@@ -4,9 +4,13 @@ set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 harden="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"
+harden_timer="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.timer"
 harden_helper="$repo/os/usr/libexec/tilo-rollback-harden"
 fs_unit="$repo/os/usr/lib/systemd/system/fs.service"
 fs_path="$repo/os/usr/lib/systemd/system/fs-identity.path"
+fs_timer="$repo/os/usr/lib/systemd/system/tilo-fs-start.timer"
+device_key_unit="$repo/os/usr/lib/systemd/system/tilo-device-key-init.service"
+tmpfiles="$repo/os/usr/lib/tmpfiles.d/tilo.conf"
 containerfile="$repo/os/Containerfile"
 # shellcheck source=lib/containerfile.sh
 . "$repo/os/tests/lib/containerfile.sh"
@@ -26,13 +30,38 @@ if exactly_once "$harden" 'ConditionPathExists=|/dev/tpmrm0' \
 else
   bad 'TPM hardening can become a failed unit on a machine with no TPM'
 fi
+if exactly_once "$harden_timer" 'OnBootSec=5s' \
+   && exactly_once "$harden_timer" 'Unit=tilo-rollback-harden.service' \
+   && grep -Fq 'systemctl enable tilo-rollback-harden.timer' "$containerfile" \
+   && ! grep -Fq 'systemctl enable tilo-rollback-harden.service' "$containerfile"; then
+  ok 'one-time TPM mutation is scheduled promptly without blocking first login'
+else
+  bad 'TPM first-boot hardening remains on the greeter critical path'
+fi
+
+# The session must be able to use the machine identity without being able to
+# unlink or replace its private key. Root provisions it before login in a
+# non-writable group-readable directory; public certificates remain separate.
+if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+2750[[:space:]]+root[[:space:]]+tilo-identity' "$tmpfiles" \
+   && exactly_once "$device_key_unit" 'Before=shell-firstboot.service greetd.service fs.service' \
+   && exactly_once "$device_key_unit" 'ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin' \
+   && exactly_once "$device_key_unit" 'ConditionPathExists=|/var/lib/tilo/device/keypair.bin' \
+   && exactly_once "$device_key_unit" 'ReadWritePaths=/var/lib/tilo/device-private' \
+   && containerfile_expanded_rootfs_copy_contract "$containerfile" | \
+        awk -F '\t' '$2 == "/out/tilo-device-key-init" && $3 == "/usr/bin/tilo-device-key-init" { found=1 } END { exit !found }' \
+   && grep -Fq 'systemctl enable tilo-device-key-init.service' "$containerfile"; then
+  ok 'device private key is provisioned before login only when creation or migration is needed'
+else
+  bad 'device private key remains replaceable by the session or is not provisioned before login'
+fi
 
 # Missing identity is normal until the compositor OOBE is acknowledged. The
-# service stays enabled for ordered later boots; the change watcher provides
-# event-driven activation during the first session.
+# boot timer starts existing identities without putting the mount on the login
+# critical path; the change watcher provides activation during first-session OOBE.
 if exactly_once "$fs_unit" 'ConditionPathExists=/var/lib/tilo/device/cert.bin' \
    && exactly_once "$fs_path" 'PathChanged=/var/lib/tilo/device/cert.bin' \
-   && exactly_once "$fs_path" 'Unit=fs.service'; then
+   && exactly_once "$fs_path" 'Unit=fs.service' \
+   && exactly_once "$fs_timer" 'Unit=fs.service'; then
   ok 'QuickFS waits cleanly for identity and starts on certificate creation'
 else
   bad 'QuickFS readiness gate or identity activation path is incomplete'
@@ -51,7 +80,7 @@ fi
 if exactly_once "$fs_path" 'ConditionKernelCommandLine=!tilo.install' \
    && containerfile_has_copy "$containerfile" \
         'os/usr/lib/systemd/system/fs-identity.path' '/usr/lib/systemd/system/fs-identity.path' \
-   && grep -Fq 'systemctl enable fs.service fs-identity.path' "$containerfile" \
+   && grep -Fq 'systemctl enable tilo-fs-start.timer fs-identity.path' "$containerfile" \
    && grep -Fq 'fs-identity.path' "$boot_mode_generator"; then
   ok 'identity activation is shipped, enabled, and quiet on installer/repair boots'
 else
@@ -67,7 +96,7 @@ enable_runs="$(sed -n \
   "$containerfile" | grep -c '^RUN systemctl' || true)"
 if [ "$enable_runs" -eq 1 ] \
    && exactly_once "$containerfile" '    systemctl enable cups.socket && \' \
-   && grep -Fq 'systemctl enable tilo-boot-entries.service tilo-boot-health.service' "$containerfile" \
+   && grep -Fq 'systemctl enable tilo-boot-entries.timer tilo-boot-health.service' "$containerfile" \
    && grep -Fq 'systemctl enable bootc-fetch-apply-updates.timer' "$containerfile" \
    && grep -Fq 'systemctl enable NetworkManager.service' "$containerfile"; then
   ok 'service activation retains one useful rootfs layer boundary'

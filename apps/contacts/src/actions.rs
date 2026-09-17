@@ -857,6 +857,11 @@ pub fn set_favorite_action(id: impl Into<String>, favorite: bool) -> ContactsAct
 #[derive(Debug, Clone)]
 pub struct ContactsResourceCtx {
     pub contacts: Vec<Contact>,
+    /// Canonical group spelling already selected by the retained app index.
+    pub groups: Vec<String>,
+    /// The authoritative book count, kept separate from the bounded snapshot
+    /// so book-level action contracts stay honest.
+    pub contact_count: usize,
     pub import_busy: bool,
     pub export_busy: bool,
     pub import_conflicts: Vec<ImportConflictResource>,
@@ -870,16 +875,6 @@ pub struct ImportConflictResource {
     pub token: String,
     pub incoming_name: String,
     pub existing_name: String,
-}
-
-fn ordered_contacts(contacts: &[Contact]) -> Vec<&Contact> {
-    let mut ordered = contacts.iter().collect::<Vec<_>>();
-    ordered.sort_by(|left, right| {
-        normalize_text(&left.display_name())
-            .cmp(&normalize_text(&right.display_name()))
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    ordered
 }
 
 /// One deterministic display spelling for every logical group in the shared
@@ -986,7 +981,7 @@ fn book_resource(ctx: &ContactsResourceCtx) -> Resource {
     }
     root = root.with_action(import);
     let mut export = file_operation("export-all-vcard", "Export all contacts", true);
-    if ctx.contacts.is_empty() {
+    if ctx.contact_count == 0 {
         export = export.unavailable("book_empty", "There are no contacts to export");
     } else if ctx.export_busy {
         export = export.unavailable("already_running", "A contact export is already in progress");
@@ -1123,6 +1118,23 @@ pub fn contact_resource(contact: &Contact) -> Resource {
     child
 }
 
+/// The minimal exact resource a retained search provider needs to invoke the
+/// canonical view action. Rich edit actions are deliberately materialised by
+/// `ContactsApp` from the authoritative CRDT projection, not copied into the
+/// search index.
+pub fn contact_open_resource(id: ContactId, label: &str) -> Resource {
+    let mut resource = Resource::new(contact_resource_id(id), "contacts.contact", label);
+    if let Some(open) = contact_operation(
+        "open",
+        "Open contact",
+        OperationKind::View,
+        &ContactsOperation::Open { id: id.to_string() },
+    ) {
+        resource = resource.with_action(open);
+    }
+    resource
+}
+
 /// Resource and canonical view action for a durable membership group. Groups
 /// are derived from UUID-addressed contact rows rather than stored as a second
 /// mutable index, so opening one is safely replayable without manufacturing
@@ -1148,16 +1160,13 @@ pub fn group_resource(name: &str) -> Resource {
 /// search provider retain complete reachability.
 pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = book_resource(ctx);
-    for group in ordered_groups(&ctx.contacts)
-        .into_iter()
-        .take(MAX_CONTEXT_GROUP_RESOURCES)
-    {
-        root = root.with_child(group_resource(&group));
+    // Defend the catalogue boundary here as well as in `ContactsApp`: other
+    // hosts can construct this context directly, and resource discovery must
+    // stay bounded regardless of which adapter supplied it.
+    for group in ctx.groups.iter().take(MAX_CONTEXT_GROUP_RESOURCES) {
+        root = root.with_child(group_resource(group));
     }
-    for contact in ordered_contacts(&ctx.contacts)
-        .into_iter()
-        .take(MAX_CONTEXT_CONTACT_RESOURCES)
-    {
+    for contact in ctx.contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
         root = root.with_child(contact_resource(contact));
     }
 
@@ -1173,6 +1182,17 @@ pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource>
         return Some(book_resource(ctx));
     }
     if let Some(raw_name) = id.strip_prefix("contacts.group:") {
+        if let Some(name) = ctx
+            .groups
+            .iter()
+            .find(|name| normalize_text(name) == raw_name)
+        {
+            return Some(group_resource(name));
+        }
+        // Standalone action tests and integration adapters can supply a
+        // complete transient context. The real `ResourceProvider` prepares
+        // the addressed group above, so it never takes this compatibility
+        // fallback over a large book.
         return ordered_groups(&ctx.contacts)
             .into_iter()
             .find(|name| normalize_text(name) == raw_name)
@@ -1227,7 +1247,8 @@ impl ResourceProvider for crate::app::ContactsApp {
     }
 
     fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        resolve_resource(&self.contacts_resource_ctx(), id)
+        self.exact_contacts_resource_ctx(id)
+            .and_then(|ctx| resolve_resource(&ctx, id))
     }
 }
 
@@ -1342,6 +1363,8 @@ mod tests {
             .collect::<Vec<_>>();
         let ctx = ContactsResourceCtx {
             contacts: contacts.clone(),
+            groups: Vec::new(),
+            contact_count: contacts.len(),
             import_busy: false,
             export_busy: false,
             import_conflicts: Vec::new(),
@@ -1375,6 +1398,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let ctx = ContactsResourceCtx {
+            groups: ordered_groups(&contacts)
+                .into_iter()
+                .take(MAX_CONTEXT_GROUP_RESOURCES)
+                .collect(),
+            contact_count: contacts.len(),
             contacts,
             import_busy: false,
             export_busy: false,
@@ -1404,6 +1432,8 @@ mod tests {
         let token = Uuid::new_v4().to_string();
         let ctx = ContactsResourceCtx {
             contacts: Vec::new(),
+            groups: Vec::new(),
+            contact_count: 0,
             import_busy: false,
             export_busy: false,
             import_conflicts: vec![ImportConflictResource {

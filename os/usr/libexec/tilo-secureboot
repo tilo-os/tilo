@@ -5,8 +5,12 @@
 #   tilo-secureboot capture-vendor-keys    save the firmware's factory db/KEK
 #   tilo-secureboot generate-keys          make this machine's PK, KEK and db
 #   tilo-secureboot sign                   sign the boot artefacts with db
+#   tilo-secureboot sign-at-shutdown       unseal only for the shutdown hook
 #   tilo-secureboot verify                 check every artefact against db
 #   tilo-secureboot enroll --yes           hand the keys to the firmware
+#   tilo-secureboot retire-enrollment-keys --yes
+#                                          remove online PK/KEK authority
+#   tilo-secureboot seal-db-key --yes       bind db key at rest to TPM PCR 7
 #
 # ## Why the owner's key and not ours
 #
@@ -38,7 +42,17 @@ set -euo pipefail
 
 KEYDIR="${TILO_SB_KEYDIR:-/var/lib/tilo/secureboot}"
 BOOTDIR="${TILO_SB_BOOT:-/boot}"
-EFIVARS=/sys/firmware/efi/efivars
+EFIVARS="${TILO_SB_EFIVARS:-/sys/firmware/efi/efivars}"
+MAX_KEY_MATERIAL_BYTES=65536
+MAX_EFI_SIGNATURE_LIST_BYTES=1048576
+MAX_BOOT_ARTIFACT_BYTES=1073741824
+TEMP_FILES=()
+
+cleanup_temp_files() {
+  local temporary
+  for temporary in "${TEMP_FILES[@]}"; do rm -f -- "$temporary"; done
+}
+trap cleanup_temp_files EXIT
 
 # Where the ESP is mounted, which differs by backend and is not a preference:
 #
@@ -66,14 +80,42 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die \
 "missing $1.
 
-The signing tools are not in this image yet. Add them to a dnf install block in
-os/Containerfile:
+The required Secure Boot tool is absent. tilo-crypto is built with the OS.
+Until it is restored this command cannot run, because half-signing or
+half-enrolling a boot chain is unsafe."
+}
 
-    sbsigntools efitools
+random_token() {
+  local token
+  token="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" \
+    || die "cannot read randomness for a collision-resistant temporary name"
+  [ "${#token}" -eq 32 ] && [[ "$token" =~ ^[0-9a-f]{32}$ ]] \
+    || die "kernel random source returned an incomplete temporary-name token"
+  printf '%s\n' "$token"
+}
 
-and re-run the snapshot-rpms workflow so the frozen package snapshot carries
-them (see os/Containerfile.rpms). Until then this command cannot run — which is
-deliberate: it is better than half-signing a boot chain."
+validate_keydir() {
+  [ -d "$KEYDIR" ] && [ ! -L "$KEYDIR" ] \
+    || die "Secure Boot key store is not a real directory: $KEYDIR"
+  local owner mode
+  owner="$(stat -c %u "$KEYDIR" 2>/dev/null)" \
+    || die "cannot inspect Secure Boot key store ownership"
+  mode="$(stat -c %a "$KEYDIR" 2>/dev/null)" \
+    || die "cannot inspect Secure Boot key store permissions"
+  [ "$owner" = "$(id -u)" ] \
+    || die "Secure Boot key store is owned by uid $owner, not the signing account"
+  [ "$mode" = 700 ] \
+    || die "Secure Boot key store has mode $mode; expected exactly 700"
+}
+
+ensure_keydir() {
+  [ ! -L "$KEYDIR" ] || die "refusing symlinked Secure Boot key store: $KEYDIR"
+  if [ -e "$KEYDIR" ]; then
+    validate_keydir
+    return
+  fi
+  install -d -m 0700 "$KEYDIR"
+  validate_keydir
 }
 
 # --- firmware state ----------------------------------------------------------
@@ -81,11 +123,17 @@ deliberate: it is better than half-signing a boot chain."
 # Reads a 1-byte EFI global variable (SecureBoot, SetupMode). Prints 0/1, or
 # nothing at all when the variable does not exist (no UEFI, or no SB support).
 efivar_byte() {
-  local f
-  f="$(ls "$EFIVARS/$1"-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | head -1)" || return 0
-  [ -n "$f" ] || return 0
-  # The first four bytes are the variable attributes; the payload follows.
-  od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n'
+  local f="$EFIVARS/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c" size attrs value
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  size="$(stat -c %s "$f" 2>/dev/null)" || return 1
+  [ "$size" = 5 ] || die "firmware $1 variable has an invalid payload size"
+  attrs="$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')"
+  # SecureBoot and SetupMode are firmware-authored read-only indicators. The
+  # required boot-service + runtime attributes are 0x6; accepting an arbitrary
+  # efivar-shaped file would let a malformed test/mount impersonate firmware.
+  [ "$attrs" = 06000000 ] || die "firmware $1 variable has unexpected attributes $attrs"
+  value="$(od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n')"
+  case "$value" in 0|1) printf '%s\n' "$value" ;; *) die "firmware $1 variable is not boolean" ;; esac
 }
 
 sb_enabled() { [ "$(efivar_byte SecureBoot)" = "1" ]; }
@@ -96,7 +144,7 @@ setup_mode()  { [ "$(efivar_byte SetupMode)" = "1" ]; }
 # an unsigned kernel; the service alone only catches it one boot too late.
 resign_armed() {
   systemctl is-enabled tilo-secureboot-sign.path >/dev/null 2>&1 \
-    && systemctl is-enabled tilo-secureboot-sign.service >/dev/null 2>&1 \
+    && systemctl is-enabled tilo-secureboot-sign.timer >/dev/null 2>&1 \
     && systemctl is-enabled tilo-secureboot-sign-shutdown.service >/dev/null 2>&1
 }
 
@@ -108,9 +156,8 @@ resign_armed() {
 #
 #   ostree backend      a bare vmlinuz per deployment under /boot/ostree, so a
 #                       new deployment means a new file to sign.
-#   composefs + UKI     one Unified Kernel Image per kernel version at
-#                       EFI/Linux/<kver>.efi, plus any signed PE addons beside
-#                       it in EFI/Linux/<kver>.efi.extra.d/.
+#   composefs + UKI     a Unified Kernel Image either at EFI/Linux/*.efi or in
+#                       bootc's EFI/Linux/bootc directory.
 #
 # Both are listed unconditionally; a layout that does not exist matches nothing.
 # Signing a UKI is safe: the signature goes in the PE certificate table, which
@@ -124,22 +171,165 @@ artefacts() {
            "$ESP/EFI/systemd/systemd-bootaa64.efi" \
            "$ESP/EFI/BOOT/BOOTAA64.EFI" \
            "$ESP/EFI/systemd/systemd-bootia32.efi"; do
-    if [ -f "$f" ]; then printf '%s\n' "$f"; fi
+    if [ -f "$f" ] && [ ! -L "$f" ]; then printf '%s\n' "$f"; fi
   done
-  find "$BOOTDIR" -maxdepth 4 -name 'vmlinuz*' -type f 2>/dev/null | sort
-  find "$ESP/EFI/Linux" -maxdepth 3 \( -name '*.efi' -o -name '*.addon.efi' \) \
+  # Do not recursively sign arbitrary payloads dropped below these trees. The
+  # online db key is an OS-maintenance capability, not a general EFI signing
+  # oracle. Tilo does not ship systemd-stub addons.
+  find "$BOOTDIR/ostree" -mindepth 2 -maxdepth 2 -name 'vmlinuz*' \
     -type f 2>/dev/null | sort
+  find "$ESP/EFI/Linux" -maxdepth 1 -name '*.efi' -type f 2>/dev/null | sort
+  find "$ESP/EFI/Linux/bootc" -maxdepth 1 -name '*.efi' -type f 2>/dev/null | sort
   # A loop or find that matched nothing must not look like a failure to `set -e`.
   return 0
 }
 
 signed_with_db() {
-  sbverify --cert "$KEYDIR/db.crt" "$1" >/dev/null 2>&1
+  tilo-crypto verify-efi "$KEYDIR/db.crt" "$1" >/dev/null 2>&1
+}
+
+db_signing_key() {
+  local candidate
+  if [ -n "${TILO_SB_UNSEALED_DB_KEY:-}" ] \
+     && private_key_file_is_safe "$TILO_SB_UNSEALED_DB_KEY"; then
+    candidate="$TILO_SB_UNSEALED_DB_KEY"
+  elif [ -n "${CREDENTIALS_DIRECTORY:-}" ] \
+     && private_key_file_is_safe "$CREDENTIALS_DIRECTORY/db.key"; then
+    candidate="$CREDENTIALS_DIRECTORY/db.key"
+  elif private_key_file_is_safe "$KEYDIR/db.key"; then
+    candidate="$KEYDIR/db.key"
+  else
+    return 1
+  fi
+  printf '%s\n' "$candidate"
+}
+
+private_key_file_is_safe() {
+  local path="$1" metadata owner mode links size
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  metadata="$(stat -c '%u %a %h %s' "$path" 2>/dev/null)" || return 1
+  read -r owner mode links size <<<"$metadata"
+  [ "$owner" = "$(id -u)" ] \
+    && { [ "$mode" = 600 ] || [ "$mode" = 400 ]; } \
+    && [ "$links" = 1 ] \
+    && [ "$size" -gt 0 ] \
+    && [ "$size" -le "$MAX_KEY_MATERIAL_BYTES" ]
+}
+
+sealed_credential_file_is_safe() {
+  local path="$1" metadata owner mode links size
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  metadata="$(stat -c '%u %a %h %s' "$path" 2>/dev/null)" || return 1
+  read -r owner mode links size <<<"$metadata"
+  [ "$owner" = "$(id -u)" ] \
+    && [ "$mode" = 600 ] \
+    && [ "$links" = 1 ] \
+    && [ "$size" -gt 0 ] \
+    && [ "$size" -le "$MAX_KEY_MATERIAL_BYTES" ]
+}
+
+public_data_file_is_safe() {
+  local path="$1" maximum="$2" metadata owner mode links size
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  metadata="$(stat -c '%u %a %h %s' "$path" 2>/dev/null)" || return 1
+  read -r owner mode links size <<<"$metadata"
+  [ "$owner" = "$(id -u)" ] \
+    && { [ "$mode" = 644 ] || [ "$mode" = 600 ] \
+         || [ "$mode" = 444 ] || [ "$mode" = 400 ]; } \
+    && [ "$links" = 1 ] \
+    && [ "$size" -gt 0 ] \
+    && [ "$size" -le "$maximum" ]
+}
+
+public_key_file_is_safe() {
+  public_data_file_is_safe "$1" "$MAX_KEY_MATERIAL_BYTES"
+}
+
+efi_signature_list_file_is_safe() {
+  public_data_file_is_safe "$1" "$MAX_EFI_SIGNATURE_LIST_BYTES"
+}
+
+owner_efi_signature_list_is_safe() {
+  local certificate="$1" signature_list="$2"
+  public_key_file_is_safe "$certificate" \
+    && efi_signature_list_file_is_safe "$signature_list" \
+    && tilo-crypto verify-exclusive-efi-signature-list "$certificate" "$signature_list" \
+      >/dev/null 2>&1
+}
+
+efi_signature_list_with_owner_is_safe() {
+  local certificate="$1" signature_list="$2"
+  public_key_file_is_safe "$certificate" \
+    && efi_signature_list_file_is_safe "$signature_list" \
+    && tilo-crypto verify-efi-signature-list "$certificate" "$signature_list" \
+      >/dev/null 2>&1
+}
+
+boot_directory_is_safe() {
+  local path="$1" metadata owner mode
+  [ -d "$path" ] && [ ! -L "$path" ] || return 1
+  metadata="$(stat -c '%u %a' "$path" 2>/dev/null)" || return 1
+  read -r owner mode <<<"$metadata"
+  [ "$owner" = "$(id -u)" ] && [ $((8#$mode & 8#022)) -eq 0 ]
+}
+
+boot_artifact_is_safe() {
+  local path="$1" metadata owner mode links size parent anchor
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  metadata="$(stat -c '%u %a %h %s' "$path" 2>/dev/null)" || return 1
+  read -r owner mode links size <<<"$metadata"
+  [ "$owner" = "$(id -u)" ] \
+    && [ $((8#$mode & 8#022)) -eq 0 ] \
+    && [ "$links" = 1 ] \
+    && [ "$size" -gt 0 ] \
+    && [ "$size" -le "$MAX_BOOT_ARTIFACT_BYTES" ] \
+    || return 1
+
+  case "$path" in
+    "$ESP"/*) anchor="$ESP" ;;
+    "$BOOTDIR"/*) anchor="$BOOTDIR" ;;
+    *) return 1 ;;
+  esac
+  parent="${path%/*}"
+  while :; do
+    boot_directory_is_safe "$parent" || return 1
+    [ "$parent" != "$anchor" ] || break
+    [ "$parent" != "${parent%/*}" ] || return 1
+    parent="${parent%/*}"
+  done
+}
+
+retirement_marker_is_safe() {
+  local path="$KEYDIR/enrollment-keys-retired"
+  local expected='PK+KEK retired after verified enrollment' metadata owner mode links size
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  metadata="$(stat -c '%u %a %h %s' "$path" 2>/dev/null)" || return 1
+  read -r owner mode links size <<<"$metadata"
+  [ "$owner" = "$(id -u)" ] \
+    && [ "$mode" = 600 ] \
+    && [ "$links" = 1 ] \
+    && [ "$size" = "$((${#expected} + 1))" ] \
+    && grep -Fqx "$expected" "$path"
+}
+
+select_tpm_device() {
+  if [ -n "${TILO_SB_TPM_DEVICE:-}" ]; then
+    [ -c "$TILO_SB_TPM_DEVICE" ] \
+      || die "TPM2 device is not a character device: $TILO_SB_TPM_DEVICE"
+    printf '%s\n' "$TILO_SB_TPM_DEVICE"
+  elif [ -c /dev/tpmrm0 ]; then
+    printf '%s\n' /dev/tpmrm0
+  elif [ -c /dev/tpm0 ]; then
+    printf '%s\n' /dev/tpm0
+  else
+    die "no TPM2 character device is available"
+  fi
 }
 
 # --- subcommands -------------------------------------------------------------
 
 cmd_status() {
+  if [ -e "$KEYDIR" ] || [ -L "$KEYDIR" ]; then validate_keydir; fi
   local sb sm
   sb="$(efivar_byte SecureBoot)"; sm="$(efivar_byte SetupMode)"
   if [ -z "$sb" ]; then
@@ -147,9 +337,16 @@ cmd_status() {
   else
     log "firmware      : SecureBoot=$sb SetupMode=${sm:-?}"
   fi
-  if [ -f "$KEYDIR/db.crt" ]; then
+  if public_key_file_is_safe "$KEYDIR/db.crt"; then
     log "owner keys    : $KEYDIR"
-    log "                db subject: $(openssl x509 -noout -subject -in "$KEYDIR/db.crt" 2>/dev/null | sed 's/^subject=//')"
+    log "                db subject: $(tilo-crypto certificate-subject "$KEYDIR/db.crt" 2>/dev/null || echo unreadable)"
+    if sealed_credential_file_is_safe "$KEYDIR/db.key.cred"; then
+      log "                db private key: TPM2-sealed (PCR 7)"
+    elif private_key_file_is_safe "$KEYDIR/db.key"; then
+      log "                db private key: plaintext mode-0600"
+    else
+      log "                db private key: MISSING"
+    fi
   else
     log "owner keys    : none generated yet"
   fi
@@ -165,7 +362,7 @@ cmd_status() {
   local a state
   while IFS= read -r a; do
     [ -n "$a" ] || continue
-    if [ ! -f "$KEYDIR/db.crt" ]; then state="?"
+    if ! public_key_file_is_safe "$KEYDIR/db.crt"; then state="?"
     elif signed_with_db "$a"; then state="signed"
     else state="UNSIGNED"; fi
     printf '  %-8s %s\n' "$state" "$a"
@@ -173,86 +370,227 @@ cmd_status() {
 }
 
 cmd_capture_vendor_keys() {
-  need efi-readvar
-  install -d -m 0700 "$KEYDIR"
+  need tilo-crypto
+  ensure_keydir
   # Run this BEFORE clearing the factory keys in firmware setup. Once they are
   # gone they cannot be read back, and enroll needs them to keep firmware
   # updates and signed option ROMs verifying.
   local v got=0
   for v in db KEK; do
-    if efi-readvar -v "$v" -o "$KEYDIR/vendor-$v.esl" >/dev/null 2>&1 \
-       && [ -s "$KEYDIR/vendor-$v.esl" ]; then
+    local output="$KEYDIR/vendor-$v.esl" temporary
+    temporary="$(mktemp "$KEYDIR/.vendor-$v.esl.XXXXXX")" \
+      || die "cannot create a safe temporary file for firmware $v"
+    TEMP_FILES+=("$temporary")
+    if tilo-crypto firmware-read-esl "$EFIVARS" "$v" "$temporary" >/dev/null 2>&1 \
+       && efi_signature_list_file_is_safe "$temporary"; then
+      chmod 0644 "$temporary"
+      tilo-crypto durable-rename "$temporary" "$output" \
+        || die "captured $v but could not publish its backup durably"
       log "captured $v -> $KEYDIR/vendor-$v.esl"
       got=$((got+1))
     else
-      rm -f "$KEYDIR/vendor-$v.esl"
+      rm -f "$temporary"
       warn "could not read $v (already cleared, or the firmware exposes nothing)"
     fi
   done
   [ "$got" -gt 0 ] || die "captured nothing; enroll will need --no-vendor-keys"
+  [ "$got" -eq 2 ] || die "captured only one of factory db/KEK.
+
+The available list was saved, but this is not a complete firmware trust backup.
+Do not clear firmware keys until the missing list is recovered, unless you
+intend to enroll later with --no-vendor-keys and accept the loss explicitly."
 }
 
 cmd_generate_keys() {
-  need openssl
-  need cert-to-efi-sig-list
+  need tilo-crypto
   local cn="${1:-Tilo $(hostname 2>/dev/null || echo machine)}"
-  install -d -m 0700 "$KEYDIR"
-  local k
+  ensure_keydir
+  local k f
   for k in PK KEK db; do
-    if [ -f "$KEYDIR/$k.key" ]; then
-      log "$k already exists, keeping it"
+    local key="$KEYDIR/$k.key" cert="$KEYDIR/$k.crt" esl="$KEYDIR/$k.esl"
+    if { [ "$k" = PK ] || [ "$k" = KEK ]; } \
+       && { [ -e "$KEYDIR/enrollment-keys-retired" ] \
+            || [ -L "$KEYDIR/enrollment-keys-retired" ]; }; then
+      retirement_marker_is_safe \
+        && [ ! -e "$key" ] \
+        && [ -f "$cert" ] && [ ! -L "$cert" ] && [ -s "$cert" ] \
+        && [ -f "$esl" ] && [ ! -L "$esl" ] && [ -s "$esl" ] \
+        || die "retired PK/KEK state is malformed or exposes a second private key"
+      log "$k enrollment key is retired, keeping its public artifacts"
       continue
     fi
+    if [ "$k" = db ] && { [ -e "$KEYDIR/db.key.cred" ] || [ -L "$KEYDIR/db.key.cred" ]; }; then
+      sealed_credential_file_is_safe "$KEYDIR/db.key.cred" \
+        && [ -f "$cert" ] && [ ! -L "$cert" ] && [ -s "$cert" ] \
+        && [ -f "$esl" ] && [ ! -L "$esl" ] && [ -s "$esl" ] \
+        && [ ! -e "$key" ] \
+        || die "TPM-sealed db keyset is incomplete or exposes a second plaintext key"
+      log "db keyset is TPM-sealed, keeping it"
+      continue
+    fi
+    local present=0
+    for f in "$key" "$cert" "$esl"; do
+      if [ -e "$f" ] || [ -L "$f" ]; then present=$((present+1)); fi
+    done
+    if [ "$present" -eq 3 ]; then
+      for f in "$key" "$cert" "$esl"; do
+        [ -f "$f" ] && [ ! -L "$f" ] && [ -s "$f" ] \
+          || die "$k keyset contains a link, special file, or empty artifact: $f"
+      done
+      private_key_file_is_safe "$key" \
+        || die "$k private key must be caller-owned mode 0600/0400 with one link"
+      tilo-crypto key-matches-certificate "$key" "$cert" \
+        || die "$k private key and certificate do not match"
+      owner_efi_signature_list_is_safe "$cert" "$esl" \
+        || die "$k EFI signature list does not exclusively contain its certificate"
+      log "$k keyset already exists and verifies, keeping it"
+      continue
+    fi
+    [ "$present" -eq 0 ] || die "$k keyset is incomplete in $KEYDIR.
+
+Do not guess which artifact belongs to the private key. Restore the complete
+$k.key/$k.crt/$k.esl set from backup, or move all three aside and rerun this
+command to generate a new coherent set."
     log "generating $k"
-    ( umask 0077
-      openssl req -new -x509 -newkey rsa:4096 -sha256 -days 7300 -nodes \
-        -subj "/CN=$cn $k/" \
-        -keyout "$KEYDIR/$k.key" -out "$KEYDIR/$k.crt" 2>/dev/null )
-    cert-to-efi-sig-list -g "$(cat /proc/sys/kernel/random/uuid)" \
-      "$KEYDIR/$k.crt" "$KEYDIR/$k.esl"
+    tilo-crypto generate-secure-boot-cert "$cn $k" \
+      "$key" "$cert"
+    private_key_file_is_safe "$key" \
+      && public_key_file_is_safe "$cert" \
+      || { rm -f "$key" "$cert"; die "generated $k keypair has unsafe metadata or size"; }
+    if ! tilo-crypto certificate-esl "$cert" "$esl"; then
+      rm -f "$key" "$cert" "$esl"
+      die "could not create $k EFI signature list; removed the incomplete new keyset"
+    fi
+    efi_signature_list_file_is_safe "$esl" \
+      || { rm -f "$key" "$cert" "$esl"; die "generated $k EFI signature list is unsafe or oversized"; }
+    owner_efi_signature_list_is_safe "$cert" "$esl" \
+      || { rm -f "$key" "$cert" "$esl"; die "generated $k EFI signature list does not match its certificate"; }
+    tilo-crypto key-matches-certificate "$key" "$cert" \
+      || die "generated $k private key and certificate do not match"
   done
-  chmod 0600 "$KEYDIR"/*.key
+  for f in "$KEYDIR"/*.key; do
+    [ -e "$f" ] || continue
+    chmod 0600 "$f"
+  done
   log ""
-  log "The private keys live in $KEYDIR and exist nowhere else. Back them up"
-  log "off-device: losing db.key means you cannot sign the next kernel, and"
-  log "losing PK.key means you cannot change the enrolled set again without"
-  log "clearing the keys in firmware setup."
+  if [ -e "$KEYDIR/enrollment-keys-retired" ]; then
+    log "PK/KEK enrollment authority remains retired; public artifacts were verified."
+  else
+    log "The private keys live in $KEYDIR and exist nowhere else. Back them up"
+    log "off-device: losing db.key means you cannot sign the next kernel, and"
+    log "losing PK.key means you cannot change the enrolled set again without"
+    log "clearing the keys in firmware setup."
+  fi
 }
 
 cmd_sign() {
-  need sbsign
-  need sbverify
-  [ -f "$KEYDIR/db.key" ] || die "no signing key; run 'tilo-secureboot generate-keys' first"
-  local a n=0 skipped=0
+  need tilo-crypto
+  need flock
+  validate_keydir
+  public_key_file_is_safe "$KEYDIR/db.crt" \
+    || die "db certificate must be caller-owned, bounded, singly linked, and non-writable outside its owner"
+  local signing_key
+  if ! signing_key="$(db_signing_key)"; then
+    if sealed_credential_file_is_safe "$KEYDIR/db.key.cred" \
+       && [ -z "${CREDENTIALS_DIRECTORY:-}" ]; then
+      need systemctl
+      systemctl start --wait tilo-secureboot-sign.service \
+        || die "TPM-sealed db key could not be unsealed by the signing service"
+      return
+    fi
+    die "no usable signing key; generate one or repair the TPM-sealed credential"
+  fi
+  # The path watcher, update service, shutdown unit and an administrator can all
+  # arrive here at once. Serialize them so one signer cannot mistake another's
+  # create-new temporary output for a corrupt or unsigned boot artefact.
+  # Lock the already validated key-store directory itself. Opening a separate
+  # pathname here would let a same-account process replace the lock with a
+  # symlink between validation and open, splitting supposedly serialized
+  # signers across different inodes.
+  exec 9<"$KEYDIR"
+  flock -x 9
+  # Serialize replacement of boot artefacts with the other root maintenance
+  # tool that publishes the repair UKI.  The ESP directory is a stable inode
+  # for the lifetime of the mounted filesystem, so this cannot be swapped like
+  # a pathname-based lock file can.
+  [ -d "$ESP" ] && [ ! -L "$ESP" ] \
+    || die "ESP is not a real directory: $ESP"
+  exec 8<"$ESP"
+  flock -x 8
+  local a signed_output n=0 skipped=0
   while IFS= read -r a; do
     [ -n "$a" ] || continue
+    boot_artifact_is_safe "$a" \
+      || die "managed boot artefact has unsafe ownership, links, size, mode, or parent directories: $a"
     if signed_with_db "$a"; then
       skipped=$((skipped+1))
       continue
     fi
-    # sbsign cannot sign in place, so write beside the target and move over it.
+    # Authenticode cannot be added in place, so write beside the target and move over it.
     # /boot and the ESP are writable on a bootc system; the deployment's /usr is
     # not, and nothing here touches it.
-    sbsign --key "$KEYDIR/db.key" --cert "$KEYDIR/db.crt" \
-           --output "$a.tilo-signed" "$a" >/dev/null \
+    # tilo-crypto creates the destination with O_EXCL. A random, absent name
+    # avoids both predictable-sidecar denial of service and symlink following.
+    signed_output="$a.tilo-signed.$(random_token)"
+    TEMP_FILES+=("$signed_output")
+    tilo-crypto sign-efi "$signing_key" "$KEYDIR/db.crt" \
+           "$a" "$signed_output" >/dev/null \
       || die "signing failed: $a"
-    sbverify --cert "$KEYDIR/db.crt" "$a.tilo-signed" >/dev/null 2>&1 \
-      || { rm -f "$a.tilo-signed"; die "signature did not verify after signing: $a"; }
-    mv -f "$a.tilo-signed" "$a"
+    tilo-crypto verify-efi "$KEYDIR/db.crt" "$signed_output" >/dev/null 2>&1 \
+      || { rm -f "$signed_output"; die "signature did not verify after signing: $a"; }
+    tilo-crypto durable-rename "$signed_output" "$a" \
+      || die "signed artefact could not be installed durably: $a"
     log "signed $a"
     n=$((n+1))
   done <<< "$(artefacts)"
-  sync
+  [ $((n + skipped)) -gt 0 ] \
+    || die "found no managed boot artefacts under $ESP / $BOOTDIR; refusing to report a successful signing pass"
   log "signed $n artefact(s), $skipped already signed"
 }
 
+cmd_sign_at_shutdown() {
+  # A plaintext installation needs no TPM ceremony. Once sealed, do not use a
+  # long-lived LoadCredentialEncrypted= on this RemainAfterExit unit: that
+  # would leave the unsealed key resident in /run/credentials for all uptime.
+  if private_key_file_is_safe "$KEYDIR/db.key"; then
+    cmd_sign
+    return
+  fi
+  need tilo-crypto
+  need systemd-creds
+  validate_keydir
+  local sealed="$KEYDIR/db.key.cred" runtime="${TILO_SB_RUNTIME_DIR:-/run/tilo-secureboot}"
+  local tpm unsealed
+  sealed_credential_file_is_safe "$sealed" \
+    || die "TPM-sealed db credential is absent or unsafe"
+  [ -d "$runtime" ] && [ ! -L "$runtime" ] \
+    && [ "$(stat -c %u:%a "$runtime")" = "$(id -u):700" ] \
+    || die "Secure Boot runtime directory must be caller-owned mode 0700"
+  tpm="$(select_tpm_device)"
+  unsealed="$(mktemp "$runtime/.shutdown-db-key.XXXXXX")" \
+    || die "cannot create shutdown credential output"
+  TEMP_FILES+=("$unsealed")
+  systemd-creds decrypt --tpm2-device="$tpm" "$sealed" "$unsealed" \
+    || die "TPM2 could not unseal db signing authority at shutdown"
+  chmod 0600 "$unsealed"
+  tilo-crypto key-matches-certificate "$unsealed" "$KEYDIR/db.crt" \
+    || die "shutdown credential does not match db certificate"
+  TILO_SB_UNSEALED_DB_KEY="$unsealed" cmd_sign
+  tilo-crypto durable-unlink "$unsealed" \
+    || die "signed at shutdown but could not retire the unsealed db key"
+}
+
 cmd_verify() {
-  need sbverify
-  [ -f "$KEYDIR/db.crt" ] || die "no db certificate; run 'tilo-secureboot generate-keys' first"
+  need tilo-crypto
+  validate_keydir
+  public_key_file_is_safe "$KEYDIR/db.crt" \
+    || die "db certificate is absent or unsafe; run 'tilo-secureboot generate-keys' or restore it"
   local a bad=0 total=0
   while IFS= read -r a; do
     [ -n "$a" ] || continue
     total=$((total+1))
+    boot_artifact_is_safe "$a" \
+      || die "managed boot artefact has unsafe ownership, links, size, mode, or parent directories: $a"
     if ! signed_with_db "$a"; then
       printf 'UNSIGNED %s\n' "$a"
       bad=$((bad+1))
@@ -263,20 +601,211 @@ cmd_verify() {
   log "all $total artefact(s) verify against db"
 }
 
+verify_firmware_variable_contains() {
+  local variable="$1" certificate="$2"
+  local readback
+  # tilo-crypto publishes with O_EXCL. Supply a random absent name rather than a
+  # pre-created mktemp file; KEYDIR is already validated caller-owned 0700.
+  readback="$KEYDIR/.firmware-$variable-readback.$(random_token).esl"
+  TEMP_FILES+=("$readback")
+  if ! tilo-crypto firmware-read-esl "$EFIVARS" "$variable" "$readback" >/dev/null 2>&1 \
+     || ! efi_signature_list_file_is_safe "$readback"; then
+    rm -f "$readback"
+    die "firmware did not return a readable $variable after enrollment"
+  fi
+  if ! tilo-crypto verify-efi-signature-list "$certificate" "$readback"; then
+    rm -f "$readback"
+    die "firmware $variable does not contain the owner certificate after enrollment"
+  fi
+  rm -f "$readback"
+}
+
+verify_firmware_db_owner_exclusive() {
+  local readback
+  readback="$KEYDIR/.firmware-db-exclusive.$(random_token).esl"
+  TEMP_FILES+=("$readback")
+  tilo-crypto firmware-read-esl "$EFIVARS" db "$readback" >/dev/null 2>&1 \
+    || die "firmware did not return a readable db after owner-exclusive enrollment"
+  efi_signature_list_file_is_safe "$readback" \
+    || die "firmware returned an unsafe or oversized db after owner-exclusive enrollment"
+  tilo-crypto verify-exclusive-efi-signature-list "$KEYDIR/db.crt" "$readback" \
+    || die "firmware retained additional db boot authority after owner-exclusive enrollment"
+  rm -f "$readback"
+}
+
+install_sealed_credential_dropin() {
+  local unit="$1" load_credential="$2"
+  local systemd_root="${TILO_SB_SYSTEMD_DIR:-/etc/systemd/system}"
+  local directory="$systemd_root/$unit.d" output temporary
+  install -d -m 0755 "$directory"
+  output="$directory/30-tilo-sealed-db-key.conf"
+  temporary="$(mktemp "$directory/.30-tilo-sealed-db-key.XXXXXX")" \
+    || die "cannot create sealed-key unit drop-in"
+  TEMP_FILES+=("$temporary")
+  {
+    printf '[Unit]\nConditionPathExists=\n'
+    printf 'ConditionPathExists=%s/db.key.cred\n' "$KEYDIR"
+    if [ "$load_credential" = yes ]; then
+      printf '\n[Service]\nLoadCredentialEncrypted=db.key:%s/db.key.cred\n' "$KEYDIR"
+    fi
+  } >"$temporary"
+  chmod 0644 "$temporary"
+  tilo-crypto durable-rename "$temporary" "$output" \
+    || die "cannot publish sealed-key unit drop-in for $unit"
+}
+
+cmd_seal_db_key() {
+  [ "${1:-}" = --yes ] && [ "$#" -eq 1 ] \
+    || die "seal-db-key replaces plaintext db.key with a TPM2 credential bound to PCR 7.
+Keep an encrypted offline recovery copy, then pass --yes."
+  need tilo-crypto
+  need systemd-creds
+  need systemctl
+  validate_keydir
+  sb_enabled || die "Secure Boot is not enabled; boot the final owner policy before sealing PCR 7"
+  private_key_file_is_safe "$KEYDIR/db.key" \
+    || die "plaintext db.key is absent or unsafe"
+  public_key_file_is_safe "$KEYDIR/db.crt" \
+    || die "db certificate is absent or unsafe"
+  [ ! -e "$KEYDIR/PK.key" ] && [ ! -e "$KEYDIR/KEK.key" ] \
+    || die "retire PK/KEK enrollment authority before sealing db.key"
+  retirement_marker_is_safe \
+    || die "verified PK/KEK retirement marker is absent"
+  tilo-crypto key-matches-certificate "$KEYDIR/db.key" "$KEYDIR/db.crt" \
+    || die "db private key does not match db certificate"
+  # PCR 7 authenticates the Secure Boot policy, not the particular booted UKI.
+  # If firmware db contains a factory certificate or an extra image hash, an
+  # alternate OS trusted by that entry can reproduce PCR 7 and decrypt db.key.
+  # Permit PCR7-only custody only when the owner certificate is the sole boot
+  # authority. Hardware that must retain vendor db trust should keep db.key
+  # offline rather than claiming the TPM has isolated it to Tilo.
+  local firmware_db
+  firmware_db="$KEYDIR/.firmware-db-seal.$(random_token).esl"
+  TEMP_FILES+=("$firmware_db")
+  tilo-crypto firmware-read-esl "$EFIVARS" db "$firmware_db" \
+    || die "cannot read firmware db before sealing signing authority"
+  efi_signature_list_file_is_safe "$firmware_db" \
+    || die "firmware db is unsafe or oversized"
+  tilo-crypto verify-exclusive-efi-signature-list "$KEYDIR/db.crt" "$firmware_db" \
+    || die "firmware db is not owner-exclusive; PCR 7 alone would let another trusted OS unseal db.key"
+  rm -f "$firmware_db"
+  local tpm
+  tpm="$(select_tpm_device)"
+
+  local sealed candidate check runtime="${TILO_SB_RUNTIME_DIR:-/run/tilo-secureboot}"
+  [ ! -L "$runtime" ] || die "refusing symlinked Secure Boot runtime directory"
+  install -d -m 0700 "$runtime"
+  [ "$(stat -c %u:%a "$runtime")" = "$(id -u):700" ] \
+    || die "Secure Boot runtime directory must be caller-owned mode 0700"
+  check="$(mktemp "$runtime/.db-key-check.XXXXXX")"
+  TEMP_FILES+=("$check")
+  sealed="$KEYDIR/db.key.cred"
+  if [ -e "$sealed" ] || [ -L "$sealed" ]; then
+    sealed_credential_file_is_safe "$sealed" \
+      || die "existing sealed db credential is unsafe"
+    candidate="$sealed"
+  else
+    candidate="$(mktemp "$KEYDIR/.db.key.cred.XXXXXX")"
+    TEMP_FILES+=("$candidate")
+    systemd-creds encrypt --name=db.key --with-key=tpm2 \
+      --tpm2-device="$tpm" --tpm2-pcrs=7 "$KEYDIR/db.key" "$candidate" \
+      || die "TPM2 could not seal db signing authority to PCR 7"
+    chmod 0600 "$candidate"
+  fi
+  systemd-creds decrypt --tpm2-device="$tpm" "$candidate" "$check" \
+    || die "new TPM2 credential could not be unsealed"
+  chmod 0600 "$check"
+  tilo-crypto key-matches-certificate "$check" "$KEYDIR/db.crt" \
+    || die "unsealed credential does not match db certificate"
+  rm -f "$check"
+  if [ "$candidate" != "$sealed" ]; then
+    tilo-crypto durable-rename "$candidate" "$sealed" \
+      || die "cannot publish sealed db credential durably"
+  fi
+
+  install_sealed_credential_dropin tilo-secureboot-sign.service yes
+  install_sealed_credential_dropin tilo-secureboot-sign-shutdown.service no
+  install_sealed_credential_dropin tilo-secureboot-sign.path no
+  systemctl daemon-reload || die "cannot reload sealed-key signing units"
+  systemctl restart tilo-secureboot-sign.path \
+    || die "cannot re-arm deployment signing for the sealed credential"
+  # Restarting the already-active shutdown unit is load-bearing: daemon-reload
+  # alone does not re-evaluate its new db.key.cred condition. Its old ExecStop
+  # signs once while plaintext still exists; the restarted instance remains
+  # armed and unseals just in time from its future ExecStop.
+  systemctl restart tilo-secureboot-sign-shutdown.service \
+    || die "cannot arm shutdown signing with the sealed credential"
+  systemctl start --wait tilo-secureboot-sign.service \
+    || die "sealed credential failed an actual signing-service activation"
+  tilo-crypto durable-unlink "$KEYDIR/db.key" \
+    || die "sealed credential is ready but plaintext db.key could not be retired"
+  log "db signing key is TPM2-sealed to PCR 7; plaintext key retired"
+}
+
+cmd_retire_enrollment_keys() {
+  [ "${1:-}" = --yes ] && [ "$#" -eq 1 ] \
+    || die "retire-enrollment-keys permanently removes the online PK and KEK private keys.
+Back them up offline first, then pass --yes. The db signing key remains online."
+  need tilo-crypto
+  validate_keydir
+  setup_mode && die "firmware is still in setup mode; enroll and verify PK/KEK before retiring their keys"
+  private_key_file_is_safe "$KEYDIR/db.key" \
+    || die "ongoing db signing key is absent or unsafe; refusing to retire recovery authority"
+  public_key_file_is_safe "$KEYDIR/db.crt" \
+    || die "db certificate is absent or unsafe; refusing to retire recovery authority"
+  public_key_file_is_safe "$KEYDIR/PK.crt" \
+    && public_key_file_is_safe "$KEYDIR/KEK.crt" \
+    || die "PK/KEK certificate state is absent or unsafe"
+  tilo-crypto key-matches-certificate "$KEYDIR/db.key" "$KEYDIR/db.crt" \
+    || die "ongoing db key does not match the enrolled db certificate"
+  verify_firmware_variable_contains KEK "$KEYDIR/KEK.crt"
+  verify_firmware_variable_contains PK "$KEYDIR/PK.crt"
+
+  local pk="$KEYDIR/PK.key" kek="$KEYDIR/KEK.key"
+  if [ ! -e "$pk" ] && [ ! -e "$kek" ]; then
+    retirement_marker_is_safe \
+      || die "PK/KEK keys are absent without a verified retirement marker; restore the offline backup"
+    log "PK and KEK private keys are already retired; db signing authority remains"
+    return
+  fi
+  [ -f "$pk" ] && [ ! -L "$pk" ] && [ -f "$kek" ] && [ ! -L "$kek" ] \
+    || die "PK/KEK retirement state is incomplete; restore both keys and verify the set before retrying"
+  tilo-crypto durable-unlink "$kek"
+  tilo-crypto durable-unlink "$pk"
+  local marker temporary
+  marker="$KEYDIR/enrollment-keys-retired"
+  temporary="$(mktemp "$KEYDIR/.enrollment-keys-retired.XXXXXX")"
+  TEMP_FILES+=("$temporary")
+  printf 'PK+KEK retired after verified enrollment\n' >"$temporary"
+  chmod 0600 "$temporary"
+  tilo-crypto durable-rename "$temporary" "$marker" \
+    || die "enrollment keys were retired but their durable marker could not be published"
+  log "retired online PK and KEK private keys; db signing authority remains"
+}
+
 cmd_enroll() {
-  local assume_no_vendor=0 yes=0
+  local assume_no_vendor=0 owner_only_db=0 yes=0 retire_enrollment_keys=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --yes|-y) yes=1; shift ;;
       --no-vendor-keys) assume_no_vendor=1; shift ;;
+      --owner-only-db) owner_only_db=1; shift ;;
+      --retire-enrollment-keys) retire_enrollment_keys=1; shift ;;
       *) die "enroll: unknown option $1" ;;
     esac
   done
-  need efi-updatevar
-  need sbverify
+  need tilo-crypto
+  validate_keydir
 
   [ "$yes" -eq 1 ] || die "enroll changes what the firmware will boot; pass --yes"
-  [ -f "$KEYDIR/PK.esl" ] || die "no keys; run 'tilo-secureboot generate-keys' first"
+  local enrollment_key
+  for enrollment_key in PK KEK db; do
+    private_key_file_is_safe "$KEYDIR/$enrollment_key.key" \
+      && public_key_file_is_safe "$KEYDIR/$enrollment_key.crt" \
+      && owner_efi_signature_list_is_safe \
+           "$KEYDIR/$enrollment_key.crt" "$KEYDIR/$enrollment_key.esl" \
+      || die "$enrollment_key enrollment keyset is absent, unsafe, or oversized"
+  done
 
   # Gate 1: the artefacts must already be acceptable to the keys we are about to
   # enrol. This is the check that keeps the machine bootable.
@@ -287,7 +816,7 @@ cmd_enroll() {
 first, or the next OS update stages a kernel nothing has signed and the machine
 stops booting at the reboot that follows:
 
-    systemctl enable --now tilo-secureboot-sign.path tilo-secureboot-sign.service \\
+    systemctl enable --now tilo-secureboot-sign.path tilo-secureboot-sign.timer \\
         tilo-secureboot-sign-shutdown.service"
 
   # Gate 3: setup mode. Writing db/KEK/PK is only accepted there, and it means
@@ -302,15 +831,47 @@ afterwards the factory keys cannot be read back."
   # db and KEK carry the factory keys alongside ours, so firmware capsule updates
   # and signed option ROMs keep verifying. Losing them is a real regression on
   # real hardware, so it takes an explicit flag.
-  local db_src kek_src
+  local db_src kek_src db_combined kek_combined
   db_src="$KEYDIR/db.esl"; kek_src="$KEYDIR/KEK.esl"
-  if [ -s "$KEYDIR/vendor-db.esl" ] || [ -s "$KEYDIR/vendor-KEK.esl" ]; then
-    cat "$KEYDIR/db.esl" "$KEYDIR/vendor-db.esl" > "$KEYDIR/.db-combined.esl" 2>/dev/null \
-      || cp "$KEYDIR/db.esl" "$KEYDIR/.db-combined.esl"
-    cat "$KEYDIR/KEK.esl" "$KEYDIR/vendor-KEK.esl" > "$KEYDIR/.KEK-combined.esl" 2>/dev/null \
-      || cp "$KEYDIR/KEK.esl" "$KEYDIR/.KEK-combined.esl"
-    db_src="$KEYDIR/.db-combined.esl"; kek_src="$KEYDIR/.KEK-combined.esl"
+  local have_vendor_db=0 have_vendor_kek=0
+  efi_signature_list_file_is_safe "$KEYDIR/vendor-db.esl" && have_vendor_db=1
+  efi_signature_list_file_is_safe "$KEYDIR/vendor-KEK.esl" && have_vendor_kek=1
+  if [ "$owner_only_db" -eq 1 ]; then
+    if [ "$have_vendor_kek" -eq 1 ]; then
+      kek_combined="$(mktemp "$KEYDIR/.KEK-combined.XXXXXX.esl")"
+      TEMP_FILES+=("$kek_combined")
+      cat "$KEYDIR/KEK.esl" "$KEYDIR/vendor-KEK.esl" > "$kek_combined"
+      kek_src="$kek_combined"
+    fi
+    warn "enrolling an owner-exclusive db so PCR7-only db-key sealing cannot be unsealed by a vendor-signed alternate OS"
+    warn "captured vendor db remains offline; signed option ROMs may stop verifying"
+  elif [ "$have_vendor_db" -eq 1 ] && [ "$have_vendor_kek" -eq 1 ]; then
+    db_combined="$(mktemp "$KEYDIR/.db-combined.XXXXXX.esl")"
+    kek_combined="$(mktemp "$KEYDIR/.KEK-combined.XXXXXX.esl")"
+    TEMP_FILES+=("$db_combined" "$kek_combined")
+    cat "$KEYDIR/db.esl" "$KEYDIR/vendor-db.esl" > "$db_combined"
+    cat "$KEYDIR/KEK.esl" "$KEYDIR/vendor-KEK.esl" > "$kek_combined"
+    db_src="$db_combined"; kek_src="$kek_combined"
     log "enrolling the owner keys alongside the captured factory keys"
+  elif [ "$have_vendor_db" -ne "$have_vendor_kek" ] && [ "$assume_no_vendor" -eq 0 ]; then
+    die "factory-key capture is incomplete in $KEYDIR.
+
+Both vendor-db.esl and vendor-KEK.esl are required to preserve the firmware's
+trust chain. Restore the missing list, or pass --no-vendor-keys to explicitly
+accept that the unavailable part cannot be preserved."
+  elif [ "$have_vendor_db" -ne "$have_vendor_kek" ]; then
+    db_combined="$(mktemp "$KEYDIR/.db-combined.XXXXXX.esl")"
+    kek_combined="$(mktemp "$KEYDIR/.KEK-combined.XXXXXX.esl")"
+    TEMP_FILES+=("$db_combined" "$kek_combined")
+    cp "$KEYDIR/db.esl" "$db_combined"
+    cp "$KEYDIR/KEK.esl" "$kek_combined"
+    if [ "$have_vendor_db" -eq 1 ]; then
+      cat "$KEYDIR/vendor-db.esl" >> "$db_combined"
+    else
+      cat "$KEYDIR/vendor-KEK.esl" >> "$kek_combined"
+    fi
+    db_src="$db_combined"; kek_src="$kek_combined"
+    warn "factory-key capture is incomplete; preserving the available vendor list only"
   elif [ "$assume_no_vendor" -eq 1 ]; then
     warn "no factory keys captured — enrolling owner keys ONLY. Firmware capsule"
     warn "updates and signed option ROMs may stop verifying on this machine."
@@ -322,20 +883,39 @@ pass --no-vendor-keys to accept losing them (firmware updates and signed option
 ROMs may stop verifying)."
   fi
 
+  efi_signature_list_with_owner_is_safe "$KEYDIR/db.crt" "$db_src" \
+    || die "combined db signature list is oversized, malformed, or missing the owner certificate"
+  efi_signature_list_with_owner_is_safe "$KEYDIR/KEK.crt" "$kek_src" \
+    || die "combined KEK signature list is oversized, malformed, or missing the owner certificate"
+
   # Order is load-bearing: db and KEK while the firmware still accepts unsigned
   # writes, PK last because setting it is what leaves setup mode.
   log "writing db"
-  efi-updatevar -e -f "$db_src" db   || die "could not write db"
+  tilo-crypto firmware-write-esl "$EFIVARS" db "$db_src" || die "could not write db"
+  verify_firmware_variable_contains db "$KEYDIR/db.crt"
+  [ "$owner_only_db" -eq 0 ] || verify_firmware_db_owner_exclusive
   log "writing KEK"
-  efi-updatevar -e -f "$kek_src" KEK || die "could not write KEK"
+  tilo-crypto firmware-write-esl "$EFIVARS" KEK "$kek_src" || die "could not write KEK"
+  verify_firmware_variable_contains KEK "$KEYDIR/KEK.crt"
   log "writing PK"
-  efi-updatevar -e -f "$KEYDIR/PK.esl" PK || die "could not write PK"
-  rm -f "$KEYDIR/.db-combined.esl" "$KEYDIR/.KEK-combined.esl"
-
+  # OVMF and conforming firmware require PK enrollment to carry a valid
+  # self-signature even in SetupMode. Enroll it last so this is the operation
+  # that transitions the platform into UserMode.
+  tilo-crypto firmware-write-esl "$EFIVARS" PK "$KEYDIR/PK.esl" \
+    "$KEYDIR/PK.key" "$KEYDIR/PK.crt" || die "could not write PK"
+  verify_firmware_variable_contains PK "$KEYDIR/PK.crt"
+  [ "$(efivar_byte SetupMode)" = 0 ] \
+    || die "owner PK was written but firmware did not leave setup mode"
   log ""
   log "Enrolled. Turn Secure Boot ON in firmware setup and reboot."
   log "If it does not boot: clear the Secure Boot keys in firmware setup again —"
   log "that returns the machine to setup mode and it boots as before."
+  if [ "$retire_enrollment_keys" -eq 1 ]; then
+    cmd_retire_enrollment_keys --yes
+  else
+    log "After an offline backup, run 'tilo-secureboot retire-enrollment-keys --yes'"
+    log "to remove PK/KEK private keys from the routinely exposed machine."
+  fi
 }
 
 sub="${1:-status}"; shift || true
@@ -344,7 +924,10 @@ case "$sub" in
   capture-vendor-keys) cmd_capture_vendor_keys "$@" ;;
   generate-keys) cmd_generate_keys "$@" ;;
   sign) cmd_sign "$@" ;;
+  sign-at-shutdown) cmd_sign_at_shutdown "$@" ;;
   verify) cmd_verify "$@" ;;
+  retire-enrollment-keys) cmd_retire_enrollment_keys "$@" ;;
+  seal-db-key) cmd_seal_db_key "$@" ;;
   enroll|enrol) cmd_enroll "$@" ;;
   -h|--help) sed -n '2,40p' "$0" ;;
   *) die "unknown subcommand: $sub (try --help)" ;;

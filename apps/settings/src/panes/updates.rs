@@ -26,10 +26,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-#[cfg(test)]
 use std::time::Duration;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
@@ -58,6 +56,29 @@ pub const SCHEDULE_KEY: &str = "updates.schedule";
 pub const METERED_KEY: &str = "updates.metered";
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
+const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+const LONG_UPDATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MAX_HELPER_OUTPUT: usize = 1024 * 1024;
+
+fn run_bounded(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<bounded_command::Output, String> {
+    bounded_command::run(program, args, None, MAX_HELPER_OUTPUT, timeout)
+        .map_err(|error| format!("{program} command failed: {error}"))
+}
+
+fn helper_diagnostic(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+        .take(512)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
 
 /// The system-derived part of the update state: the current image and any
 /// image staged for the next boot. Preferences (channel, auto, last-checked)
@@ -80,37 +101,39 @@ pub struct UpdateDetails {
 
 impl UpdateDetails {
     fn from_system(rollback_target: Option<&str>) -> Self {
-        let bootc_json = Command::new("bootc")
-            .args(["status", "--format", "json"])
-            .output()
+        let bootc_json = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).to_string());
         let release_notes = bootc_json.as_deref().and_then(parse_bootc_release_notes);
-        let history = Command::new("journalctl")
-            .args([
+        let history = run_bounded(
+            "journalctl",
+            &[
                 "-u",
                 "bootc-fetch-apply-updates.service",
                 "-n",
                 "6",
                 "--output=short-iso",
                 "--no-pager",
-            ])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| parse_update_history(&String::from_utf8_lossy(&output.stdout)))
-            .unwrap_or_default();
-        let protection_enabled = Command::new("systemctl")
-            .args(["is-enabled", "tilo-rollback-confirm.timer"])
-            .output()
-            .ok()
-            .is_some_and(|output| {
-                matches!(
-                    String::from_utf8_lossy(&output.stdout).trim(),
-                    "enabled" | "enabled-runtime"
-                )
-            });
+            ],
+            STATUS_TIMEOUT,
+        )
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| parse_update_history(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_default();
+        let protection_enabled = run_bounded(
+            "systemctl",
+            &["is-enabled", "tilo-rollback-confirm.timer"],
+            STATUS_TIMEOUT,
+        )
+        .ok()
+        .is_some_and(|output| {
+            matches!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                "enabled" | "enabled-runtime"
+            )
+        });
         let rollback_health = Some(match (protection_enabled, rollback_target) {
             (true, Some(target)) => format!("Protected · fallback available: {target}"),
             (true, None) => "Boot confirmation active · no previous image retained yet".into(),
@@ -199,10 +222,7 @@ fn parse_pretty_name(contents: &str) -> Option<String> {
 /// Ask `bootc` whether an image is staged for the next boot. Returns `None`
 /// when `bootc` is missing, fails, or reports nothing staged.
 fn read_bootc_staged() -> Option<String> {
-    let out = Command::new("bootc")
-        .args(["status", "--format", "json"])
-        .output()
-        .ok()?;
+    let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -379,14 +399,11 @@ fn start_update_policy(action: &str) -> Result<(), String> {
         return Err("invalid update policy action".into());
     }
     let unit = format!("tilo-update-policy@{action}.service");
-    let output = Command::new("systemctl")
-        .args(["start", "--wait", &unit])
-        .output()
-        .map_err(|error| format!("systemctl not available: {error}"))?;
+    let output = run_bounded("systemctl", &["start", "--wait", &unit], CONTROL_TIMEOUT)?;
     if output.status.success() {
         Ok(())
     } else {
-        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let error = helper_diagnostic(&output.stderr);
         Err(if error.is_empty() {
             format!("{unit} failed")
         } else {
@@ -429,10 +446,7 @@ pub struct RealUpdateControl;
 
 impl UpdateControl for RealUpdateControl {
     fn timer_enabled(&self) -> Option<bool> {
-        let out = Command::new("systemctl")
-            .args(["is-enabled", UPDATE_TIMER])
-            .output()
-            .ok()?;
+        let out = run_bounded("systemctl", &["is-enabled", UPDATE_TIMER], STATUS_TIMEOUT).ok()?;
         // `is-enabled` exits non-zero for "disabled", so the exit status is not
         // the answer — the word on stdout is. An unparseable word is `None`,
         // not `false`: "masked", "static" and "not-found" all mean something
@@ -450,14 +464,11 @@ impl UpdateControl for RealUpdateControl {
         // without it, switching updates off leaves the timer armed until the
         // next reboot, which is most of the problem being fixed.
         let verb = if on { "enable" } else { "disable" };
-        let out = Command::new("systemctl")
-            .args([verb, "--now", UPDATE_TIMER])
-            .output()
-            .map_err(|e| format!("systemctl not available: {e}"))?;
+        let out = run_bounded("systemctl", &[verb, "--now", UPDATE_TIMER], CONTROL_TIMEOUT)?;
         if out.status.success() {
             return Ok(());
         }
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let err = helper_diagnostic(&out.stderr);
         Err(if err.is_empty() {
             format!("systemctl {verb} {UPDATE_TIMER} failed")
         } else {
@@ -466,10 +477,7 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn rollback_target(&self) -> Option<String> {
-        let out = Command::new("bootc")
-            .args(["status", "--format", "json"])
-            .output()
-            .ok()?;
+        let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT).ok()?;
         if !out.status.success() {
             return None;
         }
@@ -477,14 +485,15 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn roll_back(&self) -> Result<(), String> {
-        let out = Command::new("systemctl")
-            .args(["start", "--wait", ROLLBACK_UNIT])
-            .output()
-            .map_err(|e| format!("systemctl not available: {e}"))?;
+        let out = run_bounded(
+            "systemctl",
+            &["start", "--wait", ROLLBACK_UNIT],
+            Duration::from_secs(5 * 60),
+        )?;
         if out.status.success() {
             return Ok(());
         }
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let err = helper_diagnostic(&out.stderr);
         Err(if err.is_empty() {
             format!("{ROLLBACK_UNIT} failed; see journalctl -u {ROLLBACK_UNIT}")
         } else {
@@ -529,14 +538,15 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn check_now(&self) -> Result<(), String> {
-        let output = Command::new("systemctl")
-            .args(["start", "--wait", "tilo-deployment-update.service"])
-            .output()
-            .map_err(|error| format!("systemctl not available: {error}"))?;
+        let output = run_bounded(
+            "systemctl",
+            &["start", "--wait", "tilo-deployment-update.service"],
+            LONG_UPDATE_TIMEOUT,
+        )?;
         if output.status.success() {
             Ok(())
         } else {
-            let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let error = helper_diagnostic(&output.stderr);
             Err(if error.is_empty() {
                 "update service failed; see its system journal".into()
             } else {
@@ -595,14 +605,11 @@ pub struct RealRebooter;
 
 impl Rebooter for RealRebooter {
     fn reboot(&self) -> Result<(), String> {
-        let out = Command::new("systemctl")
-            .arg("reboot")
-            .output()
-            .map_err(|e| format!("systemctl not available: {e}"))?;
+        let out = run_bounded("systemctl", &["reboot"], CONTROL_TIMEOUT)?;
         if out.status.success() {
             Ok(())
         } else {
-            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+            Err(helper_diagnostic(&out.stderr))
         }
     }
 }

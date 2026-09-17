@@ -16,6 +16,17 @@ grep -Fq 'group: tilo-os-image-series' "$workflow" \
   && ok 'OS generation publication is globally serialized' \
   || bad 'release jobs can race and reuse one generation'
 
+kernel_verify_line="$(grep -n 'cosign verify --key keys/cosign.pub "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
+kernel_export_line="$(grep -n 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$workflow" | head -1 | cut -d: -f1)"
+kernel_build_arg_line="$(grep -n 'KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}' "$workflow" | head -1 | cut -d: -f1)"
+if [ -n "$kernel_verify_line" ] && [ -n "$kernel_export_line" ] && [ -n "$kernel_build_arg_line" ] \
+   && [ "$kernel_verify_line" -lt "$kernel_export_line" ] \
+   && [ "$kernel_export_line" -lt "$kernel_build_arg_line" ]; then
+  ok 'kernel signature verification precedes export and every image build'
+else
+  bad 'kernel repository reaches an image build before signature verification'
+fi
+
 publication_guards="$(grep -Fc "if: steps.release-mode.outputs.publish == 'true'" "$workflow")"
 if grep -Fq 'REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}' "$workflow" \
    && grep -Fq '$GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main' "$workflow" \
@@ -135,17 +146,21 @@ else
 fi
 
 children='[{"architecture":"x86_64","digest":"sha256:'"$hex"'"},{"architecture":"aarch64","digest":"sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
+kernel_refs='[{"architecture":"x86_64","ref":"code.podesta.ai/qos/qos-kernel@sha256:'"$hex"'"},{"architecture":"aarch64","ref":"code.podesta.ai/qos/qos-kernel@sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" TILO_RELEASE_CHILDREN_JSON="$children" \
+   TILO_KERNEL_REFS_JSON="$kernel_refs" TILO_RELEASE_CHILDREN_JSON="$children" \
    GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
    "$provenance" "$tmp/index-provenance.json" \
    && jq -e --argjson children "$children" \
      '.buildDefinition.externalParameters.children == $children' \
+     "$tmp/index-provenance.json" >/dev/null \
+   && jq -e --argjson kernels "$kernel_refs" \
+     '.buildDefinition.externalParameters.kernelInputs == $kernels' \
      "$tmp/index-provenance.json" >/dev/null; then
-  ok 'index provenance binds the exact architecture child digests'
+  ok 'index provenance binds exact architecture child and kernel digests'
 else
-  bad 'index provenance omits or rewrites its native child manifests'
+  bad 'index provenance omits or rewrites native child or kernel inputs'
 fi
 
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \

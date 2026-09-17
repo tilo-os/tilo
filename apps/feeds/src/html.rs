@@ -10,11 +10,6 @@
 use crate::model::{BlockKind, ContentBlock};
 
 /// Convert an HTML fragment into renderable blocks.
-// `flush!` resets `kind` after emitting a block, which is right at every
-// call site but the last one before the function returns. Rewriting the
-// macro to skip the reset there would trade a correct invariant for a
-// warning.
-#[allow(unused_assignments)]
 pub fn to_blocks(html: &str) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     let mut buf = String::new();
@@ -22,23 +17,6 @@ pub fn to_blocks(html: &str) -> Vec<ContentBlock> {
     let mut in_pre = false;
     let mut in_tag = false;
     let mut tag = String::new();
-
-    // Flush the current text buffer as a block (collapsing whitespace
-    // unless we're inside a <pre>).
-    macro_rules! flush {
-        () => {{
-            let text = if in_pre {
-                buf.trim_matches('\n').to_string()
-            } else {
-                collapse_ws(&buf)
-            };
-            if !text.is_empty() {
-                blocks.push(ContentBlock::new(kind, text));
-            }
-            buf.clear();
-            kind = BlockKind::Paragraph;
-        }};
-    }
 
     let mut chars = html.chars().peekable();
     while let Some(c) = chars.next() {
@@ -83,8 +61,7 @@ pub fn to_blocks(html: &str) -> Vec<ContentBlock> {
         }
     }
     // Final flush of any trailing text.
-    let _ = &mut kind;
-    flush!();
+    flush_block(&mut blocks, &mut buf, &mut kind, in_pre);
 
     if blocks.is_empty() {
         let text = collapse_ws(&strip_all_tags(html));
@@ -109,23 +86,9 @@ fn handle_tag(
         .unwrap_or("");
     let closing = tag.starts_with('/');
 
-    let flush =
-        |blocks: &mut Vec<ContentBlock>, buf: &mut String, kind: &mut BlockKind, pre: bool| {
-            let text = if pre {
-                buf.trim_matches('\n').to_string()
-            } else {
-                collapse_ws(buf)
-            };
-            if !text.is_empty() {
-                blocks.push(ContentBlock::new(*kind, text));
-            }
-            buf.clear();
-            *kind = BlockKind::Paragraph;
-        };
-
     match name {
         "p" | "div" | "section" | "article" => {
-            flush(blocks, buf, kind, *in_pre);
+            flush_block(blocks, buf, kind, *in_pre);
         }
         "br" => {
             buf.push('\n');
@@ -139,20 +102,41 @@ fn handle_tag(
         "blockquote" => set_block(blocks, buf, kind, closing, BlockKind::Quote, *in_pre),
         "pre" => {
             if closing {
-                flush(blocks, buf, kind, true);
+                flush_block(blocks, buf, kind, true);
                 *in_pre = false;
             } else {
-                flush(blocks, buf, kind, false);
+                flush_block(blocks, buf, kind, false);
                 *kind = BlockKind::Code;
                 *in_pre = true;
             }
         }
         "hr" => {
-            flush(blocks, buf, kind, *in_pre);
+            flush_block(blocks, buf, kind, *in_pre);
             blocks.push(ContentBlock::new(BlockKind::Divider, String::new()));
         }
         _ => {}
     }
+}
+
+/// Emit the buffered text using the active block kind, then restore the
+/// parser's paragraph default. All tag and end-of-input boundaries share this
+/// path so whitespace and `<pre>` handling cannot drift apart.
+fn flush_block(
+    blocks: &mut Vec<ContentBlock>,
+    buf: &mut String,
+    kind: &mut BlockKind,
+    in_pre: bool,
+) {
+    let text = if in_pre {
+        buf.trim_matches('\n').to_string()
+    } else {
+        collapse_ws(buf)
+    };
+    if !text.is_empty() {
+        blocks.push(ContentBlock::new(*kind, text));
+    }
+    buf.clear();
+    *kind = BlockKind::Paragraph;
 }
 
 fn set_block(
@@ -270,5 +254,13 @@ mod tests {
     fn numeric_entities() {
         let blocks = to_blocks("<p>caf&#233; &#x41;</p>");
         assert_eq!(blocks[0].text, "café A");
+    }
+
+    #[test]
+    fn unclosed_preformatted_block_uses_the_shared_final_flush() {
+        let blocks = to_blocks("<pre>\nfn main() {\n    work();\n}");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].kind, BlockKind::Code);
+        assert_eq!(blocks[0].text, "fn main() {\n    work();\n}");
     }
 }

@@ -11,7 +11,9 @@
 //! reader needs on focus changes.
 
 use std::io::Write;
+use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 use crate::error::TtsError;
 use crate::speaker::{Speaker, Utterance};
@@ -97,6 +99,12 @@ impl EspeakSpeaker {
     /// Kill and reap the current child, if any.
     fn kill_current(&mut self) {
         if let Some(mut child) = self.current.take() {
+            if let Ok(pid) = i32::try_from(child.id()) {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -113,7 +121,8 @@ impl EspeakSpeaker {
         cmd.arg("--stdin");
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            .process_group(0);
 
         let mut child = cmd.spawn().map_err(|e| TtsError::Spawn {
             backend: "espeak-ng",
@@ -141,12 +150,7 @@ impl EspeakSpeaker {
 
 /// Probe whether `bin --version` runs (i.e. the binary exists & is executable).
 fn probe(bin: &str) -> bool {
-    Command::new(bin)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    bounded_command::run(bin, &["--version"], None, 64 * 1024, Duration::from_secs(2))
         // Spawning at all proves the binary exists & is executable; the exit
         // code of `--version` varies across espeak-ng builds, so we ignore it.
         .is_ok()

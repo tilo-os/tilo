@@ -20,6 +20,7 @@
 //   `power.profile`     — string, power-profile dropdown
 //   `power.auto_suspend`— bool, suspend-when-idle toggle
 //   `power.blank`       — string, screen-blank timeout dropdown
+//   `power.lock`        — string, session-lock timeout dropdown
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,6 +42,7 @@ use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row
 pub const PROFILE_KEY: &str = "power.profile";
 pub const AUTO_SUSPEND_KEY: &str = "power.auto_suspend";
 pub const BLANK_KEY: &str = "power.blank";
+pub const LOCK_KEY: &str = "power.lock";
 pub const SUSPEND_KEY: &str = "power.suspend";
 pub const LID_KEY: &str = "power.lid";
 pub const POWER_KEY_KEY: &str = "power.power_key";
@@ -132,6 +134,31 @@ fn blank_from_label(label: &str) -> Option<u32> {
         .iter()
         .find(|(l, _)| *l == label)
         .map(|(_, m)| *m)
+}
+
+/// Idle-lock timeout options. `0` is the explicit "Never" value persisted
+/// by Settings; manual locking and pre-suspend locking are unaffected.
+const LOCK_OPTIONS: &[(&str, u32)] = &[
+    ("1 minute", 1),
+    ("5 minutes", 5),
+    ("10 minutes", 10),
+    ("15 minutes", 15),
+    ("30 minutes", 30),
+    ("Never", 0),
+];
+
+fn lock_label(minutes: u32) -> &'static str {
+    LOCK_OPTIONS
+        .iter()
+        .find(|(_, value)| *value == minutes)
+        .map_or("5 minutes", |(label, _)| *label)
+}
+
+fn lock_from_label(label: &str) -> Option<u32> {
+    LOCK_OPTIONS
+        .iter()
+        .find(|(candidate, _)| *candidate == label)
+        .map(|(_, value)| *value)
 }
 
 /// Power pane widget.
@@ -410,6 +437,7 @@ impl PowerPane {
 
     fn idle_card(&self) -> El {
         let blank_opts: Vec<String> = BLANK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
+        let lock_opts: Vec<String> = LOCK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
         let suspend_opts: Vec<String> =
             SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
         card(
@@ -436,6 +464,14 @@ impl PowerPane {
                         Dropdown::new(blank_opts, BLANK_KEY)
                             .with_id("power.blank")
                             .with_placeholder(blank_label(self.prefs.blank_minutes)),
+                    ),
+                ),
+                choice_row(
+                    "Lock after",
+                    Box::new(
+                        Dropdown::new(lock_opts, LOCK_KEY)
+                            .with_id("power.lock")
+                            .with_placeholder(lock_label(self.prefs.lock_minutes)),
                     ),
                 ),
                 caption("Idle timeouts are applied by the compositor's power layer."),
@@ -542,6 +578,7 @@ impl PowerPane {
         );
         let _ = state.put(root, SUSPEND_KEY, suspend_label(self.prefs.suspend_minutes));
         let _ = state.put(root, BLANK_KEY, blank_label(self.prefs.blank_minutes));
+        let _ = state.put(root, LOCK_KEY, lock_label(self.prefs.lock_minutes));
         let _ = state.put(
             root,
             SAVER_SUSPEND_KEY,
@@ -649,6 +686,15 @@ impl PowerPane {
         {
             self.last_prefs.blank_minutes = m;
             self.prefs.blank_minutes = m;
+            self.persist();
+        }
+
+        if let Some(label) = read_str(state, root, LOCK_KEY)
+            && let Some(minutes) = lock_from_label(&label)
+            && minutes != self.last_prefs.lock_minutes
+        {
+            self.last_prefs.lock_minutes = minutes;
+            self.prefs.lock_minutes = minutes;
             self.persist();
         }
 
@@ -1021,9 +1067,8 @@ mod tests {
         );
     }
 
-    /// The idle preferences are durable: toggling auto-suspend and choosing a
-    /// blank timeout are adopted into the pane's tracked prefs (persisted via
-    /// the shared store, asserted against disk in the persistence test).
+    /// The idle preferences are durable: toggling auto-suspend and choosing
+    /// blank/lock timeouts are adopted into the pane's tracked prefs.
     #[test]
     fn idle_prefs_are_adopted_on_change() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("power_idle");
@@ -1043,9 +1088,12 @@ mod tests {
             automerge::ScalarValue::Boolean(false),
         );
         let _ = doc.put(&root, BLANK_KEY, "30 minutes");
+        let _ = doc.put(&root, LOCK_KEY, "Never");
         pane.sync(&mut doc, &root);
         assert!(!pane.prefs().auto_suspend);
         assert_eq!(pane.prefs().blank_minutes, 30);
+        assert_eq!(pane.prefs().lock_minutes, 0);
+        assert_eq!(SystemPrefs::load().power.lock_minutes, 0);
     }
 
     /// The new power-behaviour controls (suspend timeout, lid, power key,

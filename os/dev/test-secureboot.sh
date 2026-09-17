@@ -68,7 +68,6 @@ wait_ssh || { echo "ssh never came up"; "$VM" serial | tail -60; exit 1; }
 say "firmware state before anything"
 runscript before '
 /usr/libexec/tilo-secureboot status
-mokutil --sb-state 2>&1 || true
 ls /sys/firmware/efi/efivars/ | grep -iE "SecureBoot|SetupMode|^PK|^KEK|^db" || echo none
 ' | tee "$OUT/01-before.txt"
 
@@ -126,7 +125,6 @@ wait_ssh || {
 say "after the reboot: is Secure Boot enforcing, on our signed kernel?"
 runscript after '
 /usr/libexec/tilo-secureboot status
-mokutil --sb-state 2>&1 || true
 cat /sys/kernel/security/lockdown 2>&1 || true
 /usr/libexec/tilo-security-audit | grep -iE "secure boot|lockdown|owner"
 ' | tee "$OUT/07-after.txt"

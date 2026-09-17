@@ -11,13 +11,23 @@ First setup creates two related Ed25519 identities:
 
 - A human root, stored as the personal `primary.json` signing identity and as
   `/var/lib/tilo/user-identity/{privkey,pubkey}.bin` on the primary device.
-- One device key at `/var/lib/tilo/device/keypair.bin`, certified by the human
+- One device key at `/var/lib/tilo/device-private/keypair.bin`, certified by the human
   root in `/var/lib/tilo/device/cert.bin`.
 
 The device key is also the Iroh `EndpointId`. The shell, filesystem sync, and
 workspace host therefore present the same device identity. A home or hosted
 server receives a separate device certificate with `can_act_as_host`; it never
 receives the human root secret.
+
+The same chain can endorse a self-built OS image without exporting the human
+root: `ImageEndorsement` binds an immutable OCI SHA-256 manifest digest and Tilo
+generation to a root-certified device with a separate, time-bounded,
+root-signed image-signing authorization. Device enrollment authority alone is
+insufficient. Verification checks both grants and then the device's
+domain-separated Ed25519 image signature. Mutable tags are never a signing
+input. Official releases additionally retain their transparency-logged
+Cosign signature; the identity endorsement expresses owner trust, not a bypass
+of release-channel policy.
 
 Existing installations are migrated idempotently by `shell
 --provision-identity`. Existing keys are checked for agreement and are never

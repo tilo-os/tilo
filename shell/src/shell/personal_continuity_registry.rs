@@ -12,7 +12,7 @@ use crate::shell::personal_continuity::{
     AppInstanceId, ContinuityError, LaunchIntent, ResumeMetadata, ResumeSensitivity,
 };
 use crate::shell::state::RoomId;
-use launcher::manifest::ContinuityFacet;
+use launcher::manifest::{ContinuityContract, ContinuityFacet, ContinuitySemanticSchema};
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,49 +71,82 @@ fn portable_http_url(value: &str) -> bool {
 pub(crate) fn validate_app_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
     if schema == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
         return ui::app::sanitize_structural_continuation_metadata(bytes, |schema, bytes| {
-            validate_app_semantic_metadata(app_id, schema, bytes)
+            semantic_schema_for_app(app_id).is_some_and(|portable_schema| {
+                validate_portable_semantic_metadata(portable_schema, schema, bytes)
+            })
         })
         .is_some();
     }
     if schema == ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA {
         return ui::app::validate_generic_continuation_metadata(bytes);
     }
-    validate_app_semantic_metadata(app_id, schema, bytes)
+    semantic_schema_for_app(app_id).is_some_and(|portable_schema| {
+        validate_portable_semantic_metadata(portable_schema, schema, bytes)
+    })
 }
 
-fn validate_app_semantic_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
+fn semantic_schema_for_app(app_id: &str) -> Option<ContinuitySemanticSchema> {
+    match crate::shell::launcher::installed_continuity_contract(app_id) {
+        crate::shell::launcher::InstalledContinuityRequirements::Required(contract) => {
+            contract.semantic_schema
+        }
+        crate::shell::launcher::InstalledContinuityRequirements::NotInstalled => {
+            semantic_schema_for_builtin(app_id)
+        }
+        crate::shell::launcher::InstalledContinuityRequirements::Invalid => None,
+    }
+}
+
+fn semantic_schema_for_builtin(app_id: &str) -> Option<ContinuitySemanticSchema> {
+    match app_id {
+        "dev.tilo.browser" => Some(ContinuitySemanticSchema::WebLocationV1),
+        "dev.tilo.ebook" => Some(ContinuitySemanticSchema::PublicationPositionV1),
+        "dev.tilo.music" => Some(ContinuitySemanticSchema::MediaPositionV1),
+        "dev.tilo.chat" => Some(ContinuitySemanticSchema::RealtimeSessionV1),
+        _ => None,
+    }
+}
+
+fn validate_portable_semantic_metadata(
+    portable_schema: ContinuitySemanticSchema,
+    schema: u16,
+    bytes: &[u8],
+) -> bool {
     if schema != 1 {
         return false;
     }
-    match app_id {
-        "dev.tilo.browser" => serde_json::from_slice::<BrowserResume>(bytes)
+    match portable_schema {
+        ContinuitySemanticSchema::WebLocationV1 => serde_json::from_slice::<BrowserResume>(bytes)
             .is_ok_and(|resume| portable_http_url(&resume.url)),
-        "dev.tilo.ebook" => serde_json::from_slice::<EbookResume>(bytes).is_ok_and(|resume| {
-            let _ = (resume.chapter, resume.page);
-            portable_id(&resume.book_id)
-        }),
-        "dev.tilo.music" => serde_json::from_slice::<MusicResume>(bytes).is_ok_and(|resume| {
-            let _ = resume.position_ms;
-            resume.paused && portable_id(&resume.track_id)
-        }),
-        "dev.tilo.chat" => serde_json::from_slice::<ChatResume>(bytes).is_ok_and(|resume| {
-            let _ = resume.controls;
-            resume.media.valid()
-                && resume.media.microphone
-                && !resume.media.share_audio
-                && portable_id(&resume.workspace_id)
-                && portable_id(&resume.channel_id)
-        }),
-        _ => false,
+        ContinuitySemanticSchema::PublicationPositionV1 => {
+            serde_json::from_slice::<EbookResume>(bytes).is_ok_and(|resume| {
+                let _ = (resume.chapter, resume.page);
+                portable_id(&resume.book_id)
+            })
+        }
+        ContinuitySemanticSchema::MediaPositionV1 => serde_json::from_slice::<MusicResume>(bytes)
+            .is_ok_and(|resume| {
+                let _ = resume.position_ms;
+                resume.paused && portable_id(&resume.track_id)
+            }),
+        ContinuitySemanticSchema::RealtimeSessionV1 => serde_json::from_slice::<ChatResume>(bytes)
+            .is_ok_and(|resume| {
+                let _ = resume.controls;
+                resume.media.valid()
+                    && resume.media.microphone
+                    && !resume.media.share_audio
+                    && portable_id(&resume.workspace_id)
+                    && portable_id(&resume.channel_id)
+            }),
     }
 }
 
-fn required_facets_for_app(app_id: &str) -> Result<Vec<ContinuityFacet>, ContinuityError> {
-    match crate::shell::launcher::installed_continuity_required_facets(app_id) {
+fn continuity_contract_for_app(app_id: &str) -> Result<ContinuityContract, ContinuityError> {
+    match crate::shell::launcher::installed_continuity_contract(app_id) {
         crate::shell::launcher::InstalledContinuityRequirements::NotInstalled => {
-            Ok(vec![ContinuityFacet::Presentation])
+            Ok(ContinuityContract::default())
         }
-        crate::shell::launcher::InstalledContinuityRequirements::Required(required) => Ok(required),
+        crate::shell::launcher::InstalledContinuityRequirements::Required(contract) => Ok(contract),
         crate::shell::launcher::InstalledContinuityRequirements::Invalid => {
             Err(ContinuityError::InvalidResumePayload)
         }
@@ -166,14 +199,27 @@ impl ContinuationRegistry {
         bytes: Vec<u8>,
     ) -> Result<bool, ContinuityError> {
         let app_id = app_id.into();
-        let required = required_facets_for_app(&app_id)?;
-        self.report_with_required_facets(
+        let contract = continuity_contract_for_app(&app_id)?;
+        self.report_with_contract(room, app_id, instance_id, schema_version, bytes, &contract)
+    }
+
+    fn report_with_contract(
+        &mut self,
+        room: RoomId,
+        app_id: String,
+        instance_id: AppInstanceId,
+        schema_version: u16,
+        bytes: Vec<u8>,
+        contract: &ContinuityContract,
+    ) -> Result<bool, ContinuityError> {
+        self.report_with_validator(
             room,
             app_id,
             instance_id,
             schema_version,
             bytes,
-            &required,
+            &contract.required,
+            contract.semantic_schema,
         )
     }
 
@@ -186,19 +232,51 @@ impl ContinuationRegistry {
         bytes: Vec<u8>,
         required: &[ContinuityFacet],
     ) -> Result<bool, ContinuityError> {
+        let semantic_schema = semantic_schema_for_builtin(&app_id);
+        self.report_with_validator(
+            room,
+            app_id,
+            instance_id,
+            schema_version,
+            bytes,
+            required,
+            semantic_schema,
+        )
+    }
+
+    fn report_with_validator(
+        &mut self,
+        room: RoomId,
+        app_id: String,
+        instance_id: AppInstanceId,
+        schema_version: u16,
+        bytes: Vec<u8>,
+        required: &[ContinuityFacet],
+        semantic_schema: Option<ContinuitySemanticSchema>,
+    ) -> Result<bool, ContinuityError> {
         // Reuse the launch target validator: a process cannot smuggle a local
         // pathname into the registry key either.
         LaunchIntent::app(app_id.clone())?;
         let resume = if schema_version == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
             let bytes =
                 ui::app::sanitize_structural_continuation_metadata(&bytes, |schema, bytes| {
-                    validate_app_semantic_metadata(&app_id, schema, bytes)
+                    semantic_schema.is_some_and(|portable_schema| {
+                        validate_portable_semantic_metadata(portable_schema, schema, bytes)
+                    })
                 })
                 .ok_or(ContinuityError::InvalidResumePayload)?;
             ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?
         } else {
             let resume = ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?;
-            if !validate_app_metadata(&app_id, schema_version, resume.bytes()) {
+            if schema_version != ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA
+                && !semantic_schema.is_some_and(|portable_schema| {
+                    validate_portable_semantic_metadata(
+                        portable_schema,
+                        schema_version,
+                        resume.bytes(),
+                    )
+                })
+            {
                 return Err(ContinuityError::InvalidResumePayload);
             }
             resume
@@ -281,10 +359,10 @@ impl ContinuationRegistry {
         resume: ResumeMetadata,
         record_instance: AppInstanceId,
     ) {
-        let Ok(required) = required_facets_for_app(&app_id) else {
+        let Ok(contract) = continuity_contract_for_app(&app_id) else {
             return;
         };
-        if !resume_has_required_facets(&resume, &required) {
+        if !resume_has_required_facets(&resume, &contract.required) {
             return;
         }
         self.remote_resumes.insert(
@@ -317,6 +395,14 @@ impl ContinuationRegistry {
             .retain(|(_, _, candidate), _| *candidate != tab);
         self.remote_records
             .retain(|(_, _, candidate), _| *candidate != tab);
+    }
+
+    /// Purge every unclaimed offer learned from another device while keeping
+    /// process-local app reports intact. This is the revocation boundary for
+    /// the device-local App continuations privacy switch.
+    pub fn clear_remote(&mut self) {
+        self.remote_resumes.clear();
+        self.remote_records.clear();
     }
 
     pub fn record_instance_for_tab(
@@ -613,6 +699,57 @@ mod tests {
                     &required,
                 )
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn third_party_app_uses_signed_portable_schema_not_package_allowlist() {
+        let room = RoomId::new();
+        let instance = AppInstanceId(74);
+        let contract = ContinuityContract {
+            required: vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic],
+            semantic_schema: Some(ContinuitySemanticSchema::WebLocationV1),
+        };
+        let safe = ui::app::compose_structural_continuation_metadata(
+            ui::view::View::default(),
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: br#"{"url":"https://docs.example/guide"}"#.to_vec(),
+            }),
+        )
+        .unwrap();
+        let mut reports = ContinuationRegistry::default();
+        assert!(
+            reports
+                .report_with_contract(
+                    room,
+                    "org.example.knowledge".into(),
+                    instance,
+                    safe.schema_version,
+                    safe.bytes,
+                    &contract,
+                )
+                .unwrap()
+        );
+
+        let unsafe_payload = ui::app::compose_structural_continuation_metadata(
+            ui::view::View::default(),
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: br#"{"url":"file:///home/alice/private"}"#.to_vec(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            reports.report_with_contract(
+                room,
+                "org.example.knowledge".into(),
+                AppInstanceId(75),
+                unsafe_payload.schema_version,
+                unsafe_payload.bytes,
+                &contract,
+            ),
+            Err(ContinuityError::InvalidResumePayload)
         );
     }
 

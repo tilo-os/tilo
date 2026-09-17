@@ -25,6 +25,19 @@
 # build.
 %global debug_package %{nil}
 
+# The signed Tilo runtime is already stripped before its bundle manifest is
+# hashed and signed. Fedora's generic brp-strip pass would mutate the bundled
+# ELF loader and shared libraries after that signature was created, leaving a
+# formally packaged but unusable runtime. Keep the ordinary post-processing
+# chain, but make its strip helpers no-ops for this prebuilt, signed payload.
+%global __strip /bin/true
+
+# These signature-covered application trees are private sandbox payloads, not
+# libraries exposed to the host. Keep RPM's automatic dependency generation
+# for package binaries and exclude only these two private stores.
+%global __provides_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
+%global __requires_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
+
 Name:           tilo-session
 Version:        %{tilo_version}
 Release:        1%{?dist}
@@ -81,6 +94,13 @@ Requires:       vulkan-loader
 # not Fedora's current provider package name, so RPM can select whichever
 # implementation supplies it without tripping explicit-library policy.
 Requires:       libEGL.so.1()(64bit)
+# A session without its qOS application store is not a usable desktop: Quick
+# Settings opens Settings through the ordinary package launcher, and the
+# launcher has no system rows to offer on a first login.  Keep the store in a
+# version-locked subpackage so normal `rpm-ostree update` advances the shell,
+# app runtime and apps as one deployment while the large immutable payload is
+# still separately visible to package managers.
+Requires:       %{name}-apps = %{version}-%{release}
 # An ICD for the loader to find. Recommends rather than Requires because the
 # driver is hardware-specific — a Mesa host wants this one, an NVIDIA host gets
 # its ICD from the proprietary or nvidia-open driver package instead, and
@@ -101,10 +121,25 @@ into the paths a Wayland login manager and the compositor itself expect, so
 Tilo can be selected as a session on a host that runs some other desktop the
 rest of the time.
 
-This is not the Tilo operating system image. It installs a session, not a boot
-chain: no FUSE workspace mount, no greeter, and no app registry seeded by the
-image. Existing XDG and Flatpak applications remain available as clearly
+This is not the Tilo operating system image. It installs a session and its
+immutable Tilo application store, not a boot chain: no FUSE workspace mount or
+greeter. Existing XDG and Flatpak applications remain available as clearly
 labeled, unconfined host apps; rootless Xwayland keeps legacy X11 apps usable.
+The system app store is merged with the user's own Tilo app store, and user
+installs shadow matching preinstalled app ids.
+
+%package apps
+Summary:        %{tilo_summary} — immutable Tilo application store
+Requires:       %{name} = %{version}-%{release}
+Requires:       bubblewrap
+Requires:       systemd
+
+%description apps
+The Tilo applications and signed shared runtime used by the Tilo host session.
+It supplies Settings, Terminal, Files, Store, and the rest of the default Tilo
+collection through the same read-only system registry that the Tilo OS image
+uses. The launcher merges it with the user's writable Tilo store; user-installed
+applications and their state are never overwritten by an RPM update.
 
 %package devel
 Summary:        %{tilo_summary} — developer session entry
@@ -154,6 +189,31 @@ install -Dpm 0644 systemd-user/tilo-graphical-session.target \
 install -Dpm 0644 license/LICENSE \
                   %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
+# The app-store source tree is staged at its final FHS paths so the registry's
+# absolute payload paths are correct after installation.  Nothing here writes
+# into a user's home directory.
+cp -a apps/usr/. %{buildroot}%{_prefix}/
+install -Dpm 0644 apps/etc/tilo/runtime-bundle-trusted-publishers.txt \
+                  %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+install -Dpm 0755 apps/bin/tilo-install %{buildroot}%{_bindir}/tilo-install
+install -Dpm 0755 apps/bin/tilo-pkg %{buildroot}%{_bindir}/tilo-pkg
+install -Dpm 0755 apps/bin/tilo-runtime-bundle %{buildroot}%{_bindir}/tilo-runtime-bundle
+install -Dpm 0755 apps/bin/tilo-model-manager %{buildroot}%{_bindir}/tilo-model-manager
+install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-gateway
+install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
+install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
+install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
+for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo-ush; do
+    install -Dpm 0644 apps/systemd-user/$unit.service \
+        %{buildroot}%{_userunitdir}/$unit.service
+done
+install -Dpm 0644 apps/user-tmpfiles/tilo-model-manager.conf \
+                  %{buildroot}%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+install -Dpm 0644 apps/profile.d/tilo-apps.sh \
+                  %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
+install -Dpm 0644 apps/license/LICENSE \
+                  %{buildroot}%{_datadir}/licenses/%{name}-apps/LICENSE
+
 install -Dpm 0755 libexec/tilo-session-dev   %{buildroot}%{_libexecdir}/tilo-session-dev
 install -Dpm 0644 wayland-sessions/tilo-dev.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo-dev.desktop
@@ -191,10 +251,27 @@ grep -q '^default=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals
 grep -q '^DesktopNames=tilo$' %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
 grep -q '^Requires=graphical-session-pre.target graphical-session.target$' \
     %{buildroot}%{_userunitdir}/tilo-graphical-session.target
+grep -q '^Wants=tilo-app-host.service tilo-models.service tilo-model-gateway.service tilo-ush.service$' \
+    %{buildroot}%{_userunitdir}/tilo-graphical-session.target
 # The compositor owns the portal bus name in-process. A separate activation
 # service would race it with a backend attached to an empty workspace.
 test ! -e %{buildroot}%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.tilo.service
 test ! -e %{buildroot}%{_userunitdir}/tilo-portal.service
+# Tilo Settings is launched from Quick Settings. A package that leaves its
+# system registry empty regresses that click into a "no longer installed"
+# notification, so prove the real app and signed runtime are present.
+test -s %{buildroot}%{_datadir}/tilo-apps/registry.toml
+grep -q '^id = "dev.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.toml
+grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml
+test -d %{buildroot}%{_prefix}/lib/tilo-apps/payloads
+test ! -e %{buildroot}%{_datadir}/tilo-apps/payloads
+test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
+test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
+grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
+test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo-ush; do
+    test -f %{buildroot}%{_userunitdir}/$unit.service
+done
 
 %files
 %{_bindir}/tilo-shell
@@ -207,6 +284,28 @@ test ! -e %{buildroot}%{_userunitdir}/tilo-portal.service
 %{_datadir}/xdg-desktop-portal/tilo-portals.conf
 %{_userunitdir}/tilo-graphical-session.target
 %license %{_datadir}/licenses/%{name}/LICENSE
+
+%files apps
+%{_bindir}/tilo-install
+%{_bindir}/tilo-pkg
+%{_bindir}/tilo-runtime-bundle
+%{_bindir}/tilo-model-manager
+%{_bindir}/tilo-model-gateway
+%{_libexecdir}/tilo-cli-shim
+%{_libexecdir}/tilo-app-host
+%{_libexecdir}/tilo-ush
+%{_userunitdir}/tilo-app-host.service
+%{_userunitdir}/tilo-model-storage.service
+%{_userunitdir}/tilo-models.service
+%{_userunitdir}/tilo-model-gateway.service
+%{_userunitdir}/tilo-ush.service
+%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+%config %{_sysconfdir}/profile.d/tilo-apps.sh
+%config(noreplace) %{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+%{_datadir}/tilo-apps
+%{_prefix}/lib/tilo-apps
+%{_prefix}/lib/tilo-runtime
+%license %{_datadir}/licenses/%{name}-apps/LICENSE
 
 %files devel
 %{_libexecdir}/tilo-session-dev

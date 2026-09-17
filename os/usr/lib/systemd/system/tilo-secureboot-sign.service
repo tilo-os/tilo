@@ -14,10 +14,51 @@ ConditionPathExists=/var/lib/tilo/secureboot/db.key
 Type=oneshot
 ExecStart=/usr/libexec/tilo-secureboot sign
 RemainAfterExit=no
+# This is the boot-time fallback. Update/path hooks remain prompt and the
+# shutdown unit runs at normal priority, so background PE scans may safely
+# yield to interactive work.
+Nice=10
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# This root service handles the machine's boot-signing key. Give it only the
+# filesystem surface needed to read that key and replace EFI artefacts.
+UMask=0077
+LimitCORE=0
+RuntimeDirectory=tilo-secureboot
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+PrivateNetwork=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/var/lib/tilo/secureboot
+ReadWritePaths=/boot
+RestrictAddressFamilies=AF_UNIX
 # Signing is idempotent and inert until the keys are enrolled, so a failure here
 # must be loud but must not block the boot.
 StandardOutput=journal
 StandardError=journal+console
-
-[Install]
-WantedBy=multi-user.target

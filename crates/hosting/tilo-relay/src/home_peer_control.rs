@@ -3,7 +3,8 @@
 use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
@@ -13,6 +14,7 @@ use tilo_relay::{DeviceRole, RelayConfig, ReplicationIntent, WorkspaceBinding};
 const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
 const HOME_PEER_CONFIG: &str = "/etc/tilo/home-peer.toml";
 const MAX_REQUEST: u64 = 64 * 1024;
+const MAX_HOME_PEER_EXPORT: u64 = 8 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(name = "tilo-home-peer-control")]
@@ -66,6 +68,10 @@ enum BrokerCommand {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each boolean is an independently authorized relay capability"
+)]
 struct ApplyRequest {
     identity_root: PathBuf,
     role: String,
@@ -145,8 +151,14 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
 }
 
 fn service(action: &str, unit: &str) -> anyhow::Result<()> {
-    let status = Command::new("systemctl").args([action, unit]).status()?;
-    if !status.success() {
+    let output = bounded_command::run(
+        "systemctl",
+        &[action, unit],
+        None,
+        64 * 1024,
+        Duration::from_secs(30),
+    )?;
+    if !output.status.success() {
         bail!("systemctl {action} {unit} failed");
     }
     Ok(())
@@ -180,16 +192,26 @@ fn export_local_home_peer(identity_root: &Path, workspace_ids: &[u64]) -> anyhow
     for id in workspace_ids {
         command.args(["--relay-workspace-id", &id.to_string()]);
     }
-    let bytes = match command.output() {
-        Ok(result) if result.status.success() => std::fs::read(&output),
-        Ok(result) => {
-            let detail = String::from_utf8_lossy(&result.stderr);
-            Err(std::io::Error::other(format!(
-                "could not prepare full workspace sync: {}",
-                detail.trim()
-            )))
-        }
-        Err(error) => Err(error),
+    let result = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(60));
+    let bytes = match result {
+        Ok(result) if result.status.success() => (|| -> std::io::Result<Vec<u8>> {
+            let mut bytes = Vec::new();
+            std::fs::File::open(&output)?
+                .take(MAX_HOME_PEER_EXPORT.saturating_add(1))
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_HOME_PEER_EXPORT {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "full workspace sync export is too large",
+                ))
+            } else {
+                Ok(bytes)
+            }
+        })(),
+        Ok(_) => Err(std::io::Error::other(
+            "could not prepare full workspace sync",
+        )),
+        Err(error) => Err(std::io::Error::other(error)),
     };
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&temp_dir);
@@ -234,14 +256,17 @@ struct ServiceState {
 }
 
 fn service_state(unit: &str) -> anyhow::Result<ServiceState> {
-    let enabled = Command::new("systemctl")
-        .args(["is-enabled", "--quiet", unit])
-        .status()?
-        .success();
-    let active = Command::new("systemctl")
-        .args(["is-active", "--quiet", unit])
-        .status()?
-        .success();
+    let query = |action| {
+        bounded_command::run(
+            "systemctl",
+            &[action, "--quiet", unit],
+            None,
+            64 * 1024,
+            Duration::from_secs(10),
+        )
+    };
+    let enabled = query("is-enabled")?.status.success();
+    let active = query("is-active")?.status.success();
     Ok(ServiceState { enabled, active })
 }
 
@@ -279,7 +304,7 @@ fn apply_services(config: &RelayConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn restore(path: &Path, previous: &Option<Vec<u8>>) -> anyhow::Result<()> {
+fn restore(path: &Path, previous: Option<&[u8]>) -> anyhow::Result<()> {
     match previous {
         Some(bytes) => atomic_file::write(path, bytes).map_err(Into::into),
         None if path.exists() => std::fs::remove_file(path).map_err(Into::into),
@@ -297,27 +322,27 @@ fn commit_transaction(
     let previous = std::fs::read(relay_path).ok();
     let previous_home = std::fs::read(home_path).ok();
     atomic_file::write(relay_path, relay_bytes)?;
-    if let Some(bytes) = home_bytes {
-        if let Err(error) = atomic_file::write(home_path, bytes) {
-            restore(relay_path, &previous)?;
-            return Err(error.into());
-        }
+    if let Some(bytes) = home_bytes
+        && let Err(error) = atomic_file::write(home_path, bytes)
+    {
+        restore(relay_path, previous.as_deref())?;
+        return Err(error.into());
     }
     if let Err(error) = restart() {
-        restore(relay_path, &previous)?;
-        restore(home_path, &previous_home)?;
+        restore(relay_path, previous.as_deref())?;
+        restore(home_path, previous_home.as_deref())?;
         return Err(error.context("configuration was rolled back"));
     }
     Ok(())
 }
 
-fn apply(request: ApplyRequest) -> anyhow::Result<()> {
+fn apply(request: &ApplyRequest) -> anyhow::Result<()> {
     std::fs::create_dir_all("/etc/tilo")?;
     let uid = invoking_uid()?;
     let identity_root = validate_identity_root(&request.identity_root, uid, &home_for_uid(uid)?)?;
     let previous_relay_state = service_state("tilo-relay.service")?;
     let previous_fs_state = service_state("tilo-fs-replica.service")?;
-    let config = desired_config(&request)?;
+    let config = desired_config(request)?;
     let bytes = toml::to_string_pretty(&config)?;
     let home_bytes = if Path::new(HOME_PEER_CONFIG).is_file() {
         let bytes = std::fs::read(HOME_PEER_CONFIG)?;
@@ -366,12 +391,12 @@ fn home_for_uid(uid: u32) -> anyhow::Result<PathBuf> {
     let passwd = std::fs::read_to_string("/etc/passwd")?;
     passwd
         .lines()
-        .filter_map(|line| {
-            let fields = line.split(':').collect::<Vec<_>>();
-            (fields.len() >= 6 && fields[2].parse::<u32>().ok() == Some(uid))
-                .then(|| PathBuf::from(fields[5]))
+        .find_map(|line| {
+            let mut fields = line.split(':');
+            let record_uid = fields.nth(2)?.parse::<u32>().ok()?;
+            let home = fields.nth(2)?;
+            (record_uid == uid).then(|| PathBuf::from(home))
         })
-        .next()
         .context("requesting user's home directory was not found")
 }
 
@@ -395,7 +420,7 @@ fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow
 }
 
 fn approve_enrollment(
-    identity_root: PathBuf,
+    identity_root: &Path,
     workspace_ids: Vec<u64>,
     expected_device: Option<String>,
     expected_service: Option<String>,
@@ -404,7 +429,7 @@ fn approve_enrollment(
         bail!("too many workspaces");
     }
     let uid = invoking_uid()?;
-    let identity_root = validate_identity_root(&identity_root, uid, &home_for_uid(uid)?)?;
+    let identity_root = validate_identity_root(identity_root, uid, &home_for_uid(uid)?)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
     command
         .args(["approve", "--timeout", "60", "--identity-root"])
@@ -427,8 +452,9 @@ fn approve_enrollment(
         (None, None) => {}
         _ => bail!("nearby device and service identities must be supplied together"),
     }
-    let status = command.stdin(Stdio::null()).status()?;
-    if !status.success() {
+    let output =
+        bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(90))?;
+    if !output.status.success() {
         bail!("home-server enrollment was not completed");
     }
     Ok(())
@@ -466,14 +492,14 @@ fn validate_peer_ids(device: &str, service: &str) -> anyhow::Result<()> {
 
 fn personal_device_command(
     operation: &str,
-    identity_root: PathBuf,
-    identity_dir: PathBuf,
+    identity_root: &Path,
+    identity_dir: &Path,
     extra: impl FnOnce(&mut Command),
 ) -> anyhow::Result<()> {
     let uid = invoking_uid()?;
     let home = home_for_uid(uid)?;
-    let identity_root = validate_identity_root(&identity_root, uid, &home)?;
-    let identity_dir = validate_identity_dir(&identity_dir, uid, &home)?;
+    let identity_root = validate_identity_root(identity_root, uid, &home)?;
+    let identity_dir = validate_identity_dir(identity_dir, uid, &home)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
     command
         .arg(operation)
@@ -482,8 +508,9 @@ fn personal_device_command(
         .arg("--identity-dir")
         .arg(identity_dir);
     extra(&mut command);
-    let status = command.status()?;
-    if !status.success() {
+    let output =
+        bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
+    if !output.status.success() {
         bail!("personal-device enrollment was not completed");
     }
     Ok(())
@@ -492,14 +519,14 @@ fn personal_device_command(
 fn main() -> anyhow::Result<()> {
     require_root()?;
     match Cli::parse().command {
-        BrokerCommand::Apply => apply(read_request()?),
+        BrokerCommand::Apply => apply(&read_request()?),
         BrokerCommand::ApproveEnrollment {
             identity_root,
             workspace_ids,
             expected_device,
             expected_service,
         } => approve_enrollment(
-            identity_root,
+            &identity_root,
             workspace_ids,
             expected_device,
             expected_service,
@@ -521,7 +548,7 @@ fn main() -> anyhow::Result<()> {
             requester
                 .validate_owner(invoking_uid()?)
                 .context("pairing requester is no longer the invoking user process")?;
-            personal_device_command("pair-device", identity_root, identity_dir, |command| {
+            personal_device_command("pair-device", &identity_root, &identity_dir, |command| {
                 command
                     .args(["--label", &label, "--status-file"])
                     .arg(status_file)
@@ -538,7 +565,7 @@ fn main() -> anyhow::Result<()> {
             expected_service,
         } => {
             validate_peer_ids(&expected_device, &expected_service)?;
-            personal_device_command("approve-device", identity_root, identity_dir, |command| {
+            personal_device_command("approve-device", &identity_root, &identity_dir, |command| {
                 command
                     .args(["--expected-device", &expected_device])
                     .args(["--expected-service", &expected_service]);

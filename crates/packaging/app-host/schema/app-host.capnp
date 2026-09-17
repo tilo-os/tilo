@@ -39,6 +39,10 @@ struct PackageEntry {
     sizeBytes     @4 :UInt64;
     # Unix epoch seconds of the last `markUsed` (or install time).
     lastUsedUnix  @5 :UInt64;
+    # True when this entry belongs to the per-user mutable app-host store.
+    # False denotes a read-only system package from /usr/share/tilo-apps;
+    # system entries may be launched but cannot be pinned or removed here.
+    userManaged   @6 :Bool;
 }
 
 struct ByPinning {

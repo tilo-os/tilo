@@ -25,6 +25,23 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_kernel_pin_selects_native_architecture_and_explicit_candidate(self):
+        x86 = 'code.podesta.ai/qos/qos-kernel@sha256:' + '1' * 64
+        arm = 'code.podesta.ai/qos/qos-kernel@sha256:' + '2' * 64
+        candidate = 'code.podesta.ai/qos/tilo-development-kernel-aarch64@sha256:' + '3' * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / 'os').mkdir()
+            pin = repo / 'os/kernel-snapshot.env'
+            pin.write_text(f'KERNEL_RPMS_X86_64_REF={x86}\nKERNEL_RPMS_AARCH64_REF={arm}\n')
+            with patch.object(driver, 'REPO', repo), patch.object(driver, 'PIN_FILES', {'KERNEL_RPMS_REF': pin.name}):
+                self.assertEqual(driver.pinned_inputs('x86_64')['KERNEL_RPMS_REF'], x86)
+                self.assertEqual(driver.pinned_inputs('aarch64')['KERNEL_RPMS_REF'], arm)
+                pin.write_text(f'KERNEL_RPMS_X86_64_REF={x86}\nKERNEL_RPMS_AARCH64_REF=\n')
+                with self.assertRaises(ValueError):
+                    driver.pinned_inputs('aarch64')
+                self.assertEqual(driver.pinned_inputs('aarch64', candidate)['KERNEL_RPMS_REF'], candidate)
+
     def test_native_asset_fetch_includes_only_matching_compiler_cache_and_wpe(self):
         script = (ROOT / 'os/dev/build-image.sh').read_text()
         block = script.split('if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then\n', 1)[1].split('\nelse\n', 1)[0]
@@ -546,7 +563,8 @@ class CompileBoundaries(unittest.TestCase):
         for value in ('', '0', '-1', '07', '1;true', '1000000000000'):
             with self.subTest(generation=value), self.assertRaises(ValueError):
                 driver.validate_inputs(WPE, value, REVISION, 'refs/heads/codex/test')
-        for branch in ('refs/heads/main', 'refs/tags/test', 'main'):
+        driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/main')
+        for branch in ('refs/heads/release', 'refs/tags/test', 'main'):
             with self.subTest(branch=branch), self.assertRaises(ValueError):
                 driver.validate_inputs(WPE, '7', REVISION, branch)
 

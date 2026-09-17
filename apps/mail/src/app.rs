@@ -51,7 +51,7 @@ use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{EmptyState, NavPane, NavShell, TextInput, Toggle, ToggleFace, Widget};
 
 use crate::account::{Account, AccountStore};
-use crate::compose::{ComposeAction, ComposeWindow};
+use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
 use crate::draw::{fill_rect, fill_round, stroke_round};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
@@ -79,6 +79,24 @@ const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
 /// into an unbounded filesystem write. Larger attachments can be downloaded
 /// through Files after Mail exposes a proper streamed handoff.
 const MAX_ATTACHMENT_SAVE_BYTES: usize = crate::attachment_store::MAX_ATTACHMENT_BYTES;
+
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+struct EventContext<'a> {
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
 
 /// An open row context menu.
 struct ContextMenu {
@@ -1813,196 +1831,211 @@ impl MailApp {
 
     // ---- engine drain -----------------------------------------------------
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the engine drain is one ordered lifecycle reducer over every EngineEvent variant; splitting it would scatter the shared settlement and dirty-state transitions"
-    )]
+    fn apply_fetched_messages(
+        &mut self,
+        doc: &mut AutoCommit,
+        st: &mut MailState,
+        request_id: EngineRequestId,
+        account_id: &str,
+        folder: Folder,
+        messages: Vec<Message>,
+    ) {
+        let count = messages.len();
+        for message in messages {
+            MailDoc::ingest_message_flags(doc, &message);
+            st.mailbox.insert(message);
+        }
+        if st.folder == folder && st.selected.is_none() {
+            st.selected = st
+                .current_threads()
+                .first()
+                .and_then(|thread| thread.message_ids.last().copied());
+        }
+        st.status = Some(if count == 0 {
+            format!("{} up to date", folder.title())
+        } else {
+            format!("Synced {count} messages")
+        });
+        report_account_sync(
+            account_id,
+            accounts::AccountSyncHealth::Healthy,
+            true,
+            Some("Mail is up to date"),
+        );
+        if self
+            .resource_refresh_invocation
+            .is_some_and(|(pending, _)| pending == request_id)
+            && let Some((_, invocation)) = self.resource_refresh_invocation
+        {
+            self.resource_refresh_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            });
+        }
+    }
+
+    fn apply_sent_message(
+        &mut self,
+        doc: &mut AutoCommit,
+        st: &mut MailState,
+        request_id: EngineRequestId,
+        wire_bytes: usize,
+    ) {
+        if self
+            .pending_send
+            .as_ref()
+            .is_none_or(|pending| pending.request_id != request_id)
+        {
+            return;
+        }
+        let Some(pending) = self.pending_send.take() else {
+            return;
+        };
+        // A message joins Sent only after SMTP has accepted its bytes. If this
+        // was an edited draft, remove it at the same point; failures leave the
+        // composer and draft intact for retry.
+        if let Some(draft_id) = pending.edited_draft {
+            st.mailbox.messages.remove(&draft_id);
+            st.mailbox
+                .order
+                .retain(|message_id| *message_id != draft_id);
+        }
+        MailDoc::ingest_message_flags(doc, &pending.message);
+        st.mailbox.insert(pending.message);
+        self.editing_draft = None;
+        self.compose.close();
+        st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
+    }
+
+    fn apply_engine_error(
+        &mut self,
+        st: &mut MailState,
+        request_id: EngineRequestId,
+        context: &str,
+        message: &str,
+    ) {
+        let detail = format!("{context}: {message}");
+        st.status = Some(detail.clone());
+        let account_id = st.accounts.active_config().email;
+        let lower = detail.to_ascii_lowercase();
+        let health = if ["auth", "login", "password", "oauth", "credential"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+        {
+            accounts::AccountSyncHealth::NeedsAuthentication
+        } else {
+            accounts::AccountSyncHealth::Error
+        };
+        report_account_sync(&account_id, health, false, Some(&detail));
+        if self
+            .pending_send
+            .as_ref()
+            .is_some_and(|pending| pending.request_id == request_id)
+        {
+            // Failed SMTP delivery leaves the composer contents recoverable.
+            self.pending_send = None;
+        }
+        if self
+            .resource_refresh_invocation
+            .is_some_and(|(pending, _)| pending == request_id)
+            && let Some((_, invocation)) = self.resource_refresh_invocation
+        {
+            self.resource_refresh_result = Some(tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "mail.refresh_failed".into(),
+                    message: detail,
+                    details: None,
+                    retryable: true,
+                },
+            });
+        }
+    }
+
+    fn apply_engine_event(&mut self, doc: &mut AutoCommit, st: &mut MailState, event: EngineEvent) {
+        match event {
+            EngineEvent::Connected {
+                request_id,
+                account_id,
+            } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
+                st.status = Some(format!("Connected {account_id}"));
+                report_account_sync(
+                    &account_id,
+                    accounts::AccountSyncHealth::Syncing,
+                    false,
+                    Some("Connected; fetching mail"),
+                );
+            }
+            EngineEvent::Folders {
+                request_id,
+                folders,
+                ..
+            } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
+                tracing::info!(count = folders.len(), "mail: server folders listed");
+            }
+            EngineEvent::Fetched {
+                request_id,
+                account_id,
+                folder,
+                messages,
+            } if self.expects_engine_event(request_id, EngineRequestKind::Fetch) => {
+                self.apply_fetched_messages(doc, st, request_id, &account_id, folder, messages);
+            }
+            EngineEvent::Sent {
+                request_id,
+                wire_bytes,
+            } if self.expects_engine_event(request_id, EngineRequestKind::Send) => {
+                self.apply_sent_message(doc, st, request_id, wire_bytes);
+            }
+            EngineEvent::Authorized {
+                request_id,
+                account_id,
+            } if self.expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) => {
+                st.status = Some(format!("Signed in as {account_id}"));
+                report_account_sync(
+                    &account_id,
+                    accounts::AccountSyncHealth::Healthy,
+                    true,
+                    Some("Signed in"),
+                );
+            }
+            EngineEvent::Error {
+                request_id,
+                kind,
+                context,
+                message,
+            } if self.expects_engine_event(request_id, kind) => {
+                self.apply_engine_error(st, request_id, &context, &message);
+            }
+            EngineEvent::Completed { request_id, kind }
+                if self.expects_engine_event(request_id, kind) =>
+            {
+                // Only the worker acknowledgement settles a queued request:
+                // connect has two payloads and successful writes have none.
+                self.pending_engine_requests.remove(&request_id);
+            }
+            ignored => {
+                tracing::warn!(request_id = %ignored.request_id(), "mail: ignoring unmatched or wrong-kind engine event");
+            }
+        }
+    }
+
     fn drain_engine(&mut self, doc: &mut AutoCommit) {
-        let Some(h) = &self.engine else { return };
+        let Some(handle) = &self.engine else { return };
         let mut events = Vec::new();
-        while let Ok(ev) = h.rx.try_recv() {
-            events.push(ev);
+        while let Ok(event) = handle.rx.try_recv() {
+            events.push(event);
         }
         if events.is_empty() {
             return;
         }
         {
-            let mut st = self.shared.borrow_mut();
-            for ev in events {
-                match ev {
-                    EngineEvent::Connected {
-                        request_id,
-                        account_id,
-                    } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
-                        st.status = Some(format!("Connected {account_id}"));
-                        report_account_sync(
-                            &account_id,
-                            accounts::AccountSyncHealth::Syncing,
-                            false,
-                            Some("Connected; fetching mail"),
-                        );
-                    }
-                    EngineEvent::Folders {
-                        request_id,
-                        folders,
-                        ..
-                    } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
-                        // The fixed system-folder set drives the sidebar; log the
-                        // server's advertised set for visibility.
-                        tracing::info!(count = folders.len(), "mail: server folders listed");
-                    }
-                    EngineEvent::Fetched {
-                        request_id,
-                        account_id,
-                        folder,
-                        messages,
-                    } if self.expects_engine_event(request_id, EngineRequestKind::Fetch) => {
-                        let count = messages.len();
-                        for m in messages {
-                            MailDoc::ingest_message_flags(doc, &m);
-                            st.mailbox.insert(m);
-                        }
-                        if st.folder == folder && st.selected.is_none() {
-                            st.selected = st
-                                .current_threads()
-                                .first()
-                                .and_then(|t| t.message_ids.last().copied());
-                        }
-                        st.status = Some(if count == 0 {
-                            format!("{} up to date", folder.title())
-                        } else {
-                            format!("Synced {count} messages")
-                        });
-                        report_account_sync(
-                            &account_id,
-                            accounts::AccountSyncHealth::Healthy,
-                            true,
-                            Some("Mail is up to date"),
-                        );
-                        if self
-                            .resource_refresh_invocation
-                            .is_some_and(|(pending, _)| pending == request_id)
-                            && let Some((_, invocation)) = self.resource_refresh_invocation
-                        {
-                            self.resource_refresh_result =
-                                Some(tilo_actions::InvocationUpdate::Succeeded {
-                                    invocation,
-                                    output: tilo_actions::ActionOutput::default(),
-                                });
-                        }
-                    }
-                    EngineEvent::Sent {
-                        request_id,
-                        wire_bytes,
-                    } if self.expects_engine_event(request_id, EngineRequestKind::Send) => {
-                        if self
-                            .pending_send
-                            .as_ref()
-                            .is_some_and(|pending| pending.request_id == request_id)
-                            && let Some(pending) = self.pending_send.take()
-                        {
-                            // A message joins Sent only after SMTP has
-                            // accepted its bytes. If this was an edited draft,
-                            // remove that draft at the same point; failures
-                            // leave the composer and draft intact for retry.
-                            if let Some(draft_id) = pending.edited_draft {
-                                st.mailbox.messages.remove(&draft_id);
-                                st.mailbox
-                                    .order
-                                    .retain(|message_id| *message_id != draft_id);
-                            }
-                            MailDoc::ingest_message_flags(doc, &pending.message);
-                            st.mailbox.insert(pending.message);
-                            self.editing_draft = None;
-                            self.compose.close();
-                            st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
-                        }
-                    }
-                    EngineEvent::Authorized {
-                        request_id,
-                        account_id,
-                    } if self
-                        .expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) =>
-                    {
-                        // Tokens are sealed in the vault under the email; the
-                        // account (saved with that email as its id) reads them
-                        // at connect time.
-                        st.status = Some(format!("Signed in as {account_id}"));
-                        report_account_sync(
-                            &account_id,
-                            accounts::AccountSyncHealth::Healthy,
-                            true,
-                            Some("Signed in"),
-                        );
-                    }
-                    EngineEvent::Error {
-                        request_id,
-                        kind,
-                        context,
-                        message,
-                    } if self.expects_engine_event(request_id, kind) => {
-                        // Surface the specific failure so a fetch never fails
-                        // silently into an empty inbox.
-                        st.status = Some(format!("{context}: {message}"));
-                        let account_id = st.accounts.active_config().email;
-                        let lower = format!("{context} {message}").to_ascii_lowercase();
-                        let health = if ["auth", "login", "password", "oauth", "credential"]
-                            .iter()
-                            .any(|needle| lower.contains(needle))
-                        {
-                            accounts::AccountSyncHealth::NeedsAuthentication
-                        } else {
-                            accounts::AccountSyncHealth::Error
-                        };
-                        report_account_sync(
-                            &account_id,
-                            health,
-                            false,
-                            Some(&format!("{context}: {message}")),
-                        );
-                        if self
-                            .pending_send
-                            .as_ref()
-                            .is_some_and(|pending| pending.request_id == request_id)
-                        {
-                            // Keep the compose surface open and its contents
-                            // untouched. A failed SMTP round trip is not a
-                            // sent message and must remain recoverable.
-                            self.pending_send = None;
-                        }
-                        if self
-                            .resource_refresh_invocation
-                            .is_some_and(|(pending, _)| pending == request_id)
-                            && let Some((_, invocation)) = self.resource_refresh_invocation
-                        {
-                            self.resource_refresh_result =
-                                Some(tilo_actions::InvocationUpdate::Failed {
-                                    invocation,
-                                    error: tilo_actions::ActionFailure {
-                                        code: "mail.refresh_failed".into(),
-                                        message: format!("{context}: {message}"),
-                                        details: None,
-                                        retryable: true,
-                                    },
-                                });
-                        }
-                    }
-                    EngineEvent::Completed { request_id, kind }
-                        if self.expects_engine_event(request_id, kind) =>
-                    {
-                        // Completion is independent from the preceding UI
-                        // event. Successful IMAP writes have no payload event
-                        // at all, while Connect emits both Connected and
-                        // Folders, so only this acknowledgement may settle a
-                        // queued request.
-                        self.pending_engine_requests.remove(&request_id);
-                    }
-                    ignored => {
-                        tracing::warn!(request_id = %ignored.request_id(), "mail: ignoring unmatched or wrong-kind engine event");
-                    }
-                }
+            let shared = self.shared.clone();
+            let mut state = shared.borrow_mut();
+            for event in events {
+                self.apply_engine_event(doc, &mut state, event);
             }
-            st.dirty = true;
+            state.dirty = true;
         }
         self.awaiting_engine = !self.pending_engine_requests.is_empty();
     }
@@ -2338,30 +2371,47 @@ impl MailApp {
             None,
         );
 
-        let smtp_row_bottom = self.draw_setup_fields(scene, t, tr, theme, presence, p, lx);
+        let smtp_row_bottom = self.draw_setup_fields(
+            &mut PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            presence,
+            p,
+            lx,
+        );
         self.draw_setup_auth_method(scene, t, tr, theme, lx, last_mouse);
         self.draw_setup_tls_toggles(scene, t, tr, theme);
-        self.draw_setup_footer(scene, t, tr, theme, lx, last_mouse, smtp_row_bottom);
+        self.draw_setup_footer(
+            &mut PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            lx,
+            last_mouse,
+            smtp_row_bottom,
+        );
     }
 
     /// The identity + server fields (left-column labels, the "Port" caption,
     /// and each [`TextInput`]'s own drawing). Part of [`Self::draw_setup`];
     /// returns the bottom edge of the SMTP-host row, which the footer's
     /// autoconfig hint sits just below.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of already-computed layout/state the fields draw with; bundling them into a context struct would just move the same count into a field list"
-    )]
     fn draw_setup_fields(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintContext<'_>,
         presence: &PresenceCtx,
         p: Rect,
         lx: f64,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let labels = [
             "Display name",
@@ -2618,20 +2668,17 @@ impl MailApp {
 
     /// The autoconfig/validation hint line and the Save / Cancel / Remove
     /// buttons at the bottom of the sheet. Part of [`Self::draw_setup`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of already-computed layout/state the footer draws with; bundling them into a context struct would just move the same count into a field list"
-    )]
     fn draw_setup_footer(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintContext<'_>,
         lx: f64,
         last_mouse: Point,
         smtp_row_bottom: f64,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         self.draw_setup_autoconfig_hint(scene, t, tr, theme, lx, smtp_row_bottom);
         self.draw_setup_footer_buttons(scene, t, tr, theme, last_mouse);
     }
@@ -3068,29 +3115,24 @@ impl MailApp {
 
     /// Route events to the open compose modal and report whether it consumed
     /// them.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn handle_compose_modal(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_compose_modal(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         let format_before = self.compose.format();
-        let (consumed, action) =
-            self.compose
-                .handle_event(event, scale_factor, &modifiers, state, path, node_id, taffy);
+        let (consumed, action) = self.compose.handle_event(
+            event,
+            &mut ComposeEventContext {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
+        );
         let lifecycle_boundary = !matches!(&action, ComposeAction::None);
         match action {
             ComposeAction::RequestAttachment => self.request_compose_attachment(),
-            ComposeAction::Send => self.send_compose(state),
-            ComposeAction::SaveDraft => self.save_compose_draft(state),
+            ComposeAction::Send => self.send_compose(ctx.state),
+            ComposeAction::SaveDraft => self.save_compose_draft(ctx.state),
             ComposeAction::Close => {
                 self.dirty = true;
             }
@@ -3123,6 +3165,435 @@ impl MailApp {
         } else {
             self.context_menu = None;
         }
+    }
+
+    fn invoke_resource_effect(
+        &mut self,
+        operation: &crate::actions::MailOperation,
+    ) -> Result<bool, String> {
+        match operation {
+            crate::actions::MailOperation::RefreshCurrentFolder => {
+                if self.engine.is_none() {
+                    return Err("no connected mail account is available".into());
+                }
+                let _ = self.refresh_active_folder();
+                Ok(true)
+            }
+            crate::actions::MailOperation::SaveAttachment { .. } => {
+                Err("Save attachment must use the admitted portal operation path".into())
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn invoke_resource_view(
+        &mut self,
+        operation: crate::actions::MailOperation,
+        doc: &AutoCommit,
+    ) -> Result<bool, String> {
+        match operation {
+            crate::actions::MailOperation::RevealFolder { folder } => {
+                let Some(folder) = Folder::from_key(&folder) else {
+                    return Err("folder no longer exists".into());
+                };
+                self.shared.borrow_mut().reveal_folder(folder);
+                self.process_intents();
+            }
+            crate::actions::MailOperation::RevealAccount { id } => {
+                let Some(index) = self
+                    .shared
+                    .borrow()
+                    .accounts
+                    .accounts
+                    .iter()
+                    .position(|account| account.id == id)
+                else {
+                    return Err("account no longer exists".into());
+                };
+                let mut state = self.shared.borrow_mut();
+                state.accounts.set_active(index);
+                state.reveal_folder(Folder::Inbox);
+                drop(state);
+                self.process_intents();
+            }
+            crate::actions::MailOperation::RevealMessage { id: _ } => {
+                return Err("Open message must use the admitted mutable operation path".into());
+            }
+            crate::actions::MailOperation::InspectMessage { id } => {
+                let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
+                if !self.shared.borrow_mut().preview_message(id) {
+                    return Err("message is no longer loaded".into());
+                }
+                self.shared.borrow_mut().status =
+                    Some("Previewing without changing this message’s read state".into());
+                self.process_intents();
+            }
+            crate::actions::MailOperation::RevealDraft => {
+                let draft = MailDoc::load_draft(doc);
+                self.compose.open_with_draft(&draft);
+                self.editing_draft = None;
+                self.dirty = true;
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Route app-owned modal surfaces in front-to-back order. Returning true
+    /// stops propagation to the navigation shell and global shortcuts.
+    fn handle_app_modal_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
+        if self.compose.open && self.handle_compose_modal(event, ctx) {
+            *ctx.handled = true;
+            self.dirty = true;
+            return true;
+        }
+
+        if self.is_first_run() {
+            if let Some(first_run_node) = self.first_run_node {
+                self.first_run.handle_event(
+                    event,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    first_run_node,
+                    ctx.taffy,
+                );
+            }
+            if self.first_run.take_action() {
+                self.open_setup_edit(None);
+            }
+            self.dirty = true;
+            return true;
+        }
+
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            if self.context_menu.is_some() {
+                self.context_menu = None;
+                *ctx.handled = true;
+                return true;
+            }
+            if self.setup_open {
+                self.close_setup();
+                *ctx.handled = true;
+                return true;
+            }
+        }
+
+        if self.context_menu.is_some()
+            && let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+        {
+            let point = self.shared.borrow().last_mouse;
+            self.handle_context_menu_click(point, ctx.state);
+            *ctx.handled = true;
+            return true;
+        }
+
+        if self.setup_open {
+            self.handle_setup_event(event, ctx);
+            if *ctx.handled {
+                self.dirty = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn setup_accessibility_fields(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        [
+            "Display name",
+            "Email address",
+            "Username",
+            "Password",
+            "IMAP server",
+            "IMAP port",
+            "SMTP server",
+            "SMTP port",
+        ]
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| self.setup_auth == crate::model::AuthMethod::Password || *index != 3)
+        .filter_map(|(index, label)| {
+            let input = self.setup_inputs.get(index)?;
+            let mut node = AccessNode::new(Role::TextInput)
+                .with_name(*label)
+                .with_action_target(format!("mail.setup:field:{index}"))
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.setup_focus == Some(index),
+                    protected: index == 3,
+                    ..Default::default()
+                });
+            if index != 3 {
+                node = node.with_value(input.value());
+            }
+            if let Some(rect) = self.overlay_hits.iter().find_map(|(rect, hit)| {
+                matches!(hit, OverlayHit::SetupField(i) if *i == index).then_some(*rect)
+            }) {
+                node = node.with_bounds(rect);
+            }
+            Some(node)
+        })
+        .collect()
+    }
+
+    fn setup_accessibility_node(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let mut controls = self.setup_accessibility_fields();
+        controls.extend([
+            AccessNode::new(Role::RadioButton)
+                .with_name("Password sign-in")
+                .with_action_target("mail.setup:auth-password")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.setup_auth == crate::model::AuthMethod::Password),
+                ),
+            AccessNode::new(Role::RadioButton)
+                .with_name("OAuth sign-in")
+                .with_action_target("mail.setup:auth-oauth")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.setup_auth == crate::model::AuthMethod::OAuth),
+                ),
+        ]);
+        if self.setup_auth == crate::model::AuthMethod::OAuth {
+            controls.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Sign in with provider")
+                    .with_action_target("mail.setup:oauth-sign-in")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        controls.extend([
+            AccessNode::new(Role::ToggleButton)
+                .with_name("IMAP TLS")
+                .with_action_target("mail.setup:imap-tls")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.setup_imap_tls),
+                ),
+            AccessNode::new(Role::ToggleButton)
+                .with_name("SMTP TLS")
+                .with_action_target("mail.setup:smtp-tls")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.setup_smtp_tls),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name("Save and verify")
+                .with_action_target("mail.setup:save")
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name("Cancel")
+                .with_action_target("mail.setup:cancel")
+                .with_state(AccessState::new().focusable(true)),
+        ]);
+        if self.setup_editing.is_some() {
+            controls.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Remove account")
+                    .with_action_target("mail.setup:remove")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name("Mail account setup")
+            .with_bounds(self.overlay_panel_rect())
+            .with_state(AccessState::new().modal(true))
+            .with_children(controls)
+    }
+
+    fn folders_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let accounts = state
+            .accounts
+            .accounts
+            .iter()
+            .enumerate()
+            .map(|(account_index, account)| {
+                let folders = if account.collapsed {
+                    Vec::new()
+                } else {
+                    AccountStore::folders_for(account)
+                        .into_iter()
+                        .map(|folder| {
+                            AccessNode::new(Role::TreeItem)
+                                .with_name(folder.title())
+                                .with_action_target(format!(
+                                    "mail.folder:{account_index}:{}",
+                                    folder.as_key()
+                                ))
+                                .with_state(AccessState::new().focusable(true).selected(
+                                    state.accounts.active == account_index
+                                        && state.folder == folder,
+                                ))
+                        })
+                        .collect()
+                };
+                AccessNode::new(Role::TreeItem)
+                    .with_name(account.label())
+                    .with_action_target(format!("mail.account:{account_index}"))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(state.accounts.active == account_index)
+                            .expanded(!account.collapsed),
+                    )
+                    .with_children(folders)
+            })
+            .collect();
+        AccessNode::new(Role::Tree)
+            .with_name("Mail folders")
+            .with_children(accounts)
+    }
+
+    fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let rows = state.list_rows();
+        let total = rows.len();
+        let messages = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (id, thread_len))| {
+                let message = state.mailbox.get(*id)?;
+                let title = if message.folder == Folder::Drafts {
+                    format!("Draft: {}", message.subject)
+                } else {
+                    format!("{}: {}", message.from.display(), message.subject)
+                };
+                let snippet = message.snippet();
+                let mut node = AccessNode::new(Role::ListItem)
+                    .with_name(title)
+                    .with_optional_value((!snippet.is_empty()).then_some(snippet))
+                    .with_action_target(format!("mail.message:{id}"))
+                    .with_position(index + 1, total)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(state.selected == Some(*id)),
+                    );
+                if *thread_len > 1 {
+                    node = node
+                        .with_description(format!("{thread_len} messages in this conversation"));
+                }
+                Some(node)
+            })
+            .collect();
+        let name = if state.search.trim().is_empty() {
+            format!("{} messages", state.folder.title())
+        } else {
+            format!("Search results in {}", state.folder.title())
+        };
+        let mut list = AccessNode::new(Role::List)
+            .with_name(name)
+            .with_children(messages);
+        if total == 0 {
+            list = list.with_description(if state.search.trim().is_empty() {
+                format!("No messages in {}", state.folder.title())
+            } else {
+                "No matching messages".to_string()
+            });
+        }
+        list
+    }
+
+    fn reader_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let thread = state.selected_thread_messages();
+        let Some(current) = state.selected.and_then(|id| state.mailbox.get(id)) else {
+            return AccessNode::new(Role::Group)
+                .with_name("No conversation selected")
+                .with_description("Select a conversation to read");
+        };
+        let message_count = thread.len();
+        let mut children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Message actions")
+                .with_children(
+                    [
+                        ("Reply", "reply"),
+                        ("Archive", "archive"),
+                        ("Delete", "delete"),
+                        ("Toggle star", "star"),
+                        ("Toggle read", "read"),
+                    ]
+                    .into_iter()
+                    .map(|(name, action)| {
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_action_target(format!("mail.reader:{}:{action}", current.id))
+                            .with_state(AccessState::new().focusable(true))
+                    })
+                    .collect(),
+                ),
+        ];
+        children.extend(thread.iter().map(|message| {
+            AccessNode::new(Role::Paragraph)
+                .with_name(format!("From {}", message.from.display()))
+                .with_value(message.body.clone())
+        }));
+        children.extend(
+            current
+                .attachments
+                .iter()
+                .enumerate()
+                .map(|(index, attachment)| {
+                    let downloadable = attachment.is_downloadable();
+                    let mut node = AccessNode::new(Role::Button)
+                        .with_name(format!(
+                            "Save attachment {} ({})",
+                            attachment.filename,
+                            attachment.size_human()
+                        ))
+                        .with_action_target(format!(
+                            "mail.reader:{}:save-attachment:{index}",
+                            current.id
+                        ))
+                        .with_state(AccessState::new().focusable(true).disabled(!downloadable));
+                    if !downloadable {
+                        node = node.with_description("Download this attachment before saving it");
+                    }
+                    node
+                }),
+        );
+        AccessNode::new(Role::Document)
+            .with_name(format!("Reading: {}", current.subject))
+            .with_description(format!(
+                "Current message from {}; {message_count} message{} in this conversation{}",
+                current.from.display(),
+                if message_count == 1 { "" } else { "s" },
+                if state.inspection == Some(current.id) {
+                    "; previewing without changing its read state"
+                } else {
+                    ""
+                },
+            ))
+            .with_children(children)
     }
 }
 
@@ -3211,10 +3682,6 @@ impl Widget for MailApp {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the resource-operation door intentionally keeps every Mail effect and view arm together, so their validation and canonical routing can be audited as one contract"
-    )]
     fn invoke_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -3226,81 +3693,11 @@ impl Widget for MailApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MailOperation::RefreshCurrentFolder,
-            ) => {
-                if self.engine.is_none() {
-                    return Err("no connected mail account is available".into());
-                }
-                let _ = self.refresh_active_folder();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MailOperation::RevealFolder { folder },
-            ) => {
-                let Some(folder) = Folder::from_key(&folder) else {
-                    return Err("folder no longer exists".into());
-                };
-                self.shared.borrow_mut().reveal_folder(folder);
-                self.process_intents();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MailOperation::RevealAccount { id },
-            ) => {
-                let Some(index) = self
-                    .shared
-                    .borrow()
-                    .accounts
-                    .accounts
-                    .iter()
-                    .position(|account| account.id == id)
-                else {
-                    return Err("account no longer exists".into());
-                };
-                let mut st = self.shared.borrow_mut();
-                st.accounts.set_active(index);
-                st.reveal_folder(Folder::Inbox);
-                drop(st);
-                self.process_intents();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MailOperation::RevealMessage { id: _ },
-            ) => {
-                return Err("Open message must use the admitted mutable operation path".into());
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MailOperation::InspectMessage { id },
-            ) => {
-                let id = id
-                    .parse::<crate::model::MessageId>()
-                    .map_err(|_| "invalid message id")?;
-                if !self.shared.borrow_mut().preview_message(id) {
-                    return Err("message is no longer loaded".into());
-                }
-                self.shared.borrow_mut().status =
-                    Some("Previewing without changing this message’s read state".into());
-                self.process_intents();
-            }
-            (tilo_actions::OperationKind::View, crate::actions::MailOperation::RevealDraft) => {
-                let draft = MailDoc::load_draft(doc);
-                self.compose.open_with_draft(&draft);
-                self.editing_draft = None;
-                self.dirty = true;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MailOperation::SaveAttachment { .. },
-            ) => {
-                return Err("Save attachment must use the admitted portal operation path".into());
-            }
-            _ => return Ok(false),
+        match kind {
+            tilo_actions::OperationKind::Effect => self.invoke_resource_effect(&operation),
+            tilo_actions::OperationKind::View => self.invoke_resource_view(operation, doc),
+            tilo_actions::OperationKind::Document => Ok(false),
         }
-        Ok(true)
     }
 
     fn start_resource_operation(
@@ -3567,10 +3964,6 @@ impl Widget for MailApp {
         self.draw_status(scene, t, tr, theme);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "this is the widget's ordered modal event-routing lifecycle; splitting it would obscure the precedence between compose, onboarding, overlays, navigation, and global shortcuts"
-    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -3584,108 +3977,28 @@ impl Widget for MailApp {
         taffy: &TaffyTree<()>,
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-            self.shared.borrow_mut().last_mouse = p;
+            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
         }
 
-        // 1) Compose window is modal while open.
-        if self.compose.open
-            && self.handle_compose_modal(
-                event,
+        let modal_consumed = {
+            let mut context = EventContext {
                 scale_factor,
-                *modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-            )
-        {
-            *handled = true;
-            self.dirty = true;
-            return;
-        }
-
-        // 1.5) First-run onboarding is modal until an account exists. Its
-        // shared empty-state child owns pointer, keyboard and AT activation.
-        if self.is_first_run() {
-            if let Some(first_run_node) = self.first_run_node {
-                self.first_run.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    first_run_node,
-                    taffy,
-                );
-            }
-            if self.first_run.take_action() {
-                self.open_setup_edit(None);
-            }
-            self.dirty = true;
-            return;
-        }
-
-        // 2) Esc dismisses app-owned overlays first.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            if self.context_menu.is_some() {
-                self.context_menu = None;
-                *handled = true;
-                return;
-            }
-            if self.setup_open {
-                self.close_setup();
-                *handled = true;
-                return;
-            }
-        }
-
-        // 3) Context menu is modal: a click hits an item or dismisses.
-        if self.context_menu.is_some()
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-        {
-            let pt = self.shared.borrow().last_mouse;
-            self.handle_context_menu_click(pt, state);
-            *handled = true;
-            return;
-        }
-
-        // 4) Setup sheet is modal while open.
-        if self.setup_open {
-            self.handle_setup_event(
-                event,
-                scale_factor,
-                *modifiers,
+                modifiers: *modifiers,
                 state,
                 path,
                 handled,
                 focus_target,
                 node_id,
                 taffy,
-            );
-            if *handled {
-                self.dirty = true;
-                return;
-            }
+            };
+            self.handle_app_modal_event(event, &mut context)
+        };
+        if modal_consumed {
+            return;
         }
 
-        // 5) Route to the navigation shell (affordance/scrim/Esc + the panes).
         self.nav.handle_event(
             event,
             scale_factor,
@@ -3697,10 +4010,8 @@ impl Widget for MailApp {
             node_id,
             taffy,
         );
-        // Panes raised intents; apply the cross-pane effects.
         self.process_intents();
 
-        // 6) If nothing consumed it, apply global mailbox shortcuts.
         if !*handled {
             self.global_shortcuts(event, *modifiers, state, handled);
         }
@@ -3745,10 +4056,6 @@ impl Widget for MailApp {
     /// the list and drawer.  It also builds only from the loaded mailbox -- a
     /// live account with no fetched mail is described as empty, never filled
     /// with sample content.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the synthetic mailbox tree keeps the sidebar, list, and reader state together so their responsive visibility remains auditable"
-    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
@@ -3756,111 +4063,7 @@ impl Widget for MailApp {
             return Some(self.compose.accessibility_node());
         }
         if self.setup_open {
-            let labels = [
-                "Display name",
-                "Email address",
-                "Username",
-                "Password",
-                "IMAP server",
-                "IMAP port",
-                "SMTP server",
-                "SMTP port",
-            ];
-            let mut controls: Vec<_> = labels
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| {
-                    self.setup_auth == crate::model::AuthMethod::Password || *index != 3
-                })
-                .filter_map(|(index, label)| {
-                    let input = self.setup_inputs.get(index)?;
-                    let mut node = AccessNode::new(Role::TextInput)
-                        .with_name(*label)
-                        .with_action_target(format!("mail.setup:field:{index}"))
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.setup_focus == Some(index),
-                            protected: index == 3,
-                            ..Default::default()
-                        });
-                    if index != 3 {
-                        node = node.with_value(input.value());
-                    }
-                    if let Some(rect) = self.overlay_hits.iter().find_map(|(rect, hit)| {
-                        matches!(hit, OverlayHit::SetupField(i) if *i == index).then_some(*rect)
-                    }) {
-                        node = node.with_bounds(rect);
-                    }
-                    Some(node)
-                })
-                .collect();
-            controls.extend([
-                AccessNode::new(Role::RadioButton)
-                    .with_name("Password sign-in")
-                    .with_action_target("mail.setup:auth-password")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.setup_auth == crate::model::AuthMethod::Password),
-                    ),
-                AccessNode::new(Role::RadioButton)
-                    .with_name("OAuth sign-in")
-                    .with_action_target("mail.setup:auth-oauth")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.setup_auth == crate::model::AuthMethod::OAuth),
-                    ),
-            ]);
-            if self.setup_auth == crate::model::AuthMethod::OAuth {
-                controls.push(
-                    AccessNode::new(Role::Button)
-                        .with_name("Sign in with provider")
-                        .with_action_target("mail.setup:oauth-sign-in")
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-            controls.extend(vec![
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("IMAP TLS")
-                    .with_action_target("mail.setup:imap-tls")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.setup_imap_tls),
-                    ),
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("SMTP TLS")
-                    .with_action_target("mail.setup:smtp-tls")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.setup_smtp_tls),
-                    ),
-                AccessNode::new(Role::Button)
-                    .with_name("Save and verify")
-                    .with_action_target("mail.setup:save")
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name("Cancel")
-                    .with_action_target("mail.setup:cancel")
-                    .with_state(AccessState::new().focusable(true)),
-            ]);
-            if self.setup_editing.is_some() {
-                controls.push(
-                    AccessNode::new(Role::Button)
-                        .with_name("Remove account")
-                        .with_action_target("mail.setup:remove")
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-            return Some(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Mail account setup")
-                    .with_bounds(self.overlay_panel_rect())
-                    .with_state(AccessState::new().modal(true))
-                    .with_children(controls),
-            );
+            return Some(self.setup_accessibility_node());
         }
         if self.is_first_run() {
             // `first_run` remains a real child widget, which supplies the
@@ -3894,186 +4097,15 @@ impl Widget for MailApp {
         }
 
         if drawer_visible {
-            let account_children = st
-                .accounts
-                .accounts
-                .iter()
-                .enumerate()
-                .map(|(account_index, account)| {
-                    let folders = if account.collapsed {
-                        Vec::new()
-                    } else {
-                        AccountStore::folders_for(account)
-                            .into_iter()
-                            .map(|folder| {
-                                AccessNode::new(Role::TreeItem)
-                                    .with_name(folder.title())
-                                    .with_action_target(format!(
-                                        "mail.folder:{account_index}:{}",
-                                        folder.as_key()
-                                    ))
-                                    .with_state(AccessState::new().focusable(true).selected(
-                                        st.accounts.active == account_index && st.folder == folder,
-                                    ))
-                            })
-                            .collect()
-                    };
-                    AccessNode::new(Role::TreeItem)
-                        .with_name(account.label())
-                        .with_action_target(format!("mail.account:{account_index}"))
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .selected(st.accounts.active == account_index)
-                                .expanded(!account.collapsed),
-                        )
-                        .with_children(folders)
-                })
-                .collect();
-            children.push(
-                AccessNode::new(Role::Tree)
-                    .with_name("Mail folders")
-                    .with_children(account_children),
-            );
+            children.push(Self::folders_accessibility_node(&st));
         }
 
         if overview_visible {
-            let rows = st.list_rows();
-            let total = rows.len();
-            let message_children = rows
-                .iter()
-                .enumerate()
-                .filter_map(|(index, (id, thread_len))| {
-                    let message = st.mailbox.get(*id)?;
-                    let sender = message.from.display();
-                    let title = if message.folder == Folder::Drafts {
-                        format!("Draft: {}", message.subject)
-                    } else {
-                        format!("{sender}: {}", message.subject)
-                    };
-                    let snippet = message.snippet();
-                    let mut node = AccessNode::new(Role::ListItem)
-                        .with_name(title)
-                        .with_optional_value((!snippet.is_empty()).then_some(snippet))
-                        .with_action_target(format!("mail.message:{id}"))
-                        .with_position(index + 1, total)
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .selected(st.selected == Some(*id)),
-                        );
-                    if *thread_len > 1 {
-                        node = node.with_description(format!(
-                            "{thread_len} messages in this conversation"
-                        ));
-                    }
-                    Some(node)
-                })
-                .collect();
-            let list_name = if st.search.trim().is_empty() {
-                format!("{} messages", st.folder.title())
-            } else {
-                format!("Search results in {}", st.folder.title())
-            };
-            let mut list = AccessNode::new(Role::List)
-                .with_name(list_name)
-                .with_children(message_children);
-            if total == 0 {
-                let description = if st.search.trim().is_empty() {
-                    format!("No messages in {}", st.folder.title())
-                } else {
-                    "No matching messages".to_string()
-                };
-                list = list.with_description(description);
-            }
-            children.push(list);
+            children.push(Self::overview_accessibility_node(&st));
         }
 
         if reader_visible {
-            let thread = st.selected_thread_messages();
-            if let Some(current) = st.selected.and_then(|id| st.mailbox.get(id)) {
-                let message_count = thread.len();
-                let thread_children: Vec<_> = thread
-                    .iter()
-                    .map(|message| {
-                        AccessNode::new(Role::Paragraph)
-                            .with_name(format!("From {}", message.from.display()))
-                            .with_value(message.body.clone())
-                    })
-                    .collect();
-                children.push(
-                    AccessNode::new(Role::Document)
-                        .with_name(format!("Reading: {}", current.subject))
-                        .with_description(format!(
-                            "Current message from {}; {message_count} message{} in this conversation{}",
-                            current.from.display(),
-                            if message_count == 1 { "" } else { "s" },
-                            if st.inspection == Some(current.id) {
-                                "; previewing without changing its read state"
-                            } else {
-                                ""
-                            },
-                        ))
-                        .with_children({
-                            let mut reader_children = vec![
-                                AccessNode::new(Role::Toolbar)
-                                    .with_name("Message actions")
-                                    .with_children([
-                                        ("Reply", "reply"),
-                                        ("Archive", "archive"),
-                                        ("Delete", "delete"),
-                                        ("Toggle star", "star"),
-                                        ("Toggle read", "read"),
-                                    ]
-                                    .into_iter()
-                                    .map(|(name, action)| {
-                                        AccessNode::new(Role::Button)
-                                            .with_name(name)
-                                            .with_action_target(format!(
-                                                "mail.reader:{}:{action}",
-                                                current.id
-                                            ))
-                                            .with_state(AccessState::new().focusable(true))
-                                    })
-                                    .collect()),
-                            ];
-                            reader_children.extend(thread_children);
-                            reader_children.extend(
-                                current.attachments.iter().enumerate().map(|(index, attachment)| {
-                                    let downloadable = attachment.is_downloadable();
-                                    let mut node = AccessNode::new(Role::Button)
-                                        .with_name(format!(
-                                            "Save attachment {} ({})",
-                                            attachment.filename,
-                                            attachment.size_human()
-                                        ))
-                                        .with_action_target(format!(
-                                            "mail.reader:{}:save-attachment:{index}",
-                                            current.id
-                                        ))
-                                        .with_state(
-                                            AccessState::new()
-                                                .focusable(true)
-                                                .disabled(!downloadable),
-                                        );
-                                    if !downloadable {
-                                        node = node.with_description(
-                                            "Download this attachment before saving it",
-                                        );
-                                    }
-                                    node
-                                }),
-                            );
-                            reader_children
-                        }),
-                );
-            } else {
-                children.push(
-                    AccessNode::new(Role::Group)
-                        .with_name("No conversation selected")
-                        .with_description("Select a conversation to read"),
-                );
-            }
+            children.push(Self::reader_accessibility_node(&st));
         }
 
         let composition = if compact {
@@ -4095,10 +4127,6 @@ impl Widget for MailApp {
         )
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "semantic targets stay centralized so keyboard and assistive-technology paths cannot drift from visible controls"
-    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -4106,210 +4134,27 @@ impl Widget for MailApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
-        use ui::a11y::Action;
-
         if let Some(control) = target.strip_prefix("mail.compose:") {
-            if !self.compose.open {
-                return false;
-            }
-            let format_before = self.compose.format();
-            let compose_action = self.compose.perform_semantic_action(control, action);
-            let lifecycle_boundary = !matches!(&compose_action, Some(ComposeAction::None));
-            match compose_action {
-                Some(ComposeAction::RequestAttachment) => self.request_compose_attachment(),
-                Some(ComposeAction::Send) => self.send_compose(state),
-                Some(ComposeAction::SaveDraft) => self.save_compose_draft(state),
-                Some(ComposeAction::Close) => {
-                    self.dirty = true;
-                }
-                Some(ComposeAction::None) => {}
-                None => return false,
-            }
-            if lifecycle_boundary || self.compose.format() != format_before {
-                self.persist_compose_format_if_changed();
-            }
-            return true;
+            return self.perform_compose_semantic_action(control, action, state);
         }
         if let Some(control) = target.strip_prefix("mail.setup:") {
-            if !self.setup_open {
-                return false;
-            }
-            if let Some(raw) = control.strip_prefix("field:") {
-                let Ok(index) = raw.parse::<usize>() else {
-                    return false;
-                };
-                if index >= self.setup_inputs.len()
-                    || (index == 3 && self.setup_auth != crate::model::AuthMethod::Password)
-                {
-                    return false;
-                }
-                match action {
-                    Action::Focus | Action::Activate => self.focus_setup(Some(index)),
-                    Action::SetValue(value) => {
-                        self.set_setup_input(index, value);
-                        if index == 1 {
-                            self.maybe_autofill();
-                        }
-                    }
-                    _ => return false,
-                }
-                self.dirty = true;
-                return true;
-            }
-            match (control, action) {
-                ("auth-password", Action::Activate | Action::ToggleCheck) => {
-                    self.setup_auth = crate::model::AuthMethod::Password;
-                }
-                ("auth-oauth", Action::Activate | Action::ToggleCheck) => {
-                    self.setup_auth = crate::model::AuthMethod::OAuth;
-                }
-                ("oauth-sign-in", Action::Activate) => self.start_oauth(),
-                ("imap-tls", Action::Activate | Action::ToggleCheck) => {
-                    self.setup_imap_tls = !self.setup_imap_tls;
-                    self.set_setup_input(5, if self.setup_imap_tls { "993" } else { "143" });
-                }
-                ("smtp-tls", Action::Activate | Action::ToggleCheck) => {
-                    self.setup_smtp_tls = !self.setup_smtp_tls;
-                    self.set_setup_input(7, if self.setup_smtp_tls { "465" } else { "587" });
-                }
-                ("save", Action::Activate) => self.save_setup(state),
-                ("cancel", Action::Activate) => self.close_setup(),
-                ("remove", Action::Activate) if self.setup_editing.is_some() => {
-                    self.remove_editing_account(state);
-                }
-                _ => return false,
-            }
-            self.dirty = true;
-            return true;
+            return self.perform_setup_semantic_action(control, action, state);
         }
         if let Some(raw) = target.strip_prefix("mail.reader:") {
-            if !matches!(action, Action::Activate) {
-                return false;
-            }
-            let Some((message_raw, control)) = raw.split_once(':') else {
-                return false;
-            };
-            let Ok(message) = message_raw.parse::<MessageId>() else {
-                return false;
-            };
-            if self.shared.borrow().selected != Some(message) {
-                return false;
-            }
-            if let Some(index) = control
-                .strip_prefix("save-attachment:")
-                .and_then(|index| index.parse::<usize>().ok())
-            {
-                let downloadable = self
-                    .shared
-                    .borrow()
-                    .mailbox
-                    .get(message)
-                    .and_then(|mail| mail.attachments.get(index))
-                    .is_some_and(Attachment::is_downloadable);
-                if !downloadable {
-                    return false;
-                }
-                if let Err(error) = self.begin_attachment_save(message, index) {
-                    self.shared.borrow_mut().status = Some(error);
-                }
-                return true;
-            }
-            let action = match control {
-                "reply" => CtxAction::Reply,
-                "archive" => CtxAction::Archive,
-                "delete" => CtxAction::Delete,
-                "star" => CtxAction::ToggleStar,
-                "read" => CtxAction::ToggleRead,
-                _ => return false,
-            };
-            self.shared
-                .borrow_mut()
-                .apply_message_action(state, message, action);
-            self.process_intents();
-            return true;
+            return self.perform_reader_semantic_action(raw, action, state);
         }
         if let Some(raw) = target.strip_prefix("mail.account:") {
-            let Ok(account_index) = raw.parse::<usize>() else {
-                return false;
-            };
-            let mut st = self.shared.borrow_mut();
-            let Some(account) = st.accounts.accounts.get(account_index) else {
-                return false;
-            };
-            let collapsed = account.collapsed;
-            match action {
-                Action::Activate => {
-                    st.set_active_account(account_index);
-                    st.select_folder(state, Folder::Inbox);
-                    st.push_intent(Intent::CloseDrawer);
-                }
-                Action::Expand if collapsed => {
-                    st.toggle_account_collapsed(account_index);
-                }
-                Action::Collapse if !collapsed => {
-                    st.toggle_account_collapsed(account_index);
-                }
-                _ => return false,
-            }
-            drop(st);
-            self.process_intents();
-            return true;
+            return self.perform_account_semantic_action(raw, action, state);
         }
 
         if let Some(raw) = target.strip_prefix("mail.folder:") {
-            let Some((account_raw, folder_raw)) = raw.split_once(':') else {
-                return false;
-            };
-            let (Ok(account_index), Some(folder)) =
-                (account_raw.parse::<usize>(), Folder::from_key(folder_raw))
-            else {
-                return false;
-            };
-            if !matches!(action, Action::Activate) {
-                return false;
-            }
-            let mut st = self.shared.borrow_mut();
-            let Some(account) = st.accounts.accounts.get(account_index) else {
-                return false;
-            };
-            if account.collapsed || !AccountStore::folders_for(account).contains(&folder) {
-                return false;
-            }
-            st.set_active_account(account_index);
-            st.select_folder(state, folder);
-            st.push_intent(Intent::CloseDrawer);
-            drop(st);
-            self.process_intents();
-            return true;
+            return self.perform_folder_semantic_action(raw, action, state);
         }
 
         let Some(raw) = target.strip_prefix("mail.message:") else {
             return false;
         };
-        if !matches!(action, Action::Activate) {
-            return false;
-        }
-        let Ok(id) = raw.parse::<MessageId>() else {
-            return false;
-        };
-        let mut st = self.shared.borrow_mut();
-        // A stale accessibility row must not open a message that is no longer
-        // visible in the current folder/search result.
-        if !st.list_rows().iter().any(|(row_id, _)| *row_id == id) {
-            return false;
-        }
-        let is_draft = st
-            .mailbox
-            .get(id)
-            .is_some_and(|message| message.folder == Folder::Drafts);
-        if is_draft {
-            st.push_intent(Intent::EditDraft(id));
-        } else {
-            st.select_message(state, id);
-        }
-        drop(st);
-        self.process_intents();
-        true
+        self.perform_message_semantic_action(raw, action, state)
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -4393,19 +4238,242 @@ fn prepare_calendar_invitation_draft(
 }
 
 impl MailApp {
-    #[allow(clippy::too_many_arguments)]
-    fn handle_setup_event(
+    fn perform_compose_semantic_action(
         &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
+        control: &str,
+        action: &ui::a11y::Action,
         state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    ) -> bool {
+        if !self.compose.open {
+            return false;
+        }
+        let format_before = self.compose.format();
+        let compose_action = self.compose.perform_semantic_action(control, action);
+        let lifecycle_boundary = !matches!(&compose_action, Some(ComposeAction::None));
+        match compose_action {
+            Some(ComposeAction::RequestAttachment) => self.request_compose_attachment(),
+            Some(ComposeAction::Send) => self.send_compose(state),
+            Some(ComposeAction::SaveDraft) => self.save_compose_draft(state),
+            Some(ComposeAction::Close) => self.dirty = true,
+            Some(ComposeAction::None) => {}
+            None => return false,
+        }
+        if lifecycle_boundary || self.compose.format() != format_before {
+            self.persist_compose_format_if_changed();
+        }
+        true
+    }
+
+    fn perform_setup_semantic_action(
+        &mut self,
+        control: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        if !self.setup_open {
+            return false;
+        }
+        if let Some(raw) = control.strip_prefix("field:") {
+            let Ok(index) = raw.parse::<usize>() else {
+                return false;
+            };
+            if index >= self.setup_inputs.len()
+                || (index == 3 && self.setup_auth != crate::model::AuthMethod::Password)
+            {
+                return false;
+            }
+            match action {
+                Action::Focus | Action::Activate => self.focus_setup(Some(index)),
+                Action::SetValue(value) => {
+                    self.set_setup_input(index, value);
+                    if index == 1 {
+                        self.maybe_autofill();
+                    }
+                }
+                _ => return false,
+            }
+            self.dirty = true;
+            return true;
+        }
+        match (control, action) {
+            ("auth-password", Action::Activate | Action::ToggleCheck) => {
+                self.setup_auth = crate::model::AuthMethod::Password;
+            }
+            ("auth-oauth", Action::Activate | Action::ToggleCheck) => {
+                self.setup_auth = crate::model::AuthMethod::OAuth;
+            }
+            ("oauth-sign-in", Action::Activate) => self.start_oauth(),
+            ("imap-tls", Action::Activate | Action::ToggleCheck) => {
+                self.setup_imap_tls = !self.setup_imap_tls;
+                self.set_setup_input(5, if self.setup_imap_tls { "993" } else { "143" });
+            }
+            ("smtp-tls", Action::Activate | Action::ToggleCheck) => {
+                self.setup_smtp_tls = !self.setup_smtp_tls;
+                self.set_setup_input(7, if self.setup_smtp_tls { "465" } else { "587" });
+            }
+            ("save", Action::Activate) => self.save_setup(state),
+            ("cancel", Action::Activate) => self.close_setup(),
+            ("remove", Action::Activate) if self.setup_editing.is_some() => {
+                self.remove_editing_account(state);
+            }
+            _ => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn perform_reader_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some((message_raw, control)) = raw.split_once(':') else {
+            return false;
+        };
+        let Ok(message) = message_raw.parse::<MessageId>() else {
+            return false;
+        };
+        if self.shared.borrow().selected != Some(message) {
+            return false;
+        }
+        if let Some(index) = control
+            .strip_prefix("save-attachment:")
+            .and_then(|index| index.parse::<usize>().ok())
+        {
+            let downloadable = self
+                .shared
+                .borrow()
+                .mailbox
+                .get(message)
+                .and_then(|mail| mail.attachments.get(index))
+                .is_some_and(Attachment::is_downloadable);
+            if !downloadable {
+                return false;
+            }
+            if let Err(error) = self.begin_attachment_save(message, index) {
+                self.shared.borrow_mut().status = Some(error);
+            }
+            return true;
+        }
+        let action = match control {
+            "reply" => CtxAction::Reply,
+            "archive" => CtxAction::Archive,
+            "delete" => CtxAction::Delete,
+            "star" => CtxAction::ToggleStar,
+            "read" => CtxAction::ToggleRead,
+            _ => return false,
+        };
+        self.shared
+            .borrow_mut()
+            .apply_message_action(state, message, action);
+        self.process_intents();
+        true
+    }
+
+    fn perform_account_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        let Ok(account_index) = raw.parse::<usize>() else {
+            return false;
+        };
+        let mut mail = self.shared.borrow_mut();
+        let Some(account) = mail.accounts.accounts.get(account_index) else {
+            return false;
+        };
+        let collapsed = account.collapsed;
+        match action {
+            Action::Activate => {
+                mail.set_active_account(account_index);
+                mail.select_folder(state, Folder::Inbox);
+                mail.push_intent(Intent::CloseDrawer);
+            }
+            Action::Expand if collapsed => {
+                mail.toggle_account_collapsed(account_index);
+            }
+            Action::Collapse if !collapsed => {
+                mail.toggle_account_collapsed(account_index);
+            }
+            _ => return false,
+        }
+        drop(mail);
+        self.process_intents();
+        true
+    }
+
+    fn perform_folder_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        let Some((account_raw, folder_raw)) = raw.split_once(':') else {
+            return false;
+        };
+        let (Ok(account_index), Some(folder)) =
+            (account_raw.parse::<usize>(), Folder::from_key(folder_raw))
+        else {
+            return false;
+        };
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let mut mail = self.shared.borrow_mut();
+        let Some(account) = mail.accounts.accounts.get(account_index) else {
+            return false;
+        };
+        if account.collapsed || !AccountStore::folders_for(account).contains(&folder) {
+            return false;
+        }
+        mail.set_active_account(account_index);
+        mail.select_folder(state, folder);
+        mail.push_intent(Intent::CloseDrawer);
+        drop(mail);
+        self.process_intents();
+        true
+    }
+
+    fn perform_message_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Ok(id) = raw.parse::<MessageId>() else {
+            return false;
+        };
+        let mut mail = self.shared.borrow_mut();
+        if !mail.list_rows().iter().any(|(row_id, _)| *row_id == id) {
+            return false;
+        }
+        let is_draft = mail
+            .mailbox
+            .get(id)
+            .is_some_and(|message| message.folder == Folder::Drafts);
+        if is_draft {
+            mail.push_intent(Intent::EditDraft(id));
+        } else {
+            mail.select_message(state, id);
+        }
+        drop(mail);
+        self.process_intents();
+        true
+    }
+
+    fn handle_setup_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
         // Keyboard: Tab/Shift+Tab move between fields, Enter advances (or
         // submits on the last field); everything else routes to the focused
         // field.
@@ -4421,20 +4489,24 @@ impl MailApp {
         {
             match logical_key {
                 Key::Named(NamedKey::Tab) => {
-                    let dir = if modifiers.state().shift_key() { -1 } else { 1 };
+                    let dir = if ctx.modifiers.state().shift_key() {
+                        -1
+                    } else {
+                        1
+                    };
                     self.focus_setup_step(dir);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
                     let order = self.setup_tab_order();
                     let is_last = self.setup_focus.is_some_and(|f| order.last() == Some(&f));
                     if is_last {
-                        self.save_setup(state);
+                        self.save_setup(ctx.state);
                     } else {
                         self.focus_setup_step(1);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -4445,14 +4517,14 @@ impl MailApp {
             if let Some(i) = focused.and_then(|i| self.setup_inputs.get_mut(i)) {
                 i.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
             // Typing in the email field pre-fills the server settings from the
@@ -4470,8 +4542,8 @@ impl MailApp {
         } = event
         {
             let pt = self.shared.borrow().last_mouse;
-            self.handle_setup_click(pt, state);
-            *handled = true;
+            self.handle_setup_click(pt, ctx.state);
+            *ctx.handled = true;
         }
     }
 
@@ -4712,6 +4784,63 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
+    }
+
+    struct InterleavedEngineFixture {
+        app: MailApp,
+        doc: AutoCommit,
+        incoming: std::sync::mpsc::Sender<EngineEvent>,
+        refresh_id: EngineRequestId,
+        send_id: EngineRequestId,
+        unrelated_id: EngineRequestId,
+        invocation: tilo_actions::InvocationId,
+    }
+
+    impl InterleavedEngineFixture {
+        fn new() -> Self {
+            let (mut app, doc) = app();
+            let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
+            let (incoming, incoming_rx) = std::sync::mpsc::channel();
+            app.engine = Some(EngineHandle {
+                tx: outgoing,
+                rx: incoming_rx,
+            });
+            let refresh_id = uuid::Uuid::new_v4();
+            let send_id = uuid::Uuid::new_v4();
+            let unrelated_id = uuid::Uuid::new_v4();
+            let invocation = tilo_actions::InvocationId::new();
+            app.resource_refresh_invocation = Some((refresh_id, invocation));
+            let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
+            app.pending_send = Some(PendingSend {
+                request_id: send_id,
+                message,
+                edited_draft: None,
+            });
+            app.pending_engine_requests
+                .insert(refresh_id, EngineRequestKind::Fetch);
+            app.pending_engine_requests
+                .insert(send_id, EngineRequestKind::Send);
+            app.pending_engine_requests
+                .insert(unrelated_id, EngineRequestKind::StoreFlag);
+            app.awaiting_engine = true;
+            Self {
+                app,
+                doc,
+                incoming,
+                refresh_id,
+                send_id,
+                unrelated_id,
+                invocation,
+            }
+        }
+
+        fn send(&self, event: EngineEvent) {
+            self.incoming.send(event).unwrap();
+        }
+
+        fn drain(&mut self) {
+            self.app.drain_engine(&mut self.doc);
+        }
     }
 
     #[test]
@@ -5385,67 +5514,49 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the regression deliberately drives the full three-request interleaving in one readable sequence"
-    )]
     fn interleaved_engine_events_only_settle_their_own_request() {
-        let (mut app, mut doc) = app();
-        let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
-        let (incoming_tx, incoming) = std::sync::mpsc::channel();
-        app.engine = Some(EngineHandle {
-            tx: outgoing,
-            rx: incoming,
-        });
+        let mut fixture = InterleavedEngineFixture::new();
 
-        let refresh_id = uuid::Uuid::new_v4();
-        let send_id = uuid::Uuid::new_v4();
-        let unrelated_id = uuid::Uuid::new_v4();
-        let invocation = tilo_actions::InvocationId::new();
-        app.resource_refresh_invocation = Some((refresh_id, invocation));
-        let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
-        app.pending_send = Some(PendingSend {
-            request_id: send_id,
-            message,
-            edited_draft: None,
+        fixture.send(EngineEvent::Error {
+            request_id: fixture.unrelated_id,
+            kind: EngineRequestKind::StoreFlag,
+            context: "flag".into(),
+            message: "rejected".into(),
         });
-        app.pending_engine_requests
-            .insert(refresh_id, EngineRequestKind::Fetch);
-        app.pending_engine_requests
-            .insert(send_id, EngineRequestKind::Send);
-        app.pending_engine_requests
-            .insert(unrelated_id, EngineRequestKind::StoreFlag);
-        app.awaiting_engine = true;
-
-        incoming_tx
-            .send(EngineEvent::Error {
-                request_id: unrelated_id,
-                kind: EngineRequestKind::StoreFlag,
-                context: "flag".into(),
-                message: "rejected".into(),
-            })
-            .unwrap();
-        incoming_tx
-            .send(EngineEvent::Sent {
-                request_id: unrelated_id,
-                wire_bytes: 9,
-            })
-            .unwrap();
-        incoming_tx
-            .send(EngineEvent::Completed {
-                request_id: unrelated_id,
-                kind: crate::engine::EngineRequestKind::StoreFlag,
-            })
-            .unwrap();
-        app.drain_engine(&mut doc);
-        assert!(app.resource_refresh_invocation.is_some());
-        assert!(app.resource_refresh_result.is_none());
-        assert!(app.pending_send.is_some());
-        assert!(app.pending_engine_requests.contains_key(&refresh_id));
-        assert!(app.pending_engine_requests.contains_key(&send_id));
-        assert!(!app.pending_engine_requests.contains_key(&unrelated_id));
+        fixture.send(EngineEvent::Sent {
+            request_id: fixture.unrelated_id,
+            wire_bytes: 9,
+        });
+        fixture.send(EngineEvent::Completed {
+            request_id: fixture.unrelated_id,
+            kind: EngineRequestKind::StoreFlag,
+        });
+        fixture.drain();
+        assert!(fixture.app.resource_refresh_invocation.is_some());
+        assert!(fixture.app.resource_refresh_result.is_none());
+        assert!(fixture.app.pending_send.is_some());
         assert!(
-            app.shared
+            fixture
+                .app
+                .pending_engine_requests
+                .contains_key(&fixture.refresh_id)
+        );
+        assert!(
+            fixture
+                .app
+                .pending_engine_requests
+                .contains_key(&fixture.send_id)
+        );
+        assert!(
+            !fixture
+                .app
+                .pending_engine_requests
+                .contains_key(&fixture.unrelated_id)
+        );
+        assert!(
+            fixture
+                .app
+                .shared
                 .borrow()
                 .status
                 .as_deref()
@@ -5453,60 +5564,63 @@ mod tests {
             "an unmatched Sent event must not claim delivery"
         );
 
-        incoming_tx
-            .send(EngineEvent::Fetched {
-                request_id: send_id,
-                account_id: "me@tilo.example".into(),
-                folder: Folder::Inbox,
-                messages: Vec::new(),
-            })
-            .unwrap();
-        app.drain_engine(&mut doc);
-        assert!(app.pending_send.is_some(), "wrong-kind results are inert");
-        assert!(app.pending_engine_requests.contains_key(&send_id));
+        fixture.send(EngineEvent::Fetched {
+            request_id: fixture.send_id,
+            account_id: "me@tilo.example".into(),
+            folder: Folder::Inbox,
+            messages: Vec::new(),
+        });
+        fixture.drain();
+        assert!(
+            fixture.app.pending_send.is_some(),
+            "wrong-kind results are inert"
+        );
+        assert!(
+            fixture
+                .app
+                .pending_engine_requests
+                .contains_key(&fixture.send_id)
+        );
 
-        incoming_tx
-            .send(EngineEvent::Fetched {
-                request_id: refresh_id,
-                account_id: "me@tilo.example".into(),
-                folder: Folder::Inbox,
-                messages: Vec::new(),
-            })
-            .unwrap();
-        incoming_tx
-            .send(EngineEvent::Completed {
-                request_id: refresh_id,
-                kind: crate::engine::EngineRequestKind::Fetch,
-            })
-            .unwrap();
-        app.drain_engine(&mut doc);
-        assert!(app.resource_refresh_invocation.is_some());
+        fixture.send(EngineEvent::Fetched {
+            request_id: fixture.refresh_id,
+            account_id: "me@tilo.example".into(),
+            folder: Folder::Inbox,
+            messages: Vec::new(),
+        });
+        fixture.send(EngineEvent::Completed {
+            request_id: fixture.refresh_id,
+            kind: EngineRequestKind::Fetch,
+        });
+        fixture.drain();
+        assert!(fixture.app.resource_refresh_invocation.is_some());
         assert!(matches!(
-            app.resource_refresh_result.as_ref(),
-            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == invocation
+            fixture.app.resource_refresh_result.as_ref(),
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == fixture.invocation
         ));
         assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == invocation
+            fixture.app.poll_resource_operation(
+                fixture.invocation,
+                false,
+                &fixture.doc,
+                &automerge::ROOT,
+            ),
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == fixture.invocation
         ));
-        assert!(app.resource_refresh_invocation.is_none());
-        assert!(app.pending_send.is_some());
+        assert!(fixture.app.resource_refresh_invocation.is_none());
+        assert!(fixture.app.pending_send.is_some());
 
-        incoming_tx
-            .send(EngineEvent::Sent {
-                request_id: send_id,
-                wire_bytes: 42,
-            })
-            .unwrap();
-        incoming_tx
-            .send(EngineEvent::Completed {
-                request_id: send_id,
-                kind: crate::engine::EngineRequestKind::Send,
-            })
-            .unwrap();
-        app.drain_engine(&mut doc);
-        assert!(app.pending_send.is_none());
-        assert!(!app.awaiting_engine);
+        fixture.send(EngineEvent::Sent {
+            request_id: fixture.send_id,
+            wire_bytes: 42,
+        });
+        fixture.send(EngineEvent::Completed {
+            request_id: fixture.send_id,
+            kind: EngineRequestKind::Send,
+        });
+        fixture.drain();
+        assert!(fixture.app.pending_send.is_none());
+        assert!(!fixture.app.awaiting_engine);
     }
 
     #[test]

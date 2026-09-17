@@ -776,11 +776,24 @@ impl ChromeState {
         self.tree_handle.clone()
     }
 
-    /// Empty buffers are a cancel — never overwrite the name with "".
+    /// Whether the local person can administer the active workspace. This is
+    /// the same room-scoped authority used for workspace policy controls;
+    /// presentation must not offer mutations that this check would reject.
+    pub fn can_rename_active_workspace(&self) -> bool {
+        let user = self.active_local_user();
+        let tree = self.tree();
+        tree.active_workspace().is_some_and(|workspace| {
+            tree.governs_room(workspace.room) && workspace.may_administer(&user)
+        })
+    }
+
+    /// Empty buffers are a cancel — never overwrite the name with "". A
+    /// guest can never turn an inline field into an apparent local rename.
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
-            if !trimmed.is_empty()
+            if self.can_rename_active_workspace()
+                && !trimmed.is_empty()
                 && let Some(ws) = self.tree_mut().active_workspace_mut()
             {
                 ws.name = trimmed.to_string();
@@ -793,7 +806,7 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Fold broker/portal mutations of the shared tree into retained chrome's
+    /// Fold non-chrome mutations of the shared tree into retained chrome's
     /// ordinary revision stream. Returns true exactly once per observed epoch.
     pub fn sync_external_tree_revision(&mut self) -> bool {
         let external = self.tree().external_revision;
@@ -839,10 +852,15 @@ impl ChromeState {
 
     /// Reveal one authoritative workspace-settings destination. All shell
     /// entry points use this instead of independently coordinating a tab and
-    /// overlay. The caller owns the ordinary action-level repaint boundary.
+    /// overlay. Device Quick Settings and the workspace lens share the same
+    /// top-right presentation lane, so opening either one closes the other;
+    /// retaining both makes the older panel remain visibly and interactively
+    /// mounted underneath the newer one. The caller owns the ordinary
+    /// action-level repaint boundary.
     pub fn open_workspace_settings(&mut self, tab: WsTab) {
         self.ws_settings_tab = tab;
         self.overlays.ws_settings = true;
+        self.overlays.quick_settings = false;
     }
 
     /// The top-bar workspace capsule is both the context indicator and the
@@ -850,7 +868,31 @@ impl ChromeState {
     /// always call [`Self::open_workspace_settings`] and can never close an
     /// already-open destination by accident.
     pub fn toggle_workspace_settings(&mut self) {
-        self.overlays.ws_settings = !self.overlays.ws_settings;
+        let opening = !self.overlays.ws_settings;
+        self.overlays.ws_settings = opening;
+        if opening {
+            self.overlays.quick_settings = false;
+        }
+        self.bump();
+    }
+
+    /// Open or close the device-controls popover from one policy point.
+    /// Workspace Settings is a contextual lens in the same presentation lane
+    /// and therefore cannot remain mounted beneath it.
+    pub fn toggle_quick_settings(&mut self) {
+        let opening = !self.overlays.quick_settings;
+        self.overlays.quick_settings = opening;
+        if opening {
+            self.overlays.ws_settings = false;
+        }
+        self.bump();
+    }
+
+    /// Reveal Quick Settings without toggle semantics, for deep links such as
+    /// media use and command search.
+    pub fn open_quick_settings(&mut self) {
+        self.overlays.quick_settings = true;
+        self.overlays.ws_settings = false;
         self.bump();
     }
 
@@ -1753,6 +1795,34 @@ impl ChromeState {
 }
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
+
+#[cfg(test)]
+mod panel_exclusion_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_and_device_settings_never_stack() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let mut state = chrome.borrow_mut();
+
+        state.open_quick_settings();
+        assert!(state.overlays.quick_settings);
+        assert!(!state.overlays.ws_settings);
+
+        state.open_workspace_settings(WsTab::Members);
+        assert!(state.overlays.ws_settings);
+        assert!(!state.overlays.quick_settings);
+        assert_eq!(state.ws_settings_tab, WsTab::Members);
+
+        state.toggle_quick_settings();
+        assert!(state.overlays.quick_settings);
+        assert!(!state.overlays.ws_settings);
+
+        state.toggle_workspace_settings();
+        assert!(state.overlays.ws_settings);
+        assert!(!state.overlays.quick_settings);
+    }
+}
 
 #[cfg(test)]
 mod visual_alert_tests {

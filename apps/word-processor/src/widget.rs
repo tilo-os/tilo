@@ -17,7 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
 use qdoc::model::Region;
-use qdoc::snapshot::{AttrVal, BlockView, NoteView};
+use qdoc::snapshot::{AttrVal, BlockView, CommentView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -79,6 +79,13 @@ enum PortalPurpose {
     /// Save the current document to the chosen path (Save As / first save of an
     /// untitled document).
     SaveAs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyPressEffect {
+    Ignored,
+    Motion,
+    Edit,
 }
 
 /// What a right-click context-menu row does. The shared [`ContextMenu`]'s
@@ -499,6 +506,33 @@ enum NumField {
     SpaceBefore,
     SpaceAfter,
     Indent,
+}
+
+#[derive(Clone, Copy)]
+struct PanelRow {
+    x0: f64,
+    right: f64,
+    y: f64,
+}
+
+#[derive(Clone, Copy)]
+struct NumRow {
+    field: NumField,
+    value: f32,
+    geometry: PanelRow,
+}
+
+#[derive(Clone, Copy)]
+struct ImageFlipRow {
+    geometry: PanelRow,
+    button_width: f64,
+}
+
+struct PanelButton<'a> {
+    rect: Rect,
+    label: &'a str,
+    active: bool,
+    centered: bool,
 }
 
 impl NumField {
@@ -981,6 +1015,51 @@ fn image_crop(b: &BlockView) -> (f64, f64, f64, f64) {
     } else {
         (left, top, right, bottom)
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ImagePaintOptions {
+    flip_horizontal: bool,
+    flip_vertical: bool,
+    crop: (f64, f64, f64, f64),
+}
+
+fn image_paint_options(block: Option<&BlockView>) -> ImagePaintOptions {
+    block.map_or_else(ImagePaintOptions::default, |block| ImagePaintOptions {
+        flip_horizontal: matches!(block.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
+        flip_vertical: matches!(block.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
+        crop: image_crop(block),
+    })
+}
+
+fn image_paint_transform(base: Affine, rect: Rect, options: ImagePaintOptions) -> Affine {
+    if !options.flip_horizontal && !options.flip_vertical {
+        return base;
+    }
+    let cx = f64::midpoint(rect.x0, rect.x1);
+    let cy = f64::midpoint(rect.y0, rect.y1);
+    base * Affine::translate((cx, cy))
+        * Affine::scale_non_uniform(
+            if options.flip_horizontal { -1.0 } else { 1.0 },
+            if options.flip_vertical { -1.0 } else { 1.0 },
+        )
+        * Affine::translate((-cx, -cy))
+}
+
+fn cropped_image_source(rect: Rect, crop: (f64, f64, f64, f64)) -> Rect {
+    let (left, top, right, bottom) = crop;
+    let visible_w = (1.0 - left - right).max(0.05);
+    let visible_h = (1.0 - top - bottom).max(0.05);
+    Rect::new(
+        rect.x0 - rect.width() * left / visible_w,
+        rect.y0 - rect.height() * top / visible_h,
+        rect.x0 + rect.width() * (1.0 - left) / visible_w,
+        rect.y0 + rect.height() * (1.0 - top) / visible_h,
+    )
+}
+
+fn image_crop_is_active(crop: (f64, f64, f64, f64)) -> bool {
+    crop != (0.0, 0.0, 0.0, 0.0)
 }
 
 /// A page-relative free object's persisted position. The `Option` separates
@@ -1515,22 +1594,24 @@ fn spell_spans(dict: &spellcheck::Dictionary, language: &str, text: &str) -> Vec
 /// `RichTextLayout` is reused verbatim. Inputs mirror `shape`'s arguments exactly,
 /// including **wrap width** (so a resize re-shapes); block-level ink is excluded
 /// since it applies at draw time (`Laid::ink`), not baked into the shaped buffer.
-#[allow(clippy::too_many_arguments)] // mirrors `RichTextLayout::shape`'s own argument list
-fn shape_key(
-    spans: &[RichSpan],
-    underlines: &[(usize, usize)],
-    strikes: &[(usize, usize)],
+#[derive(Clone, Copy)]
+struct ShapeKeyInput<'a> {
+    spans: &'a [RichSpan],
+    underlines: &'a [(usize, usize)],
+    strikes: &'a [(usize, usize)],
     base_bold: bool,
     size: f32,
     wrap_w: f32,
     align: TextAlign,
     family: FontFamily,
     line_height_mult: f32,
-) -> u64 {
+}
+
+fn shape_key(input: &ShapeKeyInput<'_>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    spans.len().hash(&mut h);
-    for s in spans {
+    input.spans.len().hash(&mut h);
+    for s in input.spans {
         s.text.hash(&mut h);
         s.bold.hash(&mut h);
         s.italic.hash(&mut h);
@@ -1542,14 +1623,14 @@ fn shape_key(
         s.background.hash(&mut h);
         (s.baseline as u8).hash(&mut h);
     }
-    underlines.hash(&mut h);
-    strikes.hash(&mut h);
-    base_bold.hash(&mut h);
-    size.to_bits().hash(&mut h);
-    wrap_w.to_bits().hash(&mut h);
-    (align as u8).hash(&mut h);
-    (family as u8).hash(&mut h);
-    line_height_mult.to_bits().hash(&mut h);
+    input.underlines.hash(&mut h);
+    input.strikes.hash(&mut h);
+    input.base_bold.hash(&mut h);
+    input.size.to_bits().hash(&mut h);
+    input.wrap_w.to_bits().hash(&mut h);
+    (input.align as u8).hash(&mut h);
+    (input.family as u8).hash(&mut h);
+    input.line_height_mult.to_bits().hash(&mut h);
     h.finish()
 }
 
@@ -1900,6 +1981,20 @@ impl Default for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
+    fn canvas_horizontal_bounds(&self, full: Rect) -> (f64, f64) {
+        let right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
+            (full.x1 - self.styles_panel_width()).max(full.x0 + 1.0)
+        } else {
+            full.x1
+        };
+        let left = if self.outline.is_open() {
+            (full.x0 + self.outline_panel_width()).min(right - 1.0)
+        } else {
+            full.x0
+        };
+        (left, right)
+    }
+
     fn layout_bar_height(&self) -> f64 {
         LAYOUT_BAR_H * self.text_scale
     }
@@ -3617,6 +3712,57 @@ struct PanelDrawCtx<'a> {
     cc: ChromeColors,
 }
 
+#[derive(Clone, Copy)]
+struct RunningBand<'a> {
+    blocks: &'a [BlockView],
+    page_no: usize,
+    rect: Rect,
+    is_footer: bool,
+    editing: bool,
+}
+
+struct EditorEventCtx<'a> {
+    scale_factor: f64,
+    modifiers: Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
+#[derive(Clone, Copy)]
+struct UtilityBarsGeometry {
+    left: f64,
+    right: f64,
+    top: f64,
+}
+
+#[derive(Clone, Copy)]
+struct PageSheetInput<'a> {
+    header: &'a [BlockView],
+    footer: &'a [BlockView],
+    edit_region: Region,
+    index: usize,
+    scroll_y: f64,
+}
+
+#[derive(Clone, Copy)]
+struct PageContentInput<'a> {
+    laid: &'a [Laid],
+    cache: &'a HashMap<String, (u64, RichTextLayout)>,
+    multi_selection: bool,
+    spell_by_block: &'a HashMap<String, Vec<(usize, usize)>>,
+    note_numbers: &'a HashMap<String, usize>,
+}
+
+struct NotesSpellcheckInput<'a> {
+    spell_by_block: &'a HashMap<String, Vec<(usize, usize)>>,
+    note_numbers: &'a HashMap<String, usize>,
+    page_notes: &'a mut HashMap<usize, Vec<usize>>,
+}
+
 impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
@@ -3649,17 +3795,19 @@ impl WordProcessorWidget {
     /// runs so click-to-caret lines up with the model, and per-block laid geometry is
     /// returned for the caller to stash. Returns `(drew_anything, laid)`; `laid` is
     /// empty unless `editing`.
-    #[allow(clippy::too_many_arguments)]
     fn draw_running_band(
         scene: &mut Scene,
         ctf: Affine,
         tr: &mut TextRenderer,
-        blocks: &[BlockView],
-        page_no: usize,
-        band: Rect,
-        is_footer: bool,
-        editing: bool,
+        band: &RunningBand<'_>,
     ) -> (bool, Vec<RegionLaid>) {
+        let RunningBand {
+            blocks,
+            page_no,
+            rect: band,
+            is_footer,
+            editing,
+        } = *band;
         if blocks.is_empty() || band.height() <= 2.0 {
             return (false, Vec::new());
         }
@@ -4435,54 +4583,42 @@ impl WordProcessorWidget {
         let right = panel.x1 - pad;
         let inner_w = right - x0;
         let mut y = panel.y0 + 14.0;
-
-        // A visible dismissal affordance matters on narrow screens: the
-        // inspector overlays the document there, so relying only on a tap in
-        // the dimmed background makes the way back needlessly undiscoverable.
-        let close = Rect::new(right - 62.0, y, right, y + 24.0);
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            close,
-            &t("panel-close"),
-            false,
-            true,
-        );
-        self.panel_hits.push((close, PanelHit::Close));
-        y += 30.0;
-
-        // When an image is selected, the panel becomes an image inspector
-        // (resize + flip) instead of the paragraph editor.
-        if self.selected_image_id().is_some() {
-            self.draw_image_inspector(scene, transform, tr, x0, right, y);
-            scene.pop_layer();
-            return;
-        }
-
-        let Some(key) = self.focused_style_key() else {
-            tr.draw_text(
-                scene,
-                &t("panel-caret-hint"),
-                12.5,
-                cc.text_dim,
-                transform * Affine::translate((x0, y)),
-                Some(num::f32_of_f64(inner_w)),
-            );
-            scene.pop_layer();
-            return;
-        };
-        // A snapshot of the focused style, threaded through every panel
-        // section below that reads it.
-        let st = self.sheet.get(&key);
-
         let mut ctx = PanelDrawCtx {
             scene,
             transform,
             tr,
             cc,
         };
+
+        // A visible dismissal affordance matters on narrow screens: the
+        // inspector overlays the document there, so relying only on a tap in
+        // the dimmed background makes the way back needlessly undiscoverable.
+        y = self.draw_panel_close_button(&mut ctx, right, y);
+
+        // When an image is selected, the panel becomes an image inspector
+        // (resize + flip) instead of the paragraph editor.
+        if self.selected_image_id().is_some() {
+            self.draw_image_inspector(ctx.scene, ctx.transform, ctx.tr, x0, right, y);
+            ctx.scene.pop_layer();
+            return;
+        }
+
+        let Some(key) = self.focused_style_key() else {
+            ctx.tr.draw_text(
+                ctx.scene,
+                &t("panel-caret-hint"),
+                12.5,
+                ctx.cc.text_dim,
+                ctx.transform * Affine::translate((x0, y)),
+                Some(num::f32_of_f64(inner_w)),
+            );
+            ctx.scene.pop_layer();
+            return;
+        };
+        // A snapshot of the focused style, threaded through every panel
+        // section below that reads it.
+        let st = self.sheet.get(&key);
+
         y = self.draw_panel_this_paragraph(&mut ctx, x0, right, y);
         y = self.draw_panel_style_header(&mut ctx, x0, right, y, &key, &st);
         y = self.draw_panel_font_weight(&mut ctx, x0, right, y, &st);
@@ -4499,11 +4635,11 @@ impl WordProcessorWidget {
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
-                field,
-                field.get(&st),
-                x0,
-                right,
-                y,
+                &NumRow {
+                    field,
+                    value: field.get(&st),
+                    geometry: PanelRow { x0, right, y },
+                },
             );
             y += 30.0;
         }
@@ -4519,15 +4655,35 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                r,
-                &t("panel-new-style"),
-                false,
-                true,
+                &PanelButton {
+                    rect: r,
+                    label: &t("panel-new-style"),
+                    active: false,
+                    centered: true,
+                },
             );
             self.panel_hits.push((r, PanelHit::NewStyle));
         }
 
         ctx.scene.pop_layer();
+    }
+
+    fn draw_panel_close_button(&mut self, ctx: &mut PanelDrawCtx<'_>, right: f64, y: f64) -> f64 {
+        let close = Rect::new(right - 62.0, y, right, y + 24.0);
+        draw_btn(
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            &ctx.cc,
+            &PanelButton {
+                rect: close,
+                label: &t("panel-close"),
+                active: false,
+                centered: true,
+            },
+        );
+        self.panel_hits.push((close, PanelHit::Close));
+        y + 30.0
     }
 
     /// Scale the complete inspector as one coherent surface at large system
@@ -4619,10 +4775,12 @@ impl WordProcessorWidget {
                     ctx.transform,
                     ctx.tr,
                     &ctx.cc,
-                    r,
-                    label,
-                    cur == *val,
-                    true,
+                    &PanelButton {
+                        rect: r,
+                        label,
+                        active: cur == *val,
+                        centered: true,
+                    },
                 );
                 self.panel_hits.push((r, PanelHit::ParaAlign(val)));
             }
@@ -4647,10 +4805,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                r,
-                &label,
-                false,
-                true,
+                &PanelButton {
+                    rect: r,
+                    label: &label,
+                    active: false,
+                    centered: true,
+                },
             );
             self.panel_hits.push((r, PanelHit::ParaLineSpacing));
             y += 30.0;
@@ -4726,10 +4886,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                r,
-                &name,
-                id.as_str() == key,
-                false,
+                &PanelButton {
+                    rect: r,
+                    label: &name,
+                    active: id.as_str() == key,
+                    centered: false,
+                },
             );
             self.panel_hits.push((r, PanelHit::Pick(id.clone())));
         }
@@ -4776,10 +4938,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                r,
-                &fl,
-                false,
-                true,
+                &PanelButton {
+                    rect: r,
+                    label: &fl,
+                    active: false,
+                    centered: true,
+                },
             );
             self.panel_hits.push((r, PanelHit::CycleFont));
             y += 30.0;
@@ -4803,20 +4967,24 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                rb,
-                &t("panel-bold"),
-                st.bold,
-                true,
+                &PanelButton {
+                    rect: rb,
+                    label: &t("panel-bold"),
+                    active: st.bold,
+                    centered: true,
+                },
             );
             draw_btn(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                ri,
-                &t("panel-italic"),
-                st.italic,
-                true,
+                &PanelButton {
+                    rect: ri,
+                    label: &t("panel-italic"),
+                    active: st.italic,
+                    centered: true,
+                },
             );
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
@@ -4900,10 +5068,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                btn,
-                &t("panel-colour-custom"),
-                self.color_picker.is_open(),
-                true,
+                &PanelButton {
+                    rect: btn,
+                    label: &t("panel-colour-custom"),
+                    active: self.color_picker.is_open(),
+                    centered: true,
+                },
             );
             self.panel_hits.push((btn, PanelHit::OpenColorPicker));
             self.panel_hits.push((chip, PanelHit::OpenColorPicker));
@@ -4917,10 +5087,6 @@ impl WordProcessorWidget {
     /// Flip toggles, crop controls, and placement controls. Registers its controls
     /// as `panel_hits` so pointer and assistive-technology activation share one
     /// dispatch path.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the inspector's one ordered drawing/hit-registration sequence keeps every object control in visual tab order"
-    )]
     fn draw_image_inspector(
         &mut self,
         scene: &mut Scene,
@@ -4963,158 +5129,179 @@ impl WordProcessorWidget {
         panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
-        // ---- Size (aspect-locked scale steppers) --------------------------
-        // Leave a label column on the left; the two buttons share the right side.
-        tr.draw_text(
+        let mut ctx = PanelDrawCtx {
             scene,
+            transform,
+            tr,
+            cc,
+        };
+        let (next_y, bw) = self.draw_panel_image_size(&mut ctx, x0, right, y, inner_w);
+        y = next_y;
+
+        self.draw_panel_image_flip(
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            &ImageFlipRow {
+                geometry: PanelRow { x0, right, y },
+                button_width: bw,
+            },
+        );
+        y += 38.0;
+
+        y = self.draw_panel_image_crop(&mut ctx, x0, right, y, bw);
+        self.draw_panel_image_placement(&mut ctx, x0, right, y, inner_w);
+    }
+
+    fn draw_panel_image_size(
+        &mut self,
+        ctx: &mut PanelDrawCtx<'_>,
+        x0: f64,
+        right: f64,
+        y: f64,
+        inner_w: f64,
+    ) -> (f64, f64) {
+        ctx.tr.draw_text(
+            ctx.scene,
             &t("panel-image-size"),
             12.5,
-            cc.text,
-            transform * Affine::translate((x0, y + 5.0)),
+            ctx.cc.text,
+            ctx.transform * Affine::translate((x0, y + 5.0)),
             None,
         );
-        let bw = ((inner_w - 60.0) / 2.0 - 6.0).clamp(48.0, 92.0);
-        let rs = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let rl = Rect::new(right - bw, y, right, y + 26.0);
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            rs,
-            &t("panel-image-smaller"),
-            false,
-            true,
+        let button_width = ((inner_w - 60.0) / 2.0 - 6.0).clamp(48.0, 92.0);
+        let smaller = Rect::new(
+            right - button_width * 2.0 - 6.0,
+            y,
+            right - button_width - 6.0,
+            y + 26.0,
         );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            rl,
-            &t("panel-image-larger"),
-            false,
-            true,
-        );
-        self.panel_hits.push((rs, PanelHit::ImageScale(0.9)));
-        self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
-        y += 34.0;
+        let larger = Rect::new(right - button_width, y, right, y + 26.0);
+        for (rect, label, scale) in [
+            (smaller, t("panel-image-smaller"), 0.9),
+            (larger, t("panel-image-larger"), 1.1),
+        ] {
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                &PanelButton {
+                    rect,
+                    label: &label,
+                    active: false,
+                    centered: true,
+                },
+            );
+            self.panel_hits.push((rect, PanelHit::ImageScale(scale)));
+        }
+        (y + 34.0, button_width)
+    }
 
-        self.draw_panel_image_flip(scene, transform, tr, x0, right, y, bw);
-        y += 38.0;
-
-        // ---- Crop ---------------------------------------------------------
-        // Cropping keeps the object's display frame, while changing the source
-        // window inside it. A small deterministic inset is an accessible,
-        // keyboard/palette-equivalent starting point; Reset is always available
-        // once a crop exists.
-        tr.draw_text(
-            scene,
+    fn draw_panel_image_crop(
+        &mut self,
+        ctx: &mut PanelDrawCtx<'_>,
+        x0: f64,
+        right: f64,
+        y: f64,
+        button_width: f64,
+    ) -> f64 {
+        ctx.tr.draw_text(
+            ctx.scene,
             &t("panel-image-crop"),
             12.5,
-            cc.text,
-            transform * Affine::translate((x0, y + 5.0)),
+            ctx.cc.text,
+            ctx.transform * Affine::translate((x0, y + 5.0)),
             None,
         );
-        let crop = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let reset = Rect::new(right - bw, y, right, y + 26.0);
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            crop,
-            &t("panel-image-crop-inset"),
-            false,
-            true,
+        let crop = Rect::new(
+            right - button_width * 2.0 - 6.0,
+            y,
+            right - button_width - 6.0,
+            y + 26.0,
         );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            reset,
-            &t("panel-image-crop-reset"),
-            false,
-            true,
-        );
-        self.panel_hits.push((crop, PanelHit::ImageCropInset));
-        self.panel_hits.push((reset, PanelHit::ImageCropReset));
-        y += 38.0;
+        let reset = Rect::new(right - button_width, y, right, y + 26.0);
+        for (rect, label, hit) in [
+            (crop, t("panel-image-crop-inset"), PanelHit::ImageCropInset),
+            (reset, t("panel-image-crop-reset"), PanelHit::ImageCropReset),
+        ] {
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                &PanelButton {
+                    rect,
+                    label: &label,
+                    active: false,
+                    centered: true,
+                },
+            );
+            self.panel_hits.push((rect, hit));
+        }
+        y + 38.0
+    }
 
-        // ---- Object placement --------------------------------------------
-        // Keep Position as a real heading, rather than competing with three
-        // controls in the same horizontal row. This preserves the label at both
-        // desktop widths and the 390px inspector overlay.
-        tr.draw_text(
-            scene,
+    fn draw_panel_image_placement(
+        &mut self,
+        ctx: &mut PanelDrawCtx<'_>,
+        x0: f64,
+        right: f64,
+        mut y: f64,
+        inner_w: f64,
+    ) {
+        ctx.tr.draw_text(
+            ctx.scene,
             &t("panel-image-position"),
             12.5,
-            cc.text,
-            transform * Affine::translate((x0, y)),
+            ctx.cc.text,
+            ctx.transform * Affine::translate((x0, y)),
             None,
         );
         y += 20.0;
-        let placement_gap = 6.0;
-        let placement_w = ((inner_w - placement_gap * 2.0) / 3.0).max(48.0);
-        let free = Rect::new(x0, y, x0 + placement_w, y + 26.0);
-        let left = Rect::new(
-            free.x1 + placement_gap,
-            y,
-            free.x1 + placement_gap + placement_w,
-            y + 26.0,
-        );
-        let right_wrap = Rect::new(left.x1 + placement_gap, y, right, y + 26.0);
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            free,
-            &t("panel-image-free"),
-            false,
-            true,
-        );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            left,
-            &t("panel-image-wrap-left"),
-            false,
-            true,
-        );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            right_wrap,
-            &t("panel-image-wrap-right"),
-            false,
-            true,
-        );
-        self.panel_hits.push((free, PanelHit::ImageFreePosition));
-        self.panel_hits.push((left, PanelHit::ImageWrapLeft));
-        self.panel_hits.push((right_wrap, PanelHit::ImageWrapRight));
+        let gap = 6.0;
+        let width = ((inner_w - gap * 2.0) / 3.0).max(48.0);
+        let free = Rect::new(x0, y, x0 + width, y + 26.0);
+        let left = Rect::new(free.x1 + gap, y, free.x1 + gap + width, y + 26.0);
+        let right_wrap = Rect::new(left.x1 + gap, y, right, y + 26.0);
+        for (rect, label, hit) in [
+            (free, t("panel-image-free"), PanelHit::ImageFreePosition),
+            (left, t("panel-image-wrap-left"), PanelHit::ImageWrapLeft),
+            (
+                right_wrap,
+                t("panel-image-wrap-right"),
+                PanelHit::ImageWrapRight,
+            ),
+        ] {
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                &PanelButton {
+                    rect,
+                    label: &label,
+                    active: false,
+                    centered: true,
+                },
+            );
+            self.panel_hits.push((rect, hit));
+        }
     }
 
     /// The image inspector's Flip section: Horizontal / Vertical mirror
     /// toggles, reflecting the selected image's current `flip_h`/`flip_v`
     /// attrs. `bw` is the button width the Size section above already
     /// computed, so the two rows of steppers line up.
-    #[allow(clippy::too_many_arguments)]
     fn draw_panel_image_flip(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
-        x0: f64,
-        right: f64,
-        y: f64,
-        bw: f64,
+        row: &ImageFlipRow,
     ) {
+        let PanelRow { x0, right, y } = row.geometry;
+        let bw = row.button_width;
         let cc = self.chrome;
         let img_id = self.selected_image_id();
         let (fh, fv) = self
@@ -5142,20 +5329,24 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            rh,
-            &t("panel-image-flip-h"),
-            fh,
-            true,
+            &PanelButton {
+                rect: rh,
+                label: &t("panel-image-flip-h"),
+                active: fh,
+                centered: true,
+            },
         );
         draw_btn(
             scene,
             transform,
             tr,
             &cc,
-            rv,
-            &t("panel-image-flip-v"),
-            fv,
-            true,
+            &PanelButton {
+                rect: rv,
+                label: &t("panel-image-flip-v"),
+                active: fv,
+                centered: true,
+            },
         );
         self.panel_hits.push((rh, PanelHit::ImageFlipH));
         self.panel_hits.push((rv, PanelHit::ImageFlipV));
@@ -5163,18 +5354,18 @@ impl WordProcessorWidget {
 
     /// One numeric property row: `Label    [−] [ value ] [+]`. The value box is
     /// click-to-type / drag-to-scrub; the steppers nudge by `field.step()`.
-    #[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
     fn draw_num_row(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
-        field: NumField,
-        value: f32,
-        x0: f64,
-        right: f64,
-        y: f64,
+        row: &NumRow,
     ) {
+        let NumRow {
+            field,
+            value,
+            geometry: PanelRow { x0, right, y },
+        } = *row;
         let cc = self.chrome;
         tr.draw_text(
             scene,
@@ -5187,8 +5378,30 @@ impl WordProcessorWidget {
         let plus = Rect::new(right - 24.0, y, right, y + 24.0);
         let vb = Rect::new(plus.x0 - 60.0, y, plus.x0 - 2.0, y + 24.0);
         let minus = Rect::new(vb.x0 - 26.0, y, vb.x0 - 2.0, y + 24.0);
-        draw_btn(scene, transform, tr, &cc, minus, "−", false, true);
-        draw_btn(scene, transform, tr, &cc, plus, "+", false, true);
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            &PanelButton {
+                rect: minus,
+                label: "−",
+                active: false,
+                centered: true,
+            },
+        );
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            &PanelButton {
+                rect: plus,
+                label: "+",
+                active: false,
+                centered: true,
+            },
+        );
         // Value box.
         let editing = self.editing_field == Some(field);
         let scrubbing = self.scrub.is_some_and(|s| s.field == field);
@@ -5377,17 +5590,19 @@ fn panel_divider(
 
 /// A panel chip / button: rounded rect + label. `center` centers the label
 /// (approximate), else left-pads it.
-#[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
 fn draw_btn(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
     cc: &ChromeColors,
-    r: Rect,
-    label: &str,
-    active: bool,
-    center: bool,
+    button: &PanelButton<'_>,
 ) {
+    let PanelButton {
+        rect: r,
+        label,
+        active,
+        centered: center,
+    } = *button;
     let bg = if active { cc.accent } else { cc.chip };
     let fg = if active { cc.on_accent } else { cc.text };
     scene.fill(
@@ -5885,6 +6100,34 @@ struct PageCursor {
     ol_counts: Vec<u32>,
 }
 
+struct TableLayoutContext<'a> {
+    cell_padding: f64,
+    text_renderer: &'a mut TextRenderer,
+    old_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
+    new_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
+}
+
+struct ParagraphPaginationContext<'a> {
+    text_renderer: &'a mut TextRenderer,
+    old_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
+    new_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
+    laid: &'a mut Vec<Laid>,
+    cursor: &'a mut PageCursor,
+}
+
+struct ResolvedImage {
+    hash: String,
+    intrinsic: Option<(u32, u32)>,
+    width: f64,
+    height: f64,
+}
+
+struct ImagePlacement {
+    x: f64,
+    y: f64,
+    page: usize,
+}
+
 /// [`WordProcessorWidget::resolve_paragraph_shape`]'s output: everything
 /// [`WordProcessorWidget::paginate_paragraph`] needs to decide where the
 /// block lands and how to lay it out.
@@ -6021,21 +6264,8 @@ impl WordProcessorWidget {
         // so the page shrinks rather than the history painting over the text.
         let history_h = self.history.band_height();
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
-        // Reserve the styles panel out of the canvas so the page re-centers in the
-        // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            (full.x1 - self.styles_panel_width()).max(full.x0 + 1.0)
-        } else {
-            full.x1
-        };
-        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
-        // styles panel on the right) so the page re-centers and scrolled content
-        // never paints under the pane.
-        let canvas_left = if self.outline.is_open() {
-            (full.x0 + self.outline_panel_width()).min(canvas_right - 1.0)
-        } else {
-            full.x0
-        };
+        // Side panels reserve canvas width rather than painting over the page.
+        let (canvas_left, canvas_right) = self.canvas_horizontal_bounds(full);
         // Reserve + draw the crash-recovery banner (when staged) and the Find
         // bar (when open), stacked directly under the toolbar.
         let (recovery_h, find_h) = self.draw_recovery_and_find_bars(
@@ -6043,9 +6273,11 @@ impl WordProcessorWidget {
             transform,
             text_renderer,
             theme,
-            canvas_left,
-            canvas_right,
-            full.y0 + tb_h,
+            &UtilityBarsGeometry {
+                left: canvas_left,
+                right: canvas_right,
+                top: full.y0 + tb_h,
+            },
         );
         // Reserve the horizontal ruler band (when on) out of the canvas top, below
         // the find bar. It is drawn with the *unscaled* `transform` so it stays a
@@ -6137,17 +6369,19 @@ impl WordProcessorWidget {
     /// the Find bar (when open), stacked directly under the toolbar at
     /// `tb_bottom`. Returns `(recovery_h, find_h)` — the heights the caller
     /// reserves out of the canvas top.
-    #[allow(clippy::too_many_arguments)]
     fn draw_recovery_and_find_bars(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        canvas_left: f64,
-        canvas_right: f64,
-        tb_bottom: f64,
+        geometry: &UtilityBarsGeometry,
     ) -> (f64, f64) {
+        let UtilityBarsGeometry {
+            left: canvas_left,
+            right: canvas_right,
+            top: tb_bottom,
+        } = *geometry;
         let recovery_h = self.recovery.height();
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
@@ -6260,30 +6494,25 @@ impl WordProcessorWidget {
                     .max(f.bottom + f64::from(self.sheet.get("body").space_after));
             }
             if cell_table(b).is_some() {
-                bi = self.paginate_table(
-                    &blocks,
-                    bi,
-                    fg,
-                    cell_pad,
+                let mut table_layout = TableLayoutContext {
+                    cell_padding: cell_pad,
                     text_renderer,
-                    &mut old_cache,
-                    &mut new_cache,
-                    &mut laid,
-                    &mut cur,
-                );
+                    old_cache: &mut old_cache,
+                    new_cache: &mut new_cache,
+                };
+                bi = self.paginate_table(&blocks, bi, fg, &mut table_layout, &mut laid, &mut cur);
             } else if b.kind == "image" {
                 self.paginate_image(b, fg, text_renderer, &mut new_cache, &mut laid, &mut cur);
                 bi += 1;
             } else {
-                self.paginate_paragraph(
-                    b,
-                    fg,
+                let mut paragraph = ParagraphPaginationContext {
                     text_renderer,
-                    &mut old_cache,
-                    &mut new_cache,
-                    &mut laid,
-                    &mut cur,
-                );
+                    old_cache: &mut old_cache,
+                    new_cache: &mut new_cache,
+                    laid: &mut laid,
+                    cursor: &mut cur,
+                };
+                self.paginate_paragraph(b, fg, &mut paragraph);
                 bi += 1;
             }
         }
@@ -6318,16 +6547,12 @@ impl WordProcessorWidget {
     /// first row on a page never breaks, so an over-tall single row overflows
     /// its page (acceptable for v1). Returns the block index just past the
     /// table's last cell.
-    #[allow(clippy::too_many_arguments)]
     fn paginate_table(
         &mut self,
         blocks: &[BlockView],
         bi: usize,
         fg: &FrameGeometry,
-        cell_pad: f64,
-        text_renderer: &mut TextRenderer,
-        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        layout: &mut TableLayoutContext<'_>,
         laid: &mut Vec<Laid>,
         cur: &mut PageCursor,
     ) -> usize {
@@ -6349,16 +6574,7 @@ impl WordProcessorWidget {
         let col_w = f64::from(fg.content_w) / num::f64_of_usize(ncols);
         // Measure every row first so the whole table can paginate as one
         // unit (it is never split mid-row across a page boundary).
-        let rows = self.measure_table_rows(
-            cells,
-            ncols,
-            nrows,
-            col_w,
-            cell_pad,
-            text_renderer,
-            old_cache,
-            new_cache,
-        );
+        let rows = self.measure_table_rows(cells, ncols, nrows, col_w, layout);
         let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
         // Break to the next page if a manual page break is set on the
         // first cell, or the whole table would not fit.
@@ -6394,11 +6610,11 @@ impl WordProcessorWidget {
                     text: cell.text.clone(),
                     kind: "cell".into(),
                     size: 16.0,
-                    y_top: ry + cell_pad,
-                    text_x: cell_x + cell_pad,
-                    width: col_w - 2.0 * cell_pad,
+                    y_top: ry + layout.cell_padding,
+                    text_x: cell_x + layout.cell_padding,
+                    width: col_w - 2.0 * layout.cell_padding,
                     height: cell_h,
-                    layout_y: ry + cell_pad,
+                    layout_y: ry + layout.cell_padding,
                     clip: None,
                     bullet: None,
                     ink: PAPER_INK,
@@ -6418,17 +6634,13 @@ impl WordProcessorWidget {
     /// can paginate as one unit (it is never split mid-row across a page
     /// boundary): the shaped (or cache-reused) layout for each populated
     /// cell, and each row's height (the tallest cell, or a minimum).
-    #[allow(clippy::too_many_arguments)]
     fn measure_table_rows<'a>(
         &mut self,
         cells: &'a [BlockView],
         ncols: usize,
         nrows: usize,
         col_w: f64,
-        cell_pad: f64,
-        text_renderer: &mut TextRenderer,
-        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        layout: &mut TableLayoutContext<'_>,
     ) -> Vec<TableRow<'a>> {
         let mut rows: Vec<TableRow<'a>> = Vec::with_capacity(nrows);
         for r in 0..nrows {
@@ -6438,20 +6650,20 @@ impl WordProcessorWidget {
                 if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
                     let (runs, underlines, strikes) =
                         block_runs_markup(cell, self.review.is_visible());
-                    let wrap_w = num::f32_of_f64((col_w - 2.0 * cell_pad).max(24.0));
+                    let wrap_w = num::f32_of_f64((col_w - 2.0 * layout.cell_padding).max(24.0));
                     let align = block_align(cell, TextAlign::Left);
-                    let key = shape_key(
-                        &runs,
-                        &underlines,
-                        &strikes,
-                        false,
-                        16.0,
+                    let key = shape_key(&ShapeKeyInput {
+                        spans: &runs,
+                        underlines: &underlines,
+                        strikes: &strikes,
+                        base_bold: false,
+                        size: 16.0,
                         wrap_w,
                         align,
-                        FontFamily::Sans,
-                        1.0,
-                    );
-                    let layout = match old_cache.remove(&cell.id) {
+                        family: FontFamily::Sans,
+                        line_height_mult: 1.0,
+                    });
+                    let cell_layout = match layout.old_cache.remove(&cell.id) {
                         Some((k, lay)) if k == key => {
                             self.dbg_layout_hits += 1;
                             lay
@@ -6459,7 +6671,7 @@ impl WordProcessorWidget {
                         _ => {
                             self.dbg_layout_misses += 1;
                             RichTextLayout::shape(
-                                &mut text_renderer.font_system,
+                                &mut layout.text_renderer.font_system,
                                 &runs,
                                 false,
                                 16.0,
@@ -6472,9 +6684,9 @@ impl WordProcessorWidget {
                             )
                         }
                     };
-                    let cell_h = f64::from(layout.height());
-                    row_h = row_h.max(cell_h + 2.0 * cell_pad);
-                    new_cache.insert(cell.id.clone(), (key, layout));
+                    let cell_h = f64::from(cell_layout.height());
+                    row_h = row_h.max(cell_h + 2.0 * layout.cell_padding);
+                    layout.new_cache.insert(cell.id.clone(), (key, cell_layout));
                     row_items.push((c, cell_h, cell));
                 }
             }
@@ -6492,14 +6704,13 @@ impl WordProcessorWidget {
     /// distorting. Also seeds `new_cache` with the block's trivial empty
     /// layout (used only so pointer hit-testing resolves to offset 0; cheap
     /// enough to re-shape every frame rather than cache incrementally).
-    /// Returns `(blob_hash, intrinsic_size, draw_w, draw_h)`.
     fn resolve_image_display_size(
         &mut self,
         b: &BlockView,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
         new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-    ) -> (String, Option<(u32, u32)>, f64, f64) {
+    ) -> ResolvedImage {
         let hash = match b.attrs.get("blob") {
             Some(AttrVal::Str(s)) => s.clone(),
             _ => String::new(),
@@ -6545,16 +6756,43 @@ impl WordProcessorWidget {
             1.0,
         );
         new_cache.insert(b.id.clone(), (0, empty));
-        (hash, intrinsic, draw_w, draw_h)
+        ResolvedImage {
+            hash,
+            intrinsic,
+            width: draw_w,
+            height: draw_h,
+        }
+    }
+
+    fn push_laid_image(
+        laid: &mut Vec<Laid>,
+        block: &BlockView,
+        image: &ResolvedImage,
+        placement: &ImagePlacement,
+    ) {
+        laid.push(Laid {
+            id: block.id.clone(),
+            text: String::new(),
+            kind: "image".into(),
+            size: 16.0,
+            y_top: placement.y,
+            text_x: placement.x,
+            width: image.width,
+            height: image.height,
+            layout_y: placement.y,
+            clip: None,
+            bullet: None,
+            ink: PAPER_INK,
+            image_hash: image.intrinsic.map(|_| image.hash.clone()),
+            cell_box: None,
+            cell_row: None,
+            page: placement.page,
+        });
     }
 
     /// One image block: resolve its decoded size, paginate it (a floated
     /// image reserves a column beside it instead of a full-width slot; see
     /// `FloatReserve`), and push its `Laid` entry.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one image pagination path keeps inline, wrapped, and free-object placement rules together"
-    )]
     fn paginate_image(
         &mut self,
         b: &BlockView,
@@ -6565,8 +6803,7 @@ impl WordProcessorWidget {
         cur: &mut PageCursor,
     ) {
         cur.ol_counts.clear();
-        let (hash, intrinsic, draw_w, draw_h) =
-            self.resolve_image_display_size(b, fg, text_renderer, new_cache);
+        let image = self.resolve_image_display_size(b, fg, text_renderer, new_cache);
         // A user-positioned page object is intentionally out of normal flow:
         // text retains its natural cursor while the object is painted at its
         // durable page-relative coordinates. Imported `anchor=page` objects
@@ -6581,28 +6818,20 @@ impl WordProcessorWidget {
                 transient_position.or_else(|| image_free_position(b))
         {
             let page = requested_page;
-            let max_x = (f64::from(fg.content_w) - draw_w).max(0.0);
-            let max_y = (fg.letter_h - fg.m.top - fg.m.bottom - draw_h).max(0.0);
+            let max_x = (f64::from(fg.content_w) - image.width).max(0.0);
+            let max_y = (fg.letter_h - fg.m.top - fg.m.bottom - image.height).max(0.0);
             let img_x = fg.content_x + offset_x.clamp(0.0, max_x);
             let img_y = page_content_top(fg, page) + offset_y.clamp(0.0, max_y);
-            laid.push(Laid {
-                id: b.id.clone(),
-                text: String::new(),
-                kind: "image".into(),
-                size: 16.0,
-                y_top: img_y,
-                text_x: img_x,
-                width: draw_w,
-                height: draw_h,
-                layout_y: img_y,
-                clip: None,
-                bullet: None,
-                ink: PAPER_INK,
-                image_hash: intrinsic.map(|_| hash),
-                cell_box: None,
-                cell_row: None,
-                page,
-            });
+            Self::push_laid_image(
+                laid,
+                b,
+                &image,
+                &ImagePlacement {
+                    x: img_x,
+                    y: img_y,
+                    page,
+                },
+            );
             // Keep enough sheets alive to show a deliberately later placement,
             // but leave `y` untouched so a free object cannot create phantom
             // blank paragraphs in the document flow.
@@ -6613,7 +6842,7 @@ impl WordProcessorWidget {
         // would not fit.
         let force_break = block_page_break_before(b);
         let item_top = if cur.placed_on_page
-            && (force_break || cur.y + draw_h > page_content_bottom(fg, cur.cur_page) + 0.5)
+            && (force_break || cur.y + image.height > page_content_bottom(fg, cur.cur_page) + 0.5)
         {
             cur.cur_page += 1;
             page_content_top(fg, cur.cur_page)
@@ -6632,30 +6861,22 @@ impl WordProcessorWidget {
             let img_x = if left {
                 fg.content_x
             } else {
-                fg.content_x + f64::from(fg.content_w) - draw_w
+                fg.content_x + f64::from(fg.content_w) - image.width
             };
-            laid.push(Laid {
-                id: b.id.clone(),
-                text: String::new(),
-                kind: "image".into(),
-                size: 16.0,
-                y_top: item_top,
-                text_x: img_x,
-                width: draw_w,
-                height: draw_h,
-                layout_y: item_top,
-                clip: None,
-                bullet: None,
-                ink: PAPER_INK,
-                image_hash: intrinsic.map(|_| hash),
-                cell_box: None,
-                cell_row: None,
-                page: cur.cur_page,
-            });
+            Self::push_laid_image(
+                laid,
+                b,
+                &image,
+                &ImagePlacement {
+                    x: img_x,
+                    y: item_top,
+                    page: cur.cur_page,
+                },
+            );
             cur.active_float = Some(FloatReserve {
                 left,
-                reserve_w: draw_w + FLOAT_GUTTER,
-                bottom: item_top + draw_h,
+                reserve_w: image.width + FLOAT_GUTTER,
+                bottom: item_top + image.height,
                 page: cur.cur_page,
             });
             // Leave `cur.y` at the image top so following text wraps beside it.
@@ -6666,29 +6887,21 @@ impl WordProcessorWidget {
             // wrap is centered in the column; inline images stay left-aligned.
             let centered = image_anchor(b) != "inline";
             let img_x = if centered {
-                fg.content_x + ((f64::from(fg.content_w) - draw_w) / 2.0).max(0.0)
+                fg.content_x + ((f64::from(fg.content_w) - image.width) / 2.0).max(0.0)
             } else {
                 fg.content_x
             };
-            laid.push(Laid {
-                id: b.id.clone(),
-                text: String::new(),
-                kind: "image".into(),
-                size: 16.0,
-                y_top: item_top,
-                text_x: img_x,
-                width: draw_w,
-                height: draw_h,
-                layout_y: item_top,
-                clip: None,
-                bullet: None,
-                ink: PAPER_INK,
-                image_hash: intrinsic.map(|_| hash),
-                cell_box: None,
-                cell_row: None,
-                page: cur.cur_page,
-            });
-            cur.y = item_top + draw_h + f64::from(self.sheet.get("body").space_after);
+            Self::push_laid_image(
+                laid,
+                b,
+                &image,
+                &ImagePlacement {
+                    x: img_x,
+                    y: item_top,
+                    page: cur.cur_page,
+                },
+            );
+            cur.y = item_top + image.height + f64::from(self.sheet.get("body").space_after);
         }
     }
 
@@ -6763,17 +6976,17 @@ impl WordProcessorWidget {
         // The paragraph's line-spacing multiplier (1.0 = single) scales the
         // shaped line advance, so it is part of the shape key.
         let line_mult = block_line_spacing(b);
-        let key = shape_key(
-            &runs,
-            &underlines,
-            &strikes,
+        let key = shape_key(&ShapeKeyInput {
+            spans: &runs,
+            underlines: &underlines,
+            strikes: &strikes,
             base_bold,
             size,
             wrap_w,
             align,
             family,
-            line_mult,
-        );
+            line_height_mult: line_mult,
+        });
         // Reuse the shaped layout if nothing affecting shaping changed
         // (text, marks, resolved style, wrap width, or line spacing), else
         // re-shape.
@@ -6814,23 +7027,20 @@ impl WordProcessorWidget {
     /// page or needs to be split into per-page slices, and push its `Laid`
     /// entry/entries. Handles the paragraph side of float bookkeeping — a
     /// floated image only narrows blocks on its own page.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors emit_paragraph_slices below: one call site threading \
-                  the shared pagination cursor, both layout caches, and the \
-                  output vec through the single-paragraph pagination step"
-    )]
     fn paginate_paragraph(
         &mut self,
         b: &BlockView,
         fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
-        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-        laid: &mut Vec<Laid>,
-        cur: &mut PageCursor,
+        context: &mut ParagraphPaginationContext<'_>,
     ) {
-        let ps = self.resolve_paragraph_shape(b, fg, text_renderer, old_cache, cur);
+        let ps = self.resolve_paragraph_shape(
+            b,
+            fg,
+            context.text_renderer,
+            context.old_cache,
+            context.cursor,
+        );
+        let cur = &mut *context.cursor;
         let block_h = f64::from(ps.layout.height());
         // Place with the style's space-before as the leading gap, breaking
         // to the next page when the whole block would not fit before the
@@ -6871,7 +7081,7 @@ impl WordProcessorWidget {
         // so this is the fast, unchanged single-`Laid` path. Otherwise the
         // block is split at line boundaries across as many pages as needed.
         if item_top + block_h <= page_content_bottom(fg, cur.cur_page) + 0.5 {
-            laid.push(Laid {
+            context.laid.push(Laid {
                 id: b.id.clone(),
                 text: b.text.clone(),
                 kind: b.kind.clone(),
@@ -6891,9 +7101,9 @@ impl WordProcessorWidget {
             });
             cur.y = item_top + block_h + f64::from(pl.space_after);
         } else {
-            Self::emit_paragraph_slices(b, fg, &ps.layout, laid, cur, item_top, &pl);
+            Self::emit_paragraph_slices(b, fg, &ps.layout, context.laid, cur, item_top, &pl);
         }
-        new_cache.insert(b.id.clone(), (ps.key, ps.layout));
+        context.new_cache.insert(b.id.clone(), (ps.key, ps.layout));
         // Float bookkeeping: a float only narrows blocks on its own page and
         // only while text is still beside the image. Clear it once the page
         // has advanced past the float, or once this block has flowed down to
@@ -7104,11 +7314,13 @@ impl WordProcessorWidget {
                 scene,
                 text_renderer,
                 fg,
-                &header,
-                &footer,
-                edit_region,
-                i,
-                sy,
+                &PageSheetInput {
+                    header: &header,
+                    footer: &footer,
+                    edit_region,
+                    index: i,
+                    scroll_y: sy,
+                },
             );
         }
         self.header = header;
@@ -7129,18 +7341,20 @@ impl WordProcessorWidget {
     /// One page sheet (shadow + paper), its header/footer running bands (with
     /// the active edit-context band highlighted), and the default "Page N"
     /// indicator when there's no footer of its own.
-    #[allow(clippy::too_many_arguments)]
     fn draw_page_sheet(
         &mut self,
         scene: &mut Scene,
         text_renderer: &mut TextRenderer,
         fg: &FrameGeometry,
-        header: &[BlockView],
-        footer: &[BlockView],
-        edit_region: Region,
-        i: usize,
-        sy: f64,
+        input: &PageSheetInput<'_>,
     ) {
+        let PageSheetInput {
+            header,
+            footer,
+            edit_region,
+            index: i,
+            scroll_y: sy,
+        } = *input;
         let ptop = fg.page_top + num::f64_of_usize(i) * fg.page_pitch - sy;
         let sheet = Rect::new(fg.page_x, ptop, fg.page_x + fg.page_w, ptop + fg.letter_h);
         chrome::page::draw(
@@ -7176,21 +7390,25 @@ impl WordProcessorWidget {
             scene,
             fg.ctf,
             text_renderer,
-            header,
-            page_no,
-            head_band,
-            false,
-            head_editing,
+            &RunningBand {
+                blocks: header,
+                page_no,
+                rect: head_band,
+                is_footer: false,
+                editing: head_editing,
+            },
         );
         let (drew_footer, foot_laid) = Self::draw_running_band(
             scene,
             fg.ctf,
             text_renderer,
-            footer,
-            page_no,
-            foot_band,
-            true,
-            foot_editing,
+            &RunningBand {
+                blocks: footer,
+                page_no,
+                rect: foot_band,
+                is_footer: true,
+                editing: foot_editing,
+            },
         );
         if head_editing {
             self.region_laid = head_laid;
@@ -7280,18 +7498,20 @@ impl WordProcessorWidget {
     /// spell-check squiggles, footnote superscripts) and the caret for every
     /// laid item. Collects the footnote/comment/change-card bookkeeping that
     /// the passes after this one render.
-    #[allow(clippy::too_many_arguments)]
     fn draw_page_content(
         &mut self,
         scene: &mut Scene,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
-        laid: &[Laid],
-        new_cache: &HashMap<String, (u64, RichTextLayout)>,
-        multi_sel: bool,
-        spell_by_block: &HashMap<String, Vec<(usize, usize)>>,
-        note_nums: &HashMap<String, usize>,
+        input: &PageContentInput<'_>,
     ) -> Pass2Markers {
+        let PageContentInput {
+            laid,
+            cache: new_cache,
+            multi_selection: multi_sel,
+            spell_by_block,
+            note_numbers: note_nums,
+        } = *input;
         let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
         let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
@@ -7371,9 +7591,11 @@ impl WordProcessorWidget {
                 fg,
                 text_renderer,
                 &item,
-                spell_by_block,
-                note_nums,
-                &mut page_notes,
+                NotesSpellcheckInput {
+                    spell_by_block,
+                    note_numbers: note_nums,
+                    page_notes: &mut page_notes,
+                },
             );
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
@@ -7426,10 +7648,6 @@ impl WordProcessorWidget {
     /// One pass-2 image item: paint it (mirrored per `flip_h`/`flip_v`, or a
     /// placeholder if undecoded), then ring it with the selection chrome when
     /// it's the caret's block.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one image paint path keeps crop, flip, fallback, and selection chrome geometrically consistent"
-    )]
     fn draw_laid_image(
         &mut self,
         scene: &mut Scene,
@@ -7441,46 +7659,17 @@ impl WordProcessorWidget {
         // Mirror flips (`flip_h` / `flip_v` block attrs) are applied as a
         // scale-about-centre on the paint transform, so the image draws
         // mirrored in place without moving its slot.
-        let (fh, fv, crop) = self.blocks.iter().find(|b| b.id == l.id).map_or(
-            (false, false, (0.0, 0.0, 0.0, 0.0)),
-            |b| {
-                (
-                    matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
-                    matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
-                    image_crop(b),
-                )
-            },
-        );
-        let itf = if fh || fv {
-            let cx = f64::midpoint(rect.x0, rect.x1);
-            let cy = f64::midpoint(rect.y0, rect.y1);
-            fg.ctf
-                * Affine::translate((cx, cy))
-                * Affine::scale_non_uniform(
-                    if fh { -1.0 } else { 1.0 },
-                    if fv { -1.0 } else { 1.0 },
-                )
-                * Affine::translate((-cx, -cy))
-        } else {
-            fg.ctf
-        };
+        let options = image_paint_options(self.blocks.iter().find(|b| b.id == l.id));
+        let image_transform = image_paint_transform(fg.ctf, rect, options);
         if let Some(hash) = &l.image_hash {
             if let Some(slot) = self.image_cache.get_mut(hash)
                 && let Some(img) = slot
             {
-                let (left, top, right, bottom) = crop;
-                let visible_w = (1.0 - left - right).max(0.05);
-                let visible_h = (1.0 - top - bottom).max(0.05);
                 // Paint a scaled full-source rectangle through a clip matching
                 // the stable display frame. This is source cropping, not a
                 // resize: the frame and surrounding text layout never jump.
-                let source = Rect::new(
-                    rect.x0 - rect.width() * left / visible_w,
-                    rect.y0 - rect.height() * top / visible_h,
-                    rect.x0 + rect.width() * (1.0 - left) / visible_w,
-                    rect.y0 + rect.height() * (1.0 - top) / visible_h,
-                );
-                if left != 0.0 || top != 0.0 || right != 0.0 || bottom != 0.0 {
+                let source = cropped_image_source(rect, options.crop);
+                if image_crop_is_active(options.crop) {
                     scene.push_layer(
                         Fill::NonZero,
                         vello::peniko::BlendMode::default(),
@@ -7488,65 +7677,83 @@ impl WordProcessorWidget {
                         fg.ctf,
                         &rect,
                     );
-                    img.paint_at(scene, itf, source);
+                    img.paint_at(scene, image_transform, source);
                     scene.pop_layer();
                 } else {
-                    img.paint_at(scene, itf, rect);
+                    img.paint_at(scene, image_transform, rect);
                 }
             }
         } else {
-            // Missing or undecodable (e.g. non-PNG) image — placeholder.
-            scene.fill(
-                Fill::NonZero,
-                fg.ctf,
-                Color::from_rgb8(0xee, 0xee, 0xf2),
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                fg.ctf,
-                Color::from_rgb8(0xcc, 0xce, 0xd6),
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                &t("canvas-image-missing"),
-                14.0,
-                PAPER_MUTED,
-                fg.ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)),
-                None,
-            );
+            Self::draw_missing_image(scene, fg.ctf, text_renderer, rect);
         }
         // Selection chrome: when this image is the caret's block, ring it
         // with an accent border + corner resize handles so it reads as
         // "selected" (the panel then shows the resize / flip controls).
         if l.id == self.inner.caret.block {
-            let accent = self.chrome.accent;
-            scene.stroke(&vello::kurbo::Stroke::new(2.0), fg.ctf, accent, None, &rect);
-            let handle_r = 5.0;
-            for (handle_x, handle_y) in [
-                (rect.x0, rect.y0),
-                (rect.x1, rect.y0),
-                (rect.x0, rect.y1),
-                (rect.x1, rect.y1),
-            ] {
-                let handle_rect = Rect::new(
-                    handle_x - handle_r,
-                    handle_y - handle_r,
-                    handle_x + handle_r,
-                    handle_y + handle_r,
-                );
-                scene.fill(Fill::NonZero, fg.ctf, Color::WHITE, None, &handle_rect);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.5),
-                    fg.ctf,
-                    accent,
-                    None,
-                    &handle_rect,
-                );
-            }
+            Self::draw_selected_image_chrome(scene, fg.ctf, rect, self.chrome.accent);
+        }
+    }
+
+    fn draw_missing_image(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        rect: Rect,
+    ) {
+        let rounded = vello::kurbo::RoundedRect::from_rect(rect, 6.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgb8(0xee, 0xee, 0xf2),
+            None,
+            &rounded,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            Color::from_rgb8(0xcc, 0xce, 0xd6),
+            None,
+            &rounded,
+        );
+        text_renderer.draw_text(
+            scene,
+            &t("canvas-image-missing"),
+            14.0,
+            PAPER_MUTED,
+            transform * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)),
+            None,
+        );
+    }
+
+    fn draw_selected_image_chrome(scene: &mut Scene, transform: Affine, rect: Rect, accent: Color) {
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            accent,
+            None,
+            &rect,
+        );
+        let handle_radius = 5.0;
+        for (x, y) in [
+            (rect.x0, rect.y0),
+            (rect.x1, rect.y0),
+            (rect.x0, rect.y1),
+            (rect.x1, rect.y1),
+        ] {
+            let handle = Rect::new(
+                x - handle_radius,
+                y - handle_radius,
+                x + handle_radius,
+                y + handle_radius,
+            );
+            scene.fill(Fill::NonZero, transform, Color::WHITE, None, &handle);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                accent,
+                None,
+                &handle,
+            );
         }
     }
 
@@ -7720,17 +7927,19 @@ impl WordProcessorWidget {
 
     /// Spell-check squiggles + note-reference superscripts over one pass-2
     /// item's text, recording `page_notes` for the footnote-area pass.
-    #[allow(clippy::too_many_arguments)]
     fn draw_laid_notes_and_spellcheck(
         &self,
         scene: &mut Scene,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
         item: &LaidItemCtx,
-        spell_by_block: &HashMap<String, Vec<(usize, usize)>>,
-        note_nums: &HashMap<String, usize>,
-        page_notes: &mut HashMap<usize, Vec<usize>>,
+        input: NotesSpellcheckInput<'_>,
     ) {
+        let NotesSpellcheckInput {
+            spell_by_block,
+            note_numbers: note_nums,
+            page_notes,
+        } = input;
         let (l, layout, ly) = (item.l, item.layout, item.ly);
         // Spell-check squiggles: a wavy red underline under each misspelled
         // span. The byte span maps to one-or-more on-screen rects via the same
@@ -8860,12 +9069,6 @@ impl WordProcessorWidget {
         true
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the guards are already split into handle_key_press_guards; what is \
-                  left is one match whose arms are the key dispatch table, and a table \
-                  reads better whole than cut in half"
-    )]
     fn handle_key_press(
         &mut self,
         state: &mut AutoCommit,
@@ -8885,115 +9088,20 @@ impl WordProcessorWidget {
         if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
             self.last_autocorrection = None;
         }
-        let mut changed = true;
-        let mut motion = false;
-        match logical_key {
-            Key::Named(NamedKey::Tab) => {
-                // Inside a table, Tab/Shift-Tab walk cells (and Tab in the
-                // last cell appends a row). Otherwise, when the paragraph has
-                // ruler tab stops, Tab advances to the next one (recording a
-                // tab char); with no stops it falls back to inserting spaces.
-                let append_row = !shift
-                    && self
-                        .caret_table_target()
-                        .is_some_and(|(_, row, column, rows, columns)| {
-                            row.saturating_add(1) == rows && column.saturating_add(1) == columns
-                        });
-                if append_row {
-                    if let Some((_, _, _, rows, _)) = self.caret_table_target() {
-                        self.edit_table_via_action(
-                            state,
-                            crate::actions::TableEdit::InsertRow { at: rows },
-                        );
+        let effect = match logical_key {
+            Key::Named(named) => self
+                .handle_named_edit_key(state, *named, shift)
+                .unwrap_or_else(|| {
+                    if self.handle_navigation_key(state, *named, shift) {
+                        KeyPressEffect::Motion
+                    } else {
+                        self.insert_key_text(state, text)
                     }
-                    motion = true;
-                } else if self.inner.tab_cell(state, !shift) {
-                    motion = true; // tab_cell already cleared any selection
-                } else if !self.inner.caret_tab_stops(state).is_empty() {
-                    self.insert_text_via_action(state, "\t");
-                } else {
-                    self.insert_text_via_action(state, "    ");
-                }
-            }
-            Key::Named(NamedKey::Enter) => {
-                let correction = self.autocorrect_before_boundary(state);
-                self.enter_via_action(state);
-                self.last_autocorrection = correction;
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if !self.undo_document_autocorrection(state) {
-                    self.delete_via_action(state, true);
-                }
-            }
-            Key::Named(NamedKey::Delete) => self.delete_via_action(state, false),
-            Key::Named(NamedKey::ArrowLeft) => {
-                self.extend_or_clear(shift);
-                self.inner.move_left(state);
-                motion = true;
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                self.extend_or_clear(shift);
-                self.inner.move_right(state);
-                motion = true;
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                self.extend_or_clear(shift);
-                // Inside a table, Up moves to the cell directly above; the
-                // grid is block-granular so this matches block-relative motion.
-                if !self.inner.cell_vertical(state, false) {
-                    self.inner.move_block_relative(state, -1);
-                }
-                motion = true;
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                self.extend_or_clear(shift);
-                if !self.inner.cell_vertical(state, true) {
-                    self.inner.move_block_relative(state, 1);
-                }
-                motion = true;
-            }
-            Key::Named(NamedKey::Home) => {
-                self.extend_or_clear(shift);
-                self.inner.move_home();
-                motion = true;
-            }
-            Key::Named(NamedKey::End) => {
-                self.extend_or_clear(shift);
-                self.inner.move_end(state);
-                motion = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                let correction = self.autocorrect_before_boundary(state);
-                if !self.autoformat_on_space_via_actions(state) {
-                    self.insert_text_via_action(state, " ");
-                }
-                self.last_autocorrection = correction.map(|mut correction| {
-                    correction.boundary_end = self.inner.caret.offset;
-                    correction
-                });
-            }
-            _ => {
-                let typed: String = text
-                    .map(|t| t.chars().filter(|c| !c.is_control()).collect())
-                    .unwrap_or_default();
-                if typed.is_empty() {
-                    changed = false;
-                } else {
-                    let correction = typed
-                        .chars()
-                        .next()
-                        .filter(|character| character.is_ascii_punctuation() && *character != '\'')
-                        .and_then(|_| self.autocorrect_before_boundary(state));
-                    self.insert_text_via_action(state, &typed);
-                    self.last_autocorrection = correction.map(|mut correction| {
-                        correction.boundary_end = self.inner.caret.offset;
-                        correction
-                    });
-                }
-            }
-        }
-        if changed {
-            if !motion {
+                }),
+            _ => self.insert_key_text(state, text),
+        };
+        if effect != KeyPressEffect::Ignored {
+            if effect == KeyPressEffect::Edit {
                 // editing consumes/collapses any selection
                 self.inner.clear_anchor();
                 // A real content edit (not caret motion) advances the
@@ -9006,6 +9114,135 @@ impl WordProcessorWidget {
             self.needs_commit = true;
             *handled = true;
         }
+    }
+
+    fn handle_named_edit_key(
+        &mut self,
+        state: &mut AutoCommit,
+        key: NamedKey,
+        shift: bool,
+    ) -> Option<KeyPressEffect> {
+        match key {
+            NamedKey::Tab => Some(self.handle_tab_key(state, shift)),
+            NamedKey::Enter => {
+                let correction = self.autocorrect_before_boundary(state);
+                self.enter_via_action(state);
+                self.last_autocorrection = correction;
+                Some(KeyPressEffect::Edit)
+            }
+            NamedKey::Backspace => {
+                if !self.undo_document_autocorrection(state) {
+                    self.delete_via_action(state, true);
+                }
+                Some(KeyPressEffect::Edit)
+            }
+            NamedKey::Delete => {
+                self.delete_via_action(state, false);
+                Some(KeyPressEffect::Edit)
+            }
+            NamedKey::Space => {
+                let correction = self.autocorrect_before_boundary(state);
+                if !self.autoformat_on_space_via_actions(state) {
+                    self.insert_text_via_action(state, " ");
+                }
+                self.last_autocorrection = correction.map(|mut correction| {
+                    correction.boundary_end = self.inner.caret.offset;
+                    correction
+                });
+                Some(KeyPressEffect::Edit)
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_tab_key(&mut self, state: &mut AutoCommit, shift: bool) -> KeyPressEffect {
+        // Inside a table, Tab/Shift-Tab walk cells (and Tab in the last cell
+        // appends a row). Paragraph tab stops insert a tab; otherwise use the
+        // conventional four-space fallback.
+        let table_target = self.caret_table_target();
+        let append_row = !shift
+            && table_target
+                .as_ref()
+                .is_some_and(|(_, row, column, rows, columns)| {
+                    row.saturating_add(1) == *rows && column.saturating_add(1) == *columns
+                });
+        if append_row {
+            if let Some((_, _, _, rows, _)) = table_target {
+                self.edit_table_via_action(
+                    state,
+                    crate::actions::TableEdit::InsertRow { at: rows },
+                );
+            }
+            KeyPressEffect::Motion
+        } else if self.inner.tab_cell(state, !shift) {
+            KeyPressEffect::Motion
+        } else {
+            let text = if self.inner.caret_tab_stops(state).is_empty() {
+                "    "
+            } else {
+                "\t"
+            };
+            self.insert_text_via_action(state, text);
+            KeyPressEffect::Edit
+        }
+    }
+
+    fn handle_navigation_key(&mut self, state: &AutoCommit, key: NamedKey, shift: bool) -> bool {
+        match key {
+            NamedKey::ArrowLeft => {
+                self.extend_or_clear(shift);
+                self.inner.move_left(state);
+            }
+            NamedKey::ArrowRight => {
+                self.extend_or_clear(shift);
+                self.inner.move_right(state);
+            }
+            NamedKey::ArrowUp | NamedKey::ArrowDown => {
+                self.extend_or_clear(shift);
+                let delta = if matches!(key, NamedKey::ArrowDown) {
+                    1
+                } else {
+                    -1
+                };
+                if !self.inner.cell_vertical(state, delta > 0) {
+                    self.inner.move_block_relative(state, delta);
+                }
+            }
+            NamedKey::Home => {
+                self.extend_or_clear(shift);
+                self.inner.move_home();
+            }
+            NamedKey::End => {
+                self.extend_or_clear(shift);
+                self.inner.move_end(state);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn insert_key_text(&mut self, state: &mut AutoCommit, text: Option<&str>) -> KeyPressEffect {
+        let typed: String = text
+            .map(|text| {
+                text.chars()
+                    .filter(|character| !character.is_control())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if typed.is_empty() {
+            return KeyPressEffect::Ignored;
+        }
+        let correction = typed
+            .chars()
+            .next()
+            .filter(|character| character.is_ascii_punctuation() && *character != '\'')
+            .and_then(|_| self.autocorrect_before_boundary(state));
+        self.insert_text_via_action(state, &typed);
+        self.last_autocorrection = correction.map(|mut correction| {
+            correction.boundary_end = self.inner.caret.offset;
+            correction
+        });
+        KeyPressEffect::Edit
     }
 
     /// Early exits before a key press reaches editing: an unfocused widget,
@@ -9481,10 +9718,6 @@ impl Widget for WordProcessorWidget {
         false
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame compositor keeps its ordered page/chrome layers together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -9524,11 +9757,13 @@ impl Widget for WordProcessorWidget {
             scene,
             &fg,
             text_renderer,
-            &laid,
-            &new_cache,
-            multi_sel,
-            &spell_by_block,
-            &note_nums,
+            &PageContentInput {
+                laid: &laid,
+                cache: &new_cache,
+                multi_selection: multi_sel,
+                spell_by_block: &spell_by_block,
+                note_numbers: &note_nums,
+            },
         );
         self.review.draw(
             scene,
@@ -9570,70 +9805,9 @@ impl Widget for WordProcessorWidget {
 
         self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
 
-        // Contextual styles panel on the right (between toolbar and layout bar).
-        if self.styles_panel_visible() {
-            let overlay = self.styles_panel_overlay();
-            if overlay {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.35),
-                    None,
-                    &Rect::new(full.x0, full.y0 + fg.tb_h, full.x1, fg.layout_bar_top),
-                );
-            }
-            let panel = Rect::new(
-                if overlay {
-                    (full.x1 - self.styles_panel_width()).max(full.x0)
-                } else {
-                    fg.canvas_right
-                },
-                full.y0 + fg.tb_h,
-                full.x1,
-                fg.layout_bar_top,
-            );
-            self.draw_styles_panel_responsive(scene, transform, text_renderer, panel);
-        } else {
-            self.panel_rect = Rect::ZERO;
-            self.panel_hits.clear();
-        }
-
-        // Document outline / navigation pane on the left (between toolbar and
-        // layout bar). Drawn after `self.laid` is set so the active-heading
-        // highlight reflects this frame's pagination.
-        if self.outline.is_open() {
-            let outline_band =
-                Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
-            let entries = self.outline_entries();
-            let active = self.active_outline_block();
-            let cc = self.chrome;
-            self.outline.draw(
-                scene,
-                transform,
-                text_renderer,
-                outline_band,
-                &entries,
-                active.as_deref(),
-                OutlinePalette {
-                    background: cc.bar,
-                    border: cc.border,
-                    chip: cc.chip,
-                    text: cc.text,
-                    text_dim: cc.text_dim,
-                },
-            );
-        } else {
-            self.outline.clear_frame();
-        }
-
-        if fg.history_h > 0.0 {
-            let band = Rect::new(full.x0, fg.history_top, full.x1, fg.layout_bar_top);
-            self.history
-                .draw(scene, transform, text_renderer, theme, presence, band);
-        }
-
-        let lbar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
-        self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
+        self.draw_styles_panel_layer(scene, transform, text_renderer, theme, &fg);
+        self.draw_outline_layer(scene, transform, text_renderer, &fg);
+        self.draw_frame_footer(scene, transform, text_renderer, theme, presence, &fg);
     }
 
     fn handle_event(
@@ -9664,17 +9838,20 @@ impl Widget for WordProcessorWidget {
         // The expanded comment thread owns its reply field and modal-like
         // button surface. Keep it ahead of the editor and Find bar so typing
         // never leaks into the document beneath it.
-        if self.handle_comment_thread_event(
+        let comment_thread_handled = self.handle_comment_thread_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+            &mut EditorEventCtx {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
+        );
+        if comment_thread_handled {
             return;
         }
         // The version-history strip captures pointer input over its own band (and
@@ -10092,11 +10269,143 @@ impl ui::widget::AppWidget for WordProcessorWidget {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CommentThreadLayout {
+    panel: Rect,
+    reply_field: Rect,
+    cancel_button: Rect,
+    submit_button: Rect,
+}
+
+impl CommentThreadLayout {
+    fn for_host(host: Rect, scale: f64) -> Self {
+        let width = (372.0 * scale).min((host.width() - 24.0 * scale).max(260.0 * scale));
+        let height = (360.0 * scale).min((host.height() - 76.0 * scale).max(238.0 * scale));
+        let panel = Rect::new(
+            host.x1 - width - 12.0 * scale,
+            host.y1 - height - 38.0 * scale,
+            host.x1 - 12.0 * scale,
+            host.y1 - 38.0 * scale,
+        );
+        Self {
+            panel,
+            reply_field: Rect::new(
+                panel.x0 + 12.0 * scale,
+                panel.y1 - 82.0 * scale,
+                panel.x1 - 12.0 * scale,
+                panel.y1 - 52.0 * scale,
+            ),
+            cancel_button: Rect::new(
+                panel.x1 - 210.0 * scale,
+                panel.y1 - 40.0 * scale,
+                panel.x1 - 118.0 * scale,
+                panel.y1 - 12.0 * scale,
+            ),
+            submit_button: Rect::new(
+                panel.x1 - 110.0 * scale,
+                panel.y1 - 40.0 * scale,
+                panel.x1 - 12.0 * scale,
+                panel.y1 - 12.0 * scale,
+            ),
+        }
+    }
+}
+
 impl WordProcessorWidget {
+    fn draw_styles_panel_layer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        fg: &FrameGeometry,
+    ) {
+        if !self.styles_panel_visible() {
+            self.panel_rect = Rect::ZERO;
+            self.panel_hits.clear();
+            return;
+        }
+        let full = self.rect;
+        let overlay = self.styles_panel_overlay();
+        if overlay {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.35),
+                None,
+                &Rect::new(full.x0, full.y0 + fg.tb_h, full.x1, fg.layout_bar_top),
+            );
+        }
+        let panel = Rect::new(
+            if overlay {
+                (full.x1 - self.styles_panel_width()).max(full.x0)
+            } else {
+                fg.canvas_right
+            },
+            full.y0 + fg.tb_h,
+            full.x1,
+            fg.layout_bar_top,
+        );
+        self.draw_styles_panel_responsive(scene, transform, text_renderer, panel);
+    }
+
+    /// Draw the document outline after pagination so its active-heading state
+    /// reflects the frame being presented.
+    fn draw_outline_layer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        fg: &FrameGeometry,
+    ) {
+        if !self.outline.is_open() {
+            self.outline.clear_frame();
+            return;
+        }
+        let full = self.rect;
+        let outline_band = Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
+        let entries = self.outline_entries();
+        let active = self.active_outline_block();
+        let colors = self.chrome;
+        self.outline.draw(
+            scene,
+            transform,
+            text_renderer,
+            outline_band,
+            &entries,
+            active.as_deref(),
+            OutlinePalette {
+                background: colors.bar,
+                border: colors.border,
+                chip: colors.chip,
+                text: colors.text,
+                text_dim: colors.text_dim,
+            },
+        );
+    }
+
+    fn draw_frame_footer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        fg: &FrameGeometry,
+    ) {
+        let full = self.rect;
+        if fg.history_h > 0.0 {
+            let band = Rect::new(full.x0, fg.history_top, full.x1, fg.layout_bar_top);
+            self.history
+                .draw(scene, transform, text_renderer, theme, presence, band);
+        }
+        let layout_bar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
+        self.draw_layout_bar(scene, transform, text_renderer, theme, layout_bar);
+    }
+
     /// Draw the expanded, durable comment thread above the inline margin
     /// anchor. The panel is on-demand, retaining the compact canvas as the
     /// primary surface while keeping each persisted reply visible and usable.
-    #[allow(clippy::too_many_lines)]
     fn draw_comment_thread(
         &mut self,
         scene: &mut Scene,
@@ -10105,37 +10414,50 @@ impl WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let Some(id) = self.thread_comment.clone() else {
-            return;
-        };
-        let comment = self
-            .review
-            .comments()
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()
-            .or_else(|| self.thread_snapshot.clone());
-        let Some(comment) = comment else {
-            self.close_comment_thread();
+        let Some(comment) = self.active_comment_thread() else {
             return;
         };
         let scale = f64::from(tr.text_scale());
         let cc = self.chrome;
-        let width = (372.0 * scale).min((self.rect.width() - 24.0 * scale).max(260.0 * scale));
-        let height = (360.0 * scale).min((self.rect.height() - 76.0 * scale).max(238.0 * scale));
-        let panel = Rect::new(
-            self.rect.x1 - width - 12.0 * scale,
-            self.rect.y1 - height - 38.0 * scale,
-            self.rect.x1 - 12.0 * scale,
-            self.rect.y1 - 38.0 * scale,
-        );
-        self.thread_panel = panel;
+        let layout = CommentThreadLayout::for_host(self.rect, scale);
+        self.thread_panel = layout.panel;
+        self.thread_cancel = layout.cancel_button;
+        self.thread_submit = layout.submit_button;
+
+        Self::draw_comment_thread_shell(scene, transform, tr, cc, layout.panel, scale);
+        Self::draw_comment_messages(scene, transform, tr, cc, &comment, layout.panel, scale);
+        self.draw_comment_reply_controls(scene, transform, tr, theme, presence, layout.reply_field);
+    }
+
+    fn active_comment_thread(&mut self) -> Option<CommentView> {
+        let id = self.thread_comment.as_ref()?;
+        let comment = self
+            .review
+            .comments()
+            .iter()
+            .find(|comment| &comment.id == id)
+            .cloned()
+            .or_else(|| self.thread_snapshot.clone());
+        if comment.is_none() {
+            self.close_comment_thread();
+        }
+        comment
+    }
+
+    fn draw_comment_thread_shell(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        colors: ChromeColors,
+        panel: Rect,
+        scale: f64,
+    ) {
         let rounded = vello::kurbo::RoundedRect::from_rect(panel, 8.0 * scale);
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &rounded);
+        scene.fill(Fill::NonZero, transform, colors.bar, None, &rounded);
         scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             transform,
-            cc.border,
+            colors.border,
             None,
             &rounded,
         );
@@ -10143,10 +10465,21 @@ impl WordProcessorWidget {
             scene,
             &t("review-thread"),
             14.0,
-            cc.text,
+            colors.text,
             transform * Affine::translate((panel.x0 + 12.0 * scale, panel.y0 + 12.0 * scale)),
             None,
         );
+    }
+
+    fn draw_comment_messages(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        colors: ChromeColors,
+        comment: &CommentView,
+        panel: Rect,
+        scale: f64,
+    ) {
         let root = comment
             .blocks
             .iter()
@@ -10158,7 +10491,7 @@ impl WordProcessorWidget {
             &[RichSpan::new(format!("{}  {}", comment.author, root))],
             false,
             num::f32_of_f64(12.0 * scale),
-            num::f32_of_f64(width - 24.0 * scale),
+            num::f32_of_f64(panel.width() - 24.0 * scale),
             TextAlign::Left,
             FontFamily::Sans,
             vec![],
@@ -10169,7 +10502,7 @@ impl WordProcessorWidget {
             scene,
             &root_layout,
             transform * Affine::translate((panel.x0 + 12.0 * scale, panel.y0 + 39.0 * scale)),
-            cc.text,
+            colors.text,
         );
         let mut y = panel.y0 + 48.0 * scale + f64::from(root_layout.height());
         for reply in comment.replies.iter().take(3) {
@@ -10184,7 +10517,7 @@ impl WordProcessorWidget {
                 &[RichSpan::new(format!("{}  {}", reply.author, text))],
                 false,
                 num::f32_of_f64(11.0 * scale),
-                num::f32_of_f64(width - 36.0 * scale),
+                num::f32_of_f64(panel.width() - 36.0 * scale),
                 TextAlign::Left,
                 FontFamily::Sans,
                 vec![],
@@ -10199,7 +10532,7 @@ impl WordProcessorWidget {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                cc.chip,
+                colors.chip,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(bubble, 5.0 * scale),
             );
@@ -10207,19 +10540,25 @@ impl WordProcessorWidget {
                 scene,
                 &layout,
                 transform * Affine::translate((bubble.x0 + 7.0 * scale, bubble.y0 + 4.0 * scale)),
-                cc.text,
+                colors.text,
             );
             y += h + 5.0 * scale;
         }
-        let field = Rect::new(
-            panel.x0 + 12.0 * scale,
-            panel.y1 - 82.0 * scale,
-            panel.x1 - 12.0 * scale,
-            panel.y1 - 52.0 * scale,
-        );
+    }
+
+    fn draw_comment_reply_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        reply_field: Rect,
+    ) {
+        let colors = self.chrome;
         self.thread_reply
             .set_placeholder(&t("review-reply-placeholder"));
-        self.thread_reply.apply_layout_external(field);
+        self.thread_reply.apply_layout_external(reply_field);
         Widget::draw(
             &mut self.thread_reply,
             scene,
@@ -10228,37 +10567,29 @@ impl WordProcessorWidget {
             theme,
             presence,
         );
-        self.thread_cancel = Rect::new(
-            panel.x1 - 210.0 * scale,
-            panel.y1 - 40.0 * scale,
-            panel.x1 - 118.0 * scale,
-            panel.y1 - 12.0 * scale,
-        );
-        self.thread_submit = Rect::new(
-            panel.x1 - 110.0 * scale,
-            panel.y1 - 40.0 * scale,
-            panel.x1 - 12.0 * scale,
-            panel.y1 - 12.0 * scale,
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &colors,
+            &PanelButton {
+                rect: self.thread_cancel,
+                label: &t("review-cancel-reply"),
+                active: false,
+                centered: true,
+            },
         );
         draw_btn(
             scene,
             transform,
             tr,
-            &cc,
-            self.thread_cancel,
-            &t("review-cancel-reply"),
-            false,
-            true,
-        );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            self.thread_submit,
-            &t("review-send-reply"),
-            true,
-            true,
+            &colors,
+            &PanelButton {
+                rect: self.thread_submit,
+                label: &t("review-send-reply"),
+                active: true,
+                centered: true,
+            },
         );
     }
 
@@ -11656,38 +11987,27 @@ impl WordProcessorWidget {
         self.dirty = true;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the embedded Find bar input route"
-    )]
     fn handle_comment_thread_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut EditorEventCtx<'_>,
     ) -> bool {
         if self.thread_comment.is_none() {
             return false;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             Widget::handle_event(
                 &mut self.thread_reply,
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+                ctx.focus_target,
+                ctx.node_id,
+                ctx.taffy,
             );
             return false;
         }
@@ -11703,13 +12023,14 @@ impl WordProcessorWidget {
         {
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
                 self.close_comment_thread();
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
-            if matches!(logical_key, Key::Named(NamedKey::Enter)) && modifiers.state().control_key()
+            if matches!(logical_key, Key::Named(NamedKey::Enter))
+                && ctx.modifiers.state().control_key()
             {
-                self.submit_comment_reply(state);
-                *handled = true;
+                self.submit_comment_reply(ctx.state);
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -11722,34 +12043,34 @@ impl WordProcessorWidget {
             }
         ) {
             if self.thread_submit.contains(self.pointer) {
-                self.submit_comment_reply(state);
-                *handled = true;
+                self.submit_comment_reply(ctx.state);
+                *ctx.handled = true;
                 return true;
             }
             if self.thread_cancel.contains(self.pointer) {
                 self.close_comment_thread();
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
             if !self.thread_panel.contains(self.pointer) {
                 self.close_comment_thread();
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
         Widget::handle_event(
             &mut self.thread_reply,
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+            ctx.focus_target,
+            ctx.node_id,
+            ctx.taffy,
         );
-        *handled = true;
+        *ctx.handled = true;
         true
     }
 
@@ -12386,6 +12707,69 @@ mod tests {
     use std::fmt::Write as _;
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
+
+    #[test]
+    fn cropped_image_source_expands_behind_the_stable_frame() {
+        let frame = Rect::new(10.0, 20.0, 110.0, 70.0);
+        let source = cropped_image_source(frame, (0.1, 0.2, 0.3, 0.1));
+
+        assert!((source.x0 - (-6.666_666_666_666_668)).abs() < 1e-9);
+        assert!((source.y0 - 5.714_285_714_285_713).abs() < 1e-9);
+        assert!((source.x1 - 160.0).abs() < 1e-9);
+        assert!((source.y1 - 77.142_857_142_857_14).abs() < 1e-9);
+        assert_eq!(cropped_image_source(frame, (0.0, 0.0, 0.0, 0.0)), frame);
+    }
+
+    #[test]
+    fn image_flip_transform_mirrors_around_the_frame_center() {
+        let frame = Rect::new(10.0, 20.0, 110.0, 70.0);
+        let horizontal = image_paint_transform(
+            Affine::IDENTITY,
+            frame,
+            ImagePaintOptions {
+                flip_horizontal: true,
+                ..ImagePaintOptions::default()
+            },
+        );
+        let vertical = image_paint_transform(
+            Affine::IDENTITY,
+            frame,
+            ImagePaintOptions {
+                flip_vertical: true,
+                ..ImagePaintOptions::default()
+            },
+        );
+
+        assert_eq!(
+            horizontal * Point::new(frame.x0, frame.y0),
+            Point::new(frame.x1, frame.y0)
+        );
+        assert_eq!(
+            vertical * Point::new(frame.x0, frame.y0),
+            Point::new(frame.x0, frame.y1)
+        );
+        let center = Point::new(frame.center().x, frame.center().y);
+        assert_eq!(horizontal * center, center);
+        assert_eq!(vertical * center, center);
+    }
+
+    #[test]
+    fn comment_thread_layout_keeps_reply_controls_inside_the_panel() {
+        let host = Rect::new(0.0, 0.0, 300.0, 480.0);
+        let layout = CommentThreadLayout::for_host(host, 1.0);
+
+        assert_eq!(layout.panel, Rect::new(12.0, 82.0, 288.0, 442.0));
+        for control in [
+            layout.reply_field,
+            layout.cancel_button,
+            layout.submit_button,
+        ] {
+            assert!(layout.panel.contains(Point::new(control.x0, control.y0)));
+            assert!(layout.panel.contains(Point::new(control.x1, control.y1)));
+        }
+        assert!(layout.cancel_button.x1 < layout.submit_button.x0);
+        assert!(layout.reply_field.y1 < layout.submit_button.y0);
+    }
 
     #[test]
     fn native_document_edit_has_writer_provenance() {
@@ -16423,6 +16807,31 @@ mod tests {
             "the document holds exactly the characters that were typed, \
              capitals included",
         );
+    }
+
+    #[test]
+    fn caret_navigation_is_handled_without_marking_the_document_modified() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "move");
+        wp.focused = true;
+        wp.modified = false;
+        wp.needs_commit = false;
+        let before = wp.model().caret().offset;
+        let mut handled = false;
+
+        wp.handle_key_press(
+            &mut state.doc,
+            &Key::Named(NamedKey::ArrowLeft),
+            None,
+            false,
+            false,
+            &mut handled,
+        );
+
+        assert!(handled);
+        assert_eq!(wp.model().caret().offset, before - 1);
+        assert!(!wp.modified, "caret motion is not a content edit");
+        assert!(wp.needs_commit, "caret presence still needs publishing");
     }
 
     /// A document editor shows the document. The contextual styles panel

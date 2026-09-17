@@ -14,7 +14,7 @@
 //! fetch instead.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -67,6 +67,310 @@ const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
 const MAX_LAUNCH_CONTENT_BYTES: usize = 64 * 1024 * 1024;
+const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(30);
+const NEARBY_TRANSFER_HANDLE_TTL: Duration = Duration::from_secs(120);
+const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
+const NEARBY_DESTINATION_HANDLE_TTL: Duration = Duration::from_secs(120);
+const FILES_APP_ID: &str = "dev.tilo.file-explorer";
+
+#[derive(Clone)]
+struct NearbyTargetBinding {
+    peer_id: u64,
+    route: String,
+    target: crate::shell::personal_continuity::DeviceId,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+struct NearbyTargetRegistry {
+    bindings: HashMap<runtime_collab::NearbyTargetHandle, NearbyTargetBinding>,
+}
+
+impl NearbyTargetRegistry {
+    fn begin_snapshot(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        targets: &[crate::shell::personal_continuity::DeviceId],
+        now: Instant,
+    ) {
+        let route = route.channel_key();
+        self.bindings.retain(|_, binding| {
+            binding.expires_at > now
+                && (binding.peer_id != peer_id
+                    || binding.route != route
+                    || targets.contains(&binding.target))
+        });
+    }
+
+    fn issue(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        target: crate::shell::personal_continuity::DeviceId,
+        now: Instant,
+    ) -> runtime_collab::NearbyTargetHandle {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        let channel = route.channel_key();
+        if let Some((handle, binding)) = self.bindings.iter_mut().find(|(_, binding)| {
+            binding.peer_id == peer_id && binding.route == channel && binding.target == target
+        }) {
+            binding.expires_at = now + NEARBY_TARGET_HANDLE_TTL;
+            return *handle;
+        }
+        loop {
+            let mut bytes = [0_u8; 16];
+            OsRng.fill_bytes(&mut bytes);
+            let handle = runtime_collab::NearbyTargetHandle::from_issued_bytes(bytes);
+            if handle.valid() && !self.bindings.contains_key(&handle) {
+                self.bindings.insert(
+                    handle,
+                    NearbyTargetBinding {
+                        peer_id,
+                        route: route.channel_key(),
+                        target,
+                        expires_at: now + NEARBY_TARGET_HANDLE_TTL,
+                    },
+                );
+                return handle;
+            }
+        }
+    }
+
+    fn consume(
+        &mut self,
+        handle: runtime_collab::NearbyTargetHandle,
+        peer_id: u64,
+        route: &CrdtRoute,
+        now: Instant,
+    ) -> Option<crate::shell::personal_continuity::DeviceId> {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        let binding = self.bindings.get(&handle)?;
+        if binding.peer_id != peer_id || binding.route != route.channel_key() {
+            return None;
+        }
+        self.bindings.remove(&handle).map(|binding| binding.target)
+    }
+
+    fn remove_peer(&mut self, peer_id: u64) {
+        self.bindings
+            .retain(|_, binding| binding.peer_id != peer_id);
+    }
+}
+
+#[derive(Clone)]
+struct NearbyTransferBinding {
+    peer_id: u64,
+    route: String,
+    transfer_id: [u8; 16],
+    direction: runtime_collab::NearbyTransferDirection,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+struct NearbyTransferRegistry {
+    bindings: HashMap<runtime_collab::NearbyTransferHandle, NearbyTransferBinding>,
+}
+
+#[derive(Clone)]
+struct NearbyDestinationBinding {
+    peer_id: u64,
+    route: String,
+    grant: PathBuf,
+    label: String,
+    remembered: bool,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+struct NearbyDestinationRegistry {
+    bindings: HashMap<runtime_collab::NearbyDestinationHandle, NearbyDestinationBinding>,
+}
+
+impl NearbyDestinationRegistry {
+    fn issue(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        grant: PathBuf,
+        label: String,
+        now: Instant,
+    ) -> runtime_collab::NearbyTransferDestination {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        if let Some((handle, binding)) = self.bindings.iter_mut().find(|(_, binding)| {
+            binding.peer_id == peer_id
+                && binding.route == route.channel_key()
+                && binding.grant == grant
+        }) {
+            binding.expires_at = now + NEARBY_DESTINATION_HANDLE_TTL;
+            return runtime_collab::NearbyTransferDestination {
+                handle: *handle,
+                label: binding.label.clone(),
+                remembered_for_session: binding.remembered,
+            };
+        }
+        loop {
+            let mut bytes = [0_u8; 16];
+            OsRng.fill_bytes(&mut bytes);
+            let handle = runtime_collab::NearbyDestinationHandle::from_issued_bytes(bytes);
+            if handle.valid() && !self.bindings.contains_key(&handle) {
+                self.bindings.insert(
+                    handle,
+                    NearbyDestinationBinding {
+                        peer_id,
+                        route: route.channel_key(),
+                        grant,
+                        label: label.clone(),
+                        remembered: false,
+                        expires_at: now + NEARBY_DESTINATION_HANDLE_TTL,
+                    },
+                );
+                return runtime_collab::NearbyTransferDestination {
+                    handle,
+                    label,
+                    remembered_for_session: false,
+                };
+            }
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        handle: runtime_collab::NearbyDestinationHandle,
+        peer_id: u64,
+        route: &CrdtRoute,
+        remember: bool,
+        now: Instant,
+    ) -> Option<crate::shell::nearby_transfer::SecureNearbyDestination> {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        let binding = self.bindings.get_mut(&handle)?;
+        if binding.peer_id != peer_id || binding.route != route.channel_key() {
+            return None;
+        }
+        binding.remembered |= remember;
+        binding.expires_at = now + NEARBY_DESTINATION_HANDLE_TTL;
+        crate::shell::nearby_transfer::SecureNearbyDestination::open_grant(&binding.grant).ok()
+    }
+
+    fn remove_peer(&mut self, peer_id: u64) {
+        self.bindings
+            .retain(|_, binding| binding.peer_id != peer_id);
+    }
+}
+
+impl NearbyTransferRegistry {
+    fn begin_snapshot(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        visible_ids: &[[u8; 16]],
+        now: Instant,
+    ) {
+        let route = route.channel_key();
+        self.bindings.retain(|_, binding| {
+            binding.expires_at > now
+                && (binding.peer_id != peer_id
+                    || binding.route != route
+                    || visible_ids.contains(&binding.transfer_id))
+        });
+    }
+
+    fn issue(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        transfer_id: [u8; 16],
+        direction: runtime_collab::NearbyTransferDirection,
+        allow_claim: bool,
+        now: Instant,
+    ) -> Option<runtime_collab::NearbyTransferHandle> {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        if let Some((handle, binding)) = self
+            .bindings
+            .iter_mut()
+            .find(|(_, binding)| binding.transfer_id == transfer_id)
+        {
+            if binding.peer_id != peer_id || binding.route != route.channel_key() {
+                return None;
+            }
+            binding.expires_at = now + NEARBY_TRANSFER_HANDLE_TTL;
+            return Some(*handle);
+        }
+        if !allow_claim || self.bindings.len() >= MAX_NEARBY_TRANSFER_HANDLES {
+            return None;
+        }
+        loop {
+            let mut bytes = [0_u8; 16];
+            OsRng.fill_bytes(&mut bytes);
+            let handle = runtime_collab::NearbyTransferHandle::from_issued_bytes(bytes);
+            if handle.valid() && !self.bindings.contains_key(&handle) {
+                self.bindings.insert(
+                    handle,
+                    NearbyTransferBinding {
+                        peer_id,
+                        route: route.channel_key(),
+                        transfer_id,
+                        direction,
+                        expires_at: now + NEARBY_TRANSFER_HANDLE_TTL,
+                    },
+                );
+                return Some(handle);
+            }
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        handle: runtime_collab::NearbyTransferHandle,
+        peer_id: u64,
+        route: &CrdtRoute,
+        direction: runtime_collab::NearbyTransferDirection,
+        now: Instant,
+    ) -> Option<[u8; 16]> {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        let binding = self.bindings.get_mut(&handle)?;
+        if binding.peer_id != peer_id
+            || binding.route != route.channel_key()
+            || binding.direction != direction
+        {
+            return None;
+        }
+        binding.expires_at = now + NEARBY_TRANSFER_HANDLE_TTL;
+        Some(binding.transfer_id)
+    }
+
+    fn remove_peer(&mut self, peer_id: u64) {
+        self.bindings
+            .retain(|_, binding| binding.peer_id != peer_id);
+    }
+}
+
+fn nearby_source_from_grants(
+    raw_path: &[u8],
+    grants: &[Capability],
+) -> Result<crate::shell::nearby_transfer::SecureNearbySource, String> {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let source = PathBuf::from(std::ffi::OsString::from_vec(raw_path.to_vec()));
+    if !source.is_absolute() {
+        return Err("Nearby Send source must be an absolute Files grant path".into());
+    }
+    grants
+        .iter()
+        .find_map(|grant| {
+            let Capability::Filesystem { path, .. } = grant else {
+                return None;
+            };
+            crate::shell::nearby_transfer::SecureNearbySource::open_beneath(path, &source).ok()
+        })
+        .ok_or_else(|| "Nearby Send source is outside this Files instance's grants".into())
+}
+
+fn nearby_policy_enabled(
+    policy: crate::shell::continuity_policy::ContinuityPolicySnapshot,
+) -> bool {
+    policy.permits(crate::shell::continuity_policy::ContinuityCapability::FileTransfer)
+}
 
 fn stage_launch_content(
     app_id: &str,
@@ -1075,13 +1379,47 @@ struct RealtimeBinding {
     source: crate::shell::personal_continuity::DeviceId,
     owner_peer: u64,
     authorization: Option<crate::shell::realtime_session::CaptureAuthorizationId>,
+    target_peer: Option<u64>,
+    capture_leases: Vec<crate::portal::capture_broker::CaptureLeaseGrant>,
+    imported: bool,
 }
 
-#[derive(Default)]
+struct RealtimeSubscriber {
+    app: crate::shell::realtime_session::VerifiedAppRegistration,
+    tx: mpsc::UnboundedSender<Vec<u8>>,
+}
+
 struct RealtimeBridge {
-    broker: crate::shell::realtime_session::RealtimeSessionBroker,
+    broker: Arc<Mutex<crate::shell::realtime_session::RealtimeSessionBroker>>,
+    fabric: Arc<crate::shell::realtime_session::BrokerRealtimeFabricAdapter>,
+    capture: Arc<Mutex<crate::portal::CaptureBroker>>,
     sessions: HashMap<String, RealtimeBinding>,
-    subscribers: HashMap<u64, mpsc::UnboundedSender<Vec<u8>>>,
+    subscribers: HashMap<u64, RealtimeSubscriber>,
+    pending_imported_offers: VecDeque<crate::shell::realtime_session::ImportedRealtimeFabricOffer>,
+    consent_capabilities_issued: std::collections::HashSet<String>,
+}
+
+impl Default for RealtimeBridge {
+    fn default() -> Self {
+        let broker = Arc::new(Mutex::new(
+            crate::shell::realtime_session::RealtimeSessionBroker::new(),
+        ));
+        Self {
+            fabric: Arc::new(
+                crate::shell::realtime_session::BrokerRealtimeFabricAdapter::new(Arc::clone(
+                    &broker,
+                )),
+            ),
+            broker,
+            capture: Arc::new(Mutex::new(
+                crate::portal::CaptureBroker::with_system_defaults(),
+            )),
+            sessions: HashMap::new(),
+            subscribers: HashMap::new(),
+            pending_imported_offers: VecDeque::new(),
+            consent_capabilities_issued: std::collections::HashSet::new(),
+        }
+    }
 }
 
 impl RealtimeBridge {
@@ -1096,18 +1434,182 @@ impl RealtimeBridge {
         }
     }
 
-    fn notify(&mut self, peer: u64, event: &ui::realtime_continuity::RealtimeEvent) {
+    fn notify(&mut self, peer: u64, event: &ui::realtime_continuity::RealtimeEvent) -> bool {
         let Ok(bytes) = serde_json::to_vec(event) else {
-            return;
+            return false;
         };
-        if bytes.len() > ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES
-            || self
-                .subscribers
-                .get(&peer)
-                .is_some_and(|subscriber| subscriber.send(bytes).is_err())
-        {
+        if bytes.len() > ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES {
+            return false;
+        }
+        let delivered = self
+            .subscribers
+            .get(&peer)
+            .is_some_and(|subscriber| subscriber.tx.send(bytes).is_ok());
+        if !delivered {
             self.subscribers.remove(&peer);
         }
+        delivered
+    }
+
+    fn required_capture_kinds(
+        &self,
+        id: crate::shell::realtime_session::RealtimeSessionId,
+    ) -> Option<Vec<crate::portal::CaptureKind>> {
+        let media = self.broker.lock().ok()?.session(id)?.intent.media;
+        let mut kinds = Vec::with_capacity(4);
+        if media.microphone() {
+            kinds.push(crate::portal::CaptureKind::Microphone);
+        }
+        if media.camera() {
+            kinds.push(crate::portal::CaptureKind::Camera);
+        }
+        if media.screen_share() {
+            kinds.push(crate::portal::CaptureKind::Screen);
+        }
+        if media.share_audio() {
+            kinds.push(crate::portal::CaptureKind::SystemAudio);
+        }
+        Some(kinds)
+    }
+}
+
+fn realtime_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+fn broker_realtime_controls(
+    controls: ui::realtime_continuity::RealtimeControlIntent,
+) -> crate::shell::realtime_session::RealtimeControlState {
+    crate::shell::realtime_session::RealtimeControlState {
+        microphone_muted: controls.microphone_muted,
+        camera_muted: controls.camera_muted,
+        screen_share_paused: controls.screen_share_paused,
+        share_audio_muted: controls.share_audio_muted,
+    }
+}
+
+fn app_realtime_controls(
+    controls: crate::shell::realtime_session::RealtimeControlState,
+) -> ui::realtime_continuity::RealtimeControlIntent {
+    ui::realtime_continuity::RealtimeControlIntent {
+        microphone_muted: controls.microphone_muted,
+        camera_muted: controls.camera_muted,
+        screen_share_paused: controls.screen_share_paused,
+        share_audio_muted: controls.share_audio_muted,
+    }
+}
+
+fn acquire_realtime_capture_leases(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    session: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+    opaque_authorizations: &[String],
+    required: &[crate::portal::CaptureKind],
+    now: std::time::Instant,
+) -> Result<
+    Vec<crate::portal::capture_broker::CaptureLeaseGrant>,
+    crate::portal::capture_broker::CaptureBrokerError,
+> {
+    let binding =
+        crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())?;
+    let authorizations = opaque_authorizations
+        .iter()
+        .map(|authorization| crate::portal::CaptureAuthorizationId::from_opaque(authorization))
+        .collect::<Result<Vec<_>, _>>()?;
+    capture
+        .lock()
+        .map_err(|_| crate::portal::capture_broker::CaptureBrokerError::Unavailable)?
+        .acquire_required(&authorizations, &binding, required, now)
+}
+
+fn realtime_capture_leases_ready(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    session: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+    leases: &[crate::portal::capture_broker::CaptureLeaseGrant],
+    now: std::time::Instant,
+) -> Result<(), crate::portal::capture_broker::CaptureBrokerError> {
+    let binding =
+        crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())?;
+    let mut capture = capture
+        .lock()
+        .map_err(|_| crate::portal::capture_broker::CaptureBrokerError::Unavailable)?;
+    capture.reap_expired(now);
+    for grant in leases {
+        capture.resolve(grant.lease_id, &binding, now)?;
+    }
+    drop(capture);
+    Ok(())
+}
+
+fn release_realtime_capture_session(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    session: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+) {
+    if let Ok(binding) =
+        crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
+        && let Ok(mut capture) = capture.lock()
+    {
+        capture.session_ended(&binding);
+    }
+}
+
+fn release_realtime_capture_leases(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    leases: &[crate::portal::capture_broker::CaptureLeaseGrant],
+) {
+    if let Ok(mut capture) = capture.lock() {
+        for grant in leases {
+            capture.release(grant.lease_id);
+        }
+    }
+}
+
+fn revoke_realtime_capture_authorizations(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    opaque_authorizations: &[String],
+) {
+    let ids = opaque_authorizations
+        .iter()
+        .filter_map(|authorization| {
+            crate::portal::CaptureAuthorizationId::from_opaque(authorization).ok()
+        })
+        .collect::<Vec<_>>();
+    if let Ok(mut capture) = capture.lock() {
+        capture.revoke_authorizations(&ids);
+    }
+}
+
+#[cfg(test)]
+struct RealtimeConsentMintHook {
+    minted: std::sync::mpsc::SyncSender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+fn realtime_consent_mint_hook() -> &'static Mutex<Option<RealtimeConsentMintHook>> {
+    static HOOK: std::sync::OnceLock<Mutex<Option<RealtimeConsentMintHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn pause_realtime_consent_after_mint() {
+    let hook = realtime_consent_mint_hook()
+        .lock()
+        .ok()
+        .and_then(|mut hook| hook.take());
+    if let Some(hook) = hook {
+        let _ = hook.minted.send(());
+        let _ = hook.resume.recv_timeout(std::time::Duration::from_secs(5));
     }
 }
 
@@ -1153,10 +1655,504 @@ pub struct CapnpBrokerState {
     task_run_id: AtomicU64,
     invocation_id: AtomicU64,
     realtime: Mutex<RealtimeBridge>,
+    nearby_targets: Mutex<NearbyTargetRegistry>,
+    nearby_transfers: Mutex<NearbyTransferRegistry>,
+    nearby_destinations: Mutex<NearbyDestinationRegistry>,
     workspace_control_network: Mutex<Option<std::sync::Weak<crate::shell::network::ShellNetwork>>>,
 }
 
+/// Cloneable production seam between the certified device fabric and the
+/// app-facing realtime broker. The compositor owns one clone for pumping;
+/// broker state owns the concrete adapter and all application routing.
+#[derive(Clone)]
+pub struct RealtimeFabricAppBridge {
+    state: Arc<CapnpBrokerState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealtimeSourceUiView {
+    pub session: String,
+    pub room_label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealtimeConsentUiView {
+    pub session: String,
+    pub room_label: String,
+    pub source: crate::shell::personal_continuity::DeviceId,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RealtimeContinuityUiView {
+    pub sources: Vec<RealtimeSourceUiView>,
+    pub consents: Vec<RealtimeConsentUiView>,
+}
+
+impl RealtimeFabricAppBridge {
+    pub(crate) fn from_state(state: Arc<CapnpBrokerState>) -> Self {
+        Self { state }
+    }
+
+    #[must_use]
+    pub fn adapter(&self) -> Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter> {
+        self.state.realtime.lock().ok().map(|realtime| {
+            let adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter =
+                realtime.fabric.clone();
+            adapter
+        })
+    }
+
+    /// Project newly authenticated fabric edges into exact certified local
+    /// application subscriptions. Called from the compositor pump after the
+    /// device-fabric runtime has drained inbound transport actions.
+    pub fn pump_app_events(&self) {
+        self.state.pump_realtime_fabric_app_events();
+    }
+
+    /// Bounded shell-only projection for compositor chrome. Certified device
+    /// identities never enter the application contract.
+    #[must_use]
+    pub fn ui_view(&self) -> RealtimeContinuityUiView {
+        use crate::shell::realtime_session::RealtimeSessionPhase;
+
+        let Ok(realtime) = self.state.realtime.lock() else {
+            return RealtimeContinuityUiView::default();
+        };
+        let Ok(broker) = realtime.broker.lock() else {
+            return RealtimeContinuityUiView::default();
+        };
+        let mut view = RealtimeContinuityUiView::default();
+        for (token, binding) in &realtime.sessions {
+            let Some(session) = broker.session(binding.id) else {
+                continue;
+            };
+            if !binding.imported && session.phase == RealtimeSessionPhase::SourceLive {
+                view.sources.push(RealtimeSourceUiView {
+                    session: token.clone(),
+                    room_label: session.intent.room.room_id().to_string(),
+                });
+            } else if binding.imported
+                && session.phase == RealtimeSessionPhase::AwaitingTargetAccept
+                && !realtime.consent_capabilities_issued.contains(token)
+            {
+                view.consents.push(RealtimeConsentUiView {
+                    session: token.clone(),
+                    room_label: session.intent.room.room_id().to_string(),
+                    source: session.source,
+                });
+            }
+        }
+        view.sources.sort_by(|left, right| {
+            left.room_label
+                .cmp(&right.room_label)
+                .then_with(|| left.session.cmp(&right.session))
+        });
+        view.consents.sort_by(|left, right| {
+            left.room_label
+                .cmp(&right.room_label)
+                .then_with(|| left.session.cmp(&right.session))
+        });
+        view
+    }
+
+    /// Start an exact source-to-target handoff selected in trusted shell UI.
+    ///
+    /// # Errors
+    ///
+    /// Rejects disabled continuity, stale/non-source sessions, identity
+    /// mismatches, offline targets, and invalid broker transitions.
+    pub fn propose_to(
+        &self,
+        session: &str,
+        target: &crate::shell::personal_continuity::DeviceId,
+    ) -> Result<(), String> {
+        if !crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+            .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
+        {
+            return Err("realtime session continuity is disabled".into());
+        }
+        let realtime = self
+            .state
+            .realtime
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?;
+        let binding = realtime
+            .sessions
+            .get(session)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        if binding.imported {
+            return Err("only a live source session can choose a destination".into());
+        }
+        let (id, app, source) = (binding.id, binding.app.clone(), binding.source.clone());
+        realtime
+            .broker
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?
+            .propose_target(&app, id, &source, target.clone(), std::time::Instant::now())
+            .map_err(|error| error.to_string())?;
+        if let Err(error) =
+            realtime
+                .fabric
+                .offer_to(id, target, realtime_unix_ms().saturating_add(30_000))
+        {
+            let _ = realtime.broker.lock().map(|mut broker| {
+                let _ = broker.target_failed(&app, id, &source, target, std::time::Instant::now());
+            });
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    /// Resolve one imported offer from compositor-owned consent UI. Approval
+    /// chooses one currently available local source for every requested
+    /// facet and sends only one-shot opaque capabilities to the verified app.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale offers, disabled policy, unavailable capture sources, or
+    /// any mismatch between the imported session and this local target.
+    pub fn resolve_consent(&self, session: &str, approved: bool) -> Result<(), String> {
+        self.resolve_consent_with_policy(session, approved, || {
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+                .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
+        })
+    }
+
+    fn resolve_consent_with_policy(
+        &self,
+        session: &str,
+        approved: bool,
+        policy_enabled: impl Fn() -> bool,
+    ) -> Result<(), String> {
+        if !policy_enabled() {
+            return Err("realtime session continuity is disabled".into());
+        }
+        let (id, app, source, target, peer, required, capture) = {
+            let mut realtime = self
+                .state
+                .realtime
+                .lock()
+                .map_err(|_| "realtime broker is unavailable".to_string())?;
+            let binding = realtime
+                .sessions
+                .get(session)
+                .ok_or_else(|| "unknown realtime session".to_string())?;
+            if !binding.imported {
+                return Err("only an imported offer can be authorized here".into());
+            }
+            if realtime.consent_capabilities_issued.contains(session) {
+                return Err("capture consent is already being applied".into());
+            }
+            let target = realtime
+                .broker
+                .lock()
+                .map_err(|_| "realtime broker is unavailable".to_string())?
+                .session(binding.id)
+                .and_then(|view| view.target)
+                .ok_or_else(|| "realtime target binding is unavailable".to_string())?;
+            let required = realtime
+                .required_capture_kinds(binding.id)
+                .ok_or_else(|| "unknown realtime session".to_string())?;
+            let result = (
+                binding.id,
+                binding.app.clone(),
+                binding.source.clone(),
+                target,
+                binding.owner_peer,
+                required,
+                Arc::clone(&realtime.capture),
+            );
+            if !realtime
+                .consent_capabilities_issued
+                .insert(session.to_string())
+            {
+                return Err("capture consent is already being applied".into());
+            }
+            result
+        };
+        if !approved {
+            let realtime = self
+                .state
+                .realtime
+                .lock()
+                .map_err(|_| "realtime broker is unavailable".to_string())?;
+            let declined = realtime
+                .fabric
+                .fail_imported(id.fabric_id(), &source, &target, std::time::Instant::now())
+                .map_err(|error| error.to_string());
+            drop(realtime);
+            if let Err(error) = declined {
+                if let Ok(mut realtime) = self.state.realtime.lock() {
+                    realtime.consent_capabilities_issued.remove(session);
+                }
+                return Err(error);
+            }
+            if let Ok(mut realtime) = self.state.realtime.lock() {
+                realtime.consent_capabilities_issued.remove(session);
+                let _ = realtime.notify(
+                    peer,
+                    &ui::realtime_continuity::RealtimeEvent::Ended {
+                        session: session.to_string(),
+                    },
+                );
+                realtime.sessions.remove(session);
+            }
+            return Ok(());
+        }
+        let selections = (|| {
+            let capture = capture
+                .lock()
+                .map_err(|_| "target capture broker is unavailable".to_string())?;
+            required
+                .iter()
+                .map(|kind| {
+                    capture
+                        .enumerate(*kind)
+                        .into_iter()
+                        .next()
+                        .map(|source| (*kind, source.id))
+                        .ok_or_else(|| format!("no local {kind:?} source is available"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })();
+        let selections = match selections {
+            Ok(selections) => selections,
+            Err(error) => {
+                if let Ok(mut realtime) = self.state.realtime.lock() {
+                    realtime.consent_capabilities_issued.remove(session);
+                }
+                return Err(error);
+            }
+        };
+        let authorizations = self.state.authorize_realtime_capture_batch(
+            &app,
+            session,
+            &target,
+            &selections,
+            std::time::Instant::now(),
+        );
+        let authorizations = match authorizations {
+            Ok(authorizations) => authorizations,
+            Err(error) => {
+                if let Ok(mut realtime) = self.state.realtime.lock() {
+                    realtime.consent_capabilities_issued.remove(session);
+                }
+                return Err(error);
+            }
+        };
+        #[cfg(test)]
+        pause_realtime_consent_after_mint();
+        let mut realtime = match self.state.realtime.lock() {
+            Ok(realtime) => realtime,
+            Err(_) => {
+                revoke_realtime_capture_authorizations(&capture, &authorizations);
+                return Err("realtime broker is unavailable".into());
+            }
+        };
+        let live_binding = realtime.sessions.get(session).is_some_and(|binding| {
+            binding.imported
+                && binding.id == id
+                && binding.app == app
+                && binding.source == source
+                && binding.owner_peer == peer
+        });
+        let live_session = realtime
+            .broker
+            .lock()
+            .ok()
+            .and_then(|broker| broker.session(id))
+            .is_some_and(|view| {
+                view.source == source
+                    && view.target.as_ref() == Some(&target)
+                    && view.phase
+                        == crate::shell::realtime_session::RealtimeSessionPhase::AwaitingTargetAccept
+            });
+        let current_required = realtime.required_capture_kinds(id);
+        let still_reserved = realtime.consent_capabilities_issued.contains(session);
+        let policy_enabled = policy_enabled();
+        if !live_binding
+            || !live_session
+            || current_required.as_ref() != Some(&required)
+            || !still_reserved
+            || !policy_enabled
+        {
+            realtime.consent_capabilities_issued.remove(session);
+            drop(realtime);
+            revoke_realtime_capture_authorizations(&capture, &authorizations);
+            return Err("realtime consent expired while capture was being prepared".into());
+        }
+        let delivered = realtime.notify(
+            peer,
+            &ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
+                session: session.to_string(),
+                capture_authorizations: authorizations.clone(),
+            },
+        );
+        if !delivered {
+            realtime.consent_capabilities_issued.remove(session);
+            let _ = realtime.fabric.fail_imported(
+                id.fabric_id(),
+                &source,
+                &target,
+                std::time::Instant::now(),
+            );
+            realtime.sessions.remove(session);
+            drop(realtime);
+            revoke_realtime_capture_authorizations(&capture, &authorizations);
+            return Err("realtime target application disconnected during consent".into());
+        }
+        Ok(())
+    }
+}
+
 impl CapnpBrokerState {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "offer admission, exact app routing, and lifecycle projection share one bounded broker lock so tokens cannot race subscriber delivery"
+    )]
+    fn pump_realtime_fabric_app_events(&self) {
+        let fabric = match self.realtime.lock() {
+            Ok(realtime) => Arc::clone(&realtime.fabric),
+            Err(_) => return,
+        };
+        let offers = fabric.drain_imported_offers();
+        let cutovers = fabric.drain_cutovers();
+        let lifecycle_events = fabric.drain_lifecycle_events();
+        let Ok(mut realtime) = self.realtime.lock() else {
+            return;
+        };
+        for imported in offers {
+            if realtime.pending_imported_offers.len()
+                == crate::shell::realtime_session::MAX_REALTIME_SESSIONS
+            {
+                realtime.pending_imported_offers.pop_front();
+            }
+            realtime.pending_imported_offers.push_back(imported);
+        }
+        let pending = realtime.pending_imported_offers.len();
+        for _ in 0..pending {
+            let Some(imported) = realtime.pending_imported_offers.pop_front() else {
+                break;
+            };
+            let Some(peer) = realtime
+                .subscribers
+                .iter()
+                .filter(|(_, subscriber)| {
+                    subscriber.app.app_id() == imported.offer.app_id
+                        && subscriber.app.workspace_id() == imported.offer.workspace_id
+                })
+                .map(|(peer, _)| *peer)
+                .min()
+            else {
+                realtime.pending_imported_offers.push_back(imported);
+                continue;
+            };
+            let id = imported.offer.session_id.into_broker_id();
+            let live = realtime
+                .broker
+                .lock()
+                .ok()
+                .and_then(|broker| broker.session(id))
+                .is_some_and(|view| {
+                    view.app_id == imported.offer.app_id
+                        && view.workspace_id == imported.offer.workspace_id
+                        && view.source == imported.source
+                        && view.target.as_ref() == Some(&imported.target)
+                });
+            if !live {
+                continue;
+            }
+            let Ok(app) = crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+                imported.offer.app_id.clone(),
+                imported.offer.workspace_id.clone(),
+            ) else {
+                continue;
+            };
+            let Ok(intent) = imported.offer.intent() else {
+                continue;
+            };
+            let token = realtime.new_token();
+            realtime.sessions.insert(
+                token.clone(),
+                RealtimeBinding {
+                    id,
+                    app,
+                    source: imported.source,
+                    owner_peer: peer,
+                    authorization: None,
+                    target_peer: None,
+                    capture_leases: Vec::new(),
+                    imported: true,
+                },
+            );
+            let event = ui::realtime_continuity::RealtimeEvent::Offer {
+                session: token,
+                intent: ui::realtime_continuity::RealtimeResumeIntent {
+                    provider: intent.room.provider().to_string(),
+                    room_id: intent.room.room_id().to_string(),
+                    semantic_position: intent.semantic_position,
+                    media: ui::realtime_continuity::RealtimeMediaFacets {
+                        microphone: intent.media.microphone(),
+                        camera: intent.media.camera(),
+                        screen_share: intent.media.screen_share(),
+                        share_audio: intent.media.share_audio(),
+                    },
+                    controls: app_realtime_controls(intent.controls),
+                },
+            };
+            realtime.notify(peer, &event);
+        }
+        for directive in cutovers {
+            if let Some((token, peer)) = realtime.sessions.iter().find_map(|(token, binding)| {
+                (!binding.imported && binding.id == directive.session_id)
+                    .then_some((token.clone(), binding.owner_peer))
+            }) {
+                realtime.notify(
+                    peer,
+                    &ui::realtime_continuity::RealtimeEvent::StopSource { session: token },
+                );
+            }
+        }
+        for event in lifecycle_events {
+            let bindings = realtime
+                .sessions
+                .iter()
+                .filter_map(|(token, binding)| {
+                    (binding.id == event.session_id).then_some((
+                        token.clone(),
+                        binding.owner_peer,
+                        binding.capture_leases.clone(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            for (token, peer, leases) in bindings {
+                let terminal = !matches!(
+                    &event.kind,
+                    crate::shell::realtime_session::BrokerEventKind::RolledBackToSource { .. }
+                );
+                let app_event = if terminal {
+                    ui::realtime_continuity::RealtimeEvent::Ended {
+                        session: token.clone(),
+                    }
+                } else {
+                    ui::realtime_continuity::RealtimeEvent::RolledBack {
+                        session: token.clone(),
+                    }
+                };
+                realtime.notify(peer, &app_event);
+                release_realtime_capture_leases(&realtime.capture, &leases);
+                if terminal {
+                    realtime.sessions.remove(&token);
+                    realtime.consent_capabilities_issued.remove(&token);
+                } else if let Some(binding) = realtime.sessions.get_mut(&token) {
+                    binding.authorization = None;
+                    binding.target_peer = None;
+                    binding.capture_leases.clear();
+                }
+            }
+        }
+    }
+
     /// Direct a late-join snapshot request to one established subscriber on
     /// the exact route. Lowest broker peer id makes selection deterministic;
     /// the requester is excluded so it never snapshots its own empty state.
@@ -1175,11 +2171,12 @@ impl CapnpBrokerState {
         else {
             return false;
         };
-        if channel.context[index]
-            .tx
-            .send(ContextEnvelope::SnapshotRequested)
-            .is_ok()
-        {
+        if channel.context.get(index).is_some_and(|subscriber| {
+            subscriber
+                .tx
+                .send(ContextEnvelope::SnapshotRequested)
+                .is_ok()
+        }) {
             true
         } else {
             channel.context.remove(index);
@@ -1326,6 +2323,127 @@ impl CapnpBrokerState {
         Arc::clone(&self.broker_channels)
     }
 
+    /// Shared target-local capture broker used by the portal consent path and
+    /// realtime IPC. Local handles and lease IDs never leave the shell.
+    #[allow(
+        dead_code,
+        reason = "the portal host consumes this narrow handle when presenting target-local capture consent"
+    )]
+    pub(crate) fn realtime_capture_broker(
+        &self,
+    ) -> Option<Arc<Mutex<crate::portal::CaptureBroker>>> {
+        self.realtime
+            .lock()
+            .ok()
+            .map(|realtime| Arc::clone(&realtime.capture))
+    }
+
+    /// Mint one target-local consent capability after trusted shell UI has
+    /// selected a concrete local source. The session/app/workspace/target and
+    /// requested kind are all re-derived from broker state before minting.
+    #[allow(
+        dead_code,
+        reason = "called by the target capture-consent host once that host is attached to the collaboration service lifecycle"
+    )]
+    pub(crate) fn authorize_realtime_capture(
+        &self,
+        app: &crate::shell::realtime_session::VerifiedAppRegistration,
+        session: &str,
+        target: &crate::shell::personal_continuity::DeviceId,
+        source_id: &str,
+        kind: crate::portal::CaptureKind,
+        now: std::time::Instant,
+    ) -> Result<String, String> {
+        let realtime = self
+            .realtime
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?;
+        let binding = realtime
+            .sessions
+            .get(session)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        let view = realtime
+            .broker
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?
+            .session(binding.id)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        if &binding.app != app || view.target.as_ref() != Some(target) {
+            return Err("realtime capture binding mismatch".into());
+        }
+        let required = realtime
+            .required_capture_kinds(binding.id)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        if !required.contains(&kind) {
+            return Err("capture kind is not active for this realtime session".into());
+        }
+        let capture_binding =
+            crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
+                .map_err(|error| error.to_string())?;
+        let capture = Arc::clone(&realtime.capture);
+        drop(realtime);
+        capture
+            .lock()
+            .map_err(|_| "target capture broker is unavailable".to_string())?
+            .authorize(&capture_binding, source_id, kind, now)
+            .map(crate::portal::CaptureAuthorizationId::to_opaque)
+            .map_err(|error| error.to_string())
+    }
+
+    fn authorize_realtime_capture_batch(
+        &self,
+        app: &crate::shell::realtime_session::VerifiedAppRegistration,
+        session: &str,
+        target: &crate::shell::personal_continuity::DeviceId,
+        selections: &[(crate::portal::CaptureKind, String)],
+        now: std::time::Instant,
+    ) -> Result<Vec<String>, String> {
+        let realtime = self
+            .realtime
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?;
+        let binding = realtime
+            .sessions
+            .get(session)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        let view = realtime
+            .broker
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?
+            .session(binding.id)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        let required = realtime
+            .required_capture_kinds(binding.id)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        let selected_kinds = selections.iter().map(|(kind, _)| *kind).collect::<Vec<_>>();
+        if &binding.app != app
+            || view.target.as_ref() != Some(target)
+            || selected_kinds.len() != required.len()
+            || required.iter().any(|kind| !selected_kinds.contains(kind))
+        {
+            return Err("realtime capture binding mismatch".into());
+        }
+        let capture_binding =
+            crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
+                .map_err(|error| error.to_string())?;
+        let capture = Arc::clone(&realtime.capture);
+        drop(realtime);
+        let selections = selections
+            .iter()
+            .map(|(kind, source)| (source.clone(), *kind))
+            .collect::<Vec<_>>();
+        capture
+            .lock()
+            .map_err(|_| "target capture broker is unavailable".to_string())?
+            .authorize_batch(&capture_binding, &selections, now)
+            .map(|ids| {
+                ids.into_iter()
+                    .map(crate::portal::CaptureAuthorizationId::to_opaque)
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
+    }
+
     fn new(
         fanout: &Arc<FanoutState>,
         broker_channels: Arc<Mutex<BrokerChannels>>,
@@ -1363,6 +2481,9 @@ impl CapnpBrokerState {
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(1),
                 realtime: Mutex::new(RealtimeBridge::default()),
+                nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
+                nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
+                nearby_destinations: Mutex::new(NearbyDestinationRegistry::default()),
                 workspace_control_network: Mutex::new(None),
             }),
             bridge_rx,
@@ -3114,6 +4235,10 @@ impl CapnpBrokerState {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "connection teardown intentionally keeps every peer-owned resource in one auditable path"
+    )]
     fn remove_connection(&self, peer_id: u64) {
         if let Ok(mut surfaces) = self.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
@@ -3133,8 +4258,99 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.task_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
+        if let Ok(mut targets) = self.nearby_targets.lock() {
+            targets.remove_peer(peer_id);
+        }
+        if let Ok(mut transfers) = self.nearby_transfers.lock() {
+            transfers.remove_peer(peer_id);
+        }
+        if let Ok(mut destinations) = self.nearby_destinations.lock() {
+            destinations.remove_peer(peer_id);
+        }
         if let Ok(mut realtime) = self.realtime.lock() {
             realtime.subscribers.remove(&peer_id);
+            let target_sessions = realtime
+                .sessions
+                .iter()
+                .filter_map(|(token, binding)| {
+                    (binding.target_peer == Some(peer_id)).then(|| {
+                        realtime
+                            .broker
+                            .lock()
+                            .ok()?
+                            .session(binding.id)
+                            .and_then(|view| {
+                                view.target.map(|target| {
+                                    (
+                                        token.clone(),
+                                        binding.id,
+                                        binding.app.clone(),
+                                        binding.source.clone(),
+                                        binding.owner_peer,
+                                        target,
+                                        view.source_live,
+                                        binding.imported,
+                                    )
+                                })
+                            })
+                    })?
+                })
+                .collect::<Vec<_>>();
+            for (token, id, app, source, owner_peer, target, source_live, imported) in
+                target_sessions
+            {
+                release_realtime_capture_session(&realtime.capture, &app, &token, &target);
+                if source_live {
+                    let failed = if imported {
+                        realtime.fabric.fail_imported(
+                            id.fabric_id(),
+                            &source,
+                            &target,
+                            std::time::Instant::now(),
+                        )
+                    } else {
+                        realtime
+                            .broker
+                            .lock()
+                            .map_err(|_| crate::shell::realtime_session::RealtimeSessionError::InvalidTransition)
+                            .and_then(|mut broker| {
+                                broker
+                                    .target_failed(&app, id, &source, &target, std::time::Instant::now())
+                                    .map(|_| ())
+                            })
+                    };
+                    if failed.is_ok() {
+                        realtime.notify(
+                            owner_peer,
+                            &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                                session: token.clone(),
+                            },
+                        );
+                    }
+                    if let Some(binding) = realtime.sessions.get_mut(&token) {
+                        binding.authorization = None;
+                        binding.target_peer = None;
+                        binding.capture_leases.clear();
+                    }
+                } else {
+                    if let Ok(mut broker) = realtime.broker.lock() {
+                        let _ = broker.apply_media_action(
+                            &app,
+                            id,
+                            &target,
+                            crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                            std::time::Instant::now(),
+                        );
+                    }
+                    realtime.notify(
+                        owner_peer,
+                        &ui::realtime_continuity::RealtimeEvent::Ended {
+                            session: token.clone(),
+                        },
+                    );
+                    realtime.sessions.remove(&token);
+                }
+            }
             let owned = realtime
                 .sessions
                 .iter()
@@ -3144,17 +4360,38 @@ impl CapnpBrokerState {
                         binding.id,
                         binding.app.clone(),
                         binding.source.clone(),
+                        binding.imported,
                     ))
                 })
                 .collect::<Vec<_>>();
-            for (token, id, app, source) in owned {
-                let _ = realtime.broker.apply_media_action(
-                    &app,
-                    id,
-                    &source,
-                    crate::shell::realtime_session::RealtimeMediaAction::Leave,
-                    std::time::Instant::now(),
-                );
+            for (token, id, app, source, imported) in owned {
+                let target = realtime
+                    .broker
+                    .lock()
+                    .ok()
+                    .and_then(|broker| broker.session(id))
+                    .and_then(|view| view.target);
+                if let Some(target) = target.as_ref() {
+                    release_realtime_capture_session(&realtime.capture, &app, &token, target);
+                }
+                if imported {
+                    if let Some(target) = target.as_ref() {
+                        let _ = realtime.fabric.fail_imported(
+                            id.fabric_id(),
+                            &source,
+                            target,
+                            std::time::Instant::now(),
+                        );
+                    }
+                } else if let Ok(mut broker) = realtime.broker.lock() {
+                    let _ = broker.apply_media_action(
+                        &app,
+                        id,
+                        &source,
+                        crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                        std::time::Instant::now(),
+                    );
+                }
                 realtime.sessions.remove(&token);
             }
         }
@@ -3385,6 +4622,7 @@ impl CapnpBrokerState {
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::Realtime(_) => {
                 // Invocation delivery and cooperative cancellation are
@@ -3759,6 +4997,68 @@ impl CapnpChannelHandle {
             })?;
         Ok((app, local))
     }
+
+    fn nearby_registration(
+        &self,
+    ) -> Result<
+        (
+            CrdtRoute,
+            Arc<crate::shell::network::ShellNetwork>,
+            Vec<Capability>,
+        ),
+        capnp::Error,
+    > {
+        let route = self.route();
+        self.state
+            .revalidate_admission(&route, &self.verified_identity)?;
+        if route.app_id != FILES_APP_ID || route.cluster_id.is_empty() {
+            return Err(capnp::Error::failed(
+                "Nearby Send requires the certified Files application route".into(),
+            ));
+        }
+        if !nearby_policy_enabled(crate::shell::continuity_policy::ContinuityPolicySnapshot::load())
+        {
+            return Err(capnp::Error::failed(
+                "Nearby Send is disabled by continuity privacy settings".into(),
+            ));
+        }
+        let network = self.state.workspace_control_network().ok_or_else(|| {
+            capnp::Error::failed("Nearby Send requires the certified device fabric".into())
+        })?;
+        let membership = self.state.membership.as_ref().ok_or_else(|| {
+            capnp::Error::failed("Nearby Send lost its workspace grant authority".into())
+        })?;
+        let grants = membership
+            .read()
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == route.cluster_id)
+            .and_then(|workspace| workspace.app_grants_snapshot().remove(FILES_APP_ID))
+            .unwrap_or_default();
+        Ok((route, network, grants))
+    }
+}
+
+fn nearby_transfer_reply(
+    results: &mut channel_handle::NearbyTransferCommandResults,
+    reply: runtime_collab::NearbyTransferReply,
+) -> Promise<(), capnp::Error> {
+    if !reply.valid() {
+        return Promise::err(capnp::Error::failed(
+            "Nearby Send produced an invalid bounded reply".into(),
+        ));
+    }
+    let bytes = match serde_json::to_vec(&reply) {
+        Ok(bytes) if bytes.len() <= runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES => bytes,
+        Ok(_) => {
+            return Promise::err(capnp::Error::failed(
+                "Nearby Send reply exceeds the local protocol bound".into(),
+            ));
+        }
+        Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+    };
+    results.get().set_reply_json(&bytes);
+    Promise::ok(())
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
@@ -3777,6 +5077,364 @@ impl channel_handle::Server for CapnpChannelHandle {
             .state
             .request_document_snapshot(&self.channel_id, self.peer_id);
         Promise::ok(())
+    }
+
+    fn nearby_transfer_command(
+        self: Rc<Self>,
+        params: channel_handle::NearbyTransferCommandParams,
+        mut results: channel_handle::NearbyTransferCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, network, grants) = match self.nearby_registration() {
+            Ok(binding) => binding,
+            Err(error) => return Promise::err(error),
+        };
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let claimed_app = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        if claimed_app != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "Nearby Send app id must match the certified connection route".into(),
+            ));
+        }
+        let command_bytes = match request.get_command_json() {
+            Ok(bytes) if bytes.len() <= runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES => bytes,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "Nearby Send command exceeds the local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(error),
+        };
+        let command: runtime_collab::NearbyTransferCommand =
+            match serde_json::from_slice(command_bytes) {
+                Ok(command) => command,
+                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+            };
+        if !command.valid() {
+            return Promise::err(capnp::Error::failed(
+                "Nearby Send command is structurally invalid".into(),
+            ));
+        }
+        let reply = match command {
+            runtime_collab::NearbyTransferCommand::Snapshot => {
+                let local = network
+                    .local_device_fabric_identity()
+                    .map(|(device, _)| device);
+                let targets = network
+                    .device_fabric()
+                    .snapshots()
+                    .values()
+                    .filter(|snapshot| {
+                        snapshot.presence.online && local.as_ref() != Some(&snapshot.owner)
+                    })
+                    .take(runtime_collab::MAX_NEARBY_TRANSFER_TARGETS)
+                    .map(|snapshot| (snapshot.owner.clone(), snapshot.presence.label.clone()))
+                    .collect::<Vec<_>>();
+                let Ok(mut registry) = self.state.nearby_targets.lock() else {
+                    return Promise::err(capnp::Error::failed(
+                        "Nearby Send target authority is unavailable".into(),
+                    ));
+                };
+                let now = Instant::now();
+                let device_ids = targets
+                    .iter()
+                    .map(|(device, _)| device.clone())
+                    .collect::<Vec<_>>();
+                registry.begin_snapshot(self.peer_id, &route, &device_ids, now);
+                let raw_transfers =
+                    crate::shell::device_fabric_runtime::nearby_transfer_statuses(&network);
+                let Ok(mut transfer_registry) = self.state.nearby_transfers.lock() else {
+                    return Promise::err(capnp::Error::failed(
+                        "Nearby Send transfer authority is unavailable".into(),
+                    ));
+                };
+                let visible_ids = raw_transfers
+                    .iter()
+                    .map(|status| status.transfer_id)
+                    .collect::<Vec<_>>();
+                transfer_registry.begin_snapshot(self.peer_id, &route, &visible_ids, now);
+                let transfers = raw_transfers
+                    .into_iter()
+                    .filter_map(|status| {
+                        let handle = transfer_registry.issue(
+                            self.peer_id,
+                            &route,
+                            status.transfer_id,
+                            status.direction,
+                            true,
+                            now,
+                        )?;
+                        Some(runtime_collab::NearbyTransferStatus {
+                            handle,
+                            name: status.name,
+                            device_label: status.device_label,
+                            direction: status.direction,
+                            phase: status.phase,
+                            transferred_bytes: status.transferred_bytes,
+                            total_bytes: status.total_bytes,
+                        })
+                    })
+                    .collect();
+                let destinations = {
+                    let Ok(mut destinations) = self.state.nearby_destinations.lock() else {
+                        return Promise::err(capnp::Error::failed(
+                            "Nearby Send destination authority is unavailable".into(),
+                        ));
+                    };
+                    grants
+                        .iter()
+                        .filter_map(|grant| {
+                            let Capability::Filesystem {
+                                path,
+                                mode: FsMode::ReadWrite,
+                                ..
+                            } = grant
+                            else {
+                                return None;
+                            };
+                            let grant = std::fs::canonicalize(path).ok()?;
+                            if !std::fs::metadata(&grant).ok()?.is_dir() {
+                                return None;
+                            }
+                            let label = grant
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .filter(|name| !name.is_empty())
+                                .unwrap_or("Workspace files")
+                                .chars()
+                                .take(runtime_collab::MAX_NEARBY_TRANSFER_LABEL_BYTES)
+                                .collect::<String>();
+                            Some(destinations.issue(self.peer_id, &route, grant, label, now))
+                        })
+                        .take(runtime_collab::MAX_NEARBY_TRANSFER_DESTINATIONS)
+                        .collect::<Vec<_>>()
+                };
+                runtime_collab::NearbyTransferReply::Snapshot {
+                    snapshot: runtime_collab::NearbyTransferSnapshot {
+                        targets: targets
+                            .into_iter()
+                            .map(|(device, label)| runtime_collab::NearbyTransferTarget {
+                                handle: registry.issue(self.peer_id, &route, device, now),
+                                label,
+                                online: true,
+                            })
+                            .collect(),
+                        destinations,
+                        transfers,
+                    },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::Send {
+                target,
+                source_path,
+            } => {
+                let source = match nearby_source_from_grants(&source_path, &grants) {
+                    Ok(source) => source,
+                    Err(reason) => {
+                        return nearby_transfer_reply(
+                            &mut results,
+                            runtime_collab::NearbyTransferReply::Rejected { reason },
+                        );
+                    }
+                };
+                let target = self
+                    .state
+                    .nearby_targets
+                    .lock()
+                    .ok()
+                    .and_then(|mut registry| {
+                        registry.consume(target, self.peer_id, &route, Instant::now())
+                    });
+                let Some(target) = target else {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason: "Nearby Send target expired; reopen the device picker".into(),
+                        },
+                    );
+                };
+                let staging_owner = format!("{}:{}", self.peer_id, route.channel_key());
+                match crate::shell::device_fabric_runtime::request_nearby_drop_secure(
+                    &network,
+                    &target,
+                    source,
+                    &staging_owner,
+                ) {
+                    Ok(transfer_id) => {
+                        let handle =
+                            self.state
+                                .nearby_transfers
+                                .lock()
+                                .ok()
+                                .and_then(|mut registry| {
+                                    registry.issue(
+                                        self.peer_id,
+                                        &route,
+                                        transfer_id,
+                                        runtime_collab::NearbyTransferDirection::Sending,
+                                        true,
+                                        Instant::now(),
+                                    )
+                                });
+                        match handle {
+                            Some(handle) => runtime_collab::NearbyTransferReply::Queued { handle },
+                            None => {
+                                let _ = crate::shell::device_fabric_runtime::cancel_nearby_transfer(
+                                    &network,
+                                    transfer_id,
+                                );
+                                runtime_collab::NearbyTransferReply::Rejected {
+                                    reason: "Nearby Send transfer authority is full".into(),
+                                }
+                            }
+                        }
+                    }
+                    Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::Cancel { handle } => {
+                let transfer_id =
+                    self.state
+                        .nearby_transfers
+                        .lock()
+                        .ok()
+                        .and_then(|mut registry| {
+                            registry.resolve(
+                                handle,
+                                self.peer_id,
+                                &route,
+                                runtime_collab::NearbyTransferDirection::Sending,
+                                Instant::now(),
+                            )
+                        });
+                let Some(transfer_id) = transfer_id else {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason:
+                                "Nearby Send transfer expired or belongs to another Files workspace"
+                                    .into(),
+                        },
+                    );
+                };
+                match crate::shell::device_fabric_runtime::cancel_nearby_transfer(
+                    &network,
+                    transfer_id,
+                ) {
+                    Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
+                    Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::Decide {
+                handle,
+                accept,
+                destination,
+                remember_for_session,
+            } => {
+                let transfer_id =
+                    self.state
+                        .nearby_transfers
+                        .lock()
+                        .ok()
+                        .and_then(|mut registry| {
+                            registry.resolve(
+                                handle,
+                                self.peer_id,
+                                &route,
+                                runtime_collab::NearbyTransferDirection::Receiving,
+                                Instant::now(),
+                            )
+                        });
+                let Some(transfer_id) = transfer_id else {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason:
+                                "Nearby Send transfer expired or belongs to another Files workspace"
+                                    .into(),
+                        },
+                    );
+                };
+                let destination =
+                    if accept {
+                        destination.and_then(|destination| {
+                            self.state.nearby_destinations.lock().ok().and_then(
+                                |mut destinations| {
+                                    destinations.resolve(
+                                        destination,
+                                        self.peer_id,
+                                        &route,
+                                        remember_for_session,
+                                        Instant::now(),
+                                    )
+                                },
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                if accept && destination.is_none() {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason: "Nearby Send destination expired; choose it again".into(),
+                        },
+                    );
+                }
+                match crate::shell::device_fabric_runtime::decide_nearby_transfer_at(
+                    &network,
+                    transfer_id,
+                    accept,
+                    destination,
+                ) {
+                    Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
+                    Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::Retry { handle } => {
+                let transfer_id =
+                    self.state
+                        .nearby_transfers
+                        .lock()
+                        .ok()
+                        .and_then(|mut registry| {
+                            registry.resolve(
+                                handle,
+                                self.peer_id,
+                                &route,
+                                runtime_collab::NearbyTransferDirection::Sending,
+                                Instant::now(),
+                            )
+                        });
+                let Some(transfer_id) = transfer_id else {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason:
+                                "Nearby Send transfer expired or belongs to another Files workspace"
+                                    .into(),
+                        },
+                    );
+                };
+                match crate::shell::device_fabric_runtime::retry_nearby_transfer(
+                    &network,
+                    transfer_id,
+                ) {
+                    Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
+                    Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+                }
+            }
+        };
+        nearby_transfer_reply(&mut results, reply)
     }
 
     #[allow(
@@ -3862,8 +5520,16 @@ impl channel_handle::Server for CapnpChannelHandle {
                         Ok(media) => media,
                         Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
                     },
+                    controls: broker_realtime_controls(intent.controls),
                 };
-                let id = match bridge.broker.register(&app, local.clone(), registered, now) {
+                let id = match bridge
+                    .broker
+                    .lock()
+                    .map_err(|_| {
+                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                    })
+                    .and_then(|mut broker| broker.register(&app, local.clone(), registered, now))
+                {
                     Ok(id) => id,
                     Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
                 };
@@ -3876,33 +5542,17 @@ impl channel_handle::Server for CapnpChannelHandle {
                         source: local,
                         owner_peer: self.peer_id,
                         authorization: None,
+                        target_peer: None,
+                        capture_leases: Vec::new(),
+                        imported: false,
                     },
                 );
                 ui::realtime_continuity::RealtimeReply::Registered { session: token }
             }
-            ui::realtime_continuity::RealtimeCommand::Propose { session, target } => {
-                let target = match crate::shell::personal_continuity::DeviceId::new(target) {
-                    Ok(target) => target,
-                    Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-                };
-                let Some(binding) = bridge.sessions.get(&session) else {
-                    return Promise::err(capnp::Error::failed("unknown realtime session".into()));
-                };
-                if binding.owner_peer != self.peer_id
-                    || binding.app != app
-                    || binding.source != local
-                {
-                    return Promise::err(capnp::Error::failed(
-                        "realtime session binding mismatch".into(),
-                    ));
-                }
-                let (id, source) = (binding.id, binding.source.clone());
-                if let Err(error) = bridge.broker.propose_target(&app, id, &source, target, now) {
-                    return Promise::err(capnp::Error::failed(error.to_string()));
-                }
-                ui::realtime_continuity::RealtimeReply::Proposed
-            }
-            ui::realtime_continuity::RealtimeCommand::Accept { session } => {
+            ui::realtime_continuity::RealtimeCommand::Accept {
+                session,
+                capture_authorizations,
+            } => {
                 let Some(binding) = bridge.sessions.get(&session) else {
                     return Promise::err(capnp::Error::failed("unknown realtime session".into()));
                 };
@@ -3911,24 +5561,66 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "realtime session binding mismatch".into(),
                     ));
                 }
-                let (id, source) = (binding.id, binding.source.clone());
-                let authorization = match bridge
-                    .broker
-                    .authorize_target_capture(&app, id, &source, &local, now)
-                {
-                    Ok(authorization) => authorization,
+                if binding.authorization.is_some() || binding.target_peer.is_some() {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime target already accepted".into(),
+                    ));
+                }
+                let (id, source, imported) = (binding.id, binding.source.clone(), binding.imported);
+                let Some(required) = bridge.required_capture_kinds(id) else {
+                    return Promise::err(capnp::Error::failed("unknown realtime session".into()));
+                };
+                let leases = match acquire_realtime_capture_leases(
+                    &bridge.capture,
+                    &app,
+                    &session,
+                    &local,
+                    &capture_authorizations,
+                    &required,
+                    now,
+                ) {
+                    Ok(leases) => leases,
                     Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
                 };
-                if let Err(error) =
-                    bridge
-                        .broker
-                        .accept_target(&app, id, &source, &local, authorization, now)
-                {
-                    return Promise::err(capnp::Error::failed(error.to_string()));
-                }
+                let authorization =
+                    if imported {
+                        if let Err(error) =
+                            bridge
+                                .fabric
+                                .accept_imported(id.fabric_id(), &source, &local, now)
+                        {
+                            release_realtime_capture_leases(&bridge.capture, &leases);
+                            return Promise::err(capnp::Error::failed(error.to_string()));
+                        }
+                        None
+                    } else {
+                        let authorization = match bridge.broker.lock().map_err(|_| {
+                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                    }).and_then(|mut broker| {
+                        broker.authorize_target_capture(&app, id, &source, &local, now)
+                    }) {
+                        Ok(authorization) => authorization,
+                        Err(error) => {
+                            release_realtime_capture_leases(&bridge.capture, &leases);
+                            return Promise::err(capnp::Error::failed(error.to_string()));
+                        }
+                    };
+                        if let Err(error) = bridge.broker.lock().map_err(|_| {
+                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                    }).and_then(|mut broker| {
+                        broker.accept_target(&app, id, &source, &local, authorization, now)
+                    }) {
+                        release_realtime_capture_leases(&bridge.capture, &leases);
+                        return Promise::err(capnp::Error::failed(error.to_string()));
+                    }
+                        Some(authorization)
+                    };
                 if let Some(binding) = bridge.sessions.get_mut(&session) {
-                    binding.authorization = Some(authorization);
+                    binding.authorization = authorization;
+                    binding.target_peer = Some(self.peer_id);
+                    binding.capture_leases = leases;
                 }
+                bridge.consent_capabilities_issued.remove(&session);
                 ui::realtime_continuity::RealtimeReply::Accepted
             }
             ui::realtime_continuity::RealtimeCommand::MediaReady { session } => {
@@ -3940,22 +5632,103 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "realtime session binding mismatch".into(),
                     ));
                 }
-                let Some(authorization) = binding.authorization else {
+                if !binding.imported && binding.authorization.is_none() {
                     return Promise::err(capnp::Error::failed(
                         "fresh target capture authorization is required".into(),
                     ));
-                };
-                let (id, owner_peer, source) =
-                    (binding.id, binding.owner_peer, binding.source.clone());
-                let directive =
-                    match bridge
-                        .broker
-                        .media_ready(&app, id, &source, &local, authorization, now)
-                    {
-                        Ok(directive) => directive,
-                        Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                }
+                if binding.target_peer != Some(self.peer_id) {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime target binding mismatch".into(),
+                    ));
+                }
+                let (id, owner_peer, source, leases, imported, authorization) = (
+                    binding.id,
+                    binding.owner_peer,
+                    binding.source.clone(),
+                    binding.capture_leases.clone(),
+                    binding.imported,
+                    binding.authorization,
+                );
+                if let Err(error) = realtime_capture_leases_ready(
+                    &bridge.capture,
+                    &app,
+                    &session,
+                    &local,
+                    &leases,
+                    now,
+                ) {
+                    if imported {
+                        let _ = bridge
+                            .fabric
+                            .fail_imported(id.fabric_id(), &source, &local, now);
+                    } else if let Ok(mut broker) = bridge.broker.lock() {
+                        let _ = broker.target_failed(&app, id, &source, &local, now);
+                    }
+                    if let Some(binding) = bridge.sessions.get_mut(&session) {
+                        binding.authorization = None;
+                        binding.target_peer = None;
+                        binding.capture_leases.clear();
+                    }
+                    release_realtime_capture_session(&bridge.capture, &app, &session, &local);
+                    bridge.notify(
+                        owner_peer,
+                        &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                            session: session.clone(),
+                        },
+                    );
+                    return Promise::err(capnp::Error::failed(error.to_string()));
+                }
+                let directive = if imported {
+                    bridge
+                        .fabric
+                        .imported_media_ready(id.fabric_id(), &source, &local, now)
+                        .map(|()| None)
+                } else {
+                    let Some(authorization) = authorization else {
+                        return Promise::err(capnp::Error::failed(
+                            "fresh target capture authorization is required".into(),
+                        ));
                     };
-                if directive.stop_source {
+                    bridge
+                        .broker
+                        .lock()
+                        .map_err(|_| {
+                            crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                        })
+                        .and_then(|mut broker| {
+                            broker
+                                .media_ready(&app, id, &source, &local, authorization, now)
+                                .map(Some)
+                        })
+                };
+                let directive = match directive {
+                    Ok(directive) => directive,
+                    Err(error) => {
+                        if imported {
+                            let _ =
+                                bridge
+                                    .fabric
+                                    .fail_imported(id.fabric_id(), &source, &local, now);
+                        } else if let Ok(mut broker) = bridge.broker.lock() {
+                            let _ = broker.target_failed(&app, id, &source, &local, now);
+                        }
+                        if let Some(binding) = bridge.sessions.get_mut(&session) {
+                            binding.authorization = None;
+                            binding.target_peer = None;
+                            binding.capture_leases.clear();
+                        }
+                        release_realtime_capture_session(&bridge.capture, &app, &session, &local);
+                        bridge.notify(
+                            owner_peer,
+                            &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                                session: session.clone(),
+                            },
+                        );
+                        return Promise::err(capnp::Error::failed(error.to_string()));
+                    }
+                };
+                if directive.is_some_and(|directive| directive.stop_source) {
                     bridge.notify(
                         owner_peer,
                         &ui::realtime_continuity::RealtimeEvent::StopSource {
@@ -3974,14 +5747,39 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "realtime session binding mismatch".into(),
                     ));
                 }
+                if binding.target_peer != Some(self.peer_id) {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime target binding mismatch".into(),
+                    ));
+                }
                 let (id, owner_peer, source) =
                     (binding.id, binding.owner_peer, binding.source.clone());
-                if let Err(error) = bridge.broker.target_failed(&app, id, &source, &local, now) {
+                let failed = if binding.imported {
+                    bridge
+                        .fabric
+                        .fail_imported(id.fabric_id(), &source, &local, now)
+                } else {
+                    bridge
+                        .broker
+                        .lock()
+                        .map_err(|_| {
+                            crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                        })
+                        .and_then(|mut broker| {
+                            broker
+                                .target_failed(&app, id, &source, &local, now)
+                                .map(|_| ())
+                        })
+                };
+                if let Err(error) = failed {
                     return Promise::err(capnp::Error::failed(error.to_string()));
                 }
                 if let Some(binding) = bridge.sessions.get_mut(&session) {
                     binding.authorization = None;
+                    binding.target_peer = None;
+                    binding.capture_leases.clear();
                 }
+                release_realtime_capture_session(&bridge.capture, &app, &session, &local);
                 bridge.notify(
                     owner_peer,
                     &ui::realtime_continuity::RealtimeEvent::RolledBack {
@@ -4005,18 +5803,19 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeRealtimeParams,
         mut results: channel_handle::SubscribeRealtimeResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
+        let (app, _) = match self.realtime_registration() {
+            Ok(binding) => binding,
+            Err(error) => return Promise::err(error),
+        };
         let (tx, rx) = mpsc::unbounded_channel();
         let Ok(mut bridge) = self.state.realtime.lock() else {
             return Promise::err(capnp::Error::failed("realtime broker unavailable".into()));
         };
-        bridge.subscribers.insert(self.peer_id, tx);
+        bridge
+            .subscribers
+            .insert(self.peer_id, RealtimeSubscriber { app, tx });
         drop(bridge);
+        self.state.pump_realtime_fabric_app_events();
         let client: realtime_stream::Client = capnp_rpc::new_client(RealtimeStreamServer {
             rx: Rc::new(AsyncMutex::new(rx)),
         });
@@ -7506,6 +9305,192 @@ mod tests {
     use ed25519_dalek::Signer as _;
     use ed25519_dalek::SigningKey;
 
+    fn capture_test_app(
+        workspace: &str,
+    ) -> crate::shell::realtime_session::VerifiedAppRegistration {
+        crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+            "dev.qos.chat",
+            workspace,
+        )
+        .expect("verified test app")
+    }
+
+    fn capture_test_broker() -> Arc<Mutex<crate::portal::CaptureBroker>> {
+        let mut capture = crate::portal::CaptureBroker::new();
+        capture
+            .register_source(
+                "mic",
+                "Microphone",
+                crate::portal::CaptureKind::Microphone,
+                crate::portal::LocalCaptureHandle::PipeWireNode(7),
+            )
+            .expect("register mic");
+        capture
+            .register_source(
+                "camera",
+                "Camera",
+                crate::portal::CaptureKind::Camera,
+                crate::portal::LocalCaptureHandle::PipeWireNode(8),
+            )
+            .expect("register camera");
+        Arc::new(Mutex::new(capture))
+    }
+
+    #[test]
+    fn realtime_capture_ipc_requires_exact_complete_one_shot_authorizations() {
+        let now = std::time::Instant::now();
+        let app = capture_test_app("work");
+        let wrong_app = capture_test_app("personal");
+        let session = "0123456789abcdef0123456789abcdef";
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("target-local").expect("target");
+        let wrong_target =
+            crate::shell::personal_continuity::DeviceId::new("target-other").expect("wrong target");
+        let capture = capture_test_broker();
+        let binding =
+            crate::portal::CaptureSessionBinding::from_verified(&app, session, target.as_str())
+                .expect("capture binding");
+        let wrong_binding = crate::portal::CaptureSessionBinding::from_verified(
+            &wrong_app,
+            session,
+            target.as_str(),
+        )
+        .expect("wrong binding");
+        let (microphone, camera) = {
+            let mut broker = capture.lock().expect("capture broker");
+            (
+                broker
+                    .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+                    .expect("microphone authorization")
+                    .to_opaque(),
+                broker
+                    .authorize(&binding, "camera", crate::portal::CaptureKind::Camera, now)
+                    .expect("camera authorization")
+                    .to_opaque(),
+            )
+        };
+        let required = [
+            crate::portal::CaptureKind::Microphone,
+            crate::portal::CaptureKind::Camera,
+        ];
+
+        assert!(
+            acquire_realtime_capture_leases(
+                &capture,
+                &wrong_app,
+                session,
+                &target,
+                &[microphone.clone(), camera.clone()],
+                &required,
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            capture
+                .lock()
+                .expect("capture broker")
+                .take_privacy_events()
+                .is_empty()
+        );
+        assert_eq!(wrong_binding.workspace_id(), "personal");
+        assert!(
+            acquire_realtime_capture_leases(
+                &capture,
+                &app,
+                session,
+                &wrong_target,
+                &[microphone.clone(), camera.clone()],
+                &required,
+                now,
+            )
+            .is_err()
+        );
+
+        let leases = acquire_realtime_capture_leases(
+            &capture,
+            &app,
+            session,
+            &target,
+            &[microphone.clone(), camera.clone()],
+            &required,
+            now,
+        )
+        .expect("exact authorization set");
+        realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now)
+            .expect("leases ready");
+        assert!(
+            acquire_realtime_capture_leases(
+                &capture,
+                &app,
+                session,
+                &target,
+                &[microphone, camera],
+                &required,
+                now,
+            )
+            .is_err()
+        );
+
+        release_realtime_capture_session(&capture, &app, session, &target);
+        assert!(
+            realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now).is_err()
+        );
+    }
+
+    #[test]
+    fn realtime_capture_ipc_rejects_expiry_and_lock_teardown_before_cutover() {
+        let now = std::time::Instant::now();
+        let app = capture_test_app("work");
+        let session = "fedcba9876543210fedcba9876543210";
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("target-local").expect("target");
+        let capture = capture_test_broker();
+        let binding =
+            crate::portal::CaptureSessionBinding::from_verified(&app, session, target.as_str())
+                .expect("capture binding");
+        let expired = capture
+            .lock()
+            .expect("capture broker")
+            .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+            .expect("authorization")
+            .to_opaque();
+        assert!(
+            acquire_realtime_capture_leases(
+                &capture,
+                &app,
+                session,
+                &target,
+                &[expired],
+                &[crate::portal::CaptureKind::Microphone],
+                now + crate::portal::capture_broker::CAPTURE_AUTHORIZATION_TTL
+                    + std::time::Duration::from_millis(1),
+            )
+            .is_err()
+        );
+
+        let fresh = capture
+            .lock()
+            .expect("capture broker")
+            .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+            .expect("fresh authorization")
+            .to_opaque();
+        let leases = acquire_realtime_capture_leases(
+            &capture,
+            &app,
+            session,
+            &target,
+            &[fresh],
+            &[crate::portal::CaptureKind::Microphone],
+            now,
+        )
+        .expect("fresh lease");
+        capture.lock().expect("capture broker").screen_locked();
+        assert!(
+            realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now).is_err()
+        );
+    }
+
     #[test]
     fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
         let fanout = Arc::new(FanoutState::new());
@@ -7530,6 +9515,334 @@ mod tests {
         assert!(
             !state.request_document_snapshot("missing", 12),
             "a route without a holder is retryable, not falsely acknowledged"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn production_realtime_bridge_delivers_two_peer_offer_and_cutover() {
+        use crate::shell::realtime_session::{
+            BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
+            RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
+            SemanticRoomLocator, VerifiedAppRegistration,
+        };
+
+        fn state_with_adapter() -> (
+            Arc<CapnpBrokerState>,
+            Arc<Mutex<RealtimeSessionBroker>>,
+            Arc<BrokerRealtimeFabricAdapter>,
+        ) {
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+                Arc::clone(&broker),
+                |_| true,
+            ));
+            let mut realtime = state.realtime.lock().expect("realtime bridge");
+            realtime.broker = Arc::clone(&broker);
+            realtime.fabric = Arc::clone(&fabric);
+            drop(realtime);
+            (state, broker, fabric)
+        }
+
+        let now = std::time::Instant::now();
+        let source =
+            crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
+        let app =
+            VerifiedAppRegistration::new_verified("dev.qos.calls", "work").expect("verified app");
+        let intent = RealtimeResumeIntent {
+            room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
+            semantic_position: Some("main-stage".into()),
+            media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+            controls: broker_realtime_controls(ui::realtime_continuity::RealtimeControlIntent {
+                microphone_muted: true,
+                camera_muted: false,
+                screen_share_paused: true,
+                share_audio_muted: true,
+            }),
+        };
+        let (source_state, source_broker, source_fabric) = state_with_adapter();
+        let (target_state, target_broker, target_fabric) = state_with_adapter();
+        let (source_tx, mut source_rx) = mpsc::unbounded_channel();
+        source_state
+            .realtime
+            .lock()
+            .expect("source bridge")
+            .subscribers
+            .insert(
+                7,
+                RealtimeSubscriber {
+                    app: app.clone(),
+                    tx: source_tx,
+                },
+            );
+        let (target_tx, mut target_rx) = mpsc::unbounded_channel();
+        target_state
+            .realtime
+            .lock()
+            .expect("target bridge")
+            .subscribers
+            .insert(
+                9,
+                RealtimeSubscriber {
+                    app: app.clone(),
+                    tx: target_tx,
+                },
+            );
+        let id = source_broker
+            .lock()
+            .expect("source broker")
+            .register(&app, source.clone(), intent, now)
+            .expect("register source");
+        source_broker
+            .lock()
+            .expect("source broker")
+            .propose_target(&app, id, &source, target.clone(), now)
+            .expect("propose target");
+        source_state
+            .realtime
+            .lock()
+            .expect("source bridge")
+            .sessions
+            .insert(
+                "source-session".into(),
+                RealtimeBinding {
+                    id,
+                    app,
+                    source: source.clone(),
+                    owner_peer: 7,
+                    authorization: None,
+                    target_peer: None,
+                    capture_leases: Vec::new(),
+                    imported: false,
+                },
+            );
+        source_fabric
+            .offer_to(id, &target, 20_000)
+            .expect("queue exact-target offer");
+        let offer = source_fabric.drain_egress().pop().expect("offer egress");
+        assert_eq!(offer.target, target);
+        let RealtimeFabricSignal::Offer(projected) = offer.signal else {
+            panic!("expected offer");
+        };
+        let fabric_id = projected.session_id;
+        assert!(target_fabric.receive_authenticated(
+            &source,
+            &target,
+            RealtimeFabricSignal::Offer(projected),
+            now,
+            10_000,
+        ));
+        target_state.pump_realtime_fabric_app_events();
+        let offer_event: ui::realtime_continuity::RealtimeEvent =
+            serde_json::from_slice(&target_rx.try_recv().expect("target app offer"))
+                .expect("offer event");
+        let ui::realtime_continuity::RealtimeEvent::Offer { session, intent } = offer_event else {
+            panic!("expected app offer");
+        };
+        assert_eq!(
+            intent.controls,
+            ui::realtime_continuity::RealtimeControlIntent {
+                microphone_muted: true,
+                camera_muted: false,
+                screen_share_paused: true,
+                share_audio_muted: true,
+            }
+        );
+        target_fabric
+            .accept_imported(fabric_id, &source, &target, now)
+            .expect("target-local accept");
+        let accepted = target_fabric.drain_egress().pop().expect("accept egress");
+        assert_eq!(accepted.target, source);
+        assert!(source_fabric.receive_authenticated(
+            &target,
+            &source,
+            accepted.signal,
+            now,
+            10_000,
+        ));
+        target_fabric
+            .imported_media_ready(fabric_id, &source, &target, now)
+            .expect("target media ready");
+        let ready = target_fabric.drain_egress().pop().expect("ready egress");
+        assert_eq!(ready.target, source);
+        assert!(source_fabric.receive_authenticated(&target, &source, ready.signal, now, 10_000,));
+        source_state.pump_realtime_fabric_app_events();
+        let stop_event: ui::realtime_continuity::RealtimeEvent =
+            serde_json::from_slice(&source_rx.try_recv().expect("source app stop"))
+                .expect("stop event");
+        assert_eq!(
+            stop_event,
+            ui::realtime_continuity::RealtimeEvent::StopSource {
+                session: "source-session".into(),
+            }
+        );
+        let stop = source_fabric.drain_egress().pop().expect("stop egress");
+        assert_eq!(stop.target, target);
+        assert!(target_fabric.receive_authenticated(&source, &target, stop.signal, now, 10_000,));
+        assert_eq!(
+            target_broker
+                .lock()
+                .expect("target broker")
+                .session(fabric_id.into_broker_id())
+                .expect("imported session")
+                .phase,
+            crate::shell::realtime_session::RealtimeSessionPhase::TargetLive
+        );
+        assert!(session.len() <= ui::realtime_continuity::MAX_REALTIME_TOKEN_BYTES);
+    }
+
+    #[test]
+    fn realtime_consent_reserves_once_and_revokes_minted_batch_after_disconnect() {
+        use crate::shell::realtime_session::{
+            BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
+            RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
+            SemanticRoomLocator, VerifiedAppRegistration,
+        };
+
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+        let target_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+            Arc::clone(&target_broker),
+            |_| true,
+        ));
+        let (subscriber, _events) = mpsc::unbounded_channel();
+        let app =
+            VerifiedAppRegistration::new_verified("dev.qos.calls", "work").expect("verified app");
+        {
+            let mut realtime = state.realtime.lock().expect("target bridge");
+            realtime.broker = Arc::clone(&target_broker);
+            realtime.fabric = Arc::clone(&target_fabric);
+            realtime.subscribers.insert(
+                9,
+                RealtimeSubscriber {
+                    app: app.clone(),
+                    tx: subscriber,
+                },
+            );
+        }
+
+        let now = std::time::Instant::now();
+        let source =
+            crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
+        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+        let source_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+            Arc::clone(&source_broker),
+            |_| true,
+        ));
+        let intent = RealtimeResumeIntent {
+            room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
+            semantic_position: None,
+            media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+            controls: Default::default(),
+        };
+        let id = source_broker
+            .lock()
+            .expect("source broker")
+            .register(&app, source.clone(), intent, now)
+            .expect("register source");
+        source_broker
+            .lock()
+            .expect("source broker")
+            .propose_target(&app, id, &source, target.clone(), now)
+            .expect("propose target");
+        source_fabric
+            .offer_to(id, &target, 20_000)
+            .expect("queue offer");
+        let offer = source_fabric.drain_egress().pop().expect("offer egress");
+        let RealtimeFabricSignal::Offer(offer) = offer.signal else {
+            panic!("expected offer");
+        };
+        assert!(target_fabric.receive_authenticated(
+            &source,
+            &target,
+            RealtimeFabricSignal::Offer(offer),
+            now,
+            10_000,
+        ));
+        state.pump_realtime_fabric_app_events();
+        let session = {
+            let realtime = state.realtime.lock().expect("target bridge");
+            realtime
+                .sessions
+                .keys()
+                .next()
+                .expect("imported session")
+                .clone()
+        };
+
+        // Pause after minting but before the exact binding is revalidated. A
+        // duplicate must fail immediately, and removing the imported binding
+        // while paused must revoke the whole just-minted batch.
+        let (minted_tx, minted_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+        *realtime_consent_mint_hook().lock().expect("consent hook") =
+            Some(RealtimeConsentMintHook {
+                minted: minted_tx,
+                resume: resume_rx,
+            });
+        let worker_bridge = RealtimeFabricAppBridge::from_state(Arc::clone(&state));
+        let worker_session = session.clone();
+        let worker = std::thread::spawn(move || {
+            worker_bridge.resolve_consent_with_policy(&worker_session, true, || true)
+        });
+        minted_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("consent worker reached post-mint checkpoint");
+        assert!(
+            state
+                .realtime
+                .lock()
+                .expect("target bridge")
+                .consent_capabilities_issued
+                .contains(&session),
+            "worker must reserve consent before capture minting"
+        );
+        assert!(
+            RealtimeFabricAppBridge::from_state(Arc::clone(&state))
+                .resolve_consent_with_policy(&session, true, || true)
+                .is_err(),
+            "a concurrent duplicate may not mint another batch"
+        );
+        state
+            .realtime
+            .lock()
+            .expect("target bridge")
+            .sessions
+            .remove(&session);
+        resume_tx.send(()).expect("resume consent worker");
+        assert!(
+            worker.join().expect("consent worker").is_err(),
+            "disconnect must invalidate consent before delivery"
+        );
+        let realtime = state.realtime.lock().expect("target bridge");
+        assert!(!realtime.consent_capabilities_issued.contains(&session));
+        assert_eq!(
+            realtime
+                .capture
+                .lock()
+                .expect("capture broker")
+                .pending_authorization_count(),
+            0,
+            "stale consent must revoke every minted capability"
         );
     }
 
@@ -9329,5 +11642,201 @@ mod tests {
             41
         );
         assert_eq!(invocation_target_peer(7, 41), 7);
+    }
+
+    #[test]
+    fn nearby_target_handles_reject_spoofed_routes_and_expiry() {
+        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+        let target = crate::shell::personal_continuity::DeviceId::new("certified-device")
+            .expect("valid device");
+        let now = Instant::now();
+        let mut registry = NearbyTargetRegistry::default();
+        let handle = registry.issue(41, &route, target.clone(), now);
+
+        assert!(registry.consume(handle, 42, &route, now).is_none());
+        assert!(registry.consume(handle, 41, &other_route, now).is_none());
+        assert_eq!(registry.consume(handle, 41, &route, now), Some(target));
+        assert!(registry.consume(handle, 41, &route, now).is_none());
+
+        let stale = registry.issue(
+            41,
+            &route,
+            crate::shell::personal_continuity::DeviceId::new("stale-device").expect("valid device"),
+            now,
+        );
+        assert!(
+            registry
+                .consume(
+                    stale,
+                    41,
+                    &route,
+                    now + NEARBY_TARGET_HANDLE_TTL + Duration::from_millis(1),
+                )
+                .is_none()
+        );
+
+        let retained_target = crate::shell::personal_continuity::DeviceId::new("retained-device")
+            .expect("valid device");
+        let retained = registry.issue(41, &route, retained_target.clone(), now);
+        registry.begin_snapshot(41, &route, std::slice::from_ref(&retained_target), now);
+        let refreshed = registry.issue(41, &route, retained_target, now);
+        assert_eq!(retained, refreshed);
+        assert_eq!(registry.bindings.len(), 1);
+        registry.begin_snapshot(41, &route, &[], now);
+        assert!(registry.consume(retained, 41, &route, now).is_none());
+        assert!(registry.bindings.is_empty());
+    }
+
+    #[test]
+    fn nearby_transfer_handles_reject_cross_workspace_actions_and_disconnect() {
+        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+        let transfer_id = [7_u8; 16];
+        let now = Instant::now();
+        let mut registry = NearbyTransferRegistry::default();
+        let handle = registry
+            .issue(
+                41,
+                &route,
+                transfer_id,
+                runtime_collab::NearbyTransferDirection::Receiving,
+                true,
+                now,
+            )
+            .expect("owner receives opaque handle");
+        assert!(
+            registry
+                .resolve(
+                    handle,
+                    42,
+                    &route,
+                    runtime_collab::NearbyTransferDirection::Receiving,
+                    now,
+                )
+                .is_none()
+        );
+        assert!(
+            registry
+                .resolve(
+                    handle,
+                    41,
+                    &other_route,
+                    runtime_collab::NearbyTransferDirection::Receiving,
+                    now,
+                )
+                .is_none()
+        );
+        assert!(
+            registry
+                .issue(
+                    42,
+                    &other_route,
+                    transfer_id,
+                    runtime_collab::NearbyTransferDirection::Receiving,
+                    true,
+                    now,
+                )
+                .is_none()
+        );
+        registry.remove_peer(41);
+        assert!(
+            registry
+                .resolve(
+                    handle,
+                    41,
+                    &route,
+                    runtime_collab::NearbyTransferDirection::Receiving,
+                    now,
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn nearby_destination_handles_are_route_bound_and_session_remembered() {
+        let root = tempfile::tempdir().expect("destination root");
+        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+        let now = Instant::now();
+        let mut registry = NearbyDestinationRegistry::default();
+        let destination = registry.issue(
+            41,
+            &route,
+            root.path().to_path_buf(),
+            "Workspace files".into(),
+            now,
+        );
+        assert!(
+            registry
+                .resolve(destination.handle, 42, &route, false, now)
+                .is_none()
+        );
+        assert!(
+            registry
+                .resolve(destination.handle, 41, &other_route, false, now)
+                .is_none()
+        );
+        assert!(
+            registry
+                .resolve(destination.handle, 41, &route, true, now)
+                .is_some()
+        );
+        let refreshed = registry.issue(
+            41,
+            &route,
+            root.path().to_path_buf(),
+            "Workspace files".into(),
+            now,
+        );
+        assert_eq!(refreshed.handle, destination.handle);
+        assert!(refreshed.remembered_for_session);
+        registry.remove_peer(41);
+        assert!(
+            registry
+                .resolve(destination.handle, 41, &route, false, now)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn nearby_source_is_canonical_and_confined_to_live_files_grants() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temp grant root");
+        let source = root.path().join("report.txt");
+        std::fs::write(&source, b"report").expect("write source");
+        let grants = vec![Capability::Filesystem {
+            path: root.path().to_path_buf(),
+            mode: FsMode::Read,
+            scope: GRANT_SESSION,
+        }];
+        let opened = nearby_source_from_grants(source.as_os_str().as_encoded_bytes(), &grants)
+            .expect("granted source");
+        assert_eq!(opened.name(), "report.txt");
+        assert_eq!(opened.metadata().expect("source metadata").len(), 6);
+        assert!(nearby_source_from_grants(b"/etc/passwd", &grants).is_err());
+
+        let escape = root.path().join("escape");
+        symlink("/etc/passwd", &escape).expect("create escape symlink");
+        assert!(nearby_source_from_grants(escape.as_os_str().as_encoded_bytes(), &grants).is_err());
+    }
+
+    #[test]
+    fn nearby_rpc_policy_requires_master_and_file_transfer_switches() {
+        let policy = |enabled, file_transfer| {
+            let document = serde_json::json!({
+                "continuity": {
+                    "enabled": enabled,
+                    "file_transfer": file_transfer,
+                }
+            });
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+                document.as_object().expect("policy object"),
+            )
+        };
+        assert!(!nearby_policy_enabled(policy(false, true)));
+        assert!(!nearby_policy_enabled(policy(true, false)));
+        assert!(nearby_policy_enabled(policy(true, true)));
     }
 }

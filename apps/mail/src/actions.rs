@@ -606,10 +606,6 @@ fn message_label(m: &MessageRow) -> String {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the stable message resource and every canonical operation remain adjacent so palette, history, and agent affordances cannot drift"
-)]
 pub(crate) fn message_resource(message: &MessageRow) -> Resource {
     let mut resource = Resource::new(
         format!("mail.message:{}", message.id),
@@ -681,44 +677,45 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
         ));
     }
     for (index, attachment) in message.attachments.iter().enumerate() {
-        let save = effect_spec(
-            "save",
-            "Save attachment",
-            &MailOperation::SaveAttachment {
-                message_id: message.id.clone(),
-                index,
-            },
-        )
-        .with_contract(ActionContract {
-            // A chosen destination can overwrite a user file. Retrying after
-            // a lost terminal acknowledgement must not silently repeat that
-            // effect; the host keeps the invocation observable instead.
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: true },
-            result: ResultSpec::Resource {
-                resource_kind: "mail.attachment".into(),
-            },
-            tags: vec!["mail".into(), "attachment".into(), "file-save".into()],
-            ..ActionContract::default()
-        });
-        resource = resource.with_child(
-            Resource::new(
-                format!("mail.attachment:{}:{index}", message.id),
-                "mail.attachment",
-                format!(
-                    "{} · {}",
-                    attachment.filename,
-                    ui::format::bytes(attachment.size)
-                ),
-            )
-            .with_action(if attachment.downloadable {
-                save
-            } else {
-                save.unavailable("not_downloaded", "Attachment content is not downloaded yet")
-            }),
-        );
+        resource = resource.with_child(attachment_resource(&message.id, index, attachment));
     }
     resource
+}
+
+fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRow) -> Resource {
+    let save = effect_spec(
+        "save",
+        "Save attachment",
+        &MailOperation::SaveAttachment {
+            message_id: message_id.to_string(),
+            index,
+        },
+    )
+    .with_contract(ActionContract {
+        // A chosen destination can overwrite a user file. Retrying after a
+        // lost terminal acknowledgement must not silently repeat that effect.
+        retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Resource {
+            resource_kind: "mail.attachment".into(),
+        },
+        tags: vec!["mail".into(), "attachment".into(), "file-save".into()],
+        ..ActionContract::default()
+    });
+    Resource::new(
+        format!("mail.attachment:{message_id}:{index}"),
+        "mail.attachment",
+        format!(
+            "{} · {}",
+            attachment.filename,
+            ui::format::bytes(attachment.size)
+        ),
+    )
+    .with_action(if attachment.downloadable {
+        save
+    } else {
+        save.unavailable("not_downloaded", "Attachment content is not downloaded yet")
+    })
 }
 
 /// Build Mail's resource tree: the mailbox root (exporting "New folder"),
@@ -727,10 +724,6 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
 /// user-defined local folder (rename / delete). The Drafts folder additionally
 /// exports "Discard draft" when a draft is in progress. Every operation is the
 /// same action the on-screen affordance dispatches.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the mailbox hierarchy is intentionally authored together so every visible entity and operation shares one contract"
-)]
 /// Stable mailbox root. Accounts, folders and messages are dynamic children
 /// served through Mail's retained provider rather than root browse pages.
 pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {

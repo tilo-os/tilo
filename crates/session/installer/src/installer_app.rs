@@ -37,7 +37,6 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -255,9 +254,14 @@ fn kernel_lockdown_active() -> bool {
 /// unless the target UKI, initramfs, command line and firmware trust chain are
 /// all covered.
 fn target_verified_boot_ready() -> bool {
-    Command::new("/usr/libexec/tilo-verified-boot-install-preflight")
-        .status()
-        .is_ok_and(|status| status.success())
+    bounded_command::run(
+        "/usr/libexec/tilo-verified-boot-install-preflight",
+        &[],
+        None,
+        64 * 1024,
+        std::time::Duration::from_secs(30),
+    )
+    .is_ok_and(|output| output.status.success())
 }
 
 /// Explanation shown under the encryption chooser, reflecting the choice and

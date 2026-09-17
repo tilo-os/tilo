@@ -25,7 +25,7 @@ while [ "$current" != / ]; do
   current="$(dirname "$current")"
 done
 
-for tool in objcopy objdump openssl podman python3 sha256sum; do command -v "$tool" >/dev/null || die "missing $tool"; done
+for tool in objcopy objdump podman python3 tilo-crypto; do command -v "$tool" >/dev/null || die "missing $tool"; done
 podman image exists "$image" || die "image is not present in local storage: $image"
 efi_cert_sha256="${TILO_EFI_SIGNING_CERT_SHA256:-}"
 case "$efi_cert_sha256" in
@@ -70,26 +70,23 @@ case "$generation" in ''|*[!0-9]*) die "image has no valid Tilo generation" ;; e
 "$signer" export-efi-cert "$work/efi-signing.crt"
 [ -f "$work/efi-signing.crt" ] && [ ! -L "$work/efi-signing.crt" ] \
   || die "broker did not export a regular EFI signing certificate"
-actual_efi_cert_sha256="$(openssl x509 -in "$work/efi-signing.crt" -outform DER \
-  | sha256sum | awk '{print $1}')" \
+actual_efi_cert_sha256="$(tilo-crypto certificate-sha256 "$work/efi-signing.crt")" \
   || die "broker did not export a valid X.509 EFI signing certificate"
 [ "$actual_efi_cert_sha256" = "$efi_cert_sha256" ] \
   || die "broker's EFI signing certificate does not match the independently pinned fingerprint"
 
 verify_signed_efi() {
-  local original="$1" signed="$2" label="$3" listing
+  local original="$1" signed="$2" label="$3" count
   [ -f "$signed" ] && [ ! -L "$signed" ] \
     || die "broker did not return a regular signed $label"
-  listing="$(podman run --rm -v "$work:/work:ro,Z" \
-    --entrypoint /usr/bin/sbverify "$image" --list "/work/${signed#"$work/"}" 2>/dev/null)" \
+  count="$(podman run --rm -v "$work:/work:ro,Z" \
+    --entrypoint /usr/bin/tilo-crypto "$image" efi-signature-count \
+    "/work/${signed#"$work/"}" 2>/dev/null)" \
     || die "broker did not return a structurally valid signed $label"
-  # sbsigntools 0.9.5 exits zero for an unsigned image, accompanied only by
-  # "No signature table present". Require an actual signature-table record.
-  grep -Eq '^signature [1-9][0-9]*$' <<<"$listing" \
-    || die "broker returned an unsigned $label"
+  case "$count" in ''|*[!0-9]*|0) die "broker returned an unsigned $label" ;; esac
   podman run --rm -v "$work:/work:ro,Z" \
-    --entrypoint /usr/bin/sbverify "$image" --cert /work/efi-signing.crt \
-    "/work/${signed#"$work/"}" >/dev/null 2>&1 \
+    --entrypoint /usr/bin/tilo-crypto "$image" verify-efi /work/efi-signing.crt \
+    "/work/${signed#"$work/"}" >/dev/null \
     || die "broker signed $label with an identity other than the pinned EFI certificate"
 
   "$TILO_OS_DIR/dev/verify-authenticode-envelope.py" "$original" "$signed" \
@@ -170,7 +167,7 @@ approved, output, generation = sys.argv[1:]
 open(output, "wb").write(open(approved, "rb").read() + struct.pack(">Q", int(generation)))
 PY
 "$signer" sign-sha256-rsa-pkcs1 "$work/message.bin" "$signature"
-openssl dgst -sha256 -verify "$work/public.pem" -signature "$signature" "$work/message.bin" >/dev/null \
+tilo-crypto verify-rsa-sha256 "$work/public.pem" "$work/message.bin" "$signature" \
   || die "broker signed the prediction with a key other than Tilo's pinned authority"
 python3 - "$work/approved.bin" "$signature" "$prediction" "$generation" <<'PY'
 import base64, json, sys
@@ -183,8 +180,7 @@ PY
 rm -f "$signature"
 
 "$signer" sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"
-openssl dgst -sha256 -verify "$work/public.pem" -signature "$prediction.uki.sig" \
-  "$work/target.efi" >/dev/null \
+tilo-crypto verify-rsa-sha256 "$work/public.pem" "$work/target.efi" "$prediction.uki.sig" \
   || die "broker's detached target-UKI signature does not match Tilo's pinned authority"
 install -m 0644 "$prediction" "$prediction.uki.sig" \
   "$work/layer/boot/EFI/tilo/pcr-predictions/"

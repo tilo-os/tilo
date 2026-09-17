@@ -11,7 +11,7 @@
 //! and feeds their JSON through those parsers.
 
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -19,6 +19,13 @@ use crate::model::{
     AttrSeverity, Drive, DriveKind, Partition, SmartAttr, SmartInfo, SmartStatus, SmartStatusOpt,
     Topology,
 };
+
+const PROBE_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn run_probe(program: &str, args: &[&str]) -> Option<bounded_command::Output> {
+    bounded_command::run(program, args, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT).ok()
+}
 
 /// Resolve a system tool to an absolute path, preferring the canonical
 /// system locations over whatever a user's `PATH` surfaces first. This
@@ -40,15 +47,16 @@ fn tool(name: &str) -> String {
 /// produced no usable disks — the caller must NOT substitute fabricated
 /// devices; an honest empty state is the correct fallback.
 pub fn probe() -> Option<Topology> {
-    let out = Command::new(tool("lsblk"))
-        .args([
+    let program = tool("lsblk");
+    let out = run_probe(
+        &program,
+        &[
             "-J",
             "-b",
             "-o",
             "NAME,MODEL,SERIAL,SIZE,TYPE,ROTA,TRAN,RM,FSTYPE,LABEL,MOUNTPOINT,FSUSED,UUID",
-        ])
-        .output()
-        .ok()?;
+        ],
+    )?;
     if !out.status.success() {
         return None;
     }
@@ -183,10 +191,8 @@ fn smart_for(name: &str, kind: DriveKind) -> Option<SmartInfo> {
         });
     }
     let dev = format!("/dev/{name}");
-    let out = Command::new(tool("smartctl"))
-        .args(["-j", "-a", &dev])
-        .output()
-        .ok()?;
+    let program = tool("smartctl");
+    let out = run_probe(&program, &["-j", "-a", &dev])?;
     // smartctl exits non-zero for warning bitmasks *and* for permission
     // errors, but always emits JSON — parse it regardless of exit code.
     let json: Value = serde_json::from_slice(&out.stdout).ok()?;

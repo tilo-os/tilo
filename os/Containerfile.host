@@ -31,7 +31,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         rust cargo sccache \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
-        openssl-devel sqlite-devel zlib-ng-compat-devel \
+        sqlite-devel zlib-ng-compat-devel \
     && dnf clean all
 
 WORKDIR /build
@@ -82,9 +82,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         fuse3 \
         ca-certificates \
         NetworkManager \
-        NetworkManager-openvpn \
-        ModemManager \
-        fwupd \
+    && rpm -q --qf '%{NAME}\n' openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core \
+        openvpn NetworkManager-openvpn openssh openssh-clients openssh-server \
+        ModemManager fwupd 2>/dev/null | xargs -r dnf remove -y \
     && dnf clean all
 
 # Copy binaries + systemd unit + tmpfiles snippet.
@@ -99,14 +99,16 @@ COPY os/usr/lib/systemd/system/tilo-relay.service /usr/lib/systemd/system/tilo-r
 COPY os/usr/lib/systemd/system/tilo-fs-replica.service /usr/lib/systemd/system/tilo-fs-replica.service
 COPY os/usr/lib/systemd/system/tilo-relay-firstboot.service /usr/lib/systemd/system/tilo-relay-firstboot.service
 COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
+COPY os/usr/libexec/tilo-relay-state-migrate /usr/libexec/tilo-relay-state-migrate
+COPY os/usr/lib/systemd/system/tilo-relay-state-migrate.service /usr/lib/systemd/system/tilo-relay-state-migrate.service
 COPY os/usr/lib/tmpfiles.d/tilo-host.conf /usr/lib/tmpfiles.d/tilo-host.conf
 # The device-trust group owns the identity directory, so it has to exist
-# before tmpfiles-setup runs. No session user joins it on a host image —
-# there is no session — but the group is what the directory is created
-# with, and the identity layout is shared with the desktop image.
+# before tmpfiles-setup runs. There is no session user on a host image; only
+# the static relay account joins this narrow device-identity boundary.
 COPY os/usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-identity.conf
-RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf
-RUN chmod 0755 /usr/libexec/tilo-relay-firstboot
+COPY os/usr/lib/sysusers.d/tilo-relay.conf /usr/lib/sysusers.d/tilo-relay.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-relay.conf
+RUN chmod 0755 /usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-state-migrate
 
 # The first-boot script consumes /etc/tilo/enrollment-token.txt (a
 # base32-Crockford EnrollmentToken minted on the operator's primary

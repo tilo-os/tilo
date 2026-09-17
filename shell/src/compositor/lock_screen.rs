@@ -26,6 +26,8 @@ use ui::accesskit::{
     Role as AccessRole, TreeId, TreeInfo, TreeUpdate,
 };
 
+use crate::compositor::lock_auth::UNAVAILABLE_MSG;
+
 // `ui::accesskit_bridge` reserves 0, low ids, 1<<60, 2<<60, 1<<62 and
 // 1<<63 for desktop widgets/resources/actions/text/synthetic nodes. Keeping
 // the lock in the unused 3<<60 range makes a stale hidden-desktop action
@@ -267,7 +269,7 @@ pub fn build_accessibility_tree(
     let status = if view.verifying {
         Some("Verifying password".to_string())
     } else if let Some(error) = view.error {
-        Some(error.to_string())
+        Some(lock_error_status(error).to_string())
     } else if view.notification_count > 0 {
         Some(count_label(view.notification_count))
     } else {
@@ -689,14 +691,14 @@ fn draw_status(
     let (value, color, size) = if view.verifying {
         ("Verifying…", theme.text_dim, 14.0)
     } else if let Some(err) = view.error {
-        // Keep the recovery action visible after a failed attempt. Replacing
-        // the only instruction with an error left keyboard users staring at
-        // a red diagnosis with no explicit way forward.
-        let retry = format!("{err} · Press Enter to try again");
+        // Keep the recovery action visible after a failed attempt. This must
+        // stay a single line at 1280x800: wrapping a red status below the
+        // password field makes the result look like a second prompt.
+        let retry = lock_error_status(err);
         draw_centered_text(
             scene,
             text,
-            &retry,
+            retry,
             scaled_text_size(12.0, layout.scale, theme),
             theme.tokens.colors.semantic.danger,
             layout.status,
@@ -713,6 +715,20 @@ fn draw_status(
         color,
         layout.status,
     );
+}
+
+/// The visual and accessible recovery line after a failed unlock.
+///
+/// Auth deliberately returns generic, non-leaky prose, but the full
+/// diagnostic plus a recovery instruction exceeded the fixed status row at
+/// common 1280x800 layouts. Keep the action in the line while preserving the
+/// distinction between a rejected credential and an unavailable verifier.
+fn lock_error_status(error: &str) -> &'static str {
+    if error == UNAVAILABLE_MSG {
+        "Can't verify · Press Enter to retry"
+    } else {
+        "Sign-in failed · Press Enter to retry"
+    }
 }
 
 /// Lock-screen count label: "N notifications" (empty for zero); reuses the
@@ -863,6 +879,45 @@ mod tests {
         };
         let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
         assert!(!scene.encoding().is_empty());
+    }
+
+    #[test]
+    fn lock_error_status_is_concise_and_preserves_retry_guidance() {
+        assert_eq!(
+            lock_error_status("Incorrect username or password"),
+            "Sign-in failed · Press Enter to retry"
+        );
+        assert_eq!(
+            lock_error_status(UNAVAILABLE_MSG),
+            "Can't verify · Press Enter to retry"
+        );
+    }
+
+    #[test]
+    fn lock_error_status_stays_on_one_line_at_1280_by_800() {
+        let theme = Theme::dark();
+        let output = LockOutput {
+            origin: (0.0, 0.0),
+            size: (1280.0, 800.0),
+            scale: 1.0,
+        };
+        let layout = LockLayout::for_output(output, &theme);
+        let mut text = TextRenderer::new();
+        for message in [
+            lock_error_status("Incorrect username or password"),
+            lock_error_status(UNAVAILABLE_MSG),
+        ] {
+            let (width, height) =
+                text.measure(message, scaled_text_size(12.0, layout.scale, &theme), None);
+            assert!(
+                f64::from(width) <= layout.status.width(),
+                "{message:?} must not wrap in the lock status row"
+            );
+            assert!(
+                f64::from(height) <= layout.status.height(),
+                "{message:?} must fit the lock status row"
+            );
+        }
     }
 
     /// The "Verifying…" state paints without panicking.

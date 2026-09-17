@@ -713,6 +713,18 @@ fn personal_continuity_backup_path(path: &Path) -> PathBuf {
     path.with_extension("postcard.backup")
 }
 
+fn purge_personal_continuity_store(path: &Path) {
+    for candidate in [path.to_path_buf(), personal_continuity_backup_path(path)] {
+        match std::fs::remove_file(&candidate) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(%error, path = %candidate.display(), "personal continuity purge failed");
+            }
+        }
+    }
+}
+
 fn load_personal_continuity(path: &Path) -> PersistedPersonalContinuity {
     for (index, candidate) in [path.to_path_buf(), personal_continuity_backup_path(path)]
         .into_iter()
@@ -871,6 +883,8 @@ pub struct ShellNetwork {
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
+    #[cfg(test)]
+    continuity_policy_override: Option<crate::shell::continuity_policy::ContinuityPolicySnapshot>,
     /// Convergent same-person device state, persisted separately from app
     /// continuation so transport upgrades cannot regress existing handoff.
     device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
@@ -1200,7 +1214,18 @@ impl ShellNetwork {
 
         let pending_invitations_path = pending_invites_path(keypair_path);
         let personal_continuity_path = personal_continuity_path(keypair_path);
-        let persisted_continuity = load_personal_continuity(&personal_continuity_path);
+        let app_continuations_permitted =
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+                .permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations);
+        let persisted_continuity = if app_continuations_permitted {
+            load_personal_continuity(&personal_continuity_path)
+        } else {
+            purge_personal_continuity_store(&personal_continuity_path);
+            PersistedPersonalContinuity {
+                counter: 0,
+                continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
+            }
+        };
         let device_fabric_path = device_fabric_path(keypair_path);
         let device_fabric = load_device_fabric(&device_fabric_path);
         let now = now_unix_seconds();
@@ -1212,7 +1237,7 @@ impl ShellNetwork {
                 .collect();
         persist_pending_invitations(&pending_invitations_path, &pending_identity_admissions);
 
-        Ok(Self {
+        let network = Self {
             cmd_tx,
             replica,
             event_tx,
@@ -1236,6 +1261,8 @@ impl ShellNetwork {
             personal_continuity_counter: Mutex::new(persisted_continuity.counter),
             personal_continuity_fingerprint: Mutex::new(None),
             personal_continuity_path: Some(personal_continuity_path),
+            #[cfg(test)]
+            continuity_policy_override: None,
             device_fabric: Mutex::new(device_fabric),
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
@@ -1257,7 +1284,11 @@ impl ShellNetwork {
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             workspace_control_observers: Mutex::new(Vec::new()),
             peer_departures: Arc::new(PeerDepartureHistory::default()),
-        })
+        };
+        if !app_continuations_permitted {
+            network.enforce_app_continuations_policy();
+        }
+        Ok(network)
     }
 
     /// Pre-computed hash of the local iroh endpoint id. Stamped on every
@@ -1323,8 +1354,11 @@ impl ShellNetwork {
                 services: tilo_relay::ServiceCapabilities::relay_only(),
                 workspaces: std::collections::BTreeSet::from([workspace]),
                 apps: std::collections::BTreeSet::new(),
+                accelerators: std::collections::BTreeSet::new(),
                 priority: 0,
                 latency_ms: 0,
+                power: tilo_relay::PowerAvailability::Unknown,
+                energy_saver: false,
                 active_assignments: 0,
                 assignment_capacity: u32::MAX,
                 online: true,
@@ -1526,6 +1560,14 @@ impl ShellNetwork {
     }
 
     fn publish_message(&self, mut msg: NeighbourMsg) -> bool {
+        if matches!(
+            &msg,
+            NeighbourMsg::PersonalContinuityRequest { .. }
+                | NeighbourMsg::PersonalContinuityCheckpoint { .. }
+        ) && !self.enforce_app_continuations_policy()
+        {
+            return false;
+        }
         if let NeighbourMsg::SyncReq {
             room, invite_id, ..
         } = &mut msg
@@ -1659,6 +1701,11 @@ impl ShellNetwork {
     }
 
     fn publish_shell_checkpoint(&self, msg: NeighbourMsg) -> bool {
+        if matches!(&msg, NeighbourMsg::PersonalContinuityCheckpoint { .. })
+            && !self.enforce_app_continuations_policy()
+        {
+            return false;
+        }
         let ws = self.topic_for_message(&msg);
         self.join_topic(ws)
             && self
@@ -2590,7 +2637,60 @@ impl ShellNetwork {
         self.publish_device_fabric_request();
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "tests inject a per-network policy snapshot while production loads the device-local store"
+    )]
+    fn continuity_policy(&self) -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
+        #[cfg(test)]
+        if let Some(policy) = self.continuity_policy_override {
+            return policy;
+        }
+        crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+    }
+
+    fn permits_continuity(
+        &self,
+        capability: crate::shell::continuity_policy::ContinuityCapability,
+    ) -> bool {
+        self.continuity_policy().permits(capability)
+    }
+
+    /// Enforce revocation before every app-continuation boundary. Besides
+    /// refusing new wire and persistence work, this removes already staged
+    /// remote offers so turning the switch off has immediate local effect.
+    fn enforce_app_continuations_policy(&self) -> bool {
+        use crate::shell::continuity_policy::ContinuityCapability;
+
+        if self.permits_continuity(ContinuityCapability::AppContinuations) {
+            return true;
+        }
+        if let Ok(mut continuity) = self.personal_continuity.lock() {
+            *continuity = crate::shell::personal_continuity::PersonalContinuity::default();
+        }
+        if let Ok(mut fingerprint) = self.personal_continuity_fingerprint.lock() {
+            *fingerprint = None;
+        }
+        if let Ok(mut registry) =
+            crate::shell::personal_continuity_registry::global_registry().lock()
+        {
+            registry.clear_remote();
+        }
+        if let Some(path) = self.personal_continuity_path.as_deref() {
+            purge_personal_continuity_store(path);
+        }
+        if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) {
+            let mut tree = tree.write();
+            tree.reconcile_continuation_tabs(&std::collections::BTreeSet::new());
+            tree.reconcile_continuation_rooms(&std::collections::BTreeSet::new());
+        }
+        false
+    }
+
     fn local_continuity_snapshot_bytes(&self) -> Option<Vec<u8>> {
+        if !self.enforce_app_continuations_policy() {
+            return None;
+        }
         let device = self.personal_continuity_device.clone()?;
         let tree_handle = self.replica.lock().ok()?.tree.clone();
         let pending_closed_tabs = tree_handle.read().continuation_closed_tabs.clone();
@@ -2628,6 +2728,10 @@ impl ShellNetwork {
             drop(continuity);
             // Retry a prior failed durable write even while the captured tree
             // is quiet.
+            drop(previous);
+            if !self.enforce_app_continuations_policy() {
+                return None;
+            }
             let _ = self.persist_personal_continuity();
             return Some(bytes);
         }
@@ -2671,6 +2775,9 @@ impl ShellNetwork {
         drop(continuity);
         drop(counter);
         drop(previous);
+        if !self.enforce_app_continuations_policy() {
+            return None;
+        }
         let durable = self.persist_personal_continuity();
         if durable && !pending_closed_tabs.is_empty() {
             let mut tree = tree_handle.write();
@@ -2684,6 +2791,9 @@ impl ShellNetwork {
     }
 
     fn persist_personal_continuity(&self) -> bool {
+        if !self.enforce_app_continuations_policy() {
+            return false;
+        }
         let Some(path) = self.personal_continuity_path.as_deref() else {
             return false;
         };
@@ -3134,6 +3244,11 @@ impl ShellNetwork {
         security: os_actions::WifiSecurity,
         password: &str,
     ) -> Result<(), String> {
+        if !self
+            .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::WifiSettings)
+        {
+            return Err("Wi-Fi Continuity is disabled on this device".to_string());
+        }
         if !security.supports_portable_passphrase() {
             return Err(match security {
                 os_actions::WifiSecurity::Enterprise => {
@@ -3193,6 +3308,11 @@ impl ShellNetwork {
         ssid: &str,
         security: os_actions::WifiSecurity,
     ) -> Option<String> {
+        if !self
+            .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::WifiSettings)
+        {
+            return None;
+        }
         if !security.supports_portable_passphrase() {
             return None;
         }
@@ -3208,6 +3328,51 @@ impl ShellNetwork {
                 )
                 .ok()
             })
+    }
+
+    /// Seal one ephemeral tethering credential to exactly one certified
+    /// requester. Unlike roaming Wi-Fi continuity this does not mutate or
+    /// persist the local fabric snapshot.
+    pub(crate) fn seal_tethering_credential(
+        &self,
+        requester: &crate::shell::personal_continuity::DeviceId,
+        ssid: &str,
+        password: &str,
+    ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
+        let author = self
+            .personal_continuity_device
+            .clone()
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        if !self.certified_secret_recipients().contains(requester) {
+            return Err("tethering requester is not an enrolled personal device".into());
+        }
+        crate::shell::device_fabric_secrets::seal_wifi_credential(
+            ssid,
+            os_actions::WifiSecurity::Wpa2,
+            password,
+            &author,
+            std::collections::BTreeSet::from([requester.clone()]),
+            crate::shell::device_fabric::FabricStamp {
+                counter: self.device_fabric().max_counter().saturating_add(1).max(1),
+                device: author.clone(),
+            },
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// Open one already route-validated tethering envelope for an immediate
+    /// NetworkManager call. The plaintext is never retained by ShellNetwork.
+    pub(crate) fn open_tethering_credential(
+        &self,
+        credential: &crate::shell::device_fabric::WifiCredential,
+    ) -> Result<String, String> {
+        let key = &self
+            .host_identity
+            .as_ref()
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?
+            .device_signing_key;
+        crate::shell::device_fabric_secrets::open_wifi_credential(credential, key)
+            .map_err(|error| error.to_string())
     }
 
     /// Rewrap credentials this device can open whenever certified device
@@ -3282,6 +3447,12 @@ impl ShellNetwork {
     }
 
     fn publish_device_fabric_payload(&self, payload: PersonalFabricPayload) {
+        // The fabric has capability-specific gates at each producer, but the
+        // master switch is also a strict transport kill switch: not even an
+        // otherwise content-free anti-entropy request may leave this device.
+        if !self.continuity_policy().enabled() {
+            return;
+        }
         let Some(user_public_key) = self.personal_continuity_user else {
             return;
         };
@@ -3306,6 +3477,9 @@ impl ShellNetwork {
     }
 
     fn publish_personal_continuity_request(&self) {
+        if !self.enforce_app_continuations_policy() {
+            return;
+        }
         let Some(user_public_key) = self.personal_continuity_user else {
             return;
         };
@@ -3316,6 +3490,9 @@ impl ShellNetwork {
     }
 
     fn publish_personal_continuity_if_changed(&self) {
+        if !self.enforce_app_continuations_policy() {
+            return;
+        }
         let Some(user_public_key) = self.personal_continuity_user else {
             return;
         };
@@ -3341,7 +3518,7 @@ impl ShellNetwork {
             snapshot,
         };
         let ws = personal_continuity_topic_id(&user_public_key);
-        if self.join_topic(ws) {
+        if self.enforce_app_continuations_policy() && self.join_topic(ws) {
             let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint { ws, msg });
         }
     }
@@ -3896,12 +4073,16 @@ impl ShellNetwork {
             .personal_continuity_user
             .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
         {
+            if !self.enforce_app_continuations_policy() {
+                return;
+            }
             // PublishCheckpoint gives a newly enrolled/offline device a
             // retained baseline even when no interactive device is online.
             if let (Some(user_public_key), Some(snapshot)) = (
                 self.personal_continuity_user,
                 self.local_continuity_snapshot_bytes(),
-            ) {
+            ) && self.enforce_app_continuations_policy()
+            {
                 let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint {
                     ws,
                     msg: NeighbourMsg::PersonalContinuityCheckpoint {
@@ -4143,6 +4324,9 @@ impl ShellNetwork {
             } => (user_public_key, Some(snapshot.as_slice())),
             _ => return false,
         };
+        if !self.enforce_app_continuations_policy() {
+            return true;
+        }
         let Some(local_user) = self.personal_continuity_user else {
             return true;
         };
@@ -4169,7 +4353,7 @@ impl ShellNetwork {
                 publisher: self.local_peer_id_hash(),
                 snapshot,
             };
-            if self.join_topic(ws) {
+            if self.enforce_app_continuations_policy() && self.join_topic(ws) {
                 let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint { ws, msg });
             }
             return true;
@@ -4186,6 +4370,9 @@ impl ShellNetwork {
             tracing::warn!("dropping invalid continuity checkpoint");
             return true;
         };
+        if !self.enforce_app_continuations_policy() {
+            return true;
+        }
         if let Ok(mut counter) = self.personal_continuity_counter.lock() {
             *counter = (*counter).max(incoming.observed_counter());
         }
@@ -4203,6 +4390,9 @@ impl ShellNetwork {
             merged = Some(continuity.clone());
         }
         if changed {
+            if !self.enforce_app_continuations_policy() {
+                return true;
+            }
             let _ = self.persist_personal_continuity();
             let Some(merged) = merged else {
                 return true;
@@ -4251,6 +4441,9 @@ impl ShellNetwork {
                 reason = "all continuation room and tab mutations share one workspace write lock to preserve their common reconciliation snapshot"
             )]
             let adopted = tree_handle.is_some_and(|tree| {
+                if !self.enforce_app_continuations_policy() {
+                    return false;
+                }
                 let mut tree = tree.write();
                 let desired_rooms = rooms
                     .keys()
@@ -4891,6 +5084,26 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_counter: Mutex::new(0),
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
+        continuity_policy_override: Some(
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+                serde_json::json!({
+                    "continuity": {
+                        "enabled": true,
+                        "clipboard": true,
+                        "notifications": true,
+                        "wifi_settings": true,
+                        "media": true,
+                        "display_input": true,
+                        "file_transfer": true,
+                        "realtime_sessions": true,
+                        "typed_gamepad": true,
+                        "app_continuations": true
+                    }
+                })
+                .as_object()
+                .expect("test continuity policy object"),
+            ),
+        ),
         device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
@@ -5308,6 +5521,24 @@ mod tests {
         (net, commands)
     }
 
+    fn test_continuity_policy(
+        enabled: bool,
+        app_continuations: bool,
+        wifi_settings: bool,
+    ) -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
+        crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+            serde_json::json!({
+                "continuity": {
+                    "enabled": enabled,
+                    "app_continuations": app_continuations,
+                    "wifi_settings": wifi_settings
+                }
+            })
+            .as_object()
+            .expect("test continuity policy object"),
+        )
+    }
+
     fn authenticated_personal_peer(
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
@@ -5332,6 +5563,165 @@ mod tests {
             &device.public(),
             &cert,
             &[],
+        );
+    }
+
+    #[test]
+    fn disabled_app_continuations_emit_no_request_or_checkpoint_wire() {
+        let user = [0xA4; 32];
+        let (mut net, mut commands) = personal_continuity_network_for_test(user);
+        net.continuity_policy_override = Some(test_continuity_policy(false, true, true));
+
+        net.publish_personal_continuity_request();
+        net.publish_personal_continuity_if_changed();
+        net.publish_device_fabric_request();
+        assert!(
+            !net.publish_message(NeighbourMsg::PersonalContinuityRequest {
+                user_public_key: user,
+                requester: net.local_peer_id_hash(),
+            })
+        );
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok()).all(|command| !matches!(
+                command,
+                NetCmd::PublishCheckpoint { .. }
+                    | NetCmd::PublishPersonalFabric { .. }
+                    | NetCmd::PublishPersonalFabricTarget { .. }
+            ))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn disabling_app_continuations_purges_staged_topology_and_checkpoints() {
+        let user = [0xA5; 32];
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let room = RoomId::new();
+        net.replica
+            .lock()
+            .expect("replica")
+            .tree
+            .write()
+            .adopt_continuation_room(room, "remote-device");
+        let remote = test_device(0xA6);
+        let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
+            remote.clone(),
+            7,
+            None,
+            vec![crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: Vec::new(),
+            }],
+        )
+        .expect("valid remote snapshot");
+        net.personal_continuity
+            .lock()
+            .expect("continuity")
+            .upsert(snapshot)
+            .expect("stage checkpoint");
+        let tab = crate::shell::personal_continuity::AppInstanceId(0xA6A6);
+        let launch = crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser")
+            .expect("valid launch");
+        {
+            let registry = crate::shell::personal_continuity_registry::global_registry();
+            let mut registry = registry.lock().expect("continuation registry");
+            registry.clear_remote();
+            registry.store_remote_record(room, tab, "dev.qos.browser".into(), tab);
+            assert_eq!(
+                registry.record_instance_for_tab(room, tab, &launch),
+                Some(tab)
+            );
+        }
+        let dir = tempfile::tempdir().expect("continuity store");
+        let path = dir.path().join("personal-continuity.postcard");
+        net.personal_continuity_path = Some(path.clone());
+        assert!(net.persist_personal_continuity());
+        assert!(path.exists());
+
+        net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
+        assert!(!net.enforce_app_continuations_policy());
+
+        assert!(
+            net.personal_continuity
+                .lock()
+                .expect("continuity")
+                .is_empty()
+        );
+        assert!(!path.exists());
+        assert!(!personal_continuity_backup_path(&path).exists());
+        assert!(
+            net.replica
+                .lock()
+                .expect("replica")
+                .tree
+                .read()
+                .continuation_rooms
+                .is_empty()
+        );
+        assert_eq!(
+            crate::shell::personal_continuity_registry::global_registry()
+                .lock()
+                .expect("continuation registry")
+                .record_instance_for_tab(room, tab, &launch),
+            None
+        );
+    }
+
+    #[test]
+    fn disabled_app_continuations_drop_authenticated_ingress_before_merge() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xA7; 32]);
+        let peer = iroh::SecretKey::from_bytes(&[0xA8; 32]);
+        let user = root.verifying_key().to_bytes();
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&net, &root, &peer);
+        net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
+        let remote = test_device(0xA9);
+        let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
+            remote,
+            1,
+            None,
+            Vec::new(),
+        )
+        .expect("valid snapshot");
+        let mut offered = crate::shell::personal_continuity::PersonalContinuity::default();
+        offered.upsert(snapshot).expect("valid checkpoint");
+
+        net.dispatch_neighbour_msg(
+            personal_continuity_topic_id(&user),
+            peer.public(),
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key: user,
+                publisher: crate::network::behaviour::peer_liveness_handle(&peer.public()),
+                snapshot: postcard::to_allocvec(&offered).expect("encode checkpoint"),
+            },
+        );
+
+        assert!(
+            net.personal_continuity
+                .lock()
+                .expect("continuity")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn wifi_secret_api_rechecks_the_device_local_toggle() {
+        let (mut net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 1);
+        net.continuity_policy_override = Some(test_continuity_policy(true, false, false));
+        assert_eq!(
+            net.share_wifi_credential("Private", os_actions::WifiSecurity::Wpa2, "secret"),
+            Err("Wi-Fi Continuity is disabled on this device".to_string())
+        );
+        assert_eq!(
+            net.shared_wifi_password("Private", os_actions::WifiSecurity::Wpa2),
+            None
+        );
+
+        net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
+        assert_ne!(
+            net.share_wifi_credential("Private", os_actions::WifiSecurity::Wpa2, "secret"),
+            Err("Wi-Fi Continuity is disabled on this device".to_string()),
+            "the API must sample the new policy instead of retaining a stale denial"
         );
     }
 

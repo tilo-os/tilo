@@ -59,6 +59,7 @@ pub mod account_probe;
 pub mod accounts;
 pub mod actions;
 pub mod categories;
+mod continuity;
 mod device_fleet;
 pub mod dispatcher;
 pub(crate) mod input_sources;

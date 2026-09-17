@@ -7,6 +7,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflow="$repo/.forgejo/workflows/snapshot-rpms.yml"
 snapshot="$repo/os/Containerfile.rpms"
 image_workflow="$repo/.forgejo/workflows/build-image.yml"
+relay_workflow="$repo/.forgejo/workflows/tilo-relay.yaml"
 build_script="$repo/os/dev/build-image.sh"
 asset_manifest="$repo/os/external-assets/github-assets.tsv"
 derive="$repo/os/dev/derive-rpm-package-set.py"
@@ -91,6 +92,16 @@ has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
 has "$workflow" 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
   'snapshot pin updates reject source changes during the build'
+has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
+  'snapshot signing requires a non-exportable key'
+has "$workflow" 'https://tilo.dev/buildtypes/frozen-rpm-index/v1' \
+  'snapshot provenance binds the package-set build type'
+has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1' \
+  'snapshot publishes signed SLSA provenance'
+has "$image_workflow" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
+  'OS CI verifies exact RPM snapshot provenance'
+has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
+  'local OS builds verify exact RPM snapshot provenance'
 has "$workflow" '- os/dev/derive-rpm-package-set.py' \
   'package parser changes retrigger the snapshot'
 
@@ -136,8 +147,14 @@ has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=
   'snapshot proves the frozen repo resolves the complete transaction offline'
 has "$image_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
   'production CI rejects a stale frozen package manifest before building'
+has "$image_workflow" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
+  'production CI accepts only the real digest-pinned RPM registry path'
+has "$relay_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
+  'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'
+has "$build_script" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
+  'local builds accept only the real digest-pinned RPM registry path'
 
 if grep -Rqs --exclude-dir=output --include='Containerfile*' 'DROP_RPMDB_WAL' \
   "$repo/os" || grep -Fq 'DROP_RPMDB_WAL' "$workflow"; then

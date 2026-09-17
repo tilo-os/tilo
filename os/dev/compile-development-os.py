@@ -84,8 +84,8 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
         raise ValueError('generation must be an explicit positive decimal integer')
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('full committed source revision required')
-    if not branch.startswith('refs/heads/codex/'):
-        raise ValueError('provisional full compilation is restricted to codex branches')
+    if branch != 'refs/heads/main' and not branch.startswith('refs/heads/codex/'):
+        raise ValueError('development compilation requires main or a codex branch')
 
 
 def validate_firmware_selection(mode, profile, reference, manifest_sha256, required=False):
@@ -443,13 +443,19 @@ def inspect_compilation(image_name, revision, generation, target, manifest_diges
     return {'image_id': image['Id'], 'hardware_profile': profile, 'loader': loader}
 
 
-def pinned_inputs():
+def pinned_inputs(architecture='x86_64', kernel_candidate=''):
     result = {}
     for variable, filename in PIN_FILES.items():
+        if variable == 'KERNEL_RPMS_REF' and kernel_candidate:
+            result[variable] = immutable_candidate(kernel_candidate)
+            continue
         lines = (REPO / 'os' / filename).read_text().splitlines()
-        values = [line.split('=', 1)[1] for line in lines if line.startswith(variable + '=')]
+        selected = variable
+        if variable == 'KERNEL_RPMS_REF':
+            selected = f'KERNEL_RPMS_{architecture.upper()}_REF'
+        values = [line.split('=', 1)[1] for line in lines if line.startswith(selected + '=')]
         if len(values) != 1 or not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', values[0]):
-            raise ValueError(f'{filename} must contain one immutable {variable}')
+            raise ValueError(f'{filename} must contain one immutable {selected}')
         result[variable] = values[0]
     return result
 
@@ -465,7 +471,7 @@ def selected_pins(architecture='x86_64', kernel_candidate='', rpms_candidate='',
         raise ValueError('unsupported native architecture')
     if require_kernel and architecture == 'aarch64' and not kernel_candidate:
         raise ValueError('ARM full-build requires an explicit immutable kernel candidate')
-    pins = pinned_inputs()
+    pins = pinned_inputs(architecture, kernel_candidate)
     for name, candidate in (('KERNEL_RPMS_REF', kernel_candidate), ('RPMS_REF', rpms_candidate)):
         if candidate:
             pins[name] = immutable_candidate(candidate)

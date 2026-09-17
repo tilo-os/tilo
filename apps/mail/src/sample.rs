@@ -27,35 +27,46 @@ fn att(filename: &str, mime: &str, size: u64) -> Attachment {
     Attachment::projected(filename, mime, size)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn message(
+struct SampleMessage<'a> {
     from: Addr,
     to: Vec<Addr>,
-    subject: &str,
-    body: &str,
+    subject: &'a str,
+    body: &'a str,
     ago_min: i64,
     read: bool,
     starred: bool,
     folder: Folder,
     attachments: Vec<Attachment>,
-) -> Message {
-    Message {
-        id: Uuid::new_v4(),
-        rfc_message_id: None,
-        in_reply_to: None,
-        from,
-        to,
-        cc: vec![],
-        subject: subject.into(),
-        body: body.into(),
-        html_body: None,
-        attachments,
-        timestamp_min: SAMPLE_NOW_MIN - ago_min,
-        read,
-        starred,
-        folder,
-        labels: Vec::new(),
+}
+
+impl SampleMessage<'_> {
+    fn build(self) -> Message {
+        Message {
+            id: Uuid::new_v4(),
+            rfc_message_id: None,
+            in_reply_to: None,
+            from: self.from,
+            to: self.to,
+            cc: vec![],
+            subject: self.subject.into(),
+            body: self.body.into(),
+            html_body: None,
+            attachments: self.attachments,
+            timestamp_min: SAMPLE_NOW_MIN - self.ago_min,
+            read: self.read,
+            starred: self.starred,
+            folder: self.folder,
+            labels: Vec::new(),
+        }
     }
+}
+
+struct InboxCorrespondents<'a> {
+    ci: Addr,
+    katherine: &'a Addr,
+    alan: Addr,
+    linus: Addr,
+    calendar: Addr,
 }
 
 /// One hour, in minutes — the unit the sample timestamps are expressed in.
@@ -89,7 +100,17 @@ pub fn sample_mailbox() -> Mailbox {
     let calendar = Addr::new("Calendar", "noreply@cal.tilo.example");
 
     insert_launch_plan_thread(&mut mb, &me, &ada, &grace);
-    insert_standalone_inbox_items(&mut mb, &me, ci, &katherine, alan, linus, calendar);
+    insert_standalone_inbox_items(
+        &mut mb,
+        &me,
+        InboxCorrespondents {
+            ci,
+            katherine: &katherine,
+            alan,
+            linus,
+            calendar,
+        },
+    );
 
     insert_sent_archive_and_junk(&mut mb, me, ada, grace, katherine);
 
@@ -126,49 +147,52 @@ pub fn sample_mailbox() -> Mailbox {
 fn insert_launch_plan_thread(mb: &mut Mailbox, me: &Addr, ada: &Addr, grace: &Addr) {
     // ---- Thread 1: "Launch plan for the spatial shell" (3 msgs, unread head)
     let root_id = "sample-launch-plan-root@tilo.example";
-    let mut root = message(
-        ada.clone(),
-        vec![me.clone()],
-        "Launch plan for the spatial shell",
-        "Hi team,\n\nI sketched the rollout for the 2D-cluster window model. \
+    let mut root = SampleMessage {
+        from: ada.clone(),
+        to: vec![me.clone()],
+        subject: "Launch plan for the spatial shell",
+        body: "Hi team,\n\nI sketched the rollout for the 2D-cluster window model. \
 First milestone is the tiling engine, then per-cluster sandboxing, then the \
 collaboration buffer streaming. Thoughts on sequencing?\n\n— Ada",
-        2 * HOUR_MIN + 23,
-        true,
-        true,
-        Folder::Inbox,
-        vec![],
-    );
+        ago_min: 2 * HOUR_MIN + 23,
+        read: true,
+        starred: true,
+        folder: Folder::Inbox,
+        attachments: vec![],
+    }
+    .build();
     root.rfc_message_id = Some(root_id.into());
     mb.insert(root);
-    let mut reply = message(
-        grace.clone(),
-        vec![me.clone(), ada.clone()],
-        "Re: Launch plan for the spatial shell",
-        "Sequencing looks right. I'd pull sandboxing forward — it's the \
+    let mut reply = SampleMessage {
+        from: grace.clone(),
+        to: vec![me.clone(), ada.clone()],
+        subject: "Re: Launch plan for the spatial shell",
+        body: "Sequencing looks right. I'd pull sandboxing forward — it's the \
 security boundary everything else leans on. Let's not ship streaming before \
 the bubblewrap policy is solid.\n\nGrace",
-        HOUR_MIN + 47,
-        true,
-        false,
-        Folder::Inbox,
-        vec![],
-    );
+        ago_min: HOUR_MIN + 47,
+        read: true,
+        starred: false,
+        folder: Folder::Inbox,
+        attachments: vec![],
+    }
+    .build();
     reply.rfc_message_id = Some("sample-launch-plan-reply@tilo.example".into());
     reply.in_reply_to = Some(root_id.into());
     mb.insert(reply);
-    let mut latest = message(
-        ada.clone(),
-        vec![me.clone(), grace.clone()],
-        "Re: Launch plan for the spatial shell",
-        "Agreed. New order: tiling → sandbox → streaming. I attached the \
+    let mut latest = SampleMessage {
+        from: ada.clone(),
+        to: vec![me.clone(), grace.clone()],
+        subject: "Re: Launch plan for the spatial shell",
+        body: "Agreed. New order: tiling → sandbox → streaming. I attached the \
 revised gantt. Can you review the collaboration section before Friday?",
-        38,
-        false,
-        false,
-        Folder::Inbox,
-        vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
-    );
+        ago_min: 38,
+        read: false,
+        starred: false,
+        folder: Folder::Inbox,
+        attachments: vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
+    }
+    .build();
     latest.rfc_message_id = Some("sample-launch-plan-latest@tilo.example".into());
     latest.in_reply_to = Some(root_id.into());
     mb.insert(latest);
@@ -176,90 +200,97 @@ revised gantt. Can you review the collaboration section before Friday?",
 
 /// The one-off inbox items: a CI failure, two short replies, a mailing-list
 /// post and a calendar invite. Each stands alone rather than threading.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one correspondent per message; bundling them into a struct would only move the same list somewhere else"
-)]
 fn insert_standalone_inbox_items(
     mb: &mut Mailbox,
     me: &Addr,
-    ci: Addr,
-    katherine: &Addr,
-    alan: Addr,
-    linus: Addr,
-    calendar: Addr,
+    correspondents: InboxCorrespondents<'_>,
 ) {
     // ---- Thread 2: CI failure (unread, attachment: log)
-    mb.insert(message(
-        ci,
-        vec![me.clone()],
-        "Build #4821 failed on shell --lib",
-        "Pipeline tilo/tilo run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
+    mb.insert(
+        SampleMessage {
+            from: correspondents.ci,
+            to: vec![me.clone()],
+            subject: "Build #4821 failed on shell --lib",
+            body: "Pipeline tilo/tilo run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
 error: process didn't exit successfully: SIGSEGV (parallel wgpu instance \
 contention?)\n\nFull log attached. Re-run threshold was 4 OK / 8 SIGSEGV.",
-        14,
-        false,
-        false,
-        Folder::Inbox,
-        vec![att("build-4821.log", "text/plain", 28_716)],
-    ));
+            ago_min: 14,
+            read: false,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![att("build-4821.log", "text/plain", 28_716)],
+        }
+        .build(),
+    );
 
     // ---- Thread 3: Katherine, calculations (read)
-    mb.insert(message(
-        katherine.clone(),
-        vec![me.clone()],
-        "Re-check the trajectory math",
-        "I ran the re-entry numbers by hand and they line up with the \
+    mb.insert(
+        SampleMessage {
+            from: correspondents.katherine.clone(),
+            to: vec![me.clone()],
+            subject: "Re-check the trajectory math",
+            body: "I ran the re-entry numbers by hand and they line up with the \
 solver. Margins are tight on the third burn — want me to widen the window?",
-        5 * HOUR_MIN,
-        true,
-        true,
-        Folder::Inbox,
-        vec![att("trajectory.csv", "text/csv", 9_204)],
-    ));
+            ago_min: 5 * HOUR_MIN,
+            read: true,
+            starred: true,
+            folder: Folder::Inbox,
+            attachments: vec![att("trajectory.csv", "text/csv", 9_204)],
+        }
+        .build(),
+    );
 
     // ---- Thread 4: Alan, single short (unread)
-    mb.insert(message(
-        alan,
-        vec![me.clone()],
-        "Coffee before the standup?",
-        "Fancy a coffee at 9:15 before we dive into the compositor review? \
+    mb.insert(
+        SampleMessage {
+            from: correspondents.alan,
+            to: vec![me.clone()],
+            subject: "Coffee before the standup?",
+            body: "Fancy a coffee at 9:15 before we dive into the compositor review? \
 I have thoughts on the focus model.",
-        3,
-        false,
-        false,
-        Folder::Inbox,
-        vec![],
-    ));
+            ago_min: 3,
+            read: false,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![],
+        }
+        .build(),
+    );
 
     // ---- Thread 5: Linus, mailing-list style (read, long)
-    mb.insert(message(
-        linus,
-        vec![Addr::bare("tilo-dev@lists.tilo.example")],
-        "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
-        "On Tue, the patch looks mostly fine, but the readahead window is \
+    mb.insert(
+        SampleMessage {
+            from: correspondents.linus,
+            to: vec![Addr::bare("tilo-dev@lists.tilo.example")],
+            subject: "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
+            body: "On Tue, the patch looks mostly fine, but the readahead window is \
 hard-coded to 1MB. Make it a mount option. Also your error path leaks the \
 moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
-        26 * HOUR_MIN,
-        true,
-        false,
-        Folder::Inbox,
-        vec![],
-    ));
+            ago_min: 26 * HOUR_MIN,
+            read: true,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![],
+        }
+        .build(),
+    );
 
     // ---- Calendar invite (unread, ics attachment)
-    mb.insert(message(
-        calendar,
-        vec![me.clone()],
-        "Invitation: Compositor sync @ Thu 11:00",
-        "You have been invited to \"Compositor sync\".\nWhen: Thursday 11:00–\
+    mb.insert(
+        SampleMessage {
+            from: correspondents.calendar,
+            to: vec![me.clone()],
+            subject: "Invitation: Compositor sync @ Thu 11:00",
+            body: "You have been invited to \"Compositor sync\".\nWhen: Thursday 11:00–\
 11:45\nWhere: cluster://review-room\n\nAccept · Decline · Tentative",
-        9 * HOUR_MIN,
-        false,
-        false,
-        Folder::Inbox,
-        vec![att("invite.ics", "text/calendar", 1_842)],
-    ));
+            ago_min: 9 * HOUR_MIN,
+            read: false,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![att("invite.ics", "text/calendar", 1_842)],
+        }
+        .build(),
+    );
 }
 
 /// The Sent, Archive and Junk folders of the bundled corpus. Split out of
@@ -272,58 +303,70 @@ fn insert_sent_archive_and_junk(
     katherine: Addr,
 ) {
     // ---- Sent items
-    mb.insert(message(
-        me.clone(),
-        vec![ada, grace.clone()],
-        "Re: Launch plan for the spatial shell",
-        "Thanks both. I'll own the tiling engine and have a skeleton up by \
+    mb.insert(
+        SampleMessage {
+            from: me.clone(),
+            to: vec![ada, grace.clone()],
+            subject: "Re: Launch plan for the spatial shell",
+            body: "Thanks both. I'll own the tiling engine and have a skeleton up by \
 Wednesday. Pushing the sandbox policy doc to the shared cluster now.",
-        50,
-        true,
-        false,
-        Folder::Sent,
-        vec![],
-    ));
-    mb.insert(message(
-        me.clone(),
-        vec![katherine],
-        "Re: Re-check the trajectory math",
-        "Widen it — better a longer window than a missed burn. I'll update \
+            ago_min: 50,
+            read: true,
+            starred: false,
+            folder: Folder::Sent,
+            attachments: vec![],
+        }
+        .build(),
+    );
+    mb.insert(
+        SampleMessage {
+            from: me.clone(),
+            to: vec![katherine],
+            subject: "Re: Re-check the trajectory math",
+            body: "Widen it — better a longer window than a missed burn. I'll update \
 the solver bounds and re-run tonight.",
-        4 * HOUR_MIN + 30,
-        true,
-        false,
-        Folder::Sent,
-        vec![],
-    ));
+            ago_min: 4 * HOUR_MIN + 30,
+            read: true,
+            starred: false,
+            folder: Folder::Sent,
+            attachments: vec![],
+        }
+        .build(),
+    );
 
     // ---- Archive
-    mb.insert(message(
-        grace,
-        vec![me.clone()],
-        "Onboarding notes",
-        "Welcome aboard! Here are the cluster conventions and the review \
+    mb.insert(
+        SampleMessage {
+            from: grace,
+            to: vec![me.clone()],
+            subject: "Onboarding notes",
+            body: "Welcome aboard! Here are the cluster conventions and the review \
 rota. Ping me if the FUSE mount misbehaves.",
-        9 * 1440,
-        true,
-        false,
-        Folder::Archive,
-        vec![att("onboarding.pdf", "application/pdf", 512_000)],
-    ));
+            ago_min: 9 * 1440,
+            read: true,
+            starred: false,
+            folder: Folder::Archive,
+            attachments: vec![att("onboarding.pdf", "application/pdf", 512_000)],
+        }
+        .build(),
+    );
 
     // ---- Junk
-    mb.insert(message(
-        Addr::new("Totally Legit Prize Co", "winner@prize.example"),
-        vec![me],
-        "\u{1F389} You have WON a free spatial monitor!!!",
-        "Dear winner, click here within 24 hours to claim your prize. This \
+    mb.insert(
+        SampleMessage {
+            from: Addr::new("Totally Legit Prize Co", "winner@prize.example"),
+            to: vec![me],
+            subject: "\u{1F389} You have WON a free spatial monitor!!!",
+            body: "Dear winner, click here within 24 hours to claim your prize. This \
 is definitely not a scam.",
-        7 * HOUR_MIN,
-        false,
-        false,
-        Folder::Junk,
-        vec![],
-    ));
+            ago_min: 7 * HOUR_MIN,
+            read: false,
+            starred: false,
+            folder: Folder::Junk,
+            attachments: vec![],
+        }
+        .build(),
+    );
 }
 
 /// A bundled multi-account store so the sidebar shows more than one account

@@ -30,6 +30,11 @@
 #   ./os/dev/vm.sh shot NAME                   framebuffer -> $TILO_RUN/NAME.png
 #   ./os/dev/vm.sh type STRING                 type a string (sendkey)
 #   ./os/dev/vm.sh keys KEY...                 send named keys (ret tab esc f2..)
+#   ./os/dev/vm.sh pointer X Y                 move the absolute USB tablet in guest pixels
+#   ./os/dev/vm.sh click X Y [left|right|middle]
+#                                             move, press and release a pointer button
+#   ./os/dev/vm.sh wait-greeter-return         prove UI logout returned to greetd
+#   ./os/dev/vm.sh shutdown                    request a clean guest shutdown over SSH
 #   ./os/dev/vm.sh cmd "HMP"                   raw QEMU monitor command
 #   ./os/dev/vm.sh serial [GREP]               dump the boot serial console log
 #   ./os/dev/vm.sh journal [GREP]             offline journal extract (VM stopped)
@@ -272,6 +277,36 @@ cmd_type() {
 
 cmd_keys() { local k; for k in "$@"; do hmp "sendkey $k" >/dev/null; sleep 0.12; done; }
 
+# QEMU's USB tablet reports absolute coordinates in the inclusive 0..32767
+# range. Accept guest logical pixels so an acceptance script can use the same
+# coordinates as screenshots and the compositor's configured mode.
+cmd_pointer() {
+  local x="${1:?usage: pointer X Y}" y="${2:?usage: pointer X Y}"
+  [ "$TILO_XRES" -gt 1 ] && [ "$TILO_YRES" -gt 1 ] \
+    || die "pointer injection requires a guest mode larger than 1x1"
+  [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]] \
+    || die "pointer coordinates must be non-negative integers"
+  [ "$x" -lt "$TILO_XRES" ] && [ "$y" -lt "$TILO_YRES" ] \
+    || die "pointer coordinate ($x,$y) is outside ${TILO_XRES}x${TILO_YRES}"
+  local qx=$((x * 32767 / (TILO_XRES - 1)))
+  local qy=$((y * 32767 / (TILO_YRES - 1)))
+  hmp "mouse_move $qx $qy 1" >/dev/null
+}
+
+cmd_click() {
+  local x="${1:?usage: click X Y [left|right|middle]}"
+  local y="${2:?usage: click X Y [left|right|middle]}"
+  local button="${3:-left}" mask
+  case "$button" in
+    left) mask=1;; right) mask=2;; middle) mask=4;;
+    *) die "click button must be left, right, or middle";;
+  esac
+  cmd_pointer "$x" "$y"
+  hmp "mouse_button $mask" >/dev/null
+  sleep 0.08
+  hmp "mouse_button 0" >/dev/null
+}
+
 cmd_login() {
   local passcode_only=0
   if [ "${1:-}" = "--passcode-only" ]; then passcode_only=1; shift; fi
@@ -308,6 +343,41 @@ cmd_serial() {
 }
 
 cmd_status() { if vm_running; then echo "running (pid $(cat "$TILO_PIDFILE"))"; else echo "stopped"; fi; }
+
+# Evidence barrier for a logout driven through Tilo's visible power menu. The
+# compositor must be gone and greetd must own a fresh login session; checking
+# only one side can mistake a crashed desktop or a still-running shell for a
+# successful logout. This intentionally performs no logout action itself.
+cmd_wait_greeter_return() {
+  local attempts="${TILO_GREETER_RETURN_ATTEMPTS:-120}" i
+  msg "waiting for Tilo logout to return to the greeter ..."
+  for i in $(seq 1 "$attempts"); do
+    if gssh "! pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
+      msg "greeter returned after logout (~$i s)"
+      return 0
+    fi
+    vm_running || die "qemu exited while waiting for the greeter to return"
+    sleep 1
+  done
+  cmd_serial 'greetd|shell|session-c[0-9]+.scope' | tail -120 >&2 || true
+  die "timed out waiting for logout to stop Tilo and return to greetd"
+}
+
+cmd_shutdown() {
+  msg "requesting clean guest shutdown"
+  gssh "sudo systemctl poweroff" >/dev/null 2>&1 || true
+  local attempts="${TILO_SHUTDOWN_ATTEMPTS:-60}" i
+  for i in $(seq 1 "$attempts"); do
+    if ! vm_running; then
+      rm -f "$TILO_PIDFILE"
+      swtpm_stop
+      msg "guest powered off cleanly (~$i s)"
+      return 0
+    fi
+    sleep 1
+  done
+  die "guest did not power off within ${attempts}s; VM left running for diagnosis"
+}
 
 cmd_stop() {
   if vm_running; then hmp "quit" >/dev/null 2>&1 || true; sleep 1; fi
@@ -375,6 +445,10 @@ case "$sub" in
   shot) cmd_shot "$@";;
   type) cmd_type "$@";;
   keys) cmd_keys "$@";;
+  pointer) cmd_pointer "$@";;
+  click) cmd_click "$@";;
+  wait-greeter-return) cmd_wait_greeter_return "$@";;
+  shutdown) cmd_shutdown "$@";;
   cmd) hmp "$*";;
   ssh) gssh "$@";;
   serial) cmd_serial "$@";;

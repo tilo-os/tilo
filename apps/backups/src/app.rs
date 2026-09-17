@@ -45,6 +45,19 @@ use crate::model::{
 };
 use crate::paint;
 
+/// Shared custom-paint resources threaded through focused view helpers.
+struct DrawContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+struct RecentActivityLabels<'a> {
+    when: &'a str,
+    action: &'a str,
+}
+
 const BAR_H: f64 = 52.0;
 const PAD: f64 = 20.0;
 const RAIL_W: f64 = 256.0;
@@ -857,7 +870,17 @@ impl BackupsApp {
         let cy = bar.y0 + bar_h / 2.0;
         let narrow = self.rect.width() < NARROW_BREAKPOINT;
 
-        let brand_right = self.draw_top_bar_left_cluster(scene, tr, theme, t, bar, cy, narrow);
+        let brand_right = self.draw_top_bar_left_cluster(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            bar,
+            cy,
+            narrow,
+        );
         // A phone-width primary action stays available but compacts to its
         // familiar plus glyph.  Reserving the full text button here used to
         // make the four view tabs overlap it at 390 px wide.
@@ -869,10 +892,12 @@ impl BackupsApp {
             122.0 * scale
         };
         self.draw_top_bar_tabs(
-            scene,
-            tr,
-            theme,
-            t,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             cy,
             brand_right,
             bar.x1 - PAD - action_width,
@@ -924,17 +949,17 @@ impl BackupsApp {
     /// the x just past the label, so the tab strip can centre in the
     /// remaining gap. Split out of [`Self::draw_top_bar`] to keep it under
     /// the line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_top_bar_left_cluster(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut DrawContext<'_>,
         bar: Rect,
         cy: f64,
         narrow: bool,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         // A hamburger leads it whenever the Timeline rail isn't fully
         // docked-open (overlay, or a collapsed dock), so the source rail is
@@ -970,17 +995,17 @@ impl BackupsApp {
     /// The view segmented-tab control, centred between the left cluster and
     /// the backup button, with per-tab width clamped so all tabs always fit.
     /// Split out of [`Self::draw_top_bar`] to keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_top_bar_tabs(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut DrawContext<'_>,
         cy: f64,
         brand_right: f64,
         btn_x0: f64,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         // Segmented tab control, centred in the gap between the brand and the
         // button, with the per-tab width clamped so four tabs always fit.
@@ -1580,6 +1605,29 @@ impl BackupsApp {
         );
     }
 
+    fn draw_rail_frame(&self, scene: &mut Scene, t: Affine, theme: &Theme, rail: Rect) {
+        let colors = &theme.tokens.colors;
+        if self.drawer.is_overlay() {
+            paint::card(
+                scene,
+                t,
+                rail,
+                14.0,
+                colors.surfaces.raised,
+                ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 51),
+            );
+        } else {
+            paint::card(
+                scene,
+                t,
+                rail,
+                14.0,
+                colors.surfaces.raised.with_alpha_factor(0.45),
+                ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
+            );
+        }
+    }
+
     fn draw_rail(
         &mut self,
         scene: &mut Scene,
@@ -1594,25 +1642,7 @@ impl BackupsApp {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rail);
         // A translucent card when docked (matches the panel), a solid surface
         // when the drawer floats over content in overlay mode.
-        if self.drawer.is_overlay() {
-            paint::card(
-                scene,
-                t,
-                rail,
-                14.0,
-                c.surfaces.raised,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
-            );
-        } else {
-            paint::card(
-                scene,
-                t,
-                rail,
-                14.0,
-                c.surfaces.raised.with_alpha_factor(0.45),
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            );
-        }
+        self.draw_rail_frame(scene, t, theme, rail);
         let pad = 14.0;
         let mut y = rail.y0 + 14.0;
         paint::text(scene, tr, t, "SOURCES", 10.5, c.text_dim, rail.x0 + pad, y);
@@ -1634,14 +1664,35 @@ impl BackupsApp {
 
         // "All sources" pseudo-row + each source.
         let all_sel = self.ui.sel_source.is_none();
-        self.draw_source_row(scene, t, tr, theme, rail, &mut y, None, all_sel);
+        self.draw_source_row(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            rail,
+            &mut y,
+            all_sel,
+        );
         for i in 0..self.catalog.sources.len() {
             let Some(src) = self.catalog.sources.get(i) else {
                 continue;
             };
             let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
             let src = src.clone();
-            self.draw_source_row_real(scene, t, tr, theme, rail, &mut y, &src, sel);
+            self.draw_source_row_real(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                rail,
+                &mut y,
+                &src,
+                sel,
+            );
         }
 
         y += 10.0;
@@ -1670,7 +1721,17 @@ impl BackupsApp {
             let Some(d) = self.catalog.destinations.get(i).cloned() else {
                 continue;
             };
-            self.draw_dest_compact(scene, t, tr, theme, rail, &mut y, &d);
+            self.draw_dest_compact(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                rail,
+                &mut y,
+                &d,
+            );
         }
         scene.pop_layer();
     }
@@ -1707,20 +1768,11 @@ impl BackupsApp {
     }
 
     /// The "All sources" aggregate row.
-    // scene/t/tr/theme is the fixed draw-call boilerplate every `draw_*`
-    // method takes; the rest are this row's own content and layout.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_source_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rail: Rect,
-        y: &mut f64,
-        _src: Option<&Source>,
-        sel: bool,
-    ) {
+    fn draw_source_row(&mut self, ctx: &mut DrawContext<'_>, rail: Rect, y: &mut f64, sel: bool) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let h = 38.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
@@ -1758,18 +1810,18 @@ impl BackupsApp {
         *y += h + 6.0;
     }
 
-    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
     fn draw_source_row_real(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         rail: Rect,
         y: &mut f64,
         src: &Source,
         sel: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let h = 50.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
@@ -1835,21 +1887,21 @@ impl BackupsApp {
         *y += h + 4.0;
     }
 
-    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
     #[allow(
         clippy::many_single_char_names,
         reason = "t/y/h/c/d are the standard graphics convention: transform, position, row height, colour tokens, and this row's Destination"
     )]
     fn draw_dest_compact(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         rail: Rect,
         y: &mut f64,
         d: &Destination,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let h = 48.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
@@ -2068,7 +2120,18 @@ impl BackupsApp {
             let row = Rect::new(list.x0, y, list.x1, y + ROW_H);
             let visible = row.y1 > list.y0 && row.y0 < list.y1;
             if visible {
-                self.draw_snapshot_row(scene, t, tr, theme, row, s, selected, show_source);
+                self.draw_snapshot_row(
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    row,
+                    s,
+                    selected,
+                    show_source,
+                );
                 self.hits.push((row, Hit::Snap(s.id.clone())));
             }
             y += ROW_H + 4.0;
@@ -2128,18 +2191,18 @@ impl BackupsApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
     fn draw_snapshot_row(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         s: &Snapshot,
         selected: bool,
         show_source: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let hovered = self.hover == Some(Hit::Snap(s.id.clone()));
         if selected {
@@ -2332,7 +2395,19 @@ impl BackupsApp {
             let Some(src) = self.catalog.sources.get(i).cloned() else {
                 continue;
             };
-            self.draw_source_card(scene, t, tr, theme, content, y, card_h, narrow, &src);
+            self.draw_source_card(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                content,
+                y,
+                card_h,
+                narrow,
+                &src,
+            );
             y += card_h + 12.0;
         }
 
@@ -2378,19 +2453,19 @@ impl BackupsApp {
     /// One source card: icon + path + kind, the cadence/snapshots/protected
     /// stats, health + next-run, and the enable toggle. Split out of
     /// [`Self::draw_sources_view`] to keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_source_card(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         content: Rect,
         y: f64,
         card_h: f64,
         narrow: bool,
         src: &Source,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let card = Rect::new(content.x0, y, content.x1, y + card_h);
         let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
@@ -2437,28 +2512,49 @@ impl BackupsApp {
         );
 
         if narrow {
-            Self::draw_source_card_stats_narrow(scene, t, tr, theme, &self.catalog, card, ix, src);
+            Self::draw_source_card_stats_narrow(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                &self.catalog,
+                card,
+                ix,
+                src,
+            );
         } else {
             Self::draw_source_card_stats_wide(scene, t, tr, theme, &self.catalog, card, src);
         }
 
-        self.draw_source_card_footer(scene, t, tr, theme, card, card_h, src);
+        self.draw_source_card_footer(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            card,
+            card_h,
+            src,
+        );
     }
 
     /// The health dot, next-run label, and enable toggle at the bottom of a
     /// source card. Split out of [`Self::draw_source_card`] to keep it under
     /// the line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_source_card_footer(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         card: Rect,
         card_h: f64,
         src: &Source,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         paint::dot(
             scene,
@@ -2502,17 +2598,17 @@ impl BackupsApp {
     /// The single compact stats line shown for a source card at narrow
     /// widths. Split out of [`Self::draw_source_card`] to keep it under the
     /// line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_source_card_stats_narrow(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         catalog: &Catalog,
         card: Rect,
         ix: f64,
         src: &Source,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let stats = format!(
             "{} · {} snapshots · {}",
@@ -2647,11 +2743,34 @@ impl BackupsApp {
             let when = format!("{} {}", Catalog::day_label(event.day), event.time);
             if narrow {
                 Self::draw_recent_activity_row_narrow(
-                    scene, t, tr, theme, region, ry, event, &when, &action,
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    region,
+                    ry,
+                    event,
+                    &when,
+                    &action,
                 );
             } else {
                 self.draw_recent_activity_row_wide(
-                    scene, t, tr, theme, region, ry, row_h, event, &when, &action,
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    region,
+                    ry,
+                    row_h,
+                    event,
+                    &RecentActivityLabels {
+                        when: &when,
+                        action: &action,
+                    },
                 );
             }
             if i + 1 < events.len() && ry + row_h * 2.0 <= region.y1 - 8.0 {
@@ -2671,18 +2790,18 @@ impl BackupsApp {
     /// One narrow-layout recent-activity row: status dot, when + size on top,
     /// the action beneath. Split out of [`Self::draw_recent_activity`] to
     /// keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_recent_activity_row_narrow(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         region: Rect,
         ry: f64,
         event: &Snapshot,
         when: &str,
         action: &str,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         paint::dot(
             scene,
@@ -2726,20 +2845,19 @@ impl BackupsApp {
     /// One wide-layout recent-activity row: status dot, when, action, dest,
     /// status label, size. Split out of [`Self::draw_recent_activity`] to
     /// keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_recent_activity_row_wide(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         region: Rect,
         ry: f64,
         row_h: f64,
         event: &Snapshot,
-        when: &str,
-        action: &str,
+        labels: &RecentActivityLabels<'_>,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let cy = ry + row_h / 2.0;
         paint::dot(
@@ -2753,7 +2871,7 @@ impl BackupsApp {
             scene,
             tr,
             t,
-            when,
+            labels.when,
             12.5,
             c.text_primary,
             region.x0 + 36.0,
@@ -2763,7 +2881,7 @@ impl BackupsApp {
             scene,
             tr,
             t,
-            action,
+            labels.action,
             12.0,
             c.text_dim,
             region.x0 + 168.0,
@@ -2869,12 +2987,40 @@ impl BackupsApp {
             if compact {
                 Self::draw_dest_card_compact(scene, t, tr, theme, card, &d, sel);
             } else {
-                Self::draw_dest_card_tall(scene, t, tr, theme, card, &d, sel);
+                Self::draw_dest_card_tall(
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    card,
+                    &d,
+                    sel,
+                );
             }
             self.hits.push((card, Hit::Dest(d.id.clone())));
         }
 
-        // Aggregate bar across the bottom.
+        let ay = top + rows_used as f64 * (ch + row_gap) + 10.0;
+        self.draw_destination_capacity(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            content,
+            ay,
+        );
+    }
+
+    fn draw_destination_capacity(&self, ctx: &mut DrawContext<'_>, content: Rect, y: f64) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let colors = &theme.tokens.colors;
         let used: u64 = self.catalog.destinations.iter().map(|d| d.used_bytes).sum();
         let total: u64 = self
             .catalog
@@ -2882,25 +3028,28 @@ impl BackupsApp {
             .iter()
             .map(|d| d.total_bytes)
             .sum();
-        let ay = top + rows_used as f64 * (ch + row_gap) + 10.0;
         paint::text_bold(
             scene,
             tr,
             t,
             "Total capacity",
             13.5,
-            c.text_primary,
+            colors.text_primary,
             content.x0,
-            ay,
+            y,
         );
-        let bar = Rect::new(content.x0, ay + 24.0, content.x1, ay + 38.0);
+        let bar = Rect::new(content.x0, y + 24.0, content.x1, y + 38.0);
         paint::bar(
             scene,
             t,
             bar,
-            used as f64 / total as f64,
+            if total == 0 {
+                0.0
+            } else {
+                used as f64 / total as f64
+            },
             theme.accent_primary,
-            c.neutral[2],
+            colors.neutral[2],
         );
         paint::text(
             scene,
@@ -2913,13 +3062,13 @@ impl BackupsApp {
                 self.catalog.destinations.len()
             ),
             11.5,
-            c.text_dim,
+            colors.text_dim,
             content.x0,
-            ay + 44.0,
+            y + 44.0,
         );
 
         // Distribution: where the snapshots actually live.
-        self.draw_dest_distribution(scene, t, tr, theme, content, ay + 76.0);
+        self.draw_dest_distribution(scene, t, tr, theme, content, y + 76.0);
     }
 
     fn dest_color(theme: &Theme, id: &str) -> Color {
@@ -2933,16 +3082,11 @@ impl BackupsApp {
     }
 
     /// The full repository card: a big capacity ring plus used/free figures.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_dest_card_tall(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        d: &Destination,
-        sel: bool,
-    ) {
+    fn draw_dest_card_tall(ctx: &mut DrawContext<'_>, card: Rect, d: &Destination, sel: bool) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let border = if sel {
             theme.accent_primary.with_alpha_factor(0.6)
@@ -3471,25 +3615,36 @@ impl BackupsApp {
         for (i, field) in PolicyField::ALL.iter().enumerate() {
             // `vals` and `PolicyField::ALL` both have exactly 4 entries.
             let value = vals.get(i).copied().unwrap_or(0);
-            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, value);
+            self.draw_schedules_editor_row(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                panel,
+                i,
+                *field,
+                value,
+            );
         }
     }
 
     /// One retention-class row: focus highlight, dot + label + unit, and the
     /// -/value/+ stepper. Split out of [`Self::draw_schedules_editor_rows`]
     /// to keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_schedules_editor_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         panel: Rect,
         i: usize,
         field: PolicyField,
         value: u32,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let row_step = 64.0 + (scale - 1.0) * 52.0;
@@ -3556,7 +3711,22 @@ impl BackupsApp {
             row.y0 + 32.0 * scale,
         );
 
-        // Stepper: [-]  value  [+]
+        self.draw_schedule_stepper(ctx, row, field, value, scale);
+    }
+
+    fn draw_schedule_stepper(
+        &mut self,
+        ctx: &mut DrawContext<'_>,
+        row: Rect,
+        field: PolicyField,
+        value: u32,
+        scale: f64,
+    ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let colors = &theme.tokens.colors;
         let cy = row.center().y;
         let plus = Rect::new(
             row.x1 - 44.0 * scale,
@@ -3571,15 +3741,35 @@ impl BackupsApp {
             valx0 - 8.0 * scale,
             cy + 18.0 * scale,
         );
-        self.draw_stepper(scene, t, tr, theme, minus, "–", Hit::Policy(field, -1));
-        self.draw_stepper(scene, t, tr, theme, plus, "+", Hit::Policy(field, 1));
+        self.draw_stepper(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            minus,
+            "–",
+            Hit::Policy(field, -1),
+        );
+        self.draw_stepper(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            plus,
+            "+",
+            Hit::Policy(field, 1),
+        );
         paint::text_center(
             scene,
             tr,
             t,
             &format!("{value}"),
             20.0,
-            c.text_primary,
+            colors.text_primary,
             valx0 - 8.0 * scale,
             plus.x0,
             cy - 12.0 * scale,
@@ -3785,17 +3975,11 @@ impl BackupsApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
-    fn draw_stepper(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        b: Rect,
-        glyph: &str,
-        hit: Hit,
-    ) {
+    fn draw_stepper(&mut self, ctx: &mut DrawContext<'_>, b: Rect, glyph: &str, hit: Hit) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let hovered = self.hover.as_ref() == Some(&hit);
         let fill = if hovered {
@@ -3844,10 +4028,28 @@ impl BackupsApp {
         let Some(snap) = snap else { return };
         let src = self.catalog.source(&snap.source_id);
 
-        let (m, narrow_modal) =
-            Self::draw_restore_modal_frame(scene, t, tr, theme, self.rect, &snap, src);
+        let (m, narrow_modal) = Self::draw_restore_modal_frame(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            self.rect,
+            &snap,
+            src,
+        );
         let (contents, safety) = Self::draw_restore_modal_layout(m, narrow_modal);
-        Self::draw_restore_contents(scene, t, tr, theme, contents, &snap);
+        Self::draw_restore_contents(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            contents,
+            &snap,
+        );
         Self::draw_restore_safety(scene, t, tr, theme, safety, &snap);
         self.draw_restore_footer_buttons(scene, t, tr, theme, m);
     }
@@ -3855,16 +4057,16 @@ impl BackupsApp {
     /// The modal's scrim, card frame, and title/subtitle. Returns the modal
     /// rect and whether it's in the narrow (stacked) layout. Split out of
     /// [`Self::draw_restore_modal`] to keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
     fn draw_restore_modal_frame(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         window: Rect,
         snap: &Snapshot,
         src: Option<&Source>,
     ) -> (Rect, bool) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         paint::fill_rect(scene, t, window, c.surfaces.overlay);
         // Clamp the modal to the window so it never overflows a small screen.
@@ -4008,15 +4210,11 @@ impl BackupsApp {
     /// A non-interactive contents preview. The restore engine currently
     /// restores whole snapshots, so these rows intentionally are not selectable
     /// and never imply a per-file restore capability.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_restore_contents(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        tree: Rect,
-        snap: &Snapshot,
-    ) {
+    fn draw_restore_contents(ctx: &mut DrawContext<'_>, tree: Rect, snap: &Snapshot) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         paint::card(
             scene,
@@ -4061,24 +4259,35 @@ impl BackupsApp {
             if ry + row_h > tree.y1 - 4.0 {
                 break;
             }
-            Self::draw_restore_content_row(scene, t, tr, theme, tree, ry, row_h, f);
+            Self::draw_restore_content_row(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                tree,
+                ry,
+                row_h,
+                f,
+            );
         }
     }
 
     /// One informational row in the snapshot preview. It deliberately has no
     /// hover, selection, hit target, or checkbox because recovery is all-or-
     /// nothing at this engine boundary.
-    #[allow(clippy::too_many_arguments)]
     fn draw_restore_content_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         tree: Rect,
         ry: f64,
         row_h: f64,
         f: &SnapFile,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let row = Rect::new(tree.x0 + 6.0, ry, tree.x1 - 6.0, ry + row_h - 2.0);
         let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
@@ -5248,6 +5457,36 @@ mod tests {
         assert!(f.has_hit(|hit| matches!(hit, Hit::Tab(View::Schedules))));
         f.key(&Key::Character("4".into()));
         assert_eq!(f.view(), View::Schedules);
+    }
+
+    #[test]
+    fn retention_steppers_stay_reachable_and_dispatch_on_wide_and_phone_layouts() {
+        let mut f = Frame::demo();
+        f.click_hit(|hit| matches!(hit, Hit::Tab(View::Schedules)));
+
+        for width in [1280.0, 390.0] {
+            f.app.rect = Rect::new(0.0, 0.0, width, 844.0);
+            f.draw();
+            for field in PolicyField::ALL {
+                let minus = f.rect_of(
+                    |hit| matches!(hit, Hit::Policy(candidate, -1) if *candidate == field),
+                );
+                let plus = f
+                    .rect_of(|hit| matches!(hit, Hit::Policy(candidate, 1) if *candidate == field));
+                assert!(minus.x1 <= plus.x0, "{field:?} stepper buttons overlap");
+                assert_eq!(minus.y0, plus.y0, "{field:?} controls leave their row");
+                assert_eq!(minus.y1, plus.y1, "{field:?} controls differ in height");
+                assert!(minus.x0 >= 0.0 && plus.x1 <= width);
+            }
+        }
+
+        let before = BackupsDoc::retention(&f.state.doc, &f.state.root, PolicyField::Daily);
+        f.click_hit(|hit| matches!(hit, Hit::Policy(PolicyField::Daily, 1)));
+        assert_eq!(
+            BackupsDoc::retention(&f.state.doc, &f.state.root, PolicyField::Daily),
+            before + 1,
+            "the visible phone control uses the durable action path"
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@
 //! ([`crate::profile::Profile::reachable_from_app_launch`] gates every request).
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -418,15 +419,20 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
 /// cannot be set to owner-only.
 pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
     store.ensure()?;
-    if let Some(parent) = socket.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-    }
+    let listener = if let Some(listener) = systemd_listener(socket)? {
+        listener
+    } else {
+        if let Some(parent) = socket.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(socket);
+        let listener = UnixListener::bind(socket)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        }
+        listener
+    };
     tracing::info!(socket = %socket.display(), "ush: serving guests");
 
     for conn in listener.incoming() {
@@ -440,6 +446,49 @@ pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+/// Consume systemd's one pre-bound service socket when activation metadata is
+/// addressed to this process. Invalid matching metadata is fatal: falling back
+/// to unlinking and rebinding would race queued clients and could replace an
+/// endpoint systemd already exposed.
+fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
+    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
+
+    let pid_matches = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        == Some(std::process::id());
+    if !pid_matches {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
+        "systemd must pass exactly one ush listener"
+    );
+    // SAFETY: fcntl only validates the scalar descriptor.
+    anyhow::ensure!(
+        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
+        "systemd ush listener fd is closed"
+    );
+    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
+    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
+    anyhow::ensure!(
+        listener.local_addr()?.as_pathname() == Some(expected),
+        "systemd ush listener has an unexpected path"
+    );
+    // Guest processes must never inherit the host supervisor endpoint.
+    anyhow::ensure!(
+        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
+        "cannot mark systemd ush listener close-on-exec"
+    );
+    // SAFETY: serve is entered before any worker thread is started.
+    unsafe {
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+    }
+    Ok(Some(listener))
 }
 
 fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Result<()> {

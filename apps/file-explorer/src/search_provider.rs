@@ -17,13 +17,13 @@ use std::sync::{Arc, RwLock};
 use sha2::{Digest as _, Sha256};
 
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult,
 };
 use ui::tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 
 #[cfg(test)]
-use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, SearchTextIndex};
+use ui::search::SearchTextIndex;
 
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
@@ -230,8 +230,12 @@ impl SearchProvider for PlacesSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.catalog.query_page(
+            query,
+            cursor,
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
@@ -387,8 +391,12 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.catalog.query_page(
+            query,
+            cursor,
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
@@ -531,8 +539,12 @@ impl SearchProvider for RemoteAccountSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.catalog.query_page(
+            query,
+            cursor,
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {

@@ -6,12 +6,35 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 CF="$REPO/os/Containerfile"
 ASSETS="$REPO/os/external-assets/github-assets.tsv"
+KERNEL_CONFIG="$REPO/os/kernel/config-fragments/tilo.config"
 
 fail=0
 ok()  { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm freerdp xwayland-satellite virt-viewer xorriso; do
+grep -Fqx 'CONFIG_NTSYNC=y' "$KERNEL_CONFIG" \
+  && ok 'kernel-native ntsync accelerates current Wine/Proton synchronization' \
+  || bad 'kernel-native ntsync is absent from the gaming kernel'
+grep -Fq '"/dev/ntsync".to_string()' "$REPO/crates/packaging/launcher/src/run.rs" \
+  && ok 'game sandboxes receive the kernel ntsync device' \
+  || bad 'ntsync is hidden by the game sandbox device namespace'
+grep -Fq '"--dev-bind".to_string()' "$REPO/crates/packaging/launcher/src/run.rs" \
+  && ok 'native game launch fails visibly instead of silently losing ntsync' \
+  || bad 'native game launch silently tolerates a missing ntsync device'
+grep -Fq 'let ntsync = PathBuf::from("/dev/ntsync")' \
+    "$REPO/crates/windows/compat-service/src/plan.rs" \
+  && ok 'UMU/Proton capsules receive the kernel ntsync device' \
+  || bad 'ntsync is hidden by the UMU/Proton capsule namespace'
+grep -Fq 'bind(&mut argv, "--dev-bind", &ntsync, &ntsync)' \
+    "$REPO/crates/windows/compat-service/src/plan.rs" \
+  && ok 'Proton launch fails visibly instead of silently losing ntsync' \
+  || bad 'Proton launch silently tolerates a missing ntsync device'
+grep -Fq '("PROTON_USE_NTSYNC", "1".to_string())' \
+    "$REPO/crates/windows/compat-service/src/plan.rs" \
+  && ok 'pinned Proton runner is instructed to select ntsync' \
+  || bad 'Proton receives ntsync but is not instructed to use it'
+
+for package in wine wine-dxvk qemu-kvm libvirt-daemon-kvm swtpm freerdp xwayland-satellite virt-viewer xorriso; do
   grep -q "^    $package \\\\$" "$CF" \
     && ok "$package is part of the immutable image" \
     || bad "$package is absent from the Windows compatibility package transaction"
@@ -25,6 +48,12 @@ done
 grep -Fq '    "$vm_firmware" \' "$CF" \
   && ok 'selected native VM firmware is installed in the compatibility transaction' \
   || bad 'native VM firmware is absent from the compatibility transaction'
+
+if grep -Eq '^    gamescope \\$' "$CF"; then
+  bad 'unused gamescope is installed despite having no trusted launch path'
+else
+  ok 'unused gamescope is absent from the immutable image'
+fi
 
 grep -q '^# tilo-rpm-snapshot-package: virtio-win$' "$CF" \
   && grep -q 'COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso' "$CF" \

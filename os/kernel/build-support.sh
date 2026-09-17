@@ -19,7 +19,6 @@ case "$command" in
         required="
             $arch_option
             CONFIG_MODULE_SIG=y
-            CONFIG_MODULE_SIG_ALL=y
             CONFIG_MODULE_SIG_FORCE=y
             CONFIG_USER_NS=y
             CONFIG_SECCOMP_FILTER=y
@@ -40,6 +39,10 @@ case "$command" in
         fi
         echo "----- required security options ($arch) -----"
         missing=""
+        if ! grep -Fqx "# CONFIG_MODULE_SIG_ALL is not set" "$config"; then
+            echo "MISSING # CONFIG_MODULE_SIG_ALL is not set" >&2
+            exit 1
+        fi
         for opt in $required; do
             if grep -Fqx "$opt" "$config"; then
                 echo "  ok      $opt"

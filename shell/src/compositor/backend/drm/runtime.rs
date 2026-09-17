@@ -3170,15 +3170,20 @@ impl KeyboardXkb {
 
     /// Translate one key event. `keycode` already carries the +8 offset (see [`KeyboardKeyEvent::key_code`]).
     fn process(&mut self, keycode: xkb::Keycode, pressed: bool) -> KeyOutcome {
-        // Read the produced keysym with the *current* modifier state, then
-        // advance for this key — a held Shift is already uppercased since Shift-down updated state first; a modifier key's sym is unaffected by ordering.
-        let sym = self.state.key_get_one_sym(keycode);
         let direction = if pressed {
             xkb::KeyDirection::Down
         } else {
             xkb::KeyDirection::Up
         };
         let _ = self.state.update_key(keycode, direction);
+
+        // Resolve the symbol and UTF-8 text *after* xkb has incorporated the
+        // event. That is required for the key which changes the state itself:
+        // a Shift press must publish Shift, not the symbol from the previous
+        // level, and a printable press must use every modifier/layout latch
+        // effective for that key. Releases are not text-bearing in the
+        // consumers below, so resolving their post-release level is harmless.
+        let sym = self.state.key_get_one_sym(keycode);
 
         let new_mods = self.current_mods();
         let modifiers_changed = if new_mods == self.mods {
@@ -3694,6 +3699,26 @@ mod tests {
             .modifiers_changed
             .expect("shift release should flip the modifier mask");
         assert!(!m.state().shift_key(), "left shift up -> shift cleared");
+    }
+
+    #[test]
+    fn xkb_shift_event_itself_is_named_and_following_text_is_shifted() {
+        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        let down = kbd.process(xkb::Keycode::new(50), true);
+        let WindowEvent::KeyboardInput { event, .. } = down.input.expect("shift input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
+
+        let letter = kbd.process(xkb::Keycode::new(38), true);
+        let WindowEvent::KeyboardInput { event, .. } = letter.input.expect("letter input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Character("A".into()));
+        assert_eq!(event.text.as_deref(), Some("A"));
     }
 
     /// End-to-end: an alpha-row keycode yields a `Character` `KeyboardInput` carrying text — QWERTY 'a' is a letter on every Latin layout, so layout-independent; soft-skips without xkb data.

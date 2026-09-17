@@ -31,8 +31,10 @@ say() { printf '\n== %s\n' "$*"; }
 # What is lost: receive-side HEVC Main10 decode, i.e. viewing a peer's HDR
 # stream. Everything else, including sending, is unaffected.
 if (( run_cargo )); then
-    say "cargo build --release (launcher, unlock helper)"
-    ( cd "$repo_root" && cargo build --release --locked -p launcher -p tilo-unlock-helper )
+    say "cargo build --release (session and app support)"
+    ( cd "$repo_root" && cargo build --release --locked \
+        -p launcher -p tilo-unlock-helper -p pkg-cli -p install -p runtime-bundle \
+        -p cli-shim -p app-host -p ush -p local-model-service -p tilo-model-gateway )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -40,8 +42,15 @@ if (( run_cargo )); then
     ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --no-default-features )
 fi
 
-rel=${TILO_BIN_DIR:-$repo_root/target/release}
-for bin in shell tilo-launcher tilo-unlock-helper; do
+# Cargo resolves a relative CARGO_TARGET_DIR from the repository root (the
+# directory used by both builds above). Canonicalise that path here as well so
+# packaging follows the artifacts Cargo actually produced.
+target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
+[[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
+target_dir=$(realpath -m "$target_dir")
+rel=${TILO_BIN_DIR:-$target_dir/release}
+for bin in shell tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
+           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
 
@@ -58,6 +67,56 @@ rm -rf "$out/stage" "$out/SOURCES" "$out/BUILD" "$out/BUILDROOT" \
        "$out/RPMS" "$out/SRPMS"
 mkdir -p "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 "$repo_root/dist/stage-payload.sh" "$rel" "$stage"
+
+# A desktop session that advertises Tilo Settings must ship that application.
+# Build the same default qpkg collection as the OS image and materialise its
+# immutable system store.  The companion RPM is version-locked to the session
+# below, so `rpm-ostree update` advances compositor, launcher, runtime and
+# apps in one deployment while user-installed packages retain precedence.
+say "building the default Tilo app collection"
+app_release=$out/app-release
+if (( run_cargo )); then
+    app_names=$(python3 "$repo_root/tools/app_release.py" --collection desktop \
+        | jq -r '.catalog[].name' | paste -sd' ' -)
+    [[ -n $app_names ]] || { echo "desktop app collection is empty" >&2; exit 1; }
+    TILO_RELEASE_APPS="$app_names" TILO_APP_RELEASE_OUT="$app_release" \
+        "$repo_root/dist/apps/package-apps.sh"
+else
+    collection=$app_release/tilo-apps-$(uname -m).tar.gz
+    [[ -f $collection ]] || {
+        echo "missing $collection — run without --no-cargo" >&2
+        exit 1
+    }
+fi
+
+say "staging immutable Tilo app store"
+app_stage=$stage/apps
+"$repo_root/dist/rpm/stage-app-store.sh" "$app_release" "$rel" "$app_stage"
+mkdir -p "$app_stage"/{bin,libexec,systemd-user,user-tmpfiles,license}
+install -pm 0755 "$rel/tilo-install" "$app_stage/bin/tilo-install"
+install -pm 0755 "$rel/tilo-pkg" "$app_stage/bin/tilo-pkg"
+install -pm 0755 "$rel/tilo-runtime-bundle" "$app_stage/bin/tilo-runtime-bundle"
+install -pm 0755 "$rel/tilo-model-manager" "$app_stage/bin/tilo-model-manager"
+install -pm 0755 "$rel/tilo-model-gateway" "$app_stage/bin/tilo-model-gateway"
+install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
+install -pm 0755 "$rel/tilo-app-host" "$app_stage/libexec/tilo-app-host"
+install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
+install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-host.service" \
+    "$app_stage/systemd-user/tilo-app-host.service"
+install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-model-storage.service" \
+    "$app_stage/systemd-user/tilo-model-storage.service"
+install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-models.service" \
+    "$app_stage/systemd-user/tilo-models.service"
+install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-model-gateway.service" \
+    "$app_stage/systemd-user/tilo-model-gateway.service"
+install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-ush.service" \
+    "$app_stage/systemd-user/tilo-ush.service"
+install -pm 0644 "$repo_root/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf" \
+    "$app_stage/user-tmpfiles/tilo-model-manager.conf"
+mkdir -p "$app_stage/profile.d"
+install -pm 0644 "$repo_root/os/etc/profile.d/tilo-apps.sh" \
+    "$app_stage/profile.d/tilo-apps.sh"
+install -pm 0644 "$repo_root/LICENSE" "$app_stage/license/LICENSE"
 
 tar -C "$out/stage" -czf "$out/SOURCES/$name-$version.tar.gz" "$name-$version"
 cp "$repo_root/dist/rpm/$name.spec" "$out/SPECS/"
