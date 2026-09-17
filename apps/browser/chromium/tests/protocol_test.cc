@@ -60,12 +60,40 @@ int main() {
     provenance.Record(7,"https://same.test/file","GET");
     provenance.Record(7,"https://same.test/file","POST");
     assert(!provenance.TakeRetryable(7,"https://same.test/file","https://same.test/file"));
+    provenance.Record(7,"https://same.test/file","GET");
+    assert(!provenance.TakeRetryable(7,"https://same.test/file","https://same.test/file"));
+    assert(!provenance.TakeRetryable(7,"https://same.test/file","https://same.test/file"));
+    provenance.Record(7,"https://same.test/file","GET");
+    assert(provenance.TakeRetryable(7,"https://same.test/file","https://same.test/file"));
     assert(!provenance.TakeRetryable(7,"https://unknown.test/file","https://unknown.test/file"));
     provenance.Record(7,"https://get.test/file","GET");
     assert(provenance.TakeRetryable(7,"https://get.test/file","https://get.test/file"));
     assert(!provenance.TakeRetryable(7,"https://get.test/file","https://get.test/file"));
     provenance.Record(7,"blob:https://get.test/id","GET");
     assert(!provenance.TakeRetryable(7,"blob:https://get.test/id","blob:https://get.test/id"));
+  }
+  {
+    DownloadOwnerReservations owners;
+    for(int owner=1;owner<=32;++owner) {
+      assert(owners.CanAdmit(owner));
+      owners.SetBusy(owner,true);
+      assert(owners.Detach(owner));
+      owners.SetBusy(owner,false); // Terminal, but OnBeforeClose is delayed.
+    }
+    assert(owners.Size()==32);
+    assert(!owners.CanAdmit(33));
+    // Replacement visible tabs remain valid, but cannot admit work that might
+    // need a 33rd detached owner until physical destruction is acknowledged.
+    owners.Destroy(1);
+    assert(owners.CanAdmit(33));
+    owners.SetBusy(33,true);  // Early update reserves ownership immediately.
+    assert(owners.IsBusy(33)); // Promotion to a pending prompt stays busy.
+    assert(owners.Detach(33));
+    owners.SetBusy(33,false); // Terminal update queues an idle task.
+    owners.SetBusy(33,true);  // New early admission makes that task stale.
+    assert(!ShouldCloseDetached(owners.IsDetached(33),owners.IsBusy(33)));
+    owners.SetBusy(33,false);
+    assert(ShouldCloseDetached(owners.IsDetached(33),owners.IsBusy(33)));
   }
   std::cout << "protocol tests passed\n";
 }

@@ -1711,6 +1711,13 @@ mod tests {
         let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
         let mut doc = AutoCommit::new();
         tabs.sync(&mut doc, &automerge::ROOT);
+        engine.events.lock().unwrap().push(WebViewEvent::DownloadRuntime {
+            admitted: 1,
+            detached: 0,
+            accepting: true,
+            error: String::new(),
+        });
+        tabs.sync(&mut doc, &automerge::ROOT);
 
         assert_eq!(
             tabs.on_window_close_requested(),
@@ -1732,6 +1739,26 @@ mod tests {
             "keeping downloads does not arm a delayed automatic quit"
         );
 
+        engine.events.lock().unwrap().extend([
+            WebViewEvent::DownloadUpdated {
+                id: 11,
+                state: "complete".into(),
+                path: "/tmp/file".into(),
+                name: String::new(),
+                url: String::new(),
+                retryable: false,
+                received: 20,
+                total: 20,
+                error: String::new(),
+            },
+            WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 0,
+                accepting: true,
+                error: String::new(),
+            },
+        ]);
+        tabs.sync(&mut doc, &automerge::ROOT);
         invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
         tabs.sync(&mut doc, &automerge::ROOT);
         assert!(engine
@@ -1748,7 +1775,28 @@ mod tests {
 
         engine.events.lock().unwrap().extend([
             WebViewEvent::DownloadUpdated {
-                id: 11,
+                id: 12,
+                state: "progress".into(),
+                path: "/tmp/new".into(),
+                name: "new".into(),
+                url: "https://downloads.test/new".into(),
+                retryable: true,
+                received: 1,
+                total: 2,
+                error: String::new(),
+            },
+            WebViewEvent::DownloadRuntime {
+                admitted: 1,
+                detached: 0,
+                accepting: true,
+                error: String::new(),
+            },
+        ]);
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert!(!tabs.take_window_close_intent(), "new admission precedes cancel barrier");
+        engine.events.lock().unwrap().extend([
+            WebViewEvent::DownloadUpdated {
+                id: 12,
                 state: "cancelled".into(),
                 path: String::new(),
                 name: String::new(),

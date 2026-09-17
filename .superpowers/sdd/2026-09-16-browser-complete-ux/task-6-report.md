@@ -75,3 +75,38 @@ The workspace contains extensive unrelated tracked/staged/untracked edits. Only 
 - `cargo build -p browser --profile thin-app` — session `5014`, chunks `4dfb59`/`5426b3`/`90f03f`/`68b638`/`74814a`/`b63960`, exit 0 after 3m48s. It initially waited for the shared Cargo lock, then compiled `ui`, `qos-app`, and `browser` without warnings/errors in the returned build output.
 - Candidate: `target/thin-app/browser`, 27,316,768 bytes, SHA-256 `6ff412a0d6584a8b58c2ec347f44022c4a3c13ba052231e8827761a9f695b1c8`.
 - Review/stage only owned hunks, record commit(s), and report parent-owned live GUI limitations honestly.
+
+## Review fix round 1
+
+Review verdict `Needs fixes` identified four lifecycle gaps. The corrective implementation is separate from source commit `4a23e862c`:
+
+- Same-owner/same-URL request provenance is now a bounded FIFO. Every request in an overlapping group remains ambiguous until consumed, so the reproduced GET/POST/GET ordering cannot make the POST or later overlapping GET replayable. A subsequent isolated GET remains retryable. Overflow disables retry provenance conservatively for the runtime.
+- A busy visible owner now reserves one of 32 retained-owner slots before native admission. Detachment converts that reservation into a physical-owner reservation, which remains until `OnBeforeClose`; terminal settlement alone cannot free capacity. This preserves 32 visible clients and up to 32 admitted transfers without cancelling accepted work.
+- Owner activity covers early callbacks and prompted/approved transfers. A posted idle callback re-reads that activity at execution, so a new early admission invalidates a stale close decision. The deterministic seam delays physical destruction and the idle callback, then verifies capacity recovery and stale-task rejection.
+- Cancel-and-quit now requires a native `download_runtime` acknowledgment with `accepting=false`, in addition to zero admitted/detached owners and terminal records. `CancelAll` publishes a final acknowledgment even when there was no active transfer. The action-broker regression leaves the dialog open through completion, selects Cancel against an accepting/idle snapshot, injects a pre-barrier admission, and waits through terminal and physical cleanup.
+- The real POST case now cancels one POST while the runtime is still accepting, attempts retry, and proves no prompt and no GET. Cancel-all acknowledgment is exercised afterward with a separate active GET.
+
+### TDD and focused verification
+
+1. Native reservation/provenance RED:
+   - `target/chromium-tools/bin/cmake --build target/chromium-build --target qos-protocol-test --parallel 2`
+   - chunk `a6107a`, exit 2: the new regression could not compile because production `DownloadOwnerReservations` did not exist.
+2. Native reservation/provenance GREEN:
+   - `target/chromium-tools/bin/cmake --build target/chromium-build --target qos-protocol-test --parallel 2 && target/chromium/qos-protocol-test`
+   - chunk `824421`, exit 0: `protocol tests passed` for outstanding GET/POST/GET ambiguity, delayed physical-close capacity, replacement visible-owner admission, and stale idle-task revalidation.
+   - Final rebuild after transition-readability edits: `target/chromium-tools/bin/cmake --build target/chromium-build --target qos-protocol-test qos-chromium-host --parallel 4 && target/chromium/qos-protocol-test`, session `26687`, exit 0; host linked/signed and `protocol tests passed`.
+3. Rust exit-barrier RED attempts:
+   - `cargo test -p browser browser_tabs::tests::window_close_requires_an_explicit_choice_and_waits_for_native_owner_cleanup --no-default-features`
+   - sessions `62d97d` and `21529f` were blocked before the Task 6 test by unrelated concurrent compile errors in `ui/src/record.rs` and then `ui/src/widget/modal_dialog.rs`. Their owners repaired both shared files; Task 6 did not edit them.
+4. Rust exit-barrier GREEN:
+   - same focused command, session `81224`, exit 0: 1 passed, 0 failed (187 filtered).
+   - `cargo test -p browser capabilities::tests --no-default-features`, session `78506`, exit 0: 4 passed, 0 failed (184 filtered).
+   - `cargo check -p browser --no-default-features`, session `44773`, exit 0.
+5. Source/fixture checks:
+   - `python3 -m py_compile apps/browser/chromium/tests/download_lifetime.py`, exit 0.
+   - `git diff --check -- apps/browser/chromium/src/capabilities.h apps/browser/chromium/src/download_slots.h apps/browser/chromium/src/host.cc apps/browser/chromium/tests/download_lifetime.py apps/browser/chromium/tests/protocol_test.cc apps/browser/src/browser_tabs.rs apps/browser/src/capabilities.rs`, exit 0.
+6. Real CEF fixture limitation:
+   - First fix-round run (session `77843`) and final correctly addressed run `PYTHONUNBUFFERED=1 python3 apps/browser/chromium/tests/download_lifetime.py 'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'` (session `29886`) both exited 1 after about 378 seconds. All three cases stopped before `download_prompt`; the latest event was navigation progress `0.1` after an `about:blank` load, and cleanup then timed out after 35 seconds. Stderr contained only the known macOS signature-validation warning. This reproduces the separately tracked Task 9/10 first-navigation/shutdown defect and does not reach the changed download transitions. The deterministic native protocol suite and native host build are green; no live CEF acceptance is claimed for this fix round.
+   - A prior invocation in session `27785` used the obsolete executable basename `Browser Engine` and exited immediately with `FileNotFoundError`; the actual bundle executable is `qos-chromium-host`, used by session `29886` above.
+
+No GUI was launched in this fix round. Parent-owned live GUI acceptance remains pending.
