@@ -62,7 +62,7 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files and Word Processor have been built and run on Windows. Other apps
+Scratchpad, Files, Word Processor and Terminal have been built and run on Windows. Other apps
 are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
@@ -145,6 +145,18 @@ recovery cleanup and merging independently edited documents:
 
 ```powershell
 cargo test --locked -p word-processor --all-targets -- --test-threads=1
+```
+
+Terminal uses Windows ConPTY and starts `COMSPEC` (normally `cmd.exe`). It supports
+the same terminal action API, live output, resizing and exit-state reporting as
+the Unix implementation. Closing the window terminates its native shell. Hosted
+Tilo process-service grants are still unavailable on Windows and fail closed.
+Windows drag selection stays in an app-local primary buffer; explicit Copy/Paste
+uses the native system clipboard. `--shots --scenario shell` executes native
+commands and fails if its completion output is not observed.
+
+```powershell
+cargo test --locked -p terminal --all-targets -- --test-threads=1
 ```
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and

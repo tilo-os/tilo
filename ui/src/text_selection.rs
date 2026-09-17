@@ -338,6 +338,15 @@ fn write_selection(target: ClipboardTarget, text: &str) {
     {
         return;
     }
+    // Windows has no primary-selection protocol. Keep select/middle-click
+    // local to the app instead of overwriting the user's Ctrl+C clipboard.
+    #[cfg(windows)]
+    if target == ClipboardTarget::Primary {
+        if let Ok(mut selection) = clipboard_fallback().lock() {
+            selection.1 = Some(text.to_string());
+        }
+        return;
+    }
     if let Some(cb) = arboard_clipboard()
         && let Ok(mut handle) = cb.lock()
     {
@@ -374,6 +383,10 @@ fn write_selection(target: ClipboardTarget, text: &str) {
 fn read_selection(target: ClipboardTarget) -> Option<String> {
     if let Some(backend) = clipboard_backend() {
         return backend.text(target);
+    }
+    #[cfg(windows)]
+    if target == ClipboardTarget::Primary {
+        return clipboard_fallback().lock().ok()?.1.clone();
     }
     if let Some(cb) = arboard_clipboard()
         && let Ok(mut handle) = cb.lock()
@@ -465,6 +478,18 @@ pub fn clipboard_paste_primary() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_primary_selection_does_not_replace_explicit_copy() {
+        clipboard_copy("explicit Windows copy");
+        clipboard_copy_primary("selected terminal text");
+        assert_eq!(
+            clipboard_paste_primary().as_deref(),
+            Some("selected terminal text")
+        );
+        assert_eq!(clipboard_paste().as_deref(), Some("explicit Windows copy"));
+    }
 
     /// Copy → paste must round-trip within the process even with no system
     /// clipboard (the headless test env), and equally when a real clipboard
