@@ -291,6 +291,13 @@ signer's statement, not independent proof of a reproducible build.
 
 The JSON output is an audit receipt, never an installation authorization token.
 A disk consumer must repeat verification and enforce container signature policy.
+The receipt includes the full local immutable `image_id`. In-process consumers
+can use `verified_source(args)` to repeat authentication and hold that exact
+image mount and an independently validated public-bundle snapshot throughout
+their checks. The context unmounts and removes its snapshot on success or
+failure. Consumers must not re-resolve the update tag, reuse an old receipt as
+authorization, or treat source identity as proof of valid boot artifacts,
+generation, native execution, disk contents or firmware acceptance.
 The existing container-only development stop remains in place. Unit tests cover
 identity rejection and failure cleanup. Run
 `podman unshare python3 os/tests/development_source_registry.py` with the pinned
