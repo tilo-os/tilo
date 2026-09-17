@@ -1019,7 +1019,11 @@ impl FrameHarness {
         // node pointers are invalid in that case; retained controls carry their
         // own focus until the fresh map below recovers it.
         let structure_changed = self.root.take_structure_dirty();
-        let focus = if structure_changed {
+        let focus = if self.node_map.is_empty() {
+            // The first frame has no previous layout focus to transfer. A
+            // component's restored application view owns its initial focus.
+            None
+        } else if structure_changed {
             CompositionFocus::capture_live(self.root.as_ref())
         } else {
             // SAFETY: no structural mutation since these maps were admitted.
