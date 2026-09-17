@@ -87,6 +87,51 @@ exit {BUILD_INTERCEPTED}
             "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY": "a" * 64,
         }
 
+    def development_inputs(self):
+        # Crypto/parser behavior is exercised with real OpenSSL by the public
+        # bundle suite; this stub isolates host argument and disk-stage control.
+        self.write("os/dev/development-trust.py", 'import json; print(json.dumps({"identities":{"registry-owner.pub":"' + 'a' * 64 + '"}}))\n')
+        public = self.root / "public bundle"
+        public.mkdir()
+        return {"TILO_PUBLIC_TRUST_MODE": "development",
+                "TILO_PUBLIC_TRUST_BUNDLE": str(public),
+                "TILO_PUBLIC_TRUST_MANIFEST_SHA256": "b" * 64,
+                "TILO_IMAGE": "localhost/tilo-development:fixture"}
+
+    def test_development_forwards_pinned_public_context(self):
+        result = self.run_builder(**self.development_inputs())
+        self.assertEqual(result.returncode, BUILD_INTERCEPTED, result.stderr)
+        args = self.log.read_bytes().decode().split("\0")
+        self.assertIn("public-trust=" + str(self.root / "public bundle"), args)
+        self.assertIn("TILO_PUBLIC_TRUST_MODE=development", args)
+        self.assertIn("TILO_PUBLIC_TRUST_MANIFEST_SHA256=" + "b" * 64, args)
+
+    def test_development_stops_before_disk_imaging(self):
+        inputs = self.development_inputs()
+        self.write("bin/podman", "#!/bin/sh\n[ \"$1\" = build ] || exit 72\nexit 0\n", executable=True)
+        result = self.run_builder(**inputs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Development container staged", result.stderr)
+        self.assertNotIn("2/2 disk image", result.stderr)
+
+    def test_development_rejects_skip_build_and_production_alias(self):
+        inputs = self.development_inputs()
+        for override in ({"TILO_SKIP_BUILD": "1"}, {"TILO_IMAGE": "code.sandbox.example/qos/tilo:latest"}):
+            result = self.run_builder(**(inputs | override))
+            self.assertNotEqual(result.returncode, BUILD_INTERCEPTED)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(self.log.exists())
+
+    def test_development_rejects_conflicting_owner(self):
+        result = self.run_builder(**(self.development_inputs() | {"TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY": "c" * 64}))
+        self.assertIn("registry owner differs", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_production_rejects_development_bundle_inputs(self):
+        result = self.run_builder(TILO_PUBLIC_TRUST_BUNDLE="unexpected")
+        self.assertIn("require TILO_PUBLIC_TRUST_MODE", result.stderr)
+        self.assertFalse(self.log.exists())
+
     def write(self, relative_path, content, executable=False):
         path = self.root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)

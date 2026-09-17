@@ -49,6 +49,34 @@ for a in "$@"; do
   esac
 done
 
+# Development trust currently stages a container only: the isolated update
+# origin and disk/VM integration are separate required work.
+_tilo_trust_args=(--build-arg TILO_PUBLIC_TRUST_MODE=production --build-arg TILO_PUBLIC_TRUST_MANIFEST_SHA256=)
+case "${TILO_PUBLIC_TRUST_MODE:-production}" in
+  production)
+    [ -z "${TILO_PUBLIC_TRUST_BUNDLE:-}${TILO_PUBLIC_TRUST_MANIFEST_SHA256:-}" ] \
+      || die "development bundle inputs require TILO_PUBLIC_TRUST_MODE=development"
+    ;;
+  development)
+    [ "${TILO_SKIP_BUILD:-0}" != 1 ] || die "development trust requires a fresh build"
+    [[ "$TILO_IMAGE" =~ ^localhost/tilo-development:[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ ]] \
+      || die "development trust requires TILO_IMAGE=localhost/tilo-development:<tag>"
+    [ -n "${TILO_PUBLIC_TRUST_BUNDLE:-}" ] && [ -n "${TILO_PUBLIC_TRUST_MANIFEST_SHA256:-}" ] \
+      || die "development trust requires a public bundle and independently pinned manifest digest"
+    _tilo_trust_result=$(python3 "$TILO_OS_DIR/dev/development-trust.py" validate \
+      "$TILO_PUBLIC_TRUST_BUNDLE" --expected-manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256") \
+      || die "invalid development public trust bundle"
+    _tilo_dev_owner=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["identities"]["registry-owner.pub"])' <<< "$_tilo_trust_result")
+    [ -z "${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}" ] || [ "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" = "$_tilo_dev_owner" ] \
+      || die "registry owner differs from development public bundle"
+    TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$_tilo_dev_owner
+    _tilo_trust_args=(--build-context "public-trust=$(realpath "$TILO_PUBLIC_TRUST_BUNDLE")"
+      --build-arg TILO_PUBLIC_TRUST_MODE=development
+      --build-arg "TILO_PUBLIC_TRUST_MANIFEST_SHA256=$TILO_PUBLIC_TRUST_MANIFEST_SHA256")
+    ;;
+  *) die "TILO_PUBLIC_TRUST_MODE must be production or development" ;;
+esac
+
 # Hardware profiles affect the sealed rootfs and UKI. Generic builds remain the
 # default; a machine-specific image must be requested explicitly.
 : "${TILO_HARDWARE_PROFILE:=generic}"
@@ -229,6 +257,7 @@ build_image() {
   podman build -f "$TILO_OS_DIR/Containerfile" -t "$TILO_IMAGE" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     "${_tilo_build_args[@]}" \
+    "${_tilo_trust_args[@]}" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
@@ -264,6 +293,11 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
 else
   msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; generation=$TILO_GENERATION)"
   build_image "$TILO_PROVISIONAL_CFS_DIGEST"
+fi
+
+if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ]; then
+  msg "Development container staged: $TILO_IMAGE. Disk/VM preparation remains incomplete until the isolated development origin and signature policy are implemented."
+  exit 0
 fi
 
 msg "2/2 disk image -> qcow2"
