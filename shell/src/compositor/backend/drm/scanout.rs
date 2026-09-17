@@ -191,6 +191,22 @@ pub(crate) fn resolve_connector_config_keys<'a>(
         .collect()
 }
 
+fn connector_is_scanout_eligible(
+    state: connector::State,
+    interface: connector::Interface,
+    has_usable_mode: bool,
+) -> bool {
+    // `Virtual` is a real scanout sink for virtual GPUs (including the
+    // Parallels display used by qOS). `Writeback` captures a CRTC rather than
+    // displaying one, and `Unknown` supplies no typed evidence that it can be
+    // used for scanout.
+    let is_scanout_sink = !matches!(
+        interface,
+        connector::Interface::Unknown | connector::Interface::Writeback
+    );
+    state == connector::State::Connected && has_usable_mode && is_scanout_sink
+}
+
 impl CardHandle {
     /// Open `card_path` through the session and become DRM master.
     ///
@@ -301,15 +317,12 @@ impl CardHandle {
                     continue;
                 }
             };
-            if info.state() != connector::State::Connected {
-                continue;
-            }
             let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-            let lower_name = connector_name.to_ascii_lowercase();
-            if lower_name.contains("writeback") || lower_name.contains("virtual") {
+            let mode = pick_configured_mode(info.modes(), None);
+            if !connector_is_scanout_eligible(info.state(), info.interface(), mode.is_some()) {
                 continue;
             }
-            let Some(mode) = pick_configured_mode(info.modes(), None) else {
+            let Some(mode) = mode else {
                 continue;
             };
             out.push(ConnectorSnapshot {
@@ -1824,6 +1837,51 @@ fn pageflip_history_commit_is_safe(dirty_ok: bool, flip_ok: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connected_virtual_connector_with_usable_mode_is_scanout_eligible() {
+        assert!(connector_is_scanout_eligible(
+            connector::State::Connected,
+            connector::Interface::Virtual,
+            true
+        ));
+    }
+
+    #[test]
+    fn disconnected_connector_is_not_scanout_eligible() {
+        assert!(!connector_is_scanout_eligible(
+            connector::State::Disconnected,
+            connector::Interface::HDMIA,
+            true
+        ));
+    }
+
+    #[test]
+    fn connector_without_usable_mode_is_not_scanout_eligible() {
+        assert!(!connector_is_scanout_eligible(
+            connector::State::Connected,
+            connector::Interface::HDMIA,
+            false
+        ));
+    }
+
+    #[test]
+    fn writeback_connector_is_not_scanout_eligible() {
+        assert!(!connector_is_scanout_eligible(
+            connector::State::Connected,
+            connector::Interface::Writeback,
+            true
+        ));
+    }
+
+    #[test]
+    fn unknown_connector_is_not_scanout_eligible() {
+        assert!(!connector_is_scanout_eligible(
+            connector::State::Connected,
+            connector::Interface::Unknown,
+            true
+        ));
+    }
 
     #[test]
     fn card_and_udev_share_the_same_dev_t_identity() {
