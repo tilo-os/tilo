@@ -5,6 +5,8 @@
 #include "config.h"
 #include "dir.h"
 #include "inode.h"
+#include "logfile.h"
+#include "mst.h"
 #include "unistr.h"
 #include "security.h"
 #include "volume.h"
@@ -39,6 +41,59 @@ int main(int argc, char **argv) {
       ntfs_attr_close(a);
     if (ni)
       ntfs_inode_close(ni);
+  } else if (!strncmp(argv[2], "restart-", 8)) {
+    ntfs_inode *ni = ntfs_inode_open(v, FILE_LogFile);
+    ntfs_attr *a = ni ? ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0) : NULL;
+    if (!a)
+      return 15;
+    for (unsigned page = 0; page < 2; ++page) {
+      unsigned char bytes[4096] = {0};
+      RESTART_PAGE_HEADER *header = (RESTART_PAGE_HEADER *)bytes;
+      header->magic = magic_RSTR;
+      header->usa_ofs = cpu_to_le16(30);
+      header->usa_count = cpu_to_le16(9);
+      header->system_page_size = cpu_to_le32(sizeof bytes);
+      header->log_page_size = cpu_to_le32(sizeof bytes);
+      header->restart_area_offset = cpu_to_le16(48);
+      header->major_ver = cpu_to_sle16(1);
+      header->minor_ver = cpu_to_sle16(1);
+      header->usn = cpu_to_le16(7 + page);
+      RESTART_AREA *area = (RESTART_AREA *)(bytes + 48);
+      area->log_clients = cpu_to_le16(1);
+      area->client_free_list = LOGFILE_NO_CLIENT;
+      area->client_in_use_list = cpu_to_le16(0);
+      area->flags = RESTART_VOLUME_IS_CLEAN;
+      unsigned bits = 0;
+      for (uint64_t size = a->data_size; size; size >>= 1)
+        ++bits;
+      area->seq_number_bits = cpu_to_le32(67 - bits);
+      area->restart_area_length = cpu_to_le16(48 + sizeof(LOG_CLIENT_RECORD));
+      area->client_array_offset = cpu_to_le16(48);
+      area->file_size = cpu_to_sle64(a->data_size);
+      area->log_record_header_length = cpu_to_le16(48);
+      area->log_page_data_offset = cpu_to_le16(64);
+      LOG_CLIENT_RECORD *client = (LOG_CLIENT_RECORD *)(bytes + 96);
+      client->prev_client = LOGFILE_NO_CLIENT;
+      client->next_client = LOGFILE_NO_CLIENT;
+      client->client_name_length = cpu_to_le32(8);
+      client->client_name[0] = cpu_to_le16('N');
+      client->client_name[1] = cpu_to_le16('T');
+      client->client_name[2] = cpu_to_le16('F');
+      client->client_name[3] = cpu_to_le16('S');
+      if (!strcmp(argv[2], "restart-v2")) {
+        header->major_ver = cpu_to_sle16(2);
+        header->minor_ver = 0;
+      }
+      if ((!strcmp(argv[2], "restart-bad-first") && page == 0) ||
+          (!strcmp(argv[2], "restart-bad-second") && page == 1))
+        area->seq_number_bits = 0;
+      if (ntfs_mst_pre_write_fixup((NTFS_RECORD *)bytes, sizeof bytes) ||
+          ntfs_attr_pwrite(a, page * sizeof bytes, sizeof bytes, bytes) != sizeof bytes)
+        rc = 1;
+    }
+    ntfs_attr_close(a);
+    if (ntfs_inode_close(ni))
+      rc = 1;
   } else if (!strcmp(argv[2], "generation")) {
     ntfs_inode *ni = ntfs_inode_open(v, FILE_root);
     if (!ni)

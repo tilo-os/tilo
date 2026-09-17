@@ -19,7 +19,7 @@ run(src/'ntfsprogs/mkntfs', '-F', '-Q', '-T', '-L', 'QOS_FIXTURE', clean)
 content = out/'content'; content.write_bytes(b'Connected NTFS fixture\n')
 run(src/'ntfsprogs/ntfscp', clean, content, '/hello.txt')
 run(exe, clean, 'serial')
-for name, mode in [('dirty','dirty'), ('badlog','badlog'), ('generation','generation'), ('metadata','metadata'), ('upcase','upcase'), ('oversize','oversize'), ('attrlist-cycle','attrlist-cycle'), ('acl','acl'), ('hardlink','hardlink')]:
+for name, mode in [('restart-clean','restart-clean'), ('restart-bad-first','restart-bad-first'), ('restart-bad-second','restart-bad-second'), ('restart-v2','restart-v2'), ('dirty','dirty'), ('badlog','badlog'), ('generation','generation'), ('metadata','metadata'), ('upcase','upcase'), ('oversize','oversize'), ('attrlist-cycle','attrlist-cycle'), ('acl','acl'), ('hardlink','hardlink')]:
     dest=out/(name+'.img'); shutil.copyfile(clean,dest); run(exe,dest,mode)
 for name, data in [('zero-hiber',bytes(4096)), ('hiber',b'hibr'+bytes(4092)), ('nonzero-hiber',bytes(4095)+b'x'), ('short-hiber',bytes(32))]:
     dest=out/(name+'.img'); shutil.copyfile(clean,dest)
@@ -35,6 +35,10 @@ manifest={'fixture_builder_sha256':hashlib.sha256((ROOT/'tests/fixture_builder.c
 for f in sorted(out.glob('*.img')):
     manifest['images'][f.name]={'sha256':hashlib.sha256(f.read_bytes()).hexdigest(),'bytes':f.stat().st_size}
 manifest['expected_by_image']={
+ 'restart-clean.img':{'status':0,'paired_restart_pages':'1.1'},
+ 'restart-bad-first.img':{'status':3,'invalid_page':0},
+ 'restart-bad-second.img':{'status':3,'invalid_page':1},
+ 'restart-v2.img':{'status':3,'paired_restart_pages':'2.0'},
  'clean.img':{'status':0,'root_sequence':5,'hello_record':64},
  'dirty.img':{'status':3},'badlog.img':{'status':'nonzero refusal'},
  'zero-hiber.img':{'status':0},'hiber.img':{'status':4},'nonzero-hiber.img':{'status':4},'short-hiber.img':{'status':4},
