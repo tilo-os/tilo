@@ -33,6 +33,15 @@ pub const DISPLAY_STREAM_PROTOCOL_VERSION: u16 = 1;
 pub const MAX_DISPLAY_FRAME_BYTES: usize = 3 * 1024 * 1024;
 pub const MAX_DISPLAY_SESSIONS: usize = 4;
 pub const MAX_DISPLAY_STREAM_AGE_MS: u64 = 15_000;
+/// Versioned remote-audio wire contract. Unknown versions fail closed instead
+/// of being interpreted as raw PCM with potentially incompatible framing.
+pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 1;
+pub const REMOTE_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
+pub const REMOTE_AUDIO_CHANNELS: u8 = 2;
+pub const REMOTE_AUDIO_FRAME_SAMPLES: u16 = 960;
+pub const MAX_REMOTE_AUDIO_FRAME_BYTES: usize =
+    REMOTE_AUDIO_FRAME_SAMPLES as usize * REMOTE_AUDIO_CHANNELS as usize * 2;
+pub const MAX_REMOTE_AUDIO_SESSIONS: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FabricStamp {
@@ -353,6 +362,35 @@ pub enum PersonalFabricAction {
         forwarding_id: [u8; 16],
         lease_nonce: [u8; 16],
     },
+    /// Request a shell-owned, live audio route. Local PipeWire node identities
+    /// never cross the certified-device boundary. Appending wire variants is
+    /// intentional: postcard encodes enum discriminants by declaration order.
+    RemoteAudioOffer {
+        session_id: [u8; 16],
+        protocol_version: u16,
+        label: String,
+        sample_rate_hz: u32,
+        channels: u8,
+        frame_samples: u16,
+    },
+    /// Target-local consent result. Approval carries the random capability
+    /// required by every subsequent frame and stop message.
+    RemoteAudioDecision {
+        session_id: [u8; 16],
+        accepted: bool,
+        authorization: Option<[u8; 16]>,
+    },
+    /// One bounded S16LE frame for an approved exact-peer session.
+    RemoteAudioFrame {
+        session_id: [u8; 16],
+        authorization: [u8; 16],
+        sequence: u64,
+        pcm_s16le: Vec<u8>,
+    },
+    RemoteAudioStop {
+        session_id: [u8; 16],
+        authorization: [u8; 16],
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -607,6 +645,62 @@ impl PersonalFabricActionEnvelope {
                 session_id,
             } => {
                 if request_id == &[0; 16] || !valid_identifier(session_id, 256) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioOffer {
+                session_id,
+                protocol_version,
+                label,
+                sample_rate_hz,
+                channels,
+                frame_samples,
+            } => {
+                if session_id == &[0; 16]
+                    || *protocol_version != REMOTE_AUDIO_PROTOCOL_VERSION
+                    || label.is_empty()
+                    || label.len() > 160
+                    || label.chars().any(char::is_control)
+                    || *sample_rate_hz != REMOTE_AUDIO_SAMPLE_RATE_HZ
+                    || *channels != REMOTE_AUDIO_CHANNELS
+                    || *frame_samples != REMOTE_AUDIO_FRAME_SAMPLES
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioDecision {
+                session_id,
+                accepted,
+                authorization,
+            } => {
+                if session_id == &[0; 16]
+                    || (*accepted && authorization.is_none_or(|value| value == [0; 16]))
+                    || (!*accepted && authorization.is_some())
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioFrame {
+                session_id,
+                authorization,
+                sequence,
+                pcm_s16le,
+            } => {
+                if session_id == &[0; 16]
+                    || authorization == &[0; 16]
+                    || *sequence == 0
+                    || pcm_s16le.is_empty()
+                    || pcm_s16le.len() > MAX_REMOTE_AUDIO_FRAME_BYTES
+                    || pcm_s16le.len() % (usize::from(REMOTE_AUDIO_CHANNELS) * 2) != 0
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioStop {
+                session_id,
+                authorization,
+            } => {
+                if session_id == &[0; 16] || authorization == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2302,6 +2396,71 @@ mod tests {
         );
         assert_eq!(
             envelope.validate_at(&source, &target, 10_000 + MAX_FABRIC_ACTION_AGE_MS + 1),
+            Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
+    fn remote_audio_wire_is_versioned_bounded_and_capability_bearing() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        let offer = || PersonalFabricAction::RemoteAudioOffer {
+            session_id: [4; 16],
+            protocol_version: REMOTE_AUDIO_PROTOCOL_VERSION,
+            label: "All system audio".into(),
+            sample_rate_hz: REMOTE_AUDIO_SAMPLE_RATE_HZ,
+            channels: REMOTE_AUDIO_CHANNELS,
+            frame_samples: REMOTE_AUDIO_FRAME_SAMPLES,
+        };
+        assert_eq!(
+            envelope(offer()).validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        let mut unsupported = offer();
+        if let PersonalFabricAction::RemoteAudioOffer {
+            protocol_version, ..
+        } = &mut unsupported
+        {
+            *protocol_version = REMOTE_AUDIO_PROTOCOL_VERSION + 1;
+        }
+        assert_eq!(
+            envelope(unsupported).validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioDecision {
+                session_id: [4; 16],
+                accepted: true,
+                authorization: None,
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioFrame {
+                session_id: [4; 16],
+                authorization: [5; 16],
+                sequence: 1,
+                pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES],
+            })
+            .validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioFrame {
+                session_id: [4; 16],
+                authorization: [5; 16],
+                sequence: 2,
+                pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES + 4],
+            })
+            .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)
         );
     }
