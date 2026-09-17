@@ -21,7 +21,9 @@ pub struct BoundActionAddress {
 pub(crate) enum BoundActionError {
     Door(tilo_actions::DoorError),
     Dispatch(BoundDispatchError),
-    AmbiguousTarget { address: tilo_actions::ActionAddress },
+    AmbiguousTarget {
+        address: tilo_actions::ActionAddress,
+    },
 }
 impl BoundActionError {
     pub(crate) fn into_door(self) -> tilo_actions::DoorError {

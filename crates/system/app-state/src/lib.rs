@@ -561,6 +561,7 @@ impl DocStore {
             dir: directory.to_path_buf(),
             document: directory.join(DOCUMENT_FILE),
             actor,
+            schema_version: SCHEMA_VERSION,
             lock: None,
             persisted: Vec::new(),
             refusal: None,
