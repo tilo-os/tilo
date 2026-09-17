@@ -24,6 +24,43 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_cache_only_and_default_exit_before_key_generation_or_os_build(self):
+        for mode in ([], ['--mode', 'cache-only']):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                def git_only(*command, **kwargs):
+                    if command == ('git', 'rev-parse', 'HEAD'):
+                        return REVISION
+                    if command == ('git', 'status', '--porcelain', '--untracked-files=all'):
+                        return ''
+                    self.fail(f'cache-only reached unexpected command: {command}')
+                with patch.object(driver, 'PRIVATE', directory / 'private'), \
+                     patch.object(driver, 'EVIDENCE', directory / 'evidence'), \
+                     patch.object(driver.os, 'getuid', return_value=0, create=True), \
+                     patch.object(driver.os, 'umask'), \
+                     patch.object(driver.platform, 'machine', return_value='x86_64'), \
+                     patch.dict(os.environ, CACHE_ENV, clear=True), \
+                     patch.object(driver, 'run', side_effect=git_only), \
+                     patch.object(driver, 'verify_remote_cache') as probe, \
+                     patch.object(driver, 'pinned_inputs') as pins, \
+                     patch.object(driver, 'compile_with_capacity_watchdog') as compile_os:
+                    driver.main([*mode, '--revision', REVISION, '--branch', 'refs/heads/codex/test'])
+                    probe.assert_called_once_with(CACHE)
+                    pins.assert_not_called()
+                    compile_os.assert_not_called()
+                receipt = json.loads((directory / 'evidence/result.json').read_text())
+                self.assertEqual(receipt['status'], 'remote-cache-probe-complete')
+                for field in ('os_compiled', 'installable', 'signing_identities_created', 'disk_created', 'published'):
+                    self.assertFalse(receipt[field])
+                self.assertEqual(list((directory / 'private').iterdir()), [])
+
+    def test_mode_requires_explicit_full_build_and_rejects_unknown_values(self):
+        driver.validate_inputs('', '', REVISION, 'refs/heads/codex/test', 'cache-only')
+        for mode in ('', 'full', 'full-build', 'cache-only; true'):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                driver.validate_inputs('', '', REVISION, 'refs/heads/codex/test', mode)
+        driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/test', 'full-build')
+
     def test_cache_rejects_missing_redirected_or_shell_configuration(self):
         for field, value in (('SCCACHE_ENDPOINT', 'https://attacker.invalid'),
                              ('SCCACHE_BUCKET', 'wrong-bucket'), ('SCCACHE_REGION', ''),
