@@ -865,10 +865,12 @@ impl Widget for EditorApp {
             gutter_rect.x1 + 1.0,
             gutter_rect.y1,
         );
+        // A hairline derived against the gutter it separates (HIG §9.5),
+        // not a literal black that vanishes on a dark editor ground.
         scene.fill(
             Fill::NonZero,
             transform,
-            Color::from_rgba8(0, 0, 0, 24),
+            ui::tokens::colors::Colors::hairline_on(palette.gutter_bg, 26),
             None,
             &divider,
         );

@@ -18,7 +18,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TaffyTreeExt, Widget};
+use ui::widget::{Button, ButtonFace, TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -128,6 +128,8 @@ const HINT_TOP: f64 = 22.0;
 /// minimum height (the "Open an app" button's minimum height).
 const FOOTER_TOP: f64 = 14.0;
 const FOOTER_MIN_H: f64 = 36.0;
+/// Height of the heading band (title + subtitle) above the first card row.
+const HEADING_BAND: f64 = 90.0;
 const KEYBOARD_HINT: &str = "Arrow keys move  ·  Enter opens  ·  Super+N shows every app";
 
 impl CollaborationLaunchpad {
@@ -162,6 +164,26 @@ impl CollaborationLaunchpad {
             last.x1,
             last.y1 + FOOTER_TOP + FOOTER_MIN_H,
         )
+    }
+
+    /// What the launchpad presents — heading band, cards and footer — as
+    /// opposed to its layout rect, which spans the whole canvas under the
+    /// floating workspace rail. The access tree reports this, so a geometry
+    /// probe does not read the rail's controls as overlapping the launchpad.
+    /// The layout rect until the first frame has placed the cards.
+    fn content_bounds(&self) -> Rect {
+        let Some(first) = self.card_rects.first().copied() else {
+            return self.rect;
+        };
+        if first.area() <= 0.0 {
+            return self.rect;
+        }
+        let last = self.card_rects.last().copied().unwrap_or(first);
+        let heading = Rect::new(first.x0, first.y0 - HEADING_BAND, last.x1, first.y0);
+        self.card_rects
+            .iter()
+            .fold(heading, |acc, card| acc.union(*card))
+            .union(self.app_button_rect())
     }
 
     fn app_button_rect(&self) -> Rect {
@@ -327,7 +349,7 @@ impl Widget for CollaborationLaunchpad {
         let cards = self.card_rects;
         let hovered = self.hovered();
         let content_left = cards.first().map_or(self.rect.x0, |card| card.x0);
-        let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - 90.0;
+        let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - HEADING_BAND;
         let panel_width = cards[5].x1 - content_left;
         let title = text.elide_to_width("Make something together", heading, panel_width as f32);
         text.draw_text(
@@ -345,7 +367,7 @@ impl Widget for CollaborationLaunchpad {
             panel_width as f32,
         );
         let (_, subtitle_h) = text.measure(&subtitle, small, None);
-        if f64::from(title_h + subtitle_h) + 9.0 <= 90.0 {
+        if f64::from(title_h + subtitle_h) + 9.0 <= HEADING_BAND {
             text.draw_text(
                 scene,
                 &subtitle,
@@ -423,37 +445,21 @@ impl Widget for CollaborationLaunchpad {
         }
 
         let button = self.app_button_rect();
-        // Control role (HIG §9.1): the button body takes `radii.lg`, and its
-        // label is centred on the measured line box (HIG §7a) rather than at
-        // an authored (16, 8) offset that only matched one font size.
-        let button_shape = RoundedRect::from_rect(
-            button,
-            ui::chrome::ChromeRole::Control.radius(theme, button.height()),
-        );
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &button_shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            if self.focused && self.selected == 6 {
-                theme.border_focus
-            } else {
-                theme.border_standard
-            },
-            None,
-            &button_shape,
-        );
-        let (label_w, label_h) = text.measure("Open an app", base, None);
-        text.draw_text(
+        // The shared `Button` face (HIG §9.9) at the Control radius (§9.1):
+        // fill, border, hover, focus ring and measured label centring come
+        // from the toolkit rather than a local copy of them. `base` is
+        // renderer-relative here (divided above), which is what the face
+        // expects from a widget painted at the tree's scale.
+        Button::paint(
             scene,
-            "Open an app",
-            base,
-            theme.text_primary,
-            transform
-                * Affine::translate((
-                    button.x0 + (button.width() - f64::from(label_w)) / 2.0,
-                    button.y0 + (button.height() - f64::from(label_h)) / 2.0,
-                )),
-            None,
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(button, "Open an app")
+                .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
+                .text_size(base)
+                .focused(self.focused && self.selected == 6)
+                .hovered(button.contains(self.last_cursor)),
         );
         if let Some(last) = cards.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
@@ -587,6 +593,7 @@ impl Widget for CollaborationLaunchpad {
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Make something together")
+                .with_bounds(self.content_bounds())
                 .with_description(
                     "Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.",
                 )

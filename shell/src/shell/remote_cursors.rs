@@ -161,6 +161,12 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             &clip_rect,
         );
 
+        // Theme type tokens already carry the user's text scale, and this
+        // overlay paints with those resolved sizes; the renderer must not
+        // scale them again (HIG §7a) — reset for this pass, as the shell's
+        // immediate-mode chrome passes do, and restored below.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
         let label_size = theme.tokens.typography.scale.sm;
         let chip_bg = theme.tokens.colors.surfaces.raised;
         let chip_border = theme.tokens.colors.border_standard;
@@ -237,6 +243,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             );
         }
 
+        text_renderer.set_text_scale(renderer_scale);
         scene.pop_layer();
     }
 
