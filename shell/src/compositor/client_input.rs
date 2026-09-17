@@ -93,7 +93,10 @@ pub struct ClientInput {
 }
 
 impl ClientInput {
-    /// Record a freshly-created foreign toplevel — called from `XdgShellHandler::new_toplevel`; the chrome-side tab is spliced in by [`sync_foreign_tabs`] next tick.
+    /// Record a freshly-created foreign toplevel — called from
+    /// `XdgShellHandler::new_toplevel`; the canonical workspace tab is
+    /// adopted by that callback and chrome observes it through the shared
+    /// handle on the next frame.
     pub fn register_toplevel(
         &mut self,
         surface_id: u64,
@@ -112,13 +115,17 @@ impl ClientInput {
         self.surfaces.insert(surface_id, surface);
     }
 
-    /// Drop any queued adoption/removal/rename bookkeeping — the rendered
-    /// tab tree is mirrored by an idempotent diff of the protocol tree
-    /// (`foreign::reconcile_foreign_tabs`) that doesn't consume these queues, so the run loop drains them each tick to keep them bounded.
-    pub fn clear_pending(&mut self) {
+    /// Drop any queued adoption/removal/rename bookkeeping. The canonical
+    /// workspace handle is mutated directly by protocol callbacks; these
+    /// queues are retained as bounded bookkeeping for input routing only.
+    pub fn clear_pending(&mut self) -> bool {
+        let had_pending = !self.pending_adoptions.is_empty()
+            || !self.pending_removals.is_empty()
+            || !self.pending_renames.is_empty();
         self.pending_adoptions.clear();
         self.pending_removals.clear();
         self.pending_renames.clear();
+        had_pending
     }
 
     /// Record a destroyed foreign toplevel — drops the surface handle immediately and queues the chrome-side tab removal.

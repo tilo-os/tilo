@@ -205,9 +205,8 @@ impl Harness {
 }
 
 fn foreign_id(state: &shell::compositor::state::State, app_id: &str) -> u64 {
-    state
-        .workspace_tree
-        .workspaces
+    let tree = state.workspace_tree.read();
+    tree.workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
         .flat_map(|strip| strip.window_groups.iter())
@@ -276,7 +275,7 @@ fn focused_serial_activates_matching_toplevel_once() {
     let source_id = foreign_id(&h.state, "org.example.Source");
     let target_id = foreign_id(&h.state, "org.example.Target");
     assert!(shell::compositor::tab_binding::activate_surface(
-        &mut h.state.workspace_tree,
+        &mut h.state.workspace_tree.write(),
         source_id
     ));
     h.state.set_client_keyboard_focus(Some(source_id));
@@ -295,20 +294,20 @@ fn focused_serial_activates_matching_toplevel_once() {
     activation.activate(token_text.clone(), &target);
     h.pump();
     assert_eq!(
-        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree),
+        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree.read()),
         Some(target_id)
     );
     assert_eq!(h.state.client_input.keyboard_focus(), Some(target_id));
     assert_eq!(h.state.xdg_activation_state.tokens().count(), 0);
 
     assert!(shell::compositor::tab_binding::activate_surface(
-        &mut h.state.workspace_tree,
+        &mut h.state.workspace_tree.write(),
         source_id
     ));
     activation.activate(token_text, &target);
     h.pump();
     assert_eq!(
-        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree),
+        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree.read()),
         Some(source_id),
         "a consumed token must not be replayable"
     );
@@ -340,7 +339,7 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
     // rather than assuming the test harness's fresh workspace carries a demo
     // group. The production tree may quite legitimately start empty.
     let target_tab = shell::compositor::tab_binding::adopt_toplevel(
-        &mut h.state.workspace_tree,
+        &mut h.state.workspace_tree.write(),
         0xfeed,
         Some("org.example.Existing".to_string()),
     );
@@ -364,7 +363,8 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
     h.pump();
     let target_id = foreign_id(&h.state, identity);
     assert_eq!(
-        h.state.workspace_tree.workspaces[0].strips[0].window_groups[0].tabs[0].id, target_tab,
+        h.state.workspace_tree.read().workspaces[0].strips[0].window_groups[0].tabs[0].id,
+        target_tab,
         "normal first adoption used the staged host placement"
     );
 
@@ -373,14 +373,13 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
     activation.activate(token.clone(), &target);
     h.pump();
     assert_eq!(
-        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree),
+        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree.read()),
         Some(target_id),
         "activation focuses the actual mapped host surface"
     );
     assert_eq!(h.state.client_input.keyboard_focus(), Some(target_id));
-    let tab = h
-        .state
-        .workspace_tree
+    let tree = h.state.workspace_tree.read();
+    let tab = tree
         .workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
@@ -405,7 +404,7 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
     activation.activate(token, &target);
     h.pump();
     assert_eq!(
-        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree),
+        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree.read()),
         Some(target_id),
         "the consumed host token cannot be replayed"
     );
@@ -470,6 +469,7 @@ fn real_xdg_popup_is_grabbed_configured_repositioned_and_never_adopted_as_a_tab(
     assert_eq!(
         h.state
             .workspace_tree
+            .read()
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
@@ -561,6 +561,7 @@ fn real_xdg_title_change_distinguishes_same_app_windows() {
     let titles = h
         .state
         .workspace_tree
+        .read()
         .workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
