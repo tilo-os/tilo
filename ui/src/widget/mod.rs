@@ -1972,6 +1972,51 @@ pub mod icon;
 pub use icon::IconWidget;
 pub mod chart;
 pub use chart::{Chart, Series, Sparkline};
+mod chart_legend;
+pub mod chart_navigation;
+pub use chart_navigation::{
+    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action,
+    moved_index as move_chart_index, moved_item as move_chart_item,
+};
+pub mod cartesian_plot;
+pub use cartesian_plot::{
+    AxisLabelFormat, AxisRange, AxisScale, AxisTick, CartesianAnnotation, CartesianAnnotationKind,
+    CartesianBrush, CartesianBrushSelection, CartesianPan, CartesianPlot, CartesianStyle,
+    CartesianTooltipAnchor, CartesianZoom, LegendPosition, MarkerShape, PlotAxis, PlotDatum,
+    PlotSeries, SeriesKind,
+};
+pub mod pie_chart;
+pub use pie_chart::{PieChart, PieSlice, PieStyle, PieTooltipAnchor};
+pub mod polar_area_chart;
+pub use polar_area_chart::{PolarAreaChart, PolarAreaDatum, PolarAreaStyle};
+pub mod heatmap;
+pub use heatmap::{Heatmap, HeatmapCell, HeatmapStyle};
+pub mod histogram;
+pub use histogram::{Histogram, HistogramNormalization};
+pub mod candlestick_chart;
+pub use candlestick_chart::{Candle, CandlestickChart, CandlestickStyle};
+pub mod chord_chart;
+pub use chord_chart::{ChordChart, ChordLink, ChordNode, ChordSelection, ChordStyle};
+pub mod treemap;
+pub use treemap::{Treemap, TreemapItem, TreemapStyle};
+pub mod radar_chart;
+pub use radar_chart::{RadarAxis, RadarChart, RadarSeries, RadarStyle};
+pub mod range_chart;
+pub use range_chart::{RangeBar, RangeChart, RangeStyle};
+pub mod category_chart;
+pub use category_chart::{
+    Category, CategoryChart, CategoryChartStyle, CategoryLayout, CategorySeries, CategoryValue,
+};
+pub mod distribution_chart;
+pub use distribution_chart::{
+    DistributionChart, DistributionKind, DistributionSeries, DistributionStyle,
+};
+pub mod sankey;
+pub use sankey::{SankeyChart, SankeyLink, SankeyNode, SankeySelection, SankeyStyle};
+pub mod sunburst;
+pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
+pub mod funnel_chart;
+pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
 pub use gauge::{BarGauge, GaugeThresholds, RingGauge};
 pub mod resizable_split;
