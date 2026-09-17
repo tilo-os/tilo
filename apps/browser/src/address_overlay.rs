@@ -30,7 +30,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::widget::Widget;
 
@@ -250,8 +250,15 @@ impl AddressSuggestions {
             &panel,
         );
 
-        let title_size = theme.tokens.typography.scale.sm;
-        let url_size = theme.tokens.typography.scale.xs;
+        // Theme type sizes already carry the text scale; `renderer_input_style`
+        // hands them to the renderer so the scale is applied exactly once.
+        // Drawing the resolved size through the legacy size API scaled it a
+        // second time on the live desktop at large text.
+        let title_style = text_renderer
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let url_style = text_renderer
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs));
+        let line_gap = f64::from(theme.tokens.spacing.s1);
         let text_max = (f64::from(self.width) - ROW_PAD_X * 2.0).max(0.0) as f32;
 
         let row_height = self.row_height();
@@ -300,21 +307,30 @@ impl AddressSuggestions {
                 entry.title.as_str()
             };
             let x = self.rect.x0 + ROW_PAD_X;
-            text_renderer.draw_text(
+            // Both lines are measured with the styles they are drawn with and
+            // centred as one block in the row, so the pair sits in the same
+            // place in a 46px row and in the taller rows a text scale buys. A
+            // fixed 8px top with a size-derived second line left the block
+            // high in the row at every scale above 1.
+            let (_, title_h) = text_renderer.measure_style(title, Some(text_max), &title_style);
+            let (_, url_h) = text_renderer.measure_style(&entry.url, Some(text_max), &url_style);
+            let block_h = f64::from(title_h) + line_gap + f64::from(url_h);
+            let block_top = row_top + ((row_height - block_h) / 2.0).max(0.0);
+            text_renderer.draw_style(
                 scene,
                 title,
-                title_size,
                 theme.text_primary,
-                transform * Affine::translate((x, row_top + 8.0)),
+                transform * Affine::translate((x, block_top)),
                 Some(text_max),
+                &title_style,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &entry.url,
-                url_size,
                 theme.text_dim,
-                transform * Affine::translate((x, row_top + 8.0 + f64::from(title_size) + 6.0)),
+                transform * Affine::translate((x, block_top + f64::from(title_h) + line_gap)),
                 Some(text_max),
+                &url_style,
             );
         }
     }
