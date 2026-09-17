@@ -26,7 +26,10 @@ use ui::presence::PresenceCtx;
 use ui::qos_actions::{ActionAddress, ControlInvocation};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, EmptyState, ModalDialog, Toggle, ToggleFace, Widget};
+use ui::widget::{
+    Button, ButtonFace, EmptyState, ModalDialog, SegmentedFace, Toggle, ToggleFace, ToggleGroup,
+    Widget,
+};
 use zeroize::Zeroize;
 
 use crate::actions::{self, VPN_ACTION_TYPE};
@@ -109,6 +112,10 @@ impl TransferHistory {
 
 const HEADER_H: f64 = 72.0;
 const LIST_W: f64 = 440.0;
+/// Height of the header's control band (Tor pill + Import) at 1× text. The
+/// live value is measured from the button label each frame so a doubled
+/// accessibility scale grows the band instead of sinking the labels.
+const HEADER_CONTROL_H: f64 = 36.0;
 
 fn tunnel_import_request(kind: ConnKind) -> PickRequest {
     let (title, filter) = match kind {
@@ -426,6 +433,10 @@ pub struct VpnApp {
     /// never synchronized with the shared profile document.
     detail_scroll: f64,
     shot_loading: bool,
+    /// Measured header control height (see [`HEADER_CONTROL_H`]); refreshed
+    /// from the renderer in `adjust_layout_with_measure` before geometry is
+    /// applied, so layout, paint and hit-testing read one value.
+    control_h: f64,
 }
 
 impl Default for VpnApp {
@@ -505,6 +516,7 @@ impl VpnApp {
             compact_detail_open: false,
             detail_scroll: 0.0,
             shot_loading: false,
+            control_h: HEADER_CONTROL_H,
         }
     }
 
@@ -1245,11 +1257,13 @@ impl VpnApp {
         // The compact title occupies the first row; controls occupy the second.
         // The body and optional notice follow the actual control band.
         let controls_top = if compact { 52.0 } else { 18.0 };
-        let controls_bottom = controls_top + 36.0;
+        let controls_bottom = controls_top + self.control_h;
+        // Both header forms end below the control band: the wide header keeps
+        // its 72px minimum but grows once the measured band no longer fits.
         let base_header_h = if compact {
             controls_bottom + 16.0
         } else {
-            HEADER_H
+            HEADER_H.max(controls_bottom + controls_top)
         };
         let has_notice =
             self.import_rx.is_some() || self.operation_error.is_some() || self.shot_loading;
@@ -1498,7 +1512,11 @@ fn text_vc(
     box_h: f64,
     weight: TextWeight,
 ) {
-    let top = box_y0 + (box_h - f64::from(size)) / 2.0;
+    // Centre on the line the renderer will paint (weight and accessibility
+    // scale included), not on the nominal size: the nominal box under-reads
+    // by a few pixels at 1× and by half a line at 2×.
+    let (_, th) = tr.measure_weighted(s, size, None, weight);
+    let top = box_y0 + (box_h - f64::from(th)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, top, weight);
 }
 
@@ -1517,9 +1535,9 @@ fn text_center(
     r: Rect,
     weight: TextWeight,
 ) {
-    let (tw, _) = tr.measure_weighted(s, size, None, weight);
+    let (tw, th) = tr.measure_weighted(s, size, None, weight);
     let x = r.center().x - f64::from(tw) / 2.0;
-    let top = r.y0 + (r.height() - f64::from(size)) / 2.0;
+    let top = r.y0 + (r.height() - f64::from(th)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, top, weight);
 }
 
@@ -1607,7 +1625,14 @@ impl VpnApp {
             self.vault.connections.len(),
             self.vault.active_count()
         );
-        text_w(
+        // The tally shares the controls' centre line when they sit beside it,
+        // and centres in its own first row when the compact header stacks.
+        let tally_band = if lay.compact {
+            Rect::new(h.x0, h.y0, h.x1, lay.add_btn.y0)
+        } else {
+            lay.add_btn
+        };
+        text_vc(
             tr,
             scene,
             t,
@@ -1615,7 +1640,8 @@ impl VpnApp {
             14.0,
             theme.text_primary,
             h.x0 + 24.0,
-            h.y0 + if lay.compact { 15.0 } else { 25.0 },
+            tally_band.y0,
+            tally_band.height(),
             TextWeight::Semibold,
         );
 
@@ -1671,12 +1697,14 @@ impl VpnApp {
             } else {
                 notice.x1 - 24.0
             };
-            let message_chars = ((text_right - notice.x0 - 24.0) / 6.5).max(12.0).floor() as usize;
+            let message_w = (text_right - notice.x0 - 24.0).max(40.0) as f32;
+            let message =
+                tr.elide_to_width_weighted(&label, 12.0, message_w, TextWeight::Semibold);
             text_vc(
                 tr,
                 scene,
                 t,
-                &ellipsize(&label, message_chars),
+                &message,
                 12.0,
                 color,
                 notice.x0 + 24.0,
@@ -1875,8 +1903,11 @@ impl VpnApp {
             );
         }
 
-        // name + badge
-        let name = ellipsize(&c.name, 18);
+        // name + badge — elided against the space the badge and toggle leave,
+        // measured at the weight the name is painted with.
+        let name_x = row.x0 + 38.0;
+        let name_max_w = ((toggle.x0 - 36.0 - 72.0) - name_x).max(40.0) as f32;
+        let name = tr.elide_to_width_weighted(&c.name, 15.0, name_max_w, TextWeight::Semibold);
         text_w(
             tr,
             scene,
@@ -1902,7 +1933,12 @@ impl VpnApp {
         let endpoint = details.map_or("Credentials unavailable on this device", |d| {
             d.endpoint.as_str()
         });
-        let line2 = format!("{} · {}", ellipsize(endpoint, 28), c.last_used);
+        let line2_max_w = ((toggle.x0 - 16.0) - name_x).max(40.0) as f32;
+        let line2 = tr.elide_to_width(
+            &format!("{endpoint} · {}", c.last_used),
+            12.0,
+            line2_max_w,
+        );
         text_w(
             tr,
             scene,
@@ -2738,7 +2774,7 @@ impl VpnApp {
             card.y0 + 60.0,
             TextWeight::Bold,
         );
-        self.draw_add_kind_selector(scene, tr, t, theme, card, x);
+        self.draw_add_kind_selector(scene, tr, t, theme, card);
         Self::draw_add_fields(scene, tr, t, theme, presence, card);
         self.draw_add_modal_footer(scene, tr, t, theme, card);
     }
@@ -2757,51 +2793,29 @@ impl VpnApp {
         t: Affine,
         theme: &Theme,
         card: Rect,
-        x: f64,
     ) {
-        // segmented kind selector
-        let seg_y = card.y0 + 78.0;
-        for (i, k) in [ConnKind::WireGuard, ConnKind::OpenVpn]
-            .into_iter()
-            .enumerate()
-        {
-            let sx = x + i as f64 * 130.0;
-            let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 34.0);
-            let active = self.add_kind == k;
-            let bg = if active {
-                theme.tokens.colors.accent[5].multiply_alpha(0.22)
-            } else {
-                theme.tokens.colors.surfaces.base
-            };
-            fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
-            stroke_round(
-                scene,
-                t,
-                r,
-                f64::from(theme.tokens.radii.md),
-                if active {
-                    theme.tokens.colors.accent[5]
-                } else {
-                    theme.tokens.colors.border_standard
-                },
-                1.0,
-            );
-            let lbl = format!("{} (.{})", k.long_name(), k.ext());
-            text_center(
-                tr,
-                scene,
-                t,
-                &lbl,
-                12.0,
-                theme.text_primary,
-                r,
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                },
-            );
-        }
+        // Shared segmented control over the one geometry the hit test reads.
+        let rects = add_modal_kind_rects(card);
+        let labels: Vec<String> = ADD_MODAL_KINDS
+            .iter()
+            .map(|k| format!("{} (.{})", k.long_name(), k.ext()))
+            .collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let selected = ADD_MODAL_KINDS
+            .iter()
+            .position(|k| *k == self.add_kind)
+            .unwrap_or(0);
+        let hovered = rects.iter().position(|r| point_in(*r, self.last_mouse));
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&rects, &labels, selected)
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(12.0)
+                .hovered(hovered),
+        );
     }
 
     /// Honest provisioning and credential-ownership explanation.
@@ -3037,14 +3051,8 @@ impl VpnApp {
 
     fn add_modal_hit(&mut self, p: Point, lay: &LayoutRects) {
         let card = lay.modal_card;
-        // kind segments
-        let seg_y = card.y0 + 78.0;
-        for (i, k) in [ConnKind::WireGuard, ConnKind::OpenVpn]
-            .into_iter()
-            .enumerate()
-        {
-            let sx = card.x0 + 28.0 + i as f64 * 130.0;
-            let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 34.0);
+        // kind segments — the same rects the painter draws
+        for (r, k) in add_modal_kind_rects(card).into_iter().zip(ADD_MODAL_KINDS) {
             if point_in(r, p) {
                 self.add_kind = k;
                 return;
@@ -3116,6 +3124,19 @@ impl VpnApp {
 
         *handled = true;
     }
+}
+
+/// Protocol choices of the import sheet, in segment order.
+const ADD_MODAL_KINDS: [ConnKind; 2] = [ConnKind::WireGuard, ConnKind::OpenVpn];
+
+/// The protocol segments of the import sheet: one contiguous strip so the
+/// shared segmented control paints it, and the only geometry the hit test
+/// consults, so a face can never drift from its click target.
+fn add_modal_kind_rects(card: Rect) -> [Rect; 2] {
+    let seg_y = card.y0 + 78.0;
+    let x = card.x0 + 28.0;
+    let seg_w = 130.0;
+    [0.0, 1.0].map(|i: f64| Rect::new(x + i * seg_w, seg_y, x + (i + 1.0) * seg_w, seg_y + 34.0))
 }
 
 fn add_modal_button_rects(card: Rect) -> (Rect, Rect) {
@@ -3289,6 +3310,22 @@ impl Widget for VpnApp {
         }
         self.apply_pending_tool_intent();
         self.sample_throughput();
+    }
+
+    /// Size the header control band from the label the renderer will paint,
+    /// so an enlarged accessibility scale grows the band (and the tally that
+    /// centres on it) instead of sinking the labels to the pill's edge.
+    fn adjust_layout_with_measure(
+        &mut self,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
+        tr: &mut TextRenderer,
+    ) -> bool {
+        let (_, label_h) = tr.measure_weighted("+ Import", 13.0, None, TextWeight::Semibold);
+        let control_h = HEADER_CONTROL_H.max(f64::from(label_h).ceil() + 16.0);
+        let changed = (control_h - self.control_h).abs() > f64::EPSILON;
+        self.control_h = control_h;
+        changed
     }
 
     fn build_layout(
@@ -4502,6 +4539,64 @@ mod tests {
         app.commit_add();
         assert_eq!(app.vault.connections.len(), before);
         assert!(app.pending_control_invocation.is_some());
+    }
+
+    /// The protocol segments are painted and hit-tested from one geometry:
+    /// pressing inside the second painted segment selects OpenVPN, the strip
+    /// is contiguous (so the shared segmented control can draw it) and stays
+    /// inside the sheet at the narrowest supported width.
+    #[test]
+    fn add_modal_kind_segments_hit_where_they_are_painted() {
+        for width in [1200.0, 480.0] {
+            let (mut app, _doc) = demo_with_doc();
+            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            app.open_add(ConnKind::WireGuard);
+            let lay = app.layout();
+            let rects = add_modal_kind_rects(lay.modal_card);
+            assert!((rects[0].x1 - rects[1].x0).abs() < 1e-6, "segments are contiguous");
+            assert!(rects[1].x1 <= lay.modal_card.x1 - 28.0 + 1e-6, "strip stays in the card");
+            app.add_modal_hit(rects[1].center(), &lay);
+            assert_eq!(app.add_kind, ConnKind::OpenVpn);
+            app.add_modal_hit(rects[0].center(), &lay);
+            assert_eq!(app.add_kind, ConnKind::WireGuard);
+        }
+    }
+
+    /// The header control band follows the measured Import label: at 2× it is
+    /// taller than the 1× constant and the layout's control rects grow with
+    /// it, so the tally and pill labels stay centred inside their band.
+    #[test]
+    fn header_control_band_grows_with_the_text_scale() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut tr = TextRenderer::new();
+        let (mut app, _doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+        let base = app.layout();
+        assert!((base.add_btn.height() - HEADER_CONTROL_H).abs() < 1e-6);
+
+        tr.set_text_scale(2.0);
+        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+        let large = app.layout();
+        assert!(large.add_btn.height() > HEADER_CONTROL_H + 8.0);
+        assert!(large.header.height() > base.header.height());
+        assert!(large.list.y0 >= large.header.y1, "body starts below the grown header");
+
+        // The wide header must also contain the grown band, at 2× and at the
+        // renderer's 4× clamp; before, only the compact form grew.
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        for scale in [2.0, 4.0] {
+            tr.set_text_scale(scale);
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            let wide = app.layout();
+            assert!(!wide.compact);
+            assert!(
+                wide.add_btn.y1 + 18.0 <= wide.header.y1 + 1e-6,
+                "controls end inside the wide header at {scale}x"
+            );
+            assert!(wide.tor_pill.y1 <= wide.header.y1);
+        }
     }
 
     #[test]
