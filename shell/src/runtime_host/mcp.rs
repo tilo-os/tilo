@@ -83,23 +83,28 @@ impl McpServer {
         }
     }
     pub async fn handle(&mut self, request: Value) -> Option<Value> {
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let valid_id =
-            id.is_null() || id.is_string() || id.as_i64().is_some() || id.as_u64().is_some();
+        let id = request.get("id").cloned();
+        let valid_id = id
+            .as_ref()
+            .is_none_or(|id| id.is_string() || id.as_i64().is_some() || id.as_u64().is_some());
         if !request.is_object()
             || request["jsonrpc"] != "2.0"
             || !request["method"].is_string()
             || !valid_id
         {
             return Some(error(
-                if valid_id { id } else { Value::Null },
+                if valid_id {
+                    id.unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                },
                 -32600,
                 "Invalid Request",
             ));
         }
-        if request.get("id").is_none() {
+        let Some(id) = id else {
             return None;
-        }
+        };
         let method = request["method"].as_str().unwrap_or_default();
         let mut params = request.get("params").cloned().unwrap_or_else(|| json!({}));
         if !params.is_object() {
@@ -149,7 +154,14 @@ impl McpServer {
                     arguments: Value,
                 }
                 match parse::<Call>(params) {
-                    Ok(call) => Ok(tool_result(self.call(&call.name, call.arguments).await)),
+                    Ok(call)
+                        if tool_definitions().iter().any(|definition| {
+                            definition["name"].as_str() == Some(call.name.as_str())
+                        }) =>
+                    {
+                        Ok(tool_result(self.call(&call.name, call.arguments).await))
+                    }
+                    Ok(_) => return Some(error(id, -32602, "Unknown tool")),
                     Err(e) => Err(e),
                 }
             }

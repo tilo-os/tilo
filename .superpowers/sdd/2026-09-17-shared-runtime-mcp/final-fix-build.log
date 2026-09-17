@@ -1,0 +1,13 @@
+    Blocking waiting for file lock on build directory
+warning: function `next_wake` is never used
+  --> ui/src/animation_schedule.rs:30:15
+   |
+30 | pub(super) fn next_wake(
+   |               ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ui` (lib) generated 1 warning
+   Compiling browser v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/browser)
+   Compiling shell v0.1.0 (/Users/xaver/dev/qos-macos-shell/shell)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.84s
