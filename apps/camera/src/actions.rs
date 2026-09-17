@@ -287,6 +287,10 @@ pub struct CaptureItem {
 
 /// The compact presentation context Camera hands [`provide_resources`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this is a compact immutable availability snapshot for typed resources"
+)]
 pub struct CameraResourceCtx {
     pub recent: Option<CaptureItem>,
     pub mode: CaptureMode,
