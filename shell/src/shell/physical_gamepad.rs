@@ -370,6 +370,12 @@ pub fn pump_physical_gamepads(
             let ready = crate::shell::device_fabric_runtime::typed_gamepad_forwarding_ready(
                 active.forwarding_id,
             );
+            if !crate::shell::device_fabric_runtime::typed_gamepad_forwarding_exists(
+                active.forwarding_id,
+            ) {
+                stops.push(*session);
+                continue;
+            }
             if !ready {
                 // Discard while consent is pending: input that happened before
                 // the target granted the lease must never be replayed later.
