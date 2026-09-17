@@ -32,6 +32,7 @@ default-members = [
 ]
 members = [
     "crates/session/qos-ntfs-helper",
+    "crates/session/qos-ntfs-protocol",
     "crates/browser/chromium-blocker",
     "apps/scratchpad",
     "crates/app/qos-app",

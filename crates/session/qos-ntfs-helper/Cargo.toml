@@ -6,6 +6,7 @@ license = "GPL-2.0-or-later"
 publish = false
 
 [dependencies]
+qos-ntfs-protocol = { path = "../qos-ntfs-protocol" }
 libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

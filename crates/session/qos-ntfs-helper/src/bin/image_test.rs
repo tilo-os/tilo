@@ -9,19 +9,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let path = args.next().ok_or("expected regular image path")?;
     let mut read_limit = limits::READ_BYTES;
-    if let Some(arg) = args.next() {
-        if arg != "--read-limit" {
+    let mut operation = limits::NativeOperation::Probe { root: 5 };
+    while let Some(arg) = args.next() {
+        if arg == "--manifest" {
+            operation = limits::NativeOperation::Manifest { root: 5 };
+        } else if arg == "--read-chunk" {
+            operation = limits::NativeOperation::ReadChunk {
+                request: serde_json::from_str(
+                    args.next()
+                        .ok_or("missing request")?
+                        .to_str()
+                        .ok_or("request encoding")?,
+                )?,
+            };
+        } else if arg == "--read-limit" {
+            read_limit = args
+                .next()
+                .ok_or("missing read limit")?
+                .to_str()
+                .ok_or("invalid read limit")?
+                .parse()?;
+        } else {
             return Err("unknown diagnostic argument".into());
         }
-        read_limit = args
-            .next()
-            .ok_or("missing read limit")?
-            .to_str()
-            .ok_or("invalid read limit")?
-            .parse()?;
-    }
-    if args.next().is_some() {
-        return Err("unexpected diagnostic argument".into());
     }
     let file = OpenOptions::new()
         .read(true)
@@ -30,10 +40,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !file.metadata()?.is_file() {
         return Err("image test requires a regular file".into());
     }
-    let report = limits::run(
+    let report = limits::run_operation(
         &file,
         file.metadata()?.len(),
-        5,
+        operation,
         read_limit,
         None,
         Instant::now()
