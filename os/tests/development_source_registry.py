@@ -5,16 +5,20 @@ Requires cosign, podman and openssl. Set TMPDIR and CONTAINERS_STORAGE_CONF to
 private temporary storage if the host must not retain fixture image layers.
 No host disk, firmware, production repository or production key is used.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
 import platform
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
 import uuid
+from types import SimpleNamespace
+from unittest.mock import patch
 
 DEV = Path(__file__).resolve().parents[1] / 'dev'
 REGISTRY = 'docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
@@ -99,6 +103,23 @@ def main():
             receipt = json.loads(run(*command, env=env))
             assert receipt['source'] == source and receipt['manifest_sha256'] == digest
             assert receipt['transparency_log_required'] is False
+            expected_id = 'sha256:' + images[0].removeprefix('sha256:')
+            assert receipt['image_id'] == expected_id
+            sys.path.insert(0, str(DEV))
+            spec = importlib.util.spec_from_file_location('native_source', DEV / 'verify-development-source.py')
+            verifier = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(verifier)
+            args = SimpleNamespace(source=source, target=target, architecture=native,
+                revision=revision, public_bundle=bundle, manifest_sha256=digest,
+                offline_key_signature=True)
+            with patch.dict(os.environ, env, clear=True):
+                with verifier.verified_source(args) as verified:
+                    assert verified.image_id == expected_id
+                    snapshot = verified.public_bundle
+                    assert snapshot != bundle and snapshot.is_dir()
+                    assert (verified.root / 'usr/share/tilo/development-trust/manifest.json').is_file()
+                    assert (snapshot / 'manifest.json').read_bytes() == (bundle / 'manifest.json').read_bytes()
+                assert not snapshot.exists()
             for option, value in (('--revision', 'c' * 40),
                                   ('--architecture', 'x86_64' if native == 'aarch64' else 'aarch64'),
                                   ('--manifest-sha256', 'd' * 64)):
@@ -132,7 +153,8 @@ def main():
                               'checks': ['unsigned rejected', 'signed source accepted',
                                          'wrong revision rejected', 'wrong architecture rejected',
                                          'wrong manifest rejected', 'wrong signing key rejected',
-                                         'signed embedded trust mismatch rejected', 'no image execution']}))
+                                         'signed embedded trust mismatch rejected',
+                                         'immutable ID and held mount handoff', 'no image execution']}))
         finally:
             subprocess.run(['podman', 'rm', '--force', registry_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for image in images:
