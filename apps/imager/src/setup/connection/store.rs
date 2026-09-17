@@ -190,6 +190,8 @@ pub(super) struct ConnectionStore {
     retention_sample: std::time::Instant,
     gc_scan: Option<storage::GcScan>,
     candidate_pin: Option<[u8; 32]>,
+    #[cfg(windows)]
+    recovery_guards: BTreeMap<Vec<u8>, storage::RecoveryWriterGuard>,
 }
 // Prepared against one immutable in-memory state; applying after fsync cannot
 // discover a new capacity error or perform another fallible tree read.
@@ -265,6 +267,8 @@ impl ConnectionStore {
             retention_sample: std::time::Instant::now(),
             gc_scan: None,
             candidate_pin: None,
+            #[cfg(windows)]
+            recovery_guards: BTreeMap::new(),
         };
         for result in storage::TreeIter::new(&store.storage, store.current.root)? {
             store.live_keys = format::next(store.live_keys)?;
@@ -296,7 +300,12 @@ impl ConnectionStore {
                 }
                 break;
             };
-            let rows = store.reduce(&event).map_err(|_| StoreError::Corrupt)?;
+            // Fresh replay reads protect only this bookkeeping step. The map
+            // starts empty; no persisted row reconstructs a writer guard.
+            let mut recovery_checks = RecoveryChecks::default();
+            let rows = store
+                .reduce(&event, &mut recovery_checks)
+                .map_err(|_| StoreError::Corrupt)?;
             let bytes = format::encode(&event)?;
             let prepared = store.prepare_rows(rows)?;
             if !prepared.fits_overlay() {
@@ -540,7 +549,11 @@ impl ConnectionStore {
         })?;
         Ok(self.ack(self.load_connection(fence.value.connection)?))
     }
-    fn reduce(&self, event: &Event) -> Result<Vec<Row>, StoreError> {
+    fn reduce(
+        &self,
+        event: &Event,
+        recovery_checks: &mut RecoveryChecks,
+    ) -> Result<Vec<Row>, StoreError> {
         if event.schema != 1 || event.predecessor != self.digest {
             return Err(StoreError::Corrupt);
         }
@@ -565,6 +578,7 @@ impl ConnectionStore {
                 source,
                 destination,
                 matches!(event.change, Change::Verified { .. }),
+                recovery_checks,
             ),
             Change::BaselineCommit {
                 connection,
@@ -582,6 +596,7 @@ impl ConnectionStore {
                 source,
                 destination,
                 *initial_review,
+                recovery_checks,
             ),
             Change::Create { record } => self.reduce_create(record),
             Change::Intent { operation } => self.reduce_intent(operation),
@@ -801,7 +816,11 @@ impl ConnectionStore {
                 predecessor: self.digest,
                 change,
             };
-            let mut prepared = self.prepare_rows(self.reduce(&event)?)?;
+            // Keep actual byte guards through checkpoint, refreshed reduction,
+            // append, flush and in-memory commit. At most two reductions each
+            // verify the operation's bounded (128) recovery slots.
+            let mut recovery_checks = RecoveryChecks::default();
+            let mut prepared = self.prepare_rows(self.reduce(&event, &mut recovery_checks)?)?;
             let bytes = format::encode(&event)?;
             let control = matches!(
                 event.change,
@@ -815,7 +834,7 @@ impl ConnectionStore {
                 // can also update retention fields read by the reducer.
                 drop(prepared);
                 self.checkpoint()?;
-                prepared = self.prepare_rows(self.reduce(&event)?)?;
+                prepared = self.prepare_rows(self.reduce(&event, &mut recovery_checks)?)?;
             }
             if !prepared.fits_overlay() {
                 return Err(StoreError::LimitExceeded);
@@ -936,9 +955,12 @@ pub(super) struct RecoveryReservation {
 }
 pub(super) struct PreservedObject {
     id: RecoveryId,
-    file: File,
+    file: storage::RecoveryReader,
+}
+#[derive(Default)]
+struct RecoveryChecks {
     #[cfg(windows)]
-    _writer_guard: File,
+    readers: Vec<storage::RecoveryReader>,
 }
 impl ConnectionStore {
     fn gc_step(&mut self) -> Result<usize, StoreError> {

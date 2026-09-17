@@ -70,6 +70,102 @@ pub(in super::super) fn validate_file(
     native::validate_named(parent, name, file, expected.id)?;
     Ok(())
 }
+/// A verified reader's clone retains the same real guard. No raw/Deref/into-File
+/// conversion is exposed: a permissive inspection handle cannot escape alone.
+pub(in super::super) struct RecoveryReader {
+    file: File,
+    writer: Option<Arc<File>>,
+}
+impl RecoveryReader {
+    pub(in super::super) fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+            writer: self.writer.clone(),
+        })
+    }
+}
+impl Read for RecoveryReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(buffer)
+    }
+}
+impl std::io::Seek for RecoveryReader {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(position)
+    }
+}
+pub(in super::super) struct RecoveryWriterGuard {
+    identity: format::FileIdentity,
+    writer: std::sync::Weak<File>,
+}
+impl RecoveryWriterGuard {
+    pub(in super::super) fn is_live(&self) -> bool {
+        self.writer.strong_count() != 0
+    }
+}
+pub(in super::super) fn preserved_reader(
+    writer: File,
+    reader: File,
+) -> Result<(RecoveryReader, RecoveryWriterGuard), StoreError> {
+    let identity = file_identity(&regular(&writer)?);
+    if file_identity(&regular(&reader)?) != identity {
+        return Err(StoreError::IdentityChanged);
+    }
+    let writer = Arc::new(writer);
+    let guard = RecoveryWriterGuard {
+        identity,
+        writer: Arc::downgrade(&writer),
+    };
+    Ok((
+        RecoveryReader {
+            file: reader,
+            writer: Some(writer),
+        },
+        guard,
+    ))
+}
+pub(in super::super) fn guarded_reader(
+    parent: &Arc<Directory>,
+    name: &str,
+    expected: format::FileIdentity,
+    live: Option<&RecoveryWriterGuard>,
+) -> Result<RecoveryReader, StoreError> {
+    let writer = match live {
+        Some(guard) => {
+            if guard.identity != expected {
+                return Err(StoreError::IdentityChanged);
+            }
+            guard.writer.upgrade()
+        }
+        None => None,
+    };
+    // Upgrade first: the original receipt may be dropped at any point after
+    // this, but the actual deny-write/delete guard remains held before reopen.
+    let role = if let Some(writer) = &writer {
+        let metadata = regular(writer)?;
+        if file_identity(&metadata) != expected {
+            return Err(StoreError::IdentityChanged);
+        }
+        validate_file(parent, name, writer, &metadata)?;
+        Role::Reread
+    } else {
+        Role::StableRead
+    };
+    let file = native::open_file(parent, name, role, false)?;
+    Ok(RecoveryReader { file, writer })
+}
+pub(in super::super) fn recovery_metadata(reader: &RecoveryReader) -> Result<Metadata, StoreError> {
+    regular(&reader.file)
+}
+pub(in super::super) fn validate_recovery_reader(
+    parent: &Arc<Directory>,
+    name: &str,
+    reader: &RecoveryReader,
+    expected: &Metadata,
+) -> Result<(), StoreError> {
+    validate_file(parent, name, &reader.file, expected)
+}
+
 impl Storage {
     pub fn open(_path: &Path) -> Result<(Self, Current), StoreError> {
         // No mkdir, device open, token change or caller/serialized privilege.
@@ -621,6 +717,29 @@ mod tests {
         assert_eq!(std::fs::read(current).unwrap(), b"foreign pointer");
         assert!(store.poisoned);
     }
+    fn compatible_editor(path: &Path) -> std::io::Result<File> {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(7)
+            .open(path)
+    }
+    fn assert_mutations_blocked(path: &Path) {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::DELETE;
+        assert!(compatible_editor(path).is_err());
+        assert!(
+            std::fs::OpenOptions::new()
+                .access_mode(DELETE)
+                .share_mode(7)
+                .open(path)
+                .is_err()
+        );
+        assert!(std::fs::remove_file(path).is_err());
+        assert!(std::fs::rename(path, path.with_extension("must-not-rename")).is_err());
+        assert!(path.exists());
+    }
     #[test]
     #[ignore = "UNRUN: actual Windows recovery reservation, independent reread, retained guard and replay"]
     fn native_windows_recovery_ack_retains_verified_bytes() {
@@ -696,11 +815,37 @@ mod tests {
         let mut actual = Vec::new();
         preserved.value.file.read_to_end(&mut actual).unwrap();
         assert_eq!(actual, content);
-        drop(preserved);
-        drop(store);
-        let reopened = open(&path).unwrap();
         let mut key = format::key(2, id.operation.connection.0, id.operation.serial);
         key.extend(id.slot.to_be_bytes());
+        let Some(format::Row::Recovery(entry)) = store.row(&key).unwrap() else {
+            panic!("recovery row missing")
+        };
+        // Verify while preservation is still live: a new stable open would
+        // self-conflict, so verification must retain its actual writer guard.
+        let mut live_reader = store.verify_recovery(&entry).unwrap();
+        let preserved_clone = preserved.value.file.try_clone().unwrap();
+        drop(preserved);
+        let live_clone = live_reader.try_clone().unwrap();
+        let mut live_bytes = Vec::new();
+        live_reader.read_to_end(&mut live_bytes).unwrap();
+        assert_eq!(live_bytes, content);
+        drop(live_reader);
+        assert_mutations_blocked(&object_path);
+        drop(live_clone);
+        assert_mutations_blocked(&object_path); // the preserved-reader clone still guards
+        drop(preserved_clone);
+        compatible_editor(&object_path).unwrap(); // no ACL-only false positive
+        drop(store);
+        assert_reopened_recovery(&path, id, content);
+    }
+    fn assert_reopened_recovery(path: &Path, id: super::super::super::RecoveryId, content: &[u8]) {
+        let object_path = path
+            .join("recovery")
+            .join(format::hex(&id.operation.connection.0))
+            .join(format!("{}-{}", id.operation.serial, id.slot));
+        let mut key = format::key(2, id.operation.connection.0, id.operation.serial);
+        key.extend(id.slot.to_be_bytes());
+        let reopened = open(path).unwrap();
         let Some(format::Row::Recovery(entry)) = reopened.row(&key).unwrap() else {
             panic!("recovery row missing")
         };
@@ -708,12 +853,57 @@ mod tests {
             entry.object.as_ref().unwrap().file_id,
             format::FileIdentity::Windows(_)
         ));
+        let editor = compatible_editor(&object_path).unwrap();
+        assert!(
+            reopened.verify_recovery(&entry).is_err(),
+            "stable admission must reject an already-open writer"
+        );
+        drop(editor);
+        let mut verified = reopened.verify_recovery(&entry).unwrap();
+        assert_mutations_blocked(&object_path);
+        let verified_clone = verified.try_clone().unwrap();
         let mut bytes = Vec::new();
-        reopened
-            .verify_recovery(&entry)
-            .unwrap()
-            .read_to_end(&mut bytes)
-            .unwrap();
+        verified.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, content);
+        let metadata = recovery_metadata(&verified).unwrap();
+        assert_eq!(
+            file_identity(&metadata),
+            entry.object.as_ref().unwrap().file_id
+        );
+        let parent_name = format::hex(&id.operation.connection.0);
+        let named = super::super::metadata_nofollow(
+            &reopened.storage.recovery.file,
+            Path::new(&parent_name),
+        )
+        .unwrap();
+        let parent = reopened
+            .storage
+            .recovery
+            .open_child(OsStr::new(&parent_name), &named)
+            .unwrap();
+        validate_recovery_reader(
+            &parent,
+            &format!("{}-{}", id.operation.serial, id.slot),
+            &verified,
+            &metadata,
+        )
+        .unwrap();
+        drop(verified);
+        assert_mutations_blocked(&object_path);
+        // The same lifetime collection used across live append preparation and
+        // persistence retains actual readers, not past digest observations.
+        let mut checks = super::super::super::RecoveryChecks::default();
+        checks.verify(&reopened, &entry).unwrap();
+        drop(verified_clone);
+        assert_mutations_blocked(&object_path);
+        drop(checks);
+        let mut editor = compatible_editor(&object_path).unwrap();
+        editor.write_all(content).unwrap();
+        editor.sync_all().unwrap();
+        drop(editor);
+        let renamed = object_path.with_extension("rename-control");
+        std::fs::rename(&object_path, &renamed).unwrap();
+        std::fs::rename(&renamed, &object_path).unwrap();
+        std::fs::remove_file(&object_path).unwrap();
     }
 }

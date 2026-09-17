@@ -1252,6 +1252,29 @@ pub(super) fn capture_no_replace(
 #[cfg(windows)]
 pub(in crate::setup::connection) use windows::{CurrentReplacement, GcDeletion};
 
+// Unix keeps its exact File interface and open behavior. Windows readers carry
+// their sharing guard and never expose an unguarded inspection File.
+#[cfg(not(windows))]
+pub(super) type RecoveryReader = File;
+#[cfg(windows)]
+pub(super) use windows::{
+    RecoveryReader, RecoveryWriterGuard, guarded_reader, preserved_reader, recovery_metadata,
+    validate_recovery_reader,
+};
+#[cfg(not(windows))]
+pub(super) fn recovery_metadata(reader: &RecoveryReader) -> Result<Metadata, StoreError> {
+    regular(reader)
+}
+#[cfg(not(windows))]
+pub(super) fn validate_recovery_reader(
+    parent: &Arc<Directory>,
+    name: &str,
+    reader: &RecoveryReader,
+    expected: &Metadata,
+) -> Result<(), StoreError> {
+    validate_file(parent, name, reader, expected)
+}
+
 #[cfg(test)]
 mod identity_wire_tests {
     use super::*;

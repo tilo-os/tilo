@@ -3,8 +3,8 @@ use super::super::super::{migration::same_snapshot, nofollow::metadata_nofollow}
 use super::{
     Arc, AtomicBool, Change, ConnectionId, ConnectionStore, DurableAck, EndpointIdentity, File,
     Lifecycle, OperationId, OperationReceipt, Page, PageCursor, Path, PreservedObject,
-    RecoveryEntry, RecoveryId, RecoveryReason, RecoveryReservation, RecoveryState, RelativePath,
-    Row, Side, StoreError, VerifiedBaseline, format, storage,
+    RecoveryChecks, RecoveryEntry, RecoveryId, RecoveryReason, RecoveryReservation, RecoveryState,
+    RelativePath, Row, Side, StoreError, VerifiedBaseline, format, storage,
 };
 use cap_primitives::fs::Metadata;
 use sha2::{Digest, Sha256};
@@ -47,7 +47,7 @@ fn cancelled(flag: &AtomicBool) -> Result<(), StoreError> {
     }
 }
 fn hash_file(
-    file: &mut File,
+    file: &mut (impl Read + Seek),
     flag: &AtomicBool,
     expected: u64,
 ) -> Result<([u8; 32], u64), StoreError> {
@@ -139,6 +139,15 @@ impl ConnectionStore {
         flag: &AtomicBool,
     ) -> Result<DurableAck<PreservedObject>, StoreError> {
         self.guard()?;
+        #[cfg(windows)]
+        {
+            self.recovery_guards.retain(|_, guard| guard.is_live());
+            // Same existing store ceiling as non-connection live keys. Each
+            // entry corresponds to one preserved recovery row; no stale growth.
+            if self.recovery_guards.len() >= 1_048_576 {
+                return Err(StoreError::LimitExceeded);
+            }
+        }
         let RecoveryReservation { id, session, fence } = reservation;
         let result = (|| {
             if !Arc::ptr_eq(&self.session, &session) {
@@ -198,20 +207,16 @@ impl ConnectionStore {
                 root: self.storage.identity.clone(),
                 file_id: storage::file_identity(&reread_identity),
             });
+            #[cfg(windows)]
+            let (reread, guard) = storage::preserved_reader(target, reread)?;
             self.append(Change::Bytes {
                 entry,
                 expected: connection.revision,
                 fence: connection.fence,
             })?;
-            Ok(self.ack(PreservedObject {
-                id,
-                file: reread,
-                // The independent read handle permits the original writer;
-                // retain that writer's deny-write/delete sharing for the full
-                // returned reader lifetime, without reopening a second writer.
-                #[cfg(windows)]
-                _writer_guard: target,
-            }))
+            #[cfg(windows)]
+            self.recovery_guards.insert(recovery_key(id), guard);
+            Ok(self.ack(PreservedObject { id, file: reread }))
         })();
         if matches!(
             result,
@@ -223,7 +228,10 @@ impl ConnectionStore {
         }
         result
     }
-    pub(super) fn verify_recovery(&self, entry: &format::Recovery) -> Result<File, StoreError> {
+    pub(super) fn verify_recovery(
+        &self,
+        entry: &format::Recovery,
+    ) -> Result<storage::RecoveryReader, StoreError> {
         self.validate()?;
         let object = entry.object.as_ref().ok_or(StoreError::RecoveryRequired)?;
         if object.root != self.storage.identity {
@@ -231,8 +239,16 @@ impl ConnectionStore {
         }
         let parent = object_directory(self, entry.id(), false)?;
         let object_name = name(entry.id());
+        #[cfg(not(windows))]
         let mut file = storage::reread_file(&parent, &object_name)?;
-        let identity = storage::regular(&file)?;
+        #[cfg(windows)]
+        let mut file = storage::guarded_reader(
+            &parent,
+            &object_name,
+            object.file_id,
+            self.recovery_guards.get(&recovery_key(entry.id())),
+        )?;
+        let identity = storage::recovery_metadata(&file)?;
         if storage::file_identity(&identity) != object.file_id.require_platform()? {
             return Err(StoreError::IdentityChanged);
         }
@@ -242,11 +258,11 @@ impl ConnectionStore {
         let (actual, size) = hash_file(&mut file, &AtomicBool::new(false), bytes)?;
         if actual != sha256
             || size != bytes
-            || !storage::same_snapshot(&identity, &storage::regular(&file)?)
+            || !storage::same_snapshot(&identity, &storage::recovery_metadata(&file)?)
         {
             return Err(StoreError::RecoveryRequired);
         }
-        storage::validate_file(&parent, &object_name, &file, &identity)?;
+        storage::validate_recovery_reader(&parent, &object_name, &file, &identity)?;
         Ok(file)
     }
     pub(super) fn reduce_recovery(
@@ -511,6 +527,7 @@ impl ConnectionStore {
         source: &storage::Identity,
         destination: &storage::Identity,
         verified: bool,
+        recovery_checks: &mut RecoveryChecks,
     ) -> Result<Vec<Row>, StoreError> {
         let mut connection = self.connection(ConnectionId(id))?;
         if connection.revision != expected
@@ -546,7 +563,7 @@ impl ConnectionStore {
                         }))? && entry.side == side
                             && entry.state == 1
                         {
-                            self.verify_recovery(&entry)?;
+                            recovery_checks.verify(self, &entry)?;
                             found = true;
                         }
                     }
@@ -625,6 +642,7 @@ impl ConnectionStore {
         source: &storage::Identity,
         destination: &storage::Identity,
         initial_review: bool,
+        recovery_checks: &mut RecoveryChecks,
     ) -> Result<Vec<Row>, StoreError> {
         let mut connection = self.connection(ConnectionId(id))?;
         if connection.revision != expected
@@ -658,7 +676,7 @@ impl ConnectionStore {
             if entry.state != 1 {
                 return Err(StoreError::RecoveryRequired);
             }
-            self.verify_recovery(&entry)?;
+            recovery_checks.verify(self, &entry)?;
             entry.state = 2;
             entry.retained = 0;
             rows.push(Row::Recovery(entry));
@@ -711,4 +729,27 @@ fn copy_bytes(
         return Err(StoreError::RecoveryRequired);
     }
     Ok((digest.finalize().into(), size))
+}
+
+impl RecoveryChecks {
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            reason = "Only Windows retains byte guards; Unix keeps the original immediate reader drop"
+        )
+    )]
+    pub(super) fn verify(
+        &mut self,
+        store: &ConnectionStore,
+        entry: &format::Recovery,
+    ) -> Result<(), StoreError> {
+        let reader = store.verify_recovery(entry)?;
+        #[cfg(windows)]
+        self.readers.push(reader);
+        #[cfg(not(windows))]
+        drop(reader);
+        Ok(())
+    }
 }
