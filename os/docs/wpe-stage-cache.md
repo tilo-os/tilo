@@ -28,9 +28,11 @@ The existing full browser and application payload remain required.
 
 ## Native acceptance before activation
 
-The setting is disabled by default. The provisional compile driver must not
-activate it until `development-source.yml` passes `wpe_stage_cache.py` on both
-native architectures. This small disposable fixture uses a local registry and
+The setting is opt-in for the general image builder. The provisional compile
+driver enables it after native acceptance in
+[run 6992](https://code.sandbox.example/qos/qos/actions/runs/6992), source
+`d161be91dffe82cec90a4ab3d9be3b1b3eb525eb`: both x86-64 and ARM64 passed with
+Podman 5.8.4. This small disposable fixture uses a local registry and
 two separate VFS stores. It requires a cold build followed by a remote cache
 hit in the fresh store without executing the build script. It also checks
 recipe, frozen asset and epoch invalidation, and immutable stage reuse by an OS

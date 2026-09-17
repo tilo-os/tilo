@@ -78,6 +78,9 @@ class CompileBoundaries(unittest.TestCase):
                 self.assertEqual((directory / filename).read_text(), credentials[variable])
             env = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE)
             self.assertIn('--build-arg TILO_REQUIRE_COMPILER_CACHE=1', env['TILO_BUILD_ARGS'])
+            self.assertEqual(env['TILO_WPE_BUILD_CACHE_REF'],
+                             'code.sandbox.example/qos/tilo-development-wpe-cache-x86_64')
+            self.assertEqual(env['TILO_WPE_SOURCE_DATE_EPOCH'], '0')
             for variable, value in credentials.items():
                 self.assertNotIn(variable, env)
                 self.assertNotIn(value, repr(env))
