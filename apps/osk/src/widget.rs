@@ -990,6 +990,9 @@ fn read_config_bool(state: &AutoCommit, path: &ObjId, key: &str) -> Option<bool>
 struct CellState {
     hovered: bool,
     pressed: bool,
+    /// A command key that should read differently from text keys without
+    /// claiming it is currently selected (for example Backspace or Enter).
+    secondary: bool,
     /// Accent styling (e.g. an active toggle key).
     accent: bool,
     /// Solid (vs. outline) icon glyph — used for a latched state like
@@ -1013,6 +1016,7 @@ fn draw_cell(
     let CellState {
         hovered,
         pressed,
+        secondary,
         accent,
         icon_filled,
     } = state;
@@ -1024,7 +1028,7 @@ fn draw_cell(
         theme.bg_active
     } else if hovered {
         theme.bg_hover
-    } else if accent {
+    } else if accent || secondary {
         t.colors.surfaces.overlay
     } else {
         t.colors.surfaces.raised
@@ -1517,7 +1521,8 @@ impl Widget for OskWidget {
                 CellState {
                     hovered,
                     pressed,
-                    accent: is_action || shift_active,
+                    secondary: is_action,
+                    accent: shift_active,
                     icon_filled,
                 },
                 font_scale,

@@ -92,7 +92,17 @@ pub fn main() {
             .shot_root(shot_root)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
             .allowed_live_flags(&["--input-method", "--no-input-method"])
-            .allowed_live_options(&["--purpose"])
+            .allowed_options(&["--purpose"])
+            .scenarios(&[
+                "qwerty",
+                "shifted",
+                "caps-lock",
+                "symbols",
+                "numeric",
+                "email",
+                "url",
+                "suggestions-off",
+            ])
             .disable_headless()
             .live_handler(run_live),
     );
@@ -106,6 +116,24 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let mut widget = OskWidget::new();
     if let Some(purpose) = parse_purpose_arg(args) {
         widget.set_purpose(purpose);
+    }
+    match args.scenario.as_deref() {
+        Some("shifted") => {
+            widget.activate_label("⇧");
+        }
+        Some("caps-lock") => {
+            widget.activate_label("⇧");
+            widget.activate_label("⇧");
+        }
+        Some("symbols") => {
+            widget.activate_label("?123");
+        }
+        Some("numeric") => widget.set_purpose(InputPurpose::Number),
+        Some("email") => widget.set_purpose(InputPurpose::Email),
+        Some("url") => widget.set_purpose(InputPurpose::Url),
+        Some("suggestions-off") => widget.set_suggestions_enabled(false),
+        Some("qwerty") | None => {}
+        Some(_) => {}
     }
     Ok(Box::new(widget))
 }

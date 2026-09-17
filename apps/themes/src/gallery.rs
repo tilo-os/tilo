@@ -19,7 +19,8 @@ use ui::theme::Theme;
 use ui::widget::{ContextMenu, MenuItem, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use vello::peniko::{BlendMode, Fill};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::draw;
 use crate::model::ThemeSpec;
@@ -74,6 +75,9 @@ pub struct Gallery {
     name_input_node: Option<NodeId>,
     count: usize,
     last_cursor: Point,
+    scroll: f64,
+    max_scroll: f64,
+    ensure_selected_visible: bool,
     structure_dirty: bool,
 }
 
@@ -105,6 +109,9 @@ impl Gallery {
             name_input_node: None,
             count: 0,
             last_cursor: Point::ZERO,
+            scroll: 0.0,
+            max_scroll: 0.0,
+            ensure_selected_visible: true,
             structure_dirty: false,
         }
     }
@@ -125,6 +132,9 @@ impl Gallery {
     ) {
         let editor_before = self.editor_present();
         self.count = specs.len();
+        if self.selected != selected {
+            self.ensure_selected_visible = true;
+        }
         self.selected = selected.to_string();
         self.active_id = active_id.to_string();
         self.selected_custom = selected_custom;
@@ -210,6 +220,9 @@ impl Gallery {
             self.menu.push(MenuItem::action("Delete", || {}));
             self.menu_cmds.push(format!("delete:{id}"));
         }
+        // The shared menu handles edge flipping and internal scrolling once
+        // its owner supplies the actual sidebar viewport.
+        self.menu.set_viewport(Some(self.rect));
         self.menu.open_at([x as f32, y as f32]);
     }
 
@@ -283,6 +296,14 @@ impl Widget for Gallery {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
+                min_size: Size {
+                    width: Dimension::auto(),
+                    height: length(0.0_f32),
+                },
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Hidden,
+                    y: taffy::Overflow::Hidden,
+                },
                 ..Default::default()
             },
             &child_nodes,
@@ -300,8 +321,36 @@ impl Widget for Gallery {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
+        // Keep the selected row visible and allow catalogs taller than the
+        // sidebar to scroll instead of silently clipping their last themes.
         if let Ok(children) = taffy.children(node) {
+            let content_bottom = children
+                .iter()
+                .filter_map(|child| taffy.layout(*child).ok())
+                .map(|layout| f64::from(layout.location.y + layout.size.height))
+                .fold(0.0, f64::max)
+                + f64::from(PAD);
+            self.max_scroll = (content_bottom - self.rect.height()).max(0.0);
+            if self.ensure_selected_visible
+                && let Some((index, _)) = self
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .find(|(_, row)| row.id() == self.selected)
+                && let Some(child) = children.get(index)
+                && let Ok(layout) = taffy.layout(*child)
+            {
+                let top = f64::from(layout.location.y) - self.scroll;
+                let bottom = top + f64::from(layout.size.height);
+                if top < HEADER_H {
+                    self.scroll -= HEADER_H - top;
+                } else if bottom > self.rect.height() - f64::from(PAD) {
+                    self.scroll += bottom - (self.rect.height() - f64::from(PAD));
+                }
+            }
+            self.ensure_selected_visible = false;
+            self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+            let new_origin = Point::new(self.rect.x0, self.rect.y0 - self.scroll);
             for (row, child) in self.rows.iter_mut().zip(children.iter()) {
                 row.apply_layout(taffy, *child, new_origin);
             }
@@ -343,6 +392,13 @@ impl Widget for Gallery {
             self.rect.y0 + 12.0,
             TextWeight::Semibold,
         );
+        let rows_viewport = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + HEADER_H,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rows_viewport);
         for r in &mut self.rows {
             r.draw(scene, t, tr, theme, p);
         }
@@ -350,6 +406,7 @@ impl Widget for Gallery {
         if self.editor_present() {
             self.name_input.draw(scene, t, tr, theme, p);
         }
+        scene.pop_layer();
     }
 
     fn draw_overlay(
@@ -379,6 +436,19 @@ impl Widget for Gallery {
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale, position.y / scale);
+        }
+
+        if !self.menu.is_open()
+            && self.rect.contains(self.last_cursor)
+            && let WindowEvent::MouseWheel { delta, .. } = event
+        {
+            let dy = match delta {
+                MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 52.0,
+                MouseScrollDelta::PixelDelta(position) => -position.y,
+            };
+            self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll);
+            *handled = true;
+            return;
         }
 
         // A rename asked to focus the inline editor.
@@ -420,10 +490,19 @@ impl Widget for Gallery {
             ..
         } = event
         {
+            let rows_viewport = Rect::new(
+                self.rect.x0,
+                self.rect.y0 + HEADER_H,
+                self.rect.x1,
+                self.rect.y1,
+            );
             let hit = self
                 .rows
                 .iter()
-                .find(|r| r.get_rect().contains(self.last_cursor))
+                .find(|r| {
+                    rows_viewport.contains(self.last_cursor)
+                        && r.get_rect().contains(self.last_cursor)
+                })
                 .map(|r| (r.id().to_string(), r.is_custom()));
             if let Some((id, custom)) = hit {
                 self.open_menu(self.last_cursor.x, self.last_cursor.y, &id, custom);
@@ -458,6 +537,22 @@ impl Widget for Gallery {
         }
 
         // Rows (selection + hover) last.
+        let pointer_press_outside_rows = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && !Rect::new(
+            self.rect.x0,
+            self.rect.y0 + HEADER_H,
+            self.rect.x1,
+            self.rect.y1,
+        )
+        .contains(self.last_cursor);
+        if pointer_press_outside_rows {
+            return;
+        }
         if let Ok(children) = taffy.children(node) {
             for (row, child) in self.rows.iter_mut().zip(children.iter()) {
                 row.handle_event(

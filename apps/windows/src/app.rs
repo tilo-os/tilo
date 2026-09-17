@@ -27,6 +27,7 @@ use winit::keyboard::{Key, NamedKey};
 const PAD: f64 = 20.0;
 const SIDEBAR_W: f64 = 296.0;
 const ROW_H: f64 = 72.0;
+const CONTROL_H: f64 = 40.0;
 // The desktop master/detail surface needs enough room for the status and
 // guest-file controls as well as the route selector. Below this width a list
 // → detail flow is clearer and, importantly, never paints an actionable
@@ -111,6 +112,10 @@ pub struct WindowsApp {
     /// than leaving the catalogue below an expanded appliance card.
     sidebar_scroll: f64,
     sidebar_content_bottom: f64,
+    /// Compact details are a full content screen and may exceed a phone's
+    /// height. Keep their scroll independent from the catalogue sidebar.
+    detail_scroll: f64,
+    detail_content_bottom: f64,
     hits: Vec<(Rect, Hit)>,
     node: Option<NodeId>,
     notice: Option<String>,
@@ -310,6 +315,8 @@ impl WindowsApp {
             mouse: Point::ZERO,
             sidebar_scroll: 0.0,
             sidebar_content_bottom: 0.0,
+            detail_scroll: 0.0,
+            detail_content_bottom: 0.0,
             hits: Vec::new(),
             node: None,
             notice: None,
@@ -895,6 +902,7 @@ impl WindowsApp {
                 self.confirm_delete_data = None;
                 if self.area.width() < COMPACT_W {
                     self.compact_detail = true;
+                    self.detail_scroll = 0.0;
                 }
             }
             Hit::Back => self.compact_detail = false,
@@ -1239,13 +1247,13 @@ impl WindowsApp {
     fn flow_button_rect(cursor: &mut Point, width: f64, bounds: Rect) -> Rect {
         if cursor.x > bounds.x0 && cursor.x + width > bounds.x1 {
             cursor.x = bounds.x0;
-            cursor.y += 40.0;
+            cursor.y += CONTROL_H + 8.0;
         }
         let rect = Rect::new(
             cursor.x,
             cursor.y,
             (cursor.x + width).min(bounds.x1),
-            cursor.y + 32.0,
+            cursor.y + CONTROL_H,
         );
         cursor.x = rect.x1 + 10.0;
         rect
@@ -1954,7 +1962,7 @@ impl Widget for WindowsApp {
                 self.area.x0 + PAD,
                 self.area.y0 + 12.0,
                 self.area.x0 + 116.0,
-                self.area.y0 + 48.0,
+                self.area.y0 + 52.0,
             );
             Self::pill(scene, t, back, theme.bg_primary);
             Self::text(
@@ -1975,9 +1983,18 @@ impl Widget for WindowsApp {
             } else {
                 self.area.x0 + SIDEBAR_W + PAD
             },
-            self.area.y0 + if compact { 68.0 } else { PAD },
+            self.area.y0
+                + if compact {
+                    68.0 - self.detail_scroll
+                } else {
+                    PAD
+                },
             self.area.x1 - PAD,
-            self.area.y1 - PAD,
+            if compact {
+                self.area.y1 + 600.0 - self.detail_scroll
+            } else {
+                self.area.y1 - PAD
+            },
         );
         let Some(app) = self.selected_app().cloned() else {
             Self::text(
@@ -2056,9 +2073,9 @@ impl Widget for WindowsApp {
         );
         let launch = Rect::new(
             status.x1 + 16.0,
-            status.y0 - 2.0,
+            status.y0 - 6.0,
             status.x1 + 148.0,
-            status.y1 + 2.0,
+            status.y1 + 6.0,
         );
         self.launch_button.apply_layout_external(launch);
         self.launch_button.set_enabled(app.launch_available);
@@ -2099,9 +2116,9 @@ impl Widget for WindowsApp {
         if app.route == Route::Vm {
             let open_file = Rect::new(
                 launch.x1 + 12.0,
-                status.y0 - 2.0,
+                status.y0 - 6.0,
                 launch.x1 + 176.0,
-                status.y1 + 2.0,
+                status.y1 + 6.0,
             );
             self.open_file_button.apply_layout_external(open_file);
             self.open_file_button.set_style(ButtonStyle::Neutral);
@@ -2129,9 +2146,9 @@ impl Widget for WindowsApp {
         if app.route != Route::Vm && app.vm_fallback_available {
             let vm = Rect::new(
                 launch.x1 + 12.0,
-                status.y0 - 2.0,
+                status.y0 - 6.0,
                 launch.x1 + 186.0,
-                status.y1 + 2.0,
+                status.y1 + 6.0,
             );
             self.vm_fallback_button.apply_layout_external(vm);
             self.vm_fallback_button.set_style(ButtonStyle::Neutral);
@@ -2188,9 +2205,21 @@ impl Widget for WindowsApp {
             theme.text_primary,
             TextWeight::Bold,
         );
+        let compact_route_top = routes_y + 22.0;
+        let compact_route_width = (detail.width() - 16.0) / 3.0;
         for (index, route) in Route::ALL.iter().enumerate() {
-            let x = detail.x0 + 94.0 + index as f64 * 118.0;
-            let button = Rect::new(x, routes_y - 8.0, x + 108.0, routes_y + 24.0);
+            let button = if compact {
+                let x = detail.x0 + index as f64 * (compact_route_width + 8.0);
+                Rect::new(
+                    x,
+                    compact_route_top,
+                    x + compact_route_width,
+                    compact_route_top + 40.0,
+                )
+            } else {
+                let x = detail.x0 + 94.0 + index as f64 * 118.0;
+                Rect::new(x, routes_y - 12.0, x + 108.0, routes_y + 28.0)
+            };
             if let Some(shared_button) = self.route_buttons.get_mut(index) {
                 shared_button.apply_layout_external(button);
                 shared_button.set_style(if *route == app.route {
@@ -2207,18 +2236,19 @@ impl Widget for WindowsApp {
         let reset_needs_row = app.uses_override() && detail.width() < 660.0;
         if app.uses_override() {
             let reset = if reset_needs_row {
+                let reset_y = routes_y + if compact { 70.0 } else { 32.0 };
                 Rect::new(
                     detail.x0,
-                    routes_y + 32.0,
+                    reset_y,
                     (detail.x0 + 195.0).min(detail.x1),
-                    routes_y + 64.0,
+                    reset_y + 40.0,
                 )
             } else {
                 Rect::new(
                     detail.x0 + 460.0,
-                    routes_y - 8.0,
+                    routes_y - 12.0,
                     detail.x0 + 655.0,
-                    routes_y + 24.0,
+                    routes_y + 28.0,
                 )
             };
             self.reset_button.apply_layout_external(reset);
@@ -2235,7 +2265,7 @@ impl Widget for WindowsApp {
                 tr,
                 scene,
                 t,
-                Point::new(detail.x0, routes_y + 42.0),
+                Point::new(detail.x0, routes_y + if compact { 120.0 } else { 42.0 }),
                 reason,
                 10.0,
                 theme.text_dim,
@@ -2246,7 +2276,12 @@ impl Widget for WindowsApp {
         // explanation. Previously the access card began six pixels below an
         // unavailable-route message, which made both unreadable in compact
         // VM details.
-        let route_controls_offset = if reset_needs_row { 40.0 } else { 0.0 }
+        let route_controls_offset = if compact { 62.0 } else { 0.0 }
+            + if reset_needs_row {
+                if compact { 48.0 } else { 40.0 }
+            } else {
+                0.0
+            }
             + if route_notice_needs_row { 24.0 } else { 0.0 };
         let vm_shared_session = app.route == Route::Vm;
         let info_line_offset = if vm_shared_session { 8.0 } else { 0.0 };
@@ -2397,12 +2432,13 @@ impl Widget for WindowsApp {
             grant_y += 20.0;
         }
         if let Some(detail) = &app.installation_detail {
+            let visible_detail = compact_detail_value(detail, compact);
             Self::text(
                 tr,
                 scene,
                 t,
                 Point::new(info.x0 + PAD, grant_y + 4.0),
-                detail,
+                &visible_detail,
                 11.0,
                 theme.text_dim,
                 TextWeight::Regular,
@@ -2496,6 +2532,11 @@ impl Widget for WindowsApp {
             self.delete_data_button.set_style(ButtonStyle::Neutral);
             self.delete_data_button.set_enabled(true);
             self.delete_data_button.draw(scene, t, tr, theme, presence);
+        }
+        if compact {
+            self.detail_content_bottom = manage_cursor.y + CONTROL_H + self.detail_scroll;
+            let max_scroll = (self.detail_content_bottom - self.area.y1 + PAD).max(0.0);
+            self.detail_scroll = self.detail_scroll.clamp(0.0, max_scroll);
         }
         if let Some(notice) = &self.notice
             && self.confirm_delete_data.is_none()
@@ -2679,6 +2720,18 @@ impl Widget for WindowsApp {
                     self.hit(Hit::App(next));
                     *handled = true;
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.area.width() < COMPACT_W && self.compact_detail =>
+            {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / scale,
+                };
+                let max = (self.detail_content_bottom - self.area.y1 + PAD).max(0.0);
+                let before = self.detail_scroll;
+                self.detail_scroll = (self.detail_scroll + delta).clamp(0.0, max);
+                *handled |= (self.detail_scroll - before).abs() > f64::EPSILON;
             }
             WindowEvent::MouseWheel { delta, .. }
                 if self.mouse.x >= self.area.x0
@@ -3688,6 +3741,7 @@ mod tests {
             let rect = WindowsApp::flow_button_rect(&mut cursor, width, detail);
             assert!(rect.x0 >= detail.x0 && rect.x1 <= detail.x1, "{rect:?}");
             assert!(rect.y1 <= detail.y1, "{rect:?}");
+            assert!(rect.height() >= 40.0, "{rect:?}");
         }
     }
 

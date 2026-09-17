@@ -65,11 +65,18 @@ pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
     // presets-only catalog, no fabricated custom theme); every other scenario
     // uses the seeded demo catalog so the customizer shows real editing.
     let scenario = std::env::var("TILO_THEMES_SHOT").unwrap_or_default();
+    app_root_for_shot_scenario(width, &scenario)
+}
+
+/// Build a deterministic screenshot root for a launcher-declared scenario.
+/// The environment-variable entry point above remains as a compatibility
+/// shim for older visual-review scripts.
+pub fn app_root_for_shot_scenario(width: u32, scenario: &str) -> Box<dyn Widget> {
     let mut app = if scenario == "live" {
         ThemesApp::new()
     } else {
         ThemesApp::new_demo()
     };
-    app.seed_shot(f64::from(width), &scenario);
+    app.seed_shot(f64::from(width), scenario);
     Box::new(app)
 }

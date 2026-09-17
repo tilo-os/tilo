@@ -55,11 +55,11 @@ const NARROW_PREVIEW_H: f32 = 560.0;
 /// becomes an overlay flap. Chosen so the gallery, a usable preview, and the
 /// customizer stop fitting side by side (`GALLERY_W + CUSTOMIZER_W` plus a
 /// readable preview column).
-const BREAKPOINT: f64 = 840.0;
+const BREAKPOINT: f64 = 1100.0;
 
 /// The hamburger / close toggle that summons or dismisses the overlay gallery.
 /// Lives at the left of the top bar; only shown when the gallery is collapsed.
-const TOGGLE_SIZE: f64 = 34.0;
+const TOGGLE_SIZE: f64 = 36.0;
 
 /// Panic-free node construction for [`Widget::build_layout`].
 /// `TaffyTree::new_with_children` is typed `-> TaffyResult<NodeId>` for API
@@ -182,13 +182,13 @@ impl ThemesApp {
             topbar_buttons: vec![
                 Button::new("themes.new", "New", None)
                     .on_action(crate::actions::new_default_binding())
-                    .fit_content(34.0),
+                    .fit_content(36.0),
                 Button::new("themes.export", "Export JSON", None)
                     .on_action(crate::actions::export_selected_binding())
-                    .fit_content(34.0),
+                    .fit_content(36.0),
                 Button::new("themes.apply", "Apply theme", None)
                     .on_action(crate::actions::apply_selected_binding())
-                    .fit_content(34.0)
+                    .fit_content(36.0)
                     .primary(),
             ],
             top_commands,
@@ -896,6 +896,10 @@ impl ThemesApp {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
+                    min_size: Size {
+                        width: Dimension::auto(),
+                        height: length(0.0_f32),
+                    },
                     flex_grow: 1.0,
                     flex_basis: length(0.0_f32),
                     overflow: taffy::Point {
@@ -915,6 +919,10 @@ impl ThemesApp {
                     size: Size {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
+                    },
+                    min_size: Size {
+                        width: Dimension::auto(),
+                        height: length(0.0_f32),
                     },
                     flex_grow: 1.0,
                     flex_basis: length(0.0_f32),
@@ -2205,6 +2213,23 @@ mod tests {
         assert!(
             !app.needs_animation_frame(),
             "an idle theme gallery must not keep the compositor at vsync"
+        );
+    }
+
+    #[test]
+    fn responsive_breakpoint_preserves_a_readable_preview_column() {
+        assert_eq!(
+            SplitLayout::from_width(900.0, BREAKPOINT),
+            SplitLayout::Overlay,
+            "three fixed panes made the preview controls overlap at 900 px"
+        );
+        assert_eq!(
+            SplitLayout::from_width(1280.0, BREAKPOINT),
+            SplitLayout::Docked
+        );
+        assert!(
+            BREAKPOINT - f64::from(GALLERY_W) - f64::from(CUSTOMIZER_W) >= 480.0,
+            "the docked layout must reserve a readable preview column"
         );
     }
 }
