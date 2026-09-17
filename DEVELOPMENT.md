@@ -202,8 +202,11 @@ Alerts obey Windows notification settings and Do Not Disturb. Clocks hands timer
 deadlines to Windows, so timers continue to notify after the app closes. Pausing
 or deleting a timer cancels its pending Windows alert. A saved receipt records
 the accepted deadline so reopening after delivery does not submit it again.
-Alarms still require the app to be running; closed-app alarm scheduling and
-activation from notifications are still pending.
+Alarms still require the app to be running; closed-app alarm scheduling remains
+pending. Alerts carry the `tilo-clocks:` protocol activation URI, which the
+installer registers to open the installed executable. This route launches a
+normal Clocks window; it does not yet focus an already-running instance. The
+registered command ignores URI contents rather than forwarding them as arguments.
 
 For device verification, build `cargo build --locked -p ui --example windows-host
 --features notifications`. The helper accepts `history dev.tilo.clocks` to inspect
@@ -214,6 +217,13 @@ may reject a settings query before the app's first notification is submitted.
 the native scheduler. Scheduled IDs are limited to 15 UTF-16 units on this host;
 ordinary toast tags allow 16. First-use scheduler registration submits and removes
 a suppressed, short-lived notification before adding a schedule.
+Apps opt into a registered activation URI with
+`HostNotifications::with_protocol_activation`; both immediate and scheduled
+notifications use the same XML builder. `show-protocol ID TAG URI TITLE BODY`
+verifies the payload independently. The SDK keeps one process-lifetime MTA usage
+reference alongside windows-rs' cached activation factories; each caller still
+balances its thread-local COM apartment. The regression tests recreate notification
+hosts on successive threads and inspect their XML without showing test alerts.
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
 `CARGO_PROFILE_TEST_DEBUG=0` in the PowerShell environment before building. Do not
