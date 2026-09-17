@@ -17,7 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
 use qdoc::model::Region;
-use qdoc::snapshot::{AttrVal, BlockView, NoteView};
+use qdoc::snapshot::{AttrVal, BlockView, CommentView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -10299,11 +10299,52 @@ impl ui::widget::AppWidget for WordProcessorWidget {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CommentThreadLayout {
+    panel: Rect,
+    reply_field: Rect,
+    cancel_button: Rect,
+    submit_button: Rect,
+}
+
+impl CommentThreadLayout {
+    fn for_host(host: Rect, scale: f64) -> Self {
+        let width = (372.0 * scale).min((host.width() - 24.0 * scale).max(260.0 * scale));
+        let height = (360.0 * scale).min((host.height() - 76.0 * scale).max(238.0 * scale));
+        let panel = Rect::new(
+            host.x1 - width - 12.0 * scale,
+            host.y1 - height - 38.0 * scale,
+            host.x1 - 12.0 * scale,
+            host.y1 - 38.0 * scale,
+        );
+        Self {
+            panel,
+            reply_field: Rect::new(
+                panel.x0 + 12.0 * scale,
+                panel.y1 - 82.0 * scale,
+                panel.x1 - 12.0 * scale,
+                panel.y1 - 52.0 * scale,
+            ),
+            cancel_button: Rect::new(
+                panel.x1 - 210.0 * scale,
+                panel.y1 - 40.0 * scale,
+                panel.x1 - 118.0 * scale,
+                panel.y1 - 12.0 * scale,
+            ),
+            submit_button: Rect::new(
+                panel.x1 - 110.0 * scale,
+                panel.y1 - 40.0 * scale,
+                panel.x1 - 12.0 * scale,
+                panel.y1 - 12.0 * scale,
+            ),
+        }
+    }
+}
+
 impl WordProcessorWidget {
     /// Draw the expanded, durable comment thread above the inline margin
     /// anchor. The panel is on-demand, retaining the compact canvas as the
     /// primary surface while keeping each persisted reply visible and usable.
-    #[allow(clippy::too_many_lines)]
     fn draw_comment_thread(
         &mut self,
         scene: &mut Scene,
@@ -10312,37 +10353,50 @@ impl WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let Some(id) = self.thread_comment.clone() else {
-            return;
-        };
-        let comment = self
-            .review
-            .comments()
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()
-            .or_else(|| self.thread_snapshot.clone());
-        let Some(comment) = comment else {
-            self.close_comment_thread();
+        let Some(comment) = self.active_comment_thread() else {
             return;
         };
         let scale = f64::from(tr.text_scale());
         let cc = self.chrome;
-        let width = (372.0 * scale).min((self.rect.width() - 24.0 * scale).max(260.0 * scale));
-        let height = (360.0 * scale).min((self.rect.height() - 76.0 * scale).max(238.0 * scale));
-        let panel = Rect::new(
-            self.rect.x1 - width - 12.0 * scale,
-            self.rect.y1 - height - 38.0 * scale,
-            self.rect.x1 - 12.0 * scale,
-            self.rect.y1 - 38.0 * scale,
-        );
-        self.thread_panel = panel;
+        let layout = CommentThreadLayout::for_host(self.rect, scale);
+        self.thread_panel = layout.panel;
+        self.thread_cancel = layout.cancel_button;
+        self.thread_submit = layout.submit_button;
+
+        Self::draw_comment_thread_shell(scene, transform, tr, cc, layout.panel, scale);
+        Self::draw_comment_messages(scene, transform, tr, cc, &comment, layout.panel, scale);
+        self.draw_comment_reply_controls(scene, transform, tr, theme, presence, layout.reply_field);
+    }
+
+    fn active_comment_thread(&mut self) -> Option<CommentView> {
+        let id = self.thread_comment.as_ref()?;
+        let comment = self
+            .review
+            .comments()
+            .iter()
+            .find(|comment| &comment.id == id)
+            .cloned()
+            .or_else(|| self.thread_snapshot.clone());
+        if comment.is_none() {
+            self.close_comment_thread();
+        }
+        comment
+    }
+
+    fn draw_comment_thread_shell(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        colors: ChromeColors,
+        panel: Rect,
+        scale: f64,
+    ) {
         let rounded = vello::kurbo::RoundedRect::from_rect(panel, 8.0 * scale);
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &rounded);
+        scene.fill(Fill::NonZero, transform, colors.bar, None, &rounded);
         scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             transform,
-            cc.border,
+            colors.border,
             None,
             &rounded,
         );
@@ -10350,10 +10404,21 @@ impl WordProcessorWidget {
             scene,
             &t("review-thread"),
             14.0,
-            cc.text,
+            colors.text,
             transform * Affine::translate((panel.x0 + 12.0 * scale, panel.y0 + 12.0 * scale)),
             None,
         );
+    }
+
+    fn draw_comment_messages(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        colors: ChromeColors,
+        comment: &CommentView,
+        panel: Rect,
+        scale: f64,
+    ) {
         let root = comment
             .blocks
             .iter()
@@ -10365,7 +10430,7 @@ impl WordProcessorWidget {
             &[RichSpan::new(format!("{}  {}", comment.author, root))],
             false,
             num::f32_of_f64(12.0 * scale),
-            num::f32_of_f64(width - 24.0 * scale),
+            num::f32_of_f64(panel.width() - 24.0 * scale),
             TextAlign::Left,
             FontFamily::Sans,
             vec![],
@@ -10376,7 +10441,7 @@ impl WordProcessorWidget {
             scene,
             &root_layout,
             transform * Affine::translate((panel.x0 + 12.0 * scale, panel.y0 + 39.0 * scale)),
-            cc.text,
+            colors.text,
         );
         let mut y = panel.y0 + 48.0 * scale + f64::from(root_layout.height());
         for reply in comment.replies.iter().take(3) {
@@ -10391,7 +10456,7 @@ impl WordProcessorWidget {
                 &[RichSpan::new(format!("{}  {}", reply.author, text))],
                 false,
                 num::f32_of_f64(11.0 * scale),
-                num::f32_of_f64(width - 36.0 * scale),
+                num::f32_of_f64(panel.width() - 36.0 * scale),
                 TextAlign::Left,
                 FontFamily::Sans,
                 vec![],
@@ -10406,7 +10471,7 @@ impl WordProcessorWidget {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                cc.chip,
+                colors.chip,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(bubble, 5.0 * scale),
             );
@@ -10414,19 +10479,25 @@ impl WordProcessorWidget {
                 scene,
                 &layout,
                 transform * Affine::translate((bubble.x0 + 7.0 * scale, bubble.y0 + 4.0 * scale)),
-                cc.text,
+                colors.text,
             );
             y += h + 5.0 * scale;
         }
-        let field = Rect::new(
-            panel.x0 + 12.0 * scale,
-            panel.y1 - 82.0 * scale,
-            panel.x1 - 12.0 * scale,
-            panel.y1 - 52.0 * scale,
-        );
+    }
+
+    fn draw_comment_reply_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        reply_field: Rect,
+    ) {
+        let colors = self.chrome;
         self.thread_reply
             .set_placeholder(&t("review-reply-placeholder"));
-        self.thread_reply.apply_layout_external(field);
+        self.thread_reply.apply_layout_external(reply_field);
         Widget::draw(
             &mut self.thread_reply,
             scene,
@@ -10435,23 +10506,11 @@ impl WordProcessorWidget {
             theme,
             presence,
         );
-        self.thread_cancel = Rect::new(
-            panel.x1 - 210.0 * scale,
-            panel.y1 - 40.0 * scale,
-            panel.x1 - 118.0 * scale,
-            panel.y1 - 12.0 * scale,
-        );
-        self.thread_submit = Rect::new(
-            panel.x1 - 110.0 * scale,
-            panel.y1 - 40.0 * scale,
-            panel.x1 - 12.0 * scale,
-            panel.y1 - 12.0 * scale,
-        );
         draw_btn(
             scene,
             transform,
             tr,
-            &cc,
+            &colors,
             &PanelButton {
                 rect: self.thread_cancel,
                 label: &t("review-cancel-reply"),
@@ -10463,7 +10522,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
-            &cc,
+            &colors,
             &PanelButton {
                 rect: self.thread_submit,
                 label: &t("review-send-reply"),
@@ -12631,6 +12690,24 @@ mod tests {
         let center = Point::new(frame.center().x, frame.center().y);
         assert_eq!(horizontal * center, center);
         assert_eq!(vertical * center, center);
+    }
+
+    #[test]
+    fn comment_thread_layout_keeps_reply_controls_inside_the_panel() {
+        let host = Rect::new(0.0, 0.0, 300.0, 480.0);
+        let layout = CommentThreadLayout::for_host(host, 1.0);
+
+        assert_eq!(layout.panel, Rect::new(12.0, 82.0, 288.0, 442.0));
+        for control in [
+            layout.reply_field,
+            layout.cancel_button,
+            layout.submit_button,
+        ] {
+            assert!(layout.panel.contains(Point::new(control.x0, control.y0)));
+            assert!(layout.panel.contains(Point::new(control.x1, control.y1)));
+        }
+        assert!(layout.cancel_button.x1 < layout.submit_button.x0);
+        assert!(layout.reply_field.y1 < layout.submit_button.y0);
     }
 
     #[test]
