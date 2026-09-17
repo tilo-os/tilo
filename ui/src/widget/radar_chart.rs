@@ -256,7 +256,7 @@ impl RadarChart {
         let bottom = if legend_rows == 0 {
             8.0
         } else {
-            legend_rows as f64 * chart_legend::ROW_HEIGHT + 8.0
+            crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + 8.0
         };
         let area = Rect::new(
             self.rect.x0 + 70.0,
@@ -504,7 +504,7 @@ impl Widget for RadarChart {
                 self.series.iter().map(|series| series.name.as_str()),
                 self.rect.x0 + 12.0,
                 self.rect.x1 - 12.0,
-                self.rect.y1 - rows as f64 * chart_legend::ROW_HEIGHT,
+                self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT,
             );
             for (series, item) in self.series.iter().zip(items) {
                 let x = item.x0;
@@ -740,22 +740,25 @@ impl Widget for RadarChart {
                         })
                 })
             })
-            .chain(self.series.iter().filter_map(|series| {
-                self.style.interactive_legend.then(|| {
-                    AccessNode::new(Role::Button)
-                        .with_action_target(format!("legend:{}", series.id))
-                        .with_name(format!("{} series", series.name))
-                        .with_description(if self.hidden_series.contains(&series.id) {
-                            "Hidden; activate to show".to_owned()
-                        } else {
-                            "Visible; activate to hide".to_owned()
-                        })
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
-                })
-            }))
+            .chain(
+                self.series
+                    .iter()
+                    .filter(|_| self.style.interactive_legend)
+                    .map(|series| {
+                        AccessNode::new(Role::Button)
+                            .with_action_target(format!("legend:{}", series.id))
+                            .with_name(format!("{} series", series.name))
+                            .with_description(if self.hidden_series.contains(&series.id) {
+                                "Hidden; activate to show".to_owned()
+                            } else {
+                                "Visible; activate to hide".to_owned()
+                            })
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                    }),
+            )
             .collect();
         Some(
             AccessNode::new(Role::Canvas)
