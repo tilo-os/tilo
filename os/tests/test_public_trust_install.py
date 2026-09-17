@@ -180,6 +180,40 @@ class InstallTests(fixtures.PublicBundleTests):
         with self.assertRaises(ValueError):
             installer.origin.validate_target_imgref('registry.vm.test:5443/tilo-development/os:test')
 
+    def test_retained_registry_has_exact_namespace_and_native_tags(self):
+        repository = 'code.podesta.ai/qos/tilo-development'
+        for architecture in ('x86_64', 'aarch64'):
+            selected = installer.origin.development_target(repository + ':development-' + architecture, architecture)
+            self.assertEqual(selected['repository'], repository)
+            self.assertTrue(selected['tls_required'])
+        installer.origin.development_target(repository + '@sha256:' + 'a' * 64, 'aarch64')
+        for value in ('code.podesta.ai/qos/tilo:development-aarch64',
+                      'code.podesta.ai/qos/tilo-development/child:development-aarch64',
+                      'code.podesta.ai:443/qos/tilo-development:development-aarch64',
+                      'code.podesta.ai./qos/tilo-development:development-aarch64',
+                      'alias.example/qos/tilo-development:development-aarch64',
+                      repository + ':latest', repository + ':development-x86_64'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                installer.origin.development_target(value, 'aarch64')
+        with self.assertRaises(ValueError):
+            installer.origin.validate_target_imgref(repository + ':development-aarch64')
+
+    def test_retained_origin_installs_exact_policy_and_rejects_override(self):
+        repository = 'code.podesta.ai/qos/tilo-development'
+        target = repository + ':development-aarch64'
+        installer.install(self.output, self.official, self.destination, 'development', self.digest,
+                          'ab' * 32, target, self.image_root)
+        self.assertEqual(installer.origin.install_update_origin(self.image_root), target)
+        policy = json.loads((self.image_root / 'etc/containers/policy.json').read_text())
+        self.assertEqual(policy, installer.origin.development_policy(repository))
+        self.assertIn('insecure = false', (self.image_root / 'etc/containers/registries.conf.d/99-tilo-development.conf').read_text())
+        for override in (repository + ':development-x86_64', 'code.podesta.ai/qos/tilo:latest'):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                installer.origin.install_update_origin(self.image_root, override)
+        (self.destination / 'cosign.pub').write_bytes(b'substituted')
+        with self.assertRaisesRegex(ValueError, 'installed development key differs'):
+            installer.origin.install_update_origin(self.image_root)
+
     def test_image_trust_is_installed_before_dracut(self):
         containerfile = Path(__file__).resolve().parents[1] / 'Containerfile'
         source = containerfile.read_text()
