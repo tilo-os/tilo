@@ -7,6 +7,7 @@ set -euo pipefail
 
 EFIVARS="${TILO_BOOT_MENU_EFIVARS:-/sys/firmware/efi/efivars}"
 EFIBOOTMGR="${TILO_BOOT_MENU_EFIBOOTMGR:-efibootmgr}"
+EFI_GLOBAL_GUID=8be4df61-93ca-11d2-aa0d-00e098032b8c
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
@@ -113,13 +114,37 @@ install_entries() {
   done
 }
 
+# Read the complete efivarfs representation, including its four-byte variable
+# attributes header and EFI_LOAD_OPTION description, device path and optional
+# data. Hex keeps NULs/newlines lossless inside the atomic text snapshot.
+firmware_entry_bytes() {
+  local path="$1"
+  [ -f "$path" ] && [ ! -L "$path" ] || die "firmware boot entry is missing or unsafe: $path"
+  od -An -v -tx1 -- "$path" | tr -d ' \n'
+}
+
+verify_firmware_entries() {
+  local state="$1" record name expected actual
+  while IFS= read -r record; do
+    name="${record%%=*}"
+    expected="${record#*=}"
+    [[ "$name" =~ ^Boot[0-9A-Fa-f]{4}-$EFI_GLOBAL_GUID$ ]] \
+      && [[ "$expected" =~ ^([0-9a-f]{2})+$ ]] \
+      || die "invalid boot-entry bytes in firmware snapshot: $state"
+    actual="$(firmware_entry_bytes "$EFIVARS/$name")" \
+      || die "existing firmware entry $name is missing or unreadable; snapshot retained at $state; entry bytes were not restored"
+    [ "$actual" = "$expected" ] \
+      || die "existing firmware entry $name changed; snapshot retained at $state; entry bytes were not restored"
+  done < <(sed -n 's/^boot_entry=//p' "$state")
+}
+
 firmware_snapshot() {
   [ "$#" -eq 1 ] || die "usage: $0 firmware-snapshot STATE_FILE"
-  local state="$1" output order next temporary
+  local state="$1" output order next temporary entry bytes
   temporary="$(mktemp "${state}.XXXXXX")"
   chmod 0600 "$temporary"
   if [ ! -d "$EFIVARS" ]; then
-    printf 'version=1\nefi=0\n' > "$temporary"
+    printf 'version=2\nefi=0\n' > "$temporary"
   else
     command -v "$EFIBOOTMGR" >/dev/null 2>&1 || die "efibootmgr is required to preserve firmware boot order"
     output="$("$EFIBOOTMGR")" || die "could not snapshot firmware boot order"
@@ -127,7 +152,16 @@ firmware_snapshot() {
     next="$(sed -n 's/^BootNext: //p' <<<"$output" | head -1)"
     [[ "$order" =~ ^[0-9A-Fa-f]{4}(,[0-9A-Fa-f]{4})*$ ]] || die "firmware returned an invalid BootOrder"
     [ -z "$next" ] || [[ "$next" =~ ^[0-9A-Fa-f]{4}$ ]] || die "firmware returned an invalid BootNext"
-    printf 'version=1\nefi=1\nboot_order=%s\nboot_next=%s\n' "$order" "$next" > "$temporary"
+    printf 'version=2\nefi=1\nboot_order=%s\nboot_next=%s\n' "$order" "$next" > "$temporary"
+    # Capture all existing Boot#### variables, including entries absent from
+    # BootOrder. New Tilo entries are allowed; existing entries must not change.
+    for entry in "$EFIVARS"/Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-"$EFI_GLOBAL_GUID"; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      bytes="$(firmware_entry_bytes "$entry")" || die "could not snapshot firmware entry: $entry"
+      [ -n "$bytes" ] || die "empty firmware boot entry: $entry"
+      printf 'boot_entry=%s=%s\n' "${entry##*/}" "$bytes" >> "$temporary"
+    done
+    verify_firmware_entries "$temporary"
   fi
   mv -f -- "$temporary" "$state"
 }
@@ -136,15 +170,21 @@ firmware_restore() {
   [ "$#" -eq 1 ] || die "usage: $0 firmware-restore STATE_FILE"
   local state="$1" efi order next
   [ -f "$state" ] && [ ! -L "$state" ] || die "firmware snapshot is missing or unsafe"
+  grep -Fqx 'version=2' "$state" || die "firmware snapshot lacks exact boot-entry evidence"
   efi="$(sed -n 's/^efi=//p' "$state" | head -1)"
   [ "$efi" = 1 ] || { [ "$efi" = 0 ] && return 0; die "invalid firmware snapshot"; }
   order="$(sed -n 's/^boot_order=//p' "$state" | head -1)"
   next="$(sed -n 's/^boot_next=//p' "$state" | head -1)"
   [[ "$order" =~ ^[0-9A-Fa-f]{4}(,[0-9A-Fa-f]{4})*$ ]] || die "invalid saved BootOrder"
   [ -z "$next" ] || [[ "$next" =~ ^[0-9A-Fa-f]{4}$ ]] || die "invalid saved BootNext"
+  # Do not reinstate an order/default that could now point at another loader.
+  # Detection is not restoration: retain the exact snapshot and fail the
+  # installation instead of rewriting opaque foreign EFI_LOAD_OPTION data.
+  verify_firmware_entries "$state"
   "$EFIBOOTMGR" -o "$order" >/dev/null || die "could not restore the original firmware BootOrder"
   if [ -n "$next" ]; then "$EFIBOOTMGR" -n "$next" >/dev/null; else "$EFIBOOTMGR" -N >/dev/null; fi \
     || die "could not restore the original firmware BootNext"
+  verify_firmware_entries "$state"
 }
 
 case "${1:-}" in
