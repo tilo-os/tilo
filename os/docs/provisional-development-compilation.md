@@ -20,6 +20,14 @@ Cargo both use two build jobs, and receipts record the visible cgroup/guest memo
 limits and peak. A storage abort is a failed experiment, never a reason to
 disable the browser or publish an incomplete image.
 
+The privileged tools container receives an explicit 9 GiB memory limit with
+swap disabled (`--memory=9g --memory-swap=9g`). It is a sibling of the workflow
+job container, so the job's own limit does not constrain it. This ceiling leaves
+an engineering margin within the selected class's 10 GiB DinD budget; it is not
+a measured peak or proof that the build fits. The workflow wrapper and any
+other nested containers share that outer budget. Memory receipts record the
+tools container's actual cgroup limit and peak for subsequent sizing decisions.
+
 This is compilation evidence, **not an installation image**. The local container
 still has a provisional composefs seal. The job creates no disk, performs no VM
 acceptance, publishes no image and allocates no production release generation.
