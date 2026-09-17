@@ -43,13 +43,22 @@ grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
-if grep -Fq 'runner: runner-arm64' "$workflows/build-kernel.yml" \
+if grep -Fq 'runner: runner-disk-100g-arm64' "$workflows/build-kernel.yml" \
+  && grep -Fxq '            runner: runner-disk-100g' "$workflows/build-kernel.yml" \
   && grep -Fq 'platforms: ${{ matrix.platform }}' "$workflows/build-kernel.yml" \
   && grep -Fq 'needs: build-and-push-kernel' "$workflows/build-kernel.yml" \
   && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-kernel.yml"; then
   ok 'kernel publication requires both native builds and verified index promotion'
 else
   bad 'kernel publication can omit native ARM64 or bypass index verification'
+fi
+
+if grep -Fq 'memory=9g' "$workflows/build-kernel.yml" \
+  && grep -Fq 'memory-swap=9g' "$workflows/build-kernel.yml" \
+  && grep -Fq 'KERNEL_BUILD_JOBS=2' "$workflows/build-kernel.yml"; then
+  ok 'native kernel BuildKit and compiler parallelism have explicit resource bounds'
+else
+  bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
 fi
 
 if grep -Fq 'needs: [build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
