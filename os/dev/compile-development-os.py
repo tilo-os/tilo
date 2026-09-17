@@ -49,7 +49,8 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
                     architecture='x86_64', kernel_candidate='', wpe_stage_receipt=None,
                     wpe_adoption_receipt=None, wpe_adoption_sha256='',
                     fex_payload_candidate='', windows_guest_candidate='', hardware_profile='generic',
-                    firmware_candidate='', firmware_manifest_sha256='', require_firmware_artifact=False):
+                    firmware_candidate='', firmware_manifest_sha256='', require_firmware_artifact=False,
+                    native_builder_receipt=None, native_builder_sha256=''):
     validate_firmware_selection(mode, hardware_profile, firmware_candidate, firmware_manifest_sha256,
                                 require_firmware_artifact)
     hardware_definition(hardware_profile, architecture)
@@ -64,16 +65,22 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
             raise ValueError(f'ARM full-build requires an explicit immutable {name} candidate')
         if reference:
             immutable_candidate(reference)
-    if mode not in ('cache-only', 'full-build'):
-        raise ValueError('mode must be cache-only or full-build')
+    if mode not in ('cache-only', 'native-payload', 'full-build'):
+        raise ValueError('mode must be cache-only, native-payload or full-build')
+    if mode == 'native-payload' and hardware_profile != 'generic':
+        raise ValueError('native payload compilation is independent of hardware profiles')
+    if native_builder_receipt or native_builder_sha256:
+        if (mode != 'full-build' or not native_builder_receipt
+                or not re.fullmatch(r'[0-9a-f]{64}', native_builder_sha256)):
+            raise ValueError('native builder reuse requires full-build and independently pinned receipt')
     adopting = bool(wpe_adoption_receipt or wpe_adoption_sha256)
-    if adopting and (mode != 'full-build' or not wpe_adoption_receipt
+    if adopting and (mode not in ('full-build', 'native-payload') or not wpe_adoption_receipt
             or not re.fullmatch(r'[0-9a-f]{64}', wpe_adoption_sha256)
             or wpe or wpe_stage_receipt):
         raise ValueError('adoption requires its independent receipt SHA256 and excludes current WPE inputs')
-    if mode == 'full-build' and not adopting and not re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
+    if mode in ('full-build', 'native-payload') and not adopting and not re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
         raise ValueError('an immutable reviewed WPE candidate reference is required')
-    if mode == 'full-build' and not re.fullmatch(r'[1-9][0-9]{0,11}', generation):
+    if mode in ('full-build', 'native-payload') and not re.fullmatch(r'[1-9][0-9]{0,11}', generation):
         raise ValueError('generation must be an explicit positive decimal integer')
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('full committed source revision required')
@@ -453,10 +460,10 @@ def immutable_candidate(reference):
     return reference
 
 
-def selected_pins(architecture='x86_64', kernel_candidate='', rpms_candidate=''):
+def selected_pins(architecture='x86_64', kernel_candidate='', rpms_candidate='', require_kernel=True):
     if architecture not in ARCHITECTURES:
         raise ValueError('unsupported native architecture')
-    if architecture == 'aarch64' and not kernel_candidate:
+    if require_kernel and architecture == 'aarch64' and not kernel_candidate:
         raise ValueError('ARM full-build requires an explicit immutable kernel candidate')
     pins = pinned_inputs()
     for name, candidate in (('KERNEL_RPMS_REF', kernel_candidate), ('RPMS_REF', rpms_candidate)):
@@ -603,7 +610,9 @@ def retain_compilation(revision, generation, epoch, target, manifest, architectu
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode', choices=('cache-only', 'full-build'), default='cache-only')
+    parser.add_argument('--mode', choices=('cache-only', 'native-payload', 'full-build'), default='cache-only')
+    parser.add_argument('--native-builder-receipt', type=Path)
+    parser.add_argument('--native-builder-sha256', default='')
     parser.add_argument('--wpe-stage-receipt', type=Path)
     parser.add_argument('--wpe-adoption-receipt', type=Path)
     parser.add_argument('--wpe-adoption-sha256', default='')
@@ -625,7 +634,9 @@ def main(argv=None):
     validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate,
                     args.wpe_stage_receipt, args.wpe_adoption_receipt, args.wpe_adoption_sha256,
                     args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile,
-                    args.firmware_candidate, args.firmware_manifest_sha256)
+                    args.firmware_candidate, args.firmware_manifest_sha256,
+                    native_builder_receipt=args.native_builder_receipt,
+                    native_builder_sha256=args.native_builder_sha256)
     for candidate in (args.rpms_candidate, args.builder_candidate):
         if candidate:
             immutable_candidate(candidate)
@@ -639,7 +650,7 @@ def main(argv=None):
                                                   args.hardware_profile, args.architecture)
     firmware = local_hardware_inputs(args.hardware_profile, args.architecture) if args.mode == 'full-build' else {}
     stage = adopted = adoption_raw = None
-    if args.mode == 'full-build':
+    if args.mode in ('full-build', 'native-payload'):
         if args.wpe_adoption_receipt:
             adopted, adoption_raw = adopted_wpe_receipt(args.wpe_adoption_receipt, args.wpe_adoption_sha256, args.architecture)
         else:
@@ -663,8 +674,11 @@ def main(argv=None):
         (EVIDENCE / 'wpe-adoption.json').write_bytes(adoption_raw)
     else:
         write_receipt('wpe-stage.json', stage)
-    pins = selected_pins(args.architecture, args.kernel_candidate, args.rpms_candidate)
+    pins = selected_pins(args.architecture, args.kernel_candidate, args.rpms_candidate,
+                         require_kernel=args.mode == 'full-build')
     references = pins | {'BUILDER_REF': args.builder_candidate}
+    if args.mode == 'native-payload':
+        references.pop('KERNEL_RPMS_REF')  # This target never consumes kernel RPMs.
     references.update({'WPE_ADOPTED_REF': adopted['reference']} if adopted is not None
                       else {'WPE_BUILDROOT_REF': args.wpe})
     native_inputs = {name: verify_native_image(reference, args.architecture)
@@ -722,7 +736,31 @@ def main(argv=None):
                             args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile)
     epoch = int(run('git', 'show', '-s', '--format=%ct', args.revision))
     env['SOURCE_DATE_EPOCH'] = str(epoch)
+    if args.mode == 'native-payload' or args.native_builder_receipt:
+        import native_builder_artifact as native_builder
+        receipt_bytes = adoption_raw if adopted is not None else args.wpe_stage_receipt.read_bytes()
+        # Stage receipts bind the completed WPE payload, not merely its buildroot.
+        wpe_reference = adopted['reference'] if adopted is not None else stage['reference']
+        native_inputs = native_builder.expected_inputs(REPO, args.revision, args.architecture,
+            pins['BASE_REF'], pins['RPMS_REF'], wpe_reference,
+            hashlib.sha256(receipt_bytes).hexdigest(), epoch)
+        if args.native_builder_receipt:
+            native_id = native_builder.import_artifact(args.native_builder_receipt,
+                args.native_builder_sha256, native_inputs)
+            env['TILO_NATIVE_BUILDER_IMAGE_ID'] = native_id
+        else:
+            env['TILO_NATIVE_BUILDER_ONLY'] = '1'
+            env['TILO_NATIVE_BUILDER_IIDFILE'] = str(EVIDENCE / 'native-builder.iid')
     compile_with_capacity_watchdog(env)
+    if args.mode == 'native-payload':
+        identity = (EVIDENCE / 'native-builder.iid').read_text().strip()
+        retained_native = native_builder.export_artifact(identity, native_inputs,
+            os.environ['GITHUB_RUN_ID'], os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
+        write_receipt('native-builder.json', retained_native)
+        write_receipt('result.json', {'status': 'native-payload-retained',
+            'installable': False, 'published': True, 'disk_created': False,
+            'revision': args.revision, 'native_builder': retained_native})
+        return
     retained = retain_compilation(args.revision, args.generation, epoch,
         env['TILO_TARGET_IMGREF'], trust['manifest_sha256'], args.architecture)
     write_receipt('raw-installation-tooling.json', installation_tooling(retained['handoff']['raw_rootfs_id']))
