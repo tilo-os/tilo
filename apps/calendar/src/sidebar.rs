@@ -42,6 +42,16 @@ pub(crate) struct Chrome {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct ChromeModel {
+    pub(crate) window: Rect,
+    pub(crate) content: Rect,
+    pub(crate) detail: Rect,
+    pub(crate) switcher_in_topbar: bool,
+    pub(crate) view: View,
+    pub(crate) pointer: Point,
+}
+
+#[derive(Clone, Copy)]
 struct ChromeLayout {
     rect: Rect,
     window: Rect,
@@ -144,13 +154,16 @@ impl Sidebar {
     pub(crate) fn draw_chrome(
         &self,
         paint: &mut PaintContext<'_>,
-        window: Rect,
-        content: Rect,
-        detail: Rect,
-        switcher_in_topbar: bool,
-        view: View,
-        pointer: Point,
+        model: ChromeModel,
     ) -> Option<Chrome> {
+        let ChromeModel {
+            window,
+            content,
+            detail,
+            switcher_in_topbar,
+            view,
+            pointer,
+        } = model;
         if !self.visible() {
             return None;
         }
