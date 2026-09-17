@@ -218,6 +218,10 @@ pub struct MailApp {
     /// this Arc-backed handle; typing never rebuilds the loaded-mail index.
     mail_search_provider: crate::search_provider::MailSearchProvider,
     nav: NavShell,
+    /// The theme the host last handed to `build_layout` / `draw`. The nav
+    /// shell resolves its breakpoint and pane widths from the theme (F1,
+    /// round two), so it is laid out against this — never a stock theme.
+    shell_theme: Theme,
     /// Retained first-run surface so the primary action uses the shared
     /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
@@ -367,6 +371,7 @@ impl MailApp {
             shared,
             mail_search_provider,
             nav,
+            shell_theme: Theme::dark(),
             first_run: EmptyState::new("Welcome to Mail")
                 .with_icon(Icon::Mail)
                 .with_message("Add your email account to start reading and sending mail.")
@@ -573,8 +578,31 @@ impl MailApp {
 
     // ---- nav layout -------------------------------------------------------
 
+    /// Adopt the host theme when its scales change; the layout below reads
+    /// `shell_theme`, so the shell and the panes judge narrow/wide the way
+    /// the host does at every text scale.
+    fn remember_shell_theme(&mut self, theme: &Theme) {
+        if self.shell_theme.text_scale.to_bits() != theme.text_scale.to_bits()
+            || self.shell_theme.ui_scale.to_bits() != theme.ui_scale.to_bits()
+        {
+            self.shell_theme = theme.clone();
+            self.dirty = true;
+        }
+    }
+
+    /// Publish the shell's collapse chip (if it shows one) so pane headers
+    /// centre on and clear the chip the shell actually laid out.
+    fn publish_shell_chip(&self) {
+        let chip = self.nav.collapse_button_rect();
+        self.shared.borrow_mut().shell_chip =
+            (chip.width() > 0.0 && chip.height() > 0.0).then_some(chip);
+    }
+
     fn publish_shell_flags(&self) {
-        let narrow = self.rect.width() < BREAKPOINT;
+        // The shell's breakpoint is the authored value resolved under the
+        // theme it was last built with; compare against that, not the
+        // constant, so the panes and the shell agree at every text scale.
+        let narrow = self.rect.width() < self.nav.breakpoint();
         let detail = self.nav.is_detail_shown();
         let sidebar_open = self.nav.is_sidebar_open();
         let mut st = self.shared.borrow_mut();
@@ -588,10 +616,11 @@ impl MailApp {
     fn layout_nav(&mut self) {
         self.publish_shell_flags();
         let (w, h) = (self.rect.width() as f32, self.rect.height() as f32);
-        let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self.nav.build_layout(&mut taffy, &theme, &mut map);
+        let child = self
+            .nav
+            .build_layout(&mut taffy, &self.shell_theme, &mut map);
         let Ok(root) = taffy.new_with_children(
             Style {
                 size: TSize {
@@ -607,7 +636,10 @@ impl MailApp {
             // pass rather than panic if the taffy internals ever surprise us.
             return;
         };
+        // The throwaway renderer measures at the theme's scale, as the host's
+        // does, so the shell's measured bands match what will be painted.
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(self.shell_theme.text_scale);
         let measure_map = map.clone();
         let _ = taffy.compute_layout_with_measure(
             root,
@@ -635,6 +667,7 @@ impl MailApp {
             self.nav
                 .apply_layout(&taffy, child, Point::new(self.rect.x0, self.rect.y0));
         }
+        self.publish_shell_chip();
         // Compose + overlays sit within the whole app rect.
         self.compose.layout(self.rect);
         self.rebuild_overlay_hits();
@@ -3341,6 +3374,7 @@ impl Widget for MailApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.remember_shell_theme(theme);
         // `Widget::build_layout` returns a bare `NodeId`, so the retained
         // first-run child and its full-size parent are inserted together.
         let first_run_node = self.first_run.build_layout(taffy, theme, node_map);
@@ -3418,6 +3452,7 @@ impl Widget for MailApp {
         presence: &PresenceCtx,
         permissions: &PermissionContext,
     ) {
+        self.remember_shell_theme(theme);
         let c = &theme.tokens.colors;
         fill_rect(scene, t, self.rect, c.surfaces.base);
         // The navigation shell (sidebar + list + reader) draws itself, its
