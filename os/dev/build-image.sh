@@ -51,6 +51,16 @@ done
 
 # Development trust currently stages a container only: registry provisioning and
 # signed disk/VM integration are separate required work.
+case "${TILO_RAW_ROOTFS_ONLY:-0}" in
+  0) ;;
+  1)
+    [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] \
+      || die "raw-only builds are development-only"
+    [ "${TILO_SKIP_BUILD:-0}" = 0 ] || die "raw-only builds require a fresh source build"
+    [ -n "${TILO_RAW_ROOTFS_RECEIPT:-}" ] || die "raw-only builds require TILO_RAW_ROOTFS_RECEIPT"
+    ;;
+  *) die "TILO_RAW_ROOTFS_ONLY must be 0 or 1" ;;
+esac
 _tilo_profile_args=()
 _tilo_podman_args=()
 _tilo_trust_args=(--build-arg TILO_PUBLIC_TRUST_MODE=production --build-arg TILO_PUBLIC_TRUST_MANIFEST_SHA256=)
@@ -345,6 +355,10 @@ else
         --architecture "$TILO_WINDOWS_ARCH" --generation "$TILO_GENERATION" \
         --target-update-ref "$TILO_TARGET_IMGREF" \
         --public-manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256"
+    fi
+    if [ "${TILO_RAW_ROOTFS_ONLY:-0}" = 1 ]; then
+      msg "Development raw rootfs staged: $_tilo_raw_rootfs. Unsealed and not installable; retention and completion require independent validation."
+      exit 0
     fi
     python3 "$TILO_OS_DIR/dev/sign-development-rootfs.py" \
       --rootfs-id "$_tilo_raw_rootfs" --architecture "$TILO_WINDOWS_ARCH" \
