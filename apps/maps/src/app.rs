@@ -22,6 +22,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::format::bytes as format_bytes;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -31,7 +32,7 @@ use ui::tilo_actions::{
     ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
     ResultSpec, RetryPolicy,
 };
-use ui::widget::{ContextMenu, MenuItem};
+use ui::widget::{Button, ButtonFace, ContextMenu, MenuItem};
 use ui::widget::{ResourceOperationStart, Widget};
 
 use crate::actions::{MAPS_ACTION_TYPE, MapsAction};
@@ -58,7 +59,7 @@ const MARGIN: f64 = 16.0;
 const SEARCH_H: f64 = 48.0;
 const GAP: f64 = 10.0;
 /// Height of the side panel's header bar (back / title / collapse toggle).
-const PANEL_HEADER_H: f64 = 40.0;
+const PANEL_HEADER_H: f64 = 44.0;
 const CTRL_SIZE: f64 = crate::map_controls::SIZE;
 const ROW_H: f64 = 56.0;
 /// Below this window width the side panel stops being docked and becomes a
@@ -604,6 +605,13 @@ impl MapsApp {
     /// map-first and panel-open states can be captured headlessly.
     pub fn set_nav_open(&mut self, open: bool) {
         self.nav_open = open;
+    }
+
+    /// Stage the docked panel's compact state for the standard screenshot
+    /// matrix. Narrow layouts intentionally ignore this and keep drawer
+    /// visibility under `nav_open`.
+    pub fn set_demo_panel_collapsed(&mut self) {
+        self.panel_collapsed = true;
     }
 
     /// Screenshot-only hook for the shared attribution dialog.
@@ -2759,18 +2767,18 @@ impl MapsApp {
         let x = card.x0 + pad;
         let right = card.x1 - pad;
         let mut y = card.y0 + 14.0;
-        // Close (×).
-        let close = Rect::new(right - 20.0, card.y0 + 12.0, right + 6.0, card.y0 + 38.0);
-        draw::text_center(
+        // Close: a standard icon button with a comfortable touch target.
+        let close = Rect::new(right - 44.0, card.y0 + 8.0, right, card.y0 + 52.0);
+        Button::paint(
             scene,
-            tr,
             t,
-            "✕",
-            close.x0,
-            close.x1,
-            y,
-            14.0,
-            theme.text_dim,
+            tr,
+            theme,
+            &ButtonFace::new(close, "")
+                .ghost()
+                .icon(Icon::X)
+                .hovered(close.contains(self.last_mouse))
+                .accessible_name("Close place details"),
         );
         self.click_targets.push((close, Hit::ClosePoi));
         draw::text_w(
@@ -2822,19 +2830,18 @@ impl MapsApp {
         }
         y += 6.0;
         // Directions (primary action).
-        let bh = 36.0;
+        let bh = 44.0;
         let btn = Rect::new(x, y, right, y + bh);
-        draw::fill_rrect(scene, t, btn, 9.0, theme.accent_primary);
-        draw::text_center(
+        Button::paint(
             scene,
-            tr,
             t,
-            "Directions",
-            btn.x0,
-            btn.x1,
-            vmid(btn.y0, bh, 13.0),
-            13.0,
-            Color::WHITE,
+            tr,
+            theme,
+            &ButtonFace::new(btn, "Directions")
+                .primary()
+                .icon(Icon::ArrowRight)
+                .hovered(btn.contains(self.last_mouse))
+                .accessible_name("Directions to this place"),
         );
         self.click_targets.push((btn, Hit::PoiDirections));
     }
@@ -3131,17 +3138,15 @@ impl MapsApp {
                 bar.x1 - inset,
                 bar.y1 - inset,
             );
-            draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
-            draw::text_center(
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "»",
-                btn.x0,
-                btn.x1,
-                vmid(btn.y0, btn.height(), 16.0),
-                16.0,
-                theme.text_primary,
+                tr,
+                theme,
+                &ButtonFace::new(btn, "")
+                    .icon(Icon::ChevronRight)
+                    .hovered(btn.contains(self.last_mouse))
+                    .accessible_name("Expand panel"),
             );
             self.click_targets.push((btn, Hit::ToggleCollapse));
             self.content_view_h = 0.0;
@@ -3167,17 +3172,15 @@ impl MapsApp {
         let mut hx = header.x0;
         if directions {
             let back = Rect::new(hx, header.y0, hx + PANEL_HEADER_H, header.y1);
-            draw::fill_rrect(scene, t, back, 8.0, c.surfaces.base);
-            draw::text_center(
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "‹",
-                back.x0,
-                back.x1,
-                vmid(back.y0, back.height(), 18.0),
-                18.0,
-                theme.text_primary,
+                tr,
+                theme,
+                &ButtonFace::new(back, "")
+                    .icon(Icon::ArrowLeft)
+                    .hovered(back.contains(self.last_mouse))
+                    .accessible_name("Back to places"),
             );
             self.click_targets.push((back, Hit::PanelBack));
             hx = back.x1 + 8.0;
@@ -3196,17 +3199,15 @@ impl MapsApp {
         );
         if docked {
             let btn = Rect::new(header.x1 - PANEL_HEADER_H, header.y0, header.x1, header.y1);
-            draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
-            draw::text_center(
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "«",
-                btn.x0,
-                btn.x1,
-                vmid(btn.y0, btn.height(), 16.0),
-                16.0,
-                theme.text_dim,
+                tr,
+                theme,
+                &ButtonFace::new(btn, "")
+                    .icon(Icon::ChevronLeft)
+                    .hovered(btn.contains(self.last_mouse))
+                    .accessible_name("Collapse panel"),
             );
             self.click_targets.push((btn, Hit::ToggleCollapse));
         }
@@ -6669,18 +6670,18 @@ mod tests {
         // Redraw: the open card records its action hot-regions.
         let mut scene2 = Scene::new();
         a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
-        assert!(
-            a.click_targets
+        for target in [Hit::ClosePoi, Hit::PoiDirections] {
+            let rect = a
+                .click_targets
                 .iter()
-                .any(|(_, h)| matches!(h, Hit::ClosePoi)),
-            "card has a close target"
-        );
-        assert!(
-            a.click_targets
-                .iter()
-                .any(|(_, h)| matches!(h, Hit::PoiDirections)),
-            "card has a Directions target"
-        );
+                .find(|(_, hit)| std::mem::discriminant(hit) == std::mem::discriminant(&target))
+                .map(|(rect, _)| *rect)
+                .expect("POI card action target");
+            assert!(
+                rect.width() >= 44.0 && rect.height() >= 44.0,
+                "POI card controls need 44 px targets, got {rect:?}"
+            );
+        }
     }
 
     /// The card's Directions action routes to the POI: it becomes the
@@ -7739,11 +7740,15 @@ mod tests {
 
         // The docked panel exposes a collapse/expand toggle — a plain
         // collapsible panel, never a tab strip.
+        let collapse = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::ToggleCollapse))
+            .map(|(rect, _)| *rect)
+            .expect("the panel has a collapse toggle");
         assert!(
-            a.click_targets
-                .iter()
-                .any(|(_, h)| matches!(h, Hit::ToggleCollapse)),
-            "the panel has a collapse toggle"
+            collapse.width() >= 44.0 && collapse.height() >= 44.0,
+            "panel toggle needs a 44 px target, got {collapse:?}"
         );
 
         // Directions is a card action, reached by clicking it — not a tab.
@@ -7769,9 +7774,13 @@ mod tests {
             .click_targets
             .iter()
             .find(|(_, h)| matches!(h, Hit::PanelBack))
-            .map(|(r, _)| r.center())
+            .map(|(r, _)| *r)
             .expect("Directions view has a back button");
-        move_to(&mut a, back.x, back.y);
+        assert!(
+            back.width() >= 44.0 && back.height() >= 44.0,
+            "panel back needs a 44 px target, got {back:?}"
+        );
+        move_to(&mut a, back.center().x, back.center().y);
         assert!(press_left(&mut a), "back is handled");
         assert_eq!(
             a.model.panel,

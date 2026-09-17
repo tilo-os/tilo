@@ -87,6 +87,28 @@ pub fn main() {
                 "--floating-navigation-returned",
             ])
             .allowed_options(&["--panel"])
+            .scenarios(&[
+                "default",
+                "empty",
+                "nav-closed",
+                "panel-collapsed",
+                "directions",
+                "edit-from",
+                "transit",
+                "transit-arrive",
+                "search",
+                "pois",
+                "traffic",
+                "offline",
+                "menu",
+                "attribution",
+                "error",
+                "floating-navigation",
+                "floating-navigation-attached",
+                "floating-navigation-hover",
+                "floating-navigation-returning",
+                "floating-navigation-returned",
+            ])
             .configure_app(|app| maps::actions::register(app.action_registry_mut())),
     );
 }
@@ -104,18 +126,26 @@ fn shot_app(args: &LaunchArgs) -> maps::MapsApp {
     // tile worker is never spawned and nothing blocks on I/O. The default
     // offline app renders the bundled sample city; `--empty` mirrors the
     // live first-run state (empty model, plain basemap).
-    let mut app = if args.has("--empty") {
+    let scenario = args.scenario.as_deref().unwrap_or_default();
+    let mut app = if args.has("--empty") || scenario == "empty" {
         maps::MapsApp::offline_empty()
     } else {
         maps::MapsApp::offline()
     };
-    if args.has("--nav-closed") {
+    if args.has("--nav-closed") || scenario == "nav-closed" {
         app.set_nav_open(false);
+    }
+    if scenario == "panel-collapsed" {
+        app.set_demo_panel_collapsed();
     }
     let mut panel = None;
     let mut transit_mode = false;
     if let Some(value) = args.value("--panel") {
         apply_panel(value, &mut panel, &mut transit_mode);
+    } else if matches!(scenario, "directions" | "edit-from") {
+        apply_panel("directions", &mut panel, &mut transit_mode);
+    } else if matches!(scenario, "transit" | "transit-arrive") {
+        apply_panel("transit", &mut panel, &mut transit_mode);
     }
     if let Some(panel) = panel {
         app.set_active_panel(panel);
@@ -123,31 +153,31 @@ fn shot_app(args: &LaunchArgs) -> maps::MapsApp {
     if transit_mode {
         app.set_travel_mode(maps::TravelMode::Transit);
     }
-    if args.has("--edit-from") {
+    if args.has("--edit-from") || scenario == "edit-from" {
         app.set_demo_edit_origin();
     }
-    if args.has("--transit-arrive") {
+    if args.has("--transit-arrive") || scenario == "transit-arrive" {
         app.set_demo_transit_arrive();
     }
-    if args.has("--search") {
+    if args.has("--search") || scenario == "search" {
         app.set_demo_search();
     }
-    if args.has("--pois") {
+    if args.has("--pois") || scenario == "pois" {
         app.set_demo_pois();
     }
-    if args.has("--traffic") {
+    if args.has("--traffic") || scenario == "traffic" {
         app.set_demo_traffic();
     }
-    if args.has("--offline") {
+    if args.has("--offline") || scenario == "offline" {
         app.set_demo_offline();
     }
-    if args.has("--menu") {
+    if args.has("--menu") || scenario == "menu" {
         app.set_demo_overflow();
     }
-    if args.has("--attribution") {
+    if args.has("--attribution") || scenario == "attribution" {
         app.set_demo_attribution();
     }
-    if args.has("--error") {
+    if args.has("--error") || scenario == "error" {
         app.set_demo_error();
     }
     app
@@ -163,6 +193,14 @@ fn floating_navigation_stage(args: &LaunchArgs) -> Option<&'static str> {
     ]
     .into_iter()
     .find_map(|(flag, stage)| args.has(flag).then_some(stage))
+    .or_else(|| match args.scenario.as_deref() {
+        Some("floating-navigation") => Some("detached"),
+        Some("floating-navigation-attached") => Some("attached"),
+        Some("floating-navigation-hover") => Some("hover"),
+        Some("floating-navigation-returning") => Some("returning"),
+        Some("floating-navigation-returned") => Some("returned"),
+        _ => None,
+    })
 }
 
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {

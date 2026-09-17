@@ -66,7 +66,7 @@ const SIDEBAR_BREAKPOINT: f64 = 820.0;
 const PUSH_BREAKPOINT: f64 = 560.0;
 
 /// Top-left toggle (hamburger / Back / close) hit size, logical px.
-const TOGGLE_SIZE: f64 = 34.0;
+const TOGGLE_SIZE: f64 = 40.0;
 
 /// What kind of toast is currently showing (auto-dismisses on next event
 /// tick after a short hold — for the headless shot it simply persists).
@@ -613,6 +613,7 @@ impl SnippetsApp {
     ///
     /// * `"narrow"` — open the overlay sidebar over the content + scrim.
     /// * `"detail"` — single-pane push showing the detail with a Back chip.
+    /// * `"expand"` — open the fill-in-variables modal for the selected snippet.
     /// * anything else — the default frame.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
@@ -627,6 +628,11 @@ impl SnippetsApp {
                 self.push.snap(true);
                 self.sidebar.snap(false);
                 self.settled_layout = true;
+            }
+            "expand" => {
+                if let Some(id) = self.open {
+                    self.start_expand(id);
+                }
             }
             _ => {}
         }
@@ -966,7 +972,7 @@ impl ui::widget::Widget for SnippetsApp {
         // docked-open, so a collapsed rail can be summoned and an overlay
         // rail dismissed. It records its own hit region.
         if self.show_toggle() {
-            self.draw_toggle(scene, t, theme, band);
+            self.draw_toggle(scene, t, tr, theme, band);
         }
 
         if let Some(toast) = &self.toast {
@@ -1313,53 +1319,32 @@ impl SnippetsApp {
     /// the list); otherwise it's the same hamburger used to open and dismiss
     /// the navigation sidebar. Keeping one glyph in both states makes the
     /// overlay read as persistent navigation, not as a disposable dialog.
-    fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, band: Rect) {
-        let c = &theme.tokens.colors;
+    fn draw_toggle(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        band: Rect,
+    ) {
         let pad = 10.0;
         let bx = band.x0 + pad;
         let by = band.y0 + pad;
         let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
-        draw::fill_round(scene, t, btn, theme.radii_md(), c.surfaces.raised);
-        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
-
-        let cx = btn.x0 + TOGGLE_SIZE / 2.0;
-        let cy = btn.y0 + TOGGLE_SIZE / 2.0;
         let push_back = self.is_push_layout() && self.push.reveal() > 0.5;
+        let (icon, name) = if push_back {
+            (ui::icons::Icon::ArrowLeft, "Back to snippet list")
+        } else {
+            (ui::icons::Icon::Menu, "Toggle navigation")
+        };
+        let face = ButtonFace::new(btn, "")
+            .icon(icon)
+            .accessible_name(name)
+            .hovered(btn.contains(self.last_mouse));
+        Button::paint(scene, t, tr, theme, &face);
         if push_back {
-            // Back chevron "‹".
-            let r = 5.0;
-            draw::stroke_line(
-                scene,
-                t,
-                Point::new(cx + r * 0.6, cy - r),
-                Point::new(cx - r * 0.6, cy),
-                1.8,
-                c.text_primary,
-            );
-            draw::stroke_line(
-                scene,
-                t,
-                Point::new(cx - r * 0.6, cy),
-                Point::new(cx + r * 0.6, cy + r),
-                1.8,
-                c.text_primary,
-            );
             self.record(btn, Action::PushBack);
         } else {
-            // Three-line hamburger toggles the navigation sidebar in either
-            // direction; an X is reserved for dialogs and sheets.
-            let half = 7.0;
-            for i in 0..3 {
-                let ly = btn.y0 + 11.0 + f64::from(i) * 6.0;
-                draw::stroke_line(
-                    scene,
-                    t,
-                    Point::new(cx - half, ly),
-                    Point::new(cx + half, ly),
-                    1.8,
-                    c.text_primary,
-                );
-            }
             self.record(btn, Action::ToggleSidebar);
         }
     }
@@ -2936,6 +2921,21 @@ mod tests {
             app.expand_open_for_test(),
             "templated copy routes through expand"
         );
+    }
+
+    #[test]
+    fn expand_shot_stages_the_real_modal() {
+        let mut app = SnippetsApp::new_demo();
+        app.seed_shot_scenario("expand");
+        assert!(
+            app.expand_open_for_test(),
+            "the saved expansion scenario must exercise the real modal"
+        );
+    }
+
+    #[test]
+    fn responsive_navigation_toggle_meets_minimum_target_size() {
+        assert!(TOGGLE_SIZE >= 40.0);
     }
 
     #[test]

@@ -4957,6 +4957,15 @@ mod tests {
 
     static PROFILE_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+    #[test]
+    fn desktop_scrubber_has_a_full_size_interaction_band() {
+        let hit = render::desktop_scrubber_hit_rect(100.0, 64.0, 500.0);
+        assert_eq!(hit.height(), 32.0);
+        assert_eq!(hit.x0, 100.0);
+        assert_eq!(hit.x1, 500.0);
+        assert!(hit.contains(Point::new(300.0, 66.0)));
+    }
+
     fn app_with_doc() -> (MusicApp, AutoCommit) {
         let mut app = MusicApp::new();
         // The behaviour tests exercise playback, queueing and playlists against

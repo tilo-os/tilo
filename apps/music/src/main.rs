@@ -500,7 +500,8 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 }
 
 /// The OS theme a `--shots` frame renders in: `--theme light|dark|high-contrast`
-/// (or the `TILO_MUSIC_THEME` env), defaulting to dark. `TILO_REDUCE_MOTION`,
+/// (or `TILO_MUSIC_THEME` / standard `TILO_SHOTS_THEME` env), defaulting to dark.
+/// `TILO_REDUCE_MOTION`,
 /// `TILO_A11Y_REDUCE_MOTION`, or the app-scoped `TILO_MUSIC_REDUCE_MOTION` also
 /// makes a deterministic no-motion shot. This mirrors the live app's
 /// accessibility setting without altering live state.
@@ -509,6 +510,7 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
         .value("--theme")
         .map(str::to_owned)
         .or_else(|| std::env::var("TILO_MUSIC_THEME").ok())
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
         .unwrap_or_default();
     let theme = match sel.to_lowercase().as_str() {
         "light" => Theme::light(),

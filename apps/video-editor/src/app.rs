@@ -136,7 +136,11 @@ const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 /// collapses into an overlay flap summoned by the topbar hamburger. Above it
 /// the bin is docked beside the editor (the wide desktop layout).
 /// Height of a collapsible inspector section header.
-const SECTION_H: f64 = 24.0;
+/// Minimum exact interaction height used by inspector commands. These are
+/// custom-painted controls, so their layout rectangles are also their pointer
+/// and accessibility bounds.
+const INSPECTOR_TARGET: f64 = 36.0;
+const SECTION_H: f64 = INSPECTOR_TARGET;
 /// The inset a picture-in-picture preset places a clip at: a third of the
 /// frame, a small margin off the corner. Big enough to see, small enough to
 /// leave the frame underneath readable.
@@ -6776,7 +6780,10 @@ impl VideoEditorApp {
                 tf,
                 col,
                 None,
-                &Circle::new(Point::new(row.x0 + 7.0, row.y0 + 13.0), 4.0),
+                &Circle::new(
+                    Point::new(row.x0 + 7.0, row.y0 + INSPECTOR_TARGET / 2.0),
+                    4.0,
+                ),
             );
             let editing = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
             let renaming = editing && self.marker_field == MarkerField::Name;
@@ -6824,7 +6831,7 @@ impl VideoEditorApp {
             let editing_note = editing && self.marker_field == MarkerField::Note;
             if !mk.note.trim().is_empty() && !editing_note {
                 let shown = elide_w(mk.note.trim(), (row.width() - 34.0) as f32, tr);
-                let line = Rect::new(row.x0 + 16.0, row.y0 + 26.0, row.x1, row.y0 + 44.0);
+                let line = Rect::new(row.x0 + 16.0, row.y0 + INSPECTOR_TARGET, row.x1, row.y1);
                 let base = text_baseline(line, 11.0, tr);
                 text(scene, tr, tf, &shown, 11.0, c.text_tertiary, line.x0, base);
             }
@@ -6917,8 +6924,8 @@ impl VideoEditorApp {
             ));
             *y += h + 4.0;
         }
-        l.add_marker = Some(Rect::new(x0, *y, x1, *y + 26.0));
-        *y += 34.0;
+        l.add_marker = Some(Rect::new(x0, *y, x1, *y + INSPECTOR_TARGET));
+        *y += INSPECTOR_TARGET + 8.0;
     }
 
     /// Lay out the project's format section — the readout of what the frame
@@ -6948,24 +6955,28 @@ impl VideoEditorApp {
         let seg_w = (x1 - x0) / FRAME_PRESETS.len() as f64;
         for (i, (_, w, h)) in FRAME_PRESETS.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
-            l.project_frames
-                .push(((*w, *h), Rect::new(sx0, *y, sx0 + seg_w - 3.0, *y + 24.0)));
+            l.project_frames.push((
+                (*w, *h),
+                Rect::new(sx0, *y, sx0 + seg_w - 3.0, *y + INSPECTOR_TARGET),
+            ));
         }
-        *y += 32.0;
+        *y += INSPECTOR_TARGET + 8.0;
         l.project_rate_y = *y;
         *y += 20.0;
         let rate_w = (x1 - x0) / RATE_PRESETS.len() as f64;
         for (i, rate) in RATE_PRESETS.iter().enumerate() {
             let sx0 = x0 + i as f64 * rate_w;
-            l.project_rates
-                .push((*rate, Rect::new(sx0, *y, sx0 + rate_w - 3.0, *y + 24.0)));
+            l.project_rates.push((
+                *rate,
+                Rect::new(sx0, *y, sx0 + rate_w - 3.0, *y + INSPECTOR_TARGET),
+            ));
         }
-        *y += 32.0;
+        *y += INSPECTOR_TARGET + 8.0;
         // Offered only when there is a source to copy a shape from, and only
         // when that source has one -- audio and titles carry no frame.
         if self.format_source().is_some() {
-            l.project_match = Some(Rect::new(x0, *y, x1, *y + 26.0));
-            *y += 34.0;
+            l.project_match = Some(Rect::new(x0, *y, x1, *y + INSPECTOR_TARGET));
+            *y += INSPECTOR_TARGET + 8.0;
         }
     }
 
@@ -8275,17 +8286,36 @@ enum MarkerField {
 fn marker_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
     // The icons sit on the row's first line, so a row grown to carry a note
     // keeps them beside the name rather than floating down beside the note.
-    let cy = row.y0 + 13.0;
-    let del = Rect::new(row.x1 - 22.0, cy - 11.0, row.x1, cy + 11.0);
-    let rename = Rect::new(del.x0 - 24.0, cy - 11.0, del.x0 - 2.0, cy + 11.0);
-    let note = Rect::new(rename.x0 - 24.0, cy - 11.0, rename.x0 - 2.0, cy + 11.0);
-    let name = Rect::new(row.x0 + 16.0, row.y0, note.x0 - 60.0, row.y0 + 26.0);
+    let del = Rect::new(
+        row.x1 - INSPECTOR_TARGET,
+        row.y0,
+        row.x1,
+        row.y0 + INSPECTOR_TARGET,
+    );
+    let rename = Rect::new(
+        del.x0 - INSPECTOR_TARGET,
+        row.y0,
+        del.x0,
+        row.y0 + INSPECTOR_TARGET,
+    );
+    let note = Rect::new(
+        rename.x0 - INSPECTOR_TARGET,
+        row.y0,
+        rename.x0,
+        row.y0 + INSPECTOR_TARGET,
+    );
+    let name = Rect::new(
+        row.x0 + 16.0,
+        row.y0,
+        note.x0 - 8.0,
+        row.y0 + INSPECTOR_TARGET,
+    );
     (name, note, rename, del)
 }
 
 /// How tall a marker's row is: one line, or two when it carries a note.
 fn marker_row_height(has_note: bool) -> f64 {
-    if has_note { 44.0 } else { 26.0 }
+    if has_note { 56.0 } else { INSPECTOR_TARGET }
 }
 
 /// The colours a title can be set to from the inspector.
@@ -30595,6 +30625,58 @@ mod tests {
             .is_err(),
             "a stale effect operation cannot resolve a duplicate by position",
         );
+    }
+
+    #[test]
+    fn project_and_marker_commands_keep_full_size_exact_targets() {
+        // These custom-painted rectangles are used unchanged for painting,
+        // hit-testing and accessibility.  Guard their exact geometry at both
+        // the docked width and the narrow overlay width: an expanded visual
+        // with a stale small hit box would still fail this test.
+        for (w, h) in [(420.0, 720.0), (1280.0, 800.0)] {
+            let (mut app, _doc) = app_sized(w, h);
+            if app.inspector_split() == SplitLayout::Overlay {
+                app.inspector_flap.snap(true);
+            }
+            let r = app.regions();
+            let l = app.inspector_layout(&r);
+
+            for (section, rect) in &l.sections {
+                assert!(
+                    rect.height() + 0.01 >= INSPECTOR_TARGET,
+                    "{section:?} header is an undersized exact target at {w}px: {rect:?}",
+                );
+            }
+            for (kind, rect) in &l.project_frames {
+                assert!(
+                    rect.width() + 0.01 >= 32.0 && rect.height() + 0.01 >= INSPECTOR_TARGET,
+                    "frame preset {kind:?} is undersized at {w}px: {rect:?}",
+                );
+            }
+            for (rate, rect) in &l.project_rates {
+                assert!(
+                    rect.width() + 0.01 >= 32.0 && rect.height() + 0.01 >= INSPECTOR_TARGET,
+                    "rate preset {rate} is undersized at {w}px: {rect:?}",
+                );
+            }
+            if let Some(rect) = l.project_match {
+                assert!(rect.height() + 0.01 >= INSPECTOR_TARGET);
+            }
+            if let Some(rect) = l.add_marker {
+                assert!(rect.height() + 0.01 >= INSPECTOR_TARGET);
+            }
+            for (_, row) in &l.marker_rows {
+                let (_, note, rename, delete) = marker_row_parts(*row);
+                for (name, rect) in [("note", note), ("rename", rename), ("delete", delete)] {
+                    assert!(
+                        rect.width() + 0.01 >= INSPECTOR_TARGET
+                            && rect.height() + 0.01 >= INSPECTOR_TARGET,
+                        "marker {name} is undersized at {w}px: {rect:?}",
+                    );
+                }
+                assert!(note.x1 <= rename.x0 && rename.x1 <= delete.x0);
+            }
+        }
     }
 
     /// The raw bytes of a rectangle of the frame.

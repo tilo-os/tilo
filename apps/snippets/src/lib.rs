@@ -66,6 +66,7 @@ pub fn app_root() -> Box<dyn Widget> {
 ///   primary sidebar as an open overlay flap over the content + scrim.
 /// * `"detail"` — pair with a very-narrow `--viewport` to show the
 ///   single-pane push stack on the detail with its Back affordance.
+/// * `"expand"` — show the standard fill-in-variables modal over the app.
 ///
 /// An empty / unknown name yields the same frame as [`app_root`].
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {

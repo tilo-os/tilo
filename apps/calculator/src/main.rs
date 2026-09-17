@@ -73,6 +73,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new("dev.tilo.calculator", calculator::app_root)
             .shot_handler(render_shot)
+            .scenarios(&["calculator", "history", "graph2d", "graph3d", "empty"])
             .configure_app(configure_app),
     )?;
     Ok(())
@@ -89,22 +90,29 @@ fn configure_app(app: &mut ui::App) {
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     // The live app starts empty; screenshots default to a populated state.
-    let root: Box<dyn Widget> = if std::env::var_os("TILO_CALC_EMPTY").is_some() {
-        calculator::app_root()
-    } else {
-        let mut app = calculator::CalculatorApp::seeded();
-        match std::env::var("TILO_CALC_MODE").ok().as_deref() {
-            Some("2d" | "graph2d") => app.shots_set_mode(calculator::model::Mode::Graph2d),
-            Some("3d" | "graph3d") => app.shots_set_mode(calculator::model::Mode::Graph3d),
-            _ => {}
-        }
-        match std::env::var("TILO_CALC_HISTORY").ok().as_deref() {
-            Some("open") => app.shots_set_history_open(true),
-            Some("closed" | "collapsed") => app.shots_set_history_open(false),
-            _ => {}
-        }
-        Box::new(app)
-    };
+    let scenario = args.scenario.as_deref().unwrap_or("calculator");
+    let root: Box<dyn Widget> =
+        if scenario == "empty" || std::env::var_os("TILO_CALC_EMPTY").is_some() {
+            calculator::app_root()
+        } else {
+            let mut app = calculator::CalculatorApp::seeded();
+            let env_mode = std::env::var("TILO_CALC_MODE").ok();
+            match env_mode.as_deref().unwrap_or(scenario) {
+                "calc" | "calculator" | "history" => {
+                    app.shots_set_mode(calculator::model::Mode::Calc);
+                }
+                "2d" | "graph2d" => app.shots_set_mode(calculator::model::Mode::Graph2d),
+                "3d" | "graph3d" => app.shots_set_mode(calculator::model::Mode::Graph3d),
+                _ => {}
+            }
+            let env_history = std::env::var("TILO_CALC_HISTORY").ok();
+            match env_history.as_deref().unwrap_or(scenario) {
+                "open" | "history" => app.shots_set_history_open(true),
+                "closed" | "collapsed" => app.shots_set_history_open(false),
+                _ => {}
+            }
+            Box::new(app)
+        };
     render_shot_to_png(
         root,
         args.viewport.unwrap_or_else(shots_viewport),

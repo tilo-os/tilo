@@ -1717,6 +1717,13 @@ fn frac_in(r: Rect, x: f64) -> f64 {
     ((x - r.x0) / r.width()).clamp(0.0, 1.0)
 }
 
+/// Desktop player scrubber target. The visible track remains four pixels
+/// high, but its interaction geometry meets the toolkit's compact-control
+/// minimum without making the player chrome visually heavy.
+pub(super) fn desktop_scrubber_hit_rect(x0: f64, track_y: f64, x1: f64) -> Rect {
+    Rect::new(x0, track_y - 14.0, x1, track_y + 18.0)
+}
+
 impl MusicApp {
     /// Hover labels for icon-only controls. Text-labelled rows and navigation
     /// deliberately return `None`; repeating their visible label would add
@@ -8070,7 +8077,9 @@ impl MusicApp {
             None,
         );
         let track = Rect::new(bar_x0, bar_y, bar_x1, bar_y + 4.0);
-        self.scrubber_rect = Rect::new(bar_x0, bar_y - 8.0, bar_x1, bar_y + 12.0);
+        // Keep the 4px visual track quiet while giving pointer and touch users
+        // a full 32px interaction band centred on it.
+        self.scrubber_rect = desktop_scrubber_hit_rect(bar_x0, bar_y, bar_x1);
         fill_rrect(scene, t, track, 2.0, c.white10);
         let fillx = bar_x0 + (bar_x1 - bar_x0) * frac;
         if fillx > bar_x0 {
