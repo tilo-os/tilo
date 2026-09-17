@@ -33,8 +33,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  signing-preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: runner
+    timeout-minutes: 2
+    steps:
+      - name: Require non-exportable snapshot signing authority
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+        run: |
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+
   snapshot:
     if: github.ref == 'refs/heads/main'
+    needs: signing-preflight
     enable-openid-connect: true
     strategy:
       fail-fast: false
