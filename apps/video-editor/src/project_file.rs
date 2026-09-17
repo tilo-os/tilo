@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn the_header_is_the_documented_layout() {
         let bytes = encode(&Project::new("x"));
-        assert_eq!(&bytes[..8], MAGIC);
+        assert_eq!(&bytes[..8], b"QosVEPRJ");
         assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), FORMAT_VERSION);
         assert_eq!(
             u16::from_le_bytes([bytes[10], bytes[11]]),

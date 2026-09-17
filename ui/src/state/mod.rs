@@ -1,3 +1,4 @@
+use crate::application::InstanceId;
 use crate::permissions::UserId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
@@ -166,6 +167,8 @@ pub struct UndoEntry {
     pub focused_node_idx: Option<usize>,
     pub widget_metadata: Option<String>,
     pub author: Option<UserId>,
+    /// Runtime instance attribution, independent of authenticated author/CRDT actor.
+    pub instance_id: Option<InstanceId>,
 }
 
 /// Per-document undo and redo depth. Entries retain two Automerge head sets
@@ -357,6 +360,7 @@ impl UndoLog {
                     focused_node_idx,
                     widget_metadata: metadata,
                     author,
+                    instance_id: None,
                 },
             );
             self.redo_stack.clear();
@@ -408,7 +412,76 @@ impl UndoLog {
         metadata: Option<String>,
         author: Option<UserId>,
     ) -> bool {
+        self.record_committed_action_owned(doc, before, focused_node_idx, metadata, author, None)
+    }
+
+    /// Record a bound action without clearing another instance's redo history.
+    pub fn record_committed_action_in(
+        &mut self,
+        doc: &mut AutoCommit,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: UserId,
+        instance: InstanceId,
+    ) -> bool {
+        self.record_committed_action_owned(
+            doc,
+            before,
+            focused_node_idx,
+            metadata,
+            Some(author),
+            Some(instance),
+        )
+    }
+
+    fn record_committed_action_owned(
+        &mut self,
+        doc: &mut AutoCommit,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        instance_id: Option<InstanceId>,
+    ) -> bool {
         let after = doc.get_heads();
+        self.record_committed_span_owned(
+            before,
+            after,
+            focused_node_idx,
+            metadata,
+            author,
+            instance_id,
+        )
+    }
+
+    pub(crate) fn record_committed_span_in(
+        &mut self,
+        before: Vec<ChangeHash>,
+        after: Vec<ChangeHash>,
+        metadata: Option<String>,
+        author: UserId,
+        instance: InstanceId,
+    ) -> bool {
+        self.record_committed_span_owned(
+            before,
+            after,
+            None,
+            metadata,
+            Some(author),
+            Some(instance),
+        )
+    }
+
+    fn record_committed_span_owned(
+        &mut self,
+        before: Vec<ChangeHash>,
+        after: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        instance_id: Option<InstanceId>,
+    ) -> bool {
         if after == before {
             // Nothing to undo, but the baseline moves up all the same — same
             // reason as the empty-transaction path in `commit_action_authored`.
@@ -426,9 +499,15 @@ impl UndoLog {
                 focused_node_idx,
                 widget_metadata: metadata,
                 author,
+                instance_id,
             },
         );
-        self.redo_stack.clear();
+        if let Some(instance) = instance_id {
+            self.redo_stack
+                .retain(|entry| entry.instance_id != Some(instance));
+        } else {
+            self.redo_stack.clear();
+        }
         self.last_heads = after;
         self.bump();
         true
@@ -458,22 +537,34 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        let index = self.undo_index_for(None)?;
+        self.undo_at(doc, index, current_focused_idx, current_metadata)
+    }
+
+    fn undo_at(
+        &mut self,
+        doc: &mut AutoCommit,
+        index: usize,
+        focus: Option<usize>,
+        metadata: Option<String>,
+    ) -> Option<UndoEntry> {
         if !self.can_bump() {
             return None;
         }
-        let entry = self.undo_stack.pop()?;
-        self.bump();
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
+        let entry = self.undo_stack.remove(index);
+        let (before, after) = self.apply_inverse(doc, &entry);
         push_history(
             &mut self.redo_stack,
             UndoEntry {
-                before: inv_before,
-                after: inv_after,
-                focused_node_idx: current_focused_idx,
-                widget_metadata: current_metadata,
+                before,
+                after,
+                focused_node_idx: focus,
+                widget_metadata: metadata,
                 author: entry.author.clone(),
+                instance_id: entry.instance_id,
             },
         );
+        self.bump();
         Some(entry)
     }
 
@@ -502,24 +593,8 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        let idx = self.undo_index_for(Some(author))?;
-        if !self.can_bump() {
-            return None;
-        }
-        let entry = self.undo_stack.remove(idx);
-        self.bump();
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
-        push_history(
-            &mut self.redo_stack,
-            UndoEntry {
-                before: inv_before,
-                after: inv_after,
-                focused_node_idx: current_focused_idx,
-                widget_metadata: current_metadata,
-                author: entry.author.clone(),
-            },
-        );
-        Some(entry)
+        let index = self.undo_index_for(Some(author))?;
+        self.undo_at(doc, index, current_focused_idx, current_metadata)
     }
 
     pub fn undo_as(
@@ -541,23 +616,7 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        if !self.can_bump() {
-            return None;
-        }
-        let entry = self.redo_stack.pop()?;
-        self.bump();
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
-        push_history(
-            &mut self.undo_stack,
-            UndoEntry {
-                before: inv_before,
-                after: inv_after,
-                focused_node_idx: current_focused_idx,
-                widget_metadata: current_metadata,
-                author: entry.author.clone(),
-            },
-        );
-        Some(entry)
+        self.redo_as(doc, None, current_focused_idx, current_metadata)
     }
 
     pub fn redo_as(
@@ -567,27 +626,75 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        let Some(a) = author else {
-            return self.redo(doc, current_focused_idx, current_metadata);
-        };
-        let idx = self.redo_index_for(Some(a))?;
+        let index = self.redo_index_for(author)?;
+        self.redo_at(doc, index, current_focused_idx, current_metadata)
+    }
+
+    fn redo_at(
+        &mut self,
+        doc: &mut AutoCommit,
+        index: usize,
+        focus: Option<usize>,
+        metadata: Option<String>,
+    ) -> Option<UndoEntry> {
         if !self.can_bump() {
             return None;
         }
-        let entry = self.redo_stack.remove(idx);
-        self.bump();
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
+        let entry = self.redo_stack.remove(index);
+        let (before, after) = self.apply_inverse(doc, &entry);
         push_history(
             &mut self.undo_stack,
             UndoEntry {
-                before: inv_before,
-                after: inv_after,
-                focused_node_idx: current_focused_idx,
-                widget_metadata: current_metadata,
+                before,
+                after,
+                focused_node_idx: focus,
+                widget_metadata: metadata,
                 author: entry.author.clone(),
+                instance_id: entry.instance_id,
             },
         );
+        self.bump();
         Some(entry)
+    }
+
+    fn instance_index(stack: &[UndoEntry], author: &UserId, instance: InstanceId) -> Option<usize> {
+        stack.iter().rposition(|entry| {
+            entry.instance_id == Some(instance) && entry.author.as_ref() == Some(author)
+        })
+    }
+
+    pub fn next_undo_in(&self, author: &UserId, instance: InstanceId) -> Option<&UndoEntry> {
+        Self::instance_index(&self.undo_stack, author, instance)
+            .and_then(|index| self.undo_stack.get(index))
+    }
+
+    pub fn next_redo_in(&self, author: &UserId, instance: InstanceId) -> Option<&UndoEntry> {
+        Self::instance_index(&self.redo_stack, author, instance)
+            .and_then(|index| self.redo_stack.get(index))
+    }
+
+    pub fn undo_in(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: &UserId,
+        instance: InstanceId,
+        focus: Option<usize>,
+        metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        let index = Self::instance_index(&self.undo_stack, author, instance)?;
+        self.undo_at(doc, index, focus, metadata)
+    }
+
+    pub fn redo_in(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: &UserId,
+        instance: InstanceId,
+        focus: Option<usize>,
+        metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        let index = Self::instance_index(&self.redo_stack, author, instance)?;
+        self.redo_at(doc, index, focus, metadata)
     }
 
     /// See [`State::restore_to_heads`].
@@ -598,6 +705,41 @@ impl UndoLog {
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
         author: Option<UserId>,
+    ) -> bool {
+        self.restore_to_heads_owned(doc, target_heads, focused_node_idx, metadata, author, None)
+    }
+
+    pub fn restore_to_heads_in(
+        &mut self,
+        doc: &mut AutoCommit,
+        target_heads: &[ChangeHash],
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: UserId,
+        instance: InstanceId,
+    ) -> bool {
+        self.restore_to_heads_owned(
+            doc,
+            target_heads,
+            focused_node_idx,
+            metadata,
+            Some(author),
+            Some(instance),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "legacy and bound restore share explicit history attribution"
+    )]
+    fn restore_to_heads_owned(
+        &mut self,
+        doc: &mut AutoCommit,
+        target_heads: &[ChangeHash],
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        instance_id: Option<InstanceId>,
     ) -> bool {
         let current = doc.get_heads();
         if current == target_heads {
@@ -616,6 +758,7 @@ impl UndoLog {
             focused_node_idx,
             widget_metadata: metadata.clone(),
             author: author.clone(),
+            instance_id,
         };
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         if inv_before == inv_after {
@@ -629,9 +772,15 @@ impl UndoLog {
                 focused_node_idx,
                 widget_metadata: metadata,
                 author,
+                instance_id,
             },
         );
-        self.redo_stack.clear();
+        if let Some(instance) = instance_id {
+            self.redo_stack
+                .retain(|entry| entry.instance_id != Some(instance));
+        } else {
+            self.redo_stack.clear();
+        }
         self.bump();
         true
     }
@@ -1366,6 +1515,7 @@ mod tests {
                     focused_node_idx: Some(index),
                     widget_metadata: None,
                     author: None,
+                    instance_id: None,
                 },
             );
         }
@@ -1944,6 +2094,29 @@ mod tests {
         let replacement = automerge::AutoCommit::new();
         assert!(!state.adopt_doc(replacement));
         assert_eq!(state.doc.get_heads(), heads_before_commit);
+    }
+
+    #[test]
+    fn task4_bound_history_revision_limit_refuses_undo_redo_and_restore() {
+        let mut doc = AutoCommit::new();
+        let mut history = UndoLog::new(&mut doc);
+        let before = doc.get_heads();
+        doc.put(ROOT, "value", 1).unwrap();
+        history.record_committed_action_in(&mut doc, before.clone(), None, None, alice(), 11);
+        history.undo_in(&mut doc, &alice(), 11, None, None).unwrap();
+        history.revision = u64::MAX;
+        let heads = doc.get_heads();
+        assert!(
+            history
+                .redo_in(&mut doc, &alice(), 11, None, None)
+                .is_none()
+        );
+        assert!(!history.restore_to_heads_in(&mut doc, &before, None, None, alice(), 11));
+        assert_eq!(doc.get_heads(), heads);
+        assert_eq!(
+            history.next_redo_in(&alice(), 11).unwrap().instance_id,
+            Some(11)
+        );
     }
 
     /// A restore from the history scrubber lands on the undo stack, so a

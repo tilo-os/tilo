@@ -19,8 +19,10 @@
 //!
 //! [`tilo-unlock-helper`]: ../../../../crates/session/tilo-unlock-helper
 
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,10 +47,12 @@ pub trait PasswordVerifier: Send + Sync {
 
 /// The real verifier: reuses the greeter's greetd/PAM `verify_password` exchange against the socket at `sock` (typically `$GREETD_SOCK`).
 #[derive(Debug, Clone)]
+#[cfg(target_os = "linux")]
 pub struct GreetdVerifier {
     sock: String,
 }
 
+#[cfg(target_os = "linux")]
 impl GreetdVerifier {
     /// Construct a verifier that talks to the greetd socket at `sock`.
     pub fn new(sock: impl Into<String>) -> Self {
@@ -56,6 +60,7 @@ impl GreetdVerifier {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl PasswordVerifier for GreetdVerifier {
     fn verify(&self, username: &str, password: &str) -> Result<(), String> {
         greeter::greetd_client::verify_password(&self.sock, username, password)
@@ -251,6 +256,7 @@ pub fn select_verifier(
 }
 
 /// Select a verifier from the environment via [`select_verifier`]. Returned behind an `Arc` so the run loop and the verify worker thread can share one verifier.
+#[cfg(target_os = "linux")]
 pub fn verifier_from_env() -> Arc<dyn PasswordVerifier> {
     let dev = crate::compositor::dev_env::DEV_ENV_OVERRIDES;
     // Reading the two developer variables is itself skipped in a shipped build, so they cannot influence anything — not even by being present.
@@ -275,6 +281,11 @@ pub fn verifier_from_env() -> Arc<dyn PasswordVerifier> {
         VerifierChoice::Greetd(sock) => Arc::new(GreetdVerifier::new(sock)),
         VerifierChoice::Unavailable => Arc::new(UnavailableVerifier),
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn verifier_from_env() -> std::sync::Arc<dyn PasswordVerifier> {
+    std::sync::Arc::new(UnavailableVerifier)
 }
 
 #[cfg(test)]
@@ -389,6 +400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn verifier_from_env_prefers_injected_fixed_password() {
         // Serialised via the process env; keep it self-contained.
         unsafe { std::env::set_var(LOCK_TEST_PASSWORD_ENV, "letmein") };

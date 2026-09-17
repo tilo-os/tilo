@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::{flex, fr, length, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -86,6 +87,11 @@ pub struct Card {
 }
 
 impl Card {
+    /// Compose a measured card with independently retained header/body/footer regions.
+    pub fn composed(body: Element) -> super::ContentCard {
+        super::ContentCard::new(body)
+    }
+
     pub fn new(body: Element) -> Self {
         Self {
             inner: surface(None, None, body),
@@ -140,7 +146,39 @@ impl Widget for Card {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.inner.build_layout(taffy, theme, node_map)
+        let child = self.inner.build_layout(taffy, theme, node_map);
+        // In a definite row the surface is capped at that row's height. In
+        // intrinsic measurement this percentage is unresolved, allowing the
+        // natural minimum to contribute without redefining fixed heights.
+        if let Ok(style) = taffy.style(child) {
+            let mut style = style.clone();
+            style.max_size.height = percent(1.0_f32);
+            let _ = taffy.set_style(child, style);
+        }
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Grid,
+                // Preserve the surface Container's non-shrinking flex contract.
+                flex_shrink: 0.0,
+                // Honor an explicit outer row height even when body content is
+                // taller. Overflow is the caller's fixed-size choice, not a larger
+                // card surface or a changed row height.
+                grid_template_rows: vec![minmax(taffy::style_helpers::min_content(), fr(1.0_f32))],
+                grid_template_columns: vec![flex(1.0_f32)],
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: length(0.0_f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
 
     fn measure(
@@ -153,7 +191,18 @@ impl Widget for Card {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.inner.apply_layout(taffy, node, origin);
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        let origin = Point::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+        );
+        if let Some(child) = taffy
+            .children(node)
+            .ok()
+            .and_then(|nodes| nodes.first().copied())
+        {
+            self.inner.apply_layout(taffy, child, origin);
+        }
     }
 
     fn draw(
@@ -199,6 +248,13 @@ impl Widget for Card {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        let Some(child_node) = taffy
+            .children(node_id)
+            .ok()
+            .and_then(|nodes| nodes.first().copied())
+        else {
+            return;
+        };
         self.inner.handle_event(
             event,
             scale_factor,
@@ -207,7 +263,7 @@ impl Widget for Card {
             path,
             handled,
             focus_target,
-            node_id,
+            child_node,
             taffy,
         );
     }
@@ -258,25 +314,24 @@ impl Widget for Card {
 // ---------------------------------------------------------------------------
 
 /// Reflows its card children into **equal, aligned columns** by width. Cards
-/// share a fixed row height ([`with_card_height`](CardGrid::with_card_height));
-/// the column count is derived from the allocated width via [`card_columns`].
-/// Children are laid out in an isolated inner tree (mirroring
-/// [`crate::widget::NavShell`]), so their content still measures and draws
-/// while the grid owns the placement.
+/// share a fixed row height by default. [`content_sized`](Self::content_sized)
+/// instead measures each visual row's largest content minimum. The column
+/// count is derived from the allocated width via [`card_columns`].
+/// Children participate in the host layout tree, so measurement, focus and
+/// input have their final geometry before paint. Native Grid handles ordinary
+/// fixed widths; manual hosts should use [`crate::widget::compute_widget_layout`]
+/// for automatic content sizing and below-minimum single-column reflow.
 pub struct CardGrid {
     cards: Vec<Element>,
     min_card_w: f64,
-    card_h: f64,
+    card_h: Option<f64>,
     gap_override: Option<f64>,
 
-    // ---- resolved geometry (from the last layout / draw pass) ----
+    // ---- resolved geometry (from the last layout pass) ----
     rect: Rect,
-    columns: usize,
-    cell_w: f64,
     gap: f64,
 
-    // ---- inner tree for the children ----
-    inner_taffy: Option<TaffyTree<()>>,
+    // Host identities, retained until a structural rebuild.
     child_nodes: Vec<NodeId>,
 }
 
@@ -287,14 +342,22 @@ impl CardGrid {
         Self {
             cards,
             min_card_w: DEFAULT_CARD_MIN_WIDTH,
-            card_h: DEFAULT_CARD_HEIGHT,
+            card_h: Some(DEFAULT_CARD_HEIGHT),
             gap_override: None,
             rect: Rect::ZERO,
-            columns: 1,
-            cell_w: DEFAULT_CARD_MIN_WIDTH,
             gap: 0.0,
-            inner_taffy: None,
             child_nodes: Vec::new(),
+        }
+    }
+
+    /// Size each visual row to its tallest measured card at the final column width.
+    /// App and `FrameHarness` settle this automatically. Manual hosts must use
+    /// [`crate::widget::compute_widget_layout`] before applying or painting.
+    /// Explicit child dimensions remain the caller's responsibility.
+    pub fn content_sized(cards: Vec<Element>) -> Self {
+        Self {
+            card_h: None,
+            ..Self::new(cards)
         }
     }
 
@@ -304,9 +367,11 @@ impl CardGrid {
         self
     }
 
+    /// Use an exact fixed row height, including after `content_sized`.
+    /// Content exceeding this authored height may overflow.
     #[must_use]
     pub fn with_card_height(mut self, px: f64) -> Self {
-        self.card_h = px.max(1.0);
+        self.card_h = Some(px.max(1.0));
         self
     }
 
@@ -321,84 +386,48 @@ impl CardGrid {
         card_columns(width, self.min_card_w, self.gap).min(self.cards.len().max(1))
     }
 
-    fn content_height(&self, columns: usize) -> f64 {
-        let n = self.cards.len();
-        if n == 0 {
-            return 0.0;
-        }
-        let rows = n.div_ceil(columns.max(1));
-        usize_to_f64(rows) * self.card_h + usize_to_f64(rows.saturating_sub(1)) * self.gap
-    }
-
-    fn cell_origin(&self, i: usize) -> Point {
-        let cols = self.columns.max(1);
-        // `cols >= 1` always (just clamped above), so these never hit their
-        // fallback — `checked_*` just spells that out for the reader (and
-        // the lint) instead of an unchecked `%`/`/`.
-        let col = i.checked_rem(cols).unwrap_or(0);
-        let row = i.checked_div(cols).unwrap_or(0);
-        Point::new(
-            self.rect.x0 + usize_to_f64(col) * (self.cell_w + self.gap),
-            self.rect.y0 + usize_to_f64(row) * (self.card_h + self.gap),
-        )
-    }
-
-    fn cell_rect(&self, i: usize) -> Rect {
-        let o = self.cell_origin(i);
-        Rect::new(o.x, o.y, o.x + self.cell_w, o.y + self.card_h)
-    }
-
-    fn resolve_columns(&mut self) {
-        let w = self.rect.width();
-        self.columns = self.columns_for_width(w);
-        self.cell_w = card_column_width(w, self.columns, self.gap);
-    }
-
-    /// Called from `draw` (which has the theme + text renderer), mirroring
-    /// `NavShell`.
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "cell width/height are bounded on-screen pixel values; f32 precision loss \
-                  is immaterial for widget layout"
+        reason = "logical pixel sizes narrow to Taffy's f32"
     )]
-    fn place_children(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
-        let mut taffy = TaffyTree::<()>::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    fn column_tracks(minimum: f64) -> Vec<taffy::GridTemplateComponent<String>> {
+        vec![repeat(
+            "auto-fit",
+            vec![minmax(length(minimum as f32), fr(1.0_f32))],
+        )]
+    }
 
-        let nodes: Vec<NodeId> = self
-            .cards
-            .iter_mut()
-            .map(|c| c.build_layout(&mut taffy, theme, &mut map))
-            .collect();
-
-        for (i, &node) in nodes.iter().enumerate() {
-            let cell = self.cell_rect(i);
-            if cell.width() <= 0.0 || cell.height() <= 0.0 {
-                continue;
-            }
-            let _ = taffy.compute_layout_with_measure(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(cell.width() as f32),
-                    height: taffy::AvailableSpace::Definite(cell.height() as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, text_renderer) }
-                    } else {
-                        Size::ZERO
-                    }
-                },
-            );
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "logical pixel sizes narrow to Taffy's f32"
+    )]
+    fn grid_style(&self) -> Style {
+        Style {
+            display: taffy::Display::Grid,
+            size: Size {
+                width: percent(1.0_f32),
+                height: taffy::Dimension::auto(),
+            },
+            min_size: Size {
+                width: length(0.0_f32),
+                height: length(0.0_f32),
+            },
+            flex_shrink: 0.0,
+            align_self: Some(taffy::AlignSelf::Start),
+            align_content: Some(taffy::AlignContent::Start),
+            grid_template_columns: Self::column_tracks(self.min_card_w),
+            grid_auto_rows: vec![
+                self.card_h
+                    .map_or_else(taffy::style_helpers::min_content, |height| {
+                        length(height as f32)
+                    }),
+            ],
+            gap: Size {
+                width: length(self.gap as f32),
+                height: length(self.gap as f32),
+            },
+            ..Default::default()
         }
-
-        let rects: Vec<Rect> = (0..self.cards.len()).map(|i| self.cell_rect(i)).collect();
-        for ((card, &node), cell) in self.cards.iter_mut().zip(nodes.iter()).zip(rects.iter()) {
-            card.apply_layout(&taffy, node, Point::new(cell.x0, cell.y0));
-        }
-
-        self.inner_taffy = Some(taffy);
-        self.child_nodes = nodes;
     }
 }
 
@@ -423,40 +452,49 @@ impl Widget for CardGrid {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The cards are laid out in an inner tree during draw, so this node
-        // is a measured leaf.
         self.gap = self
             .gap_override
             .unwrap_or_else(|| f64::from(theme.gap_standard));
-        let node = taffy.leaf_node(Style::default());
+        self.child_nodes = self
+            .cards
+            .iter_mut()
+            .map(|card| card.build_layout(taffy, theme, node_map))
+            .collect();
+        let node = taffy.parent_node(self.grid_style(), &self.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "width/height are bounded on-screen pixel values; f32 precision loss is \
-                  immaterial for widget layout"
-    )]
-    fn measure(
-        &mut self,
-        known: taffy::Size<Option<f32>>,
-        available: taffy::Size<taffy::AvailableSpace>,
-        _text_renderer: &mut TextRenderer,
-    ) -> taffy::Size<f32> {
-        let width = known.width.map_or_else(
-            || match available.width {
-                taffy::AvailableSpace::Definite(w) => f64::from(w),
-                _ => self.min_card_w,
-            },
-            f64::from,
-        );
-        let columns = self.columns_for_width(width);
-        let height = self.content_height(columns);
-        taffy::Size {
-            width: width as f32,
-            height: height as f32,
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(layout) = taffy.layout(node) else {
+            return false;
+        };
+        // Resolve content tracks at the allocated width before measuring row
+        // minima. Fixed mode only needs CSS min(100%, min_card_width), which
+        // Taffy cannot express directly.
+        let minimum = f64::from(layout.size.width).min(self.min_card_w).max(0.0);
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        let tracks = if self.card_h.is_none() {
+            let width = f64::from(layout.size.width);
+            let columns = self.columns_for_width(width);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "host logical width narrows to Taffy precision"
+            )]
+            let column_width = card_column_width(width, columns, self.gap) as f32;
+            vec![length(column_width); columns]
+        } else {
+            Self::column_tracks(minimum)
+        };
+        let mut style = current.clone();
+        let mut changed = false;
+        if style.grid_template_columns != tracks {
+            style.grid_template_columns = tracks;
+            changed |= taffy.set_style(node, style).is_ok();
         }
+        changed
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -467,7 +505,10 @@ impl Widget for CardGrid {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        self.resolve_columns();
+        let origin = Point::new(self.rect.x0, self.rect.y0);
+        for (card, &child) in self.cards.iter_mut().zip(&self.child_nodes) {
+            card.apply_layout(taffy, child, origin);
+        }
     }
 
     fn draw(
@@ -478,13 +519,8 @@ impl Widget for CardGrid {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.resolve_columns();
-        self.place_children(theme, text_renderer);
-        // Precompute cell rects so the cull check doesn't borrow `self` while
-        // the cards are iterated mutably.
-        let rects: Vec<Rect> = (0..self.cards.len()).map(|i| self.cell_rect(i)).collect();
-        for (card, rect) in self.cards.iter_mut().zip(rects.iter()) {
-            if presence.should_cull(*rect) {
+        for card in &mut self.cards {
+            if presence.should_cull(card.get_rect()) {
                 continue;
             }
             card.draw(scene, transform, text_renderer, theme, presence);
@@ -501,12 +537,8 @@ impl Widget for CardGrid {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        taffy: &TaffyTree<()>,
     ) {
-        // Route to the child cells using the inner tree from the last draw.
-        let Some(inner) = self.inner_taffy.take() else {
-            return;
-        };
         for (card, &node) in self.cards.iter_mut().zip(self.child_nodes.iter()) {
             card.handle_event(
                 event,
@@ -517,13 +549,12 @@ impl Widget for CardGrid {
                 handled,
                 focus_target,
                 node,
-                &inner,
+                taffy,
             );
             if *handled {
                 break;
             }
         }
-        self.inner_taffy = Some(inner);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -579,6 +610,7 @@ impl Widget for CardGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::Column;
 
     // ---- pure reflow geometry ----
 
@@ -632,22 +664,24 @@ mod tests {
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let mut tr = TextRenderer::new();
         let node = g.build_layout(&mut taffy, &theme, &mut map);
-        taffy
-            .compute_layout_with_measure(
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        unsafe {
+            bindings.rebuild(&g, &taffy, node, &map);
+        }
+        unsafe {
+            crate::widget::compute_widget_layout(
+                &mut taffy,
                 node,
                 Size {
                     width: taffy::AvailableSpace::Definite(w as f32),
                     height: taffy::AvailableSpace::Definite(h as f32),
                 },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        Size::ZERO
-                    }
-                },
+                &map,
+                &bindings,
+                &mut tr,
             )
-            .unwrap();
+        }
+        .unwrap();
         g.apply_layout(&taffy, node, Point::ZERO);
         g
     }
@@ -668,11 +702,18 @@ mod tests {
             2000.0,
         );
         // 900px → 3 columns of ~(900-32)/3 = 289.3px each.
-        assert_eq!(g.columns, 3, "900px / 260-min → 3 columns");
+        assert_eq!(
+            g.cards
+                .iter()
+                .filter(|card| card.get_rect().y0 == g.rect.y0)
+                .count(),
+            3,
+            "900px / 260-min → 3 columns"
+        );
         assert!(
-            (g.cell_w - 289.333).abs() < 0.1,
+            (g.cards[0].get_rect().width() - 289.333).abs() < 1.0,
             "equal column width, got {}",
-            g.cell_w
+            g.cards[0].get_rect().width()
         );
     }
 
@@ -687,11 +728,11 @@ mod tests {
         );
         // Card 0 and card 3 are in the same (first) column → identical x0.
         assert!(
-            (g.cell_rect(0).x0 - g.cell_rect(3).x0).abs() < 0.01,
+            (g.cards[0].get_rect().x0 - g.cards[3].get_rect().x0).abs() < 0.01,
             "column 0 x aligns across rows"
         );
         // Card 0 and card 1 are in adjacent columns → x1 vs x2 separated by one gap.
-        let gap_between = g.cell_rect(1).x0 - g.cell_rect(0).x1;
+        let gap_between = g.cards[1].get_rect().x0 - g.cards[0].get_rect().x1;
         assert!(
             (gap_between - 16.0).abs() < 0.5,
             "adjacent cards separated by one gap, got {gap_between}"
@@ -699,7 +740,7 @@ mod tests {
         // Every cell has the same width → they line up.
         for i in 0..6 {
             assert!(
-                (g.cell_rect(i).width() - g.cell_w).abs() < 0.01,
+                (g.cards[i].get_rect().width() - 289.333).abs() < 1.0,
                 "cell {i} width matches column"
             );
         }
@@ -716,7 +757,7 @@ mod tests {
             900.0,
             2000.0,
         );
-        assert_eq!(g.content_height(3), 2.0 * 150.0 + 16.0);
+        assert_eq!(g.get_rect().height(), 316.0);
     }
 
     #[test]
@@ -728,9 +769,16 @@ mod tests {
             300.0,
             2000.0,
         );
-        assert_eq!(g.columns, 1, "300px < 2-col stride → single column");
+        assert_eq!(
+            g.cards
+                .iter()
+                .filter(|card| card.get_rect().y0 == g.rect.y0)
+                .count(),
+            1,
+            "300px < 2-col stride → single column"
+        );
         assert!(
-            (g.cell_w - 300.0).abs() < 0.5,
+            (g.cards[0].get_rect().width() - 300.0).abs() < 0.5,
             "single column spans full width"
         );
     }
@@ -744,8 +792,43 @@ mod tests {
             900.0,
             500.0,
         );
-        assert_eq!(g.columns, 1, "empty grid columns are never reserved");
-        assert!((g.cell_w - 900.0).abs() < 0.5);
+        assert_eq!(g.columns_for_width(900.0), 1);
+        assert!((g.cards[0].get_rect().width() - 900.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn content_rows_use_each_rows_largest_natural_card() {
+        let cards = || {
+            vec![
+                Box::new(Card::new(Box::new(Text::new("Short")))) as Element,
+                Box::new(Card::new(Box::new(Text::new(
+                    &"Long description with useful details. ".repeat(20),
+                )))) as Element,
+                Box::new(Card::new(Box::new(Text::new("Last row")))) as Element,
+            ]
+        };
+        let wide = lay_out_grid(CardGrid::content_sized(cards()), 600.0, 2000.0);
+        assert!(wide.cards[0].get_rect().height() > 160.0);
+        assert_eq!(
+            wide.cards[0].get_rect().height(),
+            wide.cards[1].get_rect().height()
+        );
+        assert!(wide.cards[2].get_rect().height() < wide.cards[0].get_rect().height());
+        let one = lay_out_grid(
+            CardGrid::content_sized(vec![Box::new(Card::new(Box::new(Text::new(
+                &"Long description with useful details. ".repeat(20),
+            ))))]),
+            wide.cards[0].get_rect().width(),
+            2000.0,
+        );
+        assert!(
+            (one.cards[0].get_rect().height() - wide.cards[0].get_rect().height()).abs() < 1.0,
+            "single {:?}, wide {:?}",
+            one.cards[0].get_rect(),
+            wide.cards[0].get_rect()
+        );
+        let empty = lay_out_grid(CardGrid::content_sized(vec![]), 600.0, 2000.0);
+        assert_eq!(empty.rect.height(), 0.0);
     }
 
     // ---- Card surface ----
@@ -780,6 +863,31 @@ mod tests {
     }
 
     #[test]
+    fn card_keeps_intrinsic_height_in_a_short_flex_parent() {
+        let mut parent = Column::new()
+            .with_no_padding()
+            .push(Box::new(Card::new(Box::new(
+                Container::new().with_no_padding().with_height(80.0),
+            ))));
+        let mut tree = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = parent.build_layout(&mut tree, &Theme::dark(), &mut map);
+        tree.compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(300.0),
+                height: taffy::AvailableSpace::Definite(40.0),
+            },
+        )
+        .unwrap();
+        parent.apply_layout(&tree, node, Point::ZERO);
+        assert!(
+            parent.children()[0].get_rect().height() >= 80.0,
+            "a manual Card retains its non-shrinking content height"
+        );
+    }
+
+    #[test]
     fn card_draws_a_themed_surface() {
         use vello::peniko::Fill;
         let mut c = Card::titled("Group", Box::new(Text::new("body")));
@@ -798,6 +906,22 @@ mod tests {
             .count();
         assert!(fills >= 1, "a card must paint a themed surface fill");
         let _ = Fill::NonZero;
+    }
+
+    #[test]
+    fn titled_card_keeps_title_gap_after_intrinsic_column_gap_fix() {
+        let mut c = Card::titled(
+            "Group",
+            Box::new(Container::new().with_no_padding().with_height(10.0)),
+        );
+        let _ = lay_out_card_mut(&mut c);
+
+        let surface = c.children()[0];
+        let section = surface.children()[0];
+        let column = section.children()[0];
+        let title = column.children()[0].get_rect();
+        let body = column.children()[2].get_rect();
+        assert_eq!(body.y0 - title.y1, f64::from(CARD_TITLE_GAP));
     }
 
     fn lay_out_card_mut(c: &mut Card) -> Rect {

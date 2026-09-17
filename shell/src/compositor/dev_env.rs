@@ -51,7 +51,7 @@ pub const DEV_SESSION_MARKER: &str = "tilo-dev-session-build-marker-v1";
 /// `#[used]` keeps the linker from discarding a static nothing reads.
 #[cfg(all(feature = "dev-session", debug_assertions))]
 #[used]
-pub static DEV_SESSION_BUILD_MARKER: [u8; 31] = *b"tilo-dev-session-build-marker-v1";
+pub static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-dev-session-build-marker-v1";
 
 #[cfg(test)]
 mod tests {
@@ -74,7 +74,7 @@ mod tests {
         // The dev session entry searches the binary for DEV_SESSION_MARKER.
         // If the static and the constant ever drift, the entry silently
         // refuses every build — so tie them together here.
-        assert_eq!(DEV_SESSION_MARKER.len(), 31);
+        assert_eq!(DEV_SESSION_MARKER.len(), 32);
         #[cfg(all(feature = "dev-session", debug_assertions))]
         assert_eq!(
             DEV_SESSION_BUILD_MARKER.as_slice(),

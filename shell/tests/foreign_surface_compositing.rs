@@ -79,6 +79,19 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
     let mut doc = automerge::AutoCommit::new();
     let root = automerge::ROOT;
     fb.pump_apps(&mut doc, &root);
+    assert_eq!(
+        fb.chrome().overlays,
+        shell::shell::chrome_state::OverlayFlags::default(),
+        "the compositing fixture must not obscure the client with a shell overlay"
+    );
+    assert!(
+        !fb.host().palette_visible() && !fb.host().onboarding_active(),
+        "the compositing fixture must not obscure the client with a palette or onboarding"
+    );
+    assert!(
+        !shell::shell::input_policy::chrome_captures_input(fb),
+        "the compositing fixture must leave the client interactive"
+    );
     fb.paint_settled()
 }
 

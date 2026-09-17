@@ -410,6 +410,7 @@ struct StatusKey {
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
 pub struct TopBarChrome {
+    explicit_local_user: Option<String>,
     rect: Rect,
     workspace_name: String,
     workspace_index: usize,
@@ -642,7 +643,16 @@ impl TopBarChrome {
         true
     }
     pub fn from_tree(tree: &WorkspaceTree) -> Self {
+        Self::from_tree_with_identity(tree, None)
+    }
+
+    pub(crate) fn from_tree_with_local_user(tree: &WorkspaceTree, local: String) -> Self {
+        Self::from_tree_with_identity(tree, Some(local))
+    }
+
+    fn from_tree_with_identity(tree: &WorkspaceTree, explicit_local_user: Option<String>) -> Self {
         let mut this = Self {
+            explicit_local_user,
             rect: Rect::ZERO,
             workspace_name: String::new(),
             workspace_index: 0,
@@ -810,7 +820,10 @@ impl TopBarChrome {
         let peer_count = crate::shell::state::active_workspace_peer_count(tree);
         // Settled over the whole room, so a peer's avatar matches the
         // colour their cursor is drawn in elsewhere on the desktop.
-        let colors = crate::shell::state::roster_colors(roster);
+        let colors = self.explicit_local_user.as_deref().map_or_else(
+            || crate::shell::state::roster_colors(roster),
+            |local| crate::shell::state::roster_colors_with_local_user(roster, local),
+        );
         for c in roster.iter().filter(present).take(3) {
             let Some(ch) = c.name.chars().next() else {
                 continue;
@@ -3258,6 +3271,10 @@ impl Widget for TopBarChrome {
             return;
         }
 
+        // Theme typography already includes accessibility scale.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+
         // Cache miss — encode at IDENTITY, then splice with `out_transform`.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
@@ -3328,6 +3345,7 @@ impl Widget for TopBarChrome {
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_fp = fp;
+        text_renderer.set_text_scale(renderer_scale);
     }
 
     fn handle_event(
@@ -3737,6 +3755,40 @@ mod tests {
     use super::*;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
+    #[test]
+    fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut bar = sample_chrome();
+        bar.workspace_name = "Home".into();
+        bar.rect = Rect::new(0.0, 0.0, 960.0, 48.0);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(!runs.is_empty());
+        assert!(
+            runs.iter()
+                .all(|run| run.font_size <= theme.tokens.typography.scale.lg)
+        );
+        assert_eq!(renderer.text_scale(), 2.0);
+        renderer.set_text_scale(1.0);
+        let (_, height) = renderer.measure_weighted(
+            "Home  1/1",
+            theme.tokens.typography.scale.sm,
+            None,
+            TextWeight::Semibold,
+        );
+        assert!(f64::from(height) <= bar.ws_pill_rect.height());
+        assert!(bar.ws_pill_rect.x1 <= bar.rect.center().x - bar.center_band_width(&theme) / 2.0);
+    }
+
     fn sample_chrome() -> TopBarChrome {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
@@ -3918,7 +3970,11 @@ mod tests {
         bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
         bar.activity_headline = Some("Quinten · 2 permission changes".into());
         bar.activity_unread = 4;
-        let mut renderer = TextRenderer::new();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/assets/fonts"),
+            "en-US",
+        );
+        let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
         let theme = Theme::default().with_text_scale(1.3);
         let size = theme.tokens.typography.scale.sm;
         let max_width = bar.activity_content_width();

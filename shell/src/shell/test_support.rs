@@ -64,3 +64,151 @@ pub fn key_press(logical: &str, mods: Mods) -> KeyPress {
         mods,
     }
 }
+
+#[cfg(test)]
+pub(crate) struct PopulatedShellFixture {
+    pub(crate) frame: crate::shell::frame::FrameBuilder,
+    pub(crate) parent: tempfile::TempDir,
+}
+
+#[cfg(test)]
+impl PopulatedShellFixture {
+    pub(crate) fn new(viewport: (u32, u32), theme: ui::theme::Theme) -> Self {
+        let parent = tempfile::tempdir().expect("private populated shell fixture parent");
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/assets/fonts"),
+            "en-US",
+        );
+        let renderer = ui::text_render::TextRenderer::with_font_catalog(&catalog)
+            .expect("controlled populated shell fonts must load");
+        let inputs =
+            crate::shell::fixture_inputs::ShellFixtureInputs::new(parent.path(), renderer, theme)
+                .expect("owned populated shell fixture files");
+        let frame = crate::shell::frame::FrameBuilder::with_fixture_inputs(
+            crate::shell::state::WorkspaceTree::bootstrap_demo(),
+            viewport,
+            inputs,
+        )
+        .expect("explicit populated shell fixture");
+        Self { frame, parent }
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for PopulatedShellFixture {
+    type Target = crate::shell::frame::FrameBuilder;
+
+    fn deref(&self) -> &Self::Target {
+        &self.frame
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for PopulatedShellFixture {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.frame
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn dispatch_populated_fixture_click(
+    frame: &mut crate::shell::frame::FrameBuilder,
+    target: &str,
+    document: &mut automerge::AutoCommit,
+    focus: &mut Option<ui::taffy::NodeId>,
+) -> vello::Scene {
+    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+
+    let center = frame
+        .widget_registry()
+        .get(target)
+        .expect("actual populated shell control")
+        .center();
+    let cursor = WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+    };
+    let press = WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    };
+    let release = WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    };
+    let _ = frame.dispatch_event(
+        &cursor,
+        &Modifiers::default(),
+        document,
+        &automerge::ROOT,
+        focus,
+    );
+    let pressed = frame.dispatch_event(
+        &press,
+        &Modifiers::default(),
+        document,
+        &automerge::ROOT,
+        focus,
+    );
+    let released = frame.dispatch_event(
+        &release,
+        &Modifiers::default(),
+        document,
+        &automerge::ROOT,
+        focus,
+    );
+    assert!(
+        pressed || released,
+        "populated shell control {target} handles click"
+    );
+    frame.pump_apps(document, &automerge::ROOT);
+    frame.relayout();
+    frame.paint()
+}
+
+#[cfg(test)]
+pub(crate) use ambient::{DenyAmbientStarts, ambient_start};
+
+#[cfg(test)]
+mod ambient {
+
+    static DENY_AMBIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static AMBIENT_ATTEMPTS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    pub(crate) struct DenyAmbientStarts {
+        initial_attempts: usize,
+    }
+    impl DenyAmbientStarts {
+        pub(crate) fn new() -> Self {
+            use std::sync::atomic::Ordering;
+            assert!(
+                !DENY_AMBIENT.swap(true, Ordering::SeqCst),
+                "ambient guard already armed"
+            );
+            AMBIENT_ATTEMPTS.store(0, Ordering::SeqCst);
+            Self {
+                initial_attempts: 0,
+            }
+        }
+        pub(crate) fn attempts(&self) -> usize {
+            AMBIENT_ATTEMPTS
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .saturating_sub(self.initial_attempts)
+        }
+    }
+    impl Drop for DenyAmbientStarts {
+        fn drop(&mut self) {
+            DENY_AMBIENT.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    pub(crate) fn ambient_start(boundary: &'static str) {
+        use std::sync::atomic::Ordering;
+        if DENY_AMBIENT.load(Ordering::SeqCst) {
+            AMBIENT_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+            panic!("ambient service start forbidden: {boundary}");
+        }
+    }
+}

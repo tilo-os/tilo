@@ -67,6 +67,8 @@ pub struct AddDeviceHostScreen {
     /// Final-line status, surfaced beneath the QR.
     status: String,
     completed_identity: Option<threshold_identity::ThresholdIdentity>,
+    /// Keep the DKG outcome until the mailbox acknowledges its final reply.
+    pending_completion: Option<(HostDkgOutcome, EnrolmentRound2, [u8; 64])>,
 }
 
 /// Per-handshake state, owned by the host screen.
@@ -106,6 +108,7 @@ impl AddDeviceHostScreen {
             session: None,
             status: "Begin pairing to see a QR code.".to_string(),
             completed_identity: None,
+            pending_completion: None,
         }
     }
 
@@ -142,6 +145,7 @@ impl AddDeviceHostScreen {
             completed: false,
         });
         self.completed_identity = None;
+        self.pending_completion = None;
         self.status = format!(
             "Waiting for the new device. Show them code {}.",
             format_pairing_code(code)
@@ -267,7 +271,9 @@ impl AddDeviceHostScreen {
             .as_ref()
             .ok_or_else(|| IdentityFlowError::DecodeFailed("no active handshake".into()))?;
         let nonce = s.nonce;
-        if let Some((round1, reply, mac)) = hs.take_pairer_exchange(&nonce) {
+        if self.pending_completion.is_none()
+            && let Some((round1, reply, mac)) = hs.take_pairer_exchange(&nonce)
+        {
             let pairer_round1 = round1.clone();
             let outcome = self.host_complete_dkg(round1, reply, mac)?;
             if let Some(round2) = outcome.round2_to_pairer.clone() {
@@ -283,8 +289,25 @@ impl AddDeviceHostScreen {
                     &pairer_round1,
                     &round2,
                 )?;
-                hs.publish_host_round2(&nonce, round2, tag);
+                self.pending_completion = Some((outcome, round2, tag));
+            } else {
+                self.completed_identity = outcome.identity;
+                self.status = if outcome.completed {
+                    "Device paired.".to_string()
+                } else {
+                    "Waiting for the new device…".to_string()
+                };
+                return Ok(outcome.completed);
             }
+        }
+        if let Some((_, round2, tag)) = self.pending_completion.as_ref() {
+            if !hs.publish_host_round2(&nonce, round2.clone(), *tag) {
+                self.status = "Waiting for the pairing broker…".to_string();
+                return Ok(false);
+            }
+            let (outcome, _, _) = self.pending_completion.take().ok_or_else(|| {
+                IdentityFlowError::DecodeFailed("pending DKG completion disappeared".into())
+            })?;
             self.completed_identity = outcome.identity;
             self.status = if outcome.completed {
                 "Device paired.".to_string()
@@ -707,6 +730,72 @@ mod tests {
         );
         assert!(!host_identity.is_single_device());
         assert!(!pairer_identity.is_single_device());
+    }
+
+    #[test]
+    fn host_retries_contended_round2_publication_without_regenerating_identity() {
+        let (mut host, nonce) = fixture_host();
+        let payload = host.handshake().unwrap().payload.clone();
+        let mut rng = OsRng;
+        let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let (mut pairer_session, pairer_round1) =
+            pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
+        let outgoing = pairer_session
+            .receive_round1(&[payload.initiator_round1().unwrap()])
+            .unwrap();
+        let reply = outgoing.get(&1).unwrap().clone();
+        let mac = super::super::pairing_transcript_mac(
+            &payload,
+            "pairer-to-host",
+            &pairer_round1,
+            &reply,
+        )
+        .unwrap();
+        let outcome = host
+            .host_complete_dkg(pairer_round1.clone(), reply, mac)
+            .unwrap();
+        let expected_key = *outcome.identity.as_ref().unwrap().group_public_key();
+        let round2 = outcome.round2_to_pairer.as_ref().unwrap().clone();
+        let tag = super::super::pairing_transcript_mac(
+            &payload,
+            "host-to-pairer",
+            &pairer_round1,
+            &round2,
+        )
+        .unwrap();
+        // Pause at the production publication boundary, after the one-shot
+        // DKG session has been consumed, with a real competing mailbox lock.
+        host.pending_completion = Some((outcome, round2, tag));
+        let temp = tempfile::tempdir().unwrap();
+        let channel = PairingHandshake::durable(
+            temp.path(),
+            std::time::SystemTime::now() + std::time::Duration::from_secs(60),
+        )
+        .unwrap();
+        let lock_path = temp.path().join(format!("{}.lock", hex::encode(nonce)));
+        let lock = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .unwrap();
+        assert!(!host.poll_handshake(&channel).unwrap());
+        assert!(host.take_completed_identity().is_none());
+        assert!(host.pending_completion.is_some());
+        assert!(host.handshake().unwrap().session.is_none());
+        drop(lock);
+        std::fs::remove_file(lock_path).unwrap();
+
+        assert!(host.poll_handshake(&channel).unwrap());
+        let identity = host.take_completed_identity().unwrap();
+        assert_eq!(*identity.group_public_key(), expected_key);
+        let (delivered, delivered_tag) = channel.take_host_round2(&nonce).unwrap();
+        assert_eq!(delivered_tag, tag);
+        pairer_session.receive_round2(&[delivered]).unwrap();
+        pairer.adopt_dkg_outcome(pairer_session).unwrap();
+        assert_eq!(identity.group_public_key(), pairer.group_public_key());
+        assert!(host.pending_completion.is_none());
+        assert!(!host.poll_handshake(&channel).unwrap());
+        assert!(channel.take_host_round2(&nonce).is_none());
     }
 
     #[test]

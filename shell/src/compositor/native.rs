@@ -3,18 +3,24 @@
 //! `wayland-2`, …) handed to `DisplayHandle::insert_client`. Doesn't open a
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
+use crate::shell::input_policy::{
+    is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
+};
+pub use crate::shell::session_policy::*;
+pub use crate::shell::test_control::{
+    ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event, read_bounded_line,
+};
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use rand_core::{OsRng, RngCore};
 
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
@@ -66,8 +72,8 @@ use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
@@ -83,7 +89,7 @@ use crate::compositor::foreign;
 use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
-use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
+use crate::compositor::lock_controller::{LockController, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockOutput, LockView};
 use crate::compositor::metrics;
 use crate::compositor::output_globals;
@@ -1583,34 +1589,6 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
     }
 }
 
-/// Build a `WindowEvent::KeyboardInput` for `key`. Mirrors
-/// `shots/driver.rs::key_press_event`: winit's `KeyEvent` has a
-/// `pub(crate)` `platform_specific` field, so we zero-init and overwrite
-/// only the fields the host reads; `text` is set for `Character` keys so
-/// text-input branches see the same glyph real hardware would send.
-fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    ev.repeat = false;
-    ev.text = if let Key::Character(s) = key {
-        Some(s.clone())
-    } else {
-        None
-    };
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
-
 fn switch_action_event(action: SwitchAction, pressed: bool) -> WindowEvent {
     keyboard_input_event(
         &Key::Named(match action {
@@ -2267,89 +2245,6 @@ fn write_snapshot_png(
 /// Cap on the per-line size: `read_line` buffers the whole line regardless
 /// of size, so an unbounded no-newline stream could OOM the compositor. 64
 /// KiB is well above any legitimate command and below meaningful memory pressure.
-pub(crate) const TEST_CONTROL_MAX_LINE_BYTES: usize = 64 * 1024;
-
-/// Read up to one `\n`-terminated line from `reader`, capped at
-/// `TEST_CONTROL_MAX_LINE_BYTES`. Returns:
-///
-/// * `Ok(Some(line))` — complete line, trailing newline included (so
-///   `parse_command` needs no change).
-/// * `Ok(None)` — EOF with no newline seen (peer closed mid-line).
-/// * `Err(TooLarge)` — cap fired before a newline; caller must close.
-/// * `Err(Io(e))` — I/O failure, including `WouldBlock`.
-pub(crate) enum ReadLineError {
-    TooLarge,
-    Io(std::io::Error),
-}
-
-pub(crate) fn read_bounded_line<R: BufRead>(
-    reader: &mut R,
-    out: &mut String,
-    max_bytes: usize,
-) -> Result<Option<()>, ReadLineError> {
-    let mut buf = Vec::with_capacity(256);
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(b) => b,
-            Err(e) => return Err(ReadLineError::Io(e)),
-        };
-        if available.is_empty() {
-            // EOF: return accumulated bytes as a best-effort line if any, else None.
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
-                }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
-            }
-        }
-        // Find the newline (if any) in the available slice.
-        let (consumed, found_nl) = match available.iter().position(|&b| b == b'\n') {
-            Some(idx) => (idx.saturating_add(1), true),
-            None => (available.len(), false),
-        };
-        if buf.len().saturating_add(consumed) > max_bytes {
-            // Cap reached: consume up to the cap so we don't leave garbage in the reader, then bail.
-            let remaining = max_bytes.saturating_sub(buf.len());
-            // `remaining < consumed <= available.len()` by construction, so this
-            // never misses — `unwrap_or(available)` is just a defensive fallback.
-            let take = available.get(..remaining).unwrap_or(available);
-            let taken = take.len();
-            buf.extend_from_slice(take);
-            reader.consume(taken);
-            return Err(ReadLineError::TooLarge);
-        }
-        // `consumed` is either `idx + 1` (a valid position in `available`) or
-        // `available.len()`, so this too never misses.
-        let take = available.get(..consumed).unwrap_or(available);
-        let taken = take.len();
-        buf.extend_from_slice(take);
-        reader.consume(taken);
-        if found_nl {
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
-                }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
-            }
-        }
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "Connection pumping preserves request order, response framing, and frame-state mutation in one transaction to make test-control behavior deterministic."
@@ -2529,43 +2424,6 @@ fn apply_session_transition(
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
     }
-}
-
-/// Result of waiting for the precise lock frame which allows a pending sleep
-/// request to proceed.  Kept pure so the failure policy is testable without a
-/// compositor, logind, seat, or GPU.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SleepLockFrameStatus {
-    /// The frame is still in the healthy render queue.
-    Awaiting,
-    /// The required frame has retired; it is safe to acknowledge the delay
-    /// inhibitor.
-    Retired,
-    /// The render worker exited before retiring the required frame.  This is
-    /// intentionally not an acknowledgement: fail closed and let logind's
-    /// own bounded delay-inhibitor policy decide when to proceed.
-    PresenterLost,
-}
-
-fn sleep_lock_frame_status(
-    serial: u64,
-    presented: u64,
-    presenter_finished: bool,
-) -> SleepLockFrameStatus {
-    if presented >= serial {
-        SleepLockFrameStatus::Retired
-    } else if presenter_finished {
-        SleepLockFrameStatus::PresenterLost
-    } else {
-        SleepLockFrameStatus::Awaiting
-    }
-}
-
-/// Only unlock a failed suspend when the compositor actually entered the
-/// pre-sleep state and that state created the lock. A `CanSuspend` denial can
-/// arrive before preparation, and must not clear a user's unrelated lock.
-fn should_unlock_after_suspend_failure(was_prepared: bool, was_locked: bool) -> bool {
-    was_prepared && !was_locked
 }
 
 /// Whether an event is the hardware power key being pressed — detected by
@@ -3202,170 +3060,8 @@ fn vt_switch_chord(event: &WindowEvent, modifiers: Modifiers) -> Option<i32> {
     Some(n)
 }
 
-/// Is `event` the remote-input kill switch, `Super+Esc`, on key *press*?
-/// The panic key for a shared session — stops whatever a guest is doing.
-/// Checked ahead of the client router and the shell's own Escape handling
-/// so an open overlay or a keyboard-grabbing client can't swallow it.
-fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return false;
-    };
-    event.state == ElementState::Pressed
-        && modifiers.state().super_key()
-        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
-}
-
-fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let config = settings_store::hardware::ShortcutConfig::load();
-    let Some(chord) = config
-        .bindings
-        .get(&settings_store::hardware::ShortcutAction::Lock)
-    else {
-        return false;
-    };
-    lock_chord_matches(event, modifiers, chord)
-}
-
-/// Session-lock bindings run before client routing, so their matching must
-/// accept every key the editable shortcut UI can persist.  In particular,
-/// named keys such as F12 are already withheld from the focused client by
-/// `configured_shortcut_matches`.
-fn lock_chord_matches(
-    event: &WindowEvent,
-    modifiers: Modifiers,
-    chord: &settings_store::hardware::KeyChord,
-) -> bool {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return false;
-    };
-    if event.state != ElementState::Pressed {
-        return false;
-    }
-    crate::shell::overlay_host::shortcut_chord_matches(&event.logical_key, modifiers, chord)
-}
-
-/// Map a live winit key event to the lock screen's normalised [`LockKey`]
-/// while locked. Non-press/unhandled keys become [`LockKey::Ignored`] —
-/// still swallowed (never routed to apps behind the overlay), but inert on
-/// the password buffer. The test-control path produces the same `LockKey`s so both drive one routing.
-fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return LockKey::Ignored;
-    };
-    if event.state != ElementState::Pressed {
-        return LockKey::Ignored;
-    }
-    match &event.logical_key {
-        Key::Named(NamedKey::Enter) => LockKey::Submit,
-        Key::Named(NamedKey::Escape) => LockKey::Cancel,
-        Key::Named(NamedKey::Backspace) => LockKey::Backspace,
-        Key::Named(NamedKey::Space) => LockKey::Text(" ".to_string()),
-        Key::Character(s) => LockKey::Text(s.to_string()),
-        _ => {
-            // Some layouts deliver typed text on otherwise-Named keys.
-            match &event.text {
-                Some(t) if !t.is_empty() && !t.chars().all(char::is_control) => {
-                    LockKey::Text(t.to_string())
-                }
-                _ => LockKey::Ignored,
-            }
-        }
-    }
-}
-
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
-
-/// Sequence for same-directory workspace-salt claim files. The final file is
-/// published with a hard link, so concurrent sessions can never replace the
-/// salt another session already used to mint durable object ids.
-static WORKSPACE_SALT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn read_workspace_salt(path: &Path) -> std::io::Result<u16> {
-    let bytes = std::fs::read(path)?;
-    let bytes: [u8; 2] = bytes.try_into().map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "workspace peer salt must contain exactly two bytes",
-        )
-    })?;
-    let salt = u16::from_be_bytes(bytes);
-    if salt == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "workspace peer salt must be non-zero",
-        ));
-    }
-    Ok(salt)
-}
-
-/// Load the namespace salt used for durable workspace object ids, creating a
-/// non-secret random one without creating or advertising a transport identity.
-/// Existing installations retain the salt derived from their existing device
-/// key on first migration.
-pub(super) fn load_or_create_workspace_salt(
-    state_path: &Path,
-    peer_key_path: &Path,
-) -> std::io::Result<u16> {
-    let parent = state_path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let path = parent.join("workspace-peer-salt");
-    if path.try_exists()? {
-        return read_workspace_salt(&path);
-    }
-
-    let salt = if peer_key_path.try_exists()? {
-        let key = crate::network::behaviour::load_or_create_keypair(peer_key_path)?;
-        crate::network::behaviour::peer_salt_from_keypair(&key).max(1)
-    } else {
-        let mut bytes = [0_u8; 2];
-        OsRng.fill_bytes(&mut bytes);
-        u16::from_be_bytes(bytes).max(1)
-    };
-
-    for _ in 0..16 {
-        let sequence = WORKSPACE_SALT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary = parent.join(format!(
-            ".workspace-peer-salt-{}-{sequence}",
-            std::process::id()
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = match options.open(&temporary) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        if let Err(error) = file
-            .write_all(&salt.to_be_bytes())
-            .and_then(|()| file.sync_all())
-        {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(error);
-        }
-        let claim = std::fs::hard_link(&temporary, &path);
-        let _ = std::fs::remove_file(&temporary);
-        match claim {
-            Ok(()) => {
-                std::fs::File::open(parent)?.sync_all()?;
-                return Ok(salt);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return read_workspace_salt(&path);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "could not allocate a workspace-salt claim file",
-    ))
-}
 
 /// Load this machine's desktop state and bring it up to the invariants
 /// later stages assume: a persist path, a durable room identity per
@@ -3825,26 +3521,6 @@ fn attach_peer_presence(
     ));
 }
 
-/// A deferred first-login transport starts precisely once: after the trusted
-/// identity ceremony has released the desktop, never while it is still
-/// collecting secrets.
-fn take_deferred_peer_sync_activation(deferred: &mut bool, onboarding_active: bool) -> bool {
-    if *deferred && !onboarding_active {
-        *deferred = false;
-        true
-    } else {
-        false
-    }
-}
-
-fn should_activate_first_use(
-    identity_missing: bool,
-    progress_pending: bool,
-    test_control_session: bool,
-) -> bool {
-    !test_control_session && (identity_missing || progress_pending)
-}
-
 fn spawn_session_identity_broker(
     chrome: &crate::shell::chrome_state::Chrome,
 ) -> Option<crate::identity_broker::IdentityBrokerHandle> {
@@ -3987,10 +3663,6 @@ struct PortalBackend {
     capture_pending: Arc<AtomicBool>,
     documents: crate::portal::DocumentStoreHandle,
     interactive_screenshot: std::sync::Mutex<Option<PendingInteractiveScreenshot>>,
-}
-
-fn portal_screencast_should_publish(has_streams: bool, session_locked: bool) -> bool {
-    has_streams && !session_locked
 }
 
 struct PendingInteractiveScreenshot {
@@ -4438,17 +4110,6 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
         return false;
     };
     registration < dispatch && dispatch < start
-}
-
-fn update_output_presentation_repaint_pending(
-    pending: &mut bool,
-    previous_surface_count: &mut usize,
-    current_surface_count: usize,
-    frame_changed: bool,
-) -> bool {
-    *pending |= frame_changed || *previous_surface_count != current_surface_count;
-    *previous_surface_count = current_surface_count;
-    *pending
 }
 
 /// Entry point for the smithay-on-Wayland compositor. Diverges (`-> !`) so
@@ -7026,68 +6687,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
-        let mut deferred = true;
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
-        assert!(deferred, "onboarding retains the pending start");
-        assert!(take_deferred_peer_sync_activation(&mut deferred, false));
-        assert!(!deferred, "the current-session start is one-shot");
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
-    }
-
-    #[test]
-    fn output_presentation_removal_stays_pending_until_a_full_frame_submits() {
-        let mut pending = false;
-        let mut previous_surface_count = 1;
-
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert_eq!(previous_surface_count, 0);
-        assert!(
-            pending,
-            "an off-cadence removal must survive until the next submitted frame"
-        );
-
-        pending = false;
-        assert!(!update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            true,
-        ));
-    }
-
-    #[test]
-    fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
-        assert!(should_activate_first_use(false, true, false));
-        assert!(
-            !should_activate_first_use(false, false, false),
-            "an established user without a journal must not see first-use again"
-        );
-        assert!(
-            !should_activate_first_use(true, true, true),
-            "the explicit development control session remains isolated"
-        );
-    }
-
-    #[test]
-    fn portal_screencast_never_publishes_a_locked_frame() {
-        assert!(portal_screencast_should_publish(true, false));
-        assert!(!portal_screencast_should_publish(true, true));
-        assert!(!portal_screencast_should_publish(false, false));
-    }
-
-    #[test]
     fn switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one() {
         use crate::compositor::tab_binding::{self, Placement};
 
@@ -7227,50 +6826,6 @@ mod tests {
                 .reconcile(&moved_outputs, &[(7, relaid_rect)])
                 .is_empty(),
             "post-layout geometry keeps the surface on the same physical output"
-        );
-    }
-
-    #[test]
-    fn fresh_workspace_salt_does_not_create_a_transport_identity() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state_path = dir.path().join("config/state.json");
-        let peer_key_path = dir.path().join("system/device-key");
-
-        let first = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("create workspace salt");
-        let second = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("reload workspace salt");
-
-        assert_ne!(first, 0);
-        assert_eq!(first, second);
-        assert!(
-            !peer_key_path.exists(),
-            "allocating an object-id namespace must not mint a network identity"
-        );
-    }
-
-    #[test]
-    fn existing_transport_identity_keeps_its_historical_workspace_salt() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state_path = dir.path().join("config/state.json");
-        let peer_key_path = dir.path().join("system/device-key");
-        let key = crate::network::behaviour::load_or_create_keypair(&peer_key_path)
-            .expect("create existing transport identity");
-        let expected = crate::network::behaviour::peer_salt_from_keypair(&key).max(1);
-
-        let actual = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("migrate historical salt");
-
-        assert_eq!(actual, expected);
-        assert_eq!(
-            read_workspace_salt(
-                &state_path
-                    .parent()
-                    .expect("fixture state path has a parent")
-                    .join("workspace-peer-salt"),
-            )
-            .expect("read persisted salt"),
-            expected
         );
     }
 
@@ -7942,186 +7497,7 @@ mod tests {
         );
     }
 
-    /// `read_bounded_line` caps a malicious/buggy client's input at
-    /// `TEST_CONTROL_MAX_LINE_BYTES`; the caller closes the connection on `TooLarge`.
-    #[test]
-    fn pump_drops_oversized_lines() {
-        use std::io::BufReader;
-        let stream: Vec<u8> = vec![b'A'; 100_000];
-        let mut reader = BufReader::new(&stream[..]);
-        let mut out = String::new();
-        let res = read_bounded_line(&mut reader, &mut out, TEST_CONTROL_MAX_LINE_BYTES);
-        match res {
-            Err(ReadLineError::TooLarge) => {
-                // Expected: `out` is intentionally still empty — truncated bytes aren't
-                // surfaced to the parser since they'd parse as garbage anyway.
-                assert!(
-                    out.is_empty(),
-                    "read_bounded_line must not hand a truncated line \
-                     to the parser; got {} bytes",
-                    out.len()
-                );
-            }
-            Err(ReadLineError::Io(e)) => {
-                panic!("expected TooLarge on a 100k newline-less stream; got io: {e}")
-            }
-            Ok(opt) => panic!(
-                "expected TooLarge on a 100k newline-less stream; got Ok({:?})",
-                opt.is_some()
-            ),
-        }
-    }
-
     // session lock chord / unlock detection
-
-    fn mods_with_super(on: bool) -> Modifiers {
-        let mut mask = ModifiersState::empty();
-        if on {
-            mask |= ModifiersState::SUPER;
-        }
-        Modifiers::from(mask)
-    }
-
-    /// Super+L on key press is the lock chord.
-    #[test]
-    fn super_l_press_is_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(is_lock_chord(&ev, mods_with_super(true)));
-        // A layout/caps state may report an upper-case logical key without an
-        // extra Shift modifier; key comparison remains case-insensitive.
-        let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
-        assert!(is_lock_chord(&ev_upper, mods_with_super(true)));
-    }
-
-    #[test]
-    fn other_super_chords_and_extra_modifiers_do_not_lock() {
-        let search = keyboard_input_event(&Key::Character(SmolStr::new("k")), true);
-        assert!(
-            !is_lock_chord(&search, mods_with_super(true)),
-            "Super+K must reach Search instead of locking the session"
-        );
-
-        let lock = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        let shifted = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
-        assert!(
-            !is_lock_chord(&lock, shifted),
-            "an extra modifier must not broaden Super+L into a lock chord"
-        );
-    }
-
-    /// Without Super held, plain `l` is not the lock chord (it types).
-    #[test]
-    fn l_without_super_is_not_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(!is_lock_chord(&ev, mods_with_super(false)));
-    }
-
-    /// The lock chord only fires on press, not release — else key-up would re-trigger and toggle twice.
-    #[test]
-    fn super_l_release_is_not_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
-        assert!(!is_lock_chord(&ev, mods_with_super(true)));
-    }
-
-    #[test]
-    fn configured_named_lock_keys_use_the_editor_matcher_without_claiming_neighbours() {
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        let f12 = settings_store::hardware::KeyChord::parse("Ctrl+F12")
-            .expect("the shortcut editor accepts named function keys");
-        let f12_press = keyboard_input_event(&Key::Named(NamedKey::F12), true);
-        assert!(lock_chord_matches(&f12_press, ctrl, &f12));
-
-        let f11_press = keyboard_input_event(&Key::Named(NamedKey::F11), true);
-        assert!(
-            !lock_chord_matches(&f11_press, ctrl, &f12),
-            "a nearby client-owned function key must not be claimed"
-        );
-        let f12_release = keyboard_input_event(&Key::Named(NamedKey::F12), false);
-        assert!(
-            !lock_chord_matches(&f12_release, ctrl, &f12),
-            "only the captured press may lock; its release stays non-actioning"
-        );
-
-        let navigation = settings_store::hardware::KeyChord::parse("Ctrl+Left")
-            .expect("the shortcut editor accepts named navigation keys");
-        let left_press = keyboard_input_event(&Key::Named(NamedKey::ArrowLeft), true);
-        assert!(
-            lock_chord_matches(&left_press, ctrl, &navigation),
-            "a named navigation binding must use the same matcher as the editor"
-        );
-    }
-
-    /// `Super+Esc` on press is the remote-input kill switch.
-    #[test]
-    fn super_escape_press_is_the_remote_input_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(is_remote_input_kill_switch(&ev, mods_with_super(true)));
-    }
-
-    /// Escape on its own closes an overlay and reaches modal clients; must not stop a shared session by accident.
-    #[test]
-    fn escape_without_super_is_not_the_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(!is_remote_input_kill_switch(&ev, mods_with_super(false)));
-    }
-
-    /// Press only — a re-firing release would engage the latch twice and post a second toast for one keystroke.
-    #[test]
-    fn super_escape_release_is_not_the_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), false);
-        assert!(!is_remote_input_kill_switch(&ev, mods_with_super(true)));
-    }
-
-    /// The panic key is not a key a client can be handed — `Super` is the
-    /// compositor modifier the shell's chord table already claims, so no client can steal it.
-    #[test]
-    fn super_escape_is_a_shell_chord_and_never_reaches_a_client() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(client_input::is_shell_chord(
-            &ev,
-            &mods_with_super(true),
-            false
-        ));
-        assert!(
-            client_input::is_shell_chord(&ev, &mods_with_super(true), true),
-            "an open overlay must not swallow the panic key either"
-        );
-    }
-
-    /// A non-keyboard event (cursor move) is never the lock chord even with Super held.
-    #[test]
-    fn cursor_move_is_not_lock_chord() {
-        let ev = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(10.0, 10.0),
-        };
-        assert!(!is_lock_chord(&ev, mods_with_super(true)));
-    }
-
-    /// Enter and Escape on press are the explicit unlock action.
-    #[test]
-    fn enter_and_escape_press_map_to_submit_and_cancel() {
-        let enter = keyboard_input_event(&Key::Named(NamedKey::Enter), true);
-        let escape = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
-        assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
-    }
-
-    /// A plain character keypress feeds the password buffer as text — it doesn't itself unlock.
-    #[test]
-    fn char_key_maps_to_text() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("a")), true);
-        assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
-    }
-
-    /// Backspace maps to a buffer edit; a key *release* is ignored (only presses type).
-    #[test]
-    fn backspace_maps_and_release_is_ignored() {
-        let bs = keyboard_input_event(&Key::Named(NamedKey::Backspace), true);
-        assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
-        let release = keyboard_input_event(&Key::Named(NamedKey::Enter), false);
-        assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
-    }
 
     /// `apply_session_transition` maps Blanked/Woke to `set_dpms`;
     /// Locked/Unlocked are pure state and touch no backend — asserted via a spy backend recording `set_dpms` calls.
@@ -8153,32 +7529,6 @@ mod tests {
         apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
-    }
-
-    #[test]
-    fn sleep_lock_ack_waits_for_its_exact_frame_and_fails_closed_on_presenter_loss() {
-        // A prior desktop frame has retired, but lock frame #42 has not: it
-        // cannot release the sleep-delay inhibitor.  If the presenter dies
-        // first, the only safe result is likewise no acknowledgement.
-        assert_eq!(
-            sleep_lock_frame_status(42, 41, false),
-            SleepLockFrameStatus::Awaiting
-        );
-        assert_eq!(
-            sleep_lock_frame_status(42, 42, false),
-            SleepLockFrameStatus::Retired
-        );
-        assert_eq!(
-            sleep_lock_frame_status(42, 41, true),
-            SleepLockFrameStatus::PresenterLost
-        );
-    }
-
-    #[test]
-    fn failed_suspend_only_unlocks_a_lock_it_prepared() {
-        assert!(should_unlock_after_suspend_failure(true, false));
-        assert!(!should_unlock_after_suspend_failure(true, true));
-        assert!(!should_unlock_after_suspend_failure(false, false));
     }
 }
 

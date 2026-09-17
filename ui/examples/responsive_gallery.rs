@@ -15,6 +15,8 @@ use ui::widget::{
 use ui::{App, State};
 
 pub fn run(_args: &[String]) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     I18nManager::init("en-US");
     I18nManager::add_resource(
         "en-US",
@@ -60,7 +62,7 @@ pub fn run(_args: &[String]) {
 
     let root_widget = build_root_widget(&theme);
 
-    let app = App::new(state, root_widget);
+    let app = App::from_scoped_parts(wake_scope, state, root_widget);
     app.run();
 }
 

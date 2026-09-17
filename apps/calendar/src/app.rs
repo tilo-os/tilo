@@ -289,6 +289,13 @@ impl FormRects {
     }
 }
 
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
 /// result, the merged outcome, the ids that uploaded successfully, and the
 /// ids the server confirmed deleted.
@@ -3244,22 +3251,21 @@ impl CalendarApp {
             header,
         );
         let mut ignored_hits = Vec::new();
-        let _ = self.draw_detail_back_button(
-            scene,
-            transform,
-            text,
-            theme,
-            self.detail_rect,
-            &mut ignored_hits,
-        );
-        self.draw_detail_header_controls(
-            scene,
-            transform,
-            theme,
-            self.detail_rect,
-            false,
-            &mut ignored_hits,
-        );
+        {
+            let mut paint = PaintContext {
+                scene,
+                transform,
+                text,
+                theme,
+            };
+            let _ = self.draw_detail_back_button(&mut paint, self.detail_rect, &mut ignored_hits);
+            self.draw_detail_header_controls(
+                &mut paint,
+                self.detail_rect,
+                false,
+                &mut ignored_hits,
+            );
+        }
         // Once content has moved under the sticky bar, keep the bar to the
         // actual navigation controls. At 200% text the event eyebrow's ascent
         // otherwise reaches into the Back label even though the body itself is
@@ -3947,6 +3953,12 @@ impl CalendarApp {
         ) else {
             return Vec::new();
         };
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
         let mut hits: Vec<_> = chrome
             .hits
             .into_iter()
@@ -3963,27 +3975,24 @@ impl CalendarApp {
             .collect();
         let r = self.sidebar.rect();
         let pad = 18.0;
-        let y = self.draw_sidebar_lists(scene, t, tr, theme, r, pad, chrome.body_y, &mut hits);
-        let y = self.draw_sidebar_calendars(scene, t, tr, theme, r, pad, y, &mut hits);
-        self.draw_sidebar_footer(scene, t, tr, theme, r, pad, y, &mut hits);
+        let y = self.draw_sidebar_lists(&mut paint, r, pad, chrome.body_y, &mut hits);
+        let y = self.draw_sidebar_calendars(&mut paint, r, pad, y, &mut hits);
+        self.draw_sidebar_footer(&mut paint, r, pad, y, &mut hits);
 
         hits
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_lists(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         pad: f64,
         mut y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         // Smart lists.
         let smart = [
@@ -4086,21 +4095,18 @@ impl CalendarApp {
     /// calendars are listed with a visibility checkbox; a Sync affordance in
     /// the heading pulls events from every visible calendar (part of
     /// [`Self::draw_sidebar`]). Returns the `y` the footer should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_calendars(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         pad: f64,
         mut y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         if !self.accounts.is_empty() {
             y += 14.0;
@@ -4198,16 +4204,9 @@ impl CalendarApp {
     /// The footer: the mini upcoming-task rail (when there's room for it
     /// above the reserved mini-month band) followed by the mini-month
     /// navigator itself (part of [`Self::draw_sidebar`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_footer(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         pad: f64,
         y: f64,
@@ -4215,14 +4214,14 @@ impl CalendarApp {
     ) {
         // Reserve the bottom of the sidebar for the mini-month navigator.
         let mini_top = MiniMonth::content_limit(r);
-        let y = self.draw_sidebar_task_rail(scene, t, tr, theme, r, pad, y, mini_top, hits);
+        let y = self.draw_sidebar_task_rail(paint, r, pad, y, mini_top, hits);
         let event_dates = self.mini_month_event_dates();
         hits.extend(
             MiniMonth::draw(
-                scene,
-                t,
-                tr,
-                theme,
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
                 r,
                 y,
                 self.anchor,
@@ -4239,22 +4238,19 @@ impl CalendarApp {
     /// there's vertical room left above the mini-month (the CALENDARS
     /// section above may have used it up; the agenda/day views still list
     /// the tasks in full either way) (part of [`Self::draw_sidebar_footer`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_task_rail(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         pad: f64,
         mut y: f64,
         mini_top: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let rail_tasks = self.model.tasks_for(&self.list_sel, self.today);
         if !rail_tasks.is_empty() && y + 56.0 < mini_top {
@@ -4377,8 +4373,14 @@ impl CalendarApp {
         let cell_w = area.width() / cols as f64;
         let grid_top = area.y0 + header_h;
         let cell_h = (area.height() - header_h) / f64::from(rows);
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
 
-        Self::draw_month_header(scene, t, tr, theme, area, cell_w);
+        Self::draw_month_header(&mut paint, area, cell_w);
 
         let grid = date::month_grid(self.anchor);
         for (idx, day) in grid.iter().enumerate() {
@@ -4390,20 +4392,17 @@ impl CalendarApp {
                 area.x0 + cell_w * (col as f64 + 1.0),
                 grid_top + cell_h * (row as f64 + 1.0),
             );
-            self.draw_month_cell(scene, t, tr, theme, cell, cell_h, *day, &mut hits);
+            self.draw_month_cell(&mut paint, cell, cell_h, *day, &mut hits);
         }
         hits
     }
 
     /// The weekday header row (part of [`Self::draw_month`]).
-    fn draw_month_header(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        cell_w: f64,
-    ) {
+    fn draw_month_header(paint: &mut PaintContext<'_>, area: Rect, cell_w: f64) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         for (i, lbl) in date::WEEKDAY_SHORT.iter().enumerate() {
             let weekend = i >= 5;
@@ -4422,21 +4421,18 @@ impl CalendarApp {
 
     /// One day cell: grid line, hit targets, background tint, and the date
     /// number (with a today pill) (part of [`Self::draw_month`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_month_cell(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         cell: Rect,
         cell_h: f64,
         day: NaiveDate,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         // grid lines
         stroke_round(scene, t, c.border_standard.with_alpha(0.5), cell, 0.0, 0.5);
@@ -4495,26 +4491,34 @@ impl CalendarApp {
             );
         }
 
-        self.draw_month_cell_chips(scene, t, tr, theme, cell, cell_h, day, hits);
+        self.draw_month_cell_chips(
+            &mut PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            cell,
+            cell_h,
+            day,
+            hits,
+        );
     }
 
     /// The event chips inside one day cell, clipped to it (part of
     /// [`Self::draw_month_cell`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_month_cell_chips(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         cell: Rect,
         cell_h: f64,
         day: NaiveDate,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         scene.push_layer(
             Fill::NonZero,
@@ -4665,8 +4669,14 @@ impl CalendarApp {
         let mut hits = Vec::new();
         let r = self.detail_rect;
         let modal = matches!(self.detail_mode, DetailMode::Overlay);
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
 
-        self.draw_detail_frame(scene, t, theme, r, modal, &mut hits);
+        self.draw_detail_frame(&mut paint, r, modal, &mut hits);
 
         let x = r.x0 + DETAIL_PAD;
         let w = self.notes_w;
@@ -4675,18 +4685,18 @@ impl CalendarApp {
         // The full-screen editor page is its own pushed screen, so it gets a
         // Back affordance top-left instead of a close button.
         if !modal {
-            y += self.draw_detail_back_button(scene, t, tr, theme, r, &mut hits);
+            y += self.draw_detail_back_button(&mut paint, r, &mut hits);
         }
 
         // Header controls, top-right: a Delete (trash) button for the selected
         // item, plus a Close (X) on the modal (the full-screen page uses Back).
-        self.draw_detail_header_controls(scene, t, theme, r, modal, &mut hits);
+        self.draw_detail_header_controls(&mut paint, r, modal, &mut hits);
 
-        self.draw_detail_selection(scene, t, tr, theme, x, y, w, &mut hits);
+        self.draw_detail_selection(&mut paint, x, y, w, &mut hits);
 
         // Notes header (the editor itself is drawn separately in draw()). For
         // an event the notes sit below the form; a task uses the fixed offset.
-        self.draw_detail_notes_header(scene, t, tr, theme, r, x, w);
+        self.draw_detail_notes_header(&mut paint, r, x, w);
 
         hits
     }
@@ -4694,19 +4704,16 @@ impl CalendarApp {
     /// The card/panel background — a dimmed floating card in overlay mode,
     /// or a docked panel with a left border otherwise (part of
     /// [`Self::draw_detail`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_detail_frame(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         modal: bool,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
         let c = &theme.tokens.colors;
         if modal {
             // Dim the calendar behind the card; a click on the dim closes the
@@ -4738,13 +4745,14 @@ impl CalendarApp {
     /// caller should push the detail body down by.
     fn draw_detail_back_button(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let back = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x0 + 96.0, r.y0 + 44.0);
         if back.contains(self.last_mouse) {
@@ -4770,19 +4778,16 @@ impl CalendarApp {
 
     /// The Close (modal only) and Delete header buttons, top-right (part of
     /// [`Self::draw_detail`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_detail_header_controls(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         modal: bool,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
         let c = &theme.tokens.colors;
         let mut bx = r.x1 - 14.0;
         if modal {
@@ -4811,10 +4816,6 @@ impl CalendarApp {
     /// editable field is drawn by [`Self::draw_event_form`]), or the full
     /// task detail (part of [`Self::draw_detail`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, x/y/w are the body column's position/width, \
                   and c is the theme's colour set — conventional short names for this \
@@ -4822,15 +4823,16 @@ impl CalendarApp {
     )]
     fn draw_detail_selection(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         x: f64,
         y: f64,
         w: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         match self.selection {
             Some(Sel::Event(id)) => {
@@ -4852,17 +4854,25 @@ impl CalendarApp {
                     );
                 }
             }
-            Some(Sel::Task(id)) => self.draw_detail_task(scene, t, tr, theme, x, y, w, id, hits),
+            Some(Sel::Task(id)) => self.draw_detail_task(
+                &mut PaintContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                x,
+                y,
+                w,
+                id,
+                hits,
+            ),
             None => {}
         }
     }
 
     /// The full task detail: checkbox + title, due/priority/project fields,
     /// and the subtask list (part of [`Self::draw_detail_selection`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, x/y/w are the body column's position/width, \
@@ -4875,16 +4885,17 @@ impl CalendarApp {
     )]
     fn draw_detail_task(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         x: f64,
         mut y: f64,
         w: f64,
         id: Id,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let Some(tk) = self.model.task(id) else {
             return;
@@ -4996,25 +5007,16 @@ impl CalendarApp {
     /// The "NOTES" section label + rule, positioned below the event form or
     /// at the task's fixed offset (part of [`Self::draw_detail`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, r/x/w are the detail card's rect/body \
                   position/width, and c is the theme's colour set — conventional short \
                   names for this draw step"
     )]
-    fn draw_detail_notes_header(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        x: f64,
-        w: f64,
-    ) {
+    fn draw_detail_notes_header(&self, paint: &mut PaintContext<'_>, r: Rect, x: f64, w: f64) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let notes_top = if matches!(self.selection, Some(Sel::Event(_))) {
             self.form.notes_top
@@ -5067,18 +5069,30 @@ impl CalendarApp {
         let f = self.form.clone();
         let mouse = self.last_mouse;
         let label_x = f.title.x0;
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
 
         // --- Title (real text input, prominent) -------------------------
-        self.title_input.draw(scene, t, tr, theme, presence);
+        self.title_input.draw(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            presence,
+        );
         hits.push((f.title, Action::FocusField(FormField::Title)));
 
         // --- All-day row: label + pill switch ---------------------------
-        tr.draw_text(
-            scene,
+        paint.text.draw_text(
+            paint.scene,
             "All day",
             14.0,
             c.text_primary,
-            t * Affine::translate((label_x, f.allday.center().y - 8.0)),
+            paint.transform * Affine::translate((label_x, f.allday.center().y - 8.0)),
             None,
         );
         let sw = Rect::new(
@@ -5088,33 +5102,41 @@ impl CalendarApp {
             f.allday.center().y + 12.0,
         );
         Toggle::paint(
-            scene,
-            t,
-            theme,
+            paint.scene,
+            paint.transform,
+            paint.theme,
             &ToggleFace::new(sw, e.all_day).hovered(sw.contains(mouse)),
         );
         hits.push((f.allday, Action::ToggleAllDay));
 
-        self.draw_event_form_dates(scene, t, tr, theme, &f, &e, mouse, label_x, &mut hits);
+        self.draw_event_form_dates(&mut paint, &f, &e, mouse, label_x, &mut hits);
 
         // --- Location (real text input) ---------------------------------
-        self.location_input.draw(scene, t, tr, theme, presence);
+        self.location_input.draw(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            presence,
+        );
         hits.push((f.location, Action::FocusField(FormField::Location)));
 
-        self.draw_event_form_calendar(scene, t, tr, theme, &f, &e, mouse, &mut hits);
-        self.invite_input.draw(scene, t, tr, theme, presence);
+        self.draw_event_form_calendar(&mut paint, &f, &e, mouse, &mut hits);
+        self.invite_input.draw(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            presence,
+        );
         hits.push((f.invite, Action::FocusField(FormField::Invite)));
-        Self::draw_event_form_chips(scene, t, tr, theme, &f, &e, label_x, &mut hits);
+        Self::draw_event_form_chips(&mut paint, &f, &e, label_x, &mut hits);
 
         hits
     }
 
     /// The Starts / Ends date + time field-button rows (part of
     /// [`Self::draw_event_form`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, f is the form layout, e is the event being \
@@ -5123,16 +5145,17 @@ impl CalendarApp {
     )]
     fn draw_event_form_dates(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         f: &FormRects,
         e: &Event,
         mouse: Point,
         label_x: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let row = |scene: &mut Scene,
                    tr: &mut TextRenderer,
@@ -5193,10 +5216,6 @@ impl CalendarApp {
     /// The calendar selector: colour dot + value + disclosure caret (part
     /// of [`Self::draw_event_form`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, f is the form layout, e is the event being \
                   edited, and c is the theme's colour set — conventional short names for \
@@ -5204,15 +5223,16 @@ impl CalendarApp {
     )]
     fn draw_event_form_calendar(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         f: &FormRects,
         e: &Event,
         mouse: Point,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let cal_active =
             f.calendar.contains(mouse) || self.event_popovers.active() == FormPopover::Calendar;
@@ -5261,23 +5281,20 @@ impl CalendarApp {
     /// The repeat / reminder / colour chips, cycled on click (part of
     /// [`Self::draw_event_form`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/f/e and x/y are conventional paint, form, event, and flow geometry names"
     )]
     fn draw_event_form_chips(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         f: &FormRects,
         e: &Event,
         label_x: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let mut recurrence_label = if e.recurrence == Recurrence::None {
             "No repeat".to_string()
         } else {

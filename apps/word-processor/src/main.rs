@@ -342,6 +342,8 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     let (mut state, widget) = build(file_arg(args))?;
     {
         // Give this instance a distinct CRDT actor so two editors are
@@ -373,7 +375,7 @@ fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
         let (room, room_autosave) = ui::persist::open_room("dev.tilo.word-processor", &room_id);
         let records = ui::RecordSet::in_memory().with_home(room_id);
-        let mut app = App::new(state, widget)
+        let mut app = App::from_scoped_parts(wake_scope, state, widget)
             .with_autosave(room_autosave)
             .with_records(records, room.doc);
         // Register the word processor's action decoder so the Ctrl+K palette and

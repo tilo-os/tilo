@@ -40,6 +40,8 @@ impl LocalHistoryNarrator {
     }
 
     fn request_prompt(&mut self, _request: &NarrativeRequest, prompt: String) {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("history model worker");
         let key = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         if self.completed_key.as_deref() == Some(&key)
             || (self.last_key.as_deref() == Some(&key)

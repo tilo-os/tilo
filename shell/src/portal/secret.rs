@@ -15,18 +15,23 @@ use std::sync::{Arc, Mutex};
 
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::zvariant::{ObjectPath, OwnedFd, OwnedValue};
 use zeroize::{Zeroize, Zeroizing};
 
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
 
 const SECRET_BYTES: usize = 32;
 const MAX_APP_ID: usize = 255;
+#[cfg(target_os = "linux")]
 const MAX_TOKEN: usize = 512;
 const NONCE_BYTES: usize = 24;
 const STORE_MAGIC: &[u8; 5] = b"QPSV1";
@@ -37,17 +42,38 @@ struct SecretFile {
 }
 
 #[derive(Clone)]
-pub struct SecretBackend {
-    ctx: PortalContext,
+pub struct SecretStore {
     state: Arc<Mutex<SecretFile>>,
     path: Arc<PathBuf>,
     key: Arc<Option<Zeroizing<[u8; SECRET_BYTES]>>>,
 }
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct SecretBackend {
+    ctx: PortalContext,
+    store: SecretStore,
+}
+#[cfg(target_os = "linux")]
+impl std::ops::Deref for SecretBackend {
+    type Target = SecretStore;
+    fn deref(&self) -> &SecretStore {
+        &self.store
+    }
+}
+#[cfg(target_os = "linux")]
 impl SecretBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::at_path(ctx, default_path())
     }
     pub fn at_path(ctx: PortalContext, path: impl Into<PathBuf>) -> Self {
+        Self {
+            ctx,
+            store: SecretStore::at_path(path),
+        }
+    }
+}
+impl SecretStore {
+    pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let key = load_or_create_key(&path);
         let state = key
@@ -56,7 +82,6 @@ impl SecretBackend {
             .and_then(|data| serde_json::from_slice(&data).ok())
             .unwrap_or_default();
         Self {
-            ctx,
             state: Arc::new(Mutex::new(state)),
             path: Arc::new(path),
             key: Arc::new(key),
@@ -179,6 +204,7 @@ fn open_store(key: &[u8; SECRET_BYTES], bytes: &[u8]) -> Option<Zeroizing<Vec<u8
         .map(Zeroizing::new)
 }
 
+#[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.Secret")]
 impl SecretBackend {
     #[zbus(property, name = "version")]
@@ -222,6 +248,7 @@ impl SecretBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn default_path() -> PathBuf {
     super::private_state_root()
         .unwrap_or_else(|| PathBuf::from("/dev/null"))
@@ -251,22 +278,11 @@ mod tests {
     fn app_secret_persists_and_is_separate() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("secrets.json");
-        let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-            crate::shell::state::Workspace::test_default(
-                crate::shell::state::WorkspaceId(1),
-                "test",
-            ),
-        );
-        let ctx = PortalContext::new_with_null_spawners(
-            grants,
-            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoDeny),
-            crate::portal::CallerMap::new(),
-        );
-        let a = SecretBackend::at_path(ctx.clone(), &p);
+        let a = SecretStore::at_path(&p);
         let one = a.secret_for("org.example.One").unwrap();
         assert_eq!(
             one,
-            SecretBackend::at_path(ctx, &p)
+            SecretStore::at_path(&p)
                 .secret_for("org.example.One")
                 .unwrap()
         );
