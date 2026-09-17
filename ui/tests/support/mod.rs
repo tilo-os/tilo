@@ -221,6 +221,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::WorkspaceControlInput { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
+            | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
             | CollabRequest::ReportContinuation { .. }
