@@ -3413,7 +3413,7 @@ fn draw_block(
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                ctx.theme.tokens.colors.border_standard,
+                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
                 None,
                 &rule,
             );
@@ -3540,10 +3540,15 @@ fn draw_checklist_prefix(
             &path,
         );
     } else {
+        // An unchecked box is an outline on the page: derived against the
+        // editor surface at the panel-edge strength so it reads as a control.
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(1.5 * scale),
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on_with(
+                ctx.theme.tokens.colors.surfaces.base,
+                crate::chrome::PANEL_BORDER_ALPHA,
+            ),
             None,
             &shape,
         );

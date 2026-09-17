@@ -510,19 +510,22 @@ impl SidebarDrawer {
         let open = self.is_open();
         let radius = f64::from(theme.tokens.radii.md).min(rect.height() * 0.5);
 
+        // Rest face and edge follow the Neutral button (HIG §9.5): the
+        // raised surface with its derived edge, `bg_hover` under the
+        // pointer. Open is the toggle's "on" state and keeps the accent.
         let bg = if open {
             mix(c.surfaces.raised, c.accent[ACCENT_IDX], 0.20)
         } else if hovered {
-            c.neutral[3]
+            theme.bg_hover
         } else {
-            c.neutral[2]
+            c.surfaces.raised
         };
         let pill = RoundedRect::from_rect(rect, radius);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
         let border = if open {
             c.accent[ACCENT_IDX]
         } else {
-            c.border_standard
+            crate::surface::edge_on(bg)
         };
         scene.stroke(&Stroke::new(1.0), transform, border, None, &pill);
 

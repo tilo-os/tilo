@@ -1777,7 +1777,7 @@ impl TabBar {
         if close_hover {
             Some(theme.tokens.colors.semantic.danger.with_alpha_factor(0.8))
         } else if is_hover {
-            Some(vello::peniko::Color::from_rgba8(255, 255, 255, 28))
+            Some(chip_hover_tint(theme, CHIP_HOVER_TINT_ALPHA))
         } else {
             None
         }
@@ -2298,7 +2298,7 @@ impl Widget for TabBar {
         self.draw_keyboard_focus(scene, transform, theme);
         self.draw_new_tab_chip(scene, transform, theme);
         self.draw_closing_tabs(scene, transform, tr, theme);
-        self.draw_drop_indicator(scene, transform);
+        self.draw_drop_indicator(scene, transform, theme);
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
     }
 
@@ -2860,10 +2860,10 @@ impl TabBar {
         }
     }
 
-    /// White-line drop indicator at `hover_drop_idx`, serving both the
-    /// single-bar case and the cross-group case (where `pending_drag.is_some()`
-    /// is false on sibling bars). Eased fade-in over `HOVER_DROP_FADE_MS`.
-    fn draw_drop_indicator(&self, scene: &mut Scene, transform: Affine) {
+    /// Drop-indicator line at `hover_drop_idx`, serving both the single-bar
+    /// case and the cross-group case (where `pending_drag.is_some()` is false
+    /// on sibling bars). Eased fade-in over `HOVER_DROP_FADE_MS`.
+    fn draw_drop_indicator(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let Some(gap_idx) = self.hover_drop_idx else {
             return;
         };
@@ -2899,7 +2899,8 @@ impl TabBar {
         };
         let half_w = HOVER_DROP_LINE_PX / 2.0;
         let line = Rect::new(cx - half_w, y0, cx + half_w, y1);
-        // Pure white at 85% terminal alpha — crisp but restrained.
+        // Derived against the bar's ground at 85% terminal alpha (HIG §9.5):
+        // crisp but restrained, and it survives a light palette.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "eased_t stays in 0.0..=1.0"
@@ -2914,7 +2915,7 @@ impl TabBar {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            vello::peniko::Color::from_rgba8(255, 255, 255, alpha_u8),
+            Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha_u8),
             None,
             &line,
         );

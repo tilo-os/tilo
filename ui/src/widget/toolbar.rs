@@ -49,6 +49,8 @@ pub struct Toolbar {
     padding: f32,
     minimum: f32,
     separator: f32,
+    /// Main-axis gap between siblings (`spacing.s3`, HIG §7b).
+    gap: f32,
     overflow_rect: Rect,
     hovered: Option<Target>,
     pointer: Option<Point>,
@@ -80,7 +82,8 @@ impl Toolbar {
             minimum: crate::tokens::Metrics::BASE.min_pointer_target,
             // Replaced by `build_layout`; the default-token value keeps a
             // renderer-less caller's estimate consistent with the real one.
-            separator: SEPARATOR_HAIRLINE + 2.0 * crate::tokens::Spacing::default().s2,
+            separator: SEPARATOR_HAIRLINE,
+            gap: crate::tokens::Spacing::default().s3,
             overflow_rect: Rect::ZERO,
             hovered: None,
             pointer: None,
@@ -152,15 +155,18 @@ impl Toolbar {
                 }
             })
             .collect();
-        let budget = if axes.iter().sum::<f64>() <= axis_extent {
+        let gap = f64::from(theme.tokens.spacing.s3);
+        let total = axes.iter().sum::<f64>() + gap * count_to_f64(axes.len().saturating_sub(1));
+        let budget = if total <= axis_extent {
             axis_extent
         } else {
-            (axis_extent - 24.0).max(0.0)
+            (axis_extent - 24.0 - gap).max(0.0)
         };
         self.visible_count = axes
             .iter()
-            .take_while(|axis| {
-                used += **axis;
+            .enumerate()
+            .take_while(|(index, axis)| {
+                used += **axis + if *index > 0 { gap } else { 0.0 };
                 used <= budget
             })
             .count();
@@ -217,15 +223,23 @@ impl Toolbar {
                         height: size.height + item.height,
                     },
                 });
+        // Siblings sit `gap` apart (HIG §7b): one gap per boundary.
+        let gaps = self.gap * count_to_f32(self.items.len().saturating_sub(1));
+        match self.orientation {
+            Orientation::Horizontal => self.intrinsic.width += gaps,
+            Orientation::Vertical => self.intrinsic.height += gaps,
+        }
         changed
     }
 
     fn fit(&self, budget: f64) -> usize {
+        let gap = f64::from(self.gap);
         let mut used = 0.0;
         self.extents
             .iter()
-            .take_while(|size| {
-                used += self.axis(**size);
+            .enumerate()
+            .take_while(|(index, size)| {
+                used += self.axis(**size) + if *index > 0 { gap } else { 0.0 };
                 used <= budget
             })
             .count()
@@ -237,9 +251,12 @@ impl Toolbar {
             Orientation::Vertical => self.rect.height(),
         }
         .max(0.0);
+        let gap = f64::from(self.gap);
         self.visible_count = self.fit(axis_total);
         if self.has_overflow() {
-            self.visible_count = self.fit((axis_total - self.axis(self.chip_extent)).max(0.0));
+            // The chip is one more sibling and takes its own gap.
+            self.visible_count =
+                self.fit((axis_total - self.axis(self.chip_extent) - gap).max(0.0));
         }
         let chip = if self.has_overflow() {
             self.axis(self.chip_extent).min(axis_total)
@@ -251,17 +268,19 @@ impl Toolbar {
             .iter()
             .take(self.visible_count)
             .map(|size| self.axis(*size))
-            .sum();
+            .sum::<f64>()
+            + gap * count_to_f64(self.visible_count.saturating_sub(1));
         let spacers = self
             .items
             .iter()
             .take(self.visible_count)
             .filter(|item| matches!(item, ToolbarItem::Spacer))
             .count();
+        let chip_gap = if self.has_overflow() { gap } else { 0.0 };
         let spacer = if spacers == 0 {
             0.0
         } else {
-            (axis_total - used - chip).max(0.0) / count_to_f64(spacers)
+            (axis_total - used - chip - chip_gap).max(0.0) / count_to_f64(spacers)
         };
         self.item_rects = vec![Rect::ZERO; self.items.len()];
         let mut cursor = match self.orientation {
@@ -285,7 +304,7 @@ impl Toolbar {
             if let Some(slot) = self.item_rects.get_mut(index) {
                 *slot = rect;
             }
-            cursor += extent;
+            cursor += extent + gap;
         }
         self.overflow_rect = if self.has_overflow() {
             match self.orientation {
@@ -495,11 +514,17 @@ impl Toolbar {
 /// The separator's painted rule is a hairline, not a spacing step.
 const SEPARATOR_HAIRLINE: f32 = 1.0;
 
-/// Main-axis extent a separator occupies: the hairline with `s2` breathing
-/// room on each side. One definition for the renderer-less estimate and the
-/// measured layout so the two cannot disagree about where items fall.
-fn separator_extent(theme: &Theme) -> f32 {
-    SEPARATOR_HAIRLINE + 2.0 * theme.tokens.spacing.s2
+/// Main-axis extent a separator occupies: the hairline alone. The sibling
+/// gap on either side is its breathing room, so a group boundary reads as
+/// `gap + rule + gap` and never doubles up with margins of its own. One
+/// definition for the renderer-less estimate and the measured layout so
+/// the two cannot disagree about where items fall.
+fn separator_extent(_theme: &Theme) -> f32 {
+    SEPARATOR_HAIRLINE
+}
+
+fn count_to_f32(n: usize) -> f32 {
+    f32::from(u16::try_from(n).unwrap_or(u16::MAX))
 }
 
 fn count_to_f64(n: usize) -> f64 {
@@ -536,6 +561,7 @@ impl Widget for Toolbar {
         // target beneath the 32 px floor (HIG §7b).
         self.minimum = theme.tokens.metrics.min_pointer_target;
         self.separator = separator_extent(theme);
+        self.gap = theme.tokens.spacing.s3;
         // Bootstrap only for legacy callers that skip renderer settlement.
         self.extents = self
             .items
@@ -670,7 +696,7 @@ impl Widget for Toolbar {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        theme.tokens.colors.border_standard,
+                        crate::chrome::chrome_hairline(theme),
                         None,
                         &line,
                     );
@@ -1009,13 +1035,17 @@ impl Toolbar {
         if rect.is_zero_area() {
             return;
         }
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let radius = f64::from(theme.tokens.radii.sm);
+        let shape = RoundedRect::from_rect(rect, radius);
         let color = if self.hovered == Some(target) {
             theme.bg_hover
         } else {
             theme.tokens.colors.surfaces.raised
         };
-        scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &shape);
+        // Neutral button face with its derived rest edge (HIG §9.5): on a
+        // raised card the bare fill is invisible and the buttons read as
+        // loose labels.
+        crate::surface::card(scene, transform, rect, radius, color);
         if self.focused && self.focus == Some(target) && !self.menu.is_open() {
             scene.stroke(
                 &Stroke::new(2.0),
@@ -1616,12 +1646,16 @@ mod lifecycle_tests {
         assert!(tb.overflow_rect.x0 >= tb.rect.x0);
         tb.open_menu(true);
         tb.menu.focus_item(4);
+        // The row's used width is the packing model `place` sums: the five
+        // extents, the four sibling gaps between them, and the chip with
+        // its own gap (HIG §7b: siblings sit `s3` apart, the chip included).
         let width = tb
             .extents
             .iter()
             .take(5)
             .map(|size| size.width)
             .sum::<f32>()
+            + tb.gap * 5.0
             + tb.chip_extent.width;
         settle(&mut tb, width, 45.0, 1.0);
         assert!(tb.menu.is_open());

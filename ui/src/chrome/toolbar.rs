@@ -272,10 +272,11 @@ pub fn draw_with_metrics(
         None,
         &rect,
     );
+    // Bar role (HIG §9.1): one derived bottom hairline.
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.border_standard,
+        crate::chrome::chrome_hairline(theme),
         None,
         &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
     );
@@ -297,7 +298,7 @@ pub fn draw_with_metrics(
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.border_standard,
+                crate::chrome::chrome_hairline(theme),
                 None,
                 &sep,
             );
