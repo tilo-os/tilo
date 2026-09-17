@@ -63,13 +63,13 @@ src/widget/identity_flow/pair_device.rs literal_color 0
 src/widget/identity_flow/recovery_share.rs literal_color 0
 src/widget/identity_flow/recovery_verify.rs literal_color 0
 src/widget/image.rs literal_color 1
-src/widget/modal_dialog.rs white_or_black 2
+src/widget/modal_dialog.rs white_or_black 0
 src/widget/nav_shell.rs literal_color 2
 src/widget/nav_split.rs literal_color 2
 src/widget/page_sidebar.rs white_or_black 0
 src/widget/permission_prompt.rs white_or_black 1
 src/widget/popover.rs literal_color 0
-src/widget/popover_widget.rs white_or_black 1
+src/widget/popover_widget.rs white_or_black 0
 src/widget/qr.rs literal_color 2
 src/widget/scrollable.rs theme_blind_white 1
 src/widget/search_field.rs literal_color 1
