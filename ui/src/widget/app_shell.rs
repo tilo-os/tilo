@@ -27,20 +27,35 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::{Metrics, Spacing};
 use crate::widget::{Button, TaffyTreeExt, Widget};
 use crate::{LocalState, local_state::LocalBinding};
 
 type Element = Box<dyn Widget>;
 
-/// Default docked sidebar width (logical px).
+/// Default docked sidebar width (logical px). Predates
+/// `Metrics::sidebar_width` (280) and stays at 264 until the apps built on
+/// it are re-measured; a change here moves every `AppShell` app's sidebar.
 pub const DEFAULT_SHELL_SIDEBAR_WIDTH: f64 = 264.0;
 /// At or above this width (logical px) the sidebar docks; below it the shell
 /// switches to the narrow list-vs-content screens. Roughly
-/// `sidebar_width + a minimum content column`.
-pub const DEFAULT_SHELL_BREAKPOINT: f64 = 720.0;
+/// `sidebar_width + a minimum content column` — the OS-wide
+/// `Metrics::compact_breakpoint`.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+pub const DEFAULT_SHELL_BREAKPOINT: f64 = Metrics::BASE.compact_breakpoint as f64;
 
 /// `spacing.s3`.
-const PAD: f64 = 12.0;
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+const PAD: f64 = Spacing::BASE.s3 as f64;
+/// Search field and Back button height. Neither the 40 px `bar_height` nor
+/// the 28 px `bar_control_height`; `NavShell`'s chip is 36. Recorded, not yet
+/// unified (see the F1 layout review).
 const CTRL_H: f64 = 34.0;
 const SEARCH_BAND_H: f64 = PAD + CTRL_H + PAD;
 const BACK_BTN: f64 = 34.0;
