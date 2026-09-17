@@ -142,6 +142,10 @@ cat > "$tmp/bin/skopeo" <<'EOF'
 printf '%s\n' "$*" > "$TILO_TEST_ARGS"
 printf '%s\n' "$REGISTRY_AUTH_FILE" > "$TILO_TEST_AUTH_PATH"
 cp "$REGISTRY_AUTH_FILE" "$TILO_TEST_AUTH_COPY"
+[ "${TILO_TEST_NAME_UNKNOWN:-0}" != 1 ] || {
+  echo 'Error listing repository tags: fetching tags list: name unknown' >&2
+  exit 1
+}
 [ "${TILO_TEST_FAIL:-0}" != 1 ] || exit 19
 printf '{"Tags":[]}\n'
 EOF
@@ -181,6 +185,24 @@ if ! PATH="$tmp/bin:$PATH" \
   ok 'registry auth cleanup also runs when the lookup command fails'
 else
   bad 'failed generation lookup retained its temporary registry auth'
+fi
+
+if result="$(
+  PATH="$tmp/bin:$PATH" \
+  TILO_DISTROBOX='' \
+  TILO_GENERATION_VERIFY_KEY="$tmp/unused.pub" \
+  TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+  TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
+  TILO_ALLOW_EMPTY_SERIES=1 \
+  TILO_TEST_ARGS="$tmp/bootstrap-args" \
+  TILO_TEST_AUTH_PATH="$tmp/bootstrap-auth-path" \
+  TILO_TEST_AUTH_COPY="$tmp/bootstrap-auth-copy" \
+  TILO_TEST_NAME_UNKNOWN=1 \
+    "$generation"
+)" && [ "$result" = 1 ]; then
+  ok 'validation can bootstrap an authenticated repository with no published series'
+else
+  bad 'validation could not bootstrap a genuinely absent published series'
 fi
 
 cycle_output="$tmp/cycle-output"
