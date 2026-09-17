@@ -1,5 +1,6 @@
 #include "host.h"
 #include "protocol.h"
+#include "view_geometry.h"
 #include "key_mapping.h"
 #include "request_filter.h"
 #include "document_scripts.h"
@@ -189,9 +190,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefFrameHandler> GetFrameHandler() override { return this; }
   void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
-  void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,width_,height_); }
+  void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height()); }
   bool GetScreenInfo(CefRefPtr<CefBrowser>,CefScreenInfo& info) override {
-    info.device_scale_factor=scale_;info.rect=info.available_rect=CefRect(0,0,width_,height_);return true;
+    info.device_scale_factor=geometry_.scale();info.rect=info.available_rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height());return true;
   }
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_=browser;
@@ -237,10 +238,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnPopupShow(CefRefPtr<CefBrowser>,bool show) override { popup_visible_=show;if(!show) { popup_.clear(); EmitFrame(); } }
   void OnPopupSize(CefRefPtr<CefBrowser>,const CefRect& rect) override { popup_rect_=rect; }
-  void OnPaint(CefRefPtr<CefBrowser>,PaintElementType type,const RectList&,const void* buffer,int width,int height) override {
+  void OnPaint(CefRefPtr<CefBrowser> browser,PaintElementType type,const RectList&,const void* buffer,int width,int height) override {
     if(!visible_) return;
     auto size=qos::FrameSize(width,height);if(!size) return;
-    if(type==PET_VIEW) { pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height; }
+    if(type==PET_VIEW && !geometry_.PaintMatches(width,height)) {
+      if(!stale_paint_recovery_pending_) { stale_paint_recovery_pending_=true;browser->GetHost()->Invalidate(PET_VIEW); }
+      return;
+    }
+    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height; }
     else { popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height; }
     EmitFrame();
   }
@@ -248,7 +253,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!visible_ || pixels_.empty()) return;
     std::string body; qos::AppendU32(body,pixel_width_);qos::AppendU32(body,pixel_height_);body+=pixels_;
     if(popup_visible_ && !popup_.empty()) {
-      int x=static_cast<int>(std::round(popup_rect_.x*scale_)),y=static_cast<int>(std::round(popup_rect_.y*scale_));
+      int x=static_cast<int>(std::round(popup_rect_.x*geometry_.scale())),y=static_cast<int>(std::round(popup_rect_.y*geometry_.scale()));
       for(int row=0;row<popup_height_;++row) {
         int dest_y=y+row;if(dest_y<0 || dest_y>=pixel_height_) continue;
         int start=std::max(0,-x),end=std::min(popup_width_,pixel_width_-x);
@@ -374,13 +379,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!qos::FrameSize(w,h)) { CloseHost(); return; }
       // IPC sizes and pointer coordinates are physical pixels; CEF uses DIP.
-      int width=static_cast<int>(std::ceil(w/scale)),height=static_cast<int>(std::ceil(h/scale));
-      if(width==width_ && height==height_ && scale==scale_) return;
-      width_=width;height_=height;scale_=scale;popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+      const auto effect=geometry_.ResizePhysical(w,h,scale);
+      stale_paint_recovery_pending_=false;
+      if(effect==qos::ResizeEffect::Repaint) { host->Invalidate(PET_VIEW);return; }
+      popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
-      CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/scale_);event.y=static_cast<int>(Number(d,"y")/scale_);event.modifiers=mouse_modifiers_|key_modifiers_;
+      CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
-      else if(op=="scroll") host->SendMouseWheelEvent(event,static_cast<int>(Number(d,"dx")/scale_),static_cast<int>(Number(d,"dy")/scale_));
+      else if(op=="scroll") host->SendMouseWheelEvent(event,static_cast<int>(Number(d,"dx")/geometry_.scale()),static_cast<int>(Number(d,"dy")/geometry_.scale()));
       else { std::string button=d->GetString("button");auto type=button=="right"?MBT_RIGHT:button=="middle"?MBT_MIDDLE:MBT_LEFT;bool down=d->GetBool("down");
         int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
         if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
@@ -446,10 +452,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<qos::Capabilities> capabilities_;
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   CefRefPtr<qos::SiteClear> site_clear_;
-  int width_=1280,height_=800,pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
+  int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
-  float scale_=1;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
+  qos::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
 void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {

@@ -7121,6 +7121,103 @@ mod tests {
         let indicator = widget.find_rect("browser.private-indicator").unwrap();
         assert!(indicator.width() > 0.0 && indicator.height() > 0.0);
     }
+
+    #[test]
+    #[ignore = "child entry point for private discovery/filter lifecycle regression"]
+    #[cfg(unix)]
+    fn private_discovery_failure_filter_worker_does_not_recreate_root_child() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("QOS_TEST_PRIVATE_ROOT").expect("private root"),
+        );
+        let done = std::path::PathBuf::from(
+            std::env::var_os("QOS_TEST_FILTER_LOADER_DONE").expect("completion marker"),
+        );
+        crate::storage::configure(root.to_str()).unwrap();
+        let mut widget = BrowserWidget::new_with_mode(crate::browsing_mode::BrowsingMode::Private);
+        assert!(
+            !root.exists(),
+            "Chromium discovery failure must remove the allocated root"
+        );
+        let mut document = AutoCommit::new();
+        widget.sync(&mut document, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(done.exists(), "legacy filter worker did not finish");
+        drop(widget);
+        assert!(
+            !root.exists(),
+            "completed unavailable-engine filter bootstrap recreated the private root"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_discovery_failure_filter_worker_keeps_removed_root_absent() {
+        use std::io::{Read, Write};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let isolated_executable = fixture.path().join("isolated/bin/browser-test");
+        std::fs::create_dir_all(isolated_executable.parent().unwrap()).unwrap();
+        std::fs::copy(std::env::current_exe().unwrap(), &isolated_executable).unwrap();
+        let done = fixture.path().join("filter-loader.done");
+        let root = crate::storage::allocate_private_root().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/filters", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "filter worker did not connect"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("filter endpoint failed: {error}"),
+                }
+            };
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            let body = b"||private-discovery.fixture^\n";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body).unwrap();
+        });
+        let output = std::process::Command::new(&isolated_executable)
+            .args([
+                "--exact",
+                "browser_widget::tests::private_discovery_failure_filter_worker_does_not_recreate_root_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_remove("QOS_CHROMIUM_HOST")
+            .env("QOS_TEST_PRIVATE_ROOT", &root)
+            .env("QOS_TEST_FILTER_LIST_URL", url)
+            .env("QOS_TEST_FILTER_LOADER_DONE", &done)
+            .output()
+            .unwrap();
+        server.join().unwrap();
+        let remained = root.exists();
+        if remained {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!remained, "child left or recreated its private root");
+    }
 }
 
 impl BrowserWidget {

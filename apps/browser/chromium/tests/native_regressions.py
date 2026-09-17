@@ -165,6 +165,30 @@ class NativeRegressions(unittest.TestCase):
         event=self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{'))
         self.assertEqual(json.loads(event['title'])['focused'],'second')
 
+    def test_scale_only_resize_replaces_queued_low_density_paint_without_input(self):
+        self.host.send(op='resize',width=800,height=452,scale_factor=1.0)
+        deadline=time.monotonic()+10
+        while True:
+            dimensions=self.host.frames.get(timeout=max(.01,deadline-time.monotonic()))
+            if dimensions==(800,452):
+                break
+        # The logical view stays 800x452. A low-density paint already queued
+        # by CEF must not replace the Retina frame published for this resize.
+        self.host.send(op='resize',width=1600,height=904,scale_factor=2.0)
+        deadline=time.monotonic()+10
+        while True:
+            dimensions=self.host.frames.get(timeout=max(.01,deadline-time.monotonic()))
+            if dimensions==(1600,904):
+                break
+        while True:
+            try:
+                self.host.frames.get_nowait()
+            except queue.Empty:
+                break
+        self.host.send(op='resize',width=1600,height=904,scale_factor=2.0)
+        dimensions=self.host.frames.get(timeout=5)
+        self.assertEqual(dimensions,(1600,904))
+
     def test_editing_keys_and_text(self):
         h = self.host
         h.send(op='focus',focused=True)
