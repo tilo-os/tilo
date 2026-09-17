@@ -40,6 +40,14 @@ struct Participant {
     sharing: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ControlVisual {
+    on: bool,
+    danger: bool,
+    hovered: bool,
+    enabled: bool,
+}
+
 fn huddle_lower_chrome_for_reveal(reveal: f32) -> f64 {
     116.0 + 40.0 * f64::from(reveal.clamp(0.0, 1.0))
 }
@@ -294,7 +302,13 @@ impl ChatApp {
         let parts = self.call_participants();
         let others = parts.len().saturating_sub(1);
         let strip_y = v.y1 + 10.0;
-        self.draw_huddle_strip_header(scene, tf, tr, theme, panel, strip_y, &parts, hits);
+        self.draw_huddle_strip_header(
+            PaintContext::new(scene, tf, tr, theme),
+            panel,
+            strip_y,
+            &parts,
+            hits,
+        );
 
         // Adaptive participant chips: shown when expanded, wrapping to the
         // panel width so the strip auto-adapts to the headcount.
@@ -312,7 +326,12 @@ impl ChatApp {
             );
             let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
             scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
-            self.draw_huddle_chips(scene, tf, tr, theme, panel, strip_y, &parts);
+            self.draw_huddle_chips(
+                PaintContext::new(scene, tf, tr, theme),
+                panel,
+                strip_y,
+                &parts,
+            );
             scene.pop_layer();
         }
 
@@ -321,21 +340,20 @@ impl ChatApp {
 
     /// Participant strip header: headcount + media-routing label, and the
     /// expand/collapse toggle's hit region.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_huddle_strip_header(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         strip_y: f64,
         parts: &[Participant],
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let toggle = Rect::new(panel.x1 - 84.0, strip_y, panel.x1 - 14.0, strip_y + 20.0);
         let caret = if self.participants_should_show(parts.len()) {
@@ -371,20 +389,19 @@ impl ChatApp {
 
     /// Adaptive participant chips beneath the strip header — one per
     /// non-host member, wrapping to the panel width.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_huddle_chips(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         strip_y: f64,
         parts: &[Participant],
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let chips_y = strip_y + 26.0;
         let radius = 15.0;
@@ -478,16 +495,15 @@ impl ChatApp {
             let r = Rect::new(x, cy, x + cw, cy + 28.0);
             let hovered = self.call_control_is_hovered(&hit);
             Self::ctl(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 r,
                 if use_text { txt } else { icon },
-                on,
-                danger,
-                hovered,
-                true,
+                ControlVisual {
+                    on,
+                    danger,
+                    hovered,
+                    enabled: true,
+                },
             );
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
@@ -790,7 +806,15 @@ impl ChatApp {
         for (label_txt, on, danger, enabled, hit, r) in buttons {
             let hovered = self.call_control_is_hovered(&hit);
             Self::ctl(
-                scene, tf, tr, theme, r, label_txt, on, danger, hovered, enabled,
+                PaintContext::new(scene, tf, tr, theme),
+                r,
+                label_txt,
+                ControlVisual {
+                    on,
+                    danger,
+                    hovered,
+                    enabled,
+                },
             );
             if enabled {
                 ChatApp::push_hit(hits, r, hit);
@@ -1150,23 +1174,19 @@ impl ChatApp {
     }
 
     /// A pill control button. `on` = active/highlighted, `danger` = red.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::fn_params_excessive_bools,
-        reason = "the four flags are independent visual states of one control; wrapping them would only move the boolean fields into a one-use parameter struct"
-    )]
-    fn ctl(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label_txt: &str,
-        on: bool,
-        danger: bool,
-        hovered: bool,
-        enabled: bool,
-    ) {
+    fn ctl(paint: PaintContext<'_>, rect: Rect, label_txt: &str, visual: ControlVisual) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let ControlVisual {
+            on,
+            danger,
+            hovered,
+            enabled,
+        } = visual;
         let c = &theme.tokens.colors;
         let (bg, fg) = if !enabled {
             (
@@ -1295,10 +1315,7 @@ impl ChatApp {
         );
         y += 16.0;
         Self::emoji_grid(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             &emoji::QUICK,
             panel.x0 + 12.0,
             &mut y,
@@ -1319,10 +1336,7 @@ impl ChatApp {
             );
             y += 16.0;
             Self::emoji_grid(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 cat.emoji,
                 panel.x0 + 12.0,
                 &mut y,
@@ -1333,12 +1347,8 @@ impl ChatApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn emoji_grid(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         set: &[&str],
         x0: f64,
         y: &mut f64,
@@ -1346,6 +1356,12 @@ impl ChatApp {
         cell: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         for (i, e) in set.iter().enumerate() {
             let col = i % cols;
