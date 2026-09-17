@@ -1,0 +1,22 @@
+{
+  "fixture_builder_sha256": "31b86ab7f8e0f474ec69be7450cee6a024b8130ddbf74664604f1485ec0cc380",
+  "source_sha256": "b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd",
+  "generated_manifest_sha256": "c267198acdf47f00a5ba4230a7b1556587e0c7a679ae3acd85e71af4a4cbc884",
+  "generated_at": "/tmp/qos-ntfs-copy-times-fixtures-v5",
+  "images": {
+    "times.img": {
+      "sha256": "ede4fd2174fbac429e17c0e47a0f04570d91a5eb983ddec05dfdfd6d4772fd26",
+      "bytes": 67108864,
+      "standard_information_bytes": 72,
+      "last_data_change_100ns": 116444735999999999,
+      "last_access_100ns": 116444736012345678
+    },
+    "times-v1.img": {
+      "sha256": "0b9a94b8bd2aa1c6b744769de941abbc3efcb8ce8f5ceddc6ac37654e5624ae4",
+      "bytes": 67108864,
+      "standard_information_bytes": 48,
+      "last_data_change_100ns": 116444735999999999,
+      "last_access_100ns": 116444736012345678
+    }
+  }
+}

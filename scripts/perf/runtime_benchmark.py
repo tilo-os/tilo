@@ -40,7 +40,8 @@ def worker_summary(lines):
         raise ValueError("Render surface failed during the measurement window")
     counts = Counter(row["outcome"] for row in rows)
     presented = [row for row in rows if row["outcome"] == "Presented"]
-    return {"outcomes": dict(counts), "skipped_fraction": counts["Skipped"] / len(rows),
+    return {"outcomes": dict(counts), "skipped_fraction": (counts["Skipped"] + counts["Occluded"]) / len(rows),
+            "occluded_fraction": counts["Occluded"] / len(rows),
             "worker_wall": distribution([row["total_us"] for row in rows], scale=0.001),
             "presented_worker_wall": distribution([row["total_us"] for row in presented], scale=0.001)}
 

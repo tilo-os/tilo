@@ -349,6 +349,7 @@ pub struct BrowserWidget {
     daily: crate::daily_controls::DailyControls,
     page_menu: crate::page_menu::PageMenu,
     site: crate::site_controls::SiteControls,
+    credentials: crate::credentials::Credentials,
     site_panel: Option<Box<dyn Widget>>,
     pending_chrome_focus: Option<(NodeId, &'static str)>,
     private_window_request: ui::LocalState<bool>,
@@ -548,6 +549,13 @@ impl BrowserWidget {
     pub(crate) fn is_headless(&self) -> bool {
         self.headless
     }
+    pub(crate) fn deactivate_credentials(&mut self) {
+        let was_open = self.credentials.open;
+        let requests = self.credentials.close();
+        crate::credentials::Credentials::send(&self.engine, requests);
+        self.structure_dirty |= was_open;
+    }
+
     pub(crate) fn browsing_mode(&self) -> BrowsingMode {
         self.browsing_mode
     }
@@ -716,6 +724,7 @@ impl BrowserWidget {
             daily: Default::default(),
             page_menu: Default::default(),
             site: crate::site_controls::SiteControls::default(),
+            credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
             site_panel: None,
             pending_chrome_focus: None,
             private_window_request: ui::LocalState::new(false),
@@ -1834,11 +1843,16 @@ impl BrowserWidget {
         // The content region is either the settings pane or the live page.
         let content: Box<dyn Widget> = if self.show_settings {
             Box::new(
-                SettingsPane::with_settings(&self.settings)
-                    .with_presentation(self.settings_presentation.clone())
-                    .with_action_bindings(self.settings_action_bindings())
-                    .with_history_clear_error(self.history_clear_error.clone())
-                    .with_private_window_request(self.private_window_request.clone()),
+                Column::new()
+                    .push(Box::new(self.credentials.launcher()))
+                    .push(Box::new(self.credentials.address_launcher()))
+                    .push(Box::new(
+                        SettingsPane::with_settings(&self.settings)
+                            .with_presentation(self.settings_presentation.clone())
+                            .with_action_bindings(self.settings_action_bindings())
+                            .with_history_clear_error(self.history_clear_error.clone())
+                            .with_private_window_request(self.private_window_request.clone()),
+                    )),
             )
         } else if self.show_library {
             self.build_library_composition()
@@ -2461,6 +2475,11 @@ impl BrowserWidget {
                 event => event,
             };
             match event {
+                WebViewEvent::CredentialResult(reply) => {
+                    let requests = self.credentials.apply(reply);
+                    crate::credentials::Credentials::send(&self.engine, requests);
+                    self.structure_dirty = true;
+                }
                 WebViewEvent::LoadFinishedAt { .. } => {}
                 event @ (WebViewEvent::SiteStatus(_) | WebViewEvent::SiteResult { .. }) => {
                     self.structure_dirty |= self.site.apply(event);
@@ -2521,6 +2540,8 @@ impl BrowserWidget {
                 }
                 WebViewEvent::UriChanged(uri) => {
                     self.site.navigation(&uri);
+                    let requests = self.credentials.navigation(&uri);
+                    crate::credentials::Credentials::send(&self.engine, requests);
                     self.structure_dirty = true;
                     if !self.navigation_deferred
                         && (uri != "about:blank"
@@ -2607,6 +2628,7 @@ impl BrowserWidget {
                     }
                 }
                 WebViewEvent::RendererTerminated => {
+                    self.deactivate_credentials();
                     if self.content_fullscreen {
                         self.content_fullscreen = false;
                         self.structure_dirty = true;
@@ -3852,7 +3874,15 @@ impl Widget for BrowserWidget {
             self.structure_dirty = true;
         }
         self.structure_dirty |= self.daily.sync(&self.engine);
+        let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
+        if self.site.open && !site_was_open {
+            self.deactivate_credentials();
+        }
+        self.structure_dirty |= self.credentials.sync(&self.engine);
+        if self.credentials.open {
+            self.site.close();
+        }
         self.tick_back_hold(std::time::Instant::now());
         self.apply_engine_events();
         self.structure_dirty |= self.capabilities.downloads_changed();
@@ -3947,7 +3977,7 @@ impl Widget for BrowserWidget {
         // tree; `child_node` was just built in this one above.
         let mut children = vec![child_node];
         self.site_panel = None;
-        if self.site.open {
+        if self.site.open || self.credentials.open {
             // The panel hangs directly under the toolbar row — its controls'
             // height plus the toolbar Container's padding either side, the
             // same sum the toolbar itself lays out to, so the two agree at
@@ -3957,9 +3987,13 @@ impl Widget for BrowserWidget {
             let gutter = theme.tokens.spacing.s3;
             let top = TOOLBAR_CONTROL_HEIGHT + 2.0 * theme.padding_standard;
             let width = (self.rect.width() as f32 - 2.0 * gutter).clamp(240.0, 480.0);
-            let height = (self.rect.height() as f32 - top - theme.tokens.spacing.s12)
-                .clamp(180.0, 510.0);
-            let mut panel = self.site.panel(width, height);
+            let height =
+                (self.rect.height() as f32 - top - theme.tokens.spacing.s12).clamp(180.0, 510.0);
+            let mut panel = if self.credentials.open {
+                self.credentials.panel(width, height)
+            } else {
+                self.site.panel(width, height)
+            };
             let panel_node = panel.build_layout(taffy, theme, node_map);
             #[allow(
                 clippy::unwrap_used,
@@ -4243,11 +4277,12 @@ impl Widget for BrowserWidget {
             self.focus_control_preserving_selection(id);
             *focus_target = Some(node);
         }
-        if self.site.open {
+        if self.site.open || self.credentials.open {
             let dismiss = matches!(event,WindowEvent::KeyboardInput {event:key,..} if key.state==ElementState::Pressed && key.logical_key==WKey::Named(WNamedKey::Escape))
                 || matches!(event,WindowEvent::MouseInput {state:ElementState::Pressed,..} if self.site_panel.as_ref().is_some_and(|p|!p.get_rect().contains(self.cursor)));
             if dismiss {
                 self.site.close();
+                self.deactivate_credentials();
                 self.structure_dirty = true;
                 *handled = true;
                 return;
@@ -4649,6 +4684,7 @@ impl Widget for BrowserWidget {
         self.site
             .deadline()
             .into_iter()
+            .chain(self.credentials.deadline())
             .chain(
                 self.children()
                     .into_iter()
@@ -4657,7 +4693,7 @@ impl Widget for BrowserWidget {
             .min()
     }
     fn modal_capture(&self) -> Option<Rect> {
-        if self.site.open {
+        if self.site.open || self.credentials.open {
             return self.site_panel.as_ref().map(|p| p.get_rect());
         }
         self.page_menu
@@ -5964,6 +6000,108 @@ mod tests {
             !w.address_error_active,
             "an allowed retry recovers the page"
         );
+    }
+
+    #[test]
+    fn address_editor_opens_and_requires_opt_in_through_narrow_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("addresses.json");
+        let mut widget = BrowserWidget::new_headless();
+        widget.credentials =
+            crate::credentials::Credentials::with_address_path(false, Some(path.clone()));
+        let (doc, root) = synced(&mut widget);
+        widget.show_settings = true;
+        widget.structure_dirty = true;
+        layout_at(&mut widget, 390.0, 700.0);
+        for id in [
+            "browser.address.open",
+            "browser.address.enable",
+            "browser.address.new",
+            "browser.address.cancel",
+            "browser.credentials.close",
+        ] {
+            let result = widget
+                .start_resource_operation(
+                    ui::qos_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "qos.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap(),
+                    &doc,
+                    &root,
+                )
+                .unwrap();
+            assert!(
+                result.is_some(),
+                "address editor control must be reachable: {id}"
+            );
+            assert!(widget.credentials.sync(&widget.engine));
+            widget.structure_dirty = true;
+            layout_at(&mut widget, 390.0, 700.0);
+            if id == "browser.address.open" {
+                assert!(!path.exists(), "opening does not opt in or write");
+            }
+            if id == "browser.address.new" {
+                let theme = Theme::dark();
+                let mut text = TextRenderer::new();
+                let mut scene = Scene::new();
+                let presence = PresenceCtx::default();
+                widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                if let Some(directory) = std::env::var_os("QOS_CREDENTIAL_RENDER_EVIDENCE") {
+                    let directory = std::path::PathBuf::from(directory);
+                    std::fs::create_dir_all(&directory).unwrap();
+                    ui::offscreen::OffscreenRenderer::new(390, 700).render_png(
+                        &scene,
+                        theme.bg_app,
+                        &directory.join("address-editor-narrow.png"),
+                    );
+                }
+            }
+        }
+        assert!(!widget.credentials.open);
+        let store = crate::autofill::AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+        assert!(store.enabled());
+        assert!(
+            store.profiles().is_empty(),
+            "discarded editor must not save a profile"
+        );
+    }
+
+    #[test]
+    fn credentials_settings_launcher_and_overlay_actions_work_at_narrow_width() {
+        let mut widget = BrowserWidget::new_headless();
+        let (doc, root) = synced(&mut widget);
+        widget.show_settings = true;
+        widget.structure_dirty = true;
+        layout_at(&mut widget, 390.0, 700.0);
+        for id in ["browser.credentials.open", "browser.credentials.close"] {
+            let result = widget
+                .start_resource_operation(
+                    ui::qos_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "qos.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap(),
+                    &doc,
+                    &root,
+                )
+                .unwrap();
+            assert!(
+                result.is_some(),
+                "credential action must reach its visible control"
+            );
+            assert!(widget.credentials.sync(&widget.engine));
+            widget.structure_dirty = true;
+            layout_at(&mut widget, 390.0, 700.0);
+            if id.ends_with("open") {
+                assert!(widget.credentials.open);
+                let panel = widget.site_panel.as_ref().unwrap();
+                assert!(panel.traps_focus(), "modal must enable scoped host Tab navigation");
+                assert!(panel.get_rect().x1 <= widget.rect.x1);
+                assert!(widget.modal_capture().is_some());
+            }
+        }
+        assert!(!widget.credentials.open);
+        assert!(widget.modal_capture().is_none());
     }
 
     #[test]

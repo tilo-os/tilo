@@ -67,7 +67,7 @@ def summarize_render_boundaries(lines, expected_cpu_ids):
                 if key in worker_keys:
                     raise ValueError('Duplicate worker boundary identity')
                 worker_keys.add(key)
-                if group_index==1 and row.get('outcome') not in ('Presented','Skipped','Reconfigured','SurfaceGone'):
+                if group_index==1 and row.get('outcome') not in ('Presented','Skipped','Occluded','Reconfigured','SurfaceGone'):
                     raise ValueError('Invalid worker outcome')
             # Auxiliary/unprofiled frames have explicit null CPU identity;
             # validate their shape but never alias them to a measured frame.

@@ -75,6 +75,7 @@ pub struct RichTextLine {
     font_size: f32,
     /// Kept sorted by `range.start`.
     marks: Vec<MarkSpan>,
+    marks_dirty: bool,
     accent_rgb: Option<[u8; 3]>,
     /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
@@ -100,6 +101,7 @@ impl RichTextLine {
             signal: None,
             font_size: DEFAULT_FONT_SIZE,
             marks: Vec::new(),
+            marks_dirty: false,
             accent_rgb: None,
             pending_marks: Vec::new(),
             prev_text: String::new(),
@@ -211,8 +213,10 @@ impl RichTextLine {
         self.refresh_attributes();
     }
 
+    /// A user edit to text or rich spans. Programmatic projection stays clean.
     pub fn take_dirty(&mut self) -> Option<String> {
-        self.inner.take_dirty()
+        let marks_dirty = std::mem::take(&mut self.marks_dirty);
+        self.inner.take_dirty().or_else(|| marks_dirty.then(|| self.inner.value().to_string()))
     }
 
     pub fn is_focused(&self) -> bool {
@@ -287,6 +291,7 @@ impl RichTextLine {
     pub fn toggle_mark(&mut self, mark: Mark) {
         if let Some((s, e)) = self.inner.selection_range_public() {
             marks::toggle_mark_range(&mut self.marks, s..e, mark);
+            self.marks_dirty = true;
             self.refresh_attributes();
         } else {
             // Pushing the same mark twice cancels it (Notion-style).
@@ -1182,6 +1187,23 @@ mod tests {
         assert!(l.take_signal().is_none(), "unfocused line must not emit");
         dispatch(&mut l, &char_press("z"));
         assert_eq!(l.value(), "abc");
+    }
+
+    #[test]
+    fn user_rich_mark_edit_emits_one_dirty_edge_but_projection_and_pending_marks_do_not() {
+        let mut line = RichTextLine::new().with_text("text");
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(line.inner_mut(), &crate::a11y::Action::SetSelection { anchor: 0, focus: 4 }, &mut doc, &automerge::ROOT));
+        let _ = line.take_dirty(); // Selection has its own presentation edge.
+        line.toggle_mark(Mark::Bold);
+        assert_eq!(line.take_dirty().as_deref(), Some("text"));
+        assert!(line.take_dirty().is_none());
+        line.set_marks(Vec::new());
+        assert!(line.take_dirty().is_none());
+        assert!(Widget::perform_action(line.inner_mut(), &crate::a11y::Action::SetSelection { anchor: 4, focus: 4 }, &mut doc, &automerge::ROOT));
+        let _ = line.take_dirty(); // Selection has its own presentation edge.
+        line.toggle_mark(Mark::Bold);
+        assert!(line.take_dirty().is_none(), "pending typing style changes no content yet");
     }
 
     #[test]

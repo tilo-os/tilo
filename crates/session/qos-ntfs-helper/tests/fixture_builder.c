@@ -101,6 +101,30 @@ int main(int argc, char **argv) {
     ni->mrec->sequence_number = cpu_to_le16(42);
     ntfs_inode_mark_dirty(ni);
     rc = ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "times") || !strcmp(argv[2], "times-v1")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
+    uint64_t expected_size = !strcmp(argv[2], "times")
+                                 ? sizeof(STANDARD_INFORMATION)
+                                 : offsetof(STANDARD_INFORMATION, v1_end);
+    ntfs_attr *a = ni ? ntfs_attr_open(ni, AT_STANDARD_INFORMATION,
+                                       AT_UNNAMED, 0) : NULL;
+    if (!a || ntfs_attr_truncate(a, expected_size))
+      return 19;
+    ntfs_attr_close(a);
+    ntfs_attr_search_ctx *ctx = ni ? ntfs_attr_get_search_ctx(ni, NULL) : NULL;
+    if (!ctx || ntfs_attr_lookup(AT_STANDARD_INFORMATION, AT_UNNAMED, 0,
+                                 CASE_SENSITIVE, 0, NULL, 0, ctx))
+      return 20;
+    if (le32_to_cpu(ctx->attr->value_length) != expected_size)
+      return 21;
+    STANDARD_INFORMATION *info = (STANDARD_INFORMATION *)
+        ((char *)ctx->attr + le16_to_cpu(ctx->attr->value_offset));
+    info->last_data_change_time = cpu_to_sle64(116444735999999999ULL);
+    info->last_access_time = cpu_to_sle64(116444736012345678ULL);
+    set_nino_flag(ni, TimesSet);
+    ntfs_inode_mark_dirty(ctx->ntfs_ino);
+    ntfs_attr_put_search_ctx(ctx);
+    rc = ntfs_inode_close(ni);
   } else if (!strcmp(argv[2], "metadata")) {
     ntfs_inode *ni = ntfs_inode_open(v, FILE_root);
     ntfschar ads[] = {cpu_to_le16('d'), cpu_to_le16('i'), cpu_to_le16('r')};

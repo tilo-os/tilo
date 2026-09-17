@@ -91,6 +91,7 @@ pub struct WebView {
     native_mounted: bool,
     /// Keyed by the frame buffer's allocation pointer + dimensions.
     cached_image: Option<PenikoImage>,
+    cached_trace_id: Option<u64>,
     cached_key: (usize, u32, u32),
     test_id: String,
     accessible_name: String,
@@ -108,6 +109,7 @@ impl WebView {
             stale_resize_retry: None,
             native_mounted: false,
             cached_image: None,
+            cached_trace_id: None,
             cached_key: (0, 0, 0),
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
@@ -332,6 +334,7 @@ impl Widget for WebView {
         if let Some(frame) = latest {
             if !self.retry_resize_for_stale_frame((frame.width, frame.height)) {
                 self.cached_image = None;
+                self.cached_trace_id = None;
                 self.cached_key = (0, 0, 0);
                 crate::webview::profile::record_draw(
                     self.rect.width(),
@@ -354,6 +357,7 @@ impl Widget for WebView {
                         height: frame.height,
                     });
                     self.cached_key = key;
+                    self.cached_trace_id = frame.trace_id;
                 }
             }
         }
@@ -380,6 +384,7 @@ impl Widget for WebView {
                 self.rect.x0 + f64::from(iw) * scale,
                 self.rect.y0 + f64::from(ih) * scale,
             ));
+            crate::webview::frame_trace::drawn(self.cached_trace_id);
             let brush = vello::peniko::ImageBrush::new(img);
             scene.fill(
                 Fill::NonZero,
@@ -908,6 +913,7 @@ mod tests {
                 scale as f32,
             );
             *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                trace_id: None,
                 rgba: Arc::new(vec![255; painted.0 as usize * painted.1 as usize * 4]),
                 width: painted.0,
                 height: painted.1,
@@ -934,6 +940,31 @@ mod tests {
     }
 
     #[test]
+    fn scene_trace_follows_drawn_cached_image_and_excludes_stale_geometry() {
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone());
+        view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
+        let frame = crate::webview::Frame {
+            trace_id: Some(101), rgba: Arc::new(vec![255; 16 * 16 * 4]), width: 16, height: 16,
+        };
+        crate::webview::frame_trace::take_for_test();
+        for available in [Some(frame), None] {
+            *engine.frames().lock().unwrap() = available;
+            let mut scene = Scene::new();
+            view.draw(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), &PresenceCtx::default());
+            assert!(scene.encoding().draw_tags.contains(&vello_encoding::DrawTag::IMAGE));
+            assert_eq!(crate::webview::frame_trace::take_for_test(), (vec![101], false));
+        }
+        *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+            trace_id: Some(102), rgba: Arc::new(vec![255; 8 * 8 * 4]), width: 8, height: 8,
+        });
+        let mut scene = Scene::new();
+        view.draw(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), &PresenceCtx::default());
+        assert!(!scene.encoding().draw_tags.contains(&vello_encoding::DrawTag::IMAGE));
+        assert_eq!(crate::webview::frame_trace::take_for_test(), (vec![], false));
+    }
+
+    #[test]
     fn old_density_frames_are_not_drawn_and_recovery_is_bounded() {
         let engine = TestEngine::new();
         let mut view = WebView::new(engine.clone());
@@ -941,6 +972,7 @@ mod tests {
         engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
         let current = engine.frames().lock().unwrap().clone().unwrap();
         let stale = crate::webview::Frame {
+            trace_id: None,
             rgba: Arc::new(vec![255; 400 * 300 * 4]),
             width: 400,
             height: 300,

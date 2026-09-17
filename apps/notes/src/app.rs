@@ -108,6 +108,7 @@ pub struct NotesApp {
     legacy_fixture_storage: Option<LegacyFixtureStorage>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
+    pub(crate) workspace_lock: Option<std::fs::File>,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
     /// Last hydrated local spans distinguish input edits from stale projection.
@@ -216,6 +217,8 @@ struct LegacyFixtureStorage {
     root: PathBuf,
     saver: Saver,
     page_saver: PageSaver,
+    // Declared last: both saver Drop implementations join before unlocking.
+    _lock: std::fs::File,
 }
 
 impl NotesApp {
@@ -250,6 +253,10 @@ impl NotesApp {
     }
 
     fn spawn_inner(root: PathBuf, seed_starter: bool) -> Result<Self, String> {
+        let lock = storage::lock_workspace(&root)?;
+        if root.join(".notes-canonical-v1").exists() {
+            return Err("this notebook has moved to canonical storage; open it with the current Notes launcher".into());
+        }
         storage::ensure_layout(&root).map_err(|e| e.to_string())?;
         let mut workspace = storage::load_workspace(&root)?.unwrap_or_default();
         if seed_starter && workspace.pages().is_empty() {
@@ -298,6 +305,7 @@ impl NotesApp {
                 root,
                 saver,
                 page_saver,
+                _lock: lock,
             }),
         ))
     }
@@ -362,6 +370,7 @@ impl NotesApp {
             content_node: None,
             legacy_fixture_storage,
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
+            workspace_lock: None,
             pending_events: Vec::new(),
             canonical_marks: Vec::new(),
             palette: PageJumpPalette::new(),

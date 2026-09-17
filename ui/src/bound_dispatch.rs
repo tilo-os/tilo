@@ -980,29 +980,26 @@ pub(crate) fn execute_resource_operation(
             context = context.enriched_by(ambient);
         }
         let before = typed_action_before(doc);
-        if broker_admitted && action.locus() == qos_actions::ExecutionLocus::ServerPreferred {
-            qos_actions::apply_local_with_context(
-                doc,
-                action.as_ref(),
-                encoded,
-                Some(actor.as_bytes()),
-                context,
-            )
-            .map_err(|error| qos_actions::DoorError::Failed(error.to_string()))?;
+        let applied = if broker_admitted && action.locus() == qos_actions::ExecutionLocus::ServerPreferred {
+            Some(qos_actions::apply_local_with_context(
+                doc, action.as_ref(), encoded, Some(actor.as_bytes()), context,
+            ).map_err(|error| qos_actions::DoorError::Failed(error.to_string()))?)
         } else {
-            qos_actions::dispatch_by_with_context(
-                doc,
-                action.as_ref(),
-                encoded,
-                transport,
-                Some(actor.as_bytes()),
-                context,
-            )
-            .map_err(|error| qos_actions::DoorError::Failed(error.to_string()))?;
-        }
+            match qos_actions::dispatch_by_with_context(
+                doc, action.as_ref(), encoded, transport, Some(actor.as_bytes()), context,
+            ).map_err(|error| qos_actions::DoorError::Failed(error.to_string()))? {
+                qos_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
+                qos_actions::Dispatched::SubmittedToHost(_) => None,
+            }
+        };
         if let Some(before) = before {
             let after = doc.get_heads();
             report_typed_action(doc, before, after);
+        }
+        if let Some(envelope) = applied {
+            // Reuse the executor's actual admission frontier: this adds no
+            // document loan, commit, replay behavior, or cross-owner traversal.
+            widget.document_action_applied(&envelope.action, &envelope.base_change_hashes(), doc, path);
         }
         crate::widget::ResourceOperationStart::Completed(qos_actions::ActionOutput::default())
     } else {
@@ -2169,11 +2166,20 @@ pub(crate) fn restore_legacy_history(
 #[derive(Default)]
 pub struct BoundNodeMap {
     nodes: HashMap<NodeId, BoundNode>,
+    parents: HashMap<NodeId, NodeId>,
     // Persistent across layout clears; aliases are allocated only for a new
     // owner/lifetime + local node, never once per redraw or tree rebuild.
     a11y_aliases: a11y_owner::OwnerAliases,
 }
 impl BoundNodeMap {
+    /// Current admitted layout ancestry, including structural non-widget nodes.
+    pub(crate) fn is_descendant(&self, mut node: NodeId, ancestor: NodeId) -> bool {
+        while let Some(parent) = self.parents.get(&node) {
+            if *parent == ancestor { return true; }
+            node = *parent;
+        }
+        false
+    }
     pub(crate) fn binding_for(&self, node: NodeId) -> Option<CallbackBinding> {
         self.nodes.get(&node).filter(|node| !node.inactive).and_then(|node| node.binding.clone())
     }
@@ -2194,6 +2200,7 @@ impl BoundNodeMap {
     }
     pub fn clear(&mut self) {
         self.nodes.clear();
+        self.parents.clear();
     }
     /// Admit raw nodes using their nearest boundary in the matching layout topology.
     ///
@@ -2257,7 +2264,10 @@ impl BoundNodeMap {
                 inherited
             };
             if let Ok(children) = taffy.children(node) {
-                pending.extend(children.into_iter().map(|child| (child, binding.clone(), legacy.clone(), inactive)));
+                for child in children {
+                    self.parents.insert(child, node);
+                    pending.push((child, binding.clone(), legacy.clone(), inactive));
+                }
             }
         }
         self.a11y_aliases.admit(&self.nodes);
@@ -2535,3 +2545,7 @@ pub(crate) unsafe fn drain_legacy_node_action(bindings: &BoundNodeMap, nodes: &H
     if changed { store.schedule_committed_history(&checkout.id); }
     Ok(changed)
 }
+
+#[cfg(test)]
+#[path = "bound_dispatch/document_action_ack_tests.rs"]
+mod document_action_ack_tests;

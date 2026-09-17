@@ -97,6 +97,7 @@ impl TestEngine {
             }
         }
         *self.lock_frames() = Some(Frame {
+            trace_id: None,
             rgba: Arc::new(rgba),
             width,
             height,
@@ -229,6 +230,7 @@ impl WebViewEngine for TestEngine {
             WebViewCommand::SetBlockingScripts(_)
             | WebViewCommand::SetSiteExceptions(_)
             | WebViewCommand::RequestSiteStatus { .. }
+            | WebViewCommand::Credentials(_)
             | WebViewCommand::SiteAction { .. }
             | WebViewCommand::StopLoading
             | WebViewCommand::ExitFullscreen

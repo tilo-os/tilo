@@ -423,12 +423,14 @@ impl SiteControls {
         }
         Box::new(
             Container::new()
+                .with_focus_trap()
                 .with_no_padding()
                 .with_background()
                 .with_width(width)
                 .with_height(height)
                 .with_child(Box::new(
                     Scrollable::new(ScrollAxis::Vertical)
+                        .with_focus_reveal()
                         .with_height(height)
                         .with_child(Box::new(column)),
                 )),

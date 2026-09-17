@@ -24,6 +24,7 @@ pub struct Container {
     child: Option<Box<dyn Widget>>,
     rect: Rect,
     has_background: bool,
+    focus_trap: bool,
     fill_height: bool,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -60,6 +61,7 @@ impl Container {
             child: None,
             rect: Rect::ZERO,
             has_background: false,
+            focus_trap: false,
             fill_height: false,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -70,6 +72,14 @@ impl Container {
             fill_color: None,
             flex_grow: false,
         }
+    }
+
+    /// Confine host keyboard traversal to this visible overlay subtree.
+    /// Ordinary containers leave the host focus order unchanged.
+    #[must_use]
+    pub fn with_focus_trap(mut self) -> Self {
+        self.focus_trap = true;
+        self
     }
 
     /// See the field docs.
@@ -375,6 +385,10 @@ impl Widget for Container {
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.focus_trap
     }
 
     fn name(&self) -> &'static str {

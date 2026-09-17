@@ -85,6 +85,7 @@ pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> 
                 pixel.swap(0, 2);
             }
             let frame = Frame {
+                trace_id: crate::webview::frame_trace::received(tab.unwrap_or(1)),
                 width,
                 height,
                 rgba: Arc::new(pixels),

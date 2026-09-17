@@ -689,6 +689,10 @@ impl Default for SnippetsApp {
 }
 
 impl ui::widget::Widget for SnippetsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SNIPPETS_OPERATION_TYPE]
     }
@@ -2487,7 +2491,7 @@ impl SnippetsApp {
         rect.x1 + 8.0
     }
 
-    fn draw_code(
+    pub(crate) fn draw_code(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

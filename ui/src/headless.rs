@@ -1311,23 +1311,12 @@ impl FrameHarness {
         if restoring_live {
             self.focused = self.history.as_mut().and_then(|history| unsafe { history.restore_focus(&self.node_map, &self.bindings) });
         } else {
-        self.focused = self.node_map.keys().find_map(|&n| {
-            if !crate::history_mode::embedded::allows_focus(self.root.as_ref(), n, &self.taffy) { return None; }
-            if self.history.as_ref().is_some_and(|history| history.has_saved_focus() && !history.owns_node(n, &self.taffy)) { return None; }
-            // SAFETY: same node_map contract the measure closure uses — the
-            // pointers alias `self.root`, which is live and not otherwise
-            // borrowed here.
-            unsafe {
-                crate::bound_dispatch::inspect_bound_node(
-                    &self.bindings,
-                    &self.node_map,
-                    n,
-                    |widget| widget.is_focused(),
-                )
-            }
-            .unwrap_or(false)
-            .then_some(n)
-        });
+        let allowed: Vec<_> = self.node_map.keys().copied().filter(|&node| {
+            crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
+                && self.history.as_ref().is_none_or(|history| !history.has_saved_focus() || history.owns_node(node, &self.taffy))
+        }).collect();
+        // SAFETY: these maps describe this exclusive runner's current tree.
+        self.focused = unsafe { CompositionFocus::current(&self.node_map, &self.bindings, Some(&allowed)) };
         }
 
         // One `relayout` is one rendered frame; commit it, folding in any
@@ -1630,6 +1619,11 @@ impl FrameHarness {
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
+        if handled && (matches!(action, crate::a11y::Action::Focus)
+            || (matches!(action, crate::a11y::Action::SetSelection { .. })
+                && self.inspect_node(taffy_id, |widget| widget.is_focused()).unwrap_or(false))) {
+            self.set_focused(Some(taffy_id));
+        }
         if !handled {
             match action {
                 crate::a11y::Action::Focus => {
@@ -1776,7 +1770,9 @@ impl FrameHarness {
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
         if handled {
-            if matches!(action, SemanticAction::Focus) {
+            if matches!(action, SemanticAction::Focus)
+                || (matches!(action, SemanticAction::SetSelection { .. })
+                    && self.inspect_node(node, |widget| widget.is_focused()).unwrap_or(false)) {
                 self.set_focused(Some(node));
             }
             if !owns_document && self.state.doc.get_heads() != before {
@@ -3689,7 +3685,28 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn anonymous_headless_focus_survives_rebuild_without_state_transfer() {
+        let mut driver = Driver::new_with_controlled_inputs(State::new(), Box::new(crate::widget::layout::AnonymousFocusProbe::new("own selection")), (600, 400), Theme::dark(), crate::font_catalog::fixture_renderer(), crate::permissions::UserId("anonymous-test".into()));
+        let old = driver.focused.unwrap();
+        driver.relayout();
+        let current = driver.focused.unwrap();
+        assert_ne!(old, current);
+        assert_eq!(driver.inspect_node(current, |widget| widget.get_state()).unwrap().as_deref(), Some("own selection"));
+    }
+
     use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
+    #[test]
+    fn anonymous_headless_unrelated_focused_siblings_have_no_input_target() {
+        let root = Column::new().push(Box::new(crate::widget::layout::AnonymousFocusProbe::new("a")))
+            .push(Box::new(crate::widget::layout::AnonymousFocusProbe::new("b")));
+        let mut driver = Driver::new_with_controlled_inputs(State::new(), Box::new(root), (600, 400),
+            Theme::dark(), crate::font_catalog::fixture_renderer(), crate::permissions::UserId("fixture".into()));
+        assert!(driver.focused.is_none());
+        driver.relayout();
+        assert!(driver.focused.is_none());
+    }
+
 
     struct ConsumingActivationControl {
         activations: std::rc::Rc<std::cell::Cell<usize>>,

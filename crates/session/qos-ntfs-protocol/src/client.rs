@@ -229,6 +229,7 @@ impl Client {
                         || e.path.iter().map(Vec::len).sum::<usize>() > 4096
                         || e.path.iter().any(|c| c.is_empty() || c.len() > 255)
                         || !tokens.insert(&e.token)
+                        || !e.copy_times_valid()
                     {
                         return Err(bad());
                     }

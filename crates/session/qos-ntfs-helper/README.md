@@ -190,7 +190,7 @@ The parser-free `qos-ntfs-protocol` crate contains portable wire types and a Lin
 client, with no native reader/helper dependency or build script. Imager links only
 that crate. Serializable facts and locators cannot create a device claim.
 
-Schema 2 has Hello, BeginObservation, NextManifestPage, ReadChunk,
+Wire schema 3 has Hello, BeginObservation, NextManifestPage, ReadChunk,
 FinishObservation, Cancel and Close operations. Requests carry the nonce and
 strictly increasing IDs beginning at zero. Frames are at most 64 KiB. Unknown
 operations/fields, ancillary FDs, truncation and replay invalidate the session.
@@ -208,6 +208,11 @@ encrypted, compressed and custom metadata remain explicit pending scopes.
 Known over-budget metadata remains scoped while enumeration continues; malformed
 structure or unknown scope refuses the observation. This does not preserve or
 apply a migration metadata capsule and does not authorize silent metadata loss.
+Each entry carries exact signed 100 ns access/data-change values only when one
+unnamed `$STANDARD_INFORMATION` attribute has complete ordered coverage in a
+pinned 48-byte or 72-byte layout. Otherwise it carries a typed unavailable
+reason. The raw metadata digest remains authoritative for before/after checks;
+wire schema 3 does not change the native parser report schema.
 
 Native range requests return at most 1 MiB, including unaligned/arbitrary ranges.
 The broker only accepts tokens issued for its selected manifest generation.

@@ -17,6 +17,8 @@
 //! translation so engines never see toolkit layout space.
 
 pub mod chromium;
+mod credentials;
+pub use credentials::{AddressFields, CredentialAction, CredentialRequest, CredentialReply, CredentialForm, CredentialAccount};
 pub mod profile;
 pub mod test_engine;
 
@@ -26,6 +28,8 @@ pub mod adblock;
 #[cfg(feature = "webview-wpe")]
 pub mod wpe;
 
+pub(crate) mod frame_trace;
+
 use std::sync::{Arc, Mutex};
 
 /// One rendered frame from the engine: tightly-packed RGBA8 at physical
@@ -33,6 +37,8 @@ use std::sync::{Arc, Mutex};
 /// widget detects staleness via the allocation pointer.
 #[derive(Clone)]
 pub struct Frame {
+    /// Opt-in Rust receipt identity; never implies input causality.
+    pub trace_id: Option<u64>,
     pub rgba: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
@@ -146,6 +152,7 @@ pub struct SiteStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
+    Credentials(CredentialRequest),
     SetSiteExceptions(Vec<String>),
     RequestSiteStatus {
         request_id: u32,
@@ -286,6 +293,7 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    CredentialResult(CredentialReply),
     SiteStatus(SiteStatus),
     SiteResult {
         request_id: u32,

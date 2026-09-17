@@ -71,9 +71,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_clicks_bench(shots_viewport(), n);
     }
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.calculator", calculator::app_root)
-            .shot_handler(render_shot)
-            .configure_app(configure_app),
+        &launch_spec(),
     )?;
     Ok(())
 }
@@ -503,4 +501,16 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("calculator: wrote shot to {}", out.display());
     Ok(())
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new("dev.qos.calculator", calculator::app_root)
+        .history(&calculator::framework_history::HISTORY)
+        .shot_handler(render_shot)
+        .configure_app(configure_app)
+}
+
+#[test]
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
 }

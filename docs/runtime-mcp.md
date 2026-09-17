@@ -12,8 +12,11 @@ Build the host on macOS or Linux:
 cargo build -p shell --bin qos-runtime-mcp --no-default-features
 ```
 
-Choose an absolute profile path and create an app manifest at an absolute path.
-The executable paths must also be absolute. The list may be empty, and repeated
+Choose a short absolute profile path and create an app manifest at an absolute
+path. Unix socket pathname limits also apply to the profile’s `collab.sock` and
+`identity.sock`; long profile paths fail at startup. For example, use a private
+`/tmp/qos-mcp-...` directory for temporary runs. The executable paths must also
+be absolute. The list may be empty, and repeated
 app ids intentionally create separate live instances:
 
 ```json
@@ -65,7 +68,11 @@ The endpoint implements `initialize`, `ping`, `tools/list`, `tools/call`,
 instances, browse a bounded lazy resource/action directory, resolve an exact
 current action, start it, inspect its canonical status, and request
 cancellation. Call `qos_list_apps`, then `qos_query`; preserve the returned peer
-id, revision, resource and action for `qos_resolve` or `qos_invoke`. After an
+id, revision, resource and action for `qos_resolve` or `qos_invoke`. Browse
+roots with an empty `parent_resource`, then use a returned resource as
+`parent_resource` to discover its actions and children. Follow `next_cursor`
+with the same revision and query. The optional `needle` searches declared
+search providers; it is not a search across every action label. After an
 invocation is accepted, poll `qos_status` until its real terminal update. Pass
 content resource references returned by one successful action as typed
 arguments to a freshly discovered action in another app. The runtime contains
