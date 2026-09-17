@@ -4,12 +4,17 @@
 //! validates signed LVFS metadata and firmware and polkit owns authorization;
 //! this module never downloads an arbitrary URL or elevates a shell command.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
+use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use crate::process::{run, run_capture};
+
+const MAX_FIRMWARE_STREAM_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_FIRMWARE_LINE_BYTES: usize = 64 * 1024;
+const MAX_FIRMWARE_EVENTS: usize = 8192;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FirmwareUpdate {
@@ -167,30 +172,30 @@ fn run_fwupd_transaction(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .map_err(|e| format!("fwupdmgr could not start: {e}"))?;
     let stdout = child.stdout.take().ok_or("fwupdmgr stdout unavailable")?;
     let stderr = child.stderr.take().ok_or("fwupdmgr stderr unavailable")?;
     let (line_tx, line_rx) = mpsc::channel();
     let out_tx = line_tx.clone();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = out_tx.send(line);
-        }
-    });
+    std::thread::spawn(move || read_firmware_progress(stdout, &out_tx));
     let err_tx = line_tx.clone();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            let _ = err_tx.send(line);
-        }
-    });
+    std::thread::spawn(move || read_firmware_progress(stderr, &err_tx));
     drop(line_tx);
 
     let started = Instant::now();
     let deadline = Duration::from_secs(2700);
     let mut last_lines = Vec::new();
     loop {
-        while let Ok(line) = line_rx.try_recv() {
+        while let Ok(event) = line_rx.try_recv() {
+            let line = match event {
+                Ok(line) => line,
+                Err(error) => {
+                    terminate_process_group(&mut child);
+                    return Err(error);
+                }
+            };
             let trimmed = line.trim();
             if !trimmed.is_empty() {
                 last_lines.push(trimmed.to_string());
@@ -217,13 +222,60 @@ fn run_fwupd_transaction(
             break;
         }
         if started.elapsed() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_process_group(&mut child);
             return Err("firmware update timed out after 45 minutes".into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     Ok(reboot_needed())
+}
+
+fn read_firmware_progress(
+    stream: impl Read + Send + 'static,
+    tx: &mpsc::Sender<Result<String, String>>,
+) {
+    let mut reader = BufReader::new(stream).take(MAX_FIRMWARE_STREAM_BYTES + 1);
+    for _ in 0..MAX_FIRMWARE_EVENTS {
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return,
+            Ok(_) if line.len() > MAX_FIRMWARE_LINE_BYTES => {
+                let _ = tx.send(Err(
+                    "firmware progress line exceeded the safety limit".into()
+                ));
+                return;
+            }
+            Ok(_) => {
+                let clean = String::from_utf8_lossy(&line)
+                    .chars()
+                    .filter(|character| {
+                        !character.is_control() || matches!(character, ' ' | '\n' | '\t')
+                    })
+                    .collect();
+                if tx.send(Ok(clean)).is_err() {
+                    return;
+                }
+            }
+            Err(_) => {
+                let _ = tx.send(Err("firmware progress stream failed".into()));
+                return;
+            }
+        }
+    }
+    let _ = tx.send(Err(
+        "firmware progress event count exceeded the safety limit".into(),
+    ));
+}
+
+fn terminate_process_group(child: &mut std::process::Child) {
+    if let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: fwupdmgr is spawned into its own pid-named process group.
+        unsafe { libc::kill(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn progress_percent(line: &str) -> Option<u8> {
@@ -376,6 +428,32 @@ fn collect_history(value: &serde_json::Value, out: &mut Vec<FirmwareHistoryEntry
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn firmware_progress_reader_bounds_lines_and_event_count() {
+        let (tx, rx) = mpsc::channel();
+        read_firmware_progress(
+            std::io::Cursor::new(vec![b'x'; MAX_FIRMWARE_LINE_BYTES + 1]),
+            &tx,
+        );
+        assert!(rx.recv().unwrap().unwrap_err().contains("line"));
+
+        let (tx, rx) = mpsc::channel();
+        read_firmware_progress(
+            std::io::Cursor::new("x\n".repeat(MAX_FIRMWARE_EVENTS + 1)),
+            &tx,
+        );
+        let events: Vec<_> = rx.try_iter().collect();
+        assert_eq!(events.len(), MAX_FIRMWARE_EVENTS + 1);
+        assert!(
+            events
+                .last()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .contains("event")
+        );
+    }
 
     #[test]
     fn parses_fwupd_devices_and_releases() {

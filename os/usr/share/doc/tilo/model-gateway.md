@@ -1,6 +1,8 @@
 # Hosted model gateway
 
-`tilo-model-gateway` is a per-user systemd service. It owns outbound calls to
+`tilo-model-gateway` is a socket-activated per-user systemd service. Its private
+socket exists for the launcher at session start, but the process and network
+stack are not loaded until Settings or Agent actually connects. It owns outbound calls to
 the explicitly supported OpenAI-compatible and Anthropic endpoints, and resolves API keys
 from the Tilo encrypted account vault. Sandboxed clients receive only an
 authenticated, launcher-passed `model-gateway` service FD; they never receive

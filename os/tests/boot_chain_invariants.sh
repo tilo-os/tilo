@@ -121,6 +121,23 @@ for kver in "${kvers[@]}"; do
         bad "initramfs has no $want module — it cannot unlock an encrypted root"
       fi
     done
+    for unwanted in network network-legacy network-manager nfs iscsi nbde clevis crypt-ssh; do
+      if grep -qx "$unwanted" "$mods"; then
+        bad "initramfs carries unsupported network-root module $unwanted"
+      fi
+    done
+    omitted_drivers="$OS_ROOT/usr/lib/tilo/initramfs-omitted-drivers.txt"
+    if [ -s "$omitted_drivers" ]; then
+      for unwanted_driver in ext4 xfs; do
+        if grep -qx "$unwanted_driver" "$omitted_drivers"; then
+          ok "initramfs excludes the $unwanted_driver kernel driver"
+        else
+          bad "initramfs omission policy does not exclude $unwanted_driver"
+        fi
+      done
+    else
+      bad "initramfs kernel-driver omission policy is missing"
+    fi
   elif [ -s "$img" ] && command -v lsinitrd >/dev/null 2>&1 \
        && [ -n "$(lsinitrd "$img" 2>/dev/null)" ]; then
     listing="$(lsinitrd "$img" 2>/dev/null)"
@@ -148,6 +165,7 @@ done
 #    `/sysroot`; masking the stock unit without a replacement leaves the
 #    installation's extra space unused.
 growfs_unit="$OS_ROOT/usr/lib/systemd/system/tilo-growfs-sysroot.service"
+growfs_timer="$OS_ROOT/usr/lib/systemd/system/tilo-growfs-sysroot.timer"
 growfs_dropin="$OS_ROOT/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf"
 if [ ! -f "$growfs_unit" ]; then
   bad "tilo-growfs-sysroot.service missing — nothing grows the root filesystem"
@@ -160,6 +178,19 @@ else
   [ "$exec_line" = "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot" ] \
     && ok "tilo growfs targets the block-backed /sysroot" \
     || bad "tilo growfs targets the wrong path (${exec_line:-none})"
+fi
+
+if [ ! -f "$growfs_timer" ]; then
+  bad "tilo-growfs-sysroot.timer missing — root growth cannot run off the login critical path"
+else
+  timer_unit="$(grep -E '^Unit=' "$growfs_timer" | head -1)"
+  timer_delay="$(grep -E '^OnBootSec=' "$growfs_timer" | head -1)"
+  [ "$timer_unit" = "Unit=tilo-growfs-sysroot.service" ] \
+    && ok "tilo growfs timer starts the sysroot grow service" \
+    || bad "tilo growfs timer starts the wrong unit (${timer_unit:-none})"
+  [ "$timer_delay" = "OnBootSec=5s" ] \
+    && ok "tilo growfs timer waits for the login I/O burst" \
+    || bad "tilo growfs timer has an unexpected delay (${timer_delay:-none})"
 fi
 
 if [ ! -f "$growfs_dropin" ]; then
@@ -182,19 +213,19 @@ fi
 # The path fallback keeps this invariant useful in a minimal unpacked root.
 growfs_enabled=""
 if command -v systemctl >/dev/null 2>&1; then
-  case "$(systemctl --root="$OS_ROOT" is-enabled tilo-growfs-sysroot.service 2>/dev/null)" in
+  case "$(systemctl --root="$OS_ROOT" is-enabled tilo-growfs-sysroot.timer 2>/dev/null)" in
     enabled|enabled-runtime|static) growfs_enabled=yes ;;
     *) growfs_enabled=no ;;
   esac
-elif [ -e "$OS_ROOT/etc/systemd/system/multi-user.target.wants/tilo-growfs-sysroot.service" ]; then
+elif [ -e "$OS_ROOT/etc/systemd/system/timers.target.wants/tilo-growfs-sysroot.timer" ]; then
   growfs_enabled=yes
 else
   growfs_enabled=no
 fi
 if [ "$growfs_enabled" = yes ]; then
-  ok "tilo-growfs-sysroot.service is enabled"
+  ok "tilo-growfs-sysroot.timer is enabled"
 else
-  bad "tilo-growfs-sysroot.service is not enabled — the filesystem is never grown"
+  bad "tilo-growfs-sysroot.timer is not enabled — the filesystem is never grown"
 fi
 
 [ "$fail" -eq 0 ] && printf '\nall boot-chain invariants hold\n'

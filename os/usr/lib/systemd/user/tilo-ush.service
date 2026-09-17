@@ -6,13 +6,9 @@ Description=Tilo confined shell runtime supervisor
 # whose shell would be unconfined. apps/terminal declares exactly that, so
 # without this unit the Terminal cannot start at all.
 #
-# Not socket-activated: `tilo-ush serve` binds the listener itself (and creates
-# the parent directory), so handing it a pre-opened descriptor would mean two
-# owners of one path. It is started with the session instead, which leaves a
-# short window at login where an app launched immediately would still find the
-# socket absent; the supervisor binds in well under a second and the launcher's
-# error names the missing socket.
-PartOf=tilo-graphical-session.target
+# Socket-activated: the endpoint exists before an app can launch while the
+# supervisor process, store discovery, and guest machinery stay off the login
+# path until the first terminal actually connects.
 
 [Service]
 Type=simple
@@ -24,8 +20,19 @@ Restart=on-failure
 RestartSec=1s
 TimeoutStopSec=10s
 
-[Install]
-# default.target, not graphical-session.target: the runtime is what makes a
-# confined shell available at all, including from a text session, and nothing
-# in this repository starts graphical-session.target explicitly.
-WantedBy=default.target
+# The supervisor must retain user-namespace/mount functionality for bubblewrap
+# and must not hide the user's package layer, but it has no reason to mutate
+# host kernel state or share IPC/keyring state with the desktop session.
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native

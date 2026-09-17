@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -16,6 +16,10 @@ pub struct CommandRequest {
     /// Host-selected environment overrides. Values are omitted from `Debug`
     /// because future adapters may carry private endpoint information here.
     pub environment: Vec<(OsString, OsString)>,
+    /// Maximum bytes captured independently from stdout and stderr.
+    pub output_limit: usize,
+    /// Hard lifetime for this invocation, including inherited pipe holders.
+    pub timeout: Duration,
 }
 
 impl CommandRequest {
@@ -26,6 +30,8 @@ impl CommandRequest {
             args: Vec::new(),
             stdin: Vec::new(),
             environment: Vec::new(),
+            output_limit: 8 * 1024 * 1024,
+            timeout: Duration::from_secs(86_400),
         }
     }
 
@@ -56,6 +62,12 @@ impl CommandRequest {
         self.environment.push((name.into(), value.into()));
         self
     }
+
+    #[must_use]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
 }
 
 impl fmt::Debug for CommandRequest {
@@ -67,6 +79,8 @@ impl fmt::Debug for CommandRequest {
                 "stdin",
                 &format_args!("<redacted: {} bytes>", self.stdin.len()),
             )
+            .field("output_limit", &self.output_limit)
+            .field("timeout", &self.timeout)
             .field(
                 "environment",
                 &self
@@ -119,6 +133,12 @@ pub enum CommandError {
         #[source]
         source: std::io::Error,
     },
+    #[error("bounded execution of {program:?} failed: {source}")]
+    Execution {
+        program: OsString,
+        #[source]
+        source: bounded_command::Error,
+    },
 }
 
 pub trait CommandRunner: Send + Sync {
@@ -133,44 +153,19 @@ pub struct StdCommandRunner;
 impl CommandRunner for StdCommandRunner {
     fn run(&self, request: &CommandRequest) -> Result<CommandOutput, CommandError> {
         let mut command = Command::new(&request.program);
-        command
-            .args(request.args.iter().map(OsStr::new))
-            .envs(
-                request
-                    .environment
-                    .iter()
-                    .map(|(name, value)| (name, value)),
-            )
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if request.stdin.is_empty() {
-            command.stdin(Stdio::null());
-        } else {
-            command.stdin(Stdio::piped());
-        }
-
-        let mut child = command.spawn().map_err(|source| CommandError::Spawn {
-            program: request.program.clone(),
-            source,
-        })?;
-        if !request.stdin.is_empty() {
-            let mut stdin = child.stdin.take().ok_or_else(|| CommandError::Stdin {
-                program: request.program.clone(),
-                source: std::io::Error::other("child did not expose its piped stdin"),
-            })?;
-            stdin
-                .write_all(&request.stdin)
-                .map_err(|source| CommandError::Stdin {
+        command.args(request.args.iter().map(OsStr::new)).envs(
+            request
+                .environment
+                .iter()
+                .map(|(name, value)| (name, value)),
+        );
+        let input = (!request.stdin.is_empty()).then_some(request.stdin.as_slice());
+        let output =
+            bounded_command::run_prepared(command, input, request.output_limit, request.timeout)
+                .map_err(|source| CommandError::Execution {
                     program: request.program.clone(),
                     source,
                 })?;
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|source| CommandError::Wait {
-                program: request.program.clone(),
-                source,
-            })?;
         Ok(CommandOutput {
             success: output.status.success(),
             code: output.status.code(),
@@ -194,5 +189,32 @@ mod tests {
         assert!(!debug.contains("do-not-log-env"));
         assert!(debug.contains("SECRET_ENV"));
         assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn runner_enforces_output_and_time_bounds() {
+        let runner = StdCommandRunner;
+        let mut oversized = CommandRequest::new("sh").args(["-c", "head -c 4096 /dev/zero"]);
+        oversized.output_limit = 32;
+        assert!(matches!(
+            runner.run(&oversized),
+            Err(CommandError::Execution {
+                source: bounded_command::Error::OutputTooLarge { .. },
+                ..
+            })
+        ));
+
+        let timeout = CommandRequest::new("sh")
+            .args(["-c", "sleep 5"])
+            .timeout(Duration::from_millis(25));
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            runner.run(&timeout),
+            Err(CommandError::Execution {
+                source: bounded_command::Error::Timeout(_),
+                ..
+            })
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

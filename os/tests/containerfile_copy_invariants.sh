@@ -8,15 +8,22 @@ containerfile="$repo/os/Containerfile"
 # shellcheck source=lib/containerfile.sh
 . "$here/lib/containerfile.sh"
 
-# Captured from the 178 effective rootfs copy mappings after rebasing the
-# consolidation over main's app-host, native AT-SPI, and VirtIO media additions.
-# Compared with the original 173-entry contract, these are exactly five added
-# mappings and no removals. Sorting intentionally ignores instruction order:
+# Captured from the effective rootfs copy mappings. The current change
+# deliberately removes the obsolete root-owned shell-firstboot unit and adds
+# non-blocking boot timers, a background-resource policy, and two model-service
+# activation sockets, the staged-image owner trust gate, and the deferred
+# BootPack status-projection timer, the physical-disk BFQ policy, the
+# root-owned device-key initializer, the off-critical-path TPM hardening timer,
+# the authenticated Chrony policy used by the image-trust freshness floor, and
+# the build-only residual OpenSSL ABI package gate (removed after it runs).
+# Rustls now compiles the fixed CA-bundle path
+# into its loader, so the former systemd environment override is absent. Sorting
+# intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=9b90479025b4e597a048d5df0205df1de39d393ce35595d3a0c48cea095159ad
+expected_contract=1a670b94565e51a26a7b8e559c10447af180368277fb5816bab0207984f6b565
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

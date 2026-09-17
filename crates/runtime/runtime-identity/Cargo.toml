@@ -23,6 +23,7 @@ path = "src/lib.rs"
 
 [dependencies]
 runtime-portal = { path = "../runtime-portal" }
+bounded-command = { path = "../../system/bounded-command" }
 serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true

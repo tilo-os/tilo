@@ -8,6 +8,7 @@ description = "Default-deny single Windows appliance and RemoteApp integration f
 
 [dependencies]
 base64.workspace = true
+bounded-command = { path = "../bounded-command" }
 hex.workspace = true
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true

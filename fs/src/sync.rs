@@ -211,6 +211,11 @@ const MODE_FULL: u8 = b'F';
 const MODE_SYNC: u8 = b'S';
 /// Hard cap on a single sync frame (`DoS` guard).
 const MAX_FRAME: usize = 64 * 1024 * 1024;
+/// Bound aggregate sync-frame memory and Automerge CPU consumed by remote
+/// peers. Router handlers are spawned per connection, so a frame limit alone
+/// otherwise permits an authenticated but compromised peer to multiply the
+/// allocation without bound.
+const MAX_CONCURRENT_SYNC_CONNECTIONS: usize = 4;
 
 async fn write_frame(send: &mut SendStream, data: &[u8]) -> std::io::Result<()> {
     let len = u32::try_from(data.len())
@@ -557,6 +562,7 @@ struct SyncProtocol {
     identity: FsTransportIdentity,
     namespace: Arc<Mutex<Namespace>>,
     policy: PeerPolicy,
+    inflight: Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for SyncProtocol {
@@ -567,6 +573,10 @@ impl std::fmt::Debug for SyncProtocol {
 
 impl ProtocolHandler for SyncProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let Ok(permit) = Arc::clone(&self.inflight).try_acquire_owned() else {
+            connection.close(2u32.into(), b"sync busy");
+            return Ok(());
+        };
         if self.identity.partitioned() {
             connection.close(1u32.into(), b"partitioned");
             return Ok(());
@@ -655,6 +665,11 @@ impl ProtocolHandler for SyncProtocol {
             Ok(res) => res?,
             Err(_) => return Ok(()), // timed-out client; just drop the connection
         }
+        // The router requires this handler to remain alive until the peer sees
+        // the graceful stream FIN and closes the connection. Release scarce
+        // sync admission first, so a peer cannot retain capacity during that
+        // transport-only wait.
+        drop(permit);
         connection.closed().await;
         Ok(())
     }
@@ -1589,6 +1604,7 @@ impl Workspace {
             identity: identity.clone(),
             namespace: namespace.clone(),
             policy: policy.clone(),
+            inflight: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SYNC_CONNECTIONS)),
         };
         let replica_ack_protocol = record_plane.as_ref().map(|records| ReplicaAckProtocol {
             endpoint: endpoint.clone(),

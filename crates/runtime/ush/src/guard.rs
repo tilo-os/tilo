@@ -18,6 +18,7 @@
 //! runtime with no signatures would be worse than no `scan` at all.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use landlock::{
     ABI, Access, AccessFs, PathBeneath, PathFd, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
@@ -239,11 +240,9 @@ pub const NO_DATABASE: &str = "no signature or reputation check was performed: \
      was true, not that the file is safe.";
 
 fn rpm_owner(path: &Path) -> Option<String> {
-    let out = std::process::Command::new("rpm")
-        .arg("-qf")
-        .arg(path)
-        .output()
-        .ok()?;
+    let args = [std::ffi::OsStr::new("-qf"), path.as_os_str()];
+    let out =
+        bounded_command::run_os("rpm", &args, None, 64 * 1024, Duration::from_secs(10)).ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -251,11 +250,13 @@ fn rpm_owner(path: &Path) -> Option<String> {
 }
 
 fn rpm_verify_failed(package: &str, path: &Path) -> bool {
-    let Ok(out) = std::process::Command::new("rpm")
-        .arg("-V")
-        .arg(package)
-        .output()
-    else {
+    let Ok(out) = bounded_command::run(
+        "rpm",
+        &["-V", package],
+        None,
+        1024 * 1024,
+        Duration::from_secs(15),
+    ) else {
         return false;
     };
     let needle = path.to_string_lossy();

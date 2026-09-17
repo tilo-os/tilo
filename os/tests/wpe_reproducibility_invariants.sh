@@ -86,12 +86,14 @@ has "$snapshot_workflow" 'enable-openid-connect: true' \
   'WPE snapshot jobs explicitly enable Forgejo OIDC'
 has "$snapshot_workflow" '"$TILO_WPE_SIGNER" "$TILO_WPE_REF"' \
   'WPE buildroots are signed through a leased non-exportable signer'
-has "$snapshot_workflow" "vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP == '1'" \
-  'exportable signing keys are isolated to an explicit bootstrap step'
+if grep -Eq 'WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP|WPE_STATIC_BOOTSTRAP_EXPIRES_AT|COSIGN_PRIVATE_KEY|COSIGN_PASSWORD' \
+    "$snapshot_workflow" "$credential_helper"; then
+  bad 'WPE snapshot retains an exportable static-credential bootstrap path'
+else
+  ok 'WPE snapshot requires brokered registry and non-exportable signing leases'
+fi
 has "$credential_helper" "bounded_expiry \"\$lease_expiry\" 900" \
   'brokered WPE credentials expire within fifteen minutes'
-has "$credential_helper" "bounded_expiry \"\${WPE_STATIC_BOOTSTRAP_EXPIRES_AT:-}\" 86400" \
-  'static WPE bootstrap has an absolute expiry no more than one day away'
 has "$credential_helper" "trusted_root_executable \"\$signer\" 'WPE signer'" \
   'brokered WPE signer and its path are controlled by root'
 has "$snapshot_workflow" 'token: ${{ github.token }}' \

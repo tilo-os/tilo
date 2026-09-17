@@ -13,7 +13,7 @@ MODULES=(
   xkbcommon libseat libinput libudev libdrm gbm gl egl
   wayland-client libpipewire-0.3 fuse3 dbus-1
   libavcodec libavformat libavutil
-  gstreamer-1.0 gstreamer-app-1.0 openssl
+  gstreamer-1.0 gstreamer-app-1.0
 )
 # Test subjects rather than build tools, but a missing one fails a test instead
 # of naming itself: bwrap runs the launcher's confinement suites and

@@ -14,6 +14,8 @@ builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/tilo-firstboot-user"
 profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 installer_app="$repo_root/crates/session/installer/src/installer_app.rs"
+installer_disks="$repo_root/crates/session/installer/src/disks.rs"
+installer_timezones="$repo_root/crates/session/installer/src/timezones.rs"
 media_profile="$repo_root/crates/session/installer/src/media_profile.rs"
 preflight="$repo_root/os/usr/libexec/tilo-verified-boot-install-preflight"
 secret_policy="$repo_root/os/usr/libexec/tilo-startup-secret-policy"
@@ -25,6 +27,16 @@ fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
+
+if grep -Fq 'bounded_command::run(' "$installer_disks" \
+   && grep -Fq 'bounded_command::run(' "$installer_timezones" \
+   && grep -Fq 'bounded_command::run(' "$installer_app" \
+   && ! grep -Eq 'Command::new\("(lsblk|timedatectl|/usr/libexec/tilo-verified-boot-install-preflight)"\)' \
+      "$installer_disks" "$installer_timezones" "$installer_app"; then
+  ok "installer discovery and verified-boot preflight have bounded subprocesses"
+else
+  bad "installer trusts an unbounded discovery or verified-boot subprocess"
+fi
 
 if grep -Fq 'enum FieldCompletion {' "$installer_app" \
    && grep -Fq 'profile_completion: Option<ProfileCompletion>' "$installer_app" \
@@ -116,7 +128,7 @@ else
   bad "installer Wi-Fi profiles are not safely preserved for first boot"
 fi
 
-if grep -Fq 'code.sandbox.example/qos/tilo:*|code.sandbox.example/qos/tilo@sha256:*' "$backend"; then
+if grep -Fq 'code.sandbox.example/tilo/tilo:*|code.sandbox.example/tilo/tilo@sha256:*' "$backend"; then
   ok "installed update origin is restricted to the signature-required repository"
 else
   bad "installer can record an update origin outside the signature-required policy"
@@ -220,8 +232,8 @@ if [ -x "$preflight" ] \
    && containerfile_has_copy "$production_containerfile" \
         os/usr/libexec/tilo-verified-boot-install-preflight \
         /usr/libexec/tilo-verified-boot-install-preflight \
-   && grep -Fq 'openssl dgst -sha256 -verify "$pub" -signature "$prediction.uki.sig" "$uki"' "$preflight" \
-   && grep -Fq "grep -Eq '^signature [1-9][0-9]*\$'" "$preflight" \
+   && grep -Fq '"$crypto_bin" verify-rsa-sha256 "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
+   && grep -Fq 'efi-signature-count "$uki"' "$preflight" \
    && grep -Fq 'd.get("pcrs") != [11]' "$preflight"; then
   ok "TPM PIN preflight verifies both the exact target UKI and its PCR11 policy"
 else
@@ -234,7 +246,7 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq '"$signer" sign-efi' "$prediction_signer" \
    && grep -Fq '"$signer" export-efi-cert' "$prediction_signer" \
    && grep -Fq 'TILO_EFI_SIGNING_CERT_SHA256' "$prediction_signer" \
-   && grep -Fq -- '--cert /work/efi-signing.crt' "$prediction_signer" \
+   && grep -Fq 'verify-efi /work/efi-signing.crt' "$prediction_signer" \
    && grep -Fq 'verify-authenticode-envelope.py' "$prediction_signer" \
    && grep -Fq 'sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"' "$prediction_signer" \
    && grep -Fq 'broker signed the prediction with a key other than Tilo' "$prediction_signer" \
@@ -316,11 +328,30 @@ else
 fi
 
 if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
-   && grep -Fq 'root|bin|daemon|' "$backend"; then
-  ok "installer refuses reserved and pre-existing system accounts"
+   && grep -Fq 'root|bin|daemon|' "$backend" \
+   && grep -Fq "stat -c '%u:%a:%h'" "$firstboot_user" \
+   && grep -Fq '[a-z_]* ) valid_user=1' "$firstboot_user" \
+   && grep -Fq 'case "$hash" in' "$firstboot_user" \
+   && grep -Fq 'valid_hash=1' "$firstboot_user"; then
+  ok "first boot revalidates installer credentials and refuses privileged account replacement"
 else
   bad "installer can reset a privileged or pre-existing account"
 fi
+
+firstboot_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-user.service"
+for policy in \
+  'TimeoutStartSec=30' \
+  'NoNewPrivileges=yes' \
+  'PrivateDevices=yes' \
+  'PrivateNetwork=yes' \
+  'ProtectKernelTunables=yes' \
+  'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID' \
+  'AmbientCapabilities=' \
+  'RestrictAddressFamilies=AF_UNIX' \
+  'SystemCallFilter=@system-service'; do
+  grep -Fqx "$policy" "$firstboot_unit" \
+    || bad "first-boot account creator sandbox is missing: $policy"
+done
 
 if [ -x "$profile_extractor" ] \
    && grep -Fq 'TILO_INSTALL_PROFILE_V1' "$profile_extractor" \

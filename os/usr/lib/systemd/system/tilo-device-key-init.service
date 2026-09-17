@@ -1,0 +1,38 @@
+[Unit]
+Description=Provision the root-owned Tilo machine device identity
+After=systemd-tmpfiles-setup.service
+Before=shell-firstboot.service greetd.service fs.service
+# This unit is ordered before login for the two cases that mutate identity, but
+# an established machine should not start a process merely to read the same
+# persistent key on every boot. `|` makes these triggers: run when the protected
+# key is absent OR when the legacy writable name still needs migration.
+ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin
+ConditionPathExists=|/var/lib/tilo/device/keypair.bin
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/tilo-device-key-init
+RemainAfterExit=yes
+UMask=0027
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tilo/device-private
+# Upgrade-only: permit unlinking the former group-writable key name after its
+# bytes and signed certificate have been validated and durably adopted.
+ReadWritePaths=/var/lib/tilo/device
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @network-io @privileged @resources @obsolete @debug @swap
+
+[Install]
+WantedBy=sysinit.target
