@@ -48,6 +48,7 @@ mpris = ["dep:zbus", "zbus/tokio"]
 # with no portal, and a feature-less build degrades to a clean
 # `PortalOutcome::Failed` rather than failing to link.
 portal = ["dep:ashpd", "dep:windows", "dep:mime_guess"]
+notifications = ["dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
 private-fs = { path = "../crates/system/private-fs" }
@@ -311,6 +312,11 @@ path = "examples/ui_perf.rs"
 name = "native-file-picker"
 path = "examples/native_file_picker.rs"
 required-features = ["portal"]
+
+[[example]]
+name = "windows-host"
+path = "examples/windows_host.rs"
+required-features = ["notifications"]
 
 [[example]]
 name = "ui-wpe"
