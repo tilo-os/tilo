@@ -125,6 +125,7 @@ class PrivateDiskImage:
             if exc_type is None and self._keep:
                 self.validate()
                 os.fsync(self._fd)
+                os.fsync(self._directory_fd)
                 keep = True
         finally:
             self._finish(remove=not keep)
