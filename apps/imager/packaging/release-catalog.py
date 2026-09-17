@@ -3,10 +3,15 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import sys
 from urllib.parse import urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "os/dev"))
+from hardware_profile import validate_target_imgref
 
 
 def select(root):
@@ -31,6 +36,15 @@ def media(catalog, root, arch=None):
     entries = catalog.get("releases")
     if not isinstance(entries, list) or not entries:
         raise ValueError("installer catalog has no media")
+    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "tilo/releases")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("release repository must be OWNER/REPOSITORY")
+    server = urlsplit(os.environ.get("GITHUB_SERVER_URL", "https://code.podesta.ai"))
+    if (server.scheme != "https" or not server.hostname or server.username or server.password
+            or server.path not in ("", "/") or server.query or server.fragment):
+        raise ValueError("release server must be an HTTPS origin without credentials")
+    # Accessing port also rejects malformed/out-of-range configured ports.
+    _ = server.port
     identities = set()
     result = []
     for entry in entries:
@@ -40,6 +54,18 @@ def media(catalog, root, arch=None):
             raise ValueError("invalid installer architecture or hardware profile")
         if catalog["schema"] == 1 and profile != "generic":
             raise ValueError("board media requires catalog schema 2")
+        if catalog["schema"] == 2 and "hardware_profile" not in entry:
+            raise ValueError("schema 2 requires an explicit hardware profile")
+        if profile != "generic":
+            provenance = entry.get("provenance")
+            if not isinstance(provenance, dict):
+                raise ValueError("board medium requires provenance")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", provenance.get("source_image_id", "")):
+                raise ValueError("invalid board source image identity")
+            for field in ("input_qcow2_sha256", "hardware_profile_sha256"):
+                if not re.fullmatch(r"[0-9a-f]{64}", provenance.get(field, "")):
+                    raise ValueError(f"invalid board provenance {field}")
+            validate_target_imgref(provenance.get("target_update_ref"))
         identity = (target, profile)
         if identity in identities:
             raise ValueError("duplicate installer architecture and hardware profile")
@@ -47,8 +73,10 @@ def media(catalog, root, arch=None):
         suffix = "" if profile == "generic" else f"-{profile}"
         name = f"tilo-installer-linux-{target}{suffix}.img.zst"
         url = urlsplit(entry.get("url", ""))
-        if url.scheme != "https" or not url.hostname or url.query or url.fragment or url.path.split("/")[-1] != name:
-            raise ValueError("catalog medium URL does not match its architecture and hardware profile")
+        expected_path = f"/{repository}/releases/download/{catalog['tag']}/{name}"
+        if (url.scheme != server.scheme or url.netloc != server.netloc or url.username
+                or url.password or url.query or url.fragment or url.path != expected_path):
+            raise ValueError("catalog medium URL does not match the configured release origin, tag and hardware profile")
         for field in ("archive_sha256", "image_sha256"):
             if not isinstance(entry.get(field), str) or not re.fullmatch(r"[0-9a-f]{64}", entry[field]):
                 raise ValueError(f"invalid catalog {field}")
