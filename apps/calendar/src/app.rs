@@ -2499,6 +2499,7 @@ impl CalendarApp {
             self.apply_timeline_effect(effect, input.state);
         }
         if outcome.handled {
+            *input.handled = true;
             self.dirty = true;
         }
         outcome.handled
@@ -2536,16 +2537,7 @@ impl CalendarApp {
         ) {
             let p = self.last_mouse;
             if self.agenda.wants_pointer_capture() || self.view_rect().contains(p) {
-                let handled = self.agenda.handle_event(
-                    input.event,
-                    input.scale_factor,
-                    input.modifiers,
-                    input.state,
-                    input.path,
-                    input.focus_target,
-                    input.node_id,
-                    input.taffy,
-                );
+                let handled = self.agenda.handle_event(input);
                 if handled {
                     self.dirty = true;
                 }
@@ -9429,7 +9421,7 @@ mod tests {
             );
         }
 
-        fn dispatch(&mut self, event: &winit::event::WindowEvent) {
+        fn dispatch(&mut self, event: &winit::event::WindowEvent) -> bool {
             let mods = winit::event::Modifiers::default();
             let mut handled = false;
             let mut focus = None;
@@ -9444,6 +9436,7 @@ mod tests {
                 self.node,
                 &self.taffy,
             );
+            handled
         }
 
         fn click(&mut self, p: Point) {
@@ -9468,21 +9461,27 @@ mod tests {
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             });
         }
-        fn mouse_button(&mut self, state: ElementState) {
+        fn mouse_button(&mut self, state: ElementState) -> bool {
             let device_id = unsafe { std::mem::zeroed() };
             self.dispatch(&winit::event::WindowEvent::MouseInput {
                 device_id,
                 state,
                 button: MouseButton::Left,
-            });
+            })
         }
 
         /// A full press → drag → release gesture through the real event path.
         fn drag(&mut self, from: Point, to: Point) {
             self.mouse_move(from);
-            self.mouse_button(ElementState::Pressed);
+            assert!(
+                self.mouse_button(ElementState::Pressed),
+                "the timeline must claim a drag press"
+            );
             self.mouse_move(to);
-            self.mouse_button(ElementState::Released);
+            assert!(
+                self.mouse_button(ElementState::Released),
+                "the timeline must claim a drag release"
+            );
         }
 
         /// Press a single character through the real keyboard path.
