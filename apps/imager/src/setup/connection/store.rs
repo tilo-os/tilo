@@ -191,6 +191,21 @@ pub(super) struct ConnectionStore {
     gc_scan: Option<storage::GcScan>,
     candidate_pin: Option<[u8; 32]>,
 }
+// Prepared against one immutable in-memory state; applying after fsync cannot
+// discover a new capacity error or perform another fallible tree read.
+struct PreparedRows {
+    rows: Vec<Row>,
+    overlay_bytes: usize,
+    overlay_keys: usize,
+    connections: u64,
+    active_intents: u64,
+    live_keys: u64,
+}
+impl PreparedRows {
+    fn fits_overlay(&self) -> bool {
+        self.overlay_keys <= 1024 && self.overlay_bytes <= 8 * 1024 * 1024
+    }
+}
 impl ConnectionStore {
     pub(super) fn open_default() -> Result<Self, StoreError> {
         let path = dirs::data_local_dir()
@@ -278,7 +293,11 @@ impl ConnectionStore {
             };
             let rows = store.reduce(&event).map_err(|_| StoreError::Corrupt)?;
             let bytes = format::encode(&event)?;
-            store.commit_rows(rows)?;
+            let prepared = store.prepare_rows(rows)?;
+            if !prepared.fits_overlay() {
+                return Err(StoreError::LimitExceeded);
+            }
+            store.commit_rows(prepared);
             store.sequence = format::next(store.sequence)?;
             store.digest = format::digest(&bytes);
         }
@@ -290,20 +309,11 @@ impl ConnectionStore {
             return Err(StoreError::RecoveryRequired);
         }
         self.storage.validate()?;
-        let pointer = storage::open_file(&self.storage.root, "CURRENT", false)?;
-        storage::validate_file(
-            &self.storage.root,
-            "CURRENT",
-            &pointer,
-            &self.current_identity,
-        )?;
-        if self
-            .storage
-            .read_bytes(&self.storage.root, "CURRENT", 4096)?
-            != format::encode(&self.current)?
-        {
-            return Err(StoreError::IdentityChanged);
-        }
+        self.storage
+            .validate_current(&self.current, &self.current_identity)?;
+        self.validate_log()
+    }
+    fn validate_log(&self) -> Result<(), StoreError> {
         storage::validate_file(
             &self.storage.root,
             &format!("log-{}", self.current.log),
@@ -709,11 +719,16 @@ impl ConnectionStore {
         }
         Ok(rows)
     }
-    fn commit_rows(&mut self, rows: Vec<Row>) -> Result<(), StoreError> {
-        // All capacity checks precede insertion, so memory commit is atomic after fsync.
+    fn prepare_rows(&self, rows: Vec<Row>) -> Result<PreparedRows, StoreError> {
+        // Exact replacement deltas, including rows reconstructed by tiny events.
+        // No state or persistence mutation is allowed during admission.
         let mut bytes = self.overlay_bytes;
         let mut keys = self.overlay.len();
+        let mut seen = std::collections::BTreeSet::new();
         for row in &rows {
+            if !seen.insert(row.key()) {
+                return Err(StoreError::Corrupt);
+            }
             if let Some(old) = self.overlay.get(&row.key()) {
                 bytes = bytes
                     .checked_sub(format::encode(old)?.len())
@@ -724,9 +739,6 @@ impl ConnectionStore {
             bytes = bytes
                 .checked_add(format::encode(row)?.len())
                 .ok_or(StoreError::LimitExceeded)?;
-        }
-        if keys > 1024 || bytes > 8 * 1024 * 1024 {
-            return Err(StoreError::LimitExceeded);
         }
         let mut connections = self.connections;
         let mut active = self.active_intents;
@@ -749,17 +761,29 @@ impl ConnectionStore {
                 }
             }
         }
-        if live.checked_sub(connections).ok_or(StoreError::Corrupt)? > 1_048_576 {
+        if connections > 65536
+            || active > 1024
+            || live.checked_sub(connections).ok_or(StoreError::Corrupt)? > 1_048_576
+        {
             return Err(StoreError::LimitExceeded);
         }
-        for row in rows {
+        Ok(PreparedRows {
+            rows,
+            overlay_bytes: bytes,
+            overlay_keys: keys,
+            connections,
+            active_intents: active,
+            live_keys: live,
+        })
+    }
+    fn commit_rows(&mut self, prepared: PreparedRows) {
+        for row in prepared.rows {
             self.overlay.insert(row.key(), row);
         }
-        self.connections = connections;
-        self.active_intents = active;
-        self.live_keys = live;
-        self.overlay_bytes = bytes;
-        Ok(())
+        self.connections = prepared.connections;
+        self.active_intents = prepared.active_intents;
+        self.live_keys = prepared.live_keys;
+        self.overlay_bytes = prepared.overlay_bytes;
     }
     fn append(&mut self, change: Change) -> Result<(), StoreError> {
         // An implicit checkpoint may collect pages before this event is durable.
@@ -775,7 +799,7 @@ impl ConnectionStore {
                 predecessor: self.digest,
                 change,
             };
-            let rows = self.reduce(&event)?;
+            let mut prepared = self.prepare_rows(self.reduce(&event)?)?;
             let bytes = format::encode(&event)?;
             let control = matches!(
                 event.change,
@@ -784,11 +808,15 @@ impl ConnectionStore {
             if matches!(event.change, Change::Fence { .. }) && bytes.len() + 44 > 512 {
                 return Err(StoreError::LimitExceeded);
             }
-            if self.overlay.len() + rows.len() > 1024
-                || self.overlay_bytes + bytes.len() * 2 > 8 * 1024 * 1024
-                || self.log.metadata()?.len() > 8 * 1024 * 1024
-            {
+            if !prepared.fits_overlay() || self.log.metadata()?.len() > 8 * 1024 * 1024 {
+                // Drop the prospective rows before page construction; checkpoint
+                // can also update retention fields read by the reducer.
+                drop(prepared);
                 self.checkpoint()?;
+                prepared = self.prepare_rows(self.reduce(&event)?)?;
+            }
+            if !prepared.fits_overlay() {
+                return Err(StoreError::LimitExceeded);
             }
             let bound = if control {
                 16 * 1024 * 1024
@@ -799,14 +827,15 @@ impl ConnectionStore {
                 return Err(StoreError::LimitExceeded);
             }
             self.validate()?;
-            let mut sequence = format::next(self.sequence)?;
+            let committed_sequence = format::next(self.sequence)?;
+            let mut sequence = committed_sequence;
             touched = true;
             framing::write_record(&mut self.log, &mut sequence, &event)?;
             storage::sync_file(&self.log)?;
             self.log_identity = storage::regular(&self.log)?;
             self.validate()?;
-            self.commit_rows(rows)?;
-            self.sequence = format::next(self.sequence)?;
+            self.commit_rows(prepared);
+            self.sequence = committed_sequence;
             self.digest = format::digest(&bytes);
             if matches!(event.change, Change::BaselineCommit { .. }) {
                 self.retention_sample = std::time::Instant::now();
@@ -874,12 +903,14 @@ impl ConnectionStore {
             };
             format::encode(&header)?;
             framing::write_record(&mut log, &mut 0, &header)?;
+            let log_identity = storage::regular(&log)?;
             storage::sync_file(&log)?;
             storage::sync_directory(&self.storage.root.file)?;
-            self.storage.publish_current(&next)?;
-            self.current_identity =
-                storage::regular(&storage::open_file(&self.storage.root, "CURRENT", false)?)?;
-            self.log_identity = storage::regular(&log)?;
+            let current_identity = self.publish_current(&next, &log, &log_identity)?;
+            // Adopt only the identities validated through publication, never a
+            // fresh snapshot that could hide a change during persistence.
+            self.current_identity = current_identity;
+            self.log_identity = log_identity;
             self.log = log;
             self.current = next;
             self.overlay.clear();

@@ -1338,6 +1338,12 @@ fn baseline_candidate_survives_automatic_checkpoint_before_commit() {
         }))),
     )
     .unwrap();
+    // Test-only pressure seam: exact replacement accounting no longer
+    // checkpoints just because the overlay already has 1,024 keys. The long-
+    // locator regression covers real byte pressure; here only the counter is
+    // raised to trigger the candidate's real implicit checkpoint/GC path.
+    store.overlay_bytes = 8 * 1024 * 1024;
+    let generation = store.current.generation;
     store
         .append(Change::BaselineCommit {
             connection: record.id.0,
@@ -1349,6 +1355,7 @@ fn baseline_candidate_survives_automatic_checkpoint_before_commit() {
             initial_review: true,
         })
         .unwrap();
+    assert!(store.current.generation > generation);
     assert!(store.load_baseline(record.id).is_ok());
     drop(store);
     assert!(
@@ -1406,6 +1413,292 @@ fn orphan_next_generation_is_preserved_for_recovery() {
     let reopened = ConnectionStore::open_at(&path).unwrap();
     assert_eq!(
         reopened.load_connection(record.id).unwrap().lifecycle,
+        Lifecycle::Disconnecting
+    );
+}
+
+// A tiny fence reconstructs a large checkpointed row; every ack must replay.
+#[test]
+fn admission_large_checkpointed_fences_remain_replayable() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let locator = "/".to_owned() + &"a".repeat(30_000);
+    let mut records = Vec::new();
+    for id in 1_u32..=93 {
+        let mut bytes = [0; 16];
+        bytes[12..].copy_from_slice(&id.to_be_bytes());
+        let (mut source, destination) = bindings();
+        source.locator = EndpointLocator::new(Path::new(&locator)).unwrap();
+        records.push(
+            store
+                .create_connection(
+                    ConnectionId(bytes),
+                    source,
+                    destination,
+                    ConnectionPolicy {
+                        deletion_retention_seconds: 2_592_000,
+                    },
+                )
+                .unwrap()
+                .value,
+        );
+    }
+    store.checkpoint().unwrap();
+    let generation = store.current.generation;
+    for record in &records {
+        store
+            .request_disconnect(record.id, record.revision)
+            .expect("fence must checkpoint its actual row before reaching overlay capacity");
+        assert!(store.overlay_bytes <= 8 * 1024 * 1024);
+    }
+    assert!(store.current.generation > generation);
+    drop(store);
+    let reopened = ConnectionStore::open_at(&path).expect("all acknowledged fences replay");
+    for record in records {
+        assert_eq!(
+            reopened.load_connection(record.id).unwrap().lifecycle,
+            Lifecycle::Disconnecting
+        );
+    }
+}
+
+// Counter seam avoids a million-row fixture; real append must refuse before writing.
+#[test]
+fn admission_control_capacity_rejects_without_changing_log() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 1);
+    let original = std::fs::read(log_path(&path)).unwrap();
+    store.live_keys = store.connections + 1_048_576;
+    assert!(matches!(
+        store.begin_intent(intent(&record)),
+        Err(StoreError::LimitExceeded)
+    ));
+    assert_eq!(
+        std::fs::read(log_path(&path)).unwrap(),
+        original,
+        "hard capacity rejection must not append an unreplayable intent"
+    );
+    assert!(!store.poisoned);
+    drop(store);
+    let reopened = ConnectionStore::open_at(&path).unwrap();
+    assert!(
+        reopened
+            .pending_page(record.id, None, 128)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+}
+
+// Replacing an overlay key must not consume another key or force a checkpoint.
+#[test]
+fn admission_full_overlay_replaces_existing_key_without_checkpoint() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 1);
+    for id in 2..=1024 {
+        create(&mut store, id);
+    }
+    let generation = store.current.generation;
+    let bytes = store.overlay_bytes;
+    let fence = store
+        .request_disconnect(record.id, record.revision)
+        .unwrap();
+    store.finish_disconnect(&fence).unwrap();
+    assert_eq!(
+        store.current.generation, generation,
+        "replacement-aware key accounting should keep this bounded overlay"
+    );
+    assert_eq!(store.overlay.len(), 1024);
+    // Revision, fence, and lifecycle remain one-digit fields; replacing this
+    // row twice must subtract its old encoded bytes each time.
+    assert_eq!(store.overlay_bytes, bytes);
+    drop(store);
+    let reopened = ConnectionStore::open_at(&path).unwrap();
+    assert_eq!(
+        reopened.load_connection(record.id).unwrap().lifecycle,
+        Lifecycle::Disconnected
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CheckpointBoundary {
+    Prepared,
+    Published,
+}
+type CheckpointHook = (
+    CheckpointBoundary,
+    Box<dyn FnOnce() -> Result<(), StoreError>>,
+);
+thread_local! {
+    static CHECKPOINT_HOOK: std::cell::RefCell<Option<CheckpointHook>> = const { std::cell::RefCell::new(None) };
+}
+pub(super) fn checkpoint_boundary(point: CheckpointBoundary) -> Result<(), StoreError> {
+    let hook = CHECKPOINT_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.as_ref().is_some_and(|(wanted, _)| *wanted == point) {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    if let Some((_, hook)) = hook {
+        hook()?;
+    }
+    Ok(())
+}
+
+// Mutations happen after real pages, next log, and CURRENT temporary have synced.
+#[test]
+fn checkpoint_boundary_preserves_changed_current() {
+    for boundary in [CheckpointBoundary::Prepared, CheckpointBoundary::Published] {
+        for replace in [false, true] {
+            let (_temp, path) = fixture();
+            let mut store = ConnectionStore::open_at(&path).unwrap();
+            let record = create(&mut store, 1);
+            store
+                .request_disconnect(record.id, record.revision)
+                .unwrap();
+            let old_log = log_path(&path);
+            let log_bytes = std::fs::read(&old_log).unwrap();
+            let target = path.join("CURRENT");
+            let changed = path.clone();
+            CHECKPOINT_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some((
+                    boundary,
+                    Box::new(move || {
+                        assert!(changed.join("log-1").exists());
+                        if replace {
+                            // Identical bytes isolate retained inode identity validation.
+                            std::fs::rename(
+                                changed.join("CURRENT"),
+                                changed.join("saved-current"),
+                            )?;
+                            std::fs::copy(changed.join("saved-current"), changed.join("CURRENT"))?;
+                        } else {
+                            std::fs::write(changed.join("CURRENT"), b"unexpected CURRENT bytes")?;
+                        }
+                        Ok(())
+                    }),
+                ));
+            });
+            let result = store.checkpoint();
+            assert!(
+                matches!(result, Err(StoreError::IdentityChanged)),
+                "{:?}",
+                result.err()
+            );
+            let expected = if replace {
+                std::fs::read(path.join("saved-current")).unwrap()
+            } else {
+                b"unexpected CURRENT bytes".to_vec()
+            };
+            assert_eq!(std::fs::read(&target).unwrap(), expected);
+            assert_eq!(std::fs::read(&old_log).unwrap(), log_bytes);
+            assert!(store.poisoned);
+            assert!(matches!(
+                store.checkpoint(),
+                Err(StoreError::RecoveryRequired)
+            ));
+            drop(store);
+            if replace {
+                let reopened = ConnectionStore::open_at(&path).unwrap();
+                assert_eq!(
+                    reopened.load_connection(record.id).unwrap().lifecycle,
+                    Lifecycle::Disconnecting
+                );
+            } else {
+                assert!(ConnectionStore::open_at(&path).is_err());
+            }
+            assert_eq!(std::fs::read(target).unwrap(), expected);
+        }
+    }
+}
+
+// Changes during both prepublication preparation and final directory sync must
+// remain evidence; adopting a new snapshot must not hide the changed old log.
+#[test]
+fn checkpoint_boundary_preserves_changed_old_log() {
+    for boundary in [CheckpointBoundary::Prepared, CheckpointBoundary::Published] {
+        let (_temp, path) = fixture();
+        let mut store = ConnectionStore::open_at(&path).unwrap();
+        let record = create(&mut store, 1);
+        store
+            .request_disconnect(record.id, record.revision)
+            .unwrap();
+        let old_log = log_path(&path);
+        let old_current = std::fs::read(path.join("CURRENT")).unwrap();
+        let mut unexpected = std::fs::read(&old_log).unwrap();
+        unexpected.extend_from_slice(b"unexpected old log tail");
+        let target = old_log.clone();
+        CHECKPOINT_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some((
+                boundary,
+                Box::new(move || {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(target)?
+                        .write_all(b"unexpected old log tail")?;
+                    Ok(())
+                }),
+            ));
+        });
+        let result = store.checkpoint();
+        assert!(
+            matches!(result, Err(StoreError::IdentityChanged)),
+            "{:?}",
+            result.err()
+        );
+        assert_eq!(std::fs::read(&old_log).unwrap(), unexpected);
+        if boundary == CheckpointBoundary::Prepared {
+            assert_eq!(std::fs::read(path.join("CURRENT")).unwrap(), old_current);
+        }
+        assert!(store.poisoned);
+        assert!(matches!(
+            store.checkpoint(),
+            Err(StoreError::RecoveryRequired)
+        ));
+        assert_eq!(std::fs::read(&old_log).unwrap(), unexpected);
+        if boundary == CheckpointBoundary::Published {
+            drop(store);
+            let mut reopened = ConnectionStore::open_at(&path).unwrap();
+            assert!(matches!(
+                reopened.gc_step(),
+                Err(StoreError::RecoveryRequired)
+            ));
+            assert_eq!(std::fs::read(old_log).unwrap(), unexpected);
+            assert!(matches!(
+                reopened.load_connection(record.id),
+                Err(StoreError::RecoveryRequired)
+            ));
+        }
+    }
+}
+
+// Existing active-intent admission must keep working alongside exact row admission.
+#[test]
+fn admission_active_intent_capacity_preserves_log_and_fence_reserve() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 1);
+    let original = std::fs::read(log_path(&path)).unwrap();
+    store.active_intents = 1024;
+    assert!(matches!(
+        store.begin_intent(intent(&record)),
+        Err(StoreError::RecoveryRequired)
+    ));
+    assert_eq!(std::fs::read(log_path(&path)).unwrap(), original);
+    store
+        .request_disconnect(record.id, record.revision)
+        .unwrap();
+    drop(store);
+    assert_eq!(
+        ConnectionStore::open_at(&path)
+            .unwrap()
+            .load_connection(record.id)
+            .unwrap()
+            .lifecycle,
         Lifecycle::Disconnecting
     );
 }
