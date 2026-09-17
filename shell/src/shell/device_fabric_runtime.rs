@@ -20,8 +20,10 @@ use crate::notifications::{
 };
 
 use crate::compositor::selection::{
-    SharedSelection, merge_shared_clipboard_history, shareable_clipboard_history,
+    SharedSelection, clear_shared_clipboard_history, merge_shared_clipboard_history,
+    shareable_clipboard_history,
 };
+use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::device_fabric::{
     ClipboardEntry, ClipboardPayload, DISPLAY_STREAM_PROTOCOL_VERSION, DeviceFabricSnapshot,
     DeviceKind, DevicePresence, DisplayEdge, DisplayPlacement, DisplayRect, DisplayStreamCodec,
@@ -280,6 +282,7 @@ fn unix_millis() -> u64 {
 }
 
 struct NearbyStagingResult {
+    transfer_id: [u8; 16],
     target: crate::shell::personal_continuity::DeviceId,
     name: String,
     result: Result<(), String>,
@@ -312,6 +315,9 @@ pub(crate) fn record_nearby_transfer_progress(
     total_bytes: u64,
     status: PersonalMediaTransferStatus,
 ) {
+    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
+        return;
+    }
     if let Ok(mut state) = nearby_drop_state().lock() {
         state
             .progress
@@ -327,6 +333,9 @@ pub(crate) fn handle_nearby_transfer_frame(
     source: &crate::shell::personal_continuity::DeviceId,
     frame: PersonalNearbyTransferFrame,
 ) {
+    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
+        return;
+    }
     let (transfer_id, request_id) = match &frame {
         PersonalNearbyTransferFrame::Chunk {
             transfer_id,
@@ -622,6 +631,7 @@ pub struct DeviceFabricRuntime {
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
+    policy: Option<ContinuityPolicySnapshot>,
 }
 
 impl DeviceFabricRuntime {
@@ -640,6 +650,7 @@ impl DeviceFabricRuntime {
             notification_bridge,
             realtime_adapter: None,
             realtime_online_peers: BTreeSet::new(),
+            policy: None,
         }
     }
 
@@ -657,15 +668,29 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
-        pump_bluetooth_handoffs(network);
-        self.handle_fabric_actions(network);
-        self.pump_realtime_continuity(network);
-        self.pump_notification_continuity(network);
-        resume_nearby_transfers(network);
-        pump_personal_displays(network);
-        self.retry_waiting_media(network);
-        flush_spatial_input(network);
-        self.acknowledge_opened_media(network);
+        let policy = ContinuityPolicySnapshot::load();
+        self.enforce_policy(network, selection, policy);
+        if policy.permits(ContinuityCapability::Media) {
+            pump_bluetooth_handoffs(network);
+        }
+        self.handle_fabric_actions(network, policy);
+        self.pump_realtime_continuity(network, policy);
+        self.pump_notification_continuity(network, policy);
+        if policy.permits(ContinuityCapability::FileTransfer) {
+            resume_nearby_transfers(network);
+        } else {
+            discard_nearby_staging_results();
+        }
+        pump_personal_displays(network, policy);
+        if policy.permits(ContinuityCapability::Media) {
+            self.retry_waiting_media(network);
+        }
+        if policy.permits(ContinuityCapability::DisplayInput) {
+            flush_spatial_input(network);
+        }
+        if policy.permits(ContinuityCapability::Media) {
+            self.acknowledge_opened_media(network);
+        }
         let now = Instant::now();
         if self
             .last_sample
@@ -702,6 +727,7 @@ impl DeviceFabricRuntime {
             previous.as_ref(),
             &self.applied_remote_settings,
             &tentative_stamp,
+            policy,
         );
         let neutral_stamp = FabricStamp {
             counter: 0,
@@ -731,9 +757,74 @@ impl DeviceFabricRuntime {
                 self.last_publish = Some(now);
             }
         }
-        self.merge_remote_state(network, selection, &device);
-        if let Err(error) = network.refresh_wifi_credential_recipients() {
+        self.merge_remote_state(network, selection, &device, policy);
+        if policy.permits(ContinuityCapability::WifiSettings)
+            && let Err(error) = network.refresh_wifi_credential_recipients()
+        {
             tracing::warn!(%error, "could not refresh per-device Wi-Fi credential envelopes");
+        }
+    }
+
+    fn enforce_policy(
+        &mut self,
+        network: &ShellNetwork,
+        selection: &SharedSelection,
+        policy: ContinuityPolicySnapshot,
+    ) {
+        let previous = self.policy.replace(policy);
+        let newly_disabled = |capability| {
+            previous.map_or_else(
+                || !policy.permits(capability),
+                |old| policy.revoked_since(old, capability),
+            )
+        };
+
+        if newly_disabled(ContinuityCapability::Clipboard) {
+            clear_shared_clipboard_history(selection);
+        }
+
+        if newly_disabled(ContinuityCapability::Notifications) {
+            let _ = self
+                .notification_bridge
+                .retain_remote_continuity_sources(&HashSet::new());
+            let _ = self.notification_bridge.drain_continuity_outbound();
+            let _ = self.notification_bridge.drain_continuity_command_egress();
+        }
+        if newly_disabled(ContinuityCapability::RealtimeSessions) {
+            if let Some(adapter) = self.realtime_adapter.as_ref() {
+                for peer in &self.realtime_online_peers {
+                    adapter.peer_offline(peer, Instant::now());
+                }
+                adapter.tick(Instant::now());
+                // Cancellation is teardown, not a new projection, so deliver
+                // the adapter's terminal signals before suppressing the plane.
+                for egress in adapter.drain_egress() {
+                    if let crate::shell::realtime_session::RealtimeFabricSignal::Cancel(
+                        session_id,
+                    ) = egress.signal
+                    {
+                        let _ = network.send_personal_fabric_action(
+                            &egress.target,
+                            PersonalFabricAction::RealtimeCancel { session_id },
+                        );
+                    }
+                }
+            }
+            self.realtime_online_peers.clear();
+        }
+        if newly_disabled(ContinuityCapability::DisplayInput) {
+            tear_down_display_and_input(network);
+        }
+        if newly_disabled(ContinuityCapability::FileTransfer) {
+            tear_down_nearby_transfers(network);
+        }
+        if newly_disabled(ContinuityCapability::Media) {
+            self.pending_incoming_media.clear();
+            self.waiting_incoming_media.clear();
+            if let Ok(mut state) = bluetooth_handoff_state().lock() {
+                state.transactions.clear();
+                while state.result_rx.try_recv().is_ok() {}
+            }
         }
     }
 
@@ -759,13 +850,20 @@ impl DeviceFabricRuntime {
         network: &ShellNetwork,
         selection: &SharedSelection,
         local_device: &crate::shell::personal_continuity::DeviceId,
+        policy: ContinuityPolicySnapshot,
     ) {
         let fabric = network.device_fabric();
-        let history = fabric.merged_clipboard();
-        let entries = history.entries().cloned().collect::<Vec<_>>();
-        merge_shared_clipboard_history(selection, &entries);
+        if policy.permits(ContinuityCapability::Clipboard) {
+            let history = fabric.merged_clipboard();
+            let entries = history.entries().cloned().collect::<Vec<_>>();
+            merge_shared_clipboard_history(selection, &entries);
+        }
 
-        let records = fabric.merged_setting_records();
+        let records = if policy.permits(ContinuityCapability::WifiSettings) {
+            fabric.merged_setting_records()
+        } else {
+            BTreeMap::new()
+        };
         let fingerprint = serde_json::to_vec(&records)
             .ok()
             .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -784,9 +882,12 @@ impl DeviceFabricRuntime {
             .collect();
     }
 
-    fn handle_fabric_actions(&mut self, network: &ShellNetwork) {
+    fn handle_fabric_actions(&mut self, network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
         prune_spatial_leases(network);
         for envelope in network.take_personal_fabric_actions() {
+            if !policy.permits_action(&envelope.action) {
+                continue;
+            }
             if self.handle_notification_action(network, &envelope) {
                 continue;
             }
@@ -907,9 +1008,29 @@ impl DeviceFabricRuntime {
         true
     }
 
-    fn pump_realtime_continuity(&mut self, network: &ShellNetwork) {
+    fn pump_realtime_continuity(
+        &mut self,
+        network: &ShellNetwork,
+        policy: ContinuityPolicySnapshot,
+    ) {
         use crate::shell::realtime_session::RealtimeFabricSignal;
 
+        if !policy.permits(ContinuityCapability::RealtimeSessions) {
+            if let Some(adapter) = self.realtime_adapter.as_ref() {
+                let peers = network
+                    .device_fabric()
+                    .snapshots()
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for peer in peers {
+                    adapter.peer_offline(&peer, Instant::now());
+                }
+                adapter.tick(Instant::now());
+                let _ = adapter.drain_egress();
+            }
+            return;
+        }
         let Some(adapter) = self.realtime_adapter.as_ref() else {
             return;
         };
@@ -996,7 +1117,19 @@ impl DeviceFabricRuntime {
         true
     }
 
-    fn pump_notification_continuity(&self, network: &ShellNetwork) {
+    fn pump_notification_continuity(
+        &self,
+        network: &ShellNetwork,
+        policy: ContinuityPolicySnapshot,
+    ) {
+        if !policy.permits(ContinuityCapability::Notifications) {
+            let _ = self
+                .notification_bridge
+                .retain_remote_continuity_sources(&HashSet::new());
+            let _ = self.notification_bridge.drain_continuity_outbound();
+            let _ = self.notification_bridge.drain_continuity_command_egress();
+            return;
+        }
         let Some((local, _)) = network.local_device_fabric_identity() else {
             let _ = self
                 .notification_bridge
@@ -1222,6 +1355,17 @@ fn resume_nearby_transfers(network: &ShellNetwork) {
             state
                 .large_offers
                 .insert(entry.id, (target, request, entry.name));
+        }
+    }
+}
+
+fn discard_nearby_staging_results() {
+    if let Ok(receiver) = nearby_staging_queue().1.lock() {
+        while let Ok(staged) = receiver.try_recv() {
+            if staged.result.is_ok() {
+                let _ =
+                    with_nearby_transfer_store(|store| store.cancel_outgoing(staged.transfer_id));
+            }
         }
     }
 }
@@ -2095,6 +2239,7 @@ pub fn request_bluetooth_handoff(
     name: &str,
     target: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::Media)?;
     if !super::device_fabric::valid_bluetooth_address(address)
         || name.is_empty()
         || name.len() > 128
@@ -2177,6 +2322,7 @@ pub fn authorize_bluetooth_handoff(
     request_id: [u8; 16],
     approved: bool,
 ) -> Result<(), String> {
+    require_continuity(ContinuityCapability::Media)?;
     let (transaction, authorization) = {
         let mut state = bluetooth_handoff_state()
             .lock()
@@ -2244,6 +2390,7 @@ pub fn request_media_handoff(
     session_id: &str,
     target: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::Media)?;
     let report = media::handoff::playback_report(session_id)
         .ok_or_else(|| "that media session is no longer available".to_string())?;
     let transfer = network
@@ -2304,6 +2451,7 @@ pub fn request_nearby_drop(
     target: &crate::shell::personal_continuity::DeviceId,
     path: &Path,
 ) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::FileTransfer)?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -2341,6 +2489,7 @@ pub fn request_nearby_drop(
                         .map(|_| ())
                 });
                 let _ = sender.send(NearbyStagingResult {
+                    transfer_id,
                     target: worker_target,
                     name,
                     result,
@@ -2611,11 +2760,16 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaOutputView,
     };
 
+    let policy = ContinuityPolicySnapshot::load();
     let fabric = network.device_fabric();
     let local_id = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let (issued_to, received_from) = active_spatial_control_devices(unix_ms());
+    let (issued_to, received_from) = if policy.permits(ContinuityCapability::DisplayInput) {
+        active_spatial_control_devices(unix_ms())
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let mut devices = fabric
         .snapshots()
         .values()
@@ -2643,30 +2797,34 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
             .then_with(|| left.label.cmp(&right.label))
     });
 
-    let local_media = local_id
-        .as_ref()
-        .and_then(|device| fabric.snapshots().get(device))
-        .map(|snapshot| {
-            snapshot
-                .media
-                .iter()
-                .map(|session| FabricMediaView {
-                    session_id: session.id.clone(),
-                    title: session.title.clone(),
-                    playing: session.playing,
-                    has_video: session.has_video,
-                    targets: devices
-                        .iter()
-                        .filter(|device| {
-                            !device.is_local
-                                && fabric.handoff_media(&session.id, &device.id).is_ok()
-                        })
-                        .map(|device| device.id.clone())
-                        .collect(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let local_media = if policy.permits(ContinuityCapability::Media) {
+        local_id
+            .as_ref()
+            .and_then(|device| fabric.snapshots().get(device))
+            .map(|snapshot| {
+                snapshot
+                    .media
+                    .iter()
+                    .map(|session| FabricMediaView {
+                        session_id: session.id.clone(),
+                        title: session.title.clone(),
+                        playing: session.playing,
+                        has_video: session.has_video,
+                        targets: devices
+                            .iter()
+                            .filter(|device| {
+                                !device.is_local
+                                    && fabric.handoff_media(&session.id, &device.id).is_ok()
+                            })
+                            .map(|device| device.id.clone())
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     let mut local_outputs = media::audio::enumerate()
         .sinks
@@ -2685,8 +2843,16 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
             .then_with(|| left.label.cmp(&right.label))
     });
 
-    let transfers = fabric_transfer_views(network);
-    let bluetooth_authorizations = bluetooth_authorization_views(&fabric);
+    let transfers = if policy.permits(ContinuityCapability::FileTransfer) {
+        fabric_transfer_views(network)
+    } else {
+        Vec::new()
+    };
+    let bluetooth_authorizations = if policy.permits(ContinuityCapability::Media) {
+        bluetooth_authorization_views(&fabric)
+    } else {
+        Vec::new()
+    };
 
     DeviceFabricView {
         bluetooth_authorizations,
@@ -2730,6 +2896,7 @@ pub fn place_device(
     target: &crate::shell::personal_continuity::DeviceId,
     edge: DisplayEdge,
 ) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
     let (local, _) = network
         .local_device_fabric_identity()
         .ok_or_else(|| "this device has no certified personal identity".to_string())?;
@@ -2821,6 +2988,7 @@ pub fn grant_input_control(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<InputLease, String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
     let (target, _) = network
         .local_device_fabric_identity()
         .ok_or_else(|| "this device has no certified personal identity".to_string())?;
@@ -2925,6 +3093,7 @@ pub fn send_spatial_input(
     target: &crate::shell::personal_continuity::DeviceId,
     event: FabricInputEvent,
 ) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
     let lease = spatial_input_state()
         .lock()
         .map_err(|_| "spatial input state is unavailable".to_string())?
@@ -3013,6 +3182,9 @@ pub fn take_personal_display_events() -> Vec<PersonalDisplayEvent> {
 /// whole-desktop packet can therefore be fanned out without exceeding any
 /// negotiated target ceiling.
 pub fn personal_display_capture_profile() -> Option<qos_projector::CaptureProfile> {
+    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::DisplayInput) {
+        return None;
+    }
     let profile = {
         let state = personal_display_state().lock().ok()?;
         let mut sessions = state.outbound.values().filter(|session| session.accepted);
@@ -3043,6 +3215,9 @@ pub fn publish_personal_display_packet(
     network: &ShellNetwork,
     packet: &qos_projector::VideoPacket,
 ) -> bool {
+    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::DisplayInput) {
+        return false;
+    }
     let Some((source, _)) = network.local_device_fabric_identity() else {
         return false;
     };
@@ -3077,6 +3252,9 @@ pub fn report_personal_display_decode(
     sequence: u64,
     outcome: crate::shell::peer_view::PushOutcome,
 ) {
+    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::DisplayInput) {
+        return;
+    }
     let Some((target, _)) = network.local_device_fabric_identity() else {
         return;
     };
@@ -3127,7 +3305,13 @@ pub fn take_personal_display_keyframe_request() -> bool {
     clippy::too_many_lines,
     reason = "session reconciliation and its exhaustive wire transition match stay together as one fail-closed boundary"
 )]
-fn pump_personal_displays(network: &ShellNetwork) {
+fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    if !policy.permits(ContinuityCapability::DisplayInput) {
+        // Drain transport ingress while disabled so stale offers cannot become
+        // live if the user opts in later.
+        let _ = network.take_personal_display_messages();
+        return;
+    }
     let Some((local, _)) = network.local_device_fabric_identity() else {
         return;
     };
@@ -3186,7 +3370,7 @@ fn pump_personal_displays(network: &ShellNetwork) {
                 PersonalDisplayMessage::End {
                     session_id: session.session_id,
                     source: local.clone(),
-                    target,
+                    target: target.clone(),
                 },
             ));
         }
@@ -3332,6 +3516,10 @@ fn pump_personal_displays(network: &ShellNetwork) {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "snapshot construction receives each sampled runtime input explicitly"
+)]
 fn build_local_snapshot(
     device: &crate::shell::personal_continuity::DeviceId,
     label: String,
@@ -3340,30 +3528,10 @@ fn build_local_snapshot(
     previous: Option<&DeviceFabricSnapshot>,
     applied_remote_settings: &BTreeMap<String, Value>,
     stamp: &FabricStamp,
+    policy: ContinuityPolicySnapshot,
 ) -> DeviceFabricSnapshot {
-    let mut snapshot = DeviceFabricSnapshot {
-        schema_version: FABRIC_SCHEMA_VERSION,
-        owner: device.clone(),
-        presence: DevicePresence {
-            device: device.clone(),
-            label,
-            kind: local_device_kind(),
-            capabilities: FabricCapabilities {
-                display: local.display.is_some(),
-                pointer: local.pointer,
-                keyboard: local.keyboard,
-                audio_output: local.audio_output,
-                video_output: local.display.is_some(),
-                clipboard: true,
-                roaming_settings: true,
-                secret_store: true,
-                app_continuation: true,
-            },
-            online: true,
-            last_seen_unix_ms: 0,
-            stamp: stamp.clone(),
-        },
-        media: media::handoff::playback_sessions()
+    let media = if policy.permits(ContinuityCapability::Media) {
+        media::handoff::playback_sessions()
             .into_iter()
             .map(|session| MediaSession {
                 id: session.id,
@@ -3377,16 +3545,30 @@ fn build_local_snapshot(
                 output_device: device.clone(),
                 stamp: stamp.clone(),
             })
-            .collect(),
-        clipboard: shareable_clipboard(device, selection, stamp.counter),
-        settings: reconcile_roaming_settings(
-            roaming_setting_values(),
-            previous,
-            applied_remote_settings,
-            stamp,
-        ),
-        wifi: previous.map_or_else(Vec::new, |state| state.wifi.clone()),
-        display: local.display.map(|rect| DisplayPlacement {
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let clipboard = if policy.permits(ContinuityCapability::Clipboard) {
+        shareable_clipboard(device, selection, stamp.counter)
+    } else {
+        Vec::new()
+    };
+    let (settings, wifi) = if policy.permits(ContinuityCapability::WifiSettings) {
+        (
+            reconcile_roaming_settings(
+                roaming_setting_values(),
+                previous,
+                applied_remote_settings,
+                stamp,
+            ),
+            previous.map_or_else(Vec::new, |state| state.wifi.clone()),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let display = if policy.permits(ContinuityCapability::DisplayInput) {
+        local.display.map(|rect| DisplayPlacement {
             device: device.clone(),
             rect,
             scale_milli: 1000,
@@ -3398,10 +3580,49 @@ fn build_local_snapshot(
                     previous.and_then(|state| state.display.as_ref()?.stream_source.clone())
                 }),
             stamp: stamp.clone(),
-        }),
+        })
+    } else {
+        None
+    };
+    let mut snapshot = DeviceFabricSnapshot {
+        schema_version: FABRIC_SCHEMA_VERSION,
+        owner: device.clone(),
+        presence: DevicePresence {
+            device: device.clone(),
+            label,
+            kind: local_device_kind(),
+            capabilities: policy_capabilities(policy, local),
+            online: true,
+            last_seen_unix_ms: 0,
+            stamp: stamp.clone(),
+        },
+        media,
+        clipboard,
+        settings,
+        wifi,
+        display,
     };
     preserve_unchanged_stamps(&mut snapshot, previous);
     snapshot
+}
+
+fn policy_capabilities(
+    policy: ContinuityPolicySnapshot,
+    local: LocalFabricCapabilities,
+) -> FabricCapabilities {
+    FabricCapabilities {
+        display: policy.permits(ContinuityCapability::DisplayInput) && local.display.is_some(),
+        pointer: policy.permits(ContinuityCapability::DisplayInput) && local.pointer,
+        keyboard: policy.permits(ContinuityCapability::DisplayInput) && local.keyboard,
+        audio_output: policy.permits(ContinuityCapability::Media) && local.audio_output,
+        video_output: (policy.permits(ContinuityCapability::Media)
+            || policy.permits(ContinuityCapability::DisplayInput))
+            && local.display.is_some(),
+        clipboard: policy.permits(ContinuityCapability::Clipboard),
+        roaming_settings: policy.permits(ContinuityCapability::WifiSettings),
+        secret_store: policy.permits(ContinuityCapability::WifiSettings),
+        app_continuation: policy.permits(ContinuityCapability::AppContinuations),
+    }
 }
 
 fn preserve_unchanged_stamps(
@@ -3584,6 +3805,107 @@ fn local_device_kind() -> DeviceKind {
     }
 }
 
+fn require_continuity(capability: ContinuityCapability) -> Result<(), String> {
+    ContinuityPolicySnapshot::load()
+        .permits(capability)
+        .then_some(())
+        .ok_or_else(|| {
+            format!(
+                "{} continuity is disabled on this device",
+                capability.label()
+            )
+        })
+}
+
+fn tear_down_display_and_input(network: &ShellNetwork) {
+    if let Some((local, _)) = network.local_device_fabric_identity()
+        && let Ok(mut state) = personal_display_state().lock()
+    {
+        for (target, session) in std::mem::take(&mut state.outbound) {
+            let _ = network.send_personal_display(
+                &target,
+                PersonalDisplayMessage::End {
+                    session_id: session.session_id,
+                    source: local.clone(),
+                    target: target.clone(),
+                },
+            );
+        }
+        if let Some(session) = state.inbound.take() {
+            state.queue_event(PersonalDisplayEvent::Ended {
+                session_id: session.session_id,
+            });
+        }
+        state
+            .events
+            .retain(|event| !matches!(event, PersonalDisplayEvent::Frame { .. }));
+    }
+
+    if let Ok(mut spatial) = spatial_input_state().lock() {
+        let issued = spatial.issued.values().cloned().collect::<Vec<_>>();
+        for lease in issued {
+            let _ = network.send_personal_fabric_action(
+                &lease.controller,
+                PersonalFabricAction::InputLeaseRevoked { nonce: lease.nonce },
+            );
+            if !spatial.release_controllers.contains(&lease.controller) {
+                spatial
+                    .release_controllers
+                    .push_back(lease.controller.clone());
+            }
+        }
+        spatial.issued.clear();
+        spatial.received.clear();
+        spatial.outbound.clear();
+        spatial.inbound.clear();
+    }
+    let _ = network.take_personal_display_messages();
+}
+
+fn tear_down_nearby_transfers(network: &ShellNetwork) {
+    let active = nearby_drop_state().lock().map_or_else(
+        |_| Vec::new(),
+        |state| {
+            state
+                .large_offers
+                .iter()
+                .map(|(transfer_id, (target, request_id, _))| {
+                    (*transfer_id, target.clone(), *request_id)
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+    for (transfer_id, target, request_id) in &active {
+        let _ = network.send_personal_fabric_action(
+            target,
+            PersonalFabricAction::NearbyTransferCancel {
+                request_id: *request_id,
+                transfer_id: *transfer_id,
+            },
+        );
+    }
+    let _ = with_nearby_transfer_store(|store| {
+        let incoming = store
+            .inbox()
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        for transfer_id in incoming {
+            let _ = store.cancel_incoming(transfer_id);
+        }
+        for (transfer_id, _, _) in &active {
+            let _ = store.cancel_outgoing(*transfer_id);
+        }
+        Ok(())
+    });
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        state.pending.clear();
+        state.large_offers.clear();
+        state.progress.clear();
+        state.last_offer.clear();
+    }
+}
+
 fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -3596,6 +3918,34 @@ fn unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn master_kill_switch_removes_runtime_advertised_capabilities() {
+        let local = LocalFabricCapabilities {
+            display: Some(DisplayRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }),
+            pointer: true,
+            keyboard: true,
+            audio_output: true,
+        };
+        let document = serde_json::json!({"continuity": {
+            "enabled": false,
+            "clipboard": true,
+            "wifi_settings": true,
+            "media": true,
+            "display_input": true,
+            "app_continuations": true
+        }});
+        let policy = ContinuityPolicySnapshot::from_document(document.as_object().unwrap());
+        assert_eq!(
+            policy_capabilities(policy, local),
+            FabricCapabilities::default()
+        );
+    }
 
     #[test]
     fn nearby_drop_never_overwrites_and_rejects_a_symlinked_destination() {
