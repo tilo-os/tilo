@@ -70,6 +70,7 @@ const MAX_LAUNCH_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(30);
 const NEARBY_TRANSFER_HANDLE_TTL: Duration = Duration::from_secs(120);
 const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
+const NEARBY_DESTINATION_HANDLE_TTL: Duration = Duration::from_secs(120);
 const FILES_APP_ID: &str = "dev.tilo.file-explorer";
 
 #[derive(Clone)]
@@ -169,6 +170,92 @@ struct NearbyTransferBinding {
 #[derive(Default)]
 struct NearbyTransferRegistry {
     bindings: HashMap<runtime_collab::NearbyTransferHandle, NearbyTransferBinding>,
+}
+
+#[derive(Clone)]
+struct NearbyDestinationBinding {
+    peer_id: u64,
+    route: String,
+    grant: PathBuf,
+    label: String,
+    remembered: bool,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+struct NearbyDestinationRegistry {
+    bindings: HashMap<runtime_collab::NearbyDestinationHandle, NearbyDestinationBinding>,
+}
+
+impl NearbyDestinationRegistry {
+    fn issue(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        grant: PathBuf,
+        label: String,
+        now: Instant,
+    ) -> runtime_collab::NearbyTransferDestination {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        if let Some((handle, binding)) = self.bindings.iter_mut().find(|(_, binding)| {
+            binding.peer_id == peer_id
+                && binding.route == route.channel_key()
+                && binding.grant == grant
+        }) {
+            binding.expires_at = now + NEARBY_DESTINATION_HANDLE_TTL;
+            return runtime_collab::NearbyTransferDestination {
+                handle: *handle,
+                label: binding.label.clone(),
+                remembered_for_session: binding.remembered,
+            };
+        }
+        loop {
+            let mut bytes = [0_u8; 16];
+            OsRng.fill_bytes(&mut bytes);
+            let handle = runtime_collab::NearbyDestinationHandle::from_issued_bytes(bytes);
+            if handle.valid() && !self.bindings.contains_key(&handle) {
+                self.bindings.insert(
+                    handle,
+                    NearbyDestinationBinding {
+                        peer_id,
+                        route: route.channel_key(),
+                        grant,
+                        label: label.clone(),
+                        remembered: false,
+                        expires_at: now + NEARBY_DESTINATION_HANDLE_TTL,
+                    },
+                );
+                return runtime_collab::NearbyTransferDestination {
+                    handle,
+                    label,
+                    remembered_for_session: false,
+                };
+            }
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        handle: runtime_collab::NearbyDestinationHandle,
+        peer_id: u64,
+        route: &CrdtRoute,
+        remember: bool,
+        now: Instant,
+    ) -> Option<crate::shell::nearby_transfer::SecureNearbyDestination> {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        let binding = self.bindings.get_mut(&handle)?;
+        if binding.peer_id != peer_id || binding.route != route.channel_key() {
+            return None;
+        }
+        binding.remembered |= remember;
+        binding.expires_at = now + NEARBY_DESTINATION_HANDLE_TTL;
+        crate::shell::nearby_transfer::SecureNearbyDestination::open_grant(&binding.grant).ok()
+    }
+
+    fn remove_peer(&mut self, peer_id: u64) {
+        self.bindings
+            .retain(|_, binding| binding.peer_id != peer_id);
+    }
 }
 
 impl NearbyTransferRegistry {
@@ -1570,6 +1657,7 @@ pub struct CapnpBrokerState {
     realtime: Mutex<RealtimeBridge>,
     nearby_targets: Mutex<NearbyTargetRegistry>,
     nearby_transfers: Mutex<NearbyTransferRegistry>,
+    nearby_destinations: Mutex<NearbyDestinationRegistry>,
     workspace_control_network: Mutex<Option<std::sync::Weak<crate::shell::network::ShellNetwork>>>,
 }
 
@@ -2395,6 +2483,7 @@ impl CapnpBrokerState {
                 realtime: Mutex::new(RealtimeBridge::default()),
                 nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
                 nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
+                nearby_destinations: Mutex::new(NearbyDestinationRegistry::default()),
                 workspace_control_network: Mutex::new(None),
             }),
             bridge_rx,
@@ -4175,6 +4264,9 @@ impl CapnpBrokerState {
         if let Ok(mut transfers) = self.nearby_transfers.lock() {
             transfers.remove_peer(peer_id);
         }
+        if let Ok(mut destinations) = self.nearby_destinations.lock() {
+            destinations.remove_peer(peer_id);
+        }
         if let Ok(mut realtime) = self.realtime.lock() {
             realtime.subscribers.remove(&peer_id);
             let target_sessions = realtime
@@ -5092,6 +5184,40 @@ impl channel_handle::Server for CapnpChannelHandle {
                         })
                     })
                     .collect();
+                let destinations = {
+                    let Ok(mut destinations) = self.state.nearby_destinations.lock() else {
+                        return Promise::err(capnp::Error::failed(
+                            "Nearby Send destination authority is unavailable".into(),
+                        ));
+                    };
+                    grants
+                        .iter()
+                        .filter_map(|grant| {
+                            let Capability::Filesystem {
+                                path,
+                                mode: FsMode::ReadWrite,
+                                ..
+                            } = grant
+                            else {
+                                return None;
+                            };
+                            let grant = std::fs::canonicalize(path).ok()?;
+                            if !std::fs::metadata(&grant).ok()?.is_dir() {
+                                return None;
+                            }
+                            let label = grant
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .filter(|name| !name.is_empty())
+                                .unwrap_or("Workspace files")
+                                .chars()
+                                .take(runtime_collab::MAX_NEARBY_TRANSFER_LABEL_BYTES)
+                                .collect::<String>();
+                            Some(destinations.issue(self.peer_id, &route, grant, label, now))
+                        })
+                        .take(runtime_collab::MAX_NEARBY_TRANSFER_DESTINATIONS)
+                        .collect::<Vec<_>>()
+                };
                 runtime_collab::NearbyTransferReply::Snapshot {
                     snapshot: runtime_collab::NearbyTransferSnapshot {
                         targets: targets
@@ -5102,6 +5228,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                                 online: true,
                             })
                             .collect(),
+                        destinations,
                         transfers,
                     },
                 }
@@ -5207,7 +5334,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                     Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
                 }
             }
-            runtime_collab::NearbyTransferCommand::Decide { handle, accept } => {
+            runtime_collab::NearbyTransferCommand::Decide {
+                handle,
+                accept,
+                destination,
+                remember_for_session,
+            } => {
                 let transfer_id =
                     self.state
                         .nearby_transfers
@@ -5232,10 +5364,37 @@ impl channel_handle::Server for CapnpChannelHandle {
                         },
                     );
                 };
-                match crate::shell::device_fabric_runtime::decide_nearby_transfer(
+                let destination =
+                    if accept {
+                        destination.and_then(|destination| {
+                            self.state.nearby_destinations.lock().ok().and_then(
+                                |mut destinations| {
+                                    destinations.resolve(
+                                        destination,
+                                        self.peer_id,
+                                        &route,
+                                        remember_for_session,
+                                        Instant::now(),
+                                    )
+                                },
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                if accept && destination.is_none() {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason: "Nearby Send destination expired; choose it again".into(),
+                        },
+                    );
+                }
+                match crate::shell::device_fabric_runtime::decide_nearby_transfer_at(
                     &network,
                     transfer_id,
                     accept,
+                    destination,
                 ) {
                     Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
                     Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
@@ -11590,6 +11749,52 @@ mod tests {
                     runtime_collab::NearbyTransferDirection::Receiving,
                     now,
                 )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn nearby_destination_handles_are_route_bound_and_session_remembered() {
+        let root = tempfile::tempdir().expect("destination root");
+        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+        let now = Instant::now();
+        let mut registry = NearbyDestinationRegistry::default();
+        let destination = registry.issue(
+            41,
+            &route,
+            root.path().to_path_buf(),
+            "Workspace files".into(),
+            now,
+        );
+        assert!(
+            registry
+                .resolve(destination.handle, 42, &route, false, now)
+                .is_none()
+        );
+        assert!(
+            registry
+                .resolve(destination.handle, 41, &other_route, false, now)
+                .is_none()
+        );
+        assert!(
+            registry
+                .resolve(destination.handle, 41, &route, true, now)
+                .is_some()
+        );
+        let refreshed = registry.issue(
+            41,
+            &route,
+            root.path().to_path_buf(),
+            "Workspace files".into(),
+            now,
+        );
+        assert_eq!(refreshed.handle, destination.handle);
+        assert!(refreshed.remembered_for_session);
+        registry.remove_peer(41);
+        assert!(
+            registry
+                .resolve(destination.handle, 41, &route, false, now)
                 .is_none()
         );
     }

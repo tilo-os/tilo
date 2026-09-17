@@ -392,6 +392,7 @@ pub struct ChannelHandle {
 pub const MAX_NEARBY_TRANSFER_WIRE_BYTES: usize = 64 * 1024;
 /// Maximum certified devices returned to one picker snapshot.
 pub const MAX_NEARBY_TRANSFER_TARGETS: usize = 32;
+pub const MAX_NEARBY_TRANSFER_DESTINATIONS: usize = 16;
 /// Maximum active/recent transfers returned to one status snapshot.
 pub const MAX_NEARBY_TRANSFER_STATUSES: usize = 128;
 /// Maximum UTF-8 byte length of a device label or rejection reason.
@@ -452,6 +453,38 @@ impl NearbyTransferHandle {
     }
 }
 
+/// A short-lived shell capability naming one receiver destination for one
+/// authenticated Files connection. Applications never receive its host path.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyDestinationHandle([u8; 16]);
+
+impl NearbyDestinationHandle {
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
+/// Path-free receiver destination projected from this Files instance's
+/// current writable grants.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferDestination {
+    pub handle: NearbyDestinationHandle,
+    pub label: String,
+    pub remembered_for_session: bool,
+}
+
 /// A certified personal-device target safe to show in an application picker.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -472,6 +505,7 @@ pub enum NearbyTransferDirection {
 #[serde(rename_all = "kebab-case")]
 pub enum NearbyTransferPhase {
     AwaitingConsent,
+    AwaitingDestination,
     Queued,
     Transferring,
     Completed,
@@ -497,6 +531,7 @@ pub struct NearbyTransferStatus {
 #[serde(deny_unknown_fields)]
 pub struct NearbyTransferSnapshot {
     pub targets: Vec<NearbyTransferTarget>,
+    pub destinations: Vec<NearbyTransferDestination>,
     pub transfers: Vec<NearbyTransferStatus>,
 }
 
@@ -515,6 +550,8 @@ pub enum NearbyTransferCommand {
     Decide {
         handle: NearbyTransferHandle,
         accept: bool,
+        destination: Option<NearbyDestinationHandle>,
+        remember_for_session: bool,
     },
     Cancel {
         handle: NearbyTransferHandle,
@@ -540,9 +577,20 @@ impl NearbyTransferCommand {
     pub fn valid(&self) -> bool {
         match self {
             Self::Snapshot => true,
-            Self::Decide { handle, .. } | Self::Cancel { handle } | Self::Retry { handle } => {
+            Self::Decide {
+                handle,
+                accept,
+                destination,
+                remember_for_session,
+            } => {
                 handle.valid()
+                    && if *accept {
+                        destination.is_some_and(NearbyDestinationHandle::valid)
+                    } else {
+                        destination.is_none() && !remember_for_session
+                    }
             }
+            Self::Cancel { handle } | Self::Retry { handle } => handle.valid(),
             Self::Send {
                 target,
                 source_path,
@@ -562,11 +610,17 @@ impl NearbyTransferReply {
         match self {
             Self::Snapshot { snapshot } => {
                 snapshot.targets.len() <= MAX_NEARBY_TRANSFER_TARGETS
+                    && snapshot.destinations.len() <= MAX_NEARBY_TRANSFER_DESTINATIONS
                     && snapshot.transfers.len() <= MAX_NEARBY_TRANSFER_STATUSES
                     && snapshot.targets.iter().all(|target| {
                         target.handle.valid()
                             && !target.label.is_empty()
                             && target.label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+                    })
+                    && snapshot.destinations.iter().all(|destination| {
+                        destination.handle.valid()
+                            && !destination.label.is_empty()
+                            && destination.label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
                     })
                     && snapshot.transfers.iter().all(|transfer| {
                         !transfer.name.is_empty()
@@ -2661,6 +2715,24 @@ mod tests {
             .valid()
         );
         assert!(
+            NearbyTransferCommand::Decide {
+                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                accept: true,
+                destination: Some(NearbyDestinationHandle::from_issued_bytes([9; 16])),
+                remember_for_session: true,
+            }
+            .valid()
+        );
+        assert!(
+            !NearbyTransferCommand::Decide {
+                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                accept: true,
+                destination: None,
+                remember_for_session: false,
+            }
+            .valid()
+        );
+        assert!(
             !NearbyTransferCommand::Send {
                 target: NearbyTargetHandle::from_issued_bytes([7; 16]),
                 source_path: vec![b'a'; MAX_NEARBY_TRANSFER_PATH_BYTES + 1],
@@ -2688,6 +2760,11 @@ mod tests {
         let reply = NearbyTransferReply::Snapshot {
             snapshot: NearbyTransferSnapshot {
                 targets: vec![target],
+                destinations: vec![NearbyTransferDestination {
+                    handle: NearbyDestinationHandle::from_issued_bytes([5; 16]),
+                    label: "Workspace files".into(),
+                    remembered_for_session: false,
+                }],
                 transfers: vec![transfer.clone()],
             },
         };
@@ -2699,6 +2776,7 @@ mod tests {
             !NearbyTransferReply::Snapshot {
                 snapshot: NearbyTransferSnapshot {
                     targets: Vec::new(),
+                    destinations: Vec::new(),
                     transfers: vec![impossible],
                 },
             }
