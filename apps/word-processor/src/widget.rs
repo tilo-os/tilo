@@ -81,6 +81,13 @@ enum PortalPurpose {
     SaveAs,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyPressEffect {
+    Ignored,
+    Motion,
+    Edit,
+}
+
 /// What a right-click context-menu row does. The shared [`ContextMenu`]'s
 /// `Arc<dyn Fn>` callbacks can't mutate the widget, so the widget keeps this
 /// parallel list and dispatches on the clicked row index.
@@ -9062,12 +9069,6 @@ impl WordProcessorWidget {
         true
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the guards are already split into handle_key_press_guards; what is \
-                  left is one match whose arms are the key dispatch table, and a table \
-                  reads better whole than cut in half"
-    )]
     fn handle_key_press(
         &mut self,
         state: &mut AutoCommit,
@@ -9087,115 +9088,20 @@ impl WordProcessorWidget {
         if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
             self.last_autocorrection = None;
         }
-        let mut changed = true;
-        let mut motion = false;
-        match logical_key {
-            Key::Named(NamedKey::Tab) => {
-                // Inside a table, Tab/Shift-Tab walk cells (and Tab in the
-                // last cell appends a row). Otherwise, when the paragraph has
-                // ruler tab stops, Tab advances to the next one (recording a
-                // tab char); with no stops it falls back to inserting spaces.
-                let append_row = !shift
-                    && self
-                        .caret_table_target()
-                        .is_some_and(|(_, row, column, rows, columns)| {
-                            row.saturating_add(1) == rows && column.saturating_add(1) == columns
-                        });
-                if append_row {
-                    if let Some((_, _, _, rows, _)) = self.caret_table_target() {
-                        self.edit_table_via_action(
-                            state,
-                            crate::actions::TableEdit::InsertRow { at: rows },
-                        );
+        let effect = match logical_key {
+            Key::Named(named) => self
+                .handle_named_edit_key(state, *named, shift)
+                .unwrap_or_else(|| {
+                    if self.handle_navigation_key(state, *named, shift) {
+                        KeyPressEffect::Motion
+                    } else {
+                        self.insert_key_text(state, text)
                     }
-                    motion = true;
-                } else if self.inner.tab_cell(state, !shift) {
-                    motion = true; // tab_cell already cleared any selection
-                } else if !self.inner.caret_tab_stops(state).is_empty() {
-                    self.insert_text_via_action(state, "\t");
-                } else {
-                    self.insert_text_via_action(state, "    ");
-                }
-            }
-            Key::Named(NamedKey::Enter) => {
-                let correction = self.autocorrect_before_boundary(state);
-                self.enter_via_action(state);
-                self.last_autocorrection = correction;
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if !self.undo_document_autocorrection(state) {
-                    self.delete_via_action(state, true);
-                }
-            }
-            Key::Named(NamedKey::Delete) => self.delete_via_action(state, false),
-            Key::Named(NamedKey::ArrowLeft) => {
-                self.extend_or_clear(shift);
-                self.inner.move_left(state);
-                motion = true;
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                self.extend_or_clear(shift);
-                self.inner.move_right(state);
-                motion = true;
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                self.extend_or_clear(shift);
-                // Inside a table, Up moves to the cell directly above; the
-                // grid is block-granular so this matches block-relative motion.
-                if !self.inner.cell_vertical(state, false) {
-                    self.inner.move_block_relative(state, -1);
-                }
-                motion = true;
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                self.extend_or_clear(shift);
-                if !self.inner.cell_vertical(state, true) {
-                    self.inner.move_block_relative(state, 1);
-                }
-                motion = true;
-            }
-            Key::Named(NamedKey::Home) => {
-                self.extend_or_clear(shift);
-                self.inner.move_home();
-                motion = true;
-            }
-            Key::Named(NamedKey::End) => {
-                self.extend_or_clear(shift);
-                self.inner.move_end(state);
-                motion = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                let correction = self.autocorrect_before_boundary(state);
-                if !self.autoformat_on_space_via_actions(state) {
-                    self.insert_text_via_action(state, " ");
-                }
-                self.last_autocorrection = correction.map(|mut correction| {
-                    correction.boundary_end = self.inner.caret.offset;
-                    correction
-                });
-            }
-            _ => {
-                let typed: String = text
-                    .map(|t| t.chars().filter(|c| !c.is_control()).collect())
-                    .unwrap_or_default();
-                if typed.is_empty() {
-                    changed = false;
-                } else {
-                    let correction = typed
-                        .chars()
-                        .next()
-                        .filter(|character| character.is_ascii_punctuation() && *character != '\'')
-                        .and_then(|_| self.autocorrect_before_boundary(state));
-                    self.insert_text_via_action(state, &typed);
-                    self.last_autocorrection = correction.map(|mut correction| {
-                        correction.boundary_end = self.inner.caret.offset;
-                        correction
-                    });
-                }
-            }
-        }
-        if changed {
-            if !motion {
+                }),
+            _ => self.insert_key_text(state, text),
+        };
+        if effect != KeyPressEffect::Ignored {
+            if effect == KeyPressEffect::Edit {
                 // editing consumes/collapses any selection
                 self.inner.clear_anchor();
                 // A real content edit (not caret motion) advances the
@@ -9208,6 +9114,135 @@ impl WordProcessorWidget {
             self.needs_commit = true;
             *handled = true;
         }
+    }
+
+    fn handle_named_edit_key(
+        &mut self,
+        state: &mut AutoCommit,
+        key: NamedKey,
+        shift: bool,
+    ) -> Option<KeyPressEffect> {
+        match key {
+            NamedKey::Tab => Some(self.handle_tab_key(state, shift)),
+            NamedKey::Enter => {
+                let correction = self.autocorrect_before_boundary(state);
+                self.enter_via_action(state);
+                self.last_autocorrection = correction;
+                Some(KeyPressEffect::Edit)
+            }
+            NamedKey::Backspace => {
+                if !self.undo_document_autocorrection(state) {
+                    self.delete_via_action(state, true);
+                }
+                Some(KeyPressEffect::Edit)
+            }
+            NamedKey::Delete => {
+                self.delete_via_action(state, false);
+                Some(KeyPressEffect::Edit)
+            }
+            NamedKey::Space => {
+                let correction = self.autocorrect_before_boundary(state);
+                if !self.autoformat_on_space_via_actions(state) {
+                    self.insert_text_via_action(state, " ");
+                }
+                self.last_autocorrection = correction.map(|mut correction| {
+                    correction.boundary_end = self.inner.caret.offset;
+                    correction
+                });
+                Some(KeyPressEffect::Edit)
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_tab_key(&mut self, state: &mut AutoCommit, shift: bool) -> KeyPressEffect {
+        // Inside a table, Tab/Shift-Tab walk cells (and Tab in the last cell
+        // appends a row). Paragraph tab stops insert a tab; otherwise use the
+        // conventional four-space fallback.
+        let table_target = self.caret_table_target();
+        let append_row = !shift
+            && table_target
+                .as_ref()
+                .is_some_and(|(_, row, column, rows, columns)| {
+                    row.saturating_add(1) == *rows && column.saturating_add(1) == *columns
+                });
+        if append_row {
+            if let Some((_, _, _, rows, _)) = table_target {
+                self.edit_table_via_action(
+                    state,
+                    crate::actions::TableEdit::InsertRow { at: rows },
+                );
+            }
+            KeyPressEffect::Motion
+        } else if self.inner.tab_cell(state, !shift) {
+            KeyPressEffect::Motion
+        } else {
+            let text = if self.inner.caret_tab_stops(state).is_empty() {
+                "    "
+            } else {
+                "\t"
+            };
+            self.insert_text_via_action(state, text);
+            KeyPressEffect::Edit
+        }
+    }
+
+    fn handle_navigation_key(&mut self, state: &AutoCommit, key: NamedKey, shift: bool) -> bool {
+        match key {
+            NamedKey::ArrowLeft => {
+                self.extend_or_clear(shift);
+                self.inner.move_left(state);
+            }
+            NamedKey::ArrowRight => {
+                self.extend_or_clear(shift);
+                self.inner.move_right(state);
+            }
+            NamedKey::ArrowUp | NamedKey::ArrowDown => {
+                self.extend_or_clear(shift);
+                let delta = if matches!(key, NamedKey::ArrowDown) {
+                    1
+                } else {
+                    -1
+                };
+                if !self.inner.cell_vertical(state, delta > 0) {
+                    self.inner.move_block_relative(state, delta);
+                }
+            }
+            NamedKey::Home => {
+                self.extend_or_clear(shift);
+                self.inner.move_home();
+            }
+            NamedKey::End => {
+                self.extend_or_clear(shift);
+                self.inner.move_end(state);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn insert_key_text(&mut self, state: &mut AutoCommit, text: Option<&str>) -> KeyPressEffect {
+        let typed: String = text
+            .map(|text| {
+                text.chars()
+                    .filter(|character| !character.is_control())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if typed.is_empty() {
+            return KeyPressEffect::Ignored;
+        }
+        let correction = typed
+            .chars()
+            .next()
+            .filter(|character| character.is_ascii_punctuation() && *character != '\'')
+            .and_then(|_| self.autocorrect_before_boundary(state));
+        self.insert_text_via_action(state, &typed);
+        self.last_autocorrection = correction.map(|mut correction| {
+            correction.boundary_end = self.inner.caret.offset;
+            correction
+        });
+        KeyPressEffect::Edit
     }
 
     /// Early exits before a key press reaches editing: an unfocused widget,
@@ -16772,6 +16807,31 @@ mod tests {
             "the document holds exactly the characters that were typed, \
              capitals included",
         );
+    }
+
+    #[test]
+    fn caret_navigation_is_handled_without_marking_the_document_modified() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "move");
+        wp.focused = true;
+        wp.modified = false;
+        wp.needs_commit = false;
+        let before = wp.model().caret().offset;
+        let mut handled = false;
+
+        wp.handle_key_press(
+            &mut state.doc,
+            &Key::Named(NamedKey::ArrowLeft),
+            None,
+            false,
+            false,
+            &mut handled,
+        );
+
+        assert!(handled);
+        assert_eq!(wp.model().caret().offset, before - 1);
+        assert!(!wp.modified, "caret motion is not a content edit");
+        assert!(wp.needs_commit, "caret presence still needs publishing");
     }
 
     /// A document editor shows the document. The contextual styles panel
