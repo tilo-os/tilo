@@ -47,6 +47,12 @@ impl CameraSearchProvider {
 
     /// Atomically replace the finite action directory and its compact exact
     /// materialization context. A rejected catalog never publishes new state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generated catalog is not canonical or
+    /// exceeds Camera's bounded published resource set. The previous complete
+    /// generation remains active.
     pub fn sync(&self, context: &CameraResourceCtx) -> Result<(), SearchCatalogError> {
         // Construct the retained seed directly from the bounded prefix. Do
         // not clone then truncate: a hostile 100k-device input must not create
@@ -150,7 +156,7 @@ impl CameraSearchProvider {
     }
 
     #[cfg(test)]
-    fn retained_resource_trees(&self) -> usize {
+    fn retained_resource_trees() -> usize {
         0
     }
 
@@ -271,7 +277,7 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "import-image")
         );
-        assert_eq!(provider.retained_resource_trees(), 0);
+        assert_eq!(CameraSearchProvider::retained_resource_trees(), 0);
     }
 
     #[test]
@@ -286,7 +292,7 @@ mod tests {
         assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
         assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
         assert!(provider.stats().records <= MAX_CAMERA_SEARCH_RESOURCES);
-        assert_eq!(provider.retained_resource_trees(), 0);
+        assert_eq!(CameraSearchProvider::retained_resource_trees(), 0);
         assert_eq!(
             provider.retained_device_seeds(),
             MAX_PUBLISHED_CAMERA_DEVICES
