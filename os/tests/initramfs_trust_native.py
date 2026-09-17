@@ -18,7 +18,7 @@ SPEC.loader.exec_module(verifier)
 def main():
     if os.environ.get('TILO_DISPOSABLE_NATIVE_FIXTURE') != '1':
         raise ValueError('explicit disposable native fixture required')
-    for tool in ('cpio', 'gzip', 'mksquashfs', 'unsquashfs'):
+    for tool in ('cpio', 'gzip', 'zstd', 'mksquashfs', 'unsquashfs'):
         if not shutil.which(tool):
             raise ValueError('required native archive tooling unavailable')
     key = (b'-----BEGIN PUBLIC KEY-----\n' +
@@ -39,11 +39,18 @@ def main():
                 stderr=subprocess.PIPE, check=True, timeout=20).stdout
         early = archive('early', {'early_cpio': b'1', 'kernel/x86/microcode/fixture.bin': b'fixture'})
         plain = archive('plain', {verifier.KEY: key})
-        def squash_archive(name, relative, contents):
+        def squash_archive(name, relative, contents, redirect=None):
             squash_root = root / (name + '-source')
             path = squash_root / relative
             path.parent.mkdir(parents=True)
             path.write_bytes(contents)
+            if redirect == 'key':
+                path.rename(path.with_name('actual-public.pem'))
+                path.symlink_to('actual-public.pem')
+            elif redirect == 'parent':
+                parent = path.parent
+                parent.rename(parent.with_name('actual-tilo'))
+                parent.symlink_to('actual-tilo', target_is_directory=True)
             squash = root / (name + '.squashfs')
             subprocess.run([shutil.which('mksquashfs'), str(squash_root), str(squash),
                             '-noappend', '-processors', '1', '-comp', 'gzip', '-no-progress'],
@@ -52,12 +59,20 @@ def main():
         wrapped = squash_archive('squash', verifier.KEY, key)
         stale_squash = squash_archive('stale-squash', verifier.KEY, b'old public key')
         missing_squash = squash_archive('missing-squash', 'unrelated', b'public')
+        linked_key = squash_archive('linked-key', verifier.KEY, key, 'key')
+        linked_parent = squash_archive('linked-parent', verifier.KEY, key, 'parent')
+        zstd_main = subprocess.run(['/usr/bin/zstd', '-q', '-c'], input=plain, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, check=True, timeout=20).stdout
         stale = archive('stale', {verifier.KEY: b'old public key'})
         missing = archive('missing', {'unrelated': b'public'})
         corrupted = bytearray(gzip.compress(plain))
         corrupted[-5] ^= 1
         cases = [('plain', plain, True), ('early-gzip', early + gzip.compress(plain), True),
                  ('early-gzip-squashfs', early + gzip.compress(wrapped), True),
+                 ('early-zstd', early + zstd_main, True),
+                 ('squash-key-symlink', gzip.compress(linked_key), False),
+                 ('squash-parent-symlink', gzip.compress(linked_parent), False),
+                 ('truncated-zstd', zstd_main[:-3], False),
                  ('missing', gzip.compress(missing), False), ('stale', gzip.compress(stale), False),
                  ('duplicate', plain + gzip.compress(plain), False),
                  ('duplicate-squash', plain + gzip.compress(wrapped), False),
@@ -78,7 +93,9 @@ def main():
                 if not accepted:
                     raise ValueError('invalid fixture unexpectedly accepted')
                 results.append({'case': name, 'proof': proof})
-        print(json.dumps({'schema': 1, 'status': 'passed', 'cases': results}, sort_keys=True))
+        packages = subprocess.run(['/usr/bin/rpm', '-q', 'cpio', 'squashfs-tools', 'gzip', 'xz', 'zstd'],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10).stdout.decode().splitlines()
+        print(json.dumps({'schema': 1, 'status': 'passed', 'tool_packages': packages, 'cases': results}, sort_keys=True))
 
 
 if __name__ == '__main__':

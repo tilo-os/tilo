@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import hashlib
 import os
 import resource
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -186,6 +187,37 @@ def archives(stream, state, scratch):
         newc(stream, magic, state, scratch)
 
 
+def squash_key(path, scratch, deadline, expected_size):
+    # -cat resolves symlinks. First require the exact root/ancestor/key chain to
+    # consist only of directories and a regular leaf, using the trusted tool's
+    # fixed-path numeric listing. Reject unfamiliar output instead of guessing.
+    expected = {'ROOT': 'd', 'ROOT/usr': 'd', 'ROOT/usr/share': 'd',
+                'ROOT/usr/share/tilo': 'd', 'ROOT/' + KEY: '-'}
+    with child([TOOLS['unsquashfs'], '-lln', '-no-wildcards', '-dest', 'ROOT',
+                str(path), KEY], limit=MAX_KEY, scratch=scratch, deadline=deadline) as output:
+        listing = bytearray()
+        while part := output.read(CHUNK):
+            listing.extend(part)
+    seen = set()
+    for line in listing.decode('ascii', errors='strict').splitlines():
+        match = re.fullmatch(r'([d-])[rwxStTs-]{9} +[0-9]+/[0-9]+ +([0-9]+) '
+                             r'[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (ROOT(?:/[a-zA-Z0-9./_-]+)?)', line)
+        if not match or match[3] in seen or expected.get(match[3]) != match[1]:
+            raise VerificationError('squashfs key path is redirected or listing is unsupported')
+        if match[3] == 'ROOT/' + KEY and int(match[2]) != expected_size:
+            raise VerificationError('squashfs public key size differs')
+        seen.add(match[3])
+    if seen != set(expected):
+        raise VerificationError('squashfs regular key path is incomplete')
+    with child([TOOLS['unsquashfs'], '-processors', '1', '-data-queue', '16',
+                '-frag-queue', '16', '-cat', str(path), KEY],
+               limit=MAX_KEY, scratch=scratch, deadline=deadline) as output:
+        key = bytearray()
+        while part := output.read(CHUNK):
+            key.extend(part)
+    return bytes(key)
+
+
 def verify(image: Path, expected_key: bytes, *, scratch_parent=None):
     deadline = time.monotonic() + TIMEOUT
     if not isinstance(expected_key, bytes) or not 0 < len(expected_key) <= MAX_KEY:
@@ -224,13 +256,7 @@ def verify(image: Path, expected_key: bytes, *, scratch_parent=None):
         if state['keys'] and state['key_parent_redirect']:
             raise VerificationError('PCR key parent is redirected')
         if state['squash'] is not None:
-            with child([TOOLS['unsquashfs'], '-processors', '1', '-data-queue', '16',
-                        '-frag-queue', '16', '-cat', str(state['squash']), KEY],
-                       limit=MAX_KEY, scratch=scratch, deadline=deadline) as output:
-                key = bytearray()
-                while part := output.read(CHUNK):
-                    key.extend(part)
-                state['keys'].append(bytes(key))
+            state['keys'].append(squash_key(state['squash'], scratch, deadline, len(expected_key)))
         if state['keys'] != [expected_key]:
             raise VerificationError('missing, duplicate, or mismatched PCR key')
         after = os.fstat(source.fileno())
