@@ -181,6 +181,11 @@ if grep -Fqx '# CONFIG_DEBUG_FS is not set' "$running_kernel_config" 2>/dev/null
 else
   warn "kernel debugfs control surface remains compiled"
 fi
+if grep -Fqx '# CONFIG_PROC_PAGE_MONITOR is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "procfs physical-page monitoring interfaces are not compiled"
+else
+  warn "procfs still exposes pagemap, smaps, or clear_refs interfaces"
+fi
 for interface in \
   DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
