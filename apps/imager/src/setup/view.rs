@@ -681,6 +681,10 @@ impl SetupApp {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(Text::new(description)));
+            // The card's commands form one action row (recheck before choose,
+            // matching the keyboard order) rather than a stack of one-button
+            // lines, so they read as a group beneath the status.
+            let mut actions = Row::new();
             if experience == Experience::Desktop {
                 let (status, can_recheck) = self.desktop_experience_status();
                 card_body = card_body.push(Box::new(
@@ -689,14 +693,14 @@ impl SetupApp {
                         .with_live(Politeness::Polite),
                 ));
                 if can_recheck {
-                    card_body = card_body.push(Box::new(self.button(
+                    actions = actions.push(Box::new(self.button(
                         "setup.desktop.recheck",
                         "Recheck Desktop support",
                         SetupCommand::RetryDesktop,
                     )));
                 }
             }
-            card_body = card_body.push(Box::new(choose));
+            card_body = card_body.push(Box::new(actions.push(Box::new(choose))));
             if !supported && experience != Experience::Desktop {
                 card_body = card_body.push(Box::new(
                     Text::new(&experience_unavailable_reason(

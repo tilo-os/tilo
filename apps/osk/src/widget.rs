@@ -1076,9 +1076,13 @@ fn draw_cell(
         return;
     }
     let font = (cell.height() * font_scale).clamp(11.0, 30.0) as f32;
-    let (tw, _th) = text_renderer.measure(label, font, None);
+    // Centre on the line the renderer paints (accessibility scale included),
+    // not on the nominal font size: at 2× the glyphs are twice as tall and a
+    // size-based offset sat them below the key centre and across the cell
+    // boundary.
+    let (tw, th) = text_renderer.measure(label, font, None);
     let tx = cell.center().x - f64::from(tw) / 2.0;
-    let ty = cell.y0 + (cell.height() - f64::from(font)) / 2.0;
+    let ty = cell.y0 + (cell.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -1144,9 +1148,10 @@ fn draw_suggestion_chip(
         return;
     }
     let font = (chip.height() * 0.5).clamp(12.0, 22.0) as f32;
-    let (tw, _th) = text_renderer.measure(word, font, None);
+    // Measured line height, so the word stays inside the pill at every scale.
+    let (tw, th) = text_renderer.measure(word, font, None);
     let tx = chip.center().x - f64::from(tw) / 2.0;
-    let ty = chip.y0 + (chip.height() - f64::from(font)) / 2.0;
+    let ty = chip.y0 + (chip.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
         scene,
         word,
