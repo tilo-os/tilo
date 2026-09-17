@@ -289,6 +289,13 @@ impl FormRects {
     }
 }
 
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
 /// result, the merged outcome, the ids that uploaded successfully, and the
 /// ids the server confirmed deleted.
@@ -3947,6 +3954,12 @@ impl CalendarApp {
         ) else {
             return Vec::new();
         };
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
         let mut hits: Vec<_> = chrome
             .hits
             .into_iter()
@@ -3963,27 +3976,24 @@ impl CalendarApp {
             .collect();
         let r = self.sidebar.rect();
         let pad = 18.0;
-        let y = self.draw_sidebar_lists(scene, t, tr, theme, r, pad, chrome.body_y, &mut hits);
-        let y = self.draw_sidebar_calendars(scene, t, tr, theme, r, pad, y, &mut hits);
-        self.draw_sidebar_footer(scene, t, tr, theme, r, pad, y, &mut hits);
+        let y = self.draw_sidebar_lists(&mut paint, r, pad, chrome.body_y, &mut hits);
+        let y = self.draw_sidebar_calendars(&mut paint, r, pad, y, &mut hits);
+        self.draw_sidebar_footer(&mut paint, r, pad, y, &mut hits);
 
         hits
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_lists(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         pad: f64,
         mut y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         // Smart lists.
         let smart = [
@@ -4086,21 +4096,18 @@ impl CalendarApp {
     /// calendars are listed with a visibility checkbox; a Sync affordance in
     /// the heading pulls events from every visible calendar (part of
     /// [`Self::draw_sidebar`]). Returns the `y` the footer should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_calendars(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         pad: f64,
         mut y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         if !self.accounts.is_empty() {
             y += 14.0;
@@ -4198,16 +4205,9 @@ impl CalendarApp {
     /// The footer: the mini upcoming-task rail (when there's room for it
     /// above the reserved mini-month band) followed by the mini-month
     /// navigator itself (part of [`Self::draw_sidebar`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_footer(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         pad: f64,
         y: f64,
@@ -4215,14 +4215,14 @@ impl CalendarApp {
     ) {
         // Reserve the bottom of the sidebar for the mini-month navigator.
         let mini_top = MiniMonth::content_limit(r);
-        let y = self.draw_sidebar_task_rail(scene, t, tr, theme, r, pad, y, mini_top, hits);
+        let y = self.draw_sidebar_task_rail(paint, r, pad, y, mini_top, hits);
         let event_dates = self.mini_month_event_dates();
         hits.extend(
             MiniMonth::draw(
-                scene,
-                t,
-                tr,
-                theme,
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
                 r,
                 y,
                 self.anchor,
@@ -4239,22 +4239,19 @@ impl CalendarApp {
     /// there's vertical room left above the mini-month (the CALENDARS
     /// section above may have used it up; the agenda/day views still list
     /// the tasks in full either way) (part of [`Self::draw_sidebar_footer`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_task_rail(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         pad: f64,
         mut y: f64,
         mini_top: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let rail_tasks = self.model.tasks_for(&self.list_sel, self.today);
         if !rail_tasks.is_empty() && y + 56.0 < mini_top {
