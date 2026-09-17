@@ -29,6 +29,7 @@ fi
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
 "$repo_root/dist/rpm/test-signing-contract.sh"
 "$repo_root/dist/rpm/test-app-store-stage.sh"
+"$repo_root/dist/rpm/test-build-target-dir.sh"
 
 # Host packages ship only the compositor from the shell crate. Keep every FHS
 # builder explicit so adding another developer binary to that crate cannot

@@ -42,7 +42,13 @@ if (( run_cargo )); then
     ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --no-default-features )
 fi
 
-rel=${TILO_BIN_DIR:-$repo_root/target/release}
+# Cargo resolves a relative CARGO_TARGET_DIR from the repository root (the
+# directory used by both builds above). Canonicalise that path here as well so
+# packaging follows the artifacts Cargo actually produced.
+target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
+[[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
+target_dir=$(realpath -m "$target_dir")
+rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in shell tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
