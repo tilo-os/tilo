@@ -185,3 +185,11 @@ All nine native test entry points and their subprocess cases remain unrun. They 
 The scoped review found two Important issues. Publication can return success for a nested destination parent moved during its final file reread, because the final name check uses the retained old directory without revalidating its ancestry. The parent-death regression polls with conflicting writer opens, which themselves trigger lease breaks and can mask missing socket-EOF cleanup.
 
 Fix round 1 is assigned to the original implementer. It requires final target ancestry/security validation with an uncertain result and retained bytes on failure, a deterministic native ancestor-substitution regression, and independent observation of receiver EOF cleanup or termination before attempting any writer open. Source acceptance remains withheld; fresh scoped re-review follows the fix. No native tests were run or runtime gates changed.
+
+### Native primitive source review closed
+
+Fix `27dd198915e9f4deee743b85feea81847070a0f2` closes both Important findings. Fresh scoped re-review found no new breakage or out-of-scope observations. Final publication now revalidates destination ancestry/security after the long reread and source postflight; failure retains the uncertain result and bytes. The parent-death regression observes the helper through a retained pidfd before any writer open can trigger a lease break.
+
+The amended Linux native test executable and normal helper linked successfully, and scoped formatting/lint completed with the existing warnings disclosed. The final native test ELF SHA-256 is `4bb3101947ac3fe15cfecbcb1d66fb501a991d3d838dffaab8c344778f333746`. The fix review package SHA-256 is `146094d402929584c7ba581d985d31903d8d95f7a0117f224fedad352b8180a8`. All ten native entry points remain unrun; this accepts the source slice without completing Task 4 or native qualification.
+
+The next source slice is the Windows Connected persistence backend. It must preserve existing Unix store formats and behavior, use full Windows object identities and role-specific sharing, and implement actual relative opens, namespace mutation and authenticated volume barriers. Live authorized access, platform persistence qualification and a reviewed product authority provider remain prerequisites to Windows activation. Neither held Fedora VM was operated.
