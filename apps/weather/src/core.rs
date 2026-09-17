@@ -76,18 +76,13 @@ const DETAIL_SUBTITLE_TEXT: f32 = 13.0;
 /// rects, the reorder metrics and the painter agree at every scale. The
 /// crate's one copy of the line-height formula.
 fn line_h(size: f32, text_scale: f32) -> f64 {
-    let scale = if text_scale.is_finite() {
-        text_scale.clamp(0.5, 4.0)
-    } else {
-        1.0
-    };
-    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+    ui::text_metrics::line_height_px(size, text_scale)
 }
 
 /// How much taller one line of `size`-pt text is at `text_scale` than at 1×;
 /// zero at or below 1×, so nothing ever shrinks under its authored design.
 fn line_growth(size: f32, text_scale: f32) -> f64 {
-    (line_h(size, text_scale) - line_h(size, 1.0)).max(0.0)
+    ui::text_metrics::line_growth(size, text_scale)
 }
 
 /// The authored (or token) 1× minimum, or the measured line plus its theme
@@ -95,7 +90,7 @@ fn line_growth(size: f32, text_scale: f32) -> f64 {
 /// (layout) and paint read the same tokens, so a row is never a fraction
 /// short of the text plus the gap the painter leaves.
 fn at_least_whole(minimum: f64, measured: f64) -> f64 {
-    measured.ceil().max(minimum)
+    ui::text_metrics::at_least_whole(minimum, measured)
 }
 
 /// Base (unscaled) text sizes handed to the legacy renderer, read from the
@@ -135,11 +130,7 @@ fn detail_header_h(spacing: &Spacing, text_scale: f32) -> f64 {
 /// the design exactly (the 74px header stays 74, not `32.5 + 4 + 16.25 + 24 =
 /// 76.75`) and at 2× the row grows by the lines' growth alone.
 fn authored_h(authored: f64, sizes: &[f32], text_scale: f32) -> f64 {
-    let growth: f64 = sizes
-        .iter()
-        .map(|&size| line_growth(size, text_scale))
-        .sum();
-    (authored + growth).ceil()
+    ui::text_metrics::authored_h(authored, sizes, text_scale)
 }
 
 /// Saved-place row geometry for the current text scale: the authored 62px
