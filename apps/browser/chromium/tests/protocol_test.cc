@@ -1,5 +1,6 @@
 #include "protocol.h"
 #include "view_geometry.h"
+#include "download_slots.h"
 #include <cassert>
 #include <sstream>
 #include <iostream>
@@ -32,6 +33,39 @@ int main() {
     assert(!geometry.PaintMatches(801,451));
     assert(geometry.PaintMatches(802,452));
     assert(geometry.ResizePhysical(801,451,2.0)==ResizeEffect::Repaint);
+  }
+  {
+    DownloadSlots slots;
+    assert(slots.Admit(1));
+    assert(slots.Admit(1));
+    assert(slots.Size()==1);
+    assert(slots.Stage(1,7));
+    assert(slots.Stage(1,7));
+    assert(slots.Size()==1 && slots.EarlyForOwner(7)==std::vector<int>({1}));
+    slots.Promote(1);
+    assert(slots.EarlyForOwner(7).empty() && slots.Size()==1);
+    assert(slots.Stage(2,7));
+    assert(slots.Stage(3,8));
+    for(int id:slots.EarlyForOwner(7))slots.Settle(id);
+    assert(!slots.Contains(2) && slots.Contains(3));
+    slots.Settle(3);
+    for(int id=2;id<=32;++id)assert(slots.Admit(id));
+    assert(!slots.Admit(33));
+    slots.Settle(1);
+    assert(slots.Admit(33));
+    assert(slots.Size()==32);
+  }
+  {
+    DownloadProvenance provenance;
+    provenance.Record(7,"https://same.test/file","GET");
+    provenance.Record(7,"https://same.test/file","POST");
+    assert(!provenance.TakeRetryable(7,"https://same.test/file","https://same.test/file"));
+    assert(!provenance.TakeRetryable(7,"https://unknown.test/file","https://unknown.test/file"));
+    provenance.Record(7,"https://get.test/file","GET");
+    assert(provenance.TakeRetryable(7,"https://get.test/file","https://get.test/file"));
+    assert(!provenance.TakeRetryable(7,"https://get.test/file","https://get.test/file"));
+    provenance.Record(7,"blob:https://get.test/id","GET");
+    assert(!provenance.TakeRetryable(7,"blob:https://get.test/id","blob:https://get.test/id"));
   }
   std::cout << "protocol tests passed\n";
 }

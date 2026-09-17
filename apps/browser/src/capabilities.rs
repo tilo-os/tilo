@@ -20,11 +20,30 @@ impl Default for Capabilities {
     }
 }
 
-#[derive(Default)]
 struct DownloadStore {
     prompts: BTreeMap<u32, (String, String)>,
     records: BTreeMap<u32, Download>,
+    admitted: u32,
+    detached: u32,
+    accepting: bool,
+    runtime_known: bool,
+    terminal_notice: String,
     version: u64,
+}
+
+impl Default for DownloadStore {
+    fn default() -> Self {
+        Self {
+            prompts: BTreeMap::new(),
+            records: BTreeMap::new(),
+            admitted: 0,
+            detached: 0,
+            accepting: true,
+            runtime_known: false,
+            terminal_notice: String::new(),
+            version: 0,
+        }
+    }
 }
 
 fn open_download(path: &std::path::Path, reveal: bool) -> Result<(), String> {
@@ -59,6 +78,8 @@ fn open_download(path: &std::path::Path, reveal: bool) -> Result<(), String> {
 #[derive(Default)]
 struct Download {
     name: String,
+    url: String,
+    retryable: bool,
     state: String,
     path: String,
     received: u64,
@@ -74,6 +95,51 @@ impl Capabilities {
         let changed = version != self.observed_download_version;
         self.observed_download_version = version;
         changed
+    }
+    pub fn toolbar_status(&self) -> Option<String> {
+        let downloads = self.downloads.lock().unwrap();
+        let active: Vec<_> = downloads
+            .records
+            .values()
+            .filter(|download| download.state == "progress")
+            .collect();
+        let count = active.len() + downloads.prompts.len();
+        if count > 0 {
+            let determinate = downloads.prompts.is_empty()
+                && active.iter().all(|download| download.total > 0);
+            if determinate {
+                let received = active.iter().map(|download| download.received).sum::<u64>();
+                let total = active.iter().map(|download| download.total).sum::<u64>();
+                let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0).min(100);
+                return Some(format!(
+                    "{count} {} · {percent}%",
+                    if count == 1 { "download" } else { "downloads" }
+                ));
+            }
+            return Some(format!(
+                "{count} active {}",
+                if count == 1 { "download" } else { "downloads" }
+            ));
+        }
+        (!downloads.terminal_notice.is_empty()).then(|| downloads.terminal_notice.clone())
+    }
+    pub fn exit_requires_choice(&self) -> bool {
+        let downloads = self.downloads.lock().unwrap();
+        downloads.admitted > 0
+            || downloads.detached > 0
+            || !downloads.prompts.is_empty()
+            || downloads.records.values().any(|download| download.state == "progress")
+    }
+    pub fn exit_cleanup_complete(&self) -> bool {
+        let downloads = self.downloads.lock().unwrap();
+        downloads.runtime_known
+            && downloads.admitted == 0
+            && downloads.detached == 0
+            && downloads.prompts.is_empty()
+            && downloads.records.values().all(|download| download.state != "progress")
+    }
+    pub fn cancel_all(&self, engine: &SharedEngine) {
+        engine.send(WebViewCommand::CancelAllDownloads);
     }
     pub fn apply(&mut self, event: WebViewEvent) {
         match event {
@@ -101,12 +167,15 @@ impl Capabilities {
                 state,
                 path,
                 name,
+                url,
+                retryable,
                 received,
                 total,
                 error,
             } => {
                 let mut downloads = self.downloads.lock().unwrap();
                 downloads.version = downloads.version.wrapping_add(1);
+                let prompt = downloads.prompts.get(&id).cloned();
                 if !path.is_empty() || state != "progress" {
                     downloads.prompts.remove(&id);
                 }
@@ -121,17 +190,70 @@ impl Capabilities {
                     }
                 }
                 if downloads.records.len() < 100 || downloads.records.contains_key(&id) {
-                    downloads.records.insert(
-                        id,
-                        Download {
-                            name,
-                            state,
-                            path,
-                            received,
-                            total,
-                            error,
-                        },
-                    );
+                    {
+                        let record = downloads.records.entry(id).or_default();
+                        if !name.is_empty() {
+                            record.name = name;
+                        } else if record.name.is_empty() {
+                            record.name = prompt
+                                .as_ref()
+                                .map(|(_, name)| name.clone())
+                                .unwrap_or_default();
+                        }
+                        if !url.is_empty() {
+                            record.url = url;
+                        } else if record.url.is_empty() {
+                            record.url = prompt
+                                .as_ref()
+                                .map(|(url, _)| url.clone())
+                                .unwrap_or_default();
+                        }
+                        record.retryable |= retryable;
+                        if !path.is_empty() {
+                            record.path = path;
+                        }
+                        if received > 0 || record.received == 0 {
+                            record.received = received;
+                        }
+                        if total > 0 || record.total == 0 {
+                            record.total = total;
+                        }
+                        if !error.is_empty() {
+                            record.error = error;
+                        }
+                        record.state = state.clone();
+                    }
+                    if state != "progress" {
+                        downloads.terminal_notice = match state.as_str() {
+                            "complete" => "Download complete".into(),
+                            "failed" => "Download failed".into(),
+                            "cancelled" => "Download cancelled".into(),
+                            _ => String::new(),
+                        };
+                    }
+                }
+            }
+            WebViewEvent::DownloadRuntime {
+                admitted,
+                detached,
+                accepting,
+                error,
+            } => {
+                let mut downloads = self.downloads.lock().unwrap();
+                downloads.version = downloads.version.wrapping_add(1);
+                downloads.admitted = admitted;
+                downloads.detached = detached;
+                downloads.accepting = accepting;
+                downloads.runtime_known = true;
+                if !error.is_empty() {
+                    downloads.prompts.clear();
+                    for record in downloads.records.values_mut() {
+                        if record.state == "progress" {
+                            record.state = "failed".into();
+                            record.error = error.clone();
+                        }
+                    }
+                    downloads.terminal_notice = "Download failed".into();
                 }
             }
             _ => {}
@@ -190,8 +312,17 @@ impl Capabilities {
         let downloads = self.downloads.lock().unwrap();
         let mut rows = Column::new().with_no_padding().with_intrinsic_height();
         rows = rows.push(Box::new(
-            Text::from_state(&self.notice, Clone::clone).with_size(13.0),
+            Text::from_state(&self.notice, Clone::clone)
+                .with_id("browser.download.notice")
+                .with_size(13.0),
         ));
+        if !downloads.terminal_notice.is_empty() {
+            rows = rows.push(Box::new(
+                Text::new(&downloads.terminal_notice)
+                    .with_id("browser.download.terminal-status")
+                    .with_size(13.0),
+            ));
+        }
         if downloads.records.is_empty() {
             rows = rows.push(Box::new(Text::new("No downloads this session.")));
         }
@@ -228,6 +359,21 @@ impl Capabilities {
                     ));
                 }
             }
+            if matches!(d.state.as_str(), "failed" | "cancelled") {
+                if d.retryable {
+                    let engine = engine.clone();
+                    row = row.push(Box::new(
+                        Button::new(&format!("browser.download.retry.{id}"), "Retry", None)
+                            .on_effect(move || {
+                                engine.send(WebViewCommand::RetryDownload { id });
+                            }),
+                    ));
+                } else {
+                    row = row.push(Box::new(
+                        Text::new("Retry unavailable for this address.").with_size(13.0),
+                    ));
+                }
+            }
             rows = rows.push(Box::new(Container::new().with_child(Box::new(row))));
         }
         Box::new(rows)
@@ -260,6 +406,8 @@ mod tests {
             state: "progress".into(),
             path: "/tmp/file".into(),
             name: "file".into(),
+            url: "https://downloads.test/file".into(),
+            retryable: true,
             received: 10,
             total: 20,
             error: String::new(),
@@ -289,6 +437,8 @@ mod tests {
             state: "complete".into(),
             path: "/tmp/file".into(),
             name: "file".into(),
+            url: "https://downloads.test/file".into(),
+            retryable: true,
             received: 20,
             total: 20,
             error: String::new(),
@@ -303,6 +453,8 @@ mod tests {
                 state: "complete".into(),
                 path: "/tmp/file".into(),
                 name: "file".into(),
+                url: "https://downloads.test/file".into(),
+                retryable: true,
                 received: 20,
                 total: 20,
                 error: String::new(),
@@ -321,6 +473,8 @@ mod tests {
                 state: state.into(),
                 path: "/tmp/test-download.txt".into(),
                 name: "test".into(),
+                url: "https://downloads.test/file".into(),
+                retryable: true,
                 received: 8,
                 total: 8,
                 error: String::new(),
@@ -335,5 +489,95 @@ mod tests {
                 state == "complete"
             );
         }
+    }
+
+    #[test]
+    fn sparse_terminal_updates_preserve_retry_metadata_and_aggregate_status() {
+        let capture = ui::webview::test_engine::TestEngine::new();
+        let engine: SharedEngine = capture.clone();
+        let mut capabilities = Capabilities::default();
+        capabilities.apply(WebViewEvent::DownloadUpdated {
+            id: 41,
+            state: "progress".into(),
+            path: "/tmp/archive.zip".into(),
+            name: "archive.zip".into(),
+            url: "https://downloads.test/archive.zip".into(),
+            retryable: true,
+            received: 256,
+            total: 1024,
+            error: String::new(),
+        });
+        assert_eq!(capabilities.toolbar_status().as_deref(), Some("1 download · 25%"));
+
+        capabilities.apply(WebViewEvent::DownloadUpdated {
+            id: 41,
+            state: "failed".into(),
+            path: String::new(),
+            name: String::new(),
+            url: String::new(),
+            retryable: false,
+            received: 0,
+            total: 0,
+            error: "connection reset".into(),
+        });
+        let mut rows = capabilities.downloads(&engine);
+        assert!(contains(rows.as_ref(), "browser.download.retry.41"));
+        let result = rows
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                ui::qos_actions::OperationKind::Effect,
+                "qos.ui.control.invoke",
+                &serde_json::to_vec("browser.download.retry.41").unwrap(),
+                &automerge::AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert!(result.is_some());
+        assert!(capture
+            .commands()
+            .contains(&WebViewCommand::RetryDownload { id: 41 }));
+        assert_eq!(capabilities.toolbar_status().as_deref(), Some("Download failed"));
+    }
+
+    #[test]
+    fn runtime_disconnect_fails_in_progress_records_and_exit_waits_for_detached_owner() {
+        let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+        let mut capabilities = Capabilities::default();
+        capabilities.apply(WebViewEvent::DownloadUpdated {
+            id: 7,
+            state: "progress".into(),
+            path: "/tmp/file".into(),
+            name: "file".into(),
+            url: "https://downloads.test/file".into(),
+            retryable: true,
+            received: 10,
+            total: 20,
+            error: String::new(),
+        });
+        capabilities.apply(WebViewEvent::DownloadRuntime {
+            admitted: 1,
+            detached: 1,
+            accepting: true,
+            error: String::new(),
+        });
+        assert!(capabilities.exit_requires_choice());
+        capabilities.apply(WebViewEvent::DownloadRuntime {
+            admitted: 0,
+            detached: 1,
+            accepting: false,
+            error: String::new(),
+        });
+        assert!(!capabilities.exit_cleanup_complete());
+        capabilities.apply(WebViewEvent::DownloadRuntime {
+            admitted: 0,
+            detached: 0,
+            accepting: false,
+            error: "Chromium engine disconnected".into(),
+        });
+        assert!(capabilities.exit_cleanup_complete());
+        assert!(contains(
+            capabilities.downloads(&engine).as_ref(),
+            "browser.download.terminal-status"
+        ));
     }
 }

@@ -125,6 +125,8 @@ CefRefPtr<CefRequestContext> shared_context;
 void CreateTab(int id);
 void PublishZoomLevels();
 void PublishFilters();
+void PublishDownloadRuntime();
+void DownloadOwnerIdle(int id);
 void Dispatch(CefRefPtr<CefDictionaryValue> command);
 bool closing=false;
 bool clear_on_exit=false;
@@ -138,6 +140,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
  public:
   explicit Client(int id):id_(id),capabilities_(new qos::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
+    if(transfer_owner_ && name!="tab_detached" && name!="closed") return;
     if(!fields) fields=CefDictionaryValue::Create();fields->SetInt("tab",id_);::Event(name,fields);
   }
   void StringEvent(const std::string& name,const std::string& key,const CefString& text) {
@@ -216,7 +219,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
-    if(browser_ && browser->IsSame(browser_)) { request_filter->Remove(browser->GetIdentifier());site_clear_->Detach();site_clear_=nullptr;capabilities_->Close();navigation_history_->Detach();navigation_history_=nullptr;document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");clients.erase(id_);if(closing && clients.empty()) CefQuitMessageLoop(); }
+    if(browser_ && browser->IsSame(browser_)) { request_filter->Remove(browser->GetIdentifier());if(site_clear_)site_clear_->Detach();site_clear_=nullptr;capabilities_->Close();if(navigation_history_)navigation_history_->Detach();navigation_history_=nullptr;if(document_scripts_)document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");clients.erase(id_);PublishDownloadRuntime();if(closing && clients.empty()) CefQuitMessageLoop(); }
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool) override {
     if(frame->IsMain()) { request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
@@ -349,6 +352,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::string op=d->GetString("op");
     if(op=="shutdown") { CloseHost();return; }
     if(!browser_ || closing) return;
+    if(transfer_owner_) {if(d->GetString("op")=="close_tab" && !downloads->Detach(id_)) CloseNative();return;}
     if(op=="site_status" || op=="site_action") {SiteCommand(d);return;}
     if(op=="site_exceptions") {std::set<std::string> origins;auto list=d->GetList("origins");for(size_t i=0;i<list->GetSize();++i)origins.insert(list->GetString(i));request_filter->Exceptions(origins);PublishFilters();return;}
     if(op=="audio_muted") { browser_->GetHost()->SetAudioMuted(d->GetBool("muted"));auto state=CefDictionaryValue::Create();state->SetBool("muted",browser_->GetHost()->IsAudioMuted());Event("audio_muted",state);return; }
@@ -364,8 +368,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         if(command && context_commands_.count(command)) callback->Continue(command,EVENTFLAG_NONE);else callback->Cancel();
       }
     }
-    else if(op=="try_close_tab") { if(downloads->Busy(id_)) Event("close_blocked");else {host->CloseDevTools();host->CloseBrowser(true);} }
-    else if(op=="close_tab") {host->CloseDevTools();host->CloseBrowser(true);}
+    else if(op=="try_close_tab") {DetachVisible();}
+    else if(op=="close_tab") {CloseNative();}
     else if(op=="navigate") frame->LoadURL(d->GetString("url"));
     else if(op=="navigation_history") navigation_history_->Request(d->GetInt("request_id"),d->GetString("direction") == "forward");
     else if(op=="history_entry") navigation_history_->Navigate(d->GetInt("request_id"),d->GetInt("id"));
@@ -455,8 +459,16 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(d->GetBool("down") && (utf16.size()==1 || key=="Enter") && !d->GetBool("ctrl")&&!d->GetBool("meta")) { e.type=KEYEVENT_CHAR;browser_->GetHost()->SendKeyEvent(e); }
   }
   CefRefPtr<CefBrowser> browser_;
+  bool detached() const {return transfer_owner_;}
+  bool accepts_downloads() const {return browser_ && !transfer_owner_ && !native_closing_;}
+  void CloseNative() {if(!browser_ || native_closing_)return;native_closing_=true;browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
+  void DetachVisible() {
+    if(transfer_owner_ || native_closing_)return;const bool retained=downloads->Detach(id_);if(!retained){CloseNative();return;}
+    transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
+    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();pixels_.clear();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
+  }
  private:
-  int id_;bool visible_=true;int key_modifiers_=0;uint64_t favicon_generation_=0;
+  int id_;bool visible_=true,transfer_owner_=false,native_closing_=false;int key_modifiers_=0;uint64_t favicon_generation_=0;
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;
   std::optional<bool> last_media_playing_;bool media_limit_reported_=false;
@@ -475,8 +487,14 @@ void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<Cef
 }
 void PublishFilters() {for(auto& entry:clients)entry.second->RefreshFilters();}
 void PublishZoomLevels() { for(auto& entry:clients) entry.second->PublishZoom(); }
+size_t DetachedOwners() {return std::count_if(clients.begin(),clients.end(),[](const auto& entry){return entry.second->detached();});}
+size_t VisibleOwners() {return std::count_if(clients.begin(),clients.end(),[](const auto& entry){return !entry.second->detached();});}
+void PublishDownloadRuntime() {
+  if(!downloads)return;auto d=CefDictionaryValue::Create();d->SetInt("admitted",static_cast<int>(downloads->Admitted()));d->SetInt("detached",static_cast<int>(DetachedOwners()));d->SetBool("accepting",downloads->Accepting());d->SetString("error","");Event("download_runtime",d);
+}
+void DownloadOwnerIdle(int id) {auto found=clients.find(id);if(found!=clients.end() && found->second->detached())found->second->CloseNative();PublishDownloadRuntime();}
 void CreateTab(int id) {
-  if(closing || id<=0 || clients.count(id) || clients.size()>=32) return;
+  if(closing || id<=0 || clients.count(id) || VisibleOwners()>=32 || clients.size()>=64) {auto d=CefDictionaryValue::Create();d->SetInt("tab",id);Event("closed",d);return;}
   auto client=CefRefPtr<Client>(new Client(id));clients.emplace(id,client);
   CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=kOffscreenFrameRate;settings.background_color=CefColorSetARGB(255,255,255,255);
   TraceGeometry("create-begin",id);
@@ -489,6 +507,8 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   if(op=="create_tab") {CreateTab(id);return;}
   if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
+  if(op=="download_cancel_all") {downloads->CancelAll();return;}
+  if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
   if(op=="resize") TraceGeometry("resize-dispatch",id,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
   auto found=clients.find(id);if(found!=clients.end()) found->second->Command(d);
 }
@@ -510,8 +530,8 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     } else {
       shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
     }
-    downloads=new qos::Downloads(downloads_directory,[](const std::string& name,CefRefPtr<CefDictionaryValue> fields){ ::Event(name,fields); },[](CefRefPtr<CefBrowser> browser) { for(const auto& entry:clients) if(entry.second->browser_ && browser && entry.second->browser_->IsSame(browser)) return entry.first;return 0; });
-    CreateTab(1);if(clients.empty()) CefQuitMessageLoop();
+    downloads=new qos::Downloads(downloads_directory,[](const std::string& name,CefRefPtr<CefDictionaryValue> fields){ ::Event(name,fields); },[](CefRefPtr<CefBrowser> browser) { for(const auto& entry:clients) if(entry.second->browser_ && browser && entry.second->browser_->IsSame(browser)) return entry.first;return 0; },[](int id){auto found=clients.find(id);return found!=clients.end() && found->second->accepts_downloads();},[](int id){DownloadOwnerIdle(id);},[]{PublishDownloadRuntime();});
+    CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
 };
@@ -531,7 +551,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
   if(op=="stop_find") return true;
   if(op=="zoom") return number("level") && Number(d,"level")>=-5 && Number(d,"level")<=9;
-  if(op=="download_cancel") return type("id",VTYPE_INT) && d->GetInt("id")>0;
+  if(op=="download_cancel" || op=="download_retry") return type("id",VTYPE_INT) && d->GetInt("id")>0;
   if(op=="modifiers") return type("ctrl",VTYPE_BOOL) && type("shift",VTYPE_BOOL) && type("alt",VTYPE_BOOL) && type("meta",VTYPE_BOOL);
   if(op=="focus") return type("focused",VTYPE_BOOL);
   if(op=="resize") return type("width",VTYPE_INT) && type("height",VTYPE_INT) && number("scale_factor");
@@ -554,7 +574,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     const auto action=d->GetString("action");return number("generation") && Number(d,"generation")>0 && (action=="clear" || action=="revoke" || action=="enable" || action=="disable");
   }
   if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
-  return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="shutdown";
+  return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="download_cancel_all" || op=="shutdown";
 }
 void ReadCommands(std::atomic<bool>& stop) {
   std::string buffer;char chunk[65536];
