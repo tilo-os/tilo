@@ -51,7 +51,7 @@ def main():
         root = Path(temporary)
         signer = json.loads(run('python3', str(DEV / 'setup-development-signer.py'), str(root / 'signer')))
         environment = {'PATH': os.defpath, 'LANG': 'C.UTF-8', 'COSIGN_PASSWORD': ''}
-        run('cosign', 'generate-key-pair', '--output-key-prefix', str(root / 'cosign'), env=environment)
+        run('/usr/local/bin/cosign', 'generate-key-pair', '--output-key-prefix', str(root / 'cosign'), env=environment)
         (root / 'owner.pub').write_text('ab' * 32 + '\n')
 
         def bundle(destination, pcr_key):
