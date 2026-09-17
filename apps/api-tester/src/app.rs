@@ -75,7 +75,7 @@ const SEND_W: f64 = 96.0;
 const URLBAR_H: f64 = 56.0;
 /// Height of the two-line URL builder at the base text scale.
 #[cfg(test)]
-const COMPACT_URLBAR_H: f64 = 88.0;
+const COMPACT_URLBAR_H: f64 = 104.0;
 /// On a phone, method/send stay on the first row and the URL gets a full
 /// second row. Keeping all four controls in one row leaves only a clipped
 /// sliver of the endpoint — especially unhelpful when it starts with a
@@ -97,11 +97,12 @@ const ENV_PATH: &str = "sel_env";
 /// Label used for the "no environment selected" dropdown option.
 const NO_ENV: &str = "No Environment";
 
-/// A status hint may sit beside request tabs only when it has its own space.
-/// On a phone the tab strip consumes the full row, so painting the hint at the
-/// right edge would overlap the tab labels.
+/// A status hint may sit beside request controls only when it has its own
+/// space. Intermediate widths can fit the tabs, Save, and request menu but not
+/// another trailing label; checking only the tabs let that label paint across
+/// the request menu on tablets.
 fn tab_strip_has_room_for_hint(layout: &Layout, hint_width: f64) -> bool {
-    layout.tabs.x1 + 12.0 + hint_width <= layout.main.x1 - PAD
+    layout.request_actions.x1 + 12.0 + hint_width <= layout.main.x1 - PAD
 }
 
 fn response_status_height(width: f64) -> f64 {
@@ -1305,7 +1306,13 @@ impl ApiTesterApp {
 
         // --- URL bar row ---
         let area = l.main;
-        let control_h = 36.0 * self.layout_text_scale.min(1.5);
+        // Pointer-first overlay chrome gets a full 44px target. The docked
+        // desktop workspace retains its denser 36px controls.
+        let control_h = if split == SplitLayout::Overlay {
+            44.0
+        } else {
+            36.0
+        } * self.layout_text_scale.min(1.5);
         let compact_urlbar =
             split == SplitLayout::Overlay && area.width() < COMPACT_URLBAR_BREAKPOINT;
         let urlbar_h = if compact_urlbar {
@@ -1433,7 +1440,11 @@ impl ApiTesterApp {
             let mut y = s.y0 + (PAD + 48.0) * scale - self.sidebar_scroll;
             let control_x = s.x0 + PAD;
             let close_w = 88.0 * scale;
-            let close_h = 36.0 * scale;
+            let close_h = if split == SplitLayout::Overlay {
+                44.0
+            } else {
+                36.0
+            } * scale;
             l.rail_close = Rect::new(
                 s.x1 - PAD - close_w,
                 s.y0 + PAD,
@@ -1632,7 +1643,7 @@ impl ApiTesterApp {
             tr.draw_text_weighted(
                 scene,
                 "ENV",
-                9.0,
+                theme.tokens.typography.scale.xs,
                 c.text_dim,
                 t * Affine::translate((l.env.x0, l.env.y0 - 14.0 * self.layout_text_scale)),
                 None,
@@ -1689,7 +1700,7 @@ impl ApiTesterApp {
         tr.draw_text_weighted(
             scene,
             text,
-            10.0,
+            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             t * Affine::translate((at.x, at.y)),
             None,
@@ -1886,7 +1897,7 @@ impl ApiTesterApp {
         tr.draw_text_weighted(
             scene,
             "KEY",
-            10.0,
+            theme.tokens.typography.scale.xs,
             c.text_dim,
             t * Affine::translate((key_x, y)),
             None,
@@ -2368,7 +2379,7 @@ impl ApiTesterApp {
                     Self::draw_response_headers(scene, t, tr, theme, &resp, body_area);
                 }
             }
-        } else if let Some(err) = &self.error {
+        } else if self.error.is_some() {
             let body_area = l.resp_body;
             scene.fill(
                 Fill::NonZero,
@@ -2378,16 +2389,6 @@ impl ApiTesterApp {
                 &body_area,
             );
             self.response_error.draw(scene, t, tr, theme, presence);
-            // Preserve the transport's actual detail below the shared recovery
-            // treatment; the CTA remains visible and keyboard-accessible.
-            tr.draw_text(
-                scene,
-                err,
-                theme.tokens.typography.scale.sm,
-                c.text_dim,
-                t * Affine::translate((body_area.x0 + PAD, body_area.y1 - 48.0)),
-                Some((body_area.width() - PAD * 2.0) as f32),
-            );
         } else {
             let body_area = l.resp_body;
             scene.fill(
@@ -3644,6 +3645,17 @@ mod tests {
     }
 
     #[test]
+    fn tablet_request_menu_reserves_no_overlapping_hint_space() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 768.0, 1024.0);
+        let layout = a.compute_layout();
+        assert!(
+            !tab_strip_has_room_for_hint(&layout, 112.0),
+            "the environment hint must not paint across the tablet request menu"
+        );
+    }
+
+    #[test]
     fn desktop_request_controls_keep_save_and_overflow_visible() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1440.0, 900.0);
@@ -3714,6 +3726,7 @@ mod tests {
     #[test]
     fn phone_url_bar_gives_the_endpoint_a_full_second_row() {
         let mut a = app();
+        a.snap_rail(true);
         a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
         let layout = a.compute_layout();
         assert!((layout.urlbar.height() - COMPACT_URLBAR_H).abs() < 0.01);
@@ -3725,6 +3738,19 @@ mod tests {
         assert!(layout.url.x0 >= layout.main.x0 + PAD);
         assert!(layout.url.x1 <= layout.main.x1 - PAD);
         assert!(layout.tab_strip.y0 >= layout.url.y1 + 8.0);
+        for (name, target) in [
+            ("workspace menu", layout.hamburger),
+            ("method", layout.method),
+            ("send", layout.send),
+            ("request tabs", layout.tabs),
+            ("request actions", layout.request_actions),
+            ("workspace close", layout.rail_close),
+        ] {
+            assert!(
+                target.height() >= 44.0,
+                "phone {name} target must be comfortably touch-sized"
+            );
+        }
     }
 
     #[test]

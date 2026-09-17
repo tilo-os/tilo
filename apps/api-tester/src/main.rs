@@ -33,22 +33,27 @@ use ui::widget::Widget;
     reason = "must match ui::launch's ShotFactory = fn(&LaunchArgs) -> Result<..>"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let mut app = if args.has("--empty") {
+    let scenario = args.scenario.as_deref();
+    let mut app = if args.has("--empty") || scenario == Some("empty") {
         api_tester::ApiTesterApp::new()
     } else {
         api_tester::ApiTesterApp::new_demo()
     };
-    if args.has("--rail-open") {
+    if args.has("--rail-open") || scenario == Some("rail-open") {
         app.snap_rail(true);
     }
-    if args.has("--error") {
+    if args.has("--error") || scenario == Some("error") {
         app.shot_error();
     }
-    if args.has("--focus-url") {
+    if args.has("--focus-url") || scenario == Some("url-focused") {
         app.shot_focus_url();
     }
-    if let Some(form) = args.value("--form") {
+    if let Some(form) = args
+        .value("--form")
+        .or_else(|| scenario.and_then(|name| name.strip_prefix("form-")))
+    {
         app.shot_form(form);
+        app.snap_rail(true);
     }
     Ok(Box::new(app))
 }
@@ -62,6 +67,19 @@ pub fn main() {
             .shot_root(shot_root)
             .allowed_flags(&["--rail-open", "--empty", "--error", "--focus-url"])
             .allowed_options(&["--form"])
+            .scenarios(&[
+                "demo",
+                "empty",
+                "error",
+                "rail-open",
+                "url-focused",
+                "form-new-collection",
+                "form-save-request",
+                "form-rename-request",
+                "form-new-environment",
+                "form-new-variable",
+                "form-delete-variable",
+            ])
             .configure_app(|app| api_tester::actions::register(app.action_registry_mut())),
     );
 }
