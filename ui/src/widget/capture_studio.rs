@@ -1940,9 +1940,12 @@ impl CaptureStudio {
         label_w: f64,
         stop_label_w: f64,
     ) {
-        // The same magnification rule the presence pills use, so a type
-        // grown by `with_ui_scale` (which leaves `Theme::text_scale` at 1)
-        // counts as well as one grown by the text scale or the renderer.
+        // The same magnification rule the presence pills use: the theme's
+        // type step against the default, so a type grown by `with_ui_scale`
+        // (which leaves `Theme::text_scale` at 1) counts as well as one grown
+        // by the text scale. A renderer scaled without the theme no longer
+        // magnifies glyphs (they are drawn at the renderer-relative size), so
+        // it does not count.
         let magnification = crate::presence::label_magnification(theme, text_renderer);
         if magnification <= 1.0 + 1e-6 {
             self.reset_docked_content_widths();
@@ -3290,7 +3293,10 @@ impl CaptureStudio {
             }
         });
         {
-            let size = theme.tokens.typography.scale.xs;
+            // Measured at the size the captions are painted with (the theme
+            // step handed to the renderer once), so the widths remembered
+            // below are the widths the painter lays down.
+            let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
             let mut label_w = text_renderer
                 .measure_weighted(&settled_label, size, None, TextWeight::Semibold)
                 .0;
@@ -6564,9 +6570,11 @@ mod tests {
     /// Stop button around its caption, and every control stays inside.
     #[test]
     fn docked_recording_pill_grows_with_its_content_above_one_x() {
-        let theme = Theme::dark().with_reduce_motion(true);
         let mut widths = Vec::new();
         for scale in [1.0_f32, 2.0] {
+            // A matched host: the theme's type steps carry the scale the
+            // renderer is set to, so captions paint at 2x, not 4x (X1).
+            let theme = Theme::dark().with_reduce_motion(true).with_text_scale(scale);
             let mut s = CaptureStudio::default();
             s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
             s.open();
@@ -6586,7 +6594,7 @@ mod tests {
             );
             let (stop_w, _) = tr.measure_weighted(
                 "Stop",
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(&tr, theme.tokens.typography.scale.xs),
                 None,
                 TextWeight::Semibold,
             );
