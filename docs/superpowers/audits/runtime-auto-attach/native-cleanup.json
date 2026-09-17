@@ -1,0 +1,40 @@
+{
+  "app_processes": {
+    "calculator": {
+      "cargo_status": -15,
+      "pids": [
+        28549
+      ]
+    },
+    "file-explorer": {
+      "cargo_status": -15,
+      "pids": [
+        28451
+      ]
+    },
+    "photos": {
+      "cargo_status": -15,
+      "pids": [
+        28526
+      ]
+    },
+    "word-processor": {
+      "cargo_status": -15,
+      "pids": [
+        28361
+      ]
+    }
+  },
+  "daemon_pid": 28409,
+  "known_pids": [
+    28361,
+    28409,
+    28451,
+    28526,
+    28548,
+    28549
+  ],
+  "mcp_exit": 0,
+  "mcp_pid": 28548,
+  "remaining": []
+}
