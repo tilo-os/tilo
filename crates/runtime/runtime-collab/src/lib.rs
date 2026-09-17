@@ -401,12 +401,37 @@ pub const MAX_NEARBY_TRANSFER_NAME_BYTES: usize = 512;
 /// Maximum raw byte length of one exact Files source path.
 pub const MAX_NEARBY_TRANSFER_PATH_BYTES: usize = 4_096;
 
+/// A short-lived shell capability naming one picker target. It deliberately
+/// carries no cryptographic peer identity and has no authority outside the
+/// authenticated app connection that received it.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyTargetHandle([u8; 16]);
+
+impl NearbyTargetHandle {
+    /// Wrap random bytes freshly issued by the shell's authenticated broker.
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return the opaque bytes for equality, serialization, and stable action ids.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Whether this is a structurally valid shell-issued handle.
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
 /// A certified personal-device target safe to show in an application picker.
-/// The id is the exact cryptographic device identity, not a mutable label.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NearbyTransferTarget {
-    pub device: [u8; 32],
+    pub handle: NearbyTargetHandle,
     pub label: String,
     pub online: bool,
 }
@@ -436,7 +461,6 @@ pub enum NearbyTransferPhase {
 pub struct NearbyTransferStatus {
     pub transfer_id: [u8; 16],
     pub name: String,
-    pub device: [u8; 32],
     pub device_label: String,
     pub direction: NearbyTransferDirection,
     pub phase: NearbyTransferPhase,
@@ -460,7 +484,7 @@ pub struct NearbyTransferSnapshot {
 pub enum NearbyTransferCommand {
     Snapshot,
     Send {
-        target_device: [u8; 32],
+        target: NearbyTargetHandle,
         source_path: Vec<u8>,
     },
     Decide {
@@ -491,8 +515,12 @@ impl NearbyTransferCommand {
     pub fn valid(&self) -> bool {
         match self {
             Self::Snapshot | Self::Decide { .. } | Self::Cancel { .. } | Self::Retry { .. } => true,
-            Self::Send { source_path, .. } => {
-                !source_path.is_empty()
+            Self::Send {
+                target,
+                source_path,
+            } => {
+                target.valid()
+                    && !source_path.is_empty()
                     && source_path.len() <= MAX_NEARBY_TRANSFER_PATH_BYTES
                     && !source_path.contains(&0)
             }
@@ -508,7 +536,8 @@ impl NearbyTransferReply {
                 snapshot.targets.len() <= MAX_NEARBY_TRANSFER_TARGETS
                     && snapshot.transfers.len() <= MAX_NEARBY_TRANSFER_STATUSES
                     && snapshot.targets.iter().all(|target| {
-                        !target.label.is_empty()
+                        target.handle.valid()
+                            && !target.label.is_empty()
                             && target.label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
                     })
                     && snapshot.transfers.iter().all(|transfer| {
@@ -2585,7 +2614,7 @@ mod tests {
     #[test]
     fn nearby_transfer_contract_is_bounded_and_path_bytes_are_opaque() {
         let command = NearbyTransferCommand::Send {
-            target_device: [7; 32],
+            target: NearbyTargetHandle::from_issued_bytes([7; 16]),
             source_path: vec![b'/', b't', b'm', b'p', b'/', 0xff],
         };
         assert!(command.valid());
@@ -2598,14 +2627,14 @@ mod tests {
 
         assert!(
             !NearbyTransferCommand::Send {
-                target_device: [7; 32],
+                target: NearbyTargetHandle::from_issued_bytes([7; 16]),
                 source_path: vec![b'a', 0, b'b'],
             }
             .valid()
         );
         assert!(
             !NearbyTransferCommand::Send {
-                target_device: [7; 32],
+                target: NearbyTargetHandle::from_issued_bytes([7; 16]),
                 source_path: vec![b'a'; MAX_NEARBY_TRANSFER_PATH_BYTES + 1],
             }
             .valid()
@@ -2615,14 +2644,13 @@ mod tests {
     #[test]
     fn nearby_transfer_snapshot_rejects_unbounded_or_impossible_progress() {
         let target = NearbyTransferTarget {
-            device: [3; 32],
+            handle: NearbyTargetHandle::from_issued_bytes([3; 16]),
             label: "Travel laptop".into(),
             online: true,
         };
         let transfer = NearbyTransferStatus {
             transfer_id: [4; 16],
             name: "Photos".into(),
-            device: target.device,
             device_label: target.label.clone(),
             direction: NearbyTransferDirection::Sending,
             phase: NearbyTransferPhase::Transferring,
