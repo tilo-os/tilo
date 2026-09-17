@@ -491,6 +491,9 @@ jobs:
           # fails as "authentication required".
           TILO_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
         run: |
+          if [[ '${{ steps.release-mode.outputs.publish }}' != true ]]; then
+            export TILO_ALLOW_EMPTY_SERIES=1
+          fi
           gen="$(./os/dev/next-generation.sh)"
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
