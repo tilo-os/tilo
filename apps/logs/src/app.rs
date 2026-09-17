@@ -68,10 +68,10 @@ const FILTER_H: f64 = 64.0;
 /// controls plus outer padding, so waiting for the 760px push breakpoint
 /// would clip the severity choices on medium-width windows.
 const FILTER_WRAP_BREAKPOINT: f64 = 1_100.0;
-const ROW_H: f64 = 30.0;
-const LIST_HEADER_H: f64 = 26.0;
-const CONTROL_H: f64 = 34.0;
-const DROPDOWN_ITEM_H: f64 = 30.0;
+const ROW_H: f64 = 40.0;
+const LIST_HEADER_H: f64 = 30.0;
+const CONTROL_H: f64 = 40.0;
+const DROPDOWN_ITEM_H: f64 = 40.0;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// An `Instant` at least `POLL_INTERVAL` in the past, so writing it into
@@ -598,7 +598,7 @@ impl LogsApp {
         let header_h = HEADER_H;
         let header = Rect::new(x0, y0, x0 + w, y0 + header_h);
         let filter_h = if Self::filters_wrap(w) {
-            128.0
+            146.0
         } else {
             FILTER_H
         };
@@ -705,21 +705,21 @@ impl LogsApp {
     /// active.
     fn header_controls(&self, x0: f64, w: f64, header: Rect) -> (Rect, Rect, Rect, Rect) {
         if PushNav::is_narrow(w) {
-            let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
+            let hy = header.y0 + (HEADER_H - 40.0) / 2.0;
             // Keep the menu at least as wide as its three action labels, so
             // the overlay remains inside a 390px phone viewport.
-            let overflow = Rect::new(x0 + w - PAD - 178.0, hy, x0 + w - PAD, hy + 30.0);
+            let overflow = Rect::new(x0 + w - PAD - 178.0, hy, x0 + w - PAD, hy + 40.0);
             return (Rect::ZERO, Rect::ZERO, overflow, Rect::ZERO);
         }
-        let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
-        let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 30.0);
-        let refresh_btn = Rect::new(live_pill.x0 - 40.0, hy, live_pill.x0 - 6.0, hy + 30.0);
+        let hy = header.y0 + (HEADER_H - 40.0) / 2.0;
+        let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 40.0);
+        let refresh_btn = Rect::new(live_pill.x0 - 46.0, hy, live_pill.x0 - 6.0, hy + 40.0);
         let clear_btn = if self.filter.is_clear() {
             Rect::ZERO
         } else {
-            let cy = header.y0 + (HEADER_H - 26.0) / 2.0;
+            let cy = header.y0 + (HEADER_H - 40.0) / 2.0;
             let x1 = refresh_btn.x0 - 12.0;
-            Rect::new(x1 - 104.0, cy, x1, cy + 26.0)
+            Rect::new(x1 - 104.0, cy, x1, cy + 40.0)
         };
         (live_pill, refresh_btn, Rect::ZERO, clear_btn)
     }
@@ -1701,7 +1701,11 @@ impl LogsApp {
                 false,
             );
             if self.source_error.is_some() && self.allow_live {
-                let retry = "Use Refresh to try again.";
+                let retry = if reg.narrow {
+                    "Choose Actions → Refresh to try again."
+                } else {
+                    "Use Refresh to try again."
+                };
                 let (rw, _) = tr.measure(retry, ssz, None);
                 text_at(
                     tr,
@@ -3524,7 +3528,7 @@ mod tests {
         let reg = app.regions();
 
         assert!(
-            (reg.filter.height() - 128.0).abs() < f64::EPSILON,
+            (reg.filter.height() - 146.0).abs() < f64::EPSILON,
             "medium-width filters should use the compact three-row height"
         );
         assert_eq!(reg.chips.len(), 8);
@@ -3536,6 +3540,8 @@ mod tests {
             reg.chips.iter().all(|chip| chip.y0 > reg.unit_trigger.y1),
             "severity choices belong on their own compact row"
         );
+        assert!(reg.chips.iter().all(|chip| chip.height() >= 40.0));
+        assert!(reg.unit_trigger.height() >= 40.0 && reg.boot_trigger.height() >= 40.0);
     }
 
     #[test]

@@ -36,30 +36,33 @@ use ui::widget::Widget;
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let entries = if std::env::var("TILO_LOGS_EMPTY").is_ok() || args.has("--error") {
+    let scenario = args.scenario.as_deref();
+    let selected = |name: &str| scenario == Some(name);
+    let error = args.has("--error") || selected("error");
+    let entries = if std::env::var("TILO_LOGS_EMPTY").is_ok() || error || selected("empty") {
         Vec::new()
     } else {
         logs::journal::sample_entries()
     };
-    let mut app = if args.has("--error") {
+    let mut app = if error {
         logs::LogsApp::new_with_source_error(
             entries,
             true,
             logs::journal::JournalLoadError::AccessDenied,
         )
     } else {
-        logs::LogsApp::new(entries, args.has("--actions"))
+        logs::LogsApp::new(entries, args.has("--actions") || selected("actions"))
     };
-    if args.has("--detail") {
+    if args.has("--detail") || selected("detail") {
         app.shots_show_detail();
     }
-    if args.has("--filter-errors") {
+    if args.has("--filter-errors") || selected("filter-errors") {
         app.shots_filter_errors();
     }
-    if args.has("--loading") {
+    if args.has("--loading") || selected("loading") {
         app.shots_show_loading();
     }
-    if args.has("--actions") {
+    if args.has("--actions") || selected("actions") {
         app.shots_show_actions();
     }
     Ok(Box::new(app))
@@ -76,6 +79,14 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.logs", logs::app_root)
             .shot_root(shot_root)
+            .scenarios(&[
+                "detail",
+                "empty",
+                "error",
+                "filter-errors",
+                "loading",
+                "actions",
+            ])
             .allowed_flags(&[
                 "--detail",
                 "--error",

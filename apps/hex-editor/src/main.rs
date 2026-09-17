@@ -35,8 +35,19 @@ use ui::widget::Widget;
     clippy::unnecessary_wraps,
     reason = "must match ui::launch::ShotFactory's fn(&LaunchArgs) -> Result<..> signature"
 )]
-fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(hex_editor::app_root())
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let mut view = if args.scenario.as_deref() == Some("empty") {
+        hex_editor::HexView::empty()
+    } else {
+        hex_editor::app::sample_view()
+    };
+    match args.scenario.as_deref() {
+        Some("search") => view.arm_search_for_shots(),
+        Some("error") => view.arm_error_for_shots(),
+        Some("empty") => {}
+        _ => view.arm_status_bubble_for_shots(),
+    }
+    Ok(Box::new(view))
 }
 
 #[cfg(feature = "thin")]
@@ -46,6 +57,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.hex-editor", hex_editor::app_root)
             .shot_root(shot_root)
+            .scenarios(&["empty", "search", "error"])
             .configure_app(|app| hex_editor::actions::register(app.action_registry_mut())),
     );
 }

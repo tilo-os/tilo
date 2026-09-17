@@ -1260,11 +1260,16 @@ impl Widget for ImageEditorApp {
             None,
             TextWeight::Semibold,
         );
+        let has_source = matches!(
+            self.project.operations.get("source"),
+            Some(Operation::Source { path }) if !path.is_empty()
+        );
         for (command, button) in &mut self.toolbar {
             button.set_enabled(match command {
+                ToolbarCommand::Open => true,
                 ToolbarCommand::Undo => !self.undo_stack.is_empty(),
                 ToolbarCommand::Redo => !self.redo_stack.is_empty(),
-                _ => true,
+                _ => has_source,
             });
             button.set_style(if matches!(command, ToolbarCommand::Export) {
                 ButtonStyle::Primary
@@ -1312,7 +1317,7 @@ impl Widget for ImageEditorApp {
                 );
                 tr.draw_text_weighted(
                     s,
-                    "Make something beautiful",
+                    "Open an image",
                     if card.width() < 400.0 { 22.0 } else { 24.0 },
                     c.text_primary,
                     a.pre_translate(
@@ -1325,7 +1330,7 @@ impl Widget for ImageEditorApp {
                     Some((card.width() - 64.0) as f32),
                     TextWeight::Semibold,
                 );
-                tr.draw_text_weighted(s,"Open an image or drop it anywhere. Every adjustment remains editable, in any order.",14.0,c.text_dim,a.pre_translate((card.x0+32.0,card.y0+if card.width()<400.0 {108.0}else{98.0}).into()),Some((card.width()-64.0) as f32),TextWeight::Regular);
+                tr.draw_text_weighted(s,"Choose an image or drop one anywhere. You can reorder adjustments at any time.",14.0,c.text_dim,a.pre_translate((card.x0+32.0,card.y0+if card.width()<400.0 {108.0}else{98.0}).into()),Some((card.width()-64.0) as f32),TextWeight::Regular);
                 self.empty_open.draw(s, a, tr, theme, &PresenceCtx::empty());
             }
             s.fill(Fill::NonZero, a, c.surfaces.raised, None, &self.stack_rect);
@@ -1421,8 +1426,8 @@ impl Widget for ImageEditorApp {
                 );
                 tr.draw_text_weighted(
                     s,
-                    &format!("Step {}, editable", steps.len() - index),
-                    10.0,
+                    &format!("Adjustment {}", steps.len() - index),
+                    12.0,
                     c.text_dim,
                     a.pre_translate((r.x0 + 12.0, r.y0 + 25.0 * self.text_scale.max(1.0)).into()),
                     None,
@@ -1475,7 +1480,7 @@ impl Widget for ImageEditorApp {
                 .next()
                 .and_then(|id| self.project.graph.nodes.get(id))
                 .map(|n| n.title.as_str())
-                .unwrap_or("Select an adjustment");
+                .unwrap_or("");
             tr.draw_text_weighted(
                 s,
                 selected,
@@ -1552,6 +1557,8 @@ impl Widget for ImageEditorApp {
             } else {
                 let hint = if self.crop_editor.is_some() {
                     "Drag a corner on the image"
+                } else if !has_source {
+                    "Open an image to begin"
                 } else {
                     "No settings for this step"
                 };

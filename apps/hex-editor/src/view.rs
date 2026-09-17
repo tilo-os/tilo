@@ -35,11 +35,12 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::format::bytes as format_bytes;
+use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, TextInputKind};
+use ui::widget::{EmptyState, TextInput, TextInputKind};
 
 use crate::actions::HexOperation;
 use crate::inspector::{self, Interpretation};
@@ -1315,93 +1316,35 @@ impl HexView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let tokens = &theme.tokens;
-        let c = &tokens.colors;
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-
-        // Title.
-        let title = "No file open";
-        let tsz = tokens.typography.scale.x2l;
-        let (tw, _) = tr.measure_weighted(title, tsz, None, TextWeight::Semibold);
-        tr.draw_text_weighted(
+        self.open_button = EmptyState::paint(
             scene,
-            title,
-            tsz,
-            c.text_primary,
-            t * Affine::translate((cx - f64::from(tw) / 2.0, cy - 78.0)),
-            None,
-            TextWeight::Semibold,
-        );
-
-        // Subtitle.
-        let sub = "Open a file to inspect and edit its bytes.";
-        let ssz = tokens.typography.scale.sm;
-        let (sw, _) = tr.measure(sub, ssz, None);
-        tr.draw_text(
-            scene,
-            sub,
-            ssz,
-            c.text_dim,
-            t * Affine::translate((cx - f64::from(sw) / 2.0, cy - 40.0)),
-            None,
-        );
-
-        // Primary action: Open file…
-        let label = "Open file…";
-        let bsz = tokens.typography.scale.base;
-        let (lw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
-        let bw = f64::from(lw) + 44.0;
-        let bh = 40.0;
-        let bx0 = cx - bw / 2.0;
-        let by0 = cy - 8.0;
-        let btn = Rect::new(bx0, by0, bx0 + bw, by0 + bh);
-        let accent = c.accent[ui_accent_idx()];
-        scene.fill(
-            Fill::NonZero,
             t,
-            accent,
-            None,
-            &RoundedRect::from_rect(btn, 10.0),
-        );
-        tr.draw_text_weighted(
-            scene,
-            label,
-            bsz,
-            contrast_on(accent),
-            t * Affine::translate((
-                bx0 + (bw - f64::from(lw)) / 2.0,
-                by0 + (bh - f64::from(bsz)) / 2.0,
-            )),
-            None,
-            TextWeight::Semibold,
-        );
-        self.open_button = btn;
-
-        // Keyboard hint under the button.
-        let hint = "Ctrl+O";
-        let hsz = tokens.typography.scale.xs;
-        let (hw, _) = tr.measure(hint, hsz, None);
-        tr.draw_text(
-            scene,
-            hint,
-            hsz,
-            c.text_dim,
-            t * Affine::translate((cx - f64::from(hw) / 2.0, by0 + bh + 16.0)),
-            None,
-        );
+            tr,
+            theme,
+            self.rect,
+            Some(Icon::FileText),
+            "No file open",
+            Some("Open a file to inspect and edit its bytes."),
+            Some("Open file…"),
+            self.last_mouse,
+        )
+        .unwrap_or(Rect::ZERO);
 
         // A pending open error (e.g. unreadable path) surfaces here.
         if let Some((msg, error, _)) = &self.flash
             && *error
         {
+            let ssz = theme.tokens.typography.scale.sm;
             let (mw, _) = tr.measure(msg, ssz, None);
             tr.draw_text(
                 scene,
                 msg,
                 ssz,
-                c.semantic.danger,
-                t * Affine::translate((cx - f64::from(mw) / 2.0, by0 + bh + 44.0)),
+                theme.tokens.colors.semantic.danger,
+                t * Affine::translate((
+                    self.rect.center().x - f64::from(mw) / 2.0,
+                    self.open_button.y1 + 28.0,
+                )),
                 None,
             );
         }
@@ -1415,11 +1358,12 @@ impl HexView {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let w = 460.0;
-        let h = 56.0;
-        let x0 = self.rect.x1 - w - 24.0;
-        let y0 = self.rect.y0 + 56.0;
-        let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
+        let panel_rect = self.search_overlay_rect();
+        let x0 = panel_rect.x0;
+        let y0 = panel_rect.y0;
+        let w = panel_rect.width();
+        let h = panel_rect.height();
+        let panel = RoundedRect::from_rect(panel_rect, 10.0);
         scene.fill(
             Fill::NonZero,
             t,
@@ -1519,6 +1463,17 @@ impl HexView {
                 None,
             );
         }
+    }
+
+    fn search_overlay_rect(&self) -> Rect {
+        let margin = if self.rect.width() < 560.0 {
+            12.0
+        } else {
+            24.0
+        };
+        let width = 460.0_f64.min((self.rect.width() - margin * 2.0).max(240.0));
+        let x0 = (self.rect.x1 - width - margin).max(self.rect.x0 + margin);
+        Rect::new(x0, self.rect.y0 + 56.0, x0 + width, self.rect.y0 + 112.0)
     }
 
     fn draw_goto_overlay(
@@ -2724,6 +2679,17 @@ mod tests {
         assert!(!view.show_inspector());
         assert!(view.fit_bytes_per_row() >= 8);
         assert!((view.metrics().inspector_x0 - view.rect.x1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn phone_search_overlay_stays_inside_the_viewport() {
+        let mut view = HexView::new(vec![0; 128], "narrow.bin");
+        view.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+
+        let overlay = view.search_overlay_rect();
+        assert!(view.rect.contains_rect(overlay));
+        assert_eq!(overlay.x0, 12.0);
+        assert_eq!(overlay.x1, 378.0);
     }
 
     #[test]
