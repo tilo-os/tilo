@@ -42,6 +42,43 @@ exercise catalog selection, synthetic PE-envelope mutations and installer
 preflight fixtures. They do not establish firmware acceptance, measured boot,
 an installable OS image, or hardware compatibility.
 
+## Preparing public build inputs
+
+`os/dev/development-trust.py` prepares and validates a public-only bundle from
+existing development public keys and a certificate. It does not generate keys,
+sign images, inject image trust, or enroll firmware certificates. Private key
+generation and custody remain outside this helper and outside the checkout.
+
+```sh
+python3 os/dev/development-trust.py create \
+  --cosign-public "$DEV_COSIGN_PUBLIC" \
+  --pcr-public "$DEV_PCR_PUBLIC" \
+  --efi-certificate "$DEV_EFI_CERTIFICATE" \
+  --registry-owner "$DEV_REGISTRY_OWNER_PUBLIC" \
+  --output "$NEW_PUBLIC_BUNDLE"
+```
+
+The destination must not exist. The helper accepts exactly the four public
+files and a development manifest, parses keys/certificates with OpenSSL, requires
+an RSA PCR key of at least 2048 bits, and rejects private PEM blocks, extra
+files, links and junctions. The owner input is a lowercase 64-hex public key.
+Certificate parsing does not establish firmware trust or certificate validity
+for a particular signing service.
+
+Record the returned `manifest_sha256` in the independently controlled build
+invocation. Validate the transferred bundle against that value:
+
+```sh
+python3 os/dev/development-trust.py validate "$PUBLIC_BUNDLE" \
+  --expected-manifest-sha256 "$EXPECTED_PUBLIC_BUNDLE_SHA256"
+python3 os/tests/test_development_trust.py
+```
+
+Without the expected digest, validation checks structure and internal hashes
+only; it cannot authenticate who selected those public identities. The
+expected digest must not be obtained from the same untrusted transfer being
+checked. No OS build consumes this bundle yet.
+
 ## Isolated development-image design — implementation still required
 
 Do not overwrite tracked public keys or reuse production aliases to get a test
