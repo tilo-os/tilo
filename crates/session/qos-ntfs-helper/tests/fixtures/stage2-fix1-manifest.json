@@ -1,0 +1,200 @@
+{
+  "fixture_builder_sha256": "dc5f79ed3da40f5872f6986d44d426ed2c213bf653d886b3ffb5ca9b09ff74b4",
+  "source_sha256": "b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd",
+  "format": "mkntfs -F -Q -T; serial set through NTFS_BOOT_SECTOR",
+  "expected": {
+    "serial": "1122334455667788",
+    "root_record": 5,
+    "hello_content_hex": "436f6e6e6563746564204e54465320666978747572650a",
+    "large_bytes": 12582912,
+    "large_sha256": "37e30b1c2930f3dbb85413f86ad9afec5768c1f352fd9fcb4b41a9dd25ddb033",
+    "large_pattern": "byte=(offset%256 + offset//1048576)%256"
+  },
+  "images": {
+    "acl.img": {
+      "sha256": "de18155aae252c22814ab6baacf07a85868c0b23187c9c9a84527dd6c791a7d6",
+      "bytes": 67108864
+    },
+    "attrlist-cycle.img": {
+      "sha256": "5bcd146ea7124d33562483e0d5c62ca30ddc8610c659e3d7f33db821ff9ad488",
+      "bytes": 67108864
+    },
+    "badlog.img": {
+      "sha256": "522475443efb96867972fe6da0151677956b650b853ce9e9a9f0e230d84120e6",
+      "bytes": 67108864
+    },
+    "bitlocker.img": {
+      "sha256": "1e3d2d00837a590366932eeb60885539d8d73f759b782bcc9e178fefb08188b1",
+      "bytes": 67108864
+    },
+    "clean.img": {
+      "sha256": "5d04834c03b7c342c606c04b435396ebf6315c17e25ac79288ccc337c77250cf",
+      "bytes": 67108864
+    },
+    "corrupt.img": {
+      "sha256": "efb8e047a2f74c080f55e074ce6cd867fe39ee197412d55c35b03fd02bee44a2",
+      "bytes": 67108864
+    },
+    "dirty.img": {
+      "sha256": "3e4f7bf4e49b7b1a497ca78682a20300e53c16a5e86b83ac720b1bcc75bb9bf1",
+      "bytes": 67108864
+    },
+    "dos-alias.img": {
+      "sha256": "9cd086d3cb1220e518d1f0ec9a25c2288101933f492b314ceed13727ff8d6cb6",
+      "bytes": 67108864
+    },
+    "generation.img": {
+      "sha256": "d2455a71105faaa3a2dfddccce21daec7cd4274f3161f091b28d3e370675184e",
+      "bytes": 67108864
+    },
+    "hardlink.img": {
+      "sha256": "36aac88f3b68ae56f983e4ed76f11f9639b9c0a3859feef3ab3defdd2c2f26f3",
+      "bytes": 67108864
+    },
+    "hiber-io.img": {
+      "sha256": "d178b114ff5f19ab4c7a9575dda575af7f5591e264253f3328cc6f87776fc42f",
+      "bytes": 67108864
+    },
+    "hiber.img": {
+      "sha256": "873b04b78dfaaf93fd318e7fd29fe57e2a8a8d8afa37a4f305171e0e7690f0d1",
+      "bytes": 67108864
+    },
+    "large-metadata.img": {
+      "sha256": "9f8b04ef2cec50da9531b3e1a1cd44e8c807f17a9e2a88dd51005e5ba2b69e93",
+      "bytes": 67108864
+    },
+    "large.img": {
+      "sha256": "0ab32c773d0a3c636af04b7d3539f74af3adb2cbb38dfe6f7708033e01cda902",
+      "bytes": 67108864
+    },
+    "metadata.img": {
+      "sha256": "cc8f0501f027a53b484f6abdcd33ac58af2cbdf1dc553d99609d4386d0848221",
+      "bytes": 67108864
+    },
+    "nonzero-hiber.img": {
+      "sha256": "ae34d0992ca8c73964de3dd43f7da4670ceb33d7363b7545e87102a70fd12615",
+      "bytes": 67108864
+    },
+    "oversize.img": {
+      "sha256": "98575dedad09ed653c57fbae1288b3f3b5a9270d303ae212ad8cdce209b75e00",
+      "bytes": 67108864
+    },
+    "restart-bad-first.img": {
+      "sha256": "a72b6ac0cb8410e1210a1285aabc3639c67cd3638b4c179d5780657142833a66",
+      "bytes": 67108864
+    },
+    "restart-bad-second.img": {
+      "sha256": "3af8b83b929ba493848d231621991510f5be5644dc713498cd2f5e8b750ac1de",
+      "bytes": 67108864
+    },
+    "restart-clean.img": {
+      "sha256": "17c0cd8e11bd2889ec4bd1efe3eed5557e3cae6c6ddfe293d4f0f8013b30d40f",
+      "bytes": 67108864
+    },
+    "restart-v2.img": {
+      "sha256": "77a0c0261cd59fbe693be29161f7ad6836ff5bd1e28e82bf67fba42acf7e9d55",
+      "bytes": 67108864
+    },
+    "short-hiber.img": {
+      "sha256": "b386d77d691b30ac25126a78af2024fef2fcef18b1973df437ce99bba60a0ab9",
+      "bytes": 67108864
+    },
+    "truncated.img": {
+      "sha256": "e707d0a7e1b96abe4187f962888a9651d13af1cc7baeec96fcb3bd15f1744641",
+      "bytes": 300
+    },
+    "upcase.img": {
+      "sha256": "8b974f21cc20cd3e2bf1e3559122c0d0950811524f015f9831a056856495a1ac",
+      "bytes": 67108864
+    },
+    "zero-hiber.img": {
+      "sha256": "8303fa92f31c5133b954820ba3bfb0e2eb813b6b5bcc9b532609c7d319c0d87c",
+      "bytes": 67108864
+    }
+  },
+  "expected_by_image": {
+    "restart-clean.img": {
+      "status": 0,
+      "paired_restart_pages": "1.1"
+    },
+    "restart-bad-first.img": {
+      "status": 3,
+      "invalid_page": 0
+    },
+    "restart-bad-second.img": {
+      "status": 3,
+      "invalid_page": 1
+    },
+    "restart-v2.img": {
+      "status": 3,
+      "paired_restart_pages": "2.0"
+    },
+    "clean.img": {
+      "status": 0,
+      "root_sequence": 5,
+      "hello_record": 64
+    },
+    "dirty.img": {
+      "status": 3
+    },
+    "badlog.img": {
+      "status": "nonzero refusal"
+    },
+    "zero-hiber.img": {
+      "status": 0
+    },
+    "hiber.img": {
+      "status": 4
+    },
+    "nonzero-hiber.img": {
+      "status": 4
+    },
+    "short-hiber.img": {
+      "status": 4
+    },
+    "hiber-io.img": {
+      "status": "nonzero refusal"
+    },
+    "bitlocker.img": {
+      "status": 2,
+      "synthetic_signature_only": true
+    },
+    "truncated.img": {
+      "status": "nonzero refusal"
+    },
+    "corrupt.img": {
+      "status": 1
+    },
+    "oversize.img": {
+      "status": 6
+    },
+    "generation.img": {
+      "status": 0,
+      "root_sequence": 42
+    },
+    "attrlist-cycle.img": {
+      "status": "nonzero refusal"
+    },
+    "metadata.img": {
+      "status": 0,
+      "root_named_data_utf16le": "640069007200",
+      "native_reparse_attribute": 192
+    },
+    "upcase.img": {
+      "status": 0,
+      "name_utf16le": "e4002e00740078007400",
+      "key_utf16le": "d6002e00540058005400"
+    },
+    "acl.img": {
+      "status": 0,
+      "hello_record": 64,
+      "native_security_id": 258,
+      "source": "$Secure:$SDS via $SII"
+    },
+    "hardlink.img": {
+      "status": 0,
+      "hello_links": 2,
+      "additional_name": "second"
+    }
+  }
+}

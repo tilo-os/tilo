@@ -9,6 +9,7 @@ native_coordinator.py. This file is executable acceptance, not a proof receipt.
 import argparse
 import array
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -40,10 +41,10 @@ def reacquire(device):
 
 
 class Session:
-    def __init__(self, probe, selected, uid):
+    def __init__(self, probe, selected, uid, root=5):
         self.uid, self.sequence, self.sock = uid, 0, None
         self.process = subprocess.Popen([probe, 'serve-read-selected', '--inventory-id',
-            selected['inventory_id'], '--root-mft', '5', '--client-uid', str(uid)],
+            selected['inventory_id'], '--root-mft', str(root), '--client-uid', str(uid)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             require(select.select([self.process.stdout], [], [], 22)[0], 'acquisition deadline')
@@ -52,8 +53,8 @@ class Session:
             self.locator = json.loads(line)
             require(self.locator['backend'] == 'native-exclusive-read', 'wrong backend')
             path = pathlib.Path(self.locator['socket'])
-            require(path.parent.stat().st_uid == 0 and path.parent.stat().st_mode & 0o022 == 0,
-                    'client can replace socket parent')
+            require(path.parent.stat().st_uid == 0 and path.parent.stat().st_mode & 0o777 == 0o711,
+                    'session parent must be exact root-owned search-only 0711 layout')
             require(path.stat().st_uid == uid and path.stat().st_mode & 0o777 == 0o600,
                     'socket authorization mode')
         except BaseException:
@@ -86,7 +87,7 @@ class Session:
                 'stale/wrong-session reply')
         return reply['result']
 
-    def begin(self):
+    def begin(self, require_large=True):
         self.connect()
         require(self.receive(self.request('Hello'))['result'] == 'Hello', 'hello')
         require(self.receive(self.request('BeginObservation'))['result'] == 'Begun', 'begin')
@@ -98,8 +99,9 @@ class Session:
                 break
         require(len(upcase) == 65536, 'native UpCase incomplete')
         require(hashlib.sha256(struct.pack('<65536H', *upcase)).hexdigest() == self.locator['identity']['upcase'], 'UpCase digest')
-        self.large = next(e for e in entries if e['path'] == [[ord(c) for c in 'large.bin']])
-        require(self.large['content_readable'] and self.large['size'] == 12 * 1024 * 1024, 'actual native large file required')
+        if require_large:
+            self.large = next(e for e in entries if e['path'] == [[ord(c) for c in 'large.bin']])
+            require(self.large['content_readable'] and self.large['size'] == 12 * 1024 * 1024, 'actual native large file required')
         return entries, issues
 
     def read(self, offset, length=1048576, before_receive=None):
@@ -150,7 +152,21 @@ def positive(probe, selected, uid, device, client):
     try:
         held_readonly(session.process.pid, os.stat(device).st_rdev)
         env = dict(os.environ, QOS_NTFS_SESSION_LOCATOR=json.dumps(session.locator))
-        result = subprocess.run([client], env=env, preexec_fn=lambda: os.setuid(uid),
+        def selected_credentials():
+            account = pwd.getpwuid(uid)
+            os.setgroups([]); os.setgid(account.pw_gid); os.setuid(uid)
+            require(os.geteuid() == uid and uid != 0, 'client must run as selected nonroot UID')
+            # Establish the actual permission boundary before executing the Rust client.
+            # O_RDONLY must fail here; successful Client::connect therefore needs search-only pinning.
+            try:
+                fd = os.open(pathlib.Path(session.locator['socket']).parent,
+                             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            except OSError as error:
+                require(error.errno == errno.EACCES, 'unexpected directory-open failure')
+            else:
+                os.close(fd)
+                raise RuntimeError('selected client unexpectedly has directory read permission')
+        result = subprocess.run([client], env=env, preexec_fn=selected_credentials,
                                 capture_output=True, timeout=600, check=True)
         receipt = json.loads(result.stdout)
         require(receipt['large_file_verified'] and receipt['native_bytes'] >= 12*1024*1024,
@@ -386,6 +402,93 @@ def detached(probe, selected, uid, device, mode):
         s.close()
 
 
+def endpoint_cancellation(probe, selected, uid, device, mode):
+    # Discover the real ordered readable manifest so we can stop the final chunk
+    # or postflight child without adding timing hooks to production code.
+    baseline = Session(probe, selected, uid)
+    try:
+        entries, _ = baseline.begin()
+        baseline.receive(baseline.request('Close')); baseline.closed(); reacquire(device)
+    finally:
+        baseline.close()
+    subtree = next(e for e in entries if e['path'] == [[ord(c) for c in 'cancel']])
+    require(subtree['directory'], 'native cancellation subtree required')
+    baseline = Session(probe, selected, uid, root=subtree['record'])
+    try:
+        entries, _ = baseline.begin(require_large=False)
+        require(len(entries) == 2 and entries[-1]['content_readable'] and entries[-1]['size'] > 0,
+                'last native range must be final manifest entry, without later cancellation checks')
+        baseline.large = entries[-1]
+        require(baseline.read(0, 11) == b'final chunk', 'subtree native content prerequisite')
+        hashes, _ = baseline.finish()
+        require(hashes[baseline.large['token']] == hashlib.sha256(b'final chunk').hexdigest(),
+                'subtree successful postflight prerequisite')
+        baseline.receive(baseline.request('Close')); baseline.closed(); reacquire(device)
+    finally:
+        baseline.close()
+    forks, hashed, last_chunk = 1, 0, None  # BeginObservation's manifest worker.
+    for entry in entries:
+        if (not entry['path'] or entry['directory'] or not entry['content_readable']
+                or hashed + entry['size'] > 1073741824):
+            continue
+        hashed += entry['size']
+        if entry['size']:
+            chunks = (entry['size'] + 1048575) // 1048576
+            last_chunk = forks + 1 + chunks  # health preflight, then range workers
+            forks += chunks + 2  # plus final content health worker
+    require(last_chunk is not None, 'fixture needs actual readable content')
+    target = last_chunk if mode == 'endpoint-cancel-last-chunk' else forks + 1
+    test_name = ('native_session_cancellation_during_last_chunk' if
+                 mode == 'endpoint-cancel-last-chunk' else 'native_session_cancellation_during_postflight')
+    endpoint_test = os.environ['QOS_NTFS_NATIVE_ENDPOINT_TEST']
+    s = Session(probe, selected, uid, root=subtree['record'])
+    control, child_control = socket.socketpair()
+    child, runner = None, None
+    try:
+        trace(0x4206, s.process.pid, 2 | 0x00100000)  # TRACEFORK | EXITKILL
+        env = dict(os.environ, QOS_NTFS_SESSION_LOCATOR=json.dumps(s.locator),
+                   QOS_NTFS_CANCELLATION_CONTROL_FD=str(child_control.fileno()))
+        def credentials():
+            account = pwd.getpwuid(uid)
+            os.setgroups([]); os.setgid(account.pw_gid); os.setuid(uid)
+        runner = subprocess.Popen([endpoint_test, test_name, '--ignored', '--nocapture'],
+                                  env=env, pass_fds=(child_control.fileno(),),
+                                  preexec_fn=credentials, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        child_control.close()
+        seen = 0
+        deadline = time.monotonic() + 120
+        while seen < target:
+            status = waited(s.process.pid, deadline)
+            require(os.WIFSTOPPED(status), 'broker ended before target native phase')
+            if status >> 16 != 1:
+                require(os.WSTOPSIG(status) == signal.SIGCHLD, 'unexpected broker signal stop')
+                trace(7, s.process.pid)
+                continue
+            child_id = ctypes.c_ulong(); trace(0x4201, s.process.pid, ctypes.addressof(child_id))
+            child = child_id.value
+            require(os.WIFSTOPPED(waited(child, deadline)), 'native child fork stop missing')
+            seen += 1
+            if seen == target:
+                held_readonly(child, os.stat(device).st_rdev)
+                control.settimeout(5); control.sendall(b'C')
+                require(control.recv(1) == b'A', 'endpoint flag was not flipped during blocking phase')
+                trace(17, child); trace(17, s.process.pid)
+            else:
+                trace(17, child); trace(7, s.process.pid)
+            child = None
+        output, errors = runner.communicate(timeout=45)
+        require(runner.returncode == 0 and b'test result: ok. 1 passed;' in output,
+                'actual endpoint cancellation fixture failed: ' + repr((output, errors)))
+        s.closed(); reacquire(device)
+    finally:
+        control.close(); child_control.close()
+        if child and not ended(child):
+            os.kill(child, signal.SIGKILL)
+        if runner and runner.poll() is None:
+            runner.kill(); runner.wait(timeout=3)
+        s.close()
+
+
 def aliases(probe, selected, uid, device):
     with tempfile.TemporaryDirectory(prefix='qos-ntfs-session-alias-') as mountpoint:
         # Baseline real NTFS3 mount must work, otherwise refusals cannot prove exclusivity.
@@ -422,12 +525,13 @@ def aliases(probe, selected, uid, device):
 def main():
     require(sys.platform=='linux' and os.geteuid()==0 and os.environ.get('QOS_NTFS_NATIVE_AUTHORIZATION')=='DISPOSABLE_FIXTURE_ONLY','explicit disposable Linux root authorization required')
     parser=argparse.ArgumentParser();parser.add_argument('--probe',required=True);parser.add_argument('--client',required=True)
-    parser.add_argument('--mode',required=True,choices=['positive','ranges','transport','aliases','parent-before-child','parent-after-child','parser-death','client-death','cancel','cancel-manifest','cancel-postflight','watchdog','idle','stalled-client','detach','replace'])
+    parser.add_argument('--mode',required=True,choices=['endpoint-cancel-last-chunk','endpoint-cancel-postflight','positive','ranges','transport','aliases','parent-before-child','parent-after-child','parser-death','client-death','cancel','cancel-manifest','cancel-postflight','watchdog','idle','stalled-client','detach','replace'])
     args=parser.parse_args();device=os.environ['QOS_NTFS_NATIVE_DEVICE'];uid=int(os.environ['QOS_NTFS_NATIVE_CLIENT_UID']);require(uid!=0,'select existing nonroot client UID')
     selected,_=select_device(args.probe,device)
     before=full_hash(device);receipt=positive(args.probe,selected,uid,device,args.client)
     if args.mode=='transport':
         transport(args.probe,selected,uid,device);fake_broker(args.client,uid)
+    elif args.mode.startswith('endpoint-cancel-'):endpoint_cancellation(args.probe,selected,uid,device,args.mode)
     elif args.mode=='ranges':ranges(args.probe,selected,uid,device)
     elif args.mode=='aliases':aliases(args.probe,selected,uid,device)
     elif args.mode in ['detach','replace']:detached(args.probe,selected,uid,device,args.mode)

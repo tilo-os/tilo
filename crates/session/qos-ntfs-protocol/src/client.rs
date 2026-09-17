@@ -51,7 +51,7 @@ impl Client {
         }
         let mut directory = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open("/")?;
         let mut components = path.components().peekable();
         while let Some(component) = components.next() {
@@ -72,7 +72,7 @@ impl Client {
                 libc::openat(
                     directory.as_raw_fd(),
                     name.as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 )
             };
             if raw < 0 {

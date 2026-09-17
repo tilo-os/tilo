@@ -133,7 +133,10 @@ impl NtfsReadEndpoint {
     }
     fn observe_inner(&self, cancelled: &AtomicBool) -> Result<ObservedTree, EndpointError> {
         let mut client = self.client.lock().map_err(|_| EndpointError::Unstable)?;
-        let m = client.begin()?;
+        check_cancelled(&mut client, cancelled)?;
+        let manifest = client.begin();
+        check_cancelled(&mut client, cancelled)?;
+        let m = manifest?;
         *self.upcase.lock().map_err(|_| EndpointError::Unstable)? = Some(m.upcase);
         let mut entries = BTreeMap::new();
         let mut keys = BTreeMap::new();
@@ -141,10 +144,7 @@ impl NtfsReadEndpoint {
         let mut bytes = 0u64;
         let mut expected = BTreeMap::new();
         for e in &m.entries {
-            if cancelled.load(Ordering::Acquire) {
-                client.cancel();
-                return Err(EndpointError::Cancelled);
-            }
+            check_cancelled(&mut client, cancelled)?;
             if e.path.is_empty() {
                 continue;
             }
@@ -164,18 +164,16 @@ impl NtfsReadEndpoint {
             let mut hash = Sha256::new();
             let mut offset = 0u64;
             while offset < e.size {
-                if cancelled.load(Ordering::Acquire) {
-                    client.cancel();
-                    return Err(EndpointError::Cancelled);
-                }
+                check_cancelled(&mut client, cancelled)?;
                 let length = u32::try_from(
                     e.size
                         .saturating_sub(offset)
                         .min(u64::from(qos_ntfs_protocol::CHUNK_BYTES)),
                 )
                 .map_err(|_| EndpointError::LimitExceeded)?;
-                let content = client.read_chunk(&e.token, offset, length)?;
-                hash.update(&content);
+                let content = client.read_chunk(&e.token, offset, length);
+                check_cancelled(&mut client, cancelled)?;
+                hash.update(&content?);
                 offset = offset
                     .checked_add(u64::from(length))
                     .ok_or(EndpointError::LimitExceeded)?;
@@ -194,11 +192,12 @@ impl NtfsReadEndpoint {
                 },
             );
         }
-        let (hashes, pending) = client.finish()?;
+        let completion = client.finish();
+        check_cancelled(&mut client, cancelled)?;
+        let (hashes, pending) = completion?;
         if hashes != expected {
             return Err(EndpointError::IdentityChanged);
         }
-        drop(client);
         for issue in m.issues.into_iter().chain(pending) {
             let path = issue.path.as_ref().and_then(|p| relative(p).ok());
             if let Some(path) = &path {
@@ -215,7 +214,7 @@ impl NtfsReadEndpoint {
         } else {
             Observation::Incomplete(issues)
         };
-        ObservedTree::new(
+        let tree = ObservedTree::new(
             Endpoint {
                 identity: self.identity,
                 encoding: Encoding::Windows,
@@ -224,7 +223,19 @@ impl NtfsReadEndpoint {
             entries,
             observation,
         )
-        .map_err(|_| EndpointError::Unsupported)
+        .map_err(|_| EndpointError::Unsupported)?;
+        check_cancelled(&mut client, cancelled)?;
+        drop(client);
+        Ok(tree)
+    }
+}
+
+fn check_cancelled(client: &mut Client, cancelled: &AtomicBool) -> Result<(), EndpointError> {
+    if cancelled.load(Ordering::Acquire) {
+        client.cancel();
+        Err(EndpointError::Cancelled)
+    } else {
+        Ok(())
     }
 }
 
@@ -242,6 +253,88 @@ fn pending_reason(reason: &str) -> PendingReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn cancellation_at_native_phase() {
+        use std::{
+            io::{Read, Write},
+            os::{fd::FromRawFd, unix::net::UnixStream},
+            time::Duration,
+        };
+        let locator: serde_json::Value =
+            serde_json::from_str(&std::env::var("QOS_NTFS_SESSION_LOCATOR").unwrap()).unwrap();
+        let identity: qos_ntfs_protocol::Identity =
+            serde_json::from_value(locator["identity"].clone()).unwrap();
+        let decode = |s: &str| -> [u8; 32] {
+            s.as_bytes()
+                .chunks_exact(2)
+                .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        };
+        let expected = EndpointIdentity {
+            volume: decode(&identity.volume),
+            root: decode(&identity.root),
+        };
+        let client = Arc::new(Mutex::new(
+            Client::connect(
+                std::path::Path::new(locator["socket"].as_str().unwrap()),
+                locator["nonce"].as_str().unwrap().to_owned(),
+                identity,
+            )
+            .unwrap(),
+        ));
+        let mut context = super::super::EndpointContext::default();
+        context
+            .register_ntfs_session(Arc::clone(&client), expected)
+            .unwrap();
+        let endpoint = context.open_read_endpoint(&expected).unwrap();
+        let fd: i32 = std::env::var("QOS_NTFS_CANCELLATION_CONTROL_FD")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(fd > 2);
+        // Test-only inherited control socket, never a production authority constructor.
+        // The coordinator stops the actual final native child before signaling this flag.
+        let mut control = unsafe { UnixStream::from_raw_fd(fd) };
+        control
+            .set_read_timeout(Some(Duration::from_secs(150)))
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancelled);
+        let trigger = std::thread::spawn(move || {
+            let mut byte = [0];
+            control.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [b'C']);
+            flag.store(true, Ordering::Release);
+            control.write_all(b"A").unwrap();
+        });
+        let result = super::super::observe_read(&endpoint, &cancelled);
+        trigger.join().unwrap();
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(
+            result.entries().is_empty(),
+            "cancelled observation leaked completed entries"
+        );
+        assert_eq!(
+            result.observation(),
+            &Observation::Unavailable(PendingReason::IncompleteScope)
+        );
+        assert!(
+            client.lock().unwrap().begin().is_err(),
+            "cancelled session remained usable"
+        );
+    }
+    #[test]
+    #[ignore = "real Linux broker/endpoint cancellation coordinator required"]
+    fn native_session_cancellation_during_last_chunk() {
+        cancellation_at_native_phase();
+    }
+    #[test]
+    #[ignore = "real Linux broker/endpoint cancellation coordinator required"]
+    fn native_session_cancellation_during_postflight() {
+        cancellation_at_native_phase();
+    }
+
     #[test]
     #[ignore = "native disposable Linux administrative session required; no public capability promotion"]
     fn native_session_context_reads_windows_names_and_refuses_write_trial() {

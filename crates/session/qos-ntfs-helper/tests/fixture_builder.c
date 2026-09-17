@@ -163,6 +163,16 @@ int main(int argc, char **argv) {
     ntfschar name[] = {cpu_to_le16('L'),cpu_to_le16('o'),cpu_to_le16('n'),cpu_to_le16('g'),cpu_to_le16('D'),cpu_to_le16('i'),cpu_to_le16('r'),cpu_to_le16('e'),cpu_to_le16('c'),cpu_to_le16('t'),cpu_to_le16('o'),cpu_to_le16('r'),cpu_to_le16('y')};
     ni = root ? ntfs_create(root, const_cpu_to_le32(0), name, 13, S_IFDIR) : NULL;
     if (!ni || ntfs_set_ntfs_dos_name(ni, root, "LONGDI~1", 8, 0)) return 18;
+  } else if (!strcmp(argv[2], "cancellation")) {
+    ntfs_inode *root = ntfs_inode_open(v, FILE_root);
+    ntfschar name[] = {cpu_to_le16('c'),cpu_to_le16('a'),cpu_to_le16('n'),cpu_to_le16('c'),cpu_to_le16('e'),cpu_to_le16('l')};
+    ntfs_inode *directory = root ? ntfs_create(root, const_cpu_to_le32(0), name, 6, S_IFDIR) : NULL;
+    ntfschar fname[] = {cpu_to_le16('l'),cpu_to_le16('a'),cpu_to_le16('s'),cpu_to_le16('t'),cpu_to_le16('.'),cpu_to_le16('b'),cpu_to_le16('i'),cpu_to_le16('n')};
+    ntfs_inode *file = directory ? ntfs_create(directory, const_cpu_to_le32(0), fname, 8, S_IFREG) : NULL;
+    rc = !file;
+    if (file && ntfs_inode_close(file)) rc = 1;
+    if (directory && ntfs_inode_close(directory)) rc = 1;
+    if (root && ntfs_inode_close(root)) rc = 1;
   } else if (!strcmp(argv[2], "large-metadata")) {
     ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
     ntfschar name[] = {cpu_to_le16('e'),cpu_to_le16('x'),cpu_to_le16('t'),cpu_to_le16('r'),cpu_to_le16('a')};
