@@ -290,6 +290,25 @@ keys, accepted native image and rejected unsigned/wrong-identity inputs. The
 on both native architectures. Final EFI/PCR sealing, disk creation and VM
 acceptance remain required integration work.
 
+## Verify the boot loader before sealing
+
+`os/dev/verify-development-loader.py` validates a signed systemd-boot loader
+against its original executable, native architecture, and independently pinned
+EFI certificate fingerprint. It checks the Authenticode envelope and actual
+signature using private snapshots of the input files. Its hash receipt describes
+those snapshots; consumers must preserve or recheck the exact bytes they install.
+
+The native development fixture invokes the packaged `bootctl` with an isolated
+directory as its ESP, image-only loader selection, and firmware-variable writes
+disabled. It checks that the signed companion supplies both EFI loader paths,
+records package versions and hashes, and rejects missing, unsigned, wrong-key,
+wrong-architecture and tampered inputs. This tests loader selection and copying;
+it does not prove a bootable disk or firmware acceptance.
+
+The verified loader must enter `/usr/lib/systemd/boot/efi` before composefs sealing.
+The full OS build still needs that integration and signed disk/VM acceptance;
+the development container-only stop remains enabled.
+
 ## Production provisioning later
 
 1. Choose the KMS/HSM provider and release operator. Provision non-exportable OS
