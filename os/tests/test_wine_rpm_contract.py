@@ -109,5 +109,121 @@ class ContractTests(unittest.TestCase):
                 C.elf_identity(header, arch)
 
 
+class MockContractTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.raw, self.bundle, self.out = [self.root / name for name in ('raw', 'bundle', 'out')]
+        self.pin = json.loads((Path(__file__).resolve().parents[1] / 'dev/wine-source.json').read_text())
+        self.ref = 'registry.example/resolution@sha256:' + 'a' * 64
+        def write(root, name, value):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value) if isinstance(value, dict) else value)
+        self.write = write
+        write(self.bundle, 'source/' + self.pin['filename'], 'source')
+        write(self.bundle, 'source/fedora-44.asc', 'key')
+        write(self.bundle, 'source/download.log', 'source acquisition evidence')
+        write(self.bundle, 'resolve.log', 'resolution command log')
+        write(self.bundle, 'mock-config/fedora.cfg', 'target config')
+        write(self.bundle, 'repository/package.rpm', 'resolved dependency')
+        write(self.bundle, 'resolution/buildroot_lock.json', {
+            'version': '1.1.0', 'config': {'target_arch': 'x86_64', 'bootstrap_image_ready': True},
+            'bootstrap': {'image_digest': 'sha256:' + 'b' * 64}, 'buildroot': {'rpms': [{'name': 'gcc'}]}})
+        options = ['--target', 'x86_64', '--without', 'new_wow64', '--define',
+                   'dist ' + self.pin['build_dist'], '--define', '_smp_mflags -j2']
+        shared = {'schema': 1, 'mode': 'mock-hermetic', 'target': 'x86_64', 'source': self.pin,
+                  'options': options, 'tools': {'runtime_image': 'registry.example/tools@sha256:' + 'c' * 64,
+                      'mock_version': '5.7', 'host_rpms': ['mock'], 'mock_api_reference_commit': 'd' * 40,
+                      'tools': {name: {'path': '/usr/bin/' + name, 'sha256': 'e' * 64}
+                                for name in ('mock', 'mock-hermetic-repo', 'rpm', 'podman')}}}
+        write(self.bundle, 'manifest.json', {**shared, 'files': C.tree_inventory(self.bundle)})
+        write(self.raw, 'rpms-and-logs/wine-core.x86_64.rpm', 'binary')
+        write(self.raw, 'rpms-and-logs/' + C.build_identity(self.pin)['source_rpm'], 'rebuilt source')
+        write(self.raw, 'rpms-and-logs/build.log', 'complete build log')
+        write(self.raw, 'hermetic-build.log', 'offline command log')
+        for name in ('installed-rpms.log', 'buildrequires.log', 'gcc-version.log', 'g++-version.log', 'rpmbuild-version.log'):
+            write(self.raw, name, 'tool evidence')
+        write(self.raw, 'compiler-probes.json', {name: {'elf_class': 2, 'elf_machine': 62, 'rpm_optflags': ['-O2']}
+                                                for name in ('gcc', 'g++')})
+        write(self.raw, 'producer.json', {**shared, 'build_identity': C.build_identity(self.pin),
+            'network_interfaces': ['lo'], 'execution_validated': False,
+            'resolution_manifest_sha256': C.sha(self.bundle / 'manifest.json'),
+            'lockfile_sha256': C.sha(self.bundle / 'resolution/buildroot_lock.json'),
+            'files': C.tree_inventory(self.raw)})
+        def query(argv):
+            if 'FILENAMES' in argv[3]:
+                return '\n'.join(name + '\t' + value for name, value in layout('x86_64').items())
+            return '\t'.join(['wine-core', self.pin['version'], self.pin['build_release'],
+                              'x86_64', C.build_identity(self.pin)['source_rpm'], 'LGPL'])
+        for mocked in (patch.object(C, 'source', return_value='signature verified'),
+                       patch.object(C, 'run', side_effect=query),
+                       patch.object(C, 'rpm_loader_identity', return_value={'elf_class': 2, 'elf_machine': 62})):
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
+    def import_output(self):
+        C.import_mock('x86_64', self.pin, self.raw, self.bundle, self.out, self.ref)
+
+    def test_import_preserves_logs_and_sources_without_fake_buildroot(self):
+        self.import_output()
+        stored = json.loads((self.out / 'provenance/contract.json').read_text())
+        self.assertNotIn('buildroot_ref', stored)
+        self.assertEqual(stored['producer']['resolution_ref'], self.ref)
+        self.assertEqual((self.out / 'provenance/mock/rpms-and-logs/build.log').read_text(), 'complete build log')
+        self.assertTrue((self.out / 'provenance' / self.pin['filename']).exists())
+        self.assertEqual((self.out / 'provenance/resolution/source/download.log').read_text(), 'source acquisition evidence')
+        self.assertEqual(stored, C.output('x86_64', self.pin, None, self.out, write=False, mode='mock-hermetic'))
+
+    def test_raw_payload_tamper_prevents_import(self):
+        (self.raw / 'rpms-and-logs/wine-core.x86_64.rpm').write_text('tampered')
+        with self.assertRaisesRegex(ValueError, 'raw Mock output changed'):
+            self.import_output()
+        self.assertFalse(self.out.exists())
+
+    def test_dependency_bundle_tamper_prevents_import(self):
+        (self.bundle / 'repository/package.rpm').write_text('tampered')
+        with self.assertRaisesRegex(ValueError, 'resolution bundle changed'):
+            self.import_output()
+
+    def test_normalized_log_lock_and_config_tampering_detected(self):
+        self.import_output()
+        for relative in ('mock/rpms-and-logs/build.log', 'buildroot_lock.json', 'mock-config/fedora.cfg',
+                         'resolution/source/download.log'):
+            path = self.out / 'provenance' / relative
+            original = path.read_bytes()
+            path.write_bytes(original + b' ')
+            with self.subTest(path=relative), self.assertRaises(ValueError):
+                C.output('x86_64', self.pin, None, self.out, write=False, mode='mock-hermetic')
+            path.write_bytes(original)
+
+    def test_option_or_target_change_rejected(self):
+        for field, value in (('target', 'i686'), ('options', ['--without', 'alsa'])):
+            path = self.raw / 'producer.json'
+            original = path.read_text()
+            record = json.loads(original)
+            record[field] = value
+            self.write(self.raw, 'producer.json', record)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.import_output()
+            path.write_text(original)
+
+    def test_legacy_output_and_mode_confusion(self):
+        self.import_output()
+        old = C.output('x86_64', self.pin, self.ref, self.out, write=False)
+        self.assertEqual(old['buildroot_ref'], self.ref)
+        self.assertNotIn('producer', old)
+        for mode, buildroot in (('unknown', None), ('mock-hermetic', self.ref)):
+            with self.assertRaises(ValueError):
+                C.output('x86_64', self.pin, buildroot, self.out, write=False, mode=mode)
+
+    def test_extra_normalized_rpm_rejected(self):
+        self.import_output()
+        (self.out / 'rpms/extra.rpm').write_text('extra')
+        with self.assertRaisesRegex(ValueError, 'RPM inventory changed'):
+            C.output('x86_64', self.pin, None, self.out, write=False, mode='mock-hermetic')
+
+
 if __name__ == '__main__':
     unittest.main()

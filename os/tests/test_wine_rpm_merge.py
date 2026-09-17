@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Noarch merge must preserve package contents, dependencies and scriptlets."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
@@ -38,6 +40,47 @@ def package(arch):
 
 
 class MergeTests(unittest.TestCase):
+    def test_merge_revalidates_each_explicit_provenance_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs = [root / 'x64', root / 'i686']
+            ref = 'repo@sha256:' + 'a' * 64
+            records = [{'buildroot_ref': ref, 'rpms': {}},
+                       {'producer': {'mode': 'mock-hermetic'}, 'rpms': {}}]
+            for directory, record in zip(inputs, records):
+                (directory / 'provenance').mkdir(parents=True)
+                (directory / 'provenance/contract.json').write_text(json.dumps(record))
+            with patch.object(M.contract, 'output', side_effect=records) as validate:
+                M.merge(*inputs, root / 'merged', {}, [ref, ref])
+            first, second = validate.call_args_list
+            self.assertEqual(first.args[2], ref)
+            self.assertNotIn('mode', first.kwargs)
+            self.assertIsNone(second.args[2])
+            self.assertEqual(second.kwargs, {'write': False, 'mode': 'mock-hermetic'})
+
+    def test_merge_rejects_unknown_or_ambiguous_mode_before_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'provenance').mkdir()
+            ref = 'repo@sha256:' + 'a' * 64
+            for record in ({'producer': {'mode': 'unknown'}},
+                           {'producer': {'mode': 'mock-hermetic'}, 'buildroot_ref': ref}):
+                (root / 'provenance/contract.json').write_text(json.dumps(record))
+                with patch.object(M.contract, 'output') as validate, self.assertRaisesRegex(ValueError, 'provenance mode'):
+                    M.merge(root, root, root / 'merged', {}, [ref, ref])
+                validate.assert_not_called()
+                self.assertFalse((root / 'merged').exists())
+
+    def test_merge_rejects_revalidated_inventory_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'provenance').mkdir()
+            (root / 'provenance/contract.json').write_text(json.dumps({'producer': {'mode': 'mock-hermetic'}}))
+            ref = 'repo@sha256:' + 'a' * 64
+            with patch.object(M.contract, 'output', return_value={'changed': True}), self.assertRaisesRegex(ValueError, 'does not match'):
+                M.merge(root, root, root / 'merged', {}, [ref, ref])
+            self.assertFalse((root / 'merged').exists())
+
     def test_build_host_encoding_changes_do_not_change_semantic_package(self):
         self.assertEqual(M.semantic_header(header()), M.semantic_header(header(
             Buildhost='builder-b', Buildtime='9999', Payloadcompressor='xz')))
