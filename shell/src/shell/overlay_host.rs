@@ -795,6 +795,26 @@ pub(crate) struct CaptureMirrorHandoffLayer {
     pub target: Rect,
 }
 
+pub(crate) struct CaptureSurfaceRequest<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    pub rgba: std::sync::Arc<[u8]>,
+    pub width: u32,
+    pub height: u32,
+    pub spawn_from: Option<Rect>,
+    pub kind: CaptureSurfaceKind,
+}
+
+pub(crate) enum CaptureSurfaceKind {
+    Live {
+        preferred_size: Option<vello::kurbo::Size>,
+        handoff_layers: Vec<CaptureMirrorHandoffLayer>,
+    },
+    Pinned {
+        preview: ui::widget::CapturePreview,
+    },
+}
+
 struct CaptureMirrorLayer {
     image: Image,
     source: Rect,
@@ -2989,111 +3009,66 @@ impl ShellOverlayHost {
         rects
     }
 
-    /// Create or refresh a live captured-region `PiP`. Updating replaces only
-    /// the image payload; the window's user-controlled position and size stay
-    /// untouched across frames.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "capture payload geometry and handoff metadata form one lifecycle operation"
-    )]
-    pub(crate) fn upsert_capture_mirror(
-        &mut self,
-        id: &str,
-        title: &str,
-        rgba: std::sync::Arc<[u8]>,
-        width: u32,
-        height: u32,
-        preferred_size: Option<vello::kurbo::Size>,
-        spawn_from: Option<Rect>,
-        handoff_layers: Vec<CaptureMirrorHandoffLayer>,
-    ) {
-        let image = Image::from_rgba(rgba, width, height)
-            .with_fit(ImageFit::Contain)
-            .with_alt(format!("Live capture: {title}"));
-        self.upsert_capture_surface(
+    /// Create or refresh a capture-owned presentation surface. Live requests
+    /// update only their pixels when the id already exists, preserving the
+    /// user's window geometry; pinned requests use unique ids and remain
+    /// immutable after insertion.
+    pub(crate) fn upsert_capture_surface(&mut self, request: CaptureSurfaceRequest<'_>) {
+        let CaptureSurfaceRequest {
             id,
             title,
-            image,
+            rgba,
             width,
             height,
-            preferred_size,
             spawn_from,
-            handoff_layers,
-            None,
-            None,
-        );
-    }
-
-    /// Create a frozen screenshot reference. Unlike a PiP/live capture this is
-    /// inserted once and thereafter owned entirely by the surface host, so its
-    /// pixels cannot drift when the underlying application changes.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pinned capture creation carries the immutable artifact and its geometry"
-    )]
-    pub(crate) fn insert_pinned_capture(
-        &mut self,
-        id: &str,
-        title: &str,
-        rgba: std::sync::Arc<[u8]>,
-        width: u32,
-        height: u32,
-        spawn_from: Option<Rect>,
-        preview: ui::widget::CapturePreview,
-    ) {
+            kind,
+        } = request;
         let pixel_aspect = f64::from(width) / f64::from(height.max(1));
-        let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
-        let fit = if document_aspect.is_some() {
-            ImageFit::Fill
-        } else {
-            ImageFit::Contain
+        let (image, preferred_size, handoff_layers, crossfade_preview, document_aspect) = match kind
+        {
+            CaptureSurfaceKind::Live {
+                preferred_size,
+                handoff_layers,
+            } => (
+                Image::from_rgba(rgba, width, height)
+                    .with_fit(ImageFit::Contain)
+                    .with_alt(format!("Live capture: {title}")),
+                preferred_size,
+                handoff_layers,
+                None,
+                None,
+            ),
+            CaptureSurfaceKind::Pinned { preview } => {
+                let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
+                let fit = if document_aspect.is_some() {
+                    ImageFit::Fill
+                } else {
+                    ImageFit::Contain
+                };
+                let image = Image::from_rgba(rgba, width, height)
+                    .with_fit(fit)
+                    .with_alt(format!("Pinned screenshot: {title}"));
+                let preview_rgba: Vec<u8> = preview
+                    .pixels
+                    .into_iter()
+                    .flat_map(std::iter::IntoIterator::into_iter)
+                    .collect();
+                let preview_image = Image::from_rgba(
+                    std::sync::Arc::from(preview_rgba),
+                    u32::from(preview.columns.max(1)),
+                    u32::from(preview.rows.max(1)),
+                )
+                .with_fit(ImageFit::Fill)
+                .with_alt(format!("Pinned screenshot preview: {title}"));
+                (
+                    image,
+                    document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
+                    Vec::new(),
+                    Some(preview_image),
+                    document_aspect,
+                )
+            }
         };
-        let image = Image::from_rgba(rgba, width, height)
-            .with_fit(fit)
-            .with_alt(format!("Pinned screenshot: {title}"));
-        let preview_rgba: Vec<u8> = preview
-            .pixels
-            .into_iter()
-            .flat_map(std::iter::IntoIterator::into_iter)
-            .collect();
-        let preview_image = Image::from_rgba(
-            std::sync::Arc::from(preview_rgba),
-            u32::from(preview.columns.max(1)),
-            u32::from(preview.rows.max(1)),
-        )
-        .with_fit(ImageFit::Fill)
-        .with_alt(format!("Pinned screenshot preview: {title}"));
-        self.upsert_capture_surface(
-            id,
-            title,
-            image,
-            width,
-            height,
-            document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
-            spawn_from,
-            Vec::new(),
-            Some(preview_image),
-            document_aspect,
-        );
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "capture image identity, geometry and one-shot handoff state are independent"
-    )]
-    fn upsert_capture_surface(
-        &mut self,
-        id: &str,
-        title: &str,
-        image: Image,
-        width: u32,
-        height: u32,
-        preferred_size: Option<vello::kurbo::Size>,
-        spawn_from: Option<Rect>,
-        handoff_layers: Vec<CaptureMirrorHandoffLayer>,
-        crossfade_preview: Option<Image>,
-        document_aspect: Option<f64>,
-    ) {
         if let Some((_, window)) = self
             .capture_mirrors
             .iter_mut()
@@ -3102,8 +3077,7 @@ impl ShellOverlayHost {
             window.content_mut().set_image(image);
             return;
         }
-        let aspect = f64::from(width) / f64::from(height.max(1));
-        let initial_size = capture_mirror_initial_size(self.rect, aspect, preferred_size);
+        let initial_size = capture_mirror_initial_size(self.rect, pixel_aspect, preferred_size);
         let body_w = initial_size.width;
         let body_h = initial_size.height;
         let visible_spawn = visible_capture_spawn(self.rect, spawn_from);
@@ -3119,7 +3093,7 @@ impl ShellOverlayHost {
             .with_initial_size(body_w, body_h)
             .spawn_from(visible_spawn);
         if document_aspect.is_none() {
-            window = window.with_aspect_ratio(aspect);
+            window = window.with_aspect_ratio(pixel_aspect);
         }
 
         let window_size = vello::kurbo::Size::new(
@@ -23730,6 +23704,69 @@ mod tests {
             ),
             Rect::new(0.0, 0.0, 0.4, 0.5)
         );
+    }
+
+    #[test]
+    fn capture_surface_requests_preserve_live_layout_and_model_pinned_documents() {
+        let mut h = build_harness();
+        let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0_u8, 0, 0, 255]);
+        h.host.upsert_capture_surface(CaptureSurfaceRequest {
+            id: "live",
+            title: "Live region",
+            rgba: pixel.clone(),
+            width: 1,
+            height: 1,
+            spawn_from: None,
+            kind: CaptureSurfaceKind::Live {
+                preferred_size: None,
+                handoff_layers: Vec::new(),
+            },
+        });
+        assert_eq!(h.host.capture_mirrors.len(), 1);
+        h.host.capture_mirrors[0].1.content_mut().rect = Rect::new(20.0, 30.0, 220.0, 130.0);
+
+        h.host.upsert_capture_surface(CaptureSurfaceRequest {
+            id: "live",
+            title: "Live region",
+            rgba: pixel,
+            width: 1,
+            height: 1,
+            spawn_from: Some(Rect::new(600.0, 400.0, 700.0, 500.0)),
+            kind: CaptureSurfaceKind::Live {
+                preferred_size: Some(vello::kurbo::Size::new(640.0, 360.0)),
+                handoff_layers: Vec::new(),
+            },
+        });
+        assert_eq!(
+            h.host.capture_mirrors.len(),
+            1,
+            "a live frame refresh must update the existing surface"
+        );
+        assert_eq!(
+            h.host.capture_mirrors[0].1.content_mut().rect,
+            Rect::new(20.0, 30.0, 220.0, 130.0),
+            "refreshing pixels must not reset retained content layout"
+        );
+
+        h.host.upsert_capture_surface(CaptureSurfaceRequest {
+            id: "pinned",
+            title: "Tall screenshot",
+            rgba: std::sync::Arc::from(vec![0_u8; 16]),
+            width: 1,
+            height: 4,
+            spawn_from: None,
+            kind: CaptureSurfaceKind::Pinned {
+                preview: ui::widget::CapturePreview {
+                    columns: 1,
+                    rows: 1,
+                    pixels: vec![[0, 0, 0, 255]],
+                },
+            },
+        });
+        let pinned = h.host.capture_mirrors[1].1.content_mut();
+        assert!(pinned.crossfade_handoff);
+        assert_eq!(pinned.document_aspect, Some(0.25));
+        assert_eq!(pinned.handoff_layers.len(), 1);
     }
 
     /// Recording mock content for the host's `content` slot. The palette
