@@ -11,6 +11,21 @@
     reason = "the bounded wire fields and state variants are described by their stable names and module contract"
 )]
 
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use launcher::manifest::{MinimalManifest, read_manifest};
+use launcher::registry::InstalledPackage;
+use launcher::run::{
+    CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination, LaunchMode,
+    RunOptions, run_with_captured_bounded,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -22,9 +37,11 @@ pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
 pub const MAX_COMPUTE_ARGUMENTS: usize = 64;
 pub const MAX_COMPUTE_ARGUMENT_BYTES: usize = 16 * 1024;
 pub const MAX_COMPUTE_INPUTS: usize = 64;
-pub const MAX_COMPUTE_CPU_TIME_MS: u64 = 60 * 60 * 1_000;
-pub const MAX_COMPUTE_MEMORY_BYTES: u64 = 16 * 1024 * 1024 * 1024;
-pub const MAX_COMPUTE_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_COMPUTE_CPU_TIME_MS: u64 = 5 * 60 * 1_000;
+pub const MAX_COMPUTE_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub const MAX_COMPUTE_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_COMPUTE_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_COMPUTE_OUTPUTS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,27 +99,21 @@ impl ComputeJobSpec {
         if !valid_identifier(&self.app_id, 256) || !valid_identifier(&self.entrypoint, 128) {
             return Err(ComputeError::InvalidEntrypoint);
         }
-        let argument_bytes = self
-            .arguments
-            .iter()
-            .try_fold(0usize, |total, argument| {
-                if argument.len() > 4 * 1024 || argument.contains('\0') {
-                    return None;
-                }
-                total.checked_add(argument.len())
-            })
-            .ok_or(ComputeError::ArgumentsTooLarge)?;
-        if self.arguments.len() > MAX_COMPUTE_ARGUMENTS
-            || argument_bytes > MAX_COMPUTE_ARGUMENT_BYTES
-            || self.inputs.len() > MAX_COMPUTE_INPUTS
-            || self.inputs.contains(&[0; 32])
-        {
+        // Mesh jobs are content transforms, not a remote command runner.
+        // Keeping the legacy wire field lets old peers fail explicitly, but
+        // no requester-provided argv (and therefore no path/env/bearer-shaped
+        // value) ever reaches the package process.
+        if !self.arguments.is_empty() {
+            return Err(ComputeError::RequesterArgumentsForbidden);
+        }
+        if self.inputs.len() > MAX_COMPUTE_INPUTS || self.inputs.contains(&[0; 32]) {
             return Err(ComputeError::ArgumentsTooLarge);
         }
         if self.limits.cpu_time_ms == 0
             || self.limits.cpu_time_ms > MAX_COMPUTE_CPU_TIME_MS
-            || self.limits.memory_bytes == 0
+            || self.limits.memory_bytes < 16 * 1024 * 1024
             || self.limits.memory_bytes > MAX_COMPUTE_MEMORY_BYTES
+            || self.limits.output_bytes == 0
             || self.limits.output_bytes > MAX_COMPUTE_OUTPUT_BYTES
         {
             return Err(ComputeError::InvalidLimits);
@@ -140,7 +151,8 @@ pub fn admit_compute_job(
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ComputeJobPhase {
     Pending,
     Running,
@@ -149,7 +161,8 @@ pub enum ComputeJobPhase {
     Cancelled,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComputeJobLifecycle {
     pub job_id: [u8; 16],
     pub sequence: u64,
@@ -224,6 +237,8 @@ pub enum ComputeError {
     InvalidEntrypoint,
     #[error("compute job arguments or inputs exceed their bound")]
     ArgumentsTooLarge,
+    #[error("compute jobs accept content references, not requester-provided argv")]
+    RequesterArgumentsForbidden,
     #[error("compute resource limits are invalid")]
     InvalidLimits,
     #[error("target worker is unavailable or ineligible")]
@@ -244,12 +259,763 @@ fn valid_identifier(value: &str, max: usize) -> bool {
         })
 }
 
+/// Trusted local catalogue lookup. Implementations return only package rows
+/// produced by the signed-package installer; requesters never supply paths.
+pub trait ComputePackageCatalogue: Send + Sync {
+    /// Resolve an installed package by its signed manifest identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the trusted local catalogue cannot be read.
+    fn resolve(&self, app_id: &str) -> Result<Option<InstalledPackage>, String>;
+}
+
+/// Production catalogue backed by `tilo-install`'s registry.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InstalledComputeCatalogue;
+
+impl ComputePackageCatalogue for InstalledComputeCatalogue {
+    fn resolve(&self, app_id: &str) -> Result<Option<InstalledPackage>, String> {
+        launcher::registry::find_installed(app_id).map_err(|error| error.to_string())
+    }
+}
+
+/// Content-addressed storage used by a worker. The worker recomputes every
+/// digest on both ingress and egress, so a faulty store cannot substitute
+/// bytes under a caller-chosen name.
+pub trait ComputeContentStore: Send + Sync {
+    /// Read bytes addressed by their digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the local content store cannot be read.
+    fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String>;
+    /// Store bytes under their independently verified digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the local content store cannot persist the bytes.
+    fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String>;
+}
+
+/// Information passed only to the trusted, local sandbox adapter.
+pub struct ComputeSandboxInvocation<'a> {
+    pub package: &'a InstalledPackage,
+    pub manifest: &'a MinimalManifest,
+    pub entrypoint: &'a str,
+    pub workspace_slug: &'a str,
+    pub host_job_dir: &'a Path,
+    pub require_gpu: bool,
+    pub plan: CapturedResourcePlan,
+    pub cancellation: CaptureCancellation,
+}
+
+/// Narrow launch seam: production always uses the package launcher; tests
+/// can model termination without creating a nested user namespace.
+pub trait ComputeSandbox: Send + Sync {
+    fn gpu_available(&self) -> bool;
+    /// Launch one worker invocation through the trusted package sandbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sandbox cannot launch or supervise the worker.
+    fn launch(&self, invocation: ComputeSandboxInvocation<'_>)
+    -> Result<CapturedRunOutput, String>;
+}
+
+/// Production adapter. The render-node path is selected by trusted local
+/// compositor/device policy; it is never present in a mesh request.
+#[derive(Clone, Debug, Default)]
+pub struct LauncherComputeSandbox {
+    render_node: Option<PathBuf>,
+}
+
+impl LauncherComputeSandbox {
+    #[must_use]
+    pub fn new(render_node: Option<PathBuf>) -> Self {
+        Self { render_node }
+    }
+}
+
+impl ComputeSandbox for LauncherComputeSandbox {
+    fn gpu_available(&self) -> bool {
+        self.render_node.is_some()
+    }
+
+    fn launch(
+        &self,
+        invocation: ComputeSandboxInvocation<'_>,
+    ) -> Result<CapturedRunOutput, String> {
+        if invocation.require_gpu && self.render_node.is_none() {
+            return Err("advertised GPU has no launcher-approved render node".into());
+        }
+        let mounted_dir = launcher::appdir::host_data_home()
+            .map(|data_home| {
+                launcher::appdir::host_app_dir(
+                    &data_home,
+                    &launcher::appdir::room_slug(Some(invocation.workspace_slug)),
+                    &invocation.manifest.package_id,
+                )
+            })
+            .ok_or_else(|| "launcher has no trusted data home".to_string())?;
+        if mounted_dir != invocation.host_job_dir {
+            return Err("staged compute directory is not the launcher's mounted appdir".into());
+        }
+        let opts = RunOptions {
+            no_services: true,
+            mode: LaunchMode::Cli {
+                command: invocation.entrypoint.to_string(),
+                passthrough_argv: vec![
+                    "--tilo-compute-request".into(),
+                    "/run/tilo/app/.tilo-compute/request.json".into(),
+                    "--tilo-compute-output".into(),
+                    "/run/tilo/app/.tilo-compute/outputs".into(),
+                ],
+            },
+            workspace_id: Some(invocation.workspace_slug.to_string()),
+            app_id: Some(invocation.manifest.package_id.clone()),
+            // A CPU-only request receives no DRM node even on a GPU worker.
+            render_node: invocation
+                .require_gpu
+                .then(|| self.render_node.clone())
+                .flatten(),
+            wayland_socket: None,
+            capabilities_path: None,
+            identity_host_path: None,
+            trusted_identities_host_path: None,
+            open_document: None,
+            open_uri: None,
+            ..RunOptions::default()
+        };
+        run_with_captured_bounded(
+            invocation.manifest,
+            &invocation.package.payload_root,
+            &opts,
+            invocation.plan,
+            invocation.cancellation,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComputeJobResult {
+    pub lifecycle: ComputeJobLifecycle,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ComputeExecutionError {
+    #[error("authenticated route does not match the job requester or workspace")]
+    RouteMismatch,
+    #[error(transparent)]
+    Admission(#[from] ComputeError),
+    #[error("signed package is not installed for the requested app")]
+    PackageUnavailable,
+    #[error("installed package digest does not match the requested signed root")]
+    PackageDigestMismatch,
+    #[error("requested entrypoint is not declared by the signed package catalogue")]
+    EntrypointUnavailable,
+    #[error("worker advertised a GPU but has no launcher-approved device")]
+    GpuUnavailable,
+    #[error("compute job id has already been claimed")]
+    Replay,
+    #[error("content input is unavailable")]
+    MissingInput,
+    #[error("content store returned bytes under the wrong digest")]
+    InputDigestMismatch,
+    #[error("content inputs exceed the worker staging bound")]
+    InputsTooLarge,
+    #[error("compute staging failed: {0}")]
+    Staging(String),
+    #[error("sandbox launch failed: {0}")]
+    Launch(String),
+    #[error("compute output is malformed or exceeds its bound")]
+    InvalidOutput,
+    #[error("content output persistence failed: {0}")]
+    OutputStore(String),
+}
+
+/// A local executor bound to one certified worker advertisement. Jobs are
+/// synchronously supervised, while cancellation is safe to signal from any
+/// thread through [`CaptureCancellation`].
+pub struct ComputeWorker<C, P, S> {
+    worker: ServerAdvertisement,
+    data_home: PathBuf,
+    state_root: PathBuf,
+    content: C,
+    catalogue: P,
+    sandbox: S,
+    jobs: Mutex<BTreeMap<[u8; 16], ComputeJobLifecycle>>,
+}
+
+impl<C, P, S> ComputeWorker<C, P, S>
+where
+    C: ComputeContentStore,
+    P: ComputePackageCatalogue,
+    S: ComputeSandbox,
+{
+    #[must_use]
+    pub fn new(
+        worker: ServerAdvertisement,
+        data_home: PathBuf,
+        state_root: PathBuf,
+        content: C,
+        catalogue: P,
+        sandbox: S,
+    ) -> Self {
+        Self {
+            worker,
+            data_home,
+            state_root,
+            content,
+            catalogue,
+            sandbox,
+            jobs: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Resolve, stage, execute and persist one authenticated mesh job.
+    ///
+    /// The two authenticated values are derived from the certified transport
+    /// route rather than from the serialized job. A mismatch is rejected
+    /// before package lookup, staging, or durable job-id claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid or ineligible request, package or
+    /// content-integrity failure, replay, sandbox failure, or invalid output.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the security-critical execution sequence auditable"
+    )]
+    pub fn execute(
+        &self,
+        authenticated_requester: DeviceKey,
+        authenticated_workspace: u64,
+        spec: &ComputeJobSpec,
+        now_ms: u64,
+        cancellation: CaptureCancellation,
+    ) -> Result<ComputeJobResult, ComputeExecutionError> {
+        if authenticated_requester != spec.requester || authenticated_workspace != spec.workspace_id
+        {
+            return Err(ComputeExecutionError::RouteMismatch);
+        }
+        admit_compute_job(spec, &self.worker, now_ms)?;
+        if spec.limits.gpu && !self.sandbox.gpu_available() {
+            return Err(ComputeExecutionError::GpuUnavailable);
+        }
+
+        let installed = self
+            .catalogue
+            .resolve(&spec.app_id)
+            .map_err(ComputeExecutionError::Staging)?
+            .ok_or(ComputeExecutionError::PackageUnavailable)?;
+        verify_registry_binding(&installed, spec)?;
+        verify_installed_payload(&installed, &installed.payload_root)?;
+        let manifest = read_manifest(&installed.manifest_path)
+            .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+        if manifest.package_id != spec.app_id
+            || !manifest
+                .cli_commands
+                .iter()
+                .any(|name| name == &spec.entrypoint)
+            || manifest.entrypoint.cli_bin().is_none()
+        {
+            return Err(ComputeExecutionError::EntrypointUnavailable);
+        }
+
+        let workspace_slug = format!("compute-job-{}", hex::encode(spec.job_id));
+        self.claim_job(spec, &workspace_slug)?;
+        self.advance(spec.job_id, 1, ComputeJobPhase::Running)?;
+
+        // Launch an exact verified snapshot rather than the mutable installed
+        // tree. Re-verifying the copy closes the check/re-open race: a source
+        // mutation during copying makes the snapshot fail its signed hashes.
+        let execution_root = self.state_root.join("jobs").join(hex::encode(spec.job_id));
+        let snapshot_root = execution_root.join("payload");
+        copy_payload_snapshot(&installed.payload_root, &snapshot_root)
+            .map_err(|error| self.fail(spec.job_id, "integrity", error.to_string()))?;
+        verify_installed_payload(&installed, &snapshot_root)
+            .map_err(|error| self.fail_existing(spec.job_id, "integrity", error))?;
+        let snapshot_manifest_path = snapshot_root.join("manifest.toml");
+        let manifest = read_manifest(&snapshot_manifest_path)
+            .map_err(|error| self.fail(spec.job_id, "integrity", error.to_string()))?;
+        if manifest.package_id != spec.app_id
+            || !manifest
+                .cli_commands
+                .iter()
+                .any(|name| name == &spec.entrypoint)
+            || manifest.entrypoint.cli_bin().is_none()
+        {
+            return Err(self.fail_existing(
+                spec.job_id,
+                "entrypoint",
+                ComputeExecutionError::EntrypointUnavailable,
+            ));
+        }
+        let package = InstalledPackage {
+            id: installed.id,
+            package_id_hex: installed.package_id_hex,
+            payload_root: snapshot_root,
+            manifest_path: snapshot_manifest_path,
+        };
+
+        let job_dir = launcher::appdir::prepare_host_app_dir(
+            &self.data_home,
+            Some(&workspace_slug),
+            &spec.app_id,
+        )
+        .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
+        let _cleanup = JobDirectoryCleanup(vec![job_dir.clone(), execution_root]);
+        let io_root = job_dir.join(".tilo-compute");
+        let input_dir = io_root.join("inputs");
+        let output_dir = io_root.join("outputs");
+        prepare_private_dir(&input_dir)
+            .and_then(|()| prepare_private_dir(&output_dir))
+            .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
+        let output_dir_handle = File::open(&output_dir)
+            .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
+        self.stage_inputs(spec, &input_dir)
+            .map_err(|error| self.fail_existing(spec.job_id, "input", error))?;
+        write_request(spec, &io_root)
+            .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
+
+        if cancellation.is_cancelled() {
+            self.advance(spec.job_id, 2, ComputeJobPhase::Cancelled)?;
+            return Ok(ComputeJobResult {
+                lifecycle: self.lifecycle(spec.job_id)?,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            });
+        }
+        let plan = resource_plan(spec, now_ms)?;
+        let captured = self
+            .sandbox
+            .launch(ComputeSandboxInvocation {
+                package: &package,
+                manifest: &manifest,
+                entrypoint: &spec.entrypoint,
+                workspace_slug: &workspace_slug,
+                host_job_dir: &job_dir,
+                require_gpu: spec.limits.gpu,
+                plan,
+                cancellation,
+            })
+            .map_err(|error| {
+                let _ = self.advance(
+                    spec.job_id,
+                    2,
+                    ComputeJobPhase::Failed {
+                        code: "launch".into(),
+                    },
+                );
+                ComputeExecutionError::Launch(error)
+            })?;
+        self.finish(spec, &output_dir_handle, captured)
+    }
+
+    /// Read the current monotonic lifecycle for a claimed job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registry is unavailable or the job is unknown.
+    pub fn lifecycle(
+        &self,
+        job_id: [u8; 16],
+    ) -> Result<ComputeJobLifecycle, ComputeExecutionError> {
+        self.jobs
+            .lock()
+            .map_err(|_| ComputeExecutionError::Staging("job registry poisoned".into()))?
+            .get(&job_id)
+            .cloned()
+            .ok_or(ComputeExecutionError::Replay)
+    }
+
+    fn claim_job(
+        &self,
+        spec: &ComputeJobSpec,
+        workspace_slug: &str,
+    ) -> Result<(), ComputeExecutionError> {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| ComputeExecutionError::Staging("job registry poisoned".into()))?;
+        if jobs.contains_key(&spec.job_id) {
+            return Err(ComputeExecutionError::Replay);
+        }
+        prepare_private_dir(&self.state_root)
+            .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+        let claim_path = self
+            .state_root
+            .join(format!("{}.claim", hex::encode(spec.job_id)));
+        let mut claim = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(claim_path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    ComputeExecutionError::Replay
+                } else {
+                    ComputeExecutionError::Staging(error.to_string())
+                }
+            })?;
+        writeln!(
+            claim,
+            "{}:{}:{}:{}",
+            hex::encode(spec.requester),
+            hex::encode(spec.worker),
+            spec.workspace_id,
+            workspace_slug
+        )
+        .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+        claim
+            .sync_all()
+            .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+        jobs.insert(spec.job_id, ComputeJobLifecycle::new(spec.job_id)?);
+        drop(jobs);
+        Ok(())
+    }
+
+    fn advance(
+        &self,
+        job_id: [u8; 16],
+        sequence: u64,
+        phase: ComputeJobPhase,
+    ) -> Result<(), ComputeExecutionError> {
+        self.jobs
+            .lock()
+            .map_err(|_| ComputeExecutionError::Staging("job registry poisoned".into()))?
+            .get_mut(&job_id)
+            .ok_or(ComputeExecutionError::Replay)?
+            .advance(sequence, phase)?;
+        Ok(())
+    }
+
+    fn stage_inputs(
+        &self,
+        spec: &ComputeJobSpec,
+        input_dir: &Path,
+    ) -> Result<(), ComputeExecutionError> {
+        let mut total = 0_u64;
+        for digest in &spec.inputs {
+            let bytes = self
+                .content
+                .get(*digest)
+                .map_err(ComputeExecutionError::Staging)?
+                .ok_or(ComputeExecutionError::MissingInput)?;
+            if blake3::hash(&bytes).as_bytes() != digest {
+                return Err(ComputeExecutionError::InputDigestMismatch);
+            }
+            total = total
+                .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+                .ok_or(ComputeExecutionError::InputsTooLarge)?;
+            if total > MAX_COMPUTE_INPUT_BYTES || total > spec.limits.memory_bytes {
+                return Err(ComputeExecutionError::InputsTooLarge);
+            }
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o400)
+                .open(input_dir.join(hex::encode(digest)))
+                .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn finish(
+        &self,
+        spec: &ComputeJobSpec,
+        output_dir: &File,
+        captured: CapturedRunOutput,
+    ) -> Result<ComputeJobResult, ComputeExecutionError> {
+        let captured_bytes = captured.stdout.len().saturating_add(captured.stderr.len());
+        if captured_bytes > usize::try_from(spec.limits.output_bytes).unwrap_or(usize::MAX) {
+            return Err(self.fail_existing(
+                spec.job_id,
+                "output",
+                ComputeExecutionError::InvalidOutput,
+            ));
+        }
+        let terminal = match captured.termination {
+            CapturedTermination::Cancelled => ComputeJobPhase::Cancelled,
+            CapturedTermination::TimedOut => ComputeJobPhase::Failed {
+                code: "timeout".into(),
+            },
+            CapturedTermination::OutputLimit => ComputeJobPhase::Failed {
+                code: "output_limit".into(),
+            },
+            CapturedTermination::Exited(status) if !status.success() => ComputeJobPhase::Failed {
+                code: status
+                    .code()
+                    .map_or_else(|| "exit_signal".into(), |code| format!("exit_{code}")),
+            },
+            CapturedTermination::Exited(_) => {
+                let remaining = usize::try_from(spec.limits.output_bytes)
+                    .unwrap_or(usize::MAX)
+                    .saturating_sub(captured_bytes);
+                let outputs = match self.collect_outputs(output_dir, remaining) {
+                    Ok(outputs) => outputs,
+                    Err(error) => {
+                        return Err(self.fail_existing(spec.job_id, "output", error));
+                    }
+                };
+                ComputeJobPhase::Completed { outputs }
+            }
+        };
+        self.advance(spec.job_id, 2, terminal)?;
+        Ok(ComputeJobResult {
+            lifecycle: self.lifecycle(spec.job_id)?,
+            stdout: captured.stdout,
+            stderr: captured.stderr,
+        })
+    }
+
+    fn collect_outputs(
+        &self,
+        output_dir: &File,
+        mut remaining: usize,
+    ) -> Result<Vec<[u8; 32]>, ComputeExecutionError> {
+        let pinned_dir = PathBuf::from(format!("/proc/self/fd/{}", output_dir.as_raw_fd()));
+        let mut paths = fs::read_dir(&pinned_dir)
+            .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+        paths.sort_by_key(std::fs::DirEntry::file_name);
+        if paths.len() > MAX_COMPUTE_OUTPUTS {
+            return Err(ComputeExecutionError::InvalidOutput);
+        }
+        let mut outputs = Vec::with_capacity(paths.len());
+        for entry in paths {
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(entry.path())
+                .map_err(|_| ComputeExecutionError::InvalidOutput)?;
+            if !file
+                .metadata()
+                .map_err(|_| ComputeExecutionError::InvalidOutput)?
+                .is_file()
+            {
+                return Err(ComputeExecutionError::InvalidOutput);
+            }
+            let mut bytes = Vec::new();
+            std::io::Read::by_ref(&mut file)
+                .take(
+                    u64::try_from(remaining)
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(1),
+                )
+                .read_to_end(&mut bytes)
+                .map_err(|_| ComputeExecutionError::InvalidOutput)?;
+            if bytes.len() > remaining {
+                return Err(ComputeExecutionError::InvalidOutput);
+            }
+            remaining = remaining.saturating_sub(bytes.len());
+            let digest = *blake3::hash(&bytes).as_bytes();
+            self.content
+                .put(digest, &bytes)
+                .map_err(ComputeExecutionError::OutputStore)?;
+            outputs.push(digest);
+        }
+        Ok(outputs)
+    }
+
+    fn fail(&self, job_id: [u8; 16], code: &str, detail: String) -> ComputeExecutionError {
+        let _ = self.advance(
+            job_id,
+            2,
+            ComputeJobPhase::Failed {
+                code: code.to_string(),
+            },
+        );
+        ComputeExecutionError::Staging(detail)
+    }
+
+    fn fail_existing(
+        &self,
+        job_id: [u8; 16],
+        code: &str,
+        error: ComputeExecutionError,
+    ) -> ComputeExecutionError {
+        let _ = self.advance(
+            job_id,
+            2,
+            ComputeJobPhase::Failed {
+                code: code.to_string(),
+            },
+        );
+        error
+    }
+}
+
+fn verify_registry_binding(
+    package: &InstalledPackage,
+    spec: &ComputeJobSpec,
+) -> Result<(), ComputeExecutionError> {
+    if package.id != spec.app_id {
+        return Err(ComputeExecutionError::PackageUnavailable);
+    }
+    let digest = hex::decode(&package.package_id_hex)
+        .map_err(|_| ComputeExecutionError::PackageDigestMismatch)?;
+    if digest.as_slice() != spec.package_digest {
+        return Err(ComputeExecutionError::PackageDigestMismatch);
+    }
+    Ok(())
+}
+
+fn verify_installed_payload(
+    package: &InstalledPackage,
+    payload_root: &Path,
+) -> Result<(), ComputeExecutionError> {
+    let data_root = package
+        .payload_root
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| ComputeExecutionError::Staging("invalid installed payload root".into()))?;
+    let report = install::integrity::verify(
+        data_root,
+        &package.id,
+        &package.package_id_hex,
+        payload_root,
+    )
+    .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+    if !report.is_intact() || !report.unexpected.is_empty() {
+        return Err(ComputeExecutionError::PackageDigestMismatch);
+    }
+    Ok(())
+}
+
+fn copy_payload_snapshot(source: &Path, destination: &Path) -> std::io::Result<()> {
+    const MAX_PACKAGE_FILES: usize = 16_384;
+    const MAX_PACKAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+    fn copy_dir(
+        source: &Path,
+        destination: &Path,
+        files: &mut usize,
+        bytes: &mut u64,
+    ) -> std::io::Result<()> {
+        prepare_private_dir(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let target = destination.join(entry.file_name());
+            if file_type.is_dir() {
+                copy_dir(&entry.path(), &target, files, bytes)?;
+            } else if file_type.is_file() {
+                *files = files.saturating_add(1);
+                let metadata = entry.metadata()?;
+                *bytes = bytes.saturating_add(metadata.len());
+                if *files > MAX_PACKAGE_FILES || *bytes > MAX_PACKAGE_BYTES {
+                    return Err(std::io::Error::other(
+                        "installed package exceeds compute snapshot bounds",
+                    ));
+                }
+                let mut input = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(entry.path())?;
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o500)
+                    .open(target)?;
+                std::io::copy(&mut input, &mut output)?;
+                output.sync_all()?;
+            } else {
+                return Err(std::io::Error::other(
+                    "installed package contains a symlink or special file",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = 0;
+    let mut bytes = 0;
+    copy_dir(source, destination, &mut files, &mut bytes)
+}
+
+fn resource_plan(
+    spec: &ComputeJobSpec,
+    now_ms: u64,
+) -> Result<CapturedResourcePlan, ComputeExecutionError> {
+    let cpu_seconds = spec.limits.cpu_time_ms.saturating_add(999) / 1_000;
+    let output_bytes = usize::try_from(spec.limits.output_bytes)
+        .map_err(|_| ComputeExecutionError::Admission(ComputeError::InvalidLimits))?;
+    CapturedResourcePlan {
+        cpu_seconds,
+        memory_bytes: spec.limits.memory_bytes,
+        output_bytes,
+        wall_time: Duration::from_millis(spec.expires_at_ms.saturating_sub(now_ms)),
+    }
+    .validate()
+    .map_err(|_| ComputeExecutionError::Admission(ComputeError::InvalidLimits))
+}
+
+fn prepare_private_dir(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[derive(Serialize)]
+struct StagedComputeRequest<'a> {
+    version: u16,
+    job_id: String,
+    workspace_id: u64,
+    inputs: Vec<String>,
+    output_directory: &'a str,
+}
+
+fn write_request(spec: &ComputeJobSpec, io_root: &Path) -> std::io::Result<()> {
+    let request = StagedComputeRequest {
+        version: spec.version,
+        job_id: hex::encode(spec.job_id),
+        workspace_id: spec.workspace_id,
+        inputs: spec.inputs.iter().map(hex::encode).collect(),
+        output_directory: "/run/tilo/app/.tilo-compute/outputs",
+    };
+    let bytes = serde_json::to_vec(&request).map_err(std::io::Error::other)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o400)
+        .open(io_root.join("request.json"))?;
+    file.write_all(&bytes)?;
+    file.sync_all()
+}
+
+struct JobDirectoryCleanup(Vec<PathBuf>);
+
+impl Drop for JobDirectoryCleanup {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            if let Err(error) = fs::remove_dir_all(path) {
+                tracing::warn!(path = %path.display(), %error, "failed to clean compute job staging");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::{DeviceRole, ServiceCapabilities};
+    use ed25519_dalek::{Signer, SigningKey};
+    use pkg::blobs::{BlobHash, Collection};
+    use pkg::signed::SignedRoot;
 
     fn spec() -> ComputeJobSpec {
         ComputeJobSpec {
@@ -261,12 +1027,12 @@ mod tests {
             app_id: "dev.tilo.video-editor".into(),
             package_digest: [4; 32],
             entrypoint: "render-export-v1".into(),
-            arguments: vec!["preset:h264".into()],
+            arguments: Vec::new(),
             inputs: vec![[5; 32]],
             limits: ComputeResourceLimits {
                 cpu_time_ms: 60_000,
                 memory_bytes: 1024 * 1024 * 1024,
-                output_bytes: 64 * 1024 * 1024,
+                output_bytes: 8 * 1024 * 1024,
                 gpu: true,
             },
             issued_at_ms: 100,
@@ -290,6 +1056,162 @@ mod tests {
             assignment_capacity: 2,
             online: true,
         }
+    }
+
+    #[derive(Clone)]
+    struct FakeCatalogue(InstalledPackage);
+
+    impl ComputePackageCatalogue for FakeCatalogue {
+        fn resolve(&self, app_id: &str) -> Result<Option<InstalledPackage>, String> {
+            Ok((self.0.id == app_id).then(|| self.0.clone()))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct MemoryContent(Arc<Mutex<BTreeMap<[u8; 32], Vec<u8>>>>);
+
+    impl MemoryContent {
+        fn insert(&self, digest: [u8; 32], bytes: Vec<u8>) {
+            self.0.lock().unwrap().insert(digest, bytes);
+        }
+    }
+
+    impl ComputeContentStore for MemoryContent {
+        fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.0.lock().unwrap().get(&digest).cloned())
+        }
+
+        fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
+            self.0.lock().unwrap().insert(digest, bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum FakeTermination {
+        Success,
+        Timeout,
+    }
+
+    struct FakeSandbox {
+        gpu: bool,
+        termination: FakeTermination,
+        output: Option<Vec<u8>>,
+        replace_output_with_symlink: bool,
+        launches: Arc<AtomicUsize>,
+    }
+
+    impl FakeSandbox {
+        fn success(gpu: bool) -> Self {
+            Self {
+                gpu,
+                termination: FakeTermination::Success,
+                output: Some(b"rendered".to_vec()),
+                replace_output_with_symlink: false,
+                launches: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    impl ComputeSandbox for FakeSandbox {
+        fn gpu_available(&self) -> bool {
+            self.gpu
+        }
+
+        fn launch(
+            &self,
+            invocation: ComputeSandboxInvocation<'_>,
+        ) -> Result<CapturedRunOutput, String> {
+            self.launches.fetch_add(1, Ordering::AcqRel);
+            let request = invocation.host_job_dir.join(".tilo-compute/request.json");
+            let value: serde_json::Value =
+                serde_json::from_slice(&fs::read(request).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+            assert!(value.get("inputs").is_some());
+            assert!(value.get("arguments").is_none());
+            assert!(value.get("environment").is_none());
+            if self.replace_output_with_symlink {
+                let output_dir = invocation.host_job_dir.join(".tilo-compute/outputs");
+                fs::remove_dir(&output_dir).map_err(|error| error.to_string())?;
+                std::os::unix::fs::symlink("inputs", output_dir)
+                    .map_err(|error| error.to_string())?;
+            }
+            if let Some(output) = &self.output {
+                fs::write(
+                    invocation.host_job_dir.join(".tilo-compute/outputs/result"),
+                    output,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            let termination = match self.termination {
+                FakeTermination::Success => CapturedTermination::Exited(ExitStatus::from_raw(0)),
+                FakeTermination::Timeout => CapturedTermination::TimedOut,
+            };
+            Ok(CapturedRunOutput {
+                termination,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn installed_fixture(root: &Path, spec: &mut ComputeJobSpec) -> InstalledPackage {
+        let data_root = root.join("apps");
+        let payload = data_root.join("payloads").join(&spec.app_id);
+        fs::create_dir_all(payload.join("bin")).unwrap();
+        fs::write(payload.join("bin/worker"), b"signed worker").unwrap();
+        let manifest = format!(
+            "[package]\nid = {:?}\nversion = \"1.0.0\"\n\
+             [entrypoint]\nbin = \"bin/worker\"\ntype = \"cli\"\n\
+             [cli]\ncommands = [{:?}]\n",
+            spec.app_id, spec.entrypoint
+        );
+        fs::write(payload.join("manifest.toml"), manifest.as_bytes()).unwrap();
+        let collection =
+            Collection::from_entries([("bin/worker".to_string(), BlobHash::of(b"signed worker"))]);
+        let collection_bytes = collection.encode();
+        let signing_key = SigningKey::from_bytes(&[11; 32]);
+        let mut signed = SignedRoot::unsigned(
+            BlobHash::of(manifest.as_bytes()),
+            BlobHash::of(&collection_bytes),
+            signing_key.verifying_key().to_bytes(),
+        );
+        signed.signature = Some([0; 64]);
+        signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
+        let signed_bytes = signed.encode();
+        let package_digest = *BlobHash::of(&signed_bytes).as_bytes();
+        spec.package_digest = package_digest;
+        install::integrity::record(
+            &data_root,
+            &spec.app_id,
+            &signed_bytes,
+            manifest.as_bytes(),
+            &collection_bytes,
+        )
+        .unwrap();
+        InstalledPackage {
+            id: spec.app_id.clone(),
+            package_id_hex: hex::encode(package_digest),
+            payload_root: payload.clone(),
+            manifest_path: payload.join("manifest.toml"),
+        }
+    }
+
+    fn make_executor(
+        root: &Path,
+        spec: &mut ComputeJobSpec,
+        content: MemoryContent,
+        sandbox: FakeSandbox,
+    ) -> ComputeWorker<MemoryContent, FakeCatalogue, FakeSandbox> {
+        let package = installed_fixture(root, spec);
+        ComputeWorker::new(
+            worker(),
+            root.join("data"),
+            root.join("worker-state"),
+            content,
+            FakeCatalogue(package),
+            sandbox,
+        )
     }
 
     #[test]
@@ -346,6 +1268,227 @@ mod tests {
         assert_eq!(
             lifecycle.advance(3, ComputeJobPhase::Cancelled),
             Err(ComputeError::InvalidTransition)
+        );
+    }
+
+    #[test]
+    fn executor_hashes_outputs_and_rejects_replay() {
+        let root = tempfile::tempdir().unwrap();
+        let content = MemoryContent::default();
+        let input = b"source frame".to_vec();
+        let input_digest = *blake3::hash(&input).as_bytes();
+        content.insert(input_digest, input);
+        let mut job = spec();
+        job.inputs = vec![input_digest];
+        let sandbox = FakeSandbox::success(true);
+        let launches = Arc::clone(&sandbox.launches);
+        let executor = make_executor(root.path(), &mut job, content.clone(), sandbox);
+
+        let result = executor
+            .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
+            .unwrap();
+        let expected = *blake3::hash(b"rendered").as_bytes();
+        assert_eq!(
+            result.lifecycle.phase,
+            ComputeJobPhase::Completed {
+                outputs: vec![expected]
+            }
+        );
+        assert_eq!(content.get(expected).unwrap(), Some(b"rendered".to_vec()));
+        assert_eq!(launches.load(Ordering::Acquire), 1);
+        assert_eq!(
+            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+            Err(ComputeExecutionError::Replay)
+        );
+        assert_eq!(launches.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn route_gpu_and_requester_argv_fail_before_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let mut job = spec();
+        job.inputs.clear();
+        let sandbox = FakeSandbox::success(false);
+        let launches = Arc::clone(&sandbox.launches);
+        let executor = make_executor(root.path(), &mut job, MemoryContent::default(), sandbox);
+        assert_eq!(
+            executor.execute([9; 32], 7, &job, 200, CaptureCancellation::default()),
+            Err(ComputeExecutionError::RouteMismatch)
+        );
+        assert_eq!(
+            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+            Err(ComputeExecutionError::GpuUnavailable)
+        );
+        assert_eq!(launches.load(Ordering::Acquire), 0);
+
+        job.limits.gpu = false;
+        job.arguments.push("/host/path".into());
+        assert_eq!(
+            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+            Err(ComputeExecutionError::Admission(
+                ComputeError::RequesterArgumentsForbidden
+            ))
+        );
+        assert_eq!(launches.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn digest_mismatch_and_oversize_input_are_terminal_without_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let content = MemoryContent::default();
+        let mut job = spec();
+        job.limits.gpu = false;
+        let claimed = [8; 32];
+        job.inputs = vec![claimed];
+        content.insert(claimed, b"different bytes".to_vec());
+        let sandbox = FakeSandbox::success(false);
+        let launches = Arc::clone(&sandbox.launches);
+        let executor = make_executor(root.path(), &mut job, content, sandbox);
+        assert_eq!(
+            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+            Err(ComputeExecutionError::InputDigestMismatch)
+        );
+        assert!(matches!(
+            executor.lifecycle(job.job_id).unwrap().phase,
+            ComputeJobPhase::Failed { .. }
+        ));
+        assert_eq!(launches.load(Ordering::Acquire), 0);
+
+        let second_root = tempfile::tempdir().unwrap();
+        let content = MemoryContent::default();
+        let oversized = vec![0_u8; 17 * 1024 * 1024];
+        let digest = *blake3::hash(&oversized).as_bytes();
+        content.insert(digest, oversized);
+        let mut second = spec();
+        second.job_id = [9; 16];
+        second.limits.gpu = false;
+        second.limits.memory_bytes = 16 * 1024 * 1024;
+        second.inputs = vec![digest];
+        let executor = make_executor(
+            second_root.path(),
+            &mut second,
+            content,
+            FakeSandbox::success(false),
+        );
+        assert_eq!(
+            executor.execute([2; 32], 7, &second, 200, CaptureCancellation::default()),
+            Err(ComputeExecutionError::InputsTooLarge)
+        );
+    }
+
+    #[test]
+    fn cancellation_and_timeout_are_monotonic_terminal_results() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cancelled_job = spec();
+        cancelled_job.inputs.clear();
+        cancelled_job.limits.gpu = false;
+        let sandbox = FakeSandbox::success(false);
+        let launches = Arc::clone(&sandbox.launches);
+        let executor = make_executor(
+            root.path(),
+            &mut cancelled_job,
+            MemoryContent::default(),
+            sandbox,
+        );
+        let cancellation = CaptureCancellation::default();
+        cancellation.cancel();
+        let result = executor
+            .execute([2; 32], 7, &cancelled_job, 200, cancellation)
+            .unwrap();
+        assert_eq!(result.lifecycle.phase, ComputeJobPhase::Cancelled);
+        assert_eq!(result.lifecycle.sequence, 2);
+        assert_eq!(launches.load(Ordering::Acquire), 0);
+
+        let timeout_root = tempfile::tempdir().unwrap();
+        let mut timeout_job = spec();
+        timeout_job.job_id = [6; 16];
+        timeout_job.inputs.clear();
+        timeout_job.limits.gpu = false;
+        let executor = make_executor(
+            timeout_root.path(),
+            &mut timeout_job,
+            MemoryContent::default(),
+            FakeSandbox {
+                gpu: false,
+                termination: FakeTermination::Timeout,
+                output: None,
+                replace_output_with_symlink: false,
+                launches: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let result = executor
+            .execute(
+                [2; 32],
+                7,
+                &timeout_job,
+                200,
+                CaptureCancellation::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            result.lifecycle.phase,
+            ComputeJobPhase::Failed {
+                code: "timeout".into()
+            }
+        );
+        assert_eq!(result.lifecycle.sequence, 2);
+    }
+
+    #[test]
+    fn modified_installed_payload_never_reaches_sandbox() {
+        let root = tempfile::tempdir().unwrap();
+        let mut job = spec();
+        job.inputs.clear();
+        job.limits.gpu = false;
+        let package = installed_fixture(root.path(), &mut job);
+        fs::write(package.payload_root.join("bin/worker"), b"tampered").unwrap();
+        let sandbox = FakeSandbox::success(false);
+        let launches = Arc::clone(&sandbox.launches);
+        let executor = ComputeWorker::new(
+            worker(),
+            root.path().join("data"),
+            root.path().join("state"),
+            MemoryContent::default(),
+            FakeCatalogue(package),
+            sandbox,
+        );
+        assert_eq!(
+            executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+            Err(ComputeExecutionError::PackageDigestMismatch)
+        );
+        assert_eq!(launches.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn replaced_output_directory_cannot_traverse_staged_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let content = MemoryContent::default();
+        let bytes = b"private input".to_vec();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        content.insert(digest, bytes);
+        let mut job = spec();
+        job.inputs = vec![digest];
+        job.limits.gpu = false;
+        let executor = make_executor(
+            root.path(),
+            &mut job,
+            content,
+            FakeSandbox {
+                gpu: false,
+                termination: FakeTermination::Success,
+                output: None,
+                replace_output_with_symlink: true,
+                launches: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let result = executor
+            .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
+            .unwrap();
+        assert_eq!(
+            result.lifecycle.phase,
+            ComputeJobPhase::Completed {
+                outputs: Vec::new()
+            }
         );
     }
 }
