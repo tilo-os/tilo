@@ -117,6 +117,20 @@ const SETTINGS_SECTIONS: [&str; 3] = ["Currency", "Date", "Time"];
 /// text-baseline-sized link. Kept as a shared constant so the renderer and
 /// regression test cannot silently drift apart.
 const ANNOTATION_ACTION_H: f64 = 44.0;
+/// Classic 1× offsets inside the floating chart / comment cards. They are
+/// the floors of [`ChromeMetrics::chart_card_rows`] /
+/// [`ChromeMetrics::comment_card_rows`]: a 1× card keeps this rhythm exactly,
+/// a larger text scale grows each row from its measured line box instead.
+const CHART_TITLE_TOP: f64 = 21.0;
+/// Least distance from the chart title's top to its action band (1×).
+const CHART_CONTROLS_SEAM: f64 = 5.0;
+/// The chart plot is content-sized, not text-sized.
+const CHART_PLOT_H: f64 = 74.0;
+const COMMENT_HEADING_TOP: f64 = 22.0;
+const COMMENT_BODY_ADV: f64 = 26.0;
+const COMMENT_DETAIL_ADV: f64 = 36.0;
+const COMMENT_CONTROLS_ADV: f64 = 28.0;
+const COMMENT_BOTTOM_PAD: f64 = 22.0;
 /// Importing is deliberately bounded before a parsed workbook can become a
 /// durable action stream.  This is large enough for useful real-world sheets,
 /// while keeping one user-selected file from monopolising a collaborator's
@@ -566,6 +580,80 @@ impl ChromeMetrics {
     fn centred_top(rect: Rect, line_h: f64) -> f64 {
         rect.y0 + (rect.height() - line_h) / 2.0
     }
+
+    /// Top of the action band that follows an `sm` title line at
+    /// `title_top`: the band's centred `xs` label clears the title line box by
+    /// `s1`, and the band never starts closer than the classic seam.
+    fn annotation_controls_top(&self, title_top: f64) -> f64 {
+        let label_top = title_top + self.lh_sm + self.s1;
+        (label_top - (ANNOTATION_ACTION_H - self.lh_xs) / 2.0)
+            .max(title_top + CHART_CONTROLS_SEAM)
+    }
+
+    /// Row rhythm of a floating chart card, relative to the card's top:
+    /// title line, action band, plot, bottom `s4`. At 1× this reproduces the
+    /// classic 176 px card; a larger text scale pushes the band and plot down
+    /// so the title never paints under the actions.
+    fn chart_card_rows(&self) -> ChartCardRows {
+        let title_top = CHART_TITLE_TOP;
+        let controls_y0 = self.annotation_controls_top(title_top);
+        let controls_y1 = controls_y0 + ANNOTATION_ACTION_H;
+        let plot_y0 = controls_y1 + self.s4;
+        let plot_y1 = plot_y0 + CHART_PLOT_H;
+        ChartCardRows {
+            title_top,
+            controls_y0,
+            controls_y1,
+            plot_y0,
+            plot_y1,
+            height: plot_y1 + self.s4,
+        }
+    }
+
+    /// Row rhythm of the floating comment card, relative to the card's top:
+    /// heading, body, reply/resolve detail line, action band. Each advance is
+    /// the measured line box plus a spacing token, floored at the classic 1×
+    /// value; the resolve/reopen target is a full action-height band centred
+    /// on its detail line that ends where the action band begins.
+    fn comment_card_rows(&self) -> CommentCardRows {
+        let heading_top = COMMENT_HEADING_TOP;
+        let body_top = heading_top + (self.lh_sm + self.s2).max(COMMENT_BODY_ADV);
+        let detail_top = body_top + (self.lh_sm + self.s4).max(COMMENT_DETAIL_ADV);
+        let controls_y0 = detail_top + (self.lh_xs + self.s3).max(COMMENT_CONTROLS_ADV);
+        let toggle_y1 = (detail_top + self.lh_xs / 2.0 + ANNOTATION_ACTION_H / 2.0).min(controls_y0);
+        CommentCardRows {
+            heading_top,
+            body_top,
+            detail_top,
+            controls_y0,
+            toggle_y0: toggle_y1 - ANNOTATION_ACTION_H,
+            toggle_y1,
+            height: controls_y0 + ANNOTATION_ACTION_H + COMMENT_BOTTOM_PAD,
+        }
+    }
+}
+
+/// See [`ChromeMetrics::chart_card_rows`]. Offsets are relative to the card top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ChartCardRows {
+    title_top: f64,
+    controls_y0: f64,
+    controls_y1: f64,
+    plot_y0: f64,
+    plot_y1: f64,
+    height: f64,
+}
+
+/// See [`ChromeMetrics::comment_card_rows`]. Offsets are relative to the card top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CommentCardRows {
+    heading_top: f64,
+    body_top: f64,
+    detail_top: f64,
+    controls_y0: f64,
+    toggle_y0: f64,
+    toggle_y1: f64,
+    height: f64,
 }
 
 /// Highlight state for one [`SheetsApp::draw_chip`] call: `active` fills
@@ -4527,9 +4615,12 @@ impl SheetsApp {
     ) {
         let Some(cache) = &self.cache else { return };
         let max_cards = 3usize;
+        // Rows follow the measured `sm`/`xs` line boxes (1× floors), so a
+        // scaled title never paints under the action band below it.
+        let rows = self.metrics.chart_card_rows();
         for (index, chart) in self.sheet_charts.iter().take(max_cards).enumerate() {
             let width = self.grid_rect.width().clamp(180.0, 300.0);
-            let height = 176.0;
+            let height = rows.height;
             let x1 = self.grid_rect.x1 - 14.0;
             let y0 = self.grid_rect.y0 + 14.0 + index as f64 * (height + 10.0);
             if y0 + height > self.grid_rect.y1 {
@@ -4550,19 +4641,27 @@ impl SheetsApp {
                 None,
                 &RoundedRect::from_rect(card, 8.0),
             );
-            tr.draw_text(
-                scene,
+            // The title is elided to the card so a long or scaled name ends
+            // inside the frame rather than over the sheet beside it.
+            let title = tr.elide_to_width_weighted(
                 &chart.title,
                 self.metrics.sm,
+                (card.width() - 24.0) as f32,
+                TextWeight::Regular,
+            );
+            tr.draw_text(
+                scene,
+                &title,
+                self.metrics.sm,
                 theme.tokens.colors.text_primary,
-                transform * Affine::translate((card.x0 + 12.0, card.y0 + 21.0)),
+                transform * Affine::translate((card.x0 + 12.0, card.y0 + rows.title_top)),
                 None,
             );
             let controls = Rect::new(
                 card.x0 + 12.0,
-                card.y0 + 26.0,
+                card.y0 + rows.controls_y0,
                 card.x1 - 12.0,
-                card.y0 + 26.0 + ANNOTATION_ACTION_H,
+                card.y0 + rows.controls_y1,
             );
             let actions = [
                 ("Open", AnnotationClick::Open(chart.start)),
@@ -4594,9 +4693,9 @@ impl SheetsApp {
             }
             let plot = Rect::new(
                 card.x0 + 14.0,
-                card.y0 + 86.0,
+                card.y0 + rows.plot_y0,
                 card.x1 - 14.0,
-                card.y1 - 16.0,
+                card.y0 + rows.plot_y1,
             );
             let mut points = Vec::new();
             for row in chart.start.1..=chart.end.1 {
@@ -4687,12 +4786,17 @@ impl SheetsApp {
             return;
         };
         let width = self.grid_rect.width().clamp(200.0, 310.0);
+        // Rows follow the measured `sm`/`xs` line boxes (1× floors), so the
+        // heading, body and detail lines stay clear of each other and of the
+        // action band at every text scale.
+        let rows = self.metrics.comment_card_rows();
         let card = Rect::new(
             self.grid_rect.x0 + 14.0,
             self.grid_rect.y0 + 14.0,
             self.grid_rect.x0 + 14.0 + width,
-            self.grid_rect.y0 + 192.0,
+            self.grid_rect.y0 + 14.0 + rows.height,
         );
+        let text_w = (card.width() - 24.0) as f32;
         scene.fill(
             Fill::NonZero,
             transform,
@@ -4722,21 +4826,25 @@ impl SheetsApp {
             thread.author,
             if thread.resolved { " · Resolved" } else { "" }
         );
+        // Heading and body are elided to the card: a scaled or long line ends
+        // inside the frame instead of running over the grid beside it.
+        let heading = tr.elide_to_width_weighted(&heading, self.metrics.sm, text_w, TextWeight::Regular);
         tr.draw_text(
             scene,
             &heading,
             self.metrics.sm,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + 22.0)),
+            transform * Affine::translate((card.x0 + 12.0, card.y0 + rows.heading_top)),
             None,
         );
         let body: String = thread.body.chars().take(56).collect();
+        let body = tr.elide_to_width_weighted(&body, self.metrics.sm, text_w, TextWeight::Regular);
         tr.draw_text(
             scene,
             &body,
             self.metrics.sm,
             theme.tokens.colors.text_tertiary,
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + 48.0)),
+            transform * Affine::translate((card.x0 + 12.0, card.y0 + rows.body_top)),
             None,
         );
         let detail = format!(
@@ -4754,14 +4862,14 @@ impl SheetsApp {
             &detail,
             self.metrics.xs,
             theme.tokens.colors.accent[5],
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + 84.0)),
+            transform * Affine::translate((card.x0 + 12.0, card.y0 + rows.detail_top)),
             None,
         );
         let controls = Rect::new(
             card.x0 + 12.0,
-            card.y0 + 112.0,
+            card.y0 + rows.controls_y0,
             card.x1 - 12.0,
-            card.y0 + 112.0 + ANNOTATION_ACTION_H,
+            card.y0 + rows.controls_y0 + ANNOTATION_ACTION_H,
         );
         let actions = [
             ("Reply", AnnotationClick::Reply(thread.id.clone())),
@@ -4793,13 +4901,14 @@ impl SheetsApp {
             self.annotation_clicks.push((button, action));
         }
         // The state-changing resolve/reopen affordance has its own normal
-        // target height and remains distinct from the action band.
+        // target height, centred on the detail line it labels, and remains
+        // distinct from the action band (it ends where that band begins).
         self.annotation_clicks.push((
             Rect::new(
                 card.x0 + 12.0,
-                card.y0 + 58.0,
+                card.y0 + rows.toggle_y0,
                 card.x1 - 12.0,
-                card.y0 + 58.0 + ANNOTATION_ACTION_H,
+                card.y0 + rows.toggle_y1,
             ),
             AnnotationClick::ToggleComment(thread.id.clone(), !thread.resolved),
         ));
@@ -7474,6 +7583,10 @@ fn seed_sales_sheet(doc: &mut AutoCommit) {
 }
 
 #[cfg(test)]
+#[path = "app/r2_annotation_cards.rs"]
+mod r2_annotation_cards;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::grid::GridCmd;
@@ -7489,7 +7602,7 @@ mod tests {
 
     /// Build an app in the seeded (sample) mode and run the first `sync`, which
     /// is exactly what the live/offscreen paths do before drawing.
-    fn seeded_app() -> (SheetsApp, AutoCommit) {
+    pub(super) fn seeded_app() -> (SheetsApp, AutoCommit) {
         let mut app = SheetsApp::new();
         app.shots_mode(); // seed sample data, no disk persistence
         let mut doc = AutoCommit::new();
@@ -7502,7 +7615,7 @@ mod tests {
     /// resolved against a renderer at `text_scale`, exactly as the first draw
     /// of a frame does. Returns the renderer so a test can re-measure labels
     /// with the same instance.
-    fn measured_app(width: f64, height: f64, text_scale: f32) -> (SheetsApp, TextRenderer) {
+    pub(super) fn measured_app(width: f64, height: f64, text_scale: f32) -> (SheetsApp, TextRenderer) {
         let (mut app, _doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, width, height);
         app.relayout();
