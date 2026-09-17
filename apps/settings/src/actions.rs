@@ -16,12 +16,11 @@
 //!
 //! ## What is *not* an action
 //!
-//! * **The hardware / service apply** — pushing a preference to the audio graph,
-//!   the Wi-Fi radio, the backlight, the compositor's theme, or the shared
-//!   `settings.json` on disk is an external side effect *driven by* the document
-//!   state (see each pane's `sync`), never part of [`Action::apply`], which only
-//!   writes the CRDT scalar. A setting's value lands in the document; a separate
-//!   reaction carries it to the world.
+//! * **Hardware / service effects** — changing an audio graph, radio,
+//!   backlight, update service, or other device authority uses a typed local
+//!   operation. The executor issues a one-shot token and the owning pane
+//!   consumes only that exact command; replicated document state can never
+//!   trigger the effect. Portable preferences alone use [`Action::apply`].
 //! * **Presentation** — which pane is open, the sidebar search, scroll, a
 //!   section's expand/collapse — never leaves the machine and never becomes an
 //!   action.
@@ -96,6 +95,52 @@ pub const AGENT_MODEL_OPERATION_TYPE: &str = "settings.agent-model-operation";
 /// machine's trust boundary. They are local effects, never CRDT preferences.
 pub const DEVICE_MESH_OPERATION_TYPE: &str = "settings.device-mesh-operation";
 pub const AGENT_PROVIDER_OPERATION_TYPE: &str = "settings.agent-provider-operation";
+
+/// Collaboration policy for every action exported by Settings. There is no
+/// implicit/default bucket: a new operation type must be added here before it
+/// can be published, so hardware effects cannot accidentally become replayable
+/// document changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingScope {
+    PortableDocument,
+    DeviceLocalEffect,
+    Presentation,
+}
+
+const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
+    ACCOUNT_OPERATION_TYPE,
+    UPDATE_OPERATION_TYPE,
+    KEYBOARD_SOURCE_OPERATION_TYPE,
+    INPUT_OPERATION_TYPE,
+    TIME_DATE_OPERATION_TYPE,
+    POWER_OPERATION_TYPE,
+    NETWORK_OPERATION_TYPE,
+    BLUETOOTH_OPERATION_TYPE,
+    STORAGE_OPERATION_TYPE,
+    AUDIO_OPERATION_TYPE,
+    DISPLAY_OPERATION_TYPE,
+    PRINTER_OPERATION_TYPE,
+    USER_OPERATION_TYPE,
+    AGENT_MODEL_OPERATION_TYPE,
+    DEVICE_MESH_OPERATION_TYPE,
+    AGENT_PROVIDER_OPERATION_TYPE,
+];
+
+pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
+    match spec.kind {
+        OperationKind::Document => Some(SettingScope::PortableDocument),
+        OperationKind::Effect
+            if spec
+                .operation_type
+                .as_deref()
+                .is_some_and(|type_id| DEVICE_LOCAL_OPERATION_TYPES.contains(&type_id)) =>
+        {
+            Some(SettingScope::DeviceLocalEffect)
+        }
+        OperationKind::View => Some(SettingScope::Presentation),
+        OperationKind::Effect => None,
+    }
+}
 
 /// Hard ceiling for any live/discovered collection published by Settings.
 ///
@@ -187,9 +232,8 @@ pub enum PowerOperation {
     SetCriticalAction { action: String },
 }
 
-/// Bounded commands owned by the Network pane. The Wi-Fi preference remains a
-/// collaborative setting; these commands change hardware or sample live
-/// network state and must never replay on another device.
+/// Bounded commands owned by the Network pane. Radio state and diagnostics
+/// belong to the current device and must never replay on another machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkOperation {
     Refresh,
@@ -224,15 +268,57 @@ pub enum StorageOperation {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AudioOperation {
-    SetOutputVolume { value: f64 },
-    SetOutputMuted { muted: bool },
-    SetInputVolume { value: f64 },
-    SetBalance { value: f64 },
-    SetMono { enabled: bool },
-    SelectOutput { device_id: u32 },
-    SelectInput { device_id: u32 },
-    RoutePlayback { stream_id: u32, device_id: u32 },
-    RouteRecording { stream_id: u32, device_id: u32 },
+    SetOutputVolume {
+        value: f64,
+    },
+    SetOutputMuted {
+        muted: bool,
+    },
+    SetInputVolume {
+        value: f64,
+    },
+    SetBalance {
+        value: f64,
+    },
+    SetMono {
+        enabled: bool,
+    },
+    SetDeviceProfile {
+        device_id: u32,
+        profile_index: u32,
+    },
+    RouteStream {
+        stream_id: u32,
+        playback: bool,
+        device_id: Option<u32>,
+    },
+    SetStreamVolume {
+        stream_id: u32,
+        value: f64,
+    },
+    SetStreamMuted {
+        stream_id: u32,
+        muted: bool,
+    },
+    ToggleDiagnostics,
+    TestChannel {
+        left: bool,
+    },
+    ToggleMicrophoneMeter,
+    SelectOutput {
+        device_id: u32,
+    },
+    SelectInput {
+        device_id: u32,
+    },
+    RoutePlayback {
+        stream_id: u32,
+        device_id: u32,
+    },
+    RouteRecording {
+        stream_id: u32,
+        device_id: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -242,6 +328,12 @@ pub enum DisplayOperation {
     },
     SetAutoBrightness {
         enabled: bool,
+    },
+    SetNightLight {
+        enabled: bool,
+    },
+    SetNightLightTemperature {
+        label: String,
     },
     SetScale {
         label: String,
@@ -301,6 +393,19 @@ pub enum DisplayOperation {
     Apply,
     Confirm,
     Revert,
+}
+
+/// Process-local delivery envelope for device effects. This value is never
+/// serialized into Automerge: the collaborative document contains portable
+/// preferences only, while the selected pane consumes one typed command.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LocalPaneCommand {
+    Updates(UpdateOperation),
+    Power(PowerOperation),
+    Network(NetworkOperation),
+    Bluetooth(BluetoothOperation),
+    Audio(AudioOperation),
+    Display(DisplayOperation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -683,7 +788,6 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
     let text =
         || matches!(value, SettingValue::Text(text) if !text.is_empty() && text.len() <= 1024);
     let boolean = || matches!(value, SettingValue::Bool(_));
-    let finite_float = || matches!(value, SettingValue::Float(number) if number.is_finite());
     let presentation_key = matches!(key.rsplit_once('.'), Some((_, "edit" | "error")));
     let valid_notification_app_key = key
         .strip_prefix("notifications.app.")
@@ -740,7 +844,6 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "notifications.show_on_lock_screen"
         | "notifications.show_badges"
         | "notifications.focus.enabled"
-        | "display.night_light"
         | "text.check_spelling"
         | "text.auto_correct" => boolean(),
         "notifications.focus.start" | "notifications.focus.end" | "notifications.focus.days" => {
@@ -1030,31 +1133,6 @@ fn encode_local_operation<T: Serialize>(type_id: &str, operation: &T) -> Encoded
         type_id: type_id.into(),
         payload: Vec::new(),
     })
-}
-
-fn float_prompt_spec(
-    id: &str,
-    label: &str,
-    key: &'static str,
-    placeholder: &str,
-    lo: f64,
-    hi: f64,
-) -> ActionSpec {
-    ActionSpec::typed(
-        id,
-        label,
-        placeholder,
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("value", ParamType::Number, "New setting value")
-                .with_schema(serde_json::json!({ "minimum": lo, "maximum": hi })),
-        ],
-        move |args| {
-            let v = args.number("value").unwrap_or(lo).clamp(lo, hi);
-            encode(&set_float_action(key, v))
-        },
-    )
-    .with_contract(setting_contract())
 }
 
 fn choice_prompt_spec(
@@ -1685,6 +1763,39 @@ fn sound_section(doc: &AutoCommit) -> Resource {
             )
         },
     ));
+    for (id, label, operation) in [
+        (
+            "diagnostics",
+            "Show or hide speaker diagnostics",
+            AudioOperation::ToggleDiagnostics,
+        ),
+        (
+            "test-left",
+            "Test left speaker",
+            AudioOperation::TestChannel { left: true },
+        ),
+        (
+            "test-right",
+            "Test right speaker",
+            AudioOperation::TestChannel { left: false },
+        ),
+        (
+            "microphone-meter",
+            "Start or stop microphone meter",
+            AudioOperation::ToggleMicrophoneMeter,
+        ),
+    ] {
+        if let Some(action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            AUDIO_OPERATION_TYPE,
+            &operation,
+            &["device-local", "audio", "diagnostic"],
+        ) {
+            sec = sec.with_action(action);
+        }
+    }
     let graph = media::audio::enumerate();
     if !graph.sinks.is_empty() {
         let choices = graph
@@ -1788,50 +1899,127 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         }
         sec = sec.with_child(resource);
     }
-    for stream in graph.playback_streams.iter().take(MAX_DYNAMIC_RESOURCES) {
-        let mut resource = Resource::new(
-            format!("settings.audio-playback:{}", stream.id),
-            "settings.audio-playback",
-            stream.label(),
-        );
-        for device in graph.sinks.iter().take(MAX_DYNAMIC_CHOICES) {
-            if let Some(action) = local_operation_spec(
-                format!("route-to-{}", device.id),
-                format!("Route to {}", device.description),
-                OperationKind::Effect,
-                AUDIO_OPERATION_TYPE,
-                &AudioOperation::RoutePlayback {
-                    stream_id: stream.id,
-                    device_id: device.id,
-                },
-                &["device-local", "audio", "live-device"],
-            ) {
-                resource = resource.with_action(action);
-            }
+    for hardware in graph.hardware.iter().take(MAX_DYNAMIC_RESOURCES) {
+        let profiles: Vec<_> = hardware
+            .profiles
+            .iter()
+            .filter(|profile| profile.available)
+            .take(MAX_DYNAMIC_CHOICES)
+            .map(|profile| (profile.description.clone(), profile.index))
+            .collect();
+        if profiles.is_empty() {
+            continue;
         }
-        sec = sec.with_child(resource);
+        let choices = profiles.iter().map(|(label, _)| label.clone()).collect();
+        let device_id = hardware.id;
+        let action = local_choice_spec(
+            "profile",
+            "Set audio device profile",
+            AUDIO_OPERATION_TYPE,
+            choices,
+            &["device-local", "audio", "live-device"],
+            move |choice| {
+                let profile_index = profiles
+                    .iter()
+                    .find(|(label, _)| label == &choice)
+                    .map_or(u32::MAX, |(_, index)| *index);
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetDeviceProfile {
+                        device_id,
+                        profile_index,
+                    },
+                )
+            },
+        );
+        sec = sec.with_child(
+            Resource::new(
+                format!("settings.audio-device:{}", hardware.id),
+                "settings.audio-device",
+                hardware.description.clone(),
+            )
+            .with_action(action),
+        );
     }
-    for stream in graph.record_streams.iter().take(MAX_DYNAMIC_RESOURCES) {
-        let mut resource = Resource::new(
-            format!("settings.audio-recording:{}", stream.id),
-            "settings.audio-recording",
-            stream.label(),
+    for stream in graph
+        .playback_streams
+        .iter()
+        .chain(graph.record_streams.iter())
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let devices = if stream.playback {
+            &graph.sinks
+        } else {
+            &graph.sources
+        };
+        let mut route_choices = vec![crate::panes::audio::FOLLOW_DEFAULT.to_string()];
+        route_choices.extend(
+            devices
+                .iter()
+                .take(MAX_DYNAMIC_CHOICES - 1)
+                .map(|device| device.description.clone()),
         );
-        for device in graph.sources.iter().take(MAX_DYNAMIC_CHOICES) {
-            if let Some(action) = local_operation_spec(
-                format!("route-to-{}", device.id),
-                format!("Route to {}", device.description),
-                OperationKind::Effect,
-                AUDIO_OPERATION_TYPE,
-                &AudioOperation::RouteRecording {
-                    stream_id: stream.id,
-                    device_id: device.id,
-                },
-                &["device-local", "audio", "live-device"],
-            ) {
-                resource = resource.with_action(action);
-            }
-        }
+        let route_devices: Vec<_> = devices
+            .iter()
+            .take(MAX_DYNAMIC_CHOICES - 1)
+            .map(|device| (device.description.clone(), device.id))
+            .collect();
+        let stream_id = stream.id;
+        let playback = stream.playback;
+        let route = local_choice_spec(
+            "route",
+            "Set audio stream route",
+            AUDIO_OPERATION_TYPE,
+            route_choices,
+            &["device-local", "audio", "live-stream"],
+            move |choice| {
+                let device_id = if choice == crate::panes::audio::FOLLOW_DEFAULT {
+                    None
+                } else {
+                    route_devices
+                        .iter()
+                        .find(|(label, _)| label == &choice)
+                        .map(|(_, id)| *id)
+                };
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::RouteStream {
+                        stream_id,
+                        playback,
+                        device_id,
+                    },
+                )
+            },
+        );
+        let stream_id = stream.id;
+        let volume = local_number_spec(
+            "volume",
+            "Set audio stream volume",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "live-stream"],
+            move |value| {
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetStreamVolume { stream_id, value },
+                )
+            },
+        );
+        let stream_id = stream.id;
+        let muted = local_bool_spec(
+            "muted",
+            "Set audio stream mute",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "live-stream"],
+            move |muted| {
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetStreamMuted { stream_id, muted },
+                )
+            },
+        );
+        let resource = audio_stream_resource(stream.id, stream.playback, &stream.label(), route)
+            .with_action(volume)
+            .with_action(muted);
         sec = sec.with_child(resource);
     }
     sec
@@ -1872,6 +2060,10 @@ pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding
         _ => return None,
     };
     bool_binding_for(&audio_control_resource(action), action_id)
+}
+
+pub fn audio_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&sound_section(&AutoCommit::new()), action_id).ok()
 }
 
 pub fn audio_number_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<f64>> {
@@ -1961,13 +2153,162 @@ pub fn audio_device_binding(
     .ok()
 }
 
+pub fn audio_profile_binding(
+    device_id: u32,
+    profiles: Vec<(String, u32)>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    if profiles.is_empty() || profiles.len() > MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let choices = profiles.iter().map(|(label, _)| label.clone()).collect();
+    let action = local_choice_spec(
+        "profile",
+        "Set audio device profile",
+        AUDIO_OPERATION_TYPE,
+        choices,
+        &["device-local", "audio", "live-device"],
+        move |choice| {
+            let profile_index = profiles
+                .iter()
+                .find(|(label, _)| label == &choice)
+                .map_or(u32::MAX, |(_, index)| *index);
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetDeviceProfile {
+                    device_id,
+                    profile_index,
+                },
+            )
+        },
+    );
+    let resource = Resource::new(
+        format!("settings.audio-device:{device_id}"),
+        "settings.audio-device",
+        format!("Audio device {device_id}"),
+    )
+    .with_action(action);
+    tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |choice| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+fn audio_stream_resource(
+    stream_id: u32,
+    playback: bool,
+    label: &str,
+    action: ActionSpec,
+) -> Resource {
+    Resource::new(
+        format!(
+            "settings.audio-{}:{stream_id}",
+            if playback { "playback" } else { "recording" }
+        ),
+        if playback {
+            "settings.audio-playback"
+        } else {
+            "settings.audio-recording"
+        },
+        label.to_string(),
+    )
+    .with_action(action)
+}
+
+pub fn audio_stream_route_binding(
+    stream_id: u32,
+    playback: bool,
+    stream_label: &str,
+    devices: Vec<(String, u32)>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    if devices.len() >= MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let mut choices = vec![crate::panes::audio::FOLLOW_DEFAULT.to_string()];
+    choices.extend(devices.iter().map(|(label, _)| label.clone()));
+    let action = local_choice_spec(
+        "route",
+        "Set audio stream route",
+        AUDIO_OPERATION_TYPE,
+        choices,
+        &["device-local", "audio", "live-stream"],
+        move |choice| {
+            let device_id = if choice == crate::panes::audio::FOLLOW_DEFAULT {
+                None
+            } else {
+                devices
+                    .iter()
+                    .find(|(label, _)| label == &choice)
+                    .map(|(_, id)| *id)
+            };
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::RouteStream {
+                    stream_id,
+                    playback,
+                    device_id,
+                },
+            )
+        },
+    );
+    let resource = audio_stream_resource(stream_id, playback, stream_label, action);
+    tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |choice| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn audio_stream_number_binding(
+    stream_id: u32,
+    playback: bool,
+    stream_label: &str,
+) -> Option<tilo_actions::ActionBinding<f64>> {
+    let action = local_number_spec(
+        "volume",
+        "Set audio stream volume",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "live-stream"],
+        move |value| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetStreamVolume { stream_id, value },
+            )
+        },
+    );
+    let resource = audio_stream_resource(stream_id, playback, stream_label, action);
+    tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::json!(value))])
+    })
+    .ok()
+}
+
+pub fn audio_stream_bool_binding(
+    stream_id: u32,
+    playback: bool,
+    stream_label: &str,
+) -> Option<tilo_actions::ActionBinding<bool>> {
+    let action = local_bool_spec(
+        "muted",
+        "Set audio stream mute",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "live-stream"],
+        move |muted| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetStreamMuted { stream_id, muted },
+            )
+        },
+    );
+    bool_binding_for(
+        &audio_stream_resource(stream_id, playback, stream_label, action),
+        "muted",
+    )
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "resource tree mirrors display capability hierarchy"
 )]
-fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::Displays),
         "settings.section",
@@ -1985,11 +2326,33 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             )
         },
     ));
-    sec = sec.with_action(bool_flip_spec(
+    sec = sec.with_action(local_bool_spec(
         "night_light",
-        panes::display::NIGHT_LIGHT_KEY,
-        b(panes::display::NIGHT_LIGHT_KEY, d.display.night_light),
-        "Night Light",
+        "Set Night Light",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        |enabled| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetNightLight { enabled },
+            )
+        },
+    ));
+    sec = sec.with_action(local_choice_spec(
+        "night_light_temperature",
+        "Set Night Light warmth",
+        DISPLAY_OPERATION_TYPE,
+        vec!["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        &["device-local", "display", "hardware"],
+        |label| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetNightLightTemperature { label },
+            )
+        },
     ));
     sec = sec.with_action(local_number_spec(
         "brightness",
@@ -2313,9 +2676,49 @@ pub fn display_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
                 )
             },
         ),
+        "night_light" => local_bool_spec(
+            "night_light",
+            "Set Night Light",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "hardware"],
+            |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetNightLight { enabled },
+                )
+            },
+        ),
         _ => return None,
     };
     bool_binding_for(&display_control_resource(action), action_id)
+}
+
+pub fn display_choice_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let action = match action_id {
+        "night_light_temperature" => local_choice_spec(
+            action_id,
+            "Set Night Light warmth",
+            DISPLAY_OPERATION_TYPE,
+            vec!["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            &["device-local", "display", "hardware"],
+            |label| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetNightLightTemperature { label },
+                )
+            },
+        ),
+        _ => return None,
+    };
+    let resource = display_control_resource(action);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(choice))])
+    })
+    .ok()
 }
 
 pub fn display_number_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<f64>> {
@@ -2365,6 +2768,11 @@ pub fn display_scale_binding() -> Option<tilo_actions::ActionBinding<String>> {
         serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
     })
     .ok()
+}
+
+pub fn display_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    let resource = displays_section(&AutoCommit::new(), &SystemPrefs::default());
+    tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
 }
 
 fn display_output_control_resource(connector: &str, action: ActionSpec) -> Resource {
@@ -3328,6 +3736,10 @@ pub fn updates_schedule_binding() -> Option<tilo_actions::ActionBinding<String>>
     .ok()
 }
 
+pub fn updates_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&updates_section(), action_id).ok()
+}
+
 fn network_section(_doc: &AutoCommit) -> Resource {
     let mut sec = Resource::new("settings.section:network", "settings.section", "Network");
     sec = sec.with_action(local_bool_spec(
@@ -4129,7 +4541,6 @@ fn region_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
 }
 
 fn time_date_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
-    use crate::panes;
     let mut section = Resource::new(
         pane_resource_id(Category::TimeDate),
         "settings.section",
@@ -5578,5 +5989,99 @@ mod tests {
             action.build_json(&invalid).is_err(),
             "a stale or undiscovered handler is refused before dispatch"
         );
+    }
+
+    #[test]
+    fn every_published_action_has_an_explicit_collaboration_scope() {
+        fn visit(resource: &Resource) {
+            for action in &resource.actions {
+                let scope = classify_action(action).unwrap_or_else(|| {
+                    panic!(
+                        "{:?}#{} has no explicit collaboration scope",
+                        resource.id, action.id
+                    )
+                });
+                match scope {
+                    SettingScope::PortableDocument => {
+                        assert_eq!(action.kind, OperationKind::Document);
+                        assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+                    }
+                    SettingScope::DeviceLocalEffect => {
+                        assert_eq!(action.kind, OperationKind::Effect);
+                        assert!(
+                            action.contract.tags.iter().any(|tag| tag == "device-local"),
+                            "{:?}#{} must state its device-local policy",
+                            resource.id,
+                            action.id
+                        );
+                    }
+                    SettingScope::Presentation => {
+                        assert_eq!(action.kind, OperationKind::View);
+                    }
+                }
+            }
+            for child in &resource.children {
+                visit(child);
+            }
+        }
+
+        for resource in &provide_resources(&AutoCommit::new()) {
+            visit(resource);
+        }
+    }
+
+    #[test]
+    fn hardware_preference_keys_are_never_replayable_document_targets() {
+        let local_keys = [
+            "network.wifi_enabled",
+            "bluetooth.enabled",
+            "audio.volume",
+            "audio.muted",
+            "audio.input_volume",
+            "audio.balance",
+            "audio.mono",
+            "display.brightness",
+            "display.auto_brightness",
+            "display.scale",
+            "power.profile",
+            "power.auto_suspend",
+            "power.blank",
+            "power.suspend",
+            "power.lid",
+            "power.power_key",
+            "power.critical",
+            "updates.auto",
+            "time.auto",
+            "time.timezone",
+            "time.h24",
+            "input.touchpad_natural_scroll",
+            "input.mouse_natural_scroll",
+            "input.tap_to_click",
+            "input.touchpad_pointer_speed",
+            "input.mouse_pointer_speed",
+            "input.key_repeat",
+            "input.accel_profile",
+            "input.compose_key",
+            "input.keyboard_layout",
+        ];
+        for key in local_keys {
+            for value in [
+                SettingValue::Bool(true),
+                SettingValue::Float(0.5),
+                SettingValue::Text("value".into()),
+            ] {
+                assert!(
+                    matches!(
+                        SettingsAction::SetSetting {
+                            key: key.into(),
+                            value,
+                        }
+                        .apply(&mut AutoCommit::new()),
+                        Err(ActionError::Refused(_))
+                    ),
+                    "device-local key {key} accepted a replayable SettingsAction"
+                );
+            }
+        }
     }
 }
