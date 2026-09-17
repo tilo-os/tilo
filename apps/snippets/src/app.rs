@@ -46,7 +46,7 @@ use crate::seed;
 const SIDEBAR_W: f64 = 232.0;
 const LIST_W: f64 = 340.0;
 const ROW_H: f64 = 64.0;
-const SIDEBAR_ROW_H: f64 = 32.0;
+const SIDEBAR_ROW_H: f64 = 36.0;
 const SEARCH_H: f64 = 52.0;
 const BODY_FONT: f32 = 13.5;
 const BODY_LINE: f64 = 20.0;
@@ -1310,8 +1310,9 @@ impl SnippetsApp {
 
     /// Draw the top-left toggle button + glyph and record its hit region.
     /// In single-pane push showing the detail it's a Back chevron (returns to
-    /// the list); otherwise it's a hamburger (open) / close-X (dismiss the
-    /// overlay sidebar).
+    /// the list); otherwise it's the same hamburger used to open and dismiss
+    /// the navigation sidebar. Keeping one glyph in both states makes the
+    /// overlay read as persistent navigation, not as a disposable dialog.
     fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, band: Rect) {
         let c = &theme.tokens.colors;
         let pad = 10.0;
@@ -1324,9 +1325,6 @@ impl SnippetsApp {
         let cx = btn.x0 + TOGGLE_SIZE / 2.0;
         let cy = btn.y0 + TOGGLE_SIZE / 2.0;
         let push_back = self.is_push_layout() && self.push.reveal() > 0.5;
-        let overlay_open =
-            self.sidebar_layout() == SplitLayout::Overlay && self.sidebar.reveal() > 0.5;
-
         if push_back {
             // Back chevron "‹".
             let r = 5.0;
@@ -1347,28 +1345,9 @@ impl SnippetsApp {
                 c.text_primary,
             );
             self.record(btn, Action::PushBack);
-        } else if overlay_open {
-            // Close "X" when the overlay sidebar is showing.
-            let r = 6.0;
-            draw::stroke_line(
-                scene,
-                t,
-                Point::new(cx - r, cy - r),
-                Point::new(cx + r, cy + r),
-                1.8,
-                c.text_primary,
-            );
-            draw::stroke_line(
-                scene,
-                t,
-                Point::new(cx + r, cy - r),
-                Point::new(cx - r, cy + r),
-                1.8,
-                c.text_primary,
-            );
-            self.record(btn, Action::ToggleSidebar);
         } else {
-            // Three-line hamburger to summon the sidebar.
+            // Three-line hamburger toggles the navigation sidebar in either
+            // direction; an X is reserved for dialogs and sheets.
             let half = 7.0;
             for i in 0..3 {
                 let ly = btn.y0 + 11.0 + f64::from(i) * 6.0;
@@ -1889,8 +1868,16 @@ impl SnippetsApp {
 
         // Search bar.
         let pad = 12.0;
+        // The compact layout's sidebar toggle floats at the leading edge of
+        // the list. Inset the search field while that sidebar is closed so
+        // the hamburger never covers the placeholder or the text caret.
+        let search_x0 = if self.show_toggle() && !self.sidebar_open() {
+            area.x0 + TOGGLE_SIZE + 18.0
+        } else {
+            area.x0 + pad
+        };
         let search_rect = Rect::new(
-            area.x0 + pad,
+            search_x0,
             area.y0 + 10.0,
             area.x1 - pad,
             area.y0 + 10.0 + SEARCH_H - 16.0,
@@ -1920,7 +1907,7 @@ impl SnippetsApp {
         if !empty {
             // A small clear affordance.
             let clear = Rect::new(
-                search_rect.x1 - 26.0,
+                search_rect.x1 - 32.0,
                 search_rect.y0,
                 search_rect.x1,
                 search_rect.y1,
@@ -1930,7 +1917,7 @@ impl SnippetsApp {
                 tr,
                 t,
                 "×",
-                clear.x0 + 6.0,
+                clear.x0 + 9.0,
                 search_rect.y0 + (search_rect.height() - 15.0) / 2.0 - 2.0,
                 18.0,
                 c.text_dim,
@@ -1959,24 +1946,18 @@ impl SnippetsApp {
             area.x1 - pad - nw,
             header_y - 4.0,
             area.x1 - pad,
-            header_y + 18.0,
+            header_y + 28.0,
         );
-        draw::fill_round(scene, t, new_rect, theme.radii_md(), c.accent[5]);
-        draw::text(
-            scene,
-            tr,
-            t,
-            new_label,
-            new_rect.x0 + 10.0,
-            new_rect.y0 + 4.0,
-            13.0,
-            c.text_primary,
-            TextWeight::Semibold,
-        );
+        let face = ButtonFace::new(new_rect, new_label)
+            .style(ButtonStyle::Primary)
+            .text_size(13.0)
+            .weight(TextWeight::Semibold)
+            .hovered(new_rect.contains(self.last_mouse));
+        Button::paint(scene, t, tr, theme, &face);
         self.record(new_rect, Action::NewSnippet);
 
         // Snippet rows (scrollable region).
-        let list_top = header_y + 26.0;
+        let list_top = header_y + 38.0;
         let mut y = list_top - self.scroll;
         let ids = self.visible.clone();
         for id in ids {
@@ -2123,30 +2104,16 @@ impl SnippetsApp {
         cx: f64,
         y: f64,
     ) {
-        let c = &theme.tokens.colors;
         let label = "New snippet";
         let lw = f64::from(tr.measure(label, 13.5, None).0);
         let bw = lw + 34.0;
         let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 36.0);
-        let hovered = btn.contains(self.last_mouse);
-        draw::fill_round(
-            scene,
-            t,
-            btn,
-            theme.radii_md(),
-            if hovered { c.accent[4] } else { c.accent[5] },
-        );
-        draw::text(
-            scene,
-            tr,
-            t,
-            label,
-            btn.x0 + 17.0,
-            btn.y0 + (36.0 - 14.0) / 2.0,
-            13.5,
-            c.text_primary,
-            TextWeight::Semibold,
-        );
+        let face = ButtonFace::new(btn, label)
+            .style(ButtonStyle::Primary)
+            .text_size(13.5)
+            .weight(TextWeight::Semibold)
+            .hovered(btn.contains(self.last_mouse));
+        Button::paint(scene, t, tr, theme, &face);
         self.record(btn, Action::NewSnippet);
         // A quiet hint at the search grammar.
         let hint_y = btn.y1 + 22.0;
@@ -2160,7 +2127,7 @@ impl SnippetsApp {
             cx - hw / 2.0,
             hint_y,
             11.5,
-            c.text_dim,
+            theme.tokens.colors.text_dim,
             TextWeight::Regular,
         );
     }
@@ -2176,35 +2143,16 @@ impl SnippetsApp {
         cx: f64,
         y: f64,
     ) {
-        let c = &theme.tokens.colors;
         let label = "Clear search";
         let lw = f64::from(tr.measure(label, 13.0, None).0);
         let bw = lw + 30.0;
         let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 34.0);
-        let hovered = btn.contains(self.last_mouse);
-        draw::fill_round(
-            scene,
-            t,
-            btn,
-            theme.radii_md(),
-            if hovered {
-                c.surfaces.raised
-            } else {
-                c.neutral[2]
-            },
-        );
-        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
-        draw::text(
-            scene,
-            tr,
-            t,
-            label,
-            btn.x0 + 15.0,
-            btn.y0 + (34.0 - 14.0) / 2.0,
-            13.0,
-            c.text_primary,
-            TextWeight::Semibold,
-        );
+        let face = ButtonFace::new(btn, label)
+            .style(ButtonStyle::Neutral)
+            .text_size(13.0)
+            .weight(TextWeight::Semibold)
+            .hovered(btn.contains(self.last_mouse));
+        Button::paint(scene, t, tr, theme, &face);
         self.record(btn, Action::ClearSearch);
     }
 
@@ -2451,13 +2399,16 @@ impl SnippetsApp {
         let c = &theme.tokens.colors;
         let pad = 28.0;
         let mut x = area.x0 + pad;
+        let start_x = x;
+        let max_x = area.x1 - pad;
+        let mut row_y = y;
         let lp = draw::pill(
             scene,
             tr,
             t,
             snippet.language.label(),
             x,
-            y,
+            row_y,
             22.0,
             12.0,
             c.neutral[0],
@@ -2465,16 +2416,23 @@ impl SnippetsApp {
         );
         // Clicking the language pill cycles to the next language.
         let next = next_language(snippet.language);
-        self.record(lp, Action::SetLanguage(open, next));
+        self.record(expand_hit_height(lp, 32.0), Action::SetLanguage(open, next));
         x = lp.x1 + 8.0;
         if !snippet.folder.is_empty() {
+            (x, row_y) = wrap_metadata_cursor(
+                x,
+                row_y,
+                pill_width(tr, &snippet.folder, 12.0),
+                start_x,
+                max_x,
+            );
             let fp = draw::pill(
                 scene,
                 tr,
                 t,
                 &snippet.folder,
                 x,
-                y,
+                row_y,
                 22.0,
                 12.0,
                 c.text_dim,
@@ -2484,22 +2442,27 @@ impl SnippetsApp {
         }
         for tag in &snippet.tags {
             let label = format!("#{tag}");
+            (x, row_y) =
+                wrap_metadata_cursor(x, row_y, pill_width(tr, &label, 12.0), start_x, max_x);
             let tp = draw::pill(
                 scene,
                 tr,
                 t,
                 &label,
                 x,
-                y,
+                row_y,
                 22.0,
                 12.0,
                 c.accent[7],
                 c.accent[1],
             );
-            self.record(tp, Action::Select(Selection::Tag(tag.clone())));
+            self.record(
+                expand_hit_height(tp, 32.0),
+                Action::Select(Selection::Tag(tag.clone())),
+            );
             x = tp.x1 + 8.0;
         }
-        y + 34.0
+        row_y + 34.0
     }
 
     /// Copy / Expand / Favorite / Duplicate / Delete. Returns the y cursor
@@ -2521,31 +2484,38 @@ impl SnippetsApp {
     ) -> f64 {
         let pad = 28.0;
         let y = y + 4.0;
-        let mut bx = area.x0 + pad;
+        let start_x = area.x0 + pad;
+        let max_x = area.x1 - pad;
+        let mut bx = start_x;
+        let mut by = y;
         let primary_label = if snippet.has_placeholders() {
             "Fill & Copy"
         } else {
             "Copy"
         };
-        bx = self.toolbar_button(
+        (bx, by) = self.toolbar_button(
             scene,
             t,
             tr,
             theme,
             bx,
-            y,
+            by,
+            start_x,
+            max_x,
             primary_label,
             true,
             Action::Copy(open),
         );
         if snippet.has_placeholders() {
-            bx = self.toolbar_button(
+            (bx, by) = self.toolbar_button(
                 scene,
                 t,
                 tr,
                 theme,
                 bx,
-                y,
+                by,
+                start_x,
+                max_x,
                 "Variables…",
                 false,
                 Action::Expand(open),
@@ -2556,40 +2526,46 @@ impl SnippetsApp {
         } else {
             "☆ Star"
         };
-        bx = self.toolbar_button(
+        (bx, by) = self.toolbar_button(
             scene,
             t,
             tr,
             theme,
             bx,
-            y,
+            by,
+            start_x,
+            max_x,
             star_label,
             false,
             Action::ToggleFavorite(open),
         );
-        bx = self.toolbar_button(
+        (bx, by) = self.toolbar_button(
             scene,
             t,
             tr,
             theme,
             bx,
-            y,
+            by,
+            start_x,
+            max_x,
             "Duplicate",
             false,
             Action::Duplicate(open),
         );
-        let _ = self.toolbar_button(
+        let (_, by) = self.toolbar_button(
             scene,
             t,
             tr,
             theme,
             bx,
-            y,
+            by,
+            start_x,
+            max_x,
             "Delete",
             false,
             Action::Delete(open),
         );
-        y + 44.0
+        by + 48.0
     }
 
     /// Draw a toolbar button, record its hit region against `action`, and
@@ -2603,13 +2579,16 @@ impl SnippetsApp {
         theme: &Theme,
         x: f64,
         y: f64,
+        start_x: f64,
+        max_x: f64,
         label: &str,
         primary: bool,
         action: Action,
-    ) -> f64 {
+    ) -> (f64, f64) {
         let tw = f64::from(tr.measure(label, 13.0, None).0);
         let w = tw + 24.0;
-        let rect = Rect::new(x, y, x + w, y + 32.0);
+        let (x, y) = wrap_toolbar_cursor(x, y, w, start_x, max_x);
+        let rect = Rect::new(x, y, x + w, y + 36.0);
         let hovered = rect.contains(self.last_mouse);
         let face = ButtonFace::new(rect, label)
             .radius(theme.radii_md())
@@ -2623,7 +2602,7 @@ impl SnippetsApp {
             });
         Button::paint(scene, t, tr, theme, &face);
         self.record(rect, action);
-        rect.x1 + 8.0
+        (rect.x1 + 8.0, y)
     }
 
     fn draw_code(
@@ -2738,6 +2717,39 @@ fn section_header(
     );
 }
 
+/// Enlarge a compact visual pill's pointer target without making the metadata
+/// row visually heavy. Pointer targets remain centred on the painted capsule.
+fn expand_hit_height(rect: Rect, minimum: f64) -> Rect {
+    if rect.height() >= minimum {
+        return rect;
+    }
+    let inset = (minimum - rect.height()) / 2.0;
+    Rect::new(rect.x0, rect.y0 - inset, rect.x1, rect.y1 + inset)
+}
+
+fn pill_width(tr: &mut TextRenderer, label: &str, size: f32) -> f64 {
+    f64::from(tr.measure(label, size, None).0) + 16.0
+}
+
+fn wrap_metadata_cursor(x: f64, y: f64, width: f64, start_x: f64, max_x: f64) -> (f64, f64) {
+    if x > start_x && x + width > max_x {
+        (start_x, y + 30.0)
+    } else {
+        (x, y)
+    }
+}
+
+/// Move the next toolbar control to a new row when it would cross the detail
+/// pane's content edge. A single unusually-wide control is left on its own row
+/// so its label remains intact rather than being silently clipped.
+fn wrap_toolbar_cursor(x: f64, y: f64, width: f64, start_x: f64, max_x: f64) -> (f64, f64) {
+    if x > start_x && x + width > max_x {
+        (start_x, y + 44.0)
+    } else {
+        (x, y)
+    }
+}
+
 /// Greedy word-wrap `s` into lines no wider than `max_w` at font `size`,
 /// for centred multi-line zero-state copy. Falls back to the whole string
 /// when a single word already exceeds the width (it will clip rather than
@@ -2789,6 +2801,30 @@ mod tests {
     use super::*;
     use crate::actions::SNIPPETS_ACTION_TYPE;
     use ui::widget::Widget;
+
+    #[test]
+    fn narrow_detail_toolbar_wraps_before_clipping() {
+        let (x, y) = wrap_toolbar_cursor(310.0, 100.0, 92.0, 28.0, 362.0);
+        assert_eq!((x, y), (28.0, 144.0));
+
+        let (x, y) = wrap_toolbar_cursor(180.0, 100.0, 92.0, 28.0, 362.0);
+        assert_eq!((x, y), (180.0, 100.0));
+    }
+
+    #[test]
+    fn compact_metadata_pills_keep_a_minimum_pointer_target() {
+        let visual = Rect::new(10.0, 20.0, 80.0, 42.0);
+        let hit = expand_hit_height(visual, 32.0);
+        assert_eq!(hit.height(), 32.0);
+        assert_eq!(hit.y0, 15.0);
+        assert_eq!(hit.y1, 47.0);
+    }
+
+    #[test]
+    fn metadata_pills_wrap_inside_narrow_detail_panes() {
+        let (x, y) = wrap_metadata_cursor(300.0, 64.0, 80.0, 28.0, 362.0);
+        assert_eq!((x, y), (28.0, 94.0));
+    }
 
     #[test]
     fn live_app_starts_empty() {

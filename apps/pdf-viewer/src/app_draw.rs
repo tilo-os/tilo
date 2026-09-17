@@ -101,29 +101,43 @@ impl PdfApp {
 
     fn toolbar_layout(&self) -> ToolbarLayout {
         let tb = self.toolbar_rect;
-        let cy = f64::midpoint(tb.y0, tb.y1);
         let w = tb.width();
         let compact = w < 640.0;
         let bw = 34.0;
         let bh = 34.0;
         let gap = 6.0;
-        let row = |x0: f64, width: f64| Rect::new(x0, cy - bh / 2.0, x0 + width, cy + bh / 2.0);
+        let row =
+            |x0: f64, width: f64, cy: f64| Rect::new(x0, cy - bh / 2.0, x0 + width, cy + bh / 2.0);
+        let top_cy = if compact {
+            tb.y0 + 28.0
+        } else {
+            f64::midpoint(tb.y0, tb.y1)
+        };
+        let tools_cy = if compact { tb.y0 + 76.0 } else { top_cy };
 
         // ---- right cluster, anchored to the right edge ----
         // Rightmost first, walking left; hidden pieces collapse to ZERO.
-        let mut rx = tb.x1 - 16.0;
-        let place = |width: f64, rx: &mut f64| {
+        let mut rx = tb.x1 - 12.0;
+        let place = |width: f64, rx: &mut f64, cy: f64| {
             *rx -= width;
-            row(*rx, width)
+            row(*rx, width, cy)
         };
-        let toggle_sidebar = place(bw, &mut rx);
+        let toggle_sidebar = place(bw, &mut rx, top_cy);
         rx -= gap;
-        let search = place(bw, &mut rx);
-        rx -= 14.0;
+        let search = place(bw, &mut rx, top_cy);
+
+        // Zoom and fit share the second row on compact windows. Keeping them
+        // separate from navigation is what leaves a stable span for all five
+        // annotation tools without overlap.
+        if compact {
+            rx = tb.x1 - 12.0;
+        } else {
+            rx -= 14.0;
+        }
         let fitw = if compact { bw } else { 40.0 };
-        let fit = place(fitw, &mut rx);
+        let fit = place(fitw, &mut rx, tools_cy);
         rx -= 10.0;
-        let zoom_in = place(28.0, &mut rx);
+        let zoom_in = place(bw, &mut rx, tools_cy);
         // The percentage is useful confirmation at normal scale, but its
         // fixed toolbar slot is not a viable control at enlarged text. The
         // fit state remains visible/actionable and the accessible document
@@ -131,28 +145,36 @@ impl PdfApp {
         let zoom_label = if compact || self.text_scale > 1.25 {
             Rect::ZERO
         } else {
-            place(46.0, &mut rx)
+            place(46.0, &mut rx, tools_cy)
         };
-        let zoom_out = place(28.0, &mut rx);
+        let zoom_out = place(bw, &mut rx, tools_cy);
         let right_start = zoom_out.x0;
 
         // ---- left cluster: page-rail toggle (LEFT-MOST) + Open + Save ----
         // The compositor owns window chrome (the document name lives in the real
         // titlebar), so the app draws no wordmark/app-name here — Open sits
         // directly after the rail toggle.
-        let toggle_rail = row(tb.x0 + 12.0, bw);
-        let open = row(toggle_rail.x1 + 10.0, bw);
-        let save = row(open.x1 + gap, bw);
+        let toggle_rail = row(tb.x0 + 12.0, bw, top_cy);
+        let open = row(toggle_rail.x1 + 10.0, bw, top_cy);
+        let save = row(open.x1 + gap, bw, top_cy);
         let left_end = save.x1;
 
         // ---- centre: tools, centred in the remaining span ----
         let n = Tool::ALL.len() as f64;
         let tools_w = n * bw + (n - 1.0) * gap;
-        let centre = f64::midpoint(left_end, right_start);
-        let mut tx = (centre - tools_w / 2.0).max(left_end + 8.0);
+        let centre = if compact {
+            f64::midpoint(tb.x0 + 12.0, right_start - 12.0)
+        } else {
+            f64::midpoint(left_end, right_start)
+        };
+        let mut tx = if compact {
+            tb.x0 + 12.0
+        } else {
+            (centre - tools_w / 2.0).max(left_end + 8.0)
+        };
         let mut tools = Vec::new();
         for t in Tool::ALL {
-            tools.push((t, row(tx, bw)));
+            tools.push((t, row(tx, bw, tools_cy)));
             tx += bw + gap;
         }
         let tools_end = tx - gap;
@@ -160,15 +182,23 @@ impl PdfApp {
         // Swatches sit just right of the tools, but only when the annotate
         // tools are active and there is genuinely room for them.
         let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
-        let sw = 16.0;
-        let sgap = 8.0;
+        let sw = if compact { 34.0 } else { 16.0 };
+        let sgap = if compact { 6.0 } else { 8.0 };
         let swatch_span = 5.0 * sw + 4.0 * sgap;
-        let sx0 = tools_end + 14.0;
+        let sx0 = if compact {
+            tb.x0 + (tb.width() - swatch_span) / 2.0
+        } else {
+            tools_end + 14.0
+        };
         let mut swatches = Vec::new();
-        if annotate && sx0 + swatch_span <= right_start - 10.0 {
+        if annotate && (compact || sx0 + swatch_span <= right_start - 10.0) {
             let mut sx = sx0;
+            let swatch_cy = if compact { tb.y0 + 124.0 } else { top_cy };
             for s in Swatch::ALL {
-                swatches.push((s, Rect::new(sx, cy - sw / 2.0, sx + sw, cy + sw / 2.0)));
+                swatches.push((
+                    s,
+                    Rect::new(sx, swatch_cy - sw / 2.0, sx + sw, swatch_cy + sw / 2.0),
+                ));
                 sx += sw + sgap;
             }
         }
@@ -269,10 +299,13 @@ impl PdfApp {
         let pad = 16.0 * scale;
         let gap = 8.0 * scale;
         let cy = f64::midpoint(s.y0, s.y1);
-        let field_top = s.y0 + 8.0 * scale;
-        let field_bot = s.y1 - 8.0 * scale;
+        // Keep both the editable field and toggle chips at least 32px tall at
+        // normal text scale; the old 22px chips were visually tidy but poor
+        // touch targets on the very compact layout that needs them most.
+        let field_top = s.y0 + 7.0 * scale;
+        let field_bot = s.y1 - 7.0 * scale;
         let field_left = s.x0 + pad;
-        let chip_h = 22.0 * scale;
+        let chip_h = (22.0 * scale).max(32.0);
         let chip = |w: f64, x1: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
 
         // Right cluster: [Case] [Whole word], packed against the right edge.
@@ -1547,10 +1580,10 @@ impl PdfApp {
         scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
 
         let lay = self.toolbar_layout();
-        self.draw_toolbar_open_save(scene, base, theme, &lay);
-        self.draw_toolbar_tools(scene, base, theme, &lay);
+        self.draw_toolbar_open_save(scene, base, tr, theme, &lay);
+        self.draw_toolbar_tools(scene, base, tr, theme, &lay);
         self.draw_toolbar_zoom_fit(scene, base, tr, theme, &lay);
-        self.draw_toolbar_view_toggles(scene, base, theme, &lay);
+        self.draw_toolbar_view_toggles(scene, base, tr, theme, &lay);
     }
 
     /// Open-document and save-annotated-PDF buttons, plus the unsaved-edits dot.
@@ -1558,6 +1591,7 @@ impl PdfApp {
         &self,
         scene: &mut Scene,
         base: Affine,
+        tr: &mut TextRenderer,
         theme: &Theme,
         lay: &ToolbarLayout,
     ) {
@@ -1566,6 +1600,7 @@ impl PdfApp {
         Self::icon_button_bg(
             scene,
             base,
+            tr,
             theme,
             lay.open,
             false,
@@ -1588,6 +1623,7 @@ impl PdfApp {
         Self::icon_button_bg(
             scene,
             base,
+            tr,
             theme,
             lay.save,
             false,
@@ -1613,13 +1649,14 @@ impl PdfApp {
         &self,
         scene: &mut Scene,
         base: Affine,
+        tr: &mut TextRenderer,
         theme: &Theme,
         lay: &ToolbarLayout,
     ) {
         for (t, r) in &lay.tools {
             let active = *t == self.tool;
             let hovered = r.contains(self.last_mouse);
-            Self::icon_button_bg(scene, base, theme, *r, active, hovered);
+            Self::icon_button_bg(scene, base, tr, theme, *r, active, hovered);
             let col = if active {
                 theme.tokens.colors.on_accent(4.5)
             } else {
@@ -1661,6 +1698,7 @@ impl PdfApp {
         Self::icon_button_bg(
             scene,
             base,
+            tr,
             theme,
             lay.zoom_out,
             false,
@@ -1670,6 +1708,7 @@ impl PdfApp {
         Self::icon_button_bg(
             scene,
             base,
+            tr,
             theme,
             lay.zoom_in,
             false,
@@ -1696,6 +1735,7 @@ impl PdfApp {
         Self::icon_button_bg(
             scene,
             base,
+            tr,
             theme,
             lay.fit,
             fit_active,
@@ -1728,12 +1768,14 @@ impl PdfApp {
         &self,
         scene: &mut Scene,
         base: Affine,
+        tr: &mut TextRenderer,
         theme: &Theme,
         lay: &ToolbarLayout,
     ) {
         Self::icon_button_bg(
             scene,
             base,
+            tr,
             theme,
             lay.search,
             self.search_active,
@@ -1752,6 +1794,7 @@ impl PdfApp {
         Self::icon_button_bg(
             scene,
             base,
+            tr,
             theme,
             lay.toggle_rail,
             self.show_rail,
@@ -1770,6 +1813,7 @@ impl PdfApp {
         Self::icon_button_bg(
             scene,
             base,
+            tr,
             theme,
             lay.toggle_sidebar,
             self.show_sidebar,
@@ -1790,23 +1834,21 @@ impl PdfApp {
     fn icon_button_bg(
         scene: &mut Scene,
         base: Affine,
+        tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
         active: bool,
         hovered: bool,
     ) {
-        let shape = RoundedRect::from_rect(r.inflate(-2.0, -2.0), f64::from(theme.tokens.radii.md));
-        if active {
-            scene.fill(Fill::NonZero, base, theme.accent_primary, None, &shape);
-        } else if hovered {
-            scene.fill(
-                Fill::NonZero,
-                base,
-                theme.tokens.colors.lift(0.72),
-                None,
-                &shape,
-            );
-        }
+        let face = ButtonFace::new(r.inflate(-2.0, -2.0), "")
+            .accessible_name("PDF toolbar control")
+            .style(if active {
+                ui::widget::ButtonStyle::Primary
+            } else {
+                ui::widget::ButtonStyle::Ghost
+            })
+            .hovered(hovered);
+        Button::paint(scene, base, tr, theme, &face);
     }
 
     // ---- search strip ----------------------------------------------

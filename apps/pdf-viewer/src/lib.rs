@@ -117,6 +117,14 @@ pub fn app_root_search() -> Box<dyn Widget> {
     Box::new(app)
 }
 
+/// Screenshot-only: the sample document with annotation tools and colour
+/// choices visible, including the compact toolbar's dedicated colour row.
+pub fn app_root_annotation_tools() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_annotation_tools();
+    Box::new(app)
+}
+
 /// Screenshot-only: the Signatures panel in Draw mode with a drawn signature and
 /// the Sign tool armed, so a still frame shows the signature-composer workflow.
 pub fn app_root_sign() -> Box<dyn Widget> {

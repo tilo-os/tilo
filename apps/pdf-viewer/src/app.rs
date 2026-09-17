@@ -38,7 +38,8 @@ use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::tooltip::Tooltip;
 use ui::widget::{
-    Avatar, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput, ToggleGroup, ViewportState,
+    Avatar, Button, ButtonFace, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput,
+    ToggleGroup, ViewportState,
 };
 
 use crate::doc::{PagePlanEntry, PdfDoc};
@@ -55,6 +56,8 @@ use crate::text_layer::{PageText, TextMatch};
 use std::sync::Arc;
 
 const TOOLBAR_H: f64 = 56.0;
+const COMPACT_TOOLBAR_H: f64 = 104.0;
+const COMPACT_ANNOTATE_TOOLBAR_H: f64 = 148.0;
 /// Default width of the thumbnail rail; the user can drag-resize it within
 /// [`RAIL_W_MIN`, `RAIL_W_MAX`] and fully collapse it.
 const RAIL_W: f64 = 144.0;
@@ -760,6 +763,12 @@ impl PdfApp {
         self.active_match = 2;
     }
 
+    /// Screenshot-only: select the highlight tool so compact captures exercise
+    /// the responsive annotation-colour row instead of silently omitting it.
+    pub fn arm_shots_annotation_tools(&mut self) {
+        self.tool = Tool::Highlight;
+    }
+
     /// Screenshot-only: open the Signatures panel in Draw mode with a signature
     /// already drawn on the pad and the Sign tool armed, so a still frame shows
     /// the real signature-composer workflow.
@@ -1249,6 +1258,19 @@ impl PdfApp {
         }
     }
 
+    /// Compact windows reflow toolbar controls into real rows instead of
+    /// squeezing the desktop composition until controls overlap. Annotation
+    /// colours get their own row so they remain usable on a phone.
+    fn toolbar_height(&self) -> f64 {
+        if self.rect.width() >= 640.0 {
+            TOOLBAR_H
+        } else if matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note) {
+            COMPACT_ANNOTATE_TOOLBAR_H
+        } else {
+            COMPACT_TOOLBAR_H
+        }
+    }
+
     /// The sidebar's drawn width — narrower on cramped overlay windows so it
     /// always leaves a strip of canvas to tap on to dismiss it.
     fn sidebar_width(&self) -> f64 {
@@ -1268,8 +1290,9 @@ impl PdfApp {
 
     fn recompute_regions(&mut self) {
         let r = self.rect;
-        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
-        let mut mid_top = r.y0 + TOOLBAR_H;
+        let toolbar_h = self.toolbar_height();
+        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
+        let mut mid_top = r.y0 + toolbar_h;
         if self.search_active {
             let search_h = SEARCH_H * self.text_scale;
             self.search_rect = Rect::new(r.x0, mid_top, r.x1, mid_top + search_h);
@@ -6110,6 +6133,12 @@ mod tests {
                     "at width {width}: {name} escapes the bar ({r:?})"
                 );
             }
+            assert!(lay.field.height() >= 32.0, "find field is a usable target");
+            assert!(lay.case.height() >= 32.0, "Case toggle is a usable target");
+            assert!(
+                lay.whole_word.height() >= 32.0,
+                "Whole word toggle is a usable target"
+            );
             lay
         }
 
@@ -6617,6 +6646,47 @@ mod tests {
             app.show_sidebar && app.show_rail,
             "panels come back when wide again"
         );
+    }
+
+    #[test]
+    fn compact_toolbar_reflows_without_overlap_and_keeps_colour_targets() {
+        let (mut app, _st) = app_with_state();
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        app.tool = Tool::Highlight;
+        app.reconcile_overlay();
+        app.recompute_regions();
+        let layout = app.toolbar_layout();
+
+        let mut targets = vec![
+            layout.open,
+            layout.save,
+            layout.zoom_out,
+            layout.zoom_in,
+            layout.fit,
+            layout.search,
+            layout.toggle_rail,
+            layout.toggle_sidebar,
+        ];
+        targets.extend(layout.tools.iter().map(|(_, rect)| *rect));
+        targets.extend(layout.swatches.iter().map(|(_, rect)| *rect));
+        assert_eq!(layout.swatches.len(), Swatch::ALL.len());
+        assert!(
+            targets
+                .iter()
+                .all(|rect| rect.width() >= 32.0 && rect.height() >= 32.0),
+            "every compact toolbar target remains comfortably actionable"
+        );
+        for (index, a) in targets.iter().enumerate() {
+            for b in targets.iter().skip(index + 1) {
+                let separated = a.x1 <= b.x0 || b.x1 <= a.x0 || a.y1 <= b.y0 || b.y1 <= a.y0;
+                assert!(
+                    separated,
+                    "compact toolbar targets overlap: {a:?} and {b:?}"
+                );
+            }
+        }
+        assert_eq!(app.toolbar_rect.height(), COMPACT_ANNOTATE_TOOLBAR_H);
+        assert_eq!(app.canvas_rect.y0, COMPACT_ANNOTATE_TOOLBAR_H);
     }
 
     #[test]

@@ -1957,7 +1957,7 @@ impl PlayerApp {
         let block_h = title_step * title_lines.len() as f64
             + 10.0 * scale
             + subtitle_step * subtitle_lines.len() as f64;
-        let mut baseline = if compact_copy && !self.shot_loading {
+        let mut baseline = if !self.shot_loading && !self.player.has_media() {
             center.y + 92.0
         } else {
             center.y - block_h * 0.5 + 20.0 * scale
@@ -2935,7 +2935,10 @@ impl Widget for PlayerApp {
         self.player.apply_layout(taffy, player_node, new_origin);
         // Floating Open pill: top-right corner, over the video.
         let scale = self.text_scale;
-        let button_h = if scale > 1.25 {
+        let compact = self.rect.width() <= 720.0;
+        let button_h = if compact {
+            44.0 * scale.max(1.0)
+        } else if scale > 1.25 {
             OPEN_BTN_H * (0.5 + scale * 0.5)
         } else {
             OPEN_BTN_H
@@ -2974,7 +2977,13 @@ impl Widget for PlayerApp {
         );
         let large_text = scale > 1.25;
         let close_w = if large_text { 96.0 } else { 68.0 };
-        let header_button_h = if large_text { 48.0 } else { 36.0 };
+        let header_button_h = if large_text {
+            48.0
+        } else if compact {
+            44.0
+        } else {
+            36.0
+        };
         self.library_close_rect = Rect::new(
             self.library_panel_rect.x1 - 12.0 - close_w,
             self.library_panel_rect.y0 + 10.0,
@@ -2988,7 +2997,13 @@ impl Widget for PlayerApp {
         ) + 1;
         let (_, tabs_top, _) = library_vertical_metrics(scale, description_lines);
         let tabs_y = self.library_panel_rect.y0 + tabs_top;
-        let tab_h = if large_text { 50.0 } else { 36.0 };
+        let tab_h = if large_text {
+            50.0
+        } else if compact {
+            44.0
+        } else {
+            36.0
+        };
         let tab_w = if large_text { 112.0 } else { 86.0 };
         self.library_queue_tab_rect = Rect::new(
             self.library_panel_rect.x0 + 12.0,
