@@ -195,7 +195,7 @@ fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
     vec![flourish, underline]
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SidebarTab {
     Comments,
     Outline,
@@ -588,6 +588,12 @@ pub struct PdfApp {
     /// this only for surrounding geometry; glyph scaling remains owned by the
     /// shared renderer.
     text_scale: f64,
+    /// Distance from either window edge to the first / last toolbar control,
+    /// cached from the theme's `spacing.s3` during layout because
+    /// `toolbar_layout` is pure geometry shared by paint, hit-testing and the
+    /// accessibility tree and has no `Theme` in scope. Symmetric: the right
+    /// edge used to sit at 16 while the left sat at 12.
+    toolbar_inset: f64,
 
     /// An in-flight XDG-portal file-open. When the user asks to open a
     /// document (toolbar folder button, Ctrl+O, or the empty state's Open
@@ -953,6 +959,7 @@ impl PdfApp {
             tooltip_pending: false,
             reduce_motion: false,
             text_scale: 1.0,
+            toolbar_inset: f64::from(ui::tokens::spacing::Spacing::default().s3),
             portal_rx: None,
             overlay_mode: false,
             prev_overlay: None,
@@ -3981,6 +3988,7 @@ impl Widget for PdfApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        self.toolbar_inset = f64::from(theme.tokens.spacing.s3);
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -7607,8 +7615,9 @@ mod tests {
         // A very long name/email truncates to fit the bounded width.
         let mut tr = ui::text_render::TextRenderer::new();
         let long = "quinten.van.der.berg.reviewer@really-long-domain.example.com";
-        let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max);
-        let (w, _) = tr.measure(&shown, 11.5, None);
+        // Measured and painted Semibold, like `draw_comment_header_row`.
+        let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max, TextWeight::Semibold);
+        let (w, _) = tr.measure_weighted(&shown, 11.5, None, TextWeight::Semibold);
         assert!(
             w <= hdr.name_max + 0.5,
             "the truncated name ({shown:?}, {w}px) fits within the bounded width {}px",
@@ -7681,6 +7690,57 @@ mod tests {
             "reply editor ({composer_bottom}) remains inside its measured card ({})",
             card.y1
         );
+    }
+
+    /// `vcenter` centres the *measured* line box, whatever the renderer's
+    /// text scale made of it — the height half of a `measure` result is the
+    /// only input it accepts, so no caller can centre on a nominal font size.
+    #[test]
+    fn vcenter_centres_the_measured_line_box() {
+        let rect = Rect::new(0.0, 10.0, 100.0, 44.0);
+        assert!((vcenter(rect, 15.0) - 19.5).abs() < 1e-9);
+        // A 2× line box in the same control still lands centred, not low.
+        let two_x = vcenter(rect, 30.0);
+        assert!((two_x - 12.0).abs() < 1e-9);
+        assert!(((rect.y1 - (two_x + 30.0)) - (two_x - rect.y0)).abs() < 1e-9);
+        let mut tr = ui::text_render::TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let (_, h) = tr.measure("Fit", 11.0, None);
+        let y = vcenter(rect, h);
+        assert!(
+            (y - rect.y0 - (rect.y1 - (y + f64::from(h)))).abs() < 1e-6,
+            "top gap equals bottom gap for a 2× scaled run"
+        );
+    }
+
+    /// A comment body painted from `card.x0 + 12·s` and wrapped with the shared
+    /// helper ends `12·s` before the card's right edge at every text scale —
+    /// the unscaled wrap used to spill 8px past the border at 2×.
+    #[test]
+    fn comment_text_wraps_keep_a_symmetric_inset_at_every_scale() {
+        for s in [1.0_f64, 1.5, 2.0] {
+            let inner_w = SIDEBAR_W - 28.0 * s;
+            let body_x = 12.0 * s;
+            let body_end = body_x + f64::from(PdfApp::comment_body_wrap(inner_w, s));
+            assert!(
+                (body_end - (inner_w - 12.0 * s)).abs() < 1e-6,
+                "body right inset at {s}×: {}",
+                inner_w - body_end
+            );
+            let reply_end = 24.0 * s + f64::from(PdfApp::comment_reply_wrap(inner_w, s));
+            assert!(
+                (reply_end - (inner_w - 12.0 * s)).abs() < 1e-6,
+                "reply right inset at {s}×: {}",
+                inner_w - reply_end
+            );
+            // Composer field: inset 12·s, editor text inset a further 10·s.
+            let compose_end = 22.0 * s + f64::from(PdfApp::comment_compose_wrap(inner_w, s));
+            assert!(
+                (compose_end - (inner_w - 22.0 * s)).abs() < 1e-6,
+                "composer right inset at {s}×: {}",
+                inner_w - compose_end
+            );
+        }
     }
 
     /// Drive the real fixture PDF through the live frame path to produce the

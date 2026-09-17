@@ -1689,6 +1689,73 @@ mod event_tests {
         }
     }
 
+    /// Hit rect == painted rect: the sidebar body is painted inside a clip, so
+    /// a card (and its delete / resolve chips) scrolled under the tab strip
+    /// must not keep an invisible, clickable rect there. `apply_sidebar` picks
+    /// the smallest containing rect, which is exactly how a hidden 24px delete
+    /// button used to beat the "Contents" tab.
+    #[test]
+    fn sidebar_hits_are_clipped_to_the_scrolled_body() {
+        let (mut app, _st) = app();
+        // A short window so the seeded thread list overflows its body.
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 420.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.show_sidebar = true;
+        app.sidebar_tab = SidebarTab::Comments;
+        // Scroll far enough that the first card sits under the tab strip.
+        app.sidebar_scroll = 180.0;
+        let mut scene = vello::Scene::new();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let mut er = Rect::ZERO;
+        let hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
+        let body = app.sidebar_body();
+        let tabs = app.sidebar_tab_rects();
+        let body_hits: Vec<&(SidebarHit, Rect)> = hits
+            .iter()
+            .filter(|(h, _)| !matches!(h, SidebarHit::Tab(_)))
+            .collect();
+        assert!(
+            !body_hits.is_empty(),
+            "the scrolled list still exposes the cards that remain visible"
+        );
+        for (i, (_, r)) in body_hits.iter().enumerate() {
+            assert!(
+                r.x0 >= body.x0 - 0.01
+                    && r.x1 <= body.x1 + 0.01
+                    && r.y0 >= body.y0 - 0.01
+                    && r.y1 <= body.y1 + 0.01,
+                "body hit #{i} {r:?} escapes the painted body {body:?}"
+            );
+            assert!(
+                r.width() > 0.0 && r.height() > 0.0,
+                "body hit #{i} {r:?} is empty and should have been dropped"
+            );
+            for (tab, t) in &tabs {
+                let overlap = r.intersect(*t);
+                assert!(
+                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                    "body hit #{i} {r:?} reaches into the {tab:?} tab {t:?}"
+                );
+            }
+        }
+    }
+
+    /// The first and last toolbar controls sit the same distance from their
+    /// window edges (the right cluster used to be inset 16 against 12).
+    #[test]
+    fn toolbar_edge_insets_are_symmetric() {
+        let (app, _st) = app();
+        let lay = app.toolbar_layout();
+        let left = lay.toggle_rail.x0 - app.toolbar_rect.x0;
+        let right = app.toolbar_rect.x1 - lay.toggle_sidebar.x1;
+        assert!(
+            (left - right).abs() < 0.01,
+            "left inset {left} != right inset {right}"
+        );
+    }
+
     #[test]
     fn sidebar_delete_buttons_remove_items() {
         let (mut app, mut st) = app();
