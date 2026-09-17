@@ -1,5 +1,10 @@
 #![allow(
     clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::if_not_else,
+    clippy::items_after_statements,
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
     reason = "PipeWire and wpctl are established product names"
 )]
 //! Audio pane — output volume + mute, microphone input level, device

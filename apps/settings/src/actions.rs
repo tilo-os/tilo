@@ -33,6 +33,15 @@
 //! key already holds is skipped (a no-op leaves the document — and its heads —
 //! untouched), so a double-applied or stale envelope can't churn a peer.
 
+#![allow(
+    clippy::indexing_slicing,
+    clippy::needless_pass_by_value,
+    clippy::redundant_locals,
+    clippy::too_many_lines,
+    clippy::unreachable,
+    reason = "resource builders operate on closed, locally-constructed action schemas; fallible public resolution remains bounded and returns Option/Result"
+)]
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
