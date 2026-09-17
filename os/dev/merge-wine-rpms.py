@@ -119,7 +119,13 @@ def merge(x64, x86, destination, pin, refs):
     for root, architecture, ref in zip(roots, ('x86_64', 'i686'), refs, strict=True):
         contract.reference(ref)
         stored = json.loads((root / 'provenance/contract.json').read_text())
-        fresh = contract.output(architecture, pin, stored['buildroot_ref'], root, write=False)
+        producer = stored.get('producer')
+        if producer is not None:
+            if producer.get('mode') != 'mock-hermetic' or 'buildroot_ref' in stored:
+                raise ValueError('unsupported or ambiguous provenance mode')
+            fresh = contract.output(architecture, pin, None, root, write=False, mode='mock-hermetic')
+        else:
+            fresh = contract.output(architecture, pin, stored['buildroot_ref'], root, write=False)
         if fresh != stored:
             raise ValueError('input artifact does not match its recorded package contract')
         if any(path.is_symlink() or not (path.is_file() or path.is_dir())
