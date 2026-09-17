@@ -100,6 +100,14 @@ fi
 # efibootmgr is injected here so the fixture can prove that bootc-created
 # ordering/default changes are rolled back exactly, without touching host NVRAM.
 mkdir -p "$work/efivars"
+guid=8be4df61-93ca-11d2-aa0d-00e098032b8c
+# Binary efivarfs attributes + load-option attributes/path length, UTF-16
+# description, end device-path node, and opaque optional bytes (including NUL).
+for id in 0000 0002 0003 000A; do
+  printf '\007\000\000\000\001\000\000\000\004\000W\000\000\000\177\377\004\000\000\012\377' \
+    > "$work/efivars/Boot$id-$guid"
+done
+cp "$work/efivars/Boot000A-$guid" "$work/original-entry"
 fake="$work/efibootmgr"
 cat > "$fake" <<'EOF'
 #!/usr/bin/env bash
@@ -114,13 +122,65 @@ state="$work/firmware.state"
 export TILO_FAKE_EFIBOOT_LOG="$work/efiboot.log"
 TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
   "$menu" firmware-snapshot "$state"
+# The new Tilo entry is not an alteration of any pre-existing foreign entry.
+cp "$work/original-entry" "$work/efivars/Boot000B-$guid"
 TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
   "$menu" firmware-restore "$state"
 if grep -Fxq -- '-o 0002,0000,0003' "$TILO_FAKE_EFIBOOT_LOG" \
    && grep -Fxq -- '-n 0003' "$TILO_FAKE_EFIBOOT_LOG"; then
-  ok "firmware BootOrder and BootNext/default are restored exactly"
+  ok "unchanged foreign entries permit exact BootOrder/BootNext restoration and a new Tilo entry"
 else
   bad "firmware state was not faithfully restored"
+fi
+
+if grep -Fqx "boot_entry=Boot000A-$guid=07000000010000000400570000007fff0400000aff" "$state"; then
+  ok "snapshot retains exact binary bytes for an entry outside BootOrder"
+else
+  bad "snapshot lost efivar attributes, device-path or optional-data bytes"
+fi
+cp "$state" "$work/original-state"
+
+reject_changed_entry() {
+  local description="$1"
+  : > "$TILO_FAKE_EFIBOOT_LOG"
+  if TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
+      "$menu" firmware-restore "$state" > "$work/restore-failure" 2>&1; then
+    bad "$description was accepted"
+  elif [ ! -s "$TILO_FAKE_EFIBOOT_LOG" ] \
+      && cmp -s "$state" "$work/original-state" \
+      && grep -Fq 'entry bytes were not restored' "$work/restore-failure"; then
+    ok "$description stops before firmware writes and retains the recovery evidence"
+  else
+    bad "$description did not fail with retained evidence and explicit non-restoration"
+  fi
+}
+
+# Alter only opaque optional data, then only the EFI device-path bytes.
+printf '\001' >> "$work/efivars/Boot000A-$guid"
+reject_changed_entry "changed optional data"
+cp "$work/original-entry" "$work/efivars/Boot000A-$guid"
+printf '\176' | dd of="$work/efivars/Boot000A-$guid" bs=1 seek=14 conv=notrunc status=none
+reject_changed_entry "changed device path"
+rm "$work/efivars/Boot000A-$guid"
+reject_changed_entry "missing foreign entry"
+cp "$work/original-entry" "$work/efivars/Boot000A-$guid"
+
+# efibootmgr should only change ordering variables. Detect unexpected entry
+# changes during that operation too, rather than reporting successful restore.
+cat > "$work/mutating-efibootmgr" <<'EOF'
+#!/usr/bin/env bash
+printf '\001' >> "$TILO_TEST_MUTATED_ENTRY"
+EOF
+chmod +x "$work/mutating-efibootmgr"
+if TILO_TEST_MUTATED_ENTRY="$work/efivars/Boot000A-$guid" \
+    TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$work/mutating-efibootmgr" \
+    "$menu" firmware-restore "$state" > "$work/restore-failure" 2>&1; then
+  bad "firmware entry changed during order restoration without detection"
+elif cmp -s "$state" "$work/original-state" \
+    && grep -Fq 'entry bytes were not restored' "$work/restore-failure"; then
+  ok "post-restore verification detects changed entries and retains evidence"
+else
+  bad "post-restore failure did not retain evidence"
 fi
 
 if grep -Fq 'firmware-snapshot "$FIRMWARE_STATE"' "$installer" \
