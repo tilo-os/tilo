@@ -1,0 +1,18 @@
+[Unit]
+Description=Confirm this OS generation once it has proven itself
+Documentation=man:tilo-rollback(8)
+
+[Timer]
+# Ten minutes of uptime is the health signal that costs nothing and catches the
+# failure that matters: an update that boots but panics, hangs, or loses its
+# session shortly afterwards never reaches its own confirmation, so the previous
+# generation stays able to unseal.
+#
+# Deliberately NOT Persistent: a missed run must not be made up for on the next
+# boot, because "the machine was off" is not evidence that the generation is good.
+OnBootSec=10min
+AccuracySec=1min
+Unit=tilo-rollback-confirm.service
+
+[Install]
+WantedBy=timers.target

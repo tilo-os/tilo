@@ -1,36 +1,20 @@
-//! Window-icon resolution for [`crate::App`].
-//!
-//! An app's icon comes from its package. The launcher exports
-//! `QOS_APP_ICON` — the in-sandbox path of the image the manifest names
-//! in `[package].icon` — and the toolkit decodes it into a winit
-//! [`Icon`] at window creation. When unset or undecodable (a dev run
-//! outside the launcher, or an app that ships no icon art yet) a
-//! generated qOS default stands in, so every window carries a real icon.
-//!
-//! Decoding uses the `image` crate already vendored for the async image
-//! cache, so raster formats (PNG / JPEG / WebP) work with no new
-//! dependency. Vector icons (SVG) are not decoded here — ship a PNG.
+//! Resolves the raster icon named by the launcher's `TILO_APP_ICON`, falling
+//! back to a generated Tilo icon when it is missing or invalid.
 //!
 //! On Wayland, most compositors ignore a client-set toplevel icon (sourced
-//! from the `app_id` + a `.desktop` file instead), so this is a no-op there
-//! today; it is correct on X11 and forward-compatible with the
-//! xdg-toplevel-icon protocol.
+//! from the `app_id` and a `.desktop` file instead).
 
 use winit::window::Icon;
 
-/// The environment variable the launcher sets to the in-sandbox path of
-/// the app's icon image.
-pub const ICON_ENV: &str = "QOS_APP_ICON";
+pub const ICON_ENV: &str = "TILO_APP_ICON";
 
 /// The app's own icon when [`ICON_ENV`] names a decodable raster image,
-/// otherwise the generated qOS default. `None` only if even the default
+/// otherwise the generated Tilo default. `None` only if even the default
 /// fails to build (it never should).
 pub fn resolve() -> Option<Icon> {
     from_env().or_else(default_icon)
 }
 
-/// Load the icon named by [`ICON_ENV`], if the variable is set,
-/// non-empty, and points at a decodable image.
 fn from_env() -> Option<Icon> {
     let raw = std::env::var_os(ICON_ENV)?;
     if raw.is_empty() {
@@ -39,14 +23,11 @@ fn from_env() -> Option<Icon> {
     load_path(std::path::Path::new(&raw))
 }
 
-/// Decode a raster image file into a winit [`Icon`]. `pub(crate)` so the
-/// resolution path is testable against a real file on disk.
 pub(crate) fn load_path(path: &std::path::Path) -> Option<Icon> {
     let bytes = std::fs::read(path).ok()?;
     load_bytes(&bytes)
 }
 
-/// Decode raster image bytes (PNG / JPEG / WebP) into a winit [`Icon`].
 pub(crate) fn load_bytes(bytes: &[u8]) -> Option<Icon> {
     let img = image::load_from_memory(bytes).ok()?;
     let rgba = img.to_rgba8();
@@ -54,7 +35,6 @@ pub(crate) fn load_bytes(bytes: &[u8]) -> Option<Icon> {
     Icon::from_rgba(rgba.into_raw(), w, h).ok()
 }
 
-/// A rounded square in the qOS accent, used when an app ships no icon of its own.
 pub(crate) fn default_icon() -> Option<Icon> {
     const SIZE: u32 = 128;
     let rgba = render_default(SIZE);
@@ -69,7 +49,6 @@ pub(crate) fn default_icon() -> Option<Icon> {
               channels — the conventional names for a per-pixel raster loop"
 )]
 fn render_default(size: u32) -> Vec<u8> {
-    // qOS accent, top-to-bottom: indigo -> violet.
     let top = [0x4Cu8, 0x6Eu8, 0xF5u8];
     let bottom = [0x8Bu8, 0x5Cu8, 0xF6u8];
     // `size` is a pixel dimension (the only caller passes a constant 128);
@@ -98,7 +77,6 @@ fn render_default(size: u32) -> Vec<u8> {
             let outside = dx.max(0.0).hypot(dy.max(0.0));
             let inside = dx.max(dy).min(0.0);
             let dist = outside + inside - radius;
-            // Coverage: full inside, fades to 0 across a 1px edge.
             let cover = (0.5 - dist).clamp(0.0, 1.0);
             let t = py / s;
             let r = lerp(top[0], bottom[0], t);
@@ -140,7 +118,7 @@ mod tests {
     fn default_icon_builds() {
         assert!(
             default_icon().is_some(),
-            "generated qOS default icon must build"
+            "generated Tilo default icon must build"
         );
     }
 
@@ -162,7 +140,6 @@ mod tests {
 
     #[test]
     fn load_bytes_decodes_a_png() {
-        // Encode a tiny solid PNG in-memory — the same path a real `QOS_APP_ICON` takes.
         let mut buf = std::io::Cursor::new(Vec::new());
         let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
         image::DynamicImage::ImageRgba8(img)
@@ -185,7 +162,7 @@ mod tests {
     #[test]
     fn load_path_of_missing_file_is_none() {
         assert!(
-            load_path(std::path::Path::new("/nonexistent/qos-icon.png")).is_none(),
+            load_path(std::path::Path::new("/nonexistent/tilo-icon.png")).is_none(),
             "a missing icon file must not panic and must yield None"
         );
     }

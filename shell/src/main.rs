@@ -30,7 +30,7 @@ use shell::shell::identity_provisioning;
 use shell::{firstboot, portal};
 
 /// Install a panic hook that writes a crash report to
-/// `~/.cache/qos/crashes/<timestamp>.log` and echoes the panic message +
+/// `~/.cache/tilo/crashes/<timestamp>.log` and echoes the panic message +
 /// log path to stderr — without this, a session launched outside a
 /// terminal (greetd, .desktop double-click) discards stderr, making "the shell just disappeared" unactionable.
 ///
@@ -38,7 +38,7 @@ use shell::{firstboot, portal};
 fn install_crash_log_hook() {
     let dir = dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("qos")
+        .join("tilo")
         .join("crashes");
     let _ = std::fs::create_dir_all(&dir);
     let default_hook = std::panic::take_hook();
@@ -57,7 +57,7 @@ fn install_crash_log_hook() {
             |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
         );
         let body = format!(
-            "qos shell panic\n\
+            "tilo shell panic\n\
              ===============\n\
              timestamp: {ts}\n\
              location:  {loc}\n\
@@ -66,9 +66,9 @@ fn install_crash_log_hook() {
         );
         let wrote = std::fs::write(&path, &body).is_ok();
         if wrote {
-            eprintln!("\n[qos] crash log written to {}", path.display());
+            eprintln!("\n[tilo] crash log written to {}", path.display());
         } else {
-            eprintln!("\n[qos] FAILED to write crash log to {}", path.display());
+            eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
         }
         default_hook(info);
     }));
@@ -128,12 +128,12 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
             if compositor::parse_mode_from_args() == Mode::Hosted {
                 tracing::error!(
                     path = %store.path().display(),
-                    "hosted mode cannot create the first identity; start a native qOS session once to complete setup"
+                    "hosted mode cannot create the first identity; start a native Tilo session once to complete setup"
                 );
                 return Some(std::process::ExitCode::FAILURE);
             }
             tracing::info!(
-                "no qOS identity found at {}; native compositor chrome will run {} setup",
+                "no Tilo identity found at {}; native compositor chrome will run {} setup",
                 store.path().display(),
                 if compositor::parse_install_mode_from_args()
                     == compositor::InstallMode::HostDesktop
@@ -154,15 +154,15 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                 if provision_requested {
                     tracing::error!("could not provision collaboration identity: {error}");
                 } else {
-                    tracing::error!("qOS identity chain is incomplete or invalid: {error}");
+                    tracing::error!("Tilo identity chain is incomplete or invalid: {error}");
                 }
                 return Some(std::process::ExitCode::FAILURE);
             }
             if provision_requested {
-                tracing::info!("qOS collaboration identity is provisioned");
+                tracing::info!("Tilo collaboration identity is provisioned");
                 return Some(std::process::ExitCode::SUCCESS);
             }
-            tracing::info!("loaded qOS identity from {}", store.path().display());
+            tracing::info!("loaded Tilo identity from {}", store.path().display());
         }
         Err(error) => {
             tracing::error!("could not initialise identity store: {error}");
@@ -204,7 +204,7 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
         eprintln!("identity verification failed: {error}");
         return std::process::ExitCode::FAILURE;
     }
-    println!("qOS collaboration identity verified");
+    println!("Tilo collaboration identity verified");
     std::process::ExitCode::SUCCESS
 }
 
@@ -215,9 +215,9 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
 fn main() -> std::process::ExitCode {
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
-    qos_startup_metrics::init();
-    let _startup_dump = qos_startup_metrics::ScopedDumper;
-    qos_startup_metrics::mark("main-start");
+    tilo_startup_metrics::init();
+    let _startup_dump = tilo_startup_metrics::ScopedDumper;
+    tilo_startup_metrics::mark("main-start");
 
     // Inspect process shape while startup is still single-threaded. Host
     // packages pass an explicit installation context; deriving it from a
@@ -233,7 +233,7 @@ fn main() -> std::process::ExitCode {
     if compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop {
         match identity_provisioning::configure_host_identity_root() {
             Ok(root) => eprintln!(
-                "qOS host session: device identity will be stored under {}",
+                "Tilo host session: device identity will be stored under {}",
                 root.display()
             ),
             Err(error) => {
@@ -260,8 +260,8 @@ fn main() -> std::process::ExitCode {
     // FontSystem warmup is on by default (~90ms / 22% of first-paint). Vello
     // scratch-render warmup is off by default — it contends for the
     // process-wide render-context mutex and measured slower than no warmup.
-    // QOS_STARTUP_WARM=off disables FontSystem warmup; QOS_STARTUP_WARM_VELLO=1 opts back in.
-    let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
+    // TILO_STARTUP_WARM=off disables FontSystem warmup; TILO_STARTUP_WARM_VELLO=1 opts back in.
+    let want_vello = std::env::var("TILO_STARTUP_WARM_VELLO")
         .ok()
         .is_some_and(|v| {
             !matches!(
@@ -322,7 +322,7 @@ fn main() -> std::process::ExitCode {
         if compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop
             && let Err(e) = firstboot::import_host_input_settings()
         {
-            tracing::warn!("firstboot: host input import failed ({e}); using qOS defaults");
+            tracing::warn!("firstboot: host input import failed ({e}); using Tilo defaults");
         }
     }
     // `--firstboot` is the host-session wrapper hook: it performs setup then
@@ -361,7 +361,7 @@ fn main() -> std::process::ExitCode {
         // an opt-in flag meant no working file dialog. `--enable-portals` is still accepted for existing units/scripts.
         Mode::Native => {
             let _ = enable_portals;
-            qos_startup_metrics::mark("compositor-native-run-start");
+            tilo_startup_metrics::mark("compositor-native-run-start");
             compositor::native::run();
         }
     }
@@ -370,15 +370,15 @@ fn main() -> std::process::ExitCode {
 
 /// Run only the `xdg-desktop-portal` D-Bus backend — no compositor, no
 /// rendering. Bootstraps a minimal tokio runtime, owns the session-bus
-/// connection the `org.freedesktop.impl.portal.desktop.nirios` name
+/// connection the `org.freedesktop.impl.portal.desktop.tilo` name
 /// resolves to, and blocks until torn down (SIGTERM from systemd). Used
-/// by `quick-desktop-portal.service` so the portal backend doesn't compete with the compositor for `wayland-N`.
+/// by `tilo-desktop-portal.service` so the portal backend doesn't compete with the compositor for `wayland-N`.
 fn run_portal_server_only() -> std::process::ExitCode {
-    tracing::info!("nirios portal server starting (--portal-server-only)");
+    tracing::info!("tilo portal server starting (--portal-server-only)");
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_name("nirios-portal-only")
+        .thread_name("tilo-portal-only")
         .build()
     {
         Ok(rt) => rt,
@@ -424,7 +424,7 @@ fn run_portal_server_only() -> std::process::ExitCode {
         };
 
         tracing::info!(
-            "nirios portal server: owning {} on session bus; blocking until shutdown",
+            "tilo portal server: owning {} on session bus; blocking until shutdown",
             portal::BUS_NAME
         );
 

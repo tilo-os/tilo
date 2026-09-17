@@ -174,7 +174,7 @@ def build(args, pin):
     optflags = shlex.split(contract.run(['chroot', str(root), 'rpmspec', '--target',
                                          args.target, '--eval', '%{optflags}']))
     compiler_evidence = {}
-    with tempfile.TemporaryDirectory(prefix='qos-compiler-', dir=root / 'tmp') as temporary:
+    with tempfile.TemporaryDirectory(prefix='tilo-compiler-', dir=root / 'tmp') as temporary:
         for compiler, language in (('gcc', 'c'), ('g++', 'c++')):
             binary = Path(temporary) / compiler
             command = ['chroot', str(root), compiler,
@@ -195,7 +195,7 @@ def build(args, pin):
         output / 'buildrequires.log')
     rebuilt_source = result / contract.build_identity(pin)['source_rpm']
     if rebuilt_source.is_symlink() or not rebuilt_source.is_file():
-        raise ValueError('Mock did not retain the rebuilt qOS source RPM')
+        raise ValueError('Mock did not retain the rebuilt Tilo source RPM')
     # The input transfer must remain identical throughout the offline phase.
     verify_bundle(bundle, args.runtime_image, args.target, pin, args.jobs)
     write_json(output / 'producer.json', {
@@ -219,7 +219,7 @@ def main():
     parser.add_argument('--config')
     parser.add_argument('--config-dir', type=Path, default=Path('/etc/mock'))
     parser.add_argument('--bundle', type=Path)
-    parser.add_argument('--root', type=Path, default=Path('/var/lib/mock/qos-wine-offline/root'))
+    parser.add_argument('--root', type=Path, default=Path('/var/lib/mock/tilo-wine-offline/root'))
     args = parser.parse_args()
     if platform.machine() != 'x86_64' or platform.system() != 'Linux':
         parser.error('native x86-64 Linux producer required')

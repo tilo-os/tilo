@@ -21,19 +21,19 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 /// Result of admitting an effect/view operation into a widget.
 ///
 /// `Accepted` is deliberately distinct from success: the widget must later
-/// report progress and exactly one terminal [`qos_actions::InvocationUpdate`]
+/// report progress and exactly one terminal [`tilo_actions::InvocationUpdate`]
 /// from [`Widget::poll_resource_operation`]. This keeps queued and streaming
 /// work from being reported as completed merely because it entered a queue.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResourceOperationStart {
-    Completed(qos_actions::ActionOutput),
+    Completed(tilo_actions::ActionOutput),
     Accepted,
 }
 
 /// Machine-readable classification of a control's activation path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlBindingKind {
-    Action(qos_actions::ActionAddress),
+    Action(tilo_actions::ActionAddress),
     /// A framework-owned CRDT edit stream. The host supplies authorship,
     /// collaboration, history boundaries, undo, and permissions directly;
     /// this avoids turning every keystroke or slider tick into a heavyweight
@@ -116,7 +116,7 @@ pub fn semantic_action_bindings(
 pub(crate) fn collect_widget_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    resources: &mut Vec<qos_actions::Resource>,
+    resources: &mut Vec<tilo_actions::Resource>,
 ) {
     resources.extend(widget.resources(doc));
     widget.for_each_child(&mut |child| collect_widget_resources(child, doc, resources));
@@ -127,7 +127,7 @@ pub(crate) fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
-) -> Option<qos_actions::Resource> {
+) -> Option<tilo_actions::Resource> {
     if let Some(resource) = widget.resource(doc, id) {
         return Some(resource);
     }
@@ -141,7 +141,7 @@ pub(crate) fn resolve_widget_resource(
 /// is meaningful only while `exhausted` is false and is never interpreted by
 /// a different widget or document revision.
 pub struct ActionDirectoryResourcePage {
-    pub resources: Vec<qos_actions::Resource>,
+    pub resources: Vec<tilo_actions::Resource>,
     pub next_cursor: Vec<u8>,
     pub exhausted: bool,
 }
@@ -173,7 +173,7 @@ pub(crate) fn resolve_action_directory_visibility(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
-) -> Option<qos_actions::ActionAddress> {
+) -> Option<tilo_actions::ActionAddress> {
     widget.action_directory_visibility(doc, id).or_else(|| {
         widget
             .children()
@@ -199,15 +199,15 @@ pub(crate) fn humanize_control_id(id: &str) -> String {
 /// Widgets call [`emit`](Self::emit) from any interaction path and expose the
 /// queue through [`Widget::take_control_invocation`].
 pub struct ActionEmitter<I> {
-    binding: qos_actions::ActionBinding<I>,
-    pending: VecDeque<qos_actions::ControlInvocation>,
+    binding: tilo_actions::ActionBinding<I>,
+    pending: VecDeque<tilo_actions::ControlInvocation>,
     available: bool,
 }
 
 const ACTION_EMITTER_QUEUE_LIMIT: usize = 64;
 
 impl<I> ActionEmitter<I> {
-    pub fn new(binding: qos_actions::ActionBinding<I>) -> Self {
+    pub fn new(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
             pending: VecDeque::new(),
@@ -221,7 +221,7 @@ impl<I> ActionEmitter<I> {
     ///
     /// Returns an error when `input` cannot be encoded against the action's
     /// declared parameter contract.
-    pub fn emit(&mut self, input: I) -> Result<(), qos_actions::ActionBindingError> {
+    pub fn emit(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         if self.available {
             let invocation = self.binding.invoke(input)?;
             if self.pending.len() >= ACTION_EMITTER_QUEUE_LIMIT {
@@ -237,17 +237,17 @@ impl<I> ActionEmitter<I> {
         Ok(())
     }
 
-    pub fn take(&mut self) -> Option<qos_actions::ControlInvocation> {
+    pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.pending.pop_front()
     }
 
-    pub fn binding(&self) -> &qos_actions::ActionBinding<I> {
+    pub fn binding(&self) -> &tilo_actions::ActionBinding<I> {
         &self.binding
     }
 
     /// Refresh whether the bound action is in the host's current,
     /// permission-filtered resource surface.
-    pub fn refresh_availability(&mut self, allowed: &HashSet<qos_actions::ActionAddress>) {
+    pub fn refresh_availability(&mut self, allowed: &HashSet<tilo_actions::ActionAddress>) {
         self.available = allowed.contains(self.binding.address());
         if !self.available {
             self.pending.clear();
@@ -268,8 +268,10 @@ impl<I> ActionEmitter<I> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_bool_action_binding() -> qos_actions::ActionBinding<bool> {
-    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
+    use tilo_actions::{
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    };
     let spec = ActionSpec::typed_operation(
         "set",
         "Set",
@@ -280,7 +282,7 @@ pub(crate) fn test_bool_action_binding() -> qos_actions::ActionBinding<bool> {
         |args| EncodedAction::encode_operation("test.set_bool", &args.boolean("value")).unwrap(),
     );
     let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
-    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+    tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
             .unwrap()
@@ -290,8 +292,10 @@ pub(crate) fn test_bool_action_binding() -> qos_actions::ActionBinding<bool> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_string_action_binding() -> qos_actions::ActionBinding<String> {
-    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+pub(crate) fn test_string_action_binding() -> tilo_actions::ActionBinding<String> {
+    use tilo_actions::{
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    };
     let spec = ActionSpec::typed_operation(
         "set",
         "Set",
@@ -302,7 +306,7 @@ pub(crate) fn test_string_action_binding() -> qos_actions::ActionBinding<String>
         |args| EncodedAction::encode_operation("test.set_string", &args.text("value")).unwrap(),
     );
     let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
-    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+    tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
             .unwrap()
@@ -312,8 +316,10 @@ pub(crate) fn test_string_action_binding() -> qos_actions::ActionBinding<String>
 }
 
 #[cfg(test)]
-pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
-    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
+    use tilo_actions::{
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    };
     let spec = ActionSpec::typed_operation(
         "set",
         "Set",
@@ -324,7 +330,7 @@ pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
         |args| EncodedAction::encode_operation("test.set_number", &args.number("value")).unwrap(),
     );
     let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
-    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+    tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
             .unwrap()
@@ -561,6 +567,15 @@ pub trait Widget {
     /// for targets, consent, capture execution, and the visible selector.
     fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
         None
+    }
+
+    /// One-shot request to open the host's action palette directly at a typed
+    /// resource action. Parameter collection and permission checks remain host
+    /// policy; widgets only name an address already present in `resources()`.
+    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_action_palette_request)
     }
 
     /// Rising-edge source-geometry updates for an already adopted generic
@@ -801,7 +816,7 @@ pub trait Widget {
         // their widget-specific implementations because they do not carry
         // this reserved prefix.
         let Some((_, encoded_path)) = target
-            .strip_prefix("qos.key-action:")
+            .strip_prefix("tilo.key-action:")
             .and_then(|target| target.rsplit_once(':'))
         else {
             return false;
@@ -867,7 +882,7 @@ pub trait Widget {
     /// Drain semantic provenance for the native transaction currently asking
     /// the host to commit. Use this for CRDT-native edits such as flowing text;
     /// replayable discrete operations should continue through `ActionHost`.
-    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_commit_context)
@@ -875,7 +890,7 @@ pub trait Widget {
     /// Drain one queued action-bound control intent from this subtree.
     /// Custom-painted widgets can own an [`ActionEmitter`] and override this
     /// method; they do not need to use the toolkit's [`Button`].
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_control_invocation)
@@ -893,7 +908,7 @@ pub trait Widget {
     /// then recurse into children.
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &HashSet<qos_actions::ActionAddress>,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
     ) {
         for child in self.children_mut() {
             child.refresh_control_action_availability(allowed);
@@ -1088,11 +1103,11 @@ pub trait Widget {
         None
     }
 
-    /// The tree of [`qos_actions::Resource`]s this widget currently has
+    /// The tree of [`tilo_actions::Resource`]s this widget currently has
     /// open, each with the actions it exports to Ctrl+K — e.g. a playing
     /// video plus its comments. `doc` lets a provider enumerate resources
     /// living in the CRDT.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         Vec::new()
     }
 
@@ -1120,7 +1135,7 @@ pub trait Widget {
 
     /// Resolve an addressable resource omitted from the contextual snapshot.
     /// Large apps override this through their `ResourceProvider` index.
-    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
         None
     }
 
@@ -1135,7 +1150,7 @@ pub trait Widget {
         &self,
         _doc: &AutoCommit,
         _resource_id: &str,
-    ) -> Option<qos_actions::ActionAddress> {
+    ) -> Option<tilo_actions::ActionAddress> {
         None
     }
 
@@ -1153,8 +1168,8 @@ pub trait Widget {
     fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {}
 
     /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
-    /// control dispatches the same [`qos_actions`] action its
-    /// [`ActionSpec`](qos_actions::ActionSpec) exports, it reports the
+    /// control dispatches the same [`tilo_actions`] action its
+    /// [`ActionSpec`](tilo_actions::ActionSpec) exports, it reports the
     /// document heads captured **just before** here, so the host can record
     /// one undo boundary the same way a palette dispatch does. Rising-edge:
     /// reading MUST clear it.
@@ -1230,13 +1245,13 @@ pub trait Widget {
     /// the retained widget tree.
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         for child in self.children_mut() {
@@ -1257,14 +1272,14 @@ pub trait Widget {
     /// or fails while routing it through the retained widget tree.
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(qos_actions::ActionOutput::default))
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 
     /// Admit an exported non-document operation with a stable invocation id.
@@ -1279,8 +1294,8 @@ pub trait Widget {
     /// while routing the payload through the retained widget tree.
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -1314,8 +1329,8 @@ pub trait Widget {
     /// [`Self::start_resource_operation`].
     fn start_resource_operation_with_document(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &mut AutoCommit,
@@ -1332,11 +1347,11 @@ pub trait Widget {
     /// recursively polls retained children.
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         for child in self.children_mut() {
             if let Some(update) =
                 child.poll_resource_operation(invocation, cancellation_requested, doc, path)
@@ -1601,7 +1616,10 @@ pub use app_shell::{
     AppShell, DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH, NarrowScreen, ShellLayout,
 };
 mod sidebar;
-pub use sidebar::{DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_WIDTH, SidebarDrawer, SidebarSide};
+pub use sidebar::{
+    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_WIDTH, SidebarDrawer, SidebarNav, SidebarNavItem,
+    SidebarNavSection, SidebarSide,
+};
 mod nav_shell;
 pub use nav_shell::{
     Affordance, ContentLayout, DEFAULT_NAVSHELL_BREAKPOINT, DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
@@ -1624,6 +1642,8 @@ mod spacer;
 pub use spacer::Spacer;
 mod image;
 pub use image::{Image, ImageDecodeError, ImageFit};
+mod image_crop;
+pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
@@ -1695,7 +1715,8 @@ pub use resize_handle::{
 };
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, JUMP_PX_PER_DETENT, OutputSpan, WheelJumpAccum, wheel_jump_detents,
+    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, WheelJumpAccum,
+    wheel_jump_detents,
 };
 mod strip_view;
 pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
@@ -1711,6 +1732,8 @@ pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOut
 
 pub mod progress_bar;
 pub use progress_bar::ProgressBar;
+pub mod page_preview;
+pub use page_preview::PagePreview;
 pub mod spinner;
 pub use spinner::Spinner;
 pub mod date_picker;
@@ -1784,7 +1807,10 @@ pub use banner::{Banner, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
 pub mod card;
+pub mod collaboration_overview;
 pub use card::{Card, CardGrid, card_column_width, card_columns};
+mod section;
+pub use section::{DEFAULT_SECTION_GAP, Section};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,

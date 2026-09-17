@@ -15,13 +15,13 @@ RUN dnf install -y git cmake ninja-build pkgconf-pkg-config ccache clang lld \
 # tests. Pin the assembler, not the expected CPU results. Verify the byte-level
 # contract as well so a future toolchain update fails before the expensive build.
 COPY os/external-assets/github-assets.tsv /tmp/external-assets.tsv
-COPY os/tests/fex-assembler.sh /usr/libexec/qos/test-fex-assembler
+COPY os/tests/fex-assembler.sh /usr/libexec/tilo/test-fex-assembler
 ARG BUILD_JOBS=2
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=github-assets,source=/,target=/tilo-assets,ro \
     set -eu; \
     case "$BUILD_JOBS" in ''|*[!0-9]*|0) echo 'BUILD_JOBS must be positive' >&2; exit 1;; esac; \
     test "$BUILD_JOBS" -gt 0; \
-    cd /qos-assets; \
+    cd /tilo-assets; \
     awk -F '\t' '$2 == "nasm-2.16.03.tar.xz" { print $1 "  " $2; found++ } END { if (found != 1) exit 1 }' \
       /tmp/external-assets.tsv > /tmp/nasm.sha256; \
     sha256sum --check --strict /tmp/nasm.sha256; \
@@ -31,13 +31,13 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
     ./configure --prefix=/usr/local; \
     make -j"$BUILD_JOBS"; \
     make install; \
-    install -D -m 0644 LICENSE /usr/share/licenses/qos-fex-nasm/LICENSE; \
-    bash /usr/libexec/qos/test-fex-assembler /usr/local/bin/nasm; \
-    install -d /usr/lib/qos; \
-    cp /tmp/nasm.sha256 /usr/lib/qos/fex-nasm-source.sha256; \
+    install -D -m 0644 LICENSE /usr/share/licenses/tilo-fex-nasm/LICENSE; \
+    bash /usr/libexec/tilo/test-fex-assembler /usr/local/bin/nasm; \
+    install -d /usr/lib/tilo; \
+    cp /tmp/nasm.sha256 /usr/lib/tilo/fex-nasm-source.sha256; \
     rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
-      | LC_ALL=C sort > /usr/lib/qos/fex-buildroot-packages.txt; \
-    uname -m > /usr/lib/qos/fex-buildroot-arch; \
+      | LC_ALL=C sort > /usr/lib/tilo/fex-buildroot-packages.txt; \
+    uname -m > /usr/lib/tilo/fex-buildroot-arch; \
     rm -rf /tmp/nasm-source /tmp/nasm.sha256 /tmp/external-assets.tsv
 
 # The pinned thunk generator emits Clang 22's internal __size_t spelling into
@@ -45,6 +45,6 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
 # and compiler explicitly; keep the default compiler for the guest SDK tools.
 RUN dnf install -y clang21 clang21-devel llvm21-devel \
  && dnf clean all \
- && /usr/lib64/llvm21/bin/clang --version > /usr/lib/qos/fex-generator-compiler-version \
+ && /usr/lib64/llvm21/bin/clang --version > /usr/lib/tilo/fex-generator-compiler-version \
  && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
-      | LC_ALL=C sort > /usr/lib/qos/fex-buildroot-packages.txt
+      | LC_ALL=C sort > /usr/lib/tilo/fex-buildroot-packages.txt

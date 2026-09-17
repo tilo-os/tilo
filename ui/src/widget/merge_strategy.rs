@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn resolver_family_name_round_trips_through_debug() {
-        // Debug must include the family name, since the impl is hand-rolled.
+        // Debug must include the resolver family name.
         let resolver = Arc::new(StubResolver {
             kind: ConflictKind::Auto,
         });

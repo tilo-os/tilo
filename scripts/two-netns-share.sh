@@ -23,8 +23,8 @@ VETH_A_IP="${VETH_A_IP:-10.42.0.1}"
 VETH_B_IP="${VETH_B_IP:-10.42.0.2}"
 VIDEO_PORT="${VIDEO_PORT:-9080}"
 INPUT_PORT="${INPUT_PORT:-9081}"
-NS_A="${NS_A:-qos-share-a}"
-NS_B="${NS_B:-qos-share-b}"
+NS_A="${NS_A:-tilo-share-a}"
+NS_B="${NS_B:-tilo-share-b}"
 
 if [[ $EUID -ne 0 ]]; then
     echo "netns creation requires root; re-run under sudo." >&2

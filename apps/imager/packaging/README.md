@@ -1,4 +1,4 @@
-# qOS Imager host packaging
+# Tilo Imager host packaging
 
 `package-host.sh` builds Linux or macOS on that native host.
 `package-host.ps1` builds Windows. Every package receives a SHA-256 sidecar.
@@ -13,11 +13,11 @@ Release hosts produce this matrix (architecture is part of every filename):
 | macOS x86-64 + Apple silicon | signed/notarized DMG and app zip | Homebrew cask |
 
 The protected tag workflow also builds the live installer on native x86-64 and
-ARM64 runners, converts the tested qcow2 to `qos-installer-linux-ARCH.img.zst`,
+ARM64 runners, converts the tested qcow2 to `tilo-installer-linux-ARCH.img.zst`,
 and publishes a digest-bound catalog. Both installer images and the catalog
 receive detached OpenPGP signatures from the independently pinned Linux release
 identity, so direct downloads can be authenticated as well as checksum-checked.
-The catalog is also embedded into every signed Imager package. Selecting its qOS
+The catalog is also embedded into every signed Imager package. Selecting its Tilo
 release downloads the compressed image into a per-user cache and verifies both
 the transport SHA-256 and expanded-image SHA-256/size before the raw image is
 offered to the writer.
@@ -25,10 +25,10 @@ offered to the writer.
 Hardware-specific media also carries an explicit `hardware_profile` identity.
 The packager validates the selected ID against `os/hardware/profiles/` and its
 declared architecture; CPU architecture alone does not establish board support.
-Generic media retains `qos-installer-linux-ARCH.img.zst` and schema-1 catalogs.
-Board media uses `qos-installer-linux-ARCH-PROFILE.img.zst` and a separate
+Generic media retains `tilo-installer-linux-ARCH.img.zst` and schema-1 catalogs.
+Board media uses `tilo-installer-linux-ARCH-PROFILE.img.zst` and a separate
 `catalog-ARCH-PROFILE.json` fragment. A catalog containing any board variant is
-schema 2, emitted as `qos-installer-catalog-v2.json`; clients deliberately treat
+schema 2, emitted as `tilo-installer-catalog-v2.json`; clients deliberately treat
 legacy schema-1 entries without a profile as generic only. The catalog requires
 one generic image for each architecture and rejects duplicate profile identities.
 
@@ -36,7 +36,7 @@ After the installer has finished resealing and optional PCR signing,
 `build-custom-installer.sh` records `INSTALLER.qcow2.hardware.json`. The sidecar
 binds the final immutable OCI image ID, validated image-owned profile payload
 (including its update origin), and completed qcow2 SHA-256. Package board media
-with `QOS_HARDWARE_PROFILE=PROFILE`; a missing or mismatched sidecar fails before
+with `TILO_HARDWARE_PROFILE=PROFILE`; a missing or mismatched sidecar fails before
 conversion. This is build provenance, separate from the UKI/rootfs acceptance
 checks and physical boot validation. Generic builds from older tooling may omit
 the sidecar; when a sidecar exists it is always checked, even for generic media.
@@ -64,38 +64,47 @@ escape. The exact same streaming write, signed-source digest, read-back verify,
 profile-tail verify, and hot-unplug identity checks run over that descriptor.
 `package-flatpak.sh` exports against the pinned 25.08 runtime, smoke-loads the
 result in that sandbox as an ABI gate, and emits a signed-release
-`qos-imager-linux-{x86_64,aarch64}.flatpak` bundle. Release runners must have
+`tilo-imager-linux-{x86_64,aarch64}.flatpak` bundle. Release runners must have
 `flatpak-builder` and `org.freedesktop.Sdk//25.08` preinstalled.
 The packaging smoke gate also runs the bundled `lsblk` without a device grant
 and reconciles its sysfs view with host-side UDisks2 Size, ReadOnly, HintSystem,
 IdUsage, and MountPoints properties. A missing service/property, mismatched
 size, read-only disk, or incomplete partition record rejects that drive.
 
-Native release packages are fail-closed with `QOS_REQUIRE_NATIVE_PACKAGES=1`.
+Native release packages are fail-closed with `TILO_REQUIRE_NATIVE_PACKAGES=1`.
 Linux release builders need GnuPG; CI materializes checksum-pinned
 `linuxdeploy`, `appimagetool`, and type-2 runtime binaries from its per-arch
 cache. A manual release build must provide those tools plus
-`QOS_APPIMAGE_RUNTIME`; implicit “latest” runtime downloads fail closed. Windows
+`TILO_APPIMAGE_RUNTIME`; implicit “latest” runtime downloads fail closed. Windows
 builders need Inno Setup 6 and the WinGet client for manifest validation.
 macOS uses the platform `hdiutil`.
 
-An `imager-v*` release tag sets `QOS_REQUIRE_SIGNING=1`, so packaging fails
+Linux release validation executes the AppImage once through its extraction
+compatibility path and, on every FUSE-capable kernel, again through its normal
+embedded runtime. A FUSE-capable runner with a missing or inaccessible
+`/dev/fuse` fails instead of silently weakening the gate. Flatpak validation
+imports the emitted bundle into a private per-job user installation and runs
+that installed ref against the system `org.freedesktop.Platform//25.08`
+runtime; release runners therefore install both the SDK and Platform runtime
+system-wide.
+
+An `imager-v*` release tag sets `TILO_REQUIRE_SIGNING=1`, so packaging fails
 closed unless the platform release credentials are configured:
 
 - Linux steady state: `IMAGER_LINUX_CREDENTIAL_BROKER` names the native OIDC
   credential broker. It installs the public verification
-  key and exports `QOS_LINUX_SIGNER` plus `QOS_LINUX_VERIFY_KEY`; every tarball
+  key and exports `TILO_LINUX_SIGNER` plus `TILO_LINUX_VERIFY_KEY`; every tarball
   and AppImage receives an armored detached signature that is immediately
   verified. The protected repository variable
   `IMAGER_LINUX_SIGNING_FINGERPRINT` must contain that key's full OpenPGP
   fingerprint. Packaging refuses a different broker/imported key, exports the
-  exact public key as `qos-release-key.asc`, and publishes its fingerprint and
+  exact public key as `tilo-release-key.asc`, and publishes its fingerprint and
   SHA-256 sidecars beside the artifacts. The final publication job imports only
   that exported key into a fresh keyring and re-verifies every Linux signature
   against the protected fingerprint. Bootstrap-only fallback:
   `IMAGER_LINUX_SIGNING_KEY_B64` (armored
   private key, base64 encoded) and `IMAGER_LINUX_SIGNING_KEY_ID`, imported by CI
-  as `QOS_LINUX_SIGNING_KEY`.
+  as `TILO_LINUX_SIGNING_KEY`.
 - Windows steady state: `IMAGER_WINDOWS_CREDENTIAL_BROKER` configures a signer
   wrapper, or repository variable `IMAGER_WINDOWS_SIGNER` directly names a
   preinstalled wrapper which performs its own OIDC exchange. It receives the
@@ -122,9 +131,9 @@ All Unix broker programs and signer wrappers must be canonical absolute,
 root-owned paths outside the checkout and runner temporary directory; neither
 they nor any parent may be group/world writable. A broker creates its output as
 a new regular, non-symlink, runner-owned mode-0600 file without an extended ACL.
-Linux leases contain exactly one `QOS_LINUX_SIGNER` and one
-`QOS_LINUX_VERIFY_KEY`; macOS leases contain exactly one
-`QOS_MAC_SIGNING_IDENTITY` and one `QOS_NOTARY_KEYCHAIN_PROFILE`. Publication
+Linux leases contain exactly one `TILO_LINUX_SIGNER` and one
+`TILO_LINUX_VERIFY_KEY`; macOS leases contain exactly one
+`TILO_MAC_SIGNING_IDENTITY` and one `TILO_NOTARY_KEYCHAIN_PROFILE`. Publication
 token brokers write one non-empty token with no newline. Unknown, duplicate,
 empty, control-character, multiline, or malformed output fails the release.
 Windows applies the equivalent protected-ACL and non-reparse-point contract.
@@ -137,39 +146,46 @@ are platform-specific; public-key identities are protected variables as well.
 Private signing material and OIDC leases must never enter the repository,
 workflow environment files, or ordinary artifacts.
 
-Linux users should download `qos-release-key.asc` and
-`qos-release-key.fingerprint`, compare the complete fingerprint through an
-independent qOS-controlled channel, and then verify a download, for example:
+Linux users should download `tilo-release-key.asc` and
+`tilo-release-key.fingerprint`, compare the complete fingerprint through an
+independent Tilo-controlled channel, and then verify a download, for example:
 
 ```sh
-gpg --import qos-release-key.asc
-gpg --fingerprint "$(tr -d '[:space:]' < qos-release-key.fingerprint)"
-sha256sum --check qos-imager-linux-x86_64.AppImage.sha256
-gpg --verify qos-imager-linux-x86_64.AppImage.asc \
-  qos-imager-linux-x86_64.AppImage
+gpg --import tilo-release-key.asc
+gpg --fingerprint "$(tr -d '[:space:]' < tilo-release-key.fingerprint)"
+sha256sum --check tilo-imager-linux-x86_64.AppImage.sha256
+gpg --verify tilo-imager-linux-x86_64.AppImage.asc \
+  tilo-imager-linux-x86_64.AppImage
 ```
 
 The release attachment is the convenient key transport, not by itself the
-trust anchor: the full fingerprint must also be pinned on the qOS website or
+trust anchor: the full fingerprint must also be pinned on the Tilo website or
 another independently authenticated channel before the first release.
 
 Publishing to Homebrew and WinGet is a separate credentialed promotion after
-the signed release exists. `publish-homebrew-tap.sh` creates/updates the
-first-party `qos/homebrew-qos` tap, replaces the version, immutable base URL and
+the signed release exists. Signed binaries are published to the dedicated
+public `tilo/releases` repository, never to the private source repository. The
+tag job obtains a 5–15 minute, target-only token from
+`IMAGER_RELEASE_CREDENTIAL_BROKER`; the source job token is not accepted for
+this step. `IMAGER_PUBLIC_RELEASE_REPOSITORY` can select another pre-created
+public `OWNER/REPOSITORY`. `publish-homebrew-tap.sh` creates/updates the
+first-party `tilo/homebrew-tilo` tap, replaces the version, immutable base URL and
 release SHA-256 values, and runs strict audits. `publish-winget.sh` submits the
 generated three-file manifest to Microsoft's public community index. See
 `docs/imager-release-operations.md` for runner labels, protected variables and
 the Forgejo OIDC design for short-lived signing access.
 
-The landing-page manifest records package-channel state separately from signed
-download availability. Homebrew is marked available only after its native
+The landing-page manifest records the public release root and package-channel
+state separately from signed download availability. Homebrew is marked available only after its native
 install matrix passes. A newly opened WinGet submission is marked `submitted`,
 so the site recommends the signed setup EXE instead of showing a command that
-cannot resolve yet. Re-running the idempotent site promotion after Microsoft
-accepts the exact version detects the public manifest and changes WinGet to
-`available`.
+cannot resolve yet. The scheduled acceptance monitor checks Microsoft's exact
+version manifest every six hours with the short-lived site credential broker.
+Once accepted, it runs the same idempotent site verification/build and changes
+WinGet to `available`; transient GitHub failures remain fail-safe as
+`submitted`.
 
-Forgejo releases remain drafts while artifacts are uploaded. Publication reads
+Public Forgejo releases remain drafts while artifacts are uploaded. Publication reads
 every attachment back and compares its exact bytes, then makes the complete
 release public in one final API update. A failed upload therefore leaves a
 recoverable private draft; an already-public release is immutable and cannot be

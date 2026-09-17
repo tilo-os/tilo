@@ -8,20 +8,20 @@ import sys
 
 
 PROFILES_DIR = Path(__file__).resolve().parents[1] / "hardware/profiles"
-DEFINITION_PATH = Path("usr/lib/qos/hardware-profile-definition.json")
+DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
-PROFILE_PATH = Path("usr/lib/qos/hardware-profile.json")
+PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
-DEFAULT_TARGET_IMGREF = "code.sandbox.example/qos/qos:latest"
+DEFAULT_TARGET_IMGREF = "code.sandbox.example/qos/tilo:latest"
 
 
 def validate_target_imgref(value):
     """Only this exact repository is signature-required by the image policy."""
     if not isinstance(value, str) or not re.fullmatch(
-        r"code\.podesta\.ai/qos/qos(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
+        r"code\.podesta\.ai/qos/tilo(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
     ):
-        raise ValueError("QOS_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in the signature-required code.sandbox.example/qos/qos repository")
+        raise ValueError("TILO_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in the signature-required code.sandbox.example/qos/tilo repository")
     return value
 
 
@@ -74,7 +74,7 @@ def install_update_origin(root, override=""):
         return validate_target_imgref(override or DEFAULT_TARGET_IMGREF)
     bound = data["target_update_ref"]
     if override and override != bound:
-        raise ValueError("QOS_TARGET_IMGREF conflicts with the image-owned hardware profile update reference")
+        raise ValueError("TILO_TARGET_IMGREF conflicts with the image-owned hardware profile update reference")
     return bound
 
 

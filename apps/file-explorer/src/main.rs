@@ -35,7 +35,7 @@
 )]
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 
 use file_explorer::FileExplorerWidget;
 use taffy::prelude::*;
@@ -87,7 +87,7 @@ fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
 /// The name this replica is given, if anything has named it.
 ///
 /// `QUICK_APP_ID` is how a dev run points two instances at one shell and gets
-/// a history it can read. `QOS_USER_ID` is the session's own identity and
+/// a history it can read. `TILO_USER_ID` is the session's own identity and
 /// would be the best of both — it does not reach a sandboxed app, because the
 /// launcher builds an app's environment from an allowlist and it is not on
 /// it, so in the product neither of these answers and the actor comes from
@@ -98,7 +98,7 @@ fn named_actor(prefix: &str) -> Option<String> {
     {
         return Some(id);
     }
-    match std::env::var("QOS_USER_ID") {
+    match std::env::var("TILO_USER_ID") {
         Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
         _ => None,
     }
@@ -126,6 +126,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("thumbnails") => Some(seed_thumbnails_demo()),
             Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
             Some("history") => Some(seed_history_demo()),
+            Some("archive" | "archive-menu") => Some(seed_archive_demo()),
             _ => None,
         };
         // Audits must not inherit a developer's persisted item zoom or custom
@@ -190,7 +191,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.file-explorer", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.file-explorer", live_root)
             .open_state(open_state)
             .allowed_live_flags(&["--open-share-stdin"])
             .max_positionals(1),
@@ -242,7 +243,7 @@ fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
     let (mut state, autosave) = ui::persist::open(app_id);
     // Keep each window's actor stable and distinct for the host-owned
     // collaborative document, even though Files itself stores no UI state in
-    // it. `QUICK_APP_ID`/`QOS_USER_ID` name a known replica; a sandboxed
+    // it. `QUICK_APP_ID`/`TILO_USER_ID` name a known replica; a sandboxed
     // launch has neither, so the fallback has to be sound on its own — see
     // [`distinct_actor`].
     let app_id =
@@ -284,12 +285,12 @@ fn read_received_share_stdin(args: &[String]) -> Option<Result<String, String>> 
     })
 }
 
-/// Seed a demo workspace directory whose files carry real `user.qos.sync`
-/// extended attributes, and point `QOS_WORKSPACE_ROOTS` at it, so a `--shots
+/// Seed a demo workspace directory whose files carry real `user.tilo.sync`
+/// extended attributes, and point `TILO_WORKSPACE_ROOTS` at it, so a `--shots
 /// --scenario sync` frame exercises the genuine badge path (`read_dir_sync` →
 /// `getxattr` → `Entry.sync_state`) rather than any mock. Returns the dir.
 fn seed_sync_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("qos-files-sync-demo");
+    let dir = std::env::temp_dir().join("tilo-files-sync-demo");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     // A believable spread across the three hydration states + a subfolder.
@@ -304,17 +305,17 @@ fn seed_sync_demo() -> std::path::PathBuf {
     for (name, state) in files {
         let p = dir.join(name);
         let _ = std::fs::write(&p, b"");
-        let _ = xattr::set(&p, "user.qos.sync", state.as_bytes());
+        let _ = xattr::set(&p, "user.tilo.sync", state.as_bytes());
     }
     let _ = std::fs::create_dir_all(dir.join("shared-assets"));
     // SAFETY: called once at process startup on the main thread, before any
     // other thread exists, so there is no concurrent environment access.
-    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
+    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &dir) };
     dir
 }
 
 fn seed_history_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("qos-files-history-demo");
+    let dir = std::env::temp_dir().join("tilo-files-history-demo");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("Launch brief.md");
@@ -342,10 +343,36 @@ fn seed_history_demo() -> std::path::PathBuf {
     }))
     .unwrap_or_default();
     let _ = xattr::set(&path, file_explorer::model::HISTORY_XATTR, &history);
-    let _ = xattr::set(&path, "user.qos.sync", b"local");
+    let _ = xattr::set(&path, "user.tilo.sync", b"local");
     // SAFETY: shots seed before the app or any worker thread is constructed.
-    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
+    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &dir) };
     dir
+}
+
+/// Build a believable archive hierarchy for permanent responsive screenshots.
+/// The shot navigates the actual ZIP reader rather than injecting sample rows.
+fn seed_archive_demo() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join("tilo-files-archive-demo.zip");
+    let file = std::fs::File::create(&path)
+        .unwrap_or_else(|error| panic!("could not create archive screenshot fixture: {error}"));
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, content) in [
+        ("Photos/Coast/IMG_2048.jpg", b"photo".as_slice()),
+        ("Photos/Coast/IMG_2051.jpg", b"photo".as_slice()),
+        ("Documents/Itinerary.pdf", b"document".as_slice()),
+        ("Documents/Packing list.txt", b"list".as_slice()),
+        ("Read me.txt", b"A trip archive".as_slice()),
+    ] {
+        zip.start_file(name, options)
+            .unwrap_or_else(|error| panic!("could not add archive screenshot entry: {error}"));
+        zip.write_all(content)
+            .unwrap_or_else(|error| panic!("could not write archive screenshot entry: {error}"));
+    }
+    zip.finish()
+        .unwrap_or_else(|error| panic!("could not finish archive screenshot fixture: {error}"));
+    path
 }
 
 /// Seed a demo directory of **real** sample files — gradient images, a genuine
@@ -355,7 +382,7 @@ fn seed_history_demo() -> std::path::PathBuf {
 /// mock. A plain local directory (not a workspace root), so previews are
 /// generated client-side by the shared service. Returns the dir.
 fn seed_thumbnails_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("qos-files-thumbnails-demo");
+    let dir = std::env::temp_dir().join("tilo-files-thumbnails-demo");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
 
@@ -420,18 +447,18 @@ fn seed_thumbnails_demo() -> std::path::PathBuf {
     dir
 }
 
-/// Seed a demo **workspace** directory whose files carry real `user.qos.thumb`
-/// (host-generated preview PNG) and `user.qos.sync` extended attributes — so a
+/// Seed a demo **workspace** directory whose files carry real `user.tilo.thumb`
+/// (host-generated preview PNG) and `user.tilo.sync` extended attributes — so a
 /// `--shots --scenario thumbnails-fs` grid exercises the FS-metadata path: the
 /// file manager paints the host's gossiped preview (via the xattr), even for a
-/// file whose content is only *projected*. Sets `QOS_WORKSPACE_ROOTS`.
+/// file whose content is only *projected*. Sets `TILO_WORKSPACE_ROOTS`.
 fn seed_thumbnails_fs_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("qos-files-thumbnails-fs-demo");
+    let dir = std::env::temp_dir().join("tilo-files-thumbnails-fs-demo");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
 
     // Files whose *content* stays empty here — the preview rides entirely on the
-    // host-provided `user.qos.thumb` metadata, exactly as a peer would see a file
+    // host-provided `user.tilo.thumb` metadata, exactly as a peer would see a file
     // it has not yet downloaded. Each carries a real preview PNG + a sync state.
     let previews: [(&str, u8, &str); 5] = [
         ("Sunset over bay.png", 0, "local"),
@@ -447,17 +474,17 @@ fn seed_thumbnails_fs_demo() -> std::path::PathBuf {
         // it. Kept tiny here so it also fits the demo temp filesystem's per-xattr
         // cap (btrfs bounds a single xattr to its ~16 KiB node size; the real
         // in-memory FUSE mount allows the full 64 KiB, which HOST_EDGE targets).
-        let _ = xattr::set(&p, "user.qos.thumb", &gradient_png(112, 84, kind));
-        let _ = xattr::set(&p, "user.qos.sync", sync.as_bytes());
+        let _ = xattr::set(&p, "user.tilo.thumb", &gradient_png(112, 84, kind));
+        let _ = xattr::set(&p, "user.tilo.sync", sync.as_bytes());
     }
     // A couple of files with no host preview → sync badge + type badge.
     for (name, sync) in [("dataset.parquet", "projected"), ("notes.md", "local")] {
         let p = dir.join(name);
         let _ = std::fs::write(&p, b"");
-        let _ = xattr::set(&p, "user.qos.sync", sync.as_bytes());
+        let _ = xattr::set(&p, "user.tilo.sync", sync.as_bytes());
     }
     // SAFETY: process startup, main thread, before any other thread exists.
-    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
+    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &dir) };
     dir
 }
 
@@ -786,6 +813,9 @@ fn apply_post_layout_scenario(
         Some("history") => {
             widget.debug_open_history_demo();
         }
+        Some("archive-menu") => {
+            widget.debug_open_view_menu();
+        }
         _ => {}
     }
 }
@@ -808,10 +838,10 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=<name>` renders the shot under any named theme (e.g.
+    // `TILO_SHOTS_THEME=<name>` renders the shot under any named theme (e.g.
     // `dracula`, `gruvbox`, `catppuccin-mocha`, `light`, `high-contrast`), so
     // the same frame can be graded under every palette. Defaults to dark.
-    let theme = std::env::var("QOS_SHOTS_THEME")
+    let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|n| Theme::named(&n))
         .unwrap_or_else(Theme::dark)
@@ -820,7 +850,7 @@ fn render_shot_to_png(
         // narrow places drawer and transient status surface settle without a
         // fade/slide. Deliberately accept only an explicit opt-in value.
         .with_reduce_motion(matches!(
-            std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
+            std::env::var("TILO_SHOTS_REDUCE_MOTION").as_deref(),
             Ok("1" | "true" | "TRUE")
         ))
         .with_text_scale(text_scale);

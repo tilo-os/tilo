@@ -10,7 +10,7 @@
 //! the settings-specific row/section shapes on top of it.
 
 use ui::icons::Icon;
-use ui::widget::{Badge, Column, Container, IconWidget, Row, Spacer, Text, Widget};
+use ui::widget::{Badge, Column, Container, IconWidget, Row, Section, Spacer, Text, Widget};
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
 pub type El = Box<dyn Widget>;
@@ -20,15 +20,14 @@ pub type El = Box<dyn Widget>;
 /// not have to carry every level of hierarchy.
 pub const CARD_GAP: f32 = 20.0;
 
-/// A fixed-height empty box used to inject deliberate vertical space.
+/// A fixed-height empty box used for one-off vertical spacing.
 ///
 /// The toolkit's `Column` applies a *uniform* 12 px gap between children
 /// — and crucially, an intrinsic-height column lays out as a CSS **block**
 /// stack, where the taffy `gap` property is ignored entirely. So a plain
-/// stack of cards renders with the cards *touching*. We therefore place
-/// these explicit spacer rows between cards (and to tune the rhythm around
-/// section headers), which gives us per-gap control the `Column` API does
-/// not expose.
+/// stack of cards renders with the cards *touching*. Repeated stacks use the
+/// shared [`Section`]; this helper remains for deliberately asymmetric space
+/// around headings and other one-off compositions.
 pub fn vgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_height(px))
 }
@@ -46,15 +45,7 @@ pub fn hgap(px: f32) -> El {
 /// pattern, which renders the cards flush against each other because an
 /// intrinsic-height (block-display) column ignores the toolkit gap.
 pub fn cards(items: Vec<El>) -> El {
-    let mut col = Column::new().with_no_padding().with_intrinsic_height();
-    let last = items.len().saturating_sub(1);
-    for (i, item) in items.into_iter().enumerate() {
-        col = col.push(item);
-        if i != last {
-            col = col.push(vgap(CARD_GAP));
-        }
-    }
-    Box::new(col)
+    Box::new(Section::with_gap(items, CARD_GAP))
 }
 
 /// The unboxed heading at the start of every settings destination.
@@ -83,7 +74,7 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
 }
 
 /// A titled "card": a heading line followed by a bordered, padded surface
-/// holding `body`. The qOS grouping primitive — every panel is a stack of
+/// holding `body`. The Tilo grouping primitive — every panel is a stack of
 /// these. Delegates to the shared [`ui::widget::Card`] so every card in the OS
 /// reads identically and tracks the theme (radius/border/fill all from
 /// `Theme`); the heading sits inside the surface, above the body.
@@ -218,18 +209,8 @@ pub const ROW_GAP: f32 = 12.0;
 /// A vertical stack of pre-built rows inside a column with intrinsic
 /// height — the standard body for a card.
 ///
-/// Like [`cards`], we interleave explicit fixed-height spacers because the
-/// intrinsic-height column lays out as a block stack that ignores the
-/// toolkit's inter-child gap; without them the rows would render flush
-/// against each other.
+/// The shared [`Section`] owns the block-layout spacing workaround, so all
+/// Settings panes inherit the same row rhythm without private spacer loops.
 pub fn rows(items: Vec<El>) -> El {
-    let mut col = Column::new().with_no_padding().with_intrinsic_height();
-    let last = items.len().saturating_sub(1);
-    for (i, item) in items.into_iter().enumerate() {
-        col = col.push(item);
-        if i != last {
-            col = col.push(vgap(ROW_GAP));
-        }
-    }
-    Box::new(col)
+    Box::new(Section::with_gap(items, ROW_GAP))
 }

@@ -464,7 +464,7 @@ impl PermissionStoreBackend {
 
 fn default_path() -> PathBuf {
     let base = super::private_state_root().unwrap_or_else(|| PathBuf::from("/dev/null"));
-    base.join("qos/portal/permissions.json")
+    base.join("tilo/portal/permissions.json")
 }
 fn failed(message: &str) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(message.into())

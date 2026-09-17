@@ -202,14 +202,14 @@ files-merge-review-menu = Zusammenführung prüfen
 files-merge-review-title = Zusammenführung prüfen — { $name }
 files-merge-review-summary = Es wurden noch keine Änderungen vorgenommen
 files-merge-review-checking = Die genauen unveränderlichen Versionen werden geprüft…
-files-merge-review-checking-detail = qOS vergleicht beide Änderungen mit ihrer gemeinsamen Basis. Währenddessen wird nichts geändert.
+files-merge-review-checking-detail = Tilo vergleicht beide Änderungen mit ihrer gemeinsamen Basis. Währenddessen wird nichts geändert.
 files-merge-review-safe = Sicher zusammenführbar
 files-merge-review-needs-review = Prüfung nötig — es wird nichts zusammengeführt
 files-merge-review-unavailable = Die Zusammenführungsprüfung ist nicht verfügbar. Aktualisieren Sie die Datei und vergleichen Sie die Versionen manuell.
 files-merge-review-no-apply = Behalten Sie beide Versionen oder wählen Sie nach dem Prüfen des unveränderlichen Diffs eine Version aus.
 files-merge-review-incoming = Eingehende Version von Gerät { $device }
 files-merge-review-diff = In der Versionshistorie können Sie die beiden unveränderlichen Versionen vor der Zusammenführung vergleichen.
-files-merge-review-guard = qOS prüft die genaue Basis und beide Versionen unmittelbar vor dem Speichern erneut. Überlappen sich die Änderungen oder haben sie sich verändert, wird nichts zusammengeführt.
+files-merge-review-guard = Tilo prüft die genaue Basis und beide Versionen unmittelbar vor dem Speichern erneut. Überlappen sich die Änderungen oder haben sie sich verändert, wird nichts zusammengeführt.
 files-merge-review-undo = Die Zusammenführung erstellt einen signierten Verlaufseintrag. So können Sie eine frühere Version wiederherstellen, ohne spätere Arbeit rückgängig zu machen.
 files-merge-apply-safe = Sichere Zusammenführung anwenden
 files-merge-apply-safe-detail = Dies wird nur ausgeführt, wenn die deterministische Vorprüfung weiterhin beide Versionen sicher erhalten kann.
@@ -448,7 +448,6 @@ files-menu-add-favourite = Zu Favoriten hinzufügen
 files-menu-remove-favourite = Aus Favoriten entfernen
 files-menu-hide-hidden = Verborgene Dateien ausblenden
 files-menu-show-hidden = Verborgene Dateien anzeigen
-files-menu-show-hidden-checked = ✓ Verborgene Dateien anzeigen
 files-menu-sort-name = Nach Name sortieren
 files-menu-sort-size = Nach Größe sortieren
 files-menu-sort-type = Nach Typ sortieren
@@ -460,10 +459,26 @@ files-sort-type = Typ
 files-sort-date = Datum
 files-sort-ascending = Aufsteigend
 files-sort-descending = Absteigend
-files-menu-checked = ✓ { $label }
-files-menu-unchecked =      { $label }
 files-new-from-template = Neu: { $name }
 files-drag-items = { $count } Elemente
+
+## Archive
+files-archive-extract = Archiv entpacken…
+files-archive-extract-here = Hier entpacken
+files-archive-compress = Als ZIP komprimieren
+files-archive-select-compress = Wählen Sie Dateien oder Ordner zum Komprimieren aus
+files-archive-read-only = Archive können erst nach dem Entpacken geändert werden
+files-archive-open-after-extract = Entpacken Sie dieses Archiv, um enthaltene Dateien zu öffnen oder zu bearbeiten
+files-archive-select = Wählen Sie zum Entpacken ein ZIP-, TAR- oder TAR.GZ-Archiv aus
+files-archive-extracted =
+    { $count ->
+        [one] 1 Datei entpackt
+       *[other] { $count } Dateien entpackt
+    }
+files-archive-extracted-partial = { $count } Dateien entpackt; { $failures }
+files-archive-extract-failed = Archiv konnte nicht entpackt werden: { $error }
+files-archive-created = { $name } erstellt
+files-archive-create-failed = Archiv konnte nicht erstellt werden: { $error }
 
 ## Validierung von Dateivorgängen
 files-folder-name-empty = Ordnername darf nicht leer sein

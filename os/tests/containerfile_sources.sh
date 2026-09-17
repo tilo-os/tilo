@@ -29,7 +29,7 @@ note() { printf '[info]   %s\n' "$*"; }
 
 # Some sources are binaries a build script stages into the tree just before calling
 # podman, so they are legitimately absent from a checkout. They are exactly the paths
-# .containerignore names for that reason — os/qos-installer and friends — so that
+# .containerignore names for that reason — os/tilo-installer and friends — so that
 # file is the declaration rather than a second list here that could disagree with it.
 staged_at_build_time() {
   grep -qxF "$1" "$REPO/.containerignore" 2>/dev/null

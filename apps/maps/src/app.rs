@@ -24,13 +24,13 @@ use winit::keyboard::{Key, NamedKey};
 use ui::format::bytes as format_bytes;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::tilo_actions::{
     ActionContract, ActionFailure, ActionOutput, ActionSpec, Availability, DiscoveryScope,
     ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
     ResultSpec, RetryPolicy,
 };
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
 use ui::widget::{ContextMenu, MenuItem};
 use ui::widget::{ResourceOperationStart, Widget};
 
@@ -287,7 +287,7 @@ impl MapsApp {
                 title: "Active navigation".into(),
                 role: ui::floating_surface::FloatingRole::Navigation,
                 source: ui::floating_surface::FloatingSource::AppElement {
-                    app_id: "dev.qos.maps".into(),
+                    app_id: "dev.tilo.maps".into(),
                     element_id: "active-navigation".into(),
                     region: source_region,
                 },
@@ -1057,7 +1057,7 @@ impl MapsApp {
             doc,
             MAPS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Maps", "Maps", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Maps", "Maps", action),
         );
         MapsDoc::apply_durable(doc, &mut self.model);
     }
@@ -1073,7 +1073,7 @@ impl MapsApp {
 
     /// Populate the traffic overlay.
     ///
-    /// qOS traffic is a crowdsourced, peer-shared layer (see `plan/product.md`);
+    /// Tilo traffic is a crowdsourced, peer-shared layer (see `plan/product.md`);
     /// no such live feed is wired yet, so the LIVE app has no reports and the
     /// overlay stays empty — the map then shows "No traffic data" rather than
     /// inventing congestion. When the bundled offline cartography is loaded
@@ -5111,10 +5111,10 @@ impl Widget for MapsApp {
     /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
     /// places, the active route, and the offline regions currently in the shared
     /// document. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         if resources.is_empty() {
             resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
         }
@@ -5160,7 +5160,7 @@ impl Widget for MapsApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let mut resource = <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+        let mut resource = <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
             .or_else(|| {
                 (id == "maps.workspace")
                     .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))
@@ -7665,7 +7665,7 @@ mod tests {
                 ref app_id,
                 ref element_id,
                 ..
-            } if app_id == "dev.qos.maps" && element_id == "active-navigation"
+            } if app_id == "dev.tilo.maps" && element_id == "active-navigation"
         ));
     }
 
@@ -8094,10 +8094,8 @@ mod tests {
         feed_key(a, Key::Named(named))
     }
 
-    /// Ctrl+V pastes the system clipboard into the focused search field via the
-    /// shared `TextInput` — the hand-rolled field had no clipboard at all. Primes
-    /// the real clipboard, checks it round-trips, then drives Ctrl+V through the
-    /// real event path and asserts the pasted text reached `model.query`.
+    /// Verifies Ctrl+V from the system clipboard reaches the focused search
+    /// field through the normal event path.
     #[test]
     fn ctrl_v_pastes_into_the_search_field() {
         let mut a = app_at(1280.0, 720.0);
@@ -8284,8 +8282,6 @@ mod tests {
         assert!(a.model.selected.is_none(), "Escape deselects the place");
     }
 
-    // --- Click-dispatch coverage for previously-untested Hits ---------------
-
     /// Clearing the search (the × button's `Hit`) empties the query and results.
     #[test]
     fn clear_search_dispatch() {
@@ -8367,7 +8363,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let dir =
-            std::env::temp_dir().join(format!("qos-maps-cctest-{}-{}", std::process::id(), uniq));
+            std::env::temp_dir().join(format!("tilo-maps-cctest-{}-{}", std::process::id(), uniq));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("seed.png"), b"not-a-real-tile").unwrap();
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
@@ -8452,7 +8448,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("qos-maps-{tag}-{}-{}", std::process::id(), n))
+        std::env::temp_dir().join(format!("tilo-maps-{tag}-{}-{}", std::process::id(), n))
     }
 
     /// Starting a download records the chosen viewport as a **manageable

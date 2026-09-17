@@ -8,14 +8,8 @@
 //! <root>/layers/<name>/layer.toml metadata
 //! ```
 //!
-//! One decision here carries most of the design's feel. An ephemeral layer is
-//! *not* an invisible tmpfs overlay; it is an ordinary layer on disk that
-//! happens to be marked for deletion when its session ends. That costs a little
-//! disk during the session and buys the thing people actually want: you can
-//! change your mind at the end. You open a throwaway shell, spend twenty minutes
-//! getting a build working, and *then* decide to keep it. A design where
-//! temporary and persistent are chosen up front forces a guess about the future
-//! at the one moment you know least.
+//! An ephemeral layer is an ordinary on-disk layer marked for deletion when its
+//! session ends. It can be promoted to a kept layer before teardown.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -74,20 +68,20 @@ impl Store {
 
     /// The user's store.
     ///
-    /// `QOS_TINKER_ROOT` overrides, which is what the tests and the demo script
+    /// `TILO_TINKER_ROOT` overrides, which is what the tests and the demo script
     /// use. Otherwise layers live under the user's data directory: per-user, on
     /// writable storage, and outside any path the OS image owns.
     ///
     /// # Errors
     ///
-    /// Returns an error if `QOS_TINKER_ROOT` is unset and neither
+    /// Returns an error if `TILO_TINKER_ROOT` is unset and neither
     /// `XDG_DATA_HOME` nor `HOME` can be resolved.
     pub fn user() -> Result<Self> {
-        if let Some(explicit) = std::env::var_os("QOS_TINKER_ROOT") {
+        if let Some(explicit) = std::env::var_os("TILO_TINKER_ROOT") {
             return Ok(Store::at(PathBuf::from(explicit)));
         }
         let data = dirs_data_home().context("cannot determine a data directory for the store")?;
-        Ok(Store::at(data.join("qos/tinker")))
+        Ok(Store::at(data.join("tilo/tinker")))
     }
 
     pub fn root(&self) -> &Path {

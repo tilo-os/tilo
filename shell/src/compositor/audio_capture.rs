@@ -105,7 +105,7 @@ impl AudioCapture {
         let (sender, receiver) = sync_channel(QUEUED_CHUNKS);
         let reader = std::thread::Builder::new()
             .name(format!(
-                "qos-screen-recording-{}",
+                "tilo-screen-recording-{}",
                 source.track_name().to_lowercase().replace(' ', "-")
             ))
             .spawn(move || read_audio(stdout, &sender))
@@ -183,10 +183,10 @@ fn read_audio(mut stdout: impl Read, sender: &SyncSender<Vec<u8>>) {
 fn capture_args(source: AudioSource, target: &str) -> Vec<String> {
     let properties = match source {
         AudioSource::System => {
-            "{ stream.capture.sink = true node.name = qos-screen-recorder-desktop node.description = \"qOS desktop sound\" }"
+            "{ stream.capture.sink = true node.name = tilo-screen-recorder-desktop node.description = \"Tilo Desktop sound\" }"
         }
         AudioSource::Microphone => {
-            "{ node.name = qos-screen-recorder-microphone node.description = \"qOS microphone\" }"
+            "{ node.name = tilo-screen-recorder-microphone node.description = \"Tilo microphone\" }"
         }
     };
     vec![

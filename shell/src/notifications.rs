@@ -1,6 +1,6 @@
 //! The compositor-owned `org.freedesktop.Notifications` D-Bus service.
 //!
-//! In qOS the desktop *chrome* is owned by the compositor, and
+//! In Tilo the desktop *chrome* is owned by the compositor, and
 //! notifications are chrome too: this module makes the compositor own
 //! `org.freedesktop.Notifications` so `libnotify`/freedesktop-API calls
 //! render as OS-drawn, OS-themed toasts (see
@@ -25,7 +25,7 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -34,6 +34,9 @@ use zbus::interface;
 use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalContext;
 use zbus::zvariant::OwnedValue;
+
+use rand_core::{OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 
 use crate::portal::{CallerMap, PortalCaller};
 use crate::priority_contacts::{ContactProjection, PriorityContactRegistry};
@@ -54,6 +57,157 @@ pub enum CloseReason {
     Dismissed,
     /// 3 — closed by a `CloseNotification` call from the app.
     Closed,
+}
+
+/// Most permissive projection an application allows for one notification.
+/// The compositor's user policy is applied independently and can only make
+/// this more restrictive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationSharing {
+    #[default]
+    Full,
+    Redacted,
+    LocalOnly,
+}
+
+pub const MAX_CONTINUITY_NOTIFICATION_TTL_MS: u64 = 15 * 60 * 1_000;
+const MAX_CONTINUITY_NOTIFICATIONS: usize = 128;
+const MAX_CONTINUITY_ACTIONS: usize = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ContinuityNotificationId {
+    pub epoch: [u8; 16],
+    pub token: [u8; 16],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuityNotificationProjection {
+    pub id: ContinuityNotificationId,
+    pub app_id: String,
+    pub app_name: String,
+    pub title: String,
+    pub body: String,
+    pub body_redacted: bool,
+    pub actions: Vec<(String, String)>,
+    pub urgency: u8,
+    pub expires_unix_ms: u64,
+}
+
+impl ContinuityNotificationProjection {
+    pub fn validate_at(&self, now_unix_ms: u64) -> bool {
+        self.id.epoch != [0; 16]
+            && self.id.token != [0; 16]
+            && valid_notification_app_id(&self.app_id)
+            && !self.app_name.is_empty()
+            && self.app_name.len() <= 160
+            && self.title.len() <= 512
+            && self.body.len() <= 4_096
+            && self.urgency <= 2
+            && self.actions.len() <= MAX_CONTINUITY_ACTIONS
+            && self.expires_unix_ms > now_unix_ms
+            && self.expires_unix_ms.saturating_sub(now_unix_ms)
+                <= MAX_CONTINUITY_NOTIFICATION_TTL_MS
+            && [&self.app_name, &self.title]
+                .into_iter()
+                .all(|value| !value.chars().any(char::is_control))
+            && self
+                .body
+                .chars()
+                .all(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+            && (!self.body_redacted || self.body.is_empty())
+            && self.actions.iter().all(|(key, label)| {
+                !key.is_empty()
+                    && key.len() <= 128
+                    && label.len() <= 256
+                    && !key.chars().any(char::is_control)
+                    && !label.chars().any(char::is_control)
+            })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContinuityNotificationDraft {
+    pub dbus_id: u32,
+    pub app_id: String,
+    pub app_name: String,
+    pub title: String,
+    pub body: String,
+    pub actions: Vec<(String, String)>,
+    pub urgency: u8,
+    pub sharing: NotificationSharing,
+    pub previews_allowed: bool,
+    pub expires_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContinuityOutboundEvent {
+    Project(ContinuityNotificationProjection),
+    Retire(ContinuityNotificationId),
+}
+
+/// One notification received over an already-authenticated personal fabric
+/// route. This is intentionally a distinct type from
+/// [`ContinuityNotificationDraft`]: it has no local D-Bus id and cannot be
+/// handed back to the local projection API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteContinuityNotification {
+    pub source_device: String,
+    pub source_label: String,
+    pub projection: ContinuityNotificationProjection,
+}
+
+impl RemoteContinuityNotification {
+    /// Remote records are displayable/routable but never projectable. Keeping
+    /// this property on the type makes the loop-prevention rule available to
+    /// consumers without asking them to infer it from absent fields.
+    pub const fn is_projectable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteContinuityEvent {
+    Upsert(RemoteContinuityNotification),
+    Retire {
+        source_device: String,
+        id: ContinuityNotificationId,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuityNotificationCommand {
+    Dismiss,
+    Invoke { action_key: String },
+}
+
+/// A locally-authorized action for the runtime to send to exactly the
+/// authenticated device which authored the displayed projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContinuityCommandEgress {
+    pub target_device: String,
+    pub id: ContinuityNotificationId,
+    pub command: ContinuityNotificationCommand,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ContinuityOriginRoute {
+    dbus_id: u32,
+    action_keys: Vec<String>,
+    expires_unix_ms: u64,
+}
+
+#[derive(Default)]
+struct ContinuityState {
+    by_id: HashMap<ContinuityNotificationId, ContinuityOriginRoute>,
+    by_dbus_id: HashMap<u32, ContinuityNotificationId>,
+    outbound: VecDeque<ContinuityOutboundEvent>,
+    remote_by_key: HashMap<(String, ContinuityNotificationId), RemoteContinuityNotification>,
+    remote_order: VecDeque<(String, ContinuityNotificationId)>,
+    remote_events: VecDeque<RemoteContinuityEvent>,
+    command_egress: VecDeque<ContinuityCommandEgress>,
+    local_closes: VecDeque<u32>,
 }
 
 impl CloseReason {
@@ -87,10 +241,10 @@ pub struct IncomingNotification {
     pub urgency: u8,
     /// Workspace/app the call was attributed to (`None` if the sender couldn't be mapped — e.g. an unsandboxed caller).
     pub caller: Option<PortalCaller>,
-    /// qOS extension: exact unread count. It is ignored unless `caller` was
+    /// Tilo extension: exact unread count. It is ignored unless `caller` was
     /// launcher-verified and policy permits badges for that package.
     pub badge_count: Option<u32>,
-    /// qOS extension: sender endpoint asserted by an explicitly authorized
+    /// Tilo extension: sender endpoint asserted by an explicitly authorized
     /// communications app. The shell hashes and checks it against its private
     /// Contacts-owned registry before it can affect focus policy.
     pub contact_endpoint: Option<String>,
@@ -112,6 +266,11 @@ struct BridgeInner {
     /// service still drains `action_events`; taps receive a copy at write time
     /// so a portal backend never races it for the same toast click.
     action_taps: Vec<ActionTap>,
+    /// Restrictive sharing hints keyed by the server-assigned D-Bus id. Kept
+    /// separate from the long-standing incoming record so non-D-Bus producers
+    /// cannot accidentally opt themselves into continuity.
+    sharing: HashMap<u32, NotificationSharing>,
+    continuity: ContinuityState,
 }
 
 impl std::fmt::Debug for BridgeInner {
@@ -123,6 +282,18 @@ impl std::fmt::Debug for BridgeInner {
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
             .field("action_taps", &self.action_taps.len())
+            .field("sharing", &self.sharing.len())
+            .field("continuity_routes", &self.continuity.by_id.len())
+            .field("continuity_outbound", &self.continuity.outbound.len())
+            .field("continuity_remote", &self.continuity.remote_by_key.len())
+            .field(
+                "continuity_remote_events",
+                &self.continuity.remote_events.len(),
+            )
+            .field(
+                "continuity_local_closes",
+                &self.continuity.local_closes.len(),
+            )
             .finish()
     }
 }
@@ -135,6 +306,9 @@ pub struct NotificationBridge {
     /// Monotonic id source. The spec requires ids be non-zero and unique for
     /// the server's lifetime; `0` is reserved to mean "allocate a fresh id" in `Notify`.
     next_id: Arc<AtomicU32>,
+    /// A restart-scoped namespace. Stale routes can never address a new
+    /// notification daemon process, even if its D-Bus ids are reused.
+    continuity_epoch: [u8; 16],
 }
 
 impl Default for NotificationBridge {
@@ -145,9 +319,11 @@ impl Default for NotificationBridge {
 
 impl NotificationBridge {
     pub fn new() -> Self {
+        let continuity_epoch = random_nonzero_token();
         Self {
             inner: Arc::new(Mutex::new(BridgeInner::default())),
             next_id: Arc::new(AtomicU32::new(1)),
+            continuity_epoch,
         }
     }
 
@@ -167,6 +343,24 @@ impl NotificationBridge {
         if let Ok(mut g) = self.inner.lock() {
             g.incoming.push(n);
         }
+    }
+
+    fn push_incoming_with_sharing(&self, n: IncomingNotification, sharing: NotificationSharing) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.sharing.insert(n.dbus_id, sharing);
+            inner.incoming.push(n);
+        }
+    }
+
+    /// Consume the sender's privacy ceiling while handling its notification.
+    /// Non-D-Bus/test producers have no hint and default to ordinary sharing;
+    /// verified caller policy still decides whether projection is allowed.
+    pub fn take_sharing(&self, id: u32) -> NotificationSharing {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.sharing.remove(&id))
+            .unwrap_or_default()
     }
 
     /// app → compositor: request a notification be closed.
@@ -196,6 +390,7 @@ impl NotificationBridge {
     pub fn note_closed(&self, id: u32, reason: CloseReason) {
         if let Ok(mut g) = self.inner.lock() {
             g.closed_events.push((id, reason));
+            retire_continuity_route(&mut g, id);
         }
     }
 
@@ -239,6 +434,395 @@ impl NotificationBridge {
     pub fn pending_incoming_len(&self) -> usize {
         self.inner.lock().map_or(0, |g| g.incoming.len())
     }
+
+    /// Register a policy-approved local notification for certified-device
+    /// projection. Returns `None` for private, malformed, or expired drafts.
+    pub fn project_continuity_notification(
+        &self,
+        draft: ContinuityNotificationDraft,
+        now_unix_ms: u64,
+    ) -> Option<ContinuityNotificationId> {
+        if draft.sharing == NotificationSharing::LocalOnly
+            || draft.dbus_id == 0
+            || draft.expires_unix_ms <= now_unix_ms
+        {
+            return None;
+        }
+        let mut inner = self.inner.lock().ok()?;
+        prune_continuity_routes(&mut inner, now_unix_ms);
+        let id = inner
+            .continuity
+            .by_dbus_id
+            .get(&draft.dbus_id)
+            .copied()
+            .unwrap_or_else(|| ContinuityNotificationId {
+                epoch: self.continuity_epoch,
+                token: random_nonzero_token(),
+            });
+        let redact = !draft.previews_allowed || draft.sharing == NotificationSharing::Redacted;
+        let projection = ContinuityNotificationProjection {
+            id,
+            app_id: draft.app_id,
+            app_name: draft.app_name,
+            title: draft.title,
+            body: if redact { String::new() } else { draft.body },
+            body_redacted: redact,
+            actions: draft.actions,
+            urgency: draft.urgency,
+            expires_unix_ms: draft
+                .expires_unix_ms
+                .min(now_unix_ms.saturating_add(MAX_CONTINUITY_NOTIFICATION_TTL_MS)),
+        };
+        if !projection.validate_at(now_unix_ms) {
+            return None;
+        }
+        if !inner.continuity.by_id.contains_key(&id)
+            && inner.continuity.by_id.len() >= MAX_CONTINUITY_NOTIFICATIONS
+        {
+            return None;
+        }
+        inner.continuity.by_dbus_id.insert(draft.dbus_id, id);
+        inner.continuity.by_id.insert(
+            id,
+            ContinuityOriginRoute {
+                dbus_id: draft.dbus_id,
+                action_keys: projection
+                    .actions
+                    .iter()
+                    .map(|(key, _)| key.clone())
+                    .collect(),
+                expires_unix_ms: projection.expires_unix_ms,
+            },
+        );
+        push_bounded(
+            &mut inner.continuity.outbound,
+            ContinuityOutboundEvent::Project(projection),
+        );
+        drop(inner);
+        Some(id)
+    }
+
+    pub fn drain_continuity_outbound(&self) -> Vec<ContinuityOutboundEvent> {
+        self.inner.lock().map_or_else(
+            |_| Vec::new(),
+            |mut inner| inner.continuity.outbound.drain(..).collect(),
+        )
+    }
+
+    /// Apply a command routed back over an authenticated device-fabric lane.
+    /// Unknown, expired, restarted, or non-allowlisted routes fail closed.
+    pub fn apply_continuity_command(
+        &self,
+        id: ContinuityNotificationId,
+        command: &ContinuityNotificationCommand,
+        now_unix_ms: u64,
+    ) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        prune_continuity_routes(&mut inner, now_unix_ms);
+        let Some(route) = inner.continuity.by_id.get(&id) else {
+            return false;
+        };
+        let dbus_id = route.dbus_id;
+        if let ContinuityNotificationCommand::Invoke { action_key } = command {
+            if !route
+                .action_keys
+                .iter()
+                .any(|allowed| allowed == action_key)
+            {
+                return false;
+            }
+            inner.action_events.push((dbus_id, action_key.clone()));
+            for tap in &inner.action_taps {
+                tap(dbus_id, action_key);
+            }
+        }
+        inner.closed_events.push((dbus_id, CloseReason::Dismissed));
+        push_bounded(&mut inner.continuity.local_closes, dbus_id);
+        retire_continuity_route(&mut inner, dbus_id);
+        true
+    }
+
+    /// Admit a projection only under the authenticated transport source that
+    /// delivered it. The source is not read from sender-controlled payload.
+    /// Exact duplicates are ignored; replacements update the existing key.
+    pub fn receive_continuity_projection(
+        &self,
+        authenticated_source: &str,
+        source_label: &str,
+        projection: ContinuityNotificationProjection,
+        now_unix_ms: u64,
+    ) -> bool {
+        if !valid_continuity_source(authenticated_source, source_label)
+            || !projection.validate_at(now_unix_ms)
+        {
+            return false;
+        }
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        expire_remote_continuity(&mut inner, now_unix_ms);
+        let key = (authenticated_source.to_string(), projection.id);
+        let incoming = RemoteContinuityNotification {
+            source_device: authenticated_source.to_string(),
+            source_label: source_label.to_string(),
+            projection,
+        };
+        if inner.continuity.remote_by_key.get(&key) == Some(&incoming) {
+            return false;
+        }
+        if !inner.continuity.remote_by_key.contains_key(&key) {
+            evict_oldest_remote_if_full(&mut inner);
+            inner.continuity.remote_order.push_back(key.clone());
+        }
+        inner.continuity.remote_by_key.insert(key, incoming.clone());
+        push_bounded(
+            &mut inner.continuity.remote_events,
+            RemoteContinuityEvent::Upsert(incoming),
+        );
+        true
+    }
+
+    /// Retire only the record authored by the authenticated source. A peer
+    /// cannot remove a sibling device's notification by copying its id.
+    pub fn retire_remote_continuity(
+        &self,
+        authenticated_source: &str,
+        id: ContinuityNotificationId,
+    ) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        remove_remote_continuity(&mut inner, authenticated_source, id, true)
+    }
+
+    /// Validate a local user command against the currently displayed remote
+    /// record, then queue it for the exact authenticated origin. Action keys
+    /// are accepted only when advertised by that live projection.
+    pub fn request_remote_continuity_command(
+        &self,
+        authenticated_source: &str,
+        id: ContinuityNotificationId,
+        command: ContinuityNotificationCommand,
+        now_unix_ms: u64,
+    ) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        expire_remote_continuity(&mut inner, now_unix_ms);
+        let key = (authenticated_source.to_string(), id);
+        let Some(notification) = inner.continuity.remote_by_key.get(&key) else {
+            return false;
+        };
+        if let ContinuityNotificationCommand::Invoke { action_key } = &command
+            && !notification
+                .projection
+                .actions
+                .iter()
+                .any(|(allowed, _)| allowed == action_key)
+        {
+            return false;
+        }
+        inner.continuity.remote_by_key.remove(&key);
+        inner
+            .continuity
+            .remote_order
+            .retain(|candidate| candidate != &key);
+        push_bounded(
+            &mut inner.continuity.command_egress,
+            ContinuityCommandEgress {
+                target_device: authenticated_source.to_string(),
+                id,
+                command,
+            },
+        );
+        push_bounded(
+            &mut inner.continuity.remote_events,
+            RemoteContinuityEvent::Retire {
+                source_device: authenticated_source.to_string(),
+                id,
+            },
+        );
+        true
+    }
+
+    /// Expire remote projections even when no new fabric traffic arrives.
+    pub fn expire_remote_continuity(&self, now_unix_ms: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            expire_remote_continuity(&mut inner, now_unix_ms);
+        }
+    }
+
+    /// Drop ephemeral projections whose authenticated origin is no longer an
+    /// online certified peer. This state is deliberately not persisted: a
+    /// reconnect requires the origin to send a fresh, live projection.
+    pub fn retain_remote_continuity_sources(&self, online_sources: &HashSet<String>) -> usize {
+        let Ok(mut inner) = self.inner.lock() else {
+            return 0;
+        };
+        let stale = inner
+            .continuity
+            .remote_by_key
+            .keys()
+            .filter(|(source, _)| !online_sources.contains(source))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut removed: usize = 0;
+        for (source, id) in stale {
+            removed = removed.saturating_add(usize::from(remove_remote_continuity(
+                &mut inner, &source, id, true,
+            )));
+        }
+        removed
+    }
+
+    pub fn drain_remote_continuity_events(&self) -> Vec<RemoteContinuityEvent> {
+        self.inner.lock().map_or_else(
+            |_| Vec::new(),
+            |mut inner| inner.continuity.remote_events.drain(..).collect(),
+        )
+    }
+
+    pub fn drain_continuity_command_egress(&self) -> Vec<ContinuityCommandEgress> {
+        self.inner.lock().map_or_else(
+            |_| Vec::new(),
+            |mut inner| inner.continuity.command_egress.drain(..).collect(),
+        )
+    }
+
+    /// Local D-Bus toasts dismissed from another certified device. Chrome
+    /// removes these without emitting a second `NotificationClosed` signal.
+    pub fn drain_continuity_local_closes(&self) -> Vec<u32> {
+        self.inner.lock().map_or_else(
+            |_| Vec::new(),
+            |mut inner| inner.continuity.local_closes.drain(..).collect(),
+        )
+    }
+
+    #[cfg(test)]
+    fn remote_continuity_len(&self) -> usize {
+        self.inner
+            .lock()
+            .map_or(0, |inner| inner.continuity.remote_by_key.len())
+    }
+}
+
+fn random_nonzero_token() -> [u8; 16] {
+    let mut token = [0; 16];
+    while token == [0; 16] {
+        OsRng.fill_bytes(&mut token);
+    }
+    token
+}
+
+fn push_bounded<T>(queue: &mut VecDeque<T>, item: T) {
+    if queue.len() == MAX_CONTINUITY_NOTIFICATIONS {
+        queue.pop_front();
+    }
+    queue.push_back(item);
+}
+
+fn prune_continuity_routes(inner: &mut BridgeInner, now_unix_ms: u64) {
+    let expired = inner
+        .continuity
+        .by_id
+        .iter()
+        .filter_map(|(id, route)| (route.expires_unix_ms <= now_unix_ms).then_some(*id))
+        .collect::<Vec<_>>();
+    for id in expired {
+        if let Some(route) = inner.continuity.by_id.remove(&id) {
+            inner.continuity.by_dbus_id.remove(&route.dbus_id);
+            push_bounded(
+                &mut inner.continuity.outbound,
+                ContinuityOutboundEvent::Retire(id),
+            );
+        }
+    }
+}
+
+fn retire_continuity_route(inner: &mut BridgeInner, dbus_id: u32) {
+    let Some(id) = inner.continuity.by_dbus_id.remove(&dbus_id) else {
+        return;
+    };
+    inner.continuity.by_id.remove(&id);
+    push_bounded(
+        &mut inner.continuity.outbound,
+        ContinuityOutboundEvent::Retire(id),
+    );
+}
+
+fn valid_continuity_source(device: &str, label: &str) -> bool {
+    !device.is_empty()
+        && device.len() <= 128
+        && !device.chars().any(char::is_control)
+        && !label.is_empty()
+        && label.len() <= 128
+        && !label.chars().any(char::is_control)
+}
+
+fn remove_remote_continuity(
+    inner: &mut BridgeInner,
+    source: &str,
+    id: ContinuityNotificationId,
+    emit: bool,
+) -> bool {
+    let key = (source.to_string(), id);
+    if inner.continuity.remote_by_key.remove(&key).is_none() {
+        return false;
+    }
+    inner
+        .continuity
+        .remote_order
+        .retain(|candidate| candidate != &key);
+    if emit {
+        push_bounded(
+            &mut inner.continuity.remote_events,
+            RemoteContinuityEvent::Retire {
+                source_device: source.to_string(),
+                id,
+            },
+        );
+    }
+    true
+}
+
+fn expire_remote_continuity(inner: &mut BridgeInner, now_unix_ms: u64) {
+    let expired = inner
+        .continuity
+        .remote_by_key
+        .iter()
+        .filter_map(|((source, id), notification)| {
+            (notification.projection.expires_unix_ms <= now_unix_ms)
+                .then_some((source.clone(), *id))
+        })
+        .collect::<Vec<_>>();
+    for (source, id) in expired {
+        remove_remote_continuity(inner, &source, id, true);
+    }
+}
+
+fn evict_oldest_remote_if_full(inner: &mut BridgeInner) {
+    if inner.continuity.remote_by_key.len() < MAX_CONTINUITY_NOTIFICATIONS {
+        return;
+    }
+    while let Some((source, id)) = inner.continuity.remote_order.pop_front() {
+        if inner
+            .continuity
+            .remote_by_key
+            .remove(&(source.clone(), id))
+            .is_some()
+        {
+            push_bounded(
+                &mut inner.continuity.remote_events,
+                RemoteContinuityEvent::Retire {
+                    source_device: source,
+                    id,
+                },
+            );
+            break;
+        }
+    }
 }
 
 /// Parse the `urgency` hint (a `y`/byte); defaults to `1` (normal) when absent or the wrong type — never refuse a notification over a bad hint.
@@ -252,7 +836,7 @@ fn parse_urgency(hints: &HashMap<String, OwnedValue>) -> u8 {
 
 fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
     hints
-        .get("x-qos-badge-count")
+        .get("x-tilo-badge-count")
         .and_then(|value| value.try_clone().ok())
         .and_then(|value| u32::try_from(value).ok())
         .map(|value| value.min(9_999))
@@ -260,11 +844,27 @@ fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
 
 fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String> {
     let value = hints
-        .get("x-qos-contact-handle")?
+        .get("x-tilo-contact-handle")?
         .try_clone()
         .ok()
         .and_then(|value| String::try_from(value).ok())?;
     (value.len() <= 320 && !value.chars().any(char::is_control)).then_some(value)
+}
+
+fn parse_notification_sharing(hints: &HashMap<String, OwnedValue>) -> NotificationSharing {
+    let Some(value) = hints.get("x-tilo-device-sharing") else {
+        return NotificationSharing::Full;
+    };
+    match value
+        .try_clone()
+        .ok()
+        .and_then(|value| String::try_from(value).ok())
+        .as_deref()
+    {
+        Some("full") => NotificationSharing::Full,
+        Some("redacted") => NotificationSharing::Redacted,
+        _ => NotificationSharing::LocalOnly,
+    }
 }
 
 /// Un-flatten the spec's `[key1, label1, key2, label2, …]` actions array into `(key, label)` pairs, dropping a dangling trailing key.
@@ -333,7 +933,7 @@ impl NotificationService {
     }
 
     /// Resolve the identity used solely for ordinary notification policy.
-    /// The bool reports a foreign Flatpak fallback so wire-only qOS
+    /// The bool reports a foreign Flatpak fallback so wire-only Tilo
     /// extensions (badges/contact handles) remain unavailable to it.
     async fn resolve_notification_caller(
         &self,
@@ -342,14 +942,14 @@ impl NotificationService {
         // A palette-launched Flatpak can also appear in the generic launch
         // registry under its desktop-file id. Its sandbox runtime ID is more
         // canonical (and is what Settings exposes), so prefer it before that
-        // fallback. A qOS package is not a Flatpak and proceeds unchanged.
+        // fallback. A Tilo package is not a Flatpak and proceeds unchanged.
         if let (Some(connection), Some(sender)) = (self.connection.as_ref(), sender)
             && let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await
             && let Ok(name) = zbus::names::BusName::try_from(sender.as_str())
             && let Ok(pid) = bus.get_connection_unix_process_id(name).await
             && let Some(app_id) = verified_foreign_notification_identity(pid)
         {
-            // Foreign callers have no qOS workspace capability. This default
+            // Foreign callers have no Tilo workspace capability. This default
             // workspace is an attribution placeholder only; policy keys come
             // from the verified id, never this workspace or Notify's name.
             return (
@@ -368,7 +968,7 @@ impl NotificationService {
 /// when the process is demonstrably inside an installed Flatpak sandbox.
 ///
 /// Plain RPM/host processes are deliberately not guessed from their argv or
-/// the `Notify.app_name` field: when qOS launched one, the trusted launcher
+/// the `Notify.app_name` field: when Tilo launched one, the trusted launcher
 /// ancestry above supplies its desktop id; otherwise it remains global-policy
 /// only. Flatpak provides two independent pieces of immutable runtime
 /// metadata — its per-process `.flatpak-info` and systemd cgroup — which are
@@ -502,39 +1102,43 @@ impl NotificationService {
             "Notifications.Notify: app={app_name:?} id={id} caller_ws={:?}",
             caller.as_ref().map(|c| c.workspace_id)
         );
-        self.bridge.push_incoming(IncomingNotification {
-            dbus_id: id,
-            app_name,
-            summary,
-            body,
-            actions: pair_actions(&actions),
-            expire_timeout,
-            urgency: parse_urgency(&hints),
-            caller,
-            // Per-app banner/sound rules may use a verified Flatpak identity,
-            // but badges and contact routing are qOS-only extensions. Do not
-            // let foreign identity prove authority for either extension.
-            badge_count: (!foreign_identity)
-                .then(|| parse_badge_count(&hints))
-                .flatten(),
-            contact_endpoint: (!foreign_identity)
-                .then(|| parse_contact_endpoint(&hints))
-                .flatten(),
-        });
+        let sharing = parse_notification_sharing(&hints);
+        self.bridge.push_incoming_with_sharing(
+            IncomingNotification {
+                dbus_id: id,
+                app_name,
+                summary,
+                body,
+                actions: pair_actions(&actions),
+                expire_timeout,
+                urgency: parse_urgency(&hints),
+                caller,
+                // Per-app banner/sound rules may use a verified Flatpak identity,
+                // but badges and contact routing are Tilo-only extensions. Do not
+                // let foreign identity prove authority for either extension.
+                badge_count: (!foreign_identity)
+                    .then(|| parse_badge_count(&hints))
+                    .flatten(),
+                contact_endpoint: (!foreign_identity)
+                    .then(|| parse_contact_endpoint(&hints))
+                    .flatten(),
+            },
+            sharing,
+        );
         id
     }
 
-    /// qOS extension used by Contacts. The complete favourite projection is
+    /// Tilo extension used by Contacts. The complete favourite projection is
     /// replaced atomically; only a launcher-verified Contacts process can call
     /// it. Other apps cannot mutate the host registry even on the same UID.
-    async fn x_qos_replace_priority_contacts(
+    async fn x_tilo_replace_priority_contacts(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         contacts: Vec<(String, String, Vec<String>)>,
     ) -> zbus::fdo::Result<u32> {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = self.resolve_caller(sender.as_ref()).await;
-        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("dev.qos.contacts") {
+        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("dev.tilo.contacts") {
             return Err(zbus::fdo::Error::AccessDenied(
                 "only the verified Contacts provider may replace priority contacts".into(),
             ));
@@ -580,8 +1184,8 @@ impl NotificationService {
     )]
     fn get_server_information(&self) -> (String, String, String, String) {
         (
-            "qOS Notifications".to_string(),
-            "qOS".to_string(),
+            "Tilo Notifications".to_string(),
+            "Tilo".to_string(),
             env!("CARGO_PKG_VERSION").to_string(),
             "1.2".to_string(),
         )
@@ -710,6 +1314,291 @@ mod tests {
         assert!(c > a, "ids must be monotonic: {a} then {c}");
     }
 
+    fn continuity_draft(sharing: NotificationSharing) -> ContinuityNotificationDraft {
+        ContinuityNotificationDraft {
+            dbus_id: 7,
+            app_id: "dev.tilo.mail".into(),
+            app_name: "Mail".into(),
+            title: "Private subject".into(),
+            body: "Private body".into(),
+            actions: vec![("reply".into(), "Reply".into())],
+            urgency: 1,
+            sharing,
+            previews_allowed: true,
+            expires_unix_ms: 10_000,
+        }
+    }
+
+    #[test]
+    fn continuity_projection_redacts_and_local_only_never_registers() {
+        let bridge = NotificationBridge::new();
+        assert!(
+            bridge
+                .project_continuity_notification(
+                    continuity_draft(NotificationSharing::LocalOnly),
+                    1_000
+                )
+                .is_none()
+        );
+        let id = bridge
+            .project_continuity_notification(continuity_draft(NotificationSharing::Redacted), 1_000)
+            .unwrap();
+        let events = bridge.drain_continuity_outbound();
+        let ContinuityOutboundEvent::Project(projected) = &events[0] else {
+            panic!("expected projection");
+        };
+        assert_eq!(projected.id, id);
+        assert!(projected.body.is_empty());
+        assert!(projected.body_redacted);
+    }
+
+    #[test]
+    fn continuity_commands_are_live_allowlisted_and_retire_once() {
+        let bridge = NotificationBridge::new();
+        let id = bridge
+            .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
+            .unwrap();
+        bridge.drain_continuity_outbound();
+
+        assert!(!bridge.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Invoke {
+                action_key: "delete-everything".into(),
+            },
+            2_000,
+        ));
+        assert!(bridge.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            },
+            2_000,
+        ));
+        assert_eq!(bridge.drain_action_events(), vec![(7, "reply".into())]);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(7, CloseReason::Dismissed)]
+        );
+        assert_eq!(
+            bridge.drain_continuity_outbound(),
+            vec![ContinuityOutboundEvent::Retire(id)]
+        );
+        assert!(!bridge.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Dismiss,
+            2_001,
+        ));
+    }
+
+    #[test]
+    fn continuity_routes_expire_and_restart_epoch_invalidates_them() {
+        let first = NotificationBridge::new();
+        let id = first
+            .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
+            .unwrap();
+        assert!(!first.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Dismiss,
+            10_000,
+        ));
+
+        let restarted = NotificationBridge::new();
+        let replacement = restarted
+            .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
+            .unwrap();
+        assert_ne!(id.epoch, replacement.epoch);
+        assert!(!restarted.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Dismiss,
+            2_000,
+        ));
+    }
+
+    fn remote_projection(token: u8, title: &str) -> ContinuityNotificationProjection {
+        ContinuityNotificationProjection {
+            id: ContinuityNotificationId {
+                epoch: [1; 16],
+                token: [token; 16],
+            },
+            app_id: "dev.tilo.mail".into(),
+            app_name: "Mail".into(),
+            title: title.into(),
+            body: "Message".into(),
+            body_redacted: false,
+            actions: vec![("reply".into(), "Reply".into())],
+            urgency: 1,
+            expires_unix_ms: 10_000,
+        }
+    }
+
+    #[test]
+    fn remote_inbox_keys_identical_ids_by_authenticated_source() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(9, "Same id");
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection.clone(), 1));
+        assert!(bridge.receive_continuity_projection("tablet", "Tablet", projection, 1));
+        assert_eq!(bridge.remote_continuity_len(), 2);
+
+        assert!(bridge.retire_remote_continuity("phone", remote_projection(9, "x").id));
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        assert!(!bridge.retire_remote_continuity("attacker", remote_projection(9, "x").id));
+    }
+
+    #[test]
+    fn remote_inbox_dedupes_and_replaces_one_source_record() {
+        let bridge = NotificationBridge::new();
+        let first = remote_projection(2, "First");
+        assert!(bridge.receive_continuity_projection("phone", "Phone", first.clone(), 1));
+        assert!(!bridge.receive_continuity_projection("phone", "Phone", first.clone(), 1));
+        assert_eq!(bridge.drain_remote_continuity_events().len(), 1);
+
+        let mut replacement = first;
+        replacement.title = "Replacement".into();
+        assert!(bridge.receive_continuity_projection("phone", "Phone", replacement, 1));
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        let events = bridge.drain_remote_continuity_events();
+        let RemoteContinuityEvent::Upsert(notification) = &events[0] else {
+            panic!("expected replacement upsert");
+        };
+        assert_eq!(notification.projection.title, "Replacement");
+    }
+
+    #[test]
+    fn offline_source_is_pruned_without_retiring_online_sibling() {
+        let bridge = NotificationBridge::new();
+        let id = remote_projection(12, "Shared id").id;
+        assert!(bridge.receive_continuity_projection(
+            "phone",
+            "Phone",
+            remote_projection(12, "Phone"),
+            1,
+        ));
+        assert!(bridge.receive_continuity_projection(
+            "tablet",
+            "Tablet",
+            remote_projection(12, "Tablet"),
+            1,
+        ));
+        let _ = bridge.drain_remote_continuity_events();
+
+        assert_eq!(
+            bridge.retain_remote_continuity_sources(&HashSet::from(["tablet".to_string()])),
+            1
+        );
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        assert_eq!(
+            bridge.drain_remote_continuity_events(),
+            vec![RemoteContinuityEvent::Retire {
+                source_device: "phone".into(),
+                id,
+            }]
+        );
+        assert!(bridge.retire_remote_continuity("tablet", id));
+    }
+
+    #[test]
+    fn remote_commands_validate_live_action_and_route_exact_origin() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(3, "Action");
+        let id = projection.id;
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, 1));
+        assert!(!bridge.request_remote_continuity_command(
+            "phone",
+            id,
+            ContinuityNotificationCommand::Invoke {
+                action_key: "archive".into(),
+            },
+            2,
+        ));
+        assert!(bridge.request_remote_continuity_command(
+            "phone",
+            id,
+            ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            },
+            2,
+        ));
+        assert_eq!(
+            bridge.drain_continuity_command_egress(),
+            vec![ContinuityCommandEgress {
+                target_device: "phone".into(),
+                id,
+                command: ContinuityNotificationCommand::Invoke {
+                    action_key: "reply".into(),
+                },
+            }]
+        );
+        assert_eq!(bridge.remote_continuity_len(), 0);
+    }
+
+    #[test]
+    fn remote_expiry_and_retire_emit_local_removal() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(4, "Expires");
+        let id = projection.id;
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, 1));
+        bridge.drain_remote_continuity_events();
+        bridge.expire_remote_continuity(10_000);
+        assert_eq!(bridge.remote_continuity_len(), 0);
+        assert_eq!(
+            bridge.drain_remote_continuity_events(),
+            vec![RemoteContinuityEvent::Retire {
+                source_device: "phone".into(),
+                id,
+            }]
+        );
+    }
+
+    #[test]
+    fn remote_inbox_is_bounded_and_evicts_oldest() {
+        let bridge = NotificationBridge::new();
+        for index in 0..=MAX_CONTINUITY_NOTIFICATIONS {
+            let token = u8::try_from(index.saturating_add(1)).unwrap();
+            assert!(bridge.receive_continuity_projection(
+                "phone",
+                "Phone",
+                remote_projection(token, "Bounded"),
+                1,
+            ));
+        }
+        assert_eq!(bridge.remote_continuity_len(), MAX_CONTINUITY_NOTIFICATIONS);
+        let events = bridge.drain_remote_continuity_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RemoteContinuityEvent::Retire { id, .. } if id.token == [1; 16]
+        )));
+    }
+
+    #[test]
+    fn remote_record_carries_provenance_and_is_never_projectable() {
+        let bridge = NotificationBridge::new();
+        assert!(bridge.receive_continuity_projection(
+            "certified-phone",
+            "ada's phone",
+            remote_projection(5, "Remote"),
+            1,
+        ));
+        let events = bridge.drain_remote_continuity_events();
+        let RemoteContinuityEvent::Upsert(notification) = &events[0] else {
+            panic!("expected remote upsert");
+        };
+        assert_eq!(notification.source_device, "certified-phone");
+        assert_eq!(notification.source_label, "ada's phone");
+        assert!(!notification.is_projectable());
+    }
+
+    #[test]
+    fn malformed_sharing_hint_fails_closed() {
+        let hints = HashMap::from([(
+            "x-tilo-device-sharing".to_string(),
+            OwnedValue::from(zbus::zvariant::Str::from("surprise")),
+        )]);
+        assert_eq!(
+            parse_notification_sharing(&hints),
+            NotificationSharing::LocalOnly
+        );
+    }
+
     #[test]
     fn systemd_escape_and_scope_match_handle_flatpak_ids_without_indexing() {
         assert_eq!(systemd_escape("org.example.App"), "org.example.App");
@@ -806,11 +1695,11 @@ mod tests {
     }
 
     #[test]
-    fn qos_hints_are_bounded_before_they_reach_chrome() {
+    fn tilo_hints_are_bounded_before_they_reach_chrome() {
         let mut hints = HashMap::new();
-        hints.insert("x-qos-badge-count".into(), OwnedValue::from(u32::MAX));
+        hints.insert("x-tilo-badge-count".into(), OwnedValue::from(u32::MAX));
         hints.insert(
-            "x-qos-contact-handle".into(),
+            "x-tilo-contact-handle".into(),
             OwnedValue::from(zbus::zvariant::Str::from("ada@example.test")),
         );
         assert_eq!(parse_badge_count(&hints), Some(9_999));
@@ -819,7 +1708,7 @@ mod tests {
             Some("ada@example.test")
         );
         hints.insert(
-            "x-qos-contact-handle".into(),
+            "x-tilo-contact-handle".into(),
             OwnedValue::from(zbus::zvariant::Str::from("bad\nhandle")),
         );
         assert_eq!(parse_contact_endpoint(&hints), None);
@@ -1016,8 +1905,8 @@ mod tests {
             .body()
             .deserialize()
             .expect("deserialize server info");
-        assert_eq!(name, "qOS Notifications");
-        assert_eq!(vendor, "qOS");
+        assert_eq!(name, "Tilo Notifications");
+        assert_eq!(vendor, "Tilo");
         assert_eq!(spec, "1.2");
     }
 }

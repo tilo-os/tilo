@@ -23,7 +23,7 @@ on:
       - os/dev/install-cached-cosign.sh
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
-      - os/containers/qos-relay/Containerfile
+      - os/containers/tilo-relay/Containerfile
       - os/kernel/Containerfile
       - .forgejo/workflows/snapshot-rpms.yml
 
@@ -44,6 +44,7 @@ jobs:
             platform: linux/arm64
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -122,8 +123,8 @@ jobs:
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
-          cache-from: type=registry,ref=code.sandbox.example/qos/qos-rpms-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/qos/qos-rpms-buildcache:${{ matrix.arch }},mode=max
+          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:${{ matrix.arch }},mode=max
           provenance: false
 
       - name: Install checksum-pinned Cosign
@@ -156,6 +157,7 @@ jobs:
           if-no-files-found: error
 
   promote-snapshot:
+    timeout-minutes: 60
     needs: snapshot
     runs-on: runner
     steps:
@@ -209,8 +211,8 @@ jobs:
             echo "Snapshot pin is already current"
             exit 0
           fi
-          git config user.name "qOS CI"
-          git config user.email "ci@qos.invalid"
+          git config user.name "Tilo CI"
+          git config user.email "ci@tilo.invalid"
           git add os/rpms-snapshot.env
           git commit -m "build(os): refresh native RPM snapshot index"
           git push origin "HEAD:${GITHUB_REF_NAME}"

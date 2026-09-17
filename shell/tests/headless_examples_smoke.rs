@@ -1,15 +1,15 @@
 //! CI gate for the `scripts/headless-examples/` Python scripts. Each
 //! advertises a documented, copy-pastable flow (full-loop.py =
-//! spawn+drive+snapshot, library-demo.py = same via the `NiriosClient` API);
+//! spawn+drive+snapshot, library-demo.py = same via the `TiloClient` API);
 //! without a gate they bit-rot the next time someone tweaks the wire
 //! format or renames a `test_id`.
 //!
-//! `#[ignore]` by default: spawns a real `quick-desktop --backend headless`
+//! `#[ignore]` by default: spawns a real `tilo-desktop --backend headless`
 //! child, needing a wgpu adapter that CI runners without a
 //! software-rasterizer Mesa lack. Opt-in:
 //! ```text
-//! cargo build -p quick-desktop --bin quick-desktop
-//! cargo test -p quick-desktop --test headless_examples_smoke -- --ignored --test-threads 1
+//! cargo build -p tilo-desktop --bin tilo-desktop
+//! cargo test -p tilo-desktop --test headless_examples_smoke -- --ignored --test-threads 1
 //! ```
 
 #![allow(
@@ -37,11 +37,11 @@ fn assert_binary_exists() {
     let bin = repo_root()
         .join("target")
         .join("debug")
-        .join("quick-desktop");
+        .join("tilo-desktop");
     assert!(
         bin.exists(),
         "expected compositor binary at {} — run \
-         `cargo build -p quick-desktop --bin quick-desktop` before this test",
+         `cargo build -p tilo-desktop --bin tilo-desktop` before this test",
         bin.display()
     );
 }
@@ -82,7 +82,7 @@ fn full_loop_writes_two_pngs() {
 
 #[test]
 #[ignore = "spawns a real headless compositor; opt in with --ignored"]
-fn library_demo_writes_two_pngs_via_qos_client() {
+fn library_demo_writes_two_pngs_via_tilo_client() {
     assert_binary_exists();
     let _ = std::fs::remove_file("/tmp/library-demo-palette.png");
     let _ = std::fs::remove_file("/tmp/library-demo-final.png");

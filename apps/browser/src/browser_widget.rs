@@ -26,12 +26,12 @@ use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::tilo_actions::{
     ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec, ControlInvocation,
     EncodedAction, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
 };
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{MediaElementInfo, SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
@@ -248,7 +248,7 @@ fn required_string(value: &serde_json::Value, key: &str) -> Result<String, Strin
 fn navigation_contract() -> ActionContract {
     ActionContract {
         retry: RetryPolicy::Idempotent,
-        execution: ui::qos_actions::ExecutionMode::Background { cancellable: false },
+        execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
         result: ResultSpec::Json {
             schema: serde_json::json!({ "type": "string" }),
         },
@@ -275,13 +275,13 @@ fn local_effect_contract(tags: &[&str]) -> ActionContract {
 
 fn local_background_contract(tags: &[&str]) -> ActionContract {
     ActionContract {
-        execution: ui::qos_actions::ExecutionMode::Background { cancellable: false },
+        execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
         ..local_effect_contract(tags)
     }
 }
 
-fn local_output(message: impl Into<String>) -> ui::qos_actions::ActionOutput {
-    ui::qos_actions::ActionOutput {
+fn local_output(message: impl Into<String>) -> ui::tilo_actions::ActionOutput {
+    ui::tilo_actions::ActionOutput {
         value: Some(serde_json::Value::String(message.into())),
         resources: Vec::new(),
     }
@@ -413,12 +413,12 @@ pub struct BrowserWidget {
     /// The `WebView` content rect as window fractions `[x0,y0,x1,y1]`,
     /// published each layout for the zero-copy compositor to blit into.
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
-    resource_navigation_invocation: Option<ui::qos_actions::InvocationId>,
-    resource_navigation_result: Option<ui::qos_actions::InvocationUpdate>,
+    resource_navigation_invocation: Option<ui::tilo_actions::InvocationId>,
+    resource_navigation_result: Option<ui::tilo_actions::InvocationUpdate>,
     resource_navigation_deadline: Option<std::time::Instant>,
-    resource_pip_invocation: Option<ui::qos_actions::InvocationId>,
+    resource_pip_invocation: Option<ui::tilo_actions::InvocationId>,
     resource_pip_request: Option<u64>,
-    resource_pip_result: Option<ui::qos_actions::InvocationUpdate>,
+    resource_pip_result: Option<ui::tilo_actions::InvocationUpdate>,
     resource_pip_deadline: Option<std::time::Instant>,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
@@ -695,12 +695,12 @@ impl BrowserWidget {
             _ => {
                 self.downloads.requested(
                     "review-progress".into(),
-                    "https://example.org/qos-sdk.tar.zst".into(),
-                    "qOS-SDK.tar.zst",
+                    "https://example.org/tilo-sdk.tar.zst".into(),
+                    "Tilo-SDK.tar.zst",
                 );
                 self.downloads.destination(
                     "review-progress",
-                    "/home/alex/Downloads/qOS-SDK.tar.zst".into(),
+                    "/home/alex/Downloads/Tilo-SDK.tar.zst".into(),
                 );
                 self.downloads.progress(
                     "review-progress",
@@ -989,7 +989,7 @@ impl BrowserWidget {
     }
 
     /// Convert an address-bar value into a safe engine target. The engine is
-    /// intentionally restricted to the schemes declared in `qos-app.toml`;
+    /// intentionally restricted to the schemes declared in `tilo-app.toml`;
     /// local files and internal `WebKit` schemes must be reached through their
     /// dedicated, consented system routes instead.
     fn navigation_target(&mut self, input: &str) -> Result<String, String> {
@@ -1158,7 +1158,7 @@ impl BrowserWidget {
             title: element.label.clone(),
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.qos.browser".into(),
+                app_id: "dev.tilo.browser".into(),
                 element_id: element.element_id.clone(),
                 region,
             },
@@ -1287,7 +1287,7 @@ impl BrowserWidget {
             title,
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppRegion {
-                app_id: "dev.qos.browser".into(),
+                app_id: "dev.tilo.browser".into(),
                 region,
             },
             preferred_size: Self::preferred_pip_size(aspect),
@@ -1338,7 +1338,7 @@ impl BrowserWidget {
         };
         self.resource_pip_request = None;
         self.resource_pip_deadline = None;
-        self.resource_pip_result = Some(ui::qos_actions::InvocationUpdate::Succeeded {
+        self.resource_pip_result = Some(ui::tilo_actions::InvocationUpdate::Succeeded {
             invocation,
             output: local_output(message),
         });
@@ -1353,9 +1353,9 @@ impl BrowserWidget {
         };
         self.resource_pip_request = None;
         self.resource_pip_deadline = None;
-        self.resource_pip_result = Some(ui::qos_actions::InvocationUpdate::Failed {
+        self.resource_pip_result = Some(ui::tilo_actions::InvocationUpdate::Failed {
             invocation,
-            error: ui::qos_actions::ActionFailure {
+            error: ui::tilo_actions::ActionFailure {
                 code: code.into(),
                 message: message.into(),
                 details: None,
@@ -1577,12 +1577,24 @@ impl BrowserWidget {
                 .with_message(error)
                 .with_action("Try again")
                 .with_action_id("browser.retry");
-            Box::new(match self.unit_binding("browser.page", "reload") {
-                Some(binding) => recovery.on_action(binding),
-                // Retain the no-registry fallback for standalone widget
-                // previews; hosted Browser always supplies the action above.
-                None => recovery,
-            })
+            let recovery: Box<dyn Widget> =
+                Box::new(match self.unit_binding("browser.page", "reload") {
+                    Some(binding) => recovery.on_action(binding),
+                    // Retain the no-registry fallback for standalone widget
+                    // previews; hosted Browser always supplies the action above.
+                    None => recovery,
+                });
+            // EmptyState grows into the space it is offered. Give recovery a
+            // remaining-height pane rather than letting the outer chrome
+            // column size it at its compact intrinsic height, which otherwise
+            // makes large text shed the explanatory copy even on a tall phone.
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_gap(0.0)
+                    .with_fill_remaining_height()
+                    .push(recovery),
+            )
         } else {
             Box::new(WebView::new(self.engine.clone()).with_test_id("browser.surface"))
         };
@@ -2067,6 +2079,16 @@ impl BrowserWidget {
                             .primary(),
                         ),
                     };
+                    // `Row` fills its parent by design. Without a fixed
+                    // action slot, this nested action row claims the full
+                    // card width and leaves the flex-growing metadata column
+                    // only a word wide. Keep the desktop actions compact and
+                    // let the detail column own the remaining readable width.
+                    let action_width = match entry.status {
+                        DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => 92.0,
+                        DownloadStatus::Completed => 126.0 + 84.0 + theme.gap_standard,
+                        DownloadStatus::Failed | DownloadStatus::Cancelled => 88.0,
+                    };
                     let content: Box<dyn Widget> = if large_text {
                         Box::new(
                             Column::new()
@@ -2088,7 +2110,12 @@ impl BrowserWidget {
                                         .with_flex_grow()
                                         .with_child(details),
                                 ))
-                                .push(actions),
+                                .push(Box::new(
+                                    Container::new()
+                                        .with_no_padding()
+                                        .with_width(action_width)
+                                        .with_child(actions),
+                                )),
                         )
                     };
                     rows = rows
@@ -2215,7 +2242,13 @@ impl BrowserWidget {
                 ))
                 .push(body),
         );
-        let content = if compact_layout {
+        // Large text changes the *inside* of Library rows to keep their
+        // controls readable and reachable, but it is not a phone-width
+        // layout.  Keeping a desktop window's content measure at 200% avoids
+        // turning three short history rows into edge-to-edge slabs with vast
+        // empty space.  Only an actually compact viewport needs the fluid
+        // full-width presentation.
+        let content = if self.compact_chrome {
             content
         } else {
             Box::new(
@@ -2393,9 +2426,9 @@ impl BrowserWidget {
                     if let Some(invocation) = self.resource_navigation_invocation.take() {
                         self.resource_navigation_deadline = None;
                         self.resource_navigation_result =
-                            Some(ui::qos_actions::InvocationUpdate::Succeeded {
+                            Some(ui::tilo_actions::InvocationUpdate::Succeeded {
                                 invocation,
-                                output: ui::qos_actions::ActionOutput {
+                                output: ui::tilo_actions::ActionOutput {
                                     value: Some(serde_json::Value::String(
                                         self.current_uri.clone(),
                                     )),
@@ -2413,9 +2446,9 @@ impl BrowserWidget {
                     if let Some(invocation) = self.resource_navigation_invocation.take() {
                         self.resource_navigation_deadline = None;
                         self.resource_navigation_result =
-                            Some(ui::qos_actions::InvocationUpdate::Failed {
+                            Some(ui::tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: ui::qos_actions::ActionFailure {
+                                error: ui::tilo_actions::ActionFailure {
                                     code: "browser.navigation_failed".into(),
                                     message: error,
                                     details: Some(serde_json::json!({ "uri": uri })),
@@ -3317,7 +3350,7 @@ impl Widget for BrowserWidget {
                     id,
                     label,
                     "enabled",
-                    ui::qos_actions::ExecutionLocus::ClientLocal,
+                    ui::tilo_actions::ExecutionLocus::ClientLocal,
                     vec![ActionParam::required_owned(
                         "enabled",
                         ParamType::Boolean,
@@ -3358,7 +3391,7 @@ impl Widget for BrowserWidget {
                     id,
                     label,
                     parameter,
-                    ui::qos_actions::ExecutionLocus::ClientLocal,
+                    ui::tilo_actions::ExecutionLocus::ClientLocal,
                     vec![ActionParam::required_owned(
                         parameter,
                         ParamType::Text,
@@ -3423,7 +3456,7 @@ impl Widget for BrowserWidget {
 
     fn start_resource_operation(
         &mut self,
-        invocation: ui::qos_actions::InvocationId,
+        invocation: ui::tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -3486,7 +3519,7 @@ impl Widget for BrowserWidget {
                 BrowserOperation::RevealDownload { .. } => {
                     local_output("Downloaded file location was handed to the desktop portal.")
                 }
-                _ => ui::qos_actions::ActionOutput::default(),
+                _ => ui::tilo_actions::ActionOutput::default(),
             };
             self.perform_browser_operation(operation)?;
             let output = if is_history_pause_toggle {
@@ -3513,11 +3546,11 @@ impl Widget for BrowserWidget {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: ui::qos_actions::InvocationId,
+        invocation: ui::tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<ui::qos_actions::InvocationUpdate> {
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
         if self
             .resource_navigation_result
             .as_ref()
@@ -3540,9 +3573,9 @@ impl Widget for BrowserWidget {
             self.resource_pip_invocation = None;
             self.resource_pip_request = None;
             self.resource_pip_deadline = None;
-            return Some(ui::qos_actions::InvocationUpdate::Failed {
+            return Some(ui::tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: ui::qos_actions::ActionFailure {
+                error: ui::tilo_actions::ActionFailure {
                     code: "browser.picture_in_picture_timed_out".into(),
                     message: "Picture in Picture did not receive a media response in time.".into(),
                     details: Some(serde_json::json!({
@@ -3559,9 +3592,9 @@ impl Widget for BrowserWidget {
         {
             self.resource_navigation_invocation = None;
             self.resource_navigation_deadline = None;
-            return Some(ui::qos_actions::InvocationUpdate::Failed {
+            return Some(ui::tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: ui::qos_actions::ActionFailure {
+                error: ui::tilo_actions::ActionFailure {
                     code: "browser.navigation_timed_out".into(),
                     message: "The page did not finish loading in time.".into(),
                     details: Some(serde_json::json!({
@@ -4197,14 +4230,17 @@ mod tests {
     }
 
     fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
+        layout_with_theme(widget, width, height, &Theme::dark());
+    }
+
+    fn layout_with_theme(widget: &mut BrowserWidget, width: f32, height: f32, theme: &Theme) {
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
-        let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut tree = TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
         widget.sync(&mut state, &root);
-        let child = widget.build_layout(&mut tree, &theme, &mut nodes);
+        let child = widget.build_layout(&mut tree, theme, &mut nodes);
         widget.sync(&mut state, &root);
         let layout_root = tree
             .new_with_children(
@@ -4495,8 +4531,37 @@ mod tests {
     }
 
     #[test]
+    fn large_text_desktop_library_keeps_a_centered_reading_measure() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_library("history");
+        widget.debug_set_viewport_width(1_200);
+        layout_with_theme(
+            &mut widget,
+            1_200.0,
+            800.0,
+            &Theme::dark().with_text_scale(2.0),
+        );
+
+        let history_tab = widget.find_rect("browser.library.history").unwrap();
+        let open = widget
+            .find_rect(&format!(
+                "{}.open",
+                history_resource_id("https://www.rust-lang.org/learn")
+            ))
+            .unwrap();
+        assert!(
+            (120.0..=160.0).contains(&history_tab.x0),
+            "large text retains the desktop Library measure instead of becoming edge-to-edge"
+        );
+        assert!(
+            open.x1 < 1_080.0,
+            "large-text row actions stay inside the centered Library measure"
+        );
+    }
+
+    #[test]
     fn toolbar_surface_controls_advertise_the_action_their_labels_promise() {
-        fn address_for(widget: &BrowserWidget, control: &str) -> ui::qos_actions::ActionAddress {
+        fn address_for(widget: &BrowserWidget, control: &str) -> ui::tilo_actions::ActionAddress {
             widget
                 .control_action_bindings()
                 .into_iter()
@@ -4937,11 +5002,11 @@ mod tests {
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
         let (mut state, root) = synced(&mut w);
 
-        engine.send(WebViewCommand::Navigate("https://qos.example".into()));
+        engine.send(WebViewCommand::Navigate("https://tilo.example".into()));
         w.sync(&mut state, &root);
 
-        assert_eq!(w.address.with(Clone::clone), "https://qos.example");
-        assert_eq!(w.app_title(), "https://qos.example — test page");
+        assert_eq!(w.address.with(Clone::clone), "https://tilo.example");
+        assert_eq!(w.app_title(), "https://tilo.example — test page");
     }
 
     #[test]
@@ -5009,15 +5074,15 @@ mod tests {
         assert_eq!(navigate.params()[0].name.as_ref(), "url");
         assert_eq!(
             navigate.contract.execution,
-            ui::qos_actions::ExecutionMode::Background { cancellable: false }
+            ui::tilo_actions::ExecutionMode::Background { cancellable: false }
         );
         assert!(navigate.contract.validate_declaration().is_empty());
         assert!(
             navigate
                 .contract
                 .result
-                .validate(&ui::qos_actions::ActionOutput {
-                    value: Some(serde_json::Value::String("https://qos.example".into())),
+                .validate(&ui::tilo_actions::ActionOutput {
+                    value: Some(serde_json::Value::String("https://tilo.example".into())),
                     resources: Vec::new(),
                 })
                 .is_ok()
@@ -5037,9 +5102,9 @@ mod tests {
             OperationKind::Document
         );
         let mut args = serde_json::Map::new();
-        args.insert("url".into(), serde_json::json!("qos.example"));
+        args.insert("url".into(), serde_json::json!("tilo.example"));
         let encoded = navigate.build_json(&args).unwrap();
-        let invocation = ui::qos_actions::InvocationId::new();
+        let invocation = ui::tilo_actions::InvocationId::new();
         assert_eq!(
             w.start_resource_operation(
                 invocation,
@@ -5052,11 +5117,14 @@ mod tests {
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Accepted)
         );
-        assert_eq!(engine.current_uri().as_deref(), Some("https://qos.example"));
+        assert_eq!(
+            engine.current_uri().as_deref(),
+            Some("https://tilo.example")
+        );
         w.sync(&mut doc, &root);
         assert!(matches!(
             w.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -5081,7 +5149,7 @@ mod tests {
         assert_eq!(clear_history.kind, OperationKind::Effect);
         assert_eq!(
             clear_history.locus,
-            ui::qos_actions::ExecutionLocus::ClientLocal
+            ui::tilo_actions::ExecutionLocus::ClientLocal
         );
         assert!(
             clear_history
@@ -5099,7 +5167,7 @@ mod tests {
         );
         assert!(clear_history.contract.validate_declaration().is_empty());
 
-        let invocation = ui::qos_actions::InvocationId::new();
+        let invocation = ui::tilo_actions::InvocationId::new();
         let started = w
             .start_resource_operation(
                 invocation,
@@ -5130,7 +5198,7 @@ mod tests {
             .unwrap();
         let started = w
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
+                ui::tilo_actions::InvocationId::new(),
                 clear_site_data.kind,
                 clear_site_data.operation_type.as_deref().unwrap(),
                 &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear)
@@ -5177,7 +5245,7 @@ mod tests {
             .find(|action| action.id == "toggle-history-pause")
             .unwrap();
         assert_eq!(toggle.kind, OperationKind::Effect);
-        assert_eq!(toggle.locus, ui::qos_actions::ExecutionLocus::ClientLocal);
+        assert_eq!(toggle.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
         assert!(
             toggle
                 .contract
@@ -5190,7 +5258,7 @@ mod tests {
 
         let started = w
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
+                ui::tilo_actions::InvocationId::new(),
                 toggle.kind,
                 toggle.operation_type.as_deref().unwrap(),
                 &browser_operation_payload(&BrowserOperation::ToggleHistoryPause)
@@ -5265,7 +5333,7 @@ mod tests {
             .unwrap();
         let error = w
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
+                ui::tilo_actions::InvocationId::new(),
                 clear.kind,
                 clear.operation_type.as_deref().unwrap(),
                 &browser_operation_payload(&BrowserOperation::ClearHistory)
@@ -5304,9 +5372,9 @@ mod tests {
             .unwrap();
         assert!(matches!(
             pip.contract.execution,
-            ui::qos_actions::ExecutionMode::Background { cancellable: false }
+            ui::tilo_actions::ExecutionMode::Background { cancellable: false }
         ));
-        let invocation = ui::qos_actions::InvocationId::new();
+        let invocation = ui::tilo_actions::InvocationId::new();
         assert_eq!(
             w.start_resource_operation(
                 invocation,
@@ -5326,7 +5394,7 @@ mod tests {
                 .is_none()
         );
         w.sync(&mut doc, &root);
-        let Some(ui::qos_actions::InvocationUpdate::Succeeded { output, .. }) =
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
             w.poll_resource_operation(invocation, false, &doc, &root)
         else {
             panic!("media acceptance must terminally succeed the admitted invocation");
@@ -5335,7 +5403,7 @@ mod tests {
 
         let mut unavailable = BrowserWidget::with_engine(TestEngine::new(), true);
         let (mut doc, root) = synced(&mut unavailable);
-        let invocation = ui::qos_actions::InvocationId::new();
+        let invocation = ui::tilo_actions::InvocationId::new();
         assert!(matches!(
             unavailable
                 .start_resource_operation(
@@ -5354,7 +5422,7 @@ mod tests {
         unavailable.sync(&mut doc, &root);
         assert!(matches!(
             unavailable.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::qos_actions::InvocationUpdate::Failed { .. })
+            Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
@@ -5534,7 +5602,7 @@ mod tests {
             vec!["show", "open", "reveal"]
         );
         for action in &resource.actions {
-            assert_eq!(action.locus, ui::qos_actions::ExecutionLocus::ClientLocal);
+            assert_eq!(action.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
         }
     }
 }

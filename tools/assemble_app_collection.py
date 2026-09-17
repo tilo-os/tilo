@@ -53,7 +53,7 @@ def assemble(
     publisher = publisher_file.read_text(encoding="utf-8").strip()
     if not re.fullmatch(r"[0-9a-fA-F]{64}", publisher):
         raise ValueError("runtime bundle publisher must be a 64-hex Ed25519 key")
-    bundle_root = runtime_dir / "qos-runtime"
+    bundle_root = runtime_dir / "tilo-runtime"
     versions = sorted(
         path.name
         for path in bundle_root.iterdir()

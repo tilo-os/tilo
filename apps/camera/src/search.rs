@@ -1,21 +1,21 @@
 //! Bounded global-search index for Camera's canonical capture resources.
 //!
-//! The open resource page is intentionally small, while the retained catalog
-//! indexes the complete bounded library. Results point at the exact `open`
-//! action exported by the corresponding photo/video resource; there is no
-//! parallel search-only navigation path.
+//! The contextual resource page is intentionally small, while the retained
+//! catalog indexes the complete bounded library. Results point at the exact
+//! `open` handoff action exported by the corresponding photo/video resource;
+//! there is no parallel search-only navigation path or retired Camera preview.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use qos_actions::{ActionAddress, Resource};
+use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
 
-use crate::actions::{GalleryItem, capture_resource, capture_resource_id};
+use crate::actions::{CaptureItem, capture_resource, capture_resource_id};
 
 pub const CAMERA_SEARCH_KIND: &str = "Camera captures";
 
@@ -37,12 +37,23 @@ impl CameraSearchProvider {
         }
     }
 
-    pub fn sync(&self, items: &[GalleryItem]) {
+    pub fn sync(&self, items: &[CaptureItem]) {
         let mut resources = self
             .resources
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let next: HashSet<String> = items.iter().map(capture_resource_id).collect();
+        // An index result must always resolve to a real open handoff. Captures
+        // without a portable identity remain visible in Camera's history but
+        // are not advertised as launchable media.
+        let next: HashSet<String> = items
+            .iter()
+            .filter(|item| {
+                item.media_id
+                    .as_deref()
+                    .is_some_and(crate::media::is_media_id)
+            })
+            .map(capture_resource_id)
+            .collect();
         let stale: Vec<String> = resources
             .keys()
             .filter(|id| !next.contains(*id))
@@ -53,6 +64,13 @@ impl CameraSearchProvider {
             self.catalog.remove(&id);
         }
         for item in items {
+            if !item
+                .media_id
+                .as_deref()
+                .is_some_and(crate::media::is_media_id)
+            {
+                continue;
+            }
             let id = capture_resource_id(item);
             let media_kind = if item.is_video { "Video" } else { "Photo" };
             let result = SearchResult::for_action(
@@ -67,7 +85,7 @@ impl CameraSearchProvider {
             })
             .with_icon(Icon::Image);
             let searchable = format!(
-                "{}\0{}\0{}\0open\0share\0favorite\0delete",
+                "{}\0{}\0{}\0open",
                 item.label,
                 item.id,
                 if item.is_video {
@@ -145,12 +163,13 @@ impl SearchProvider for CameraSearchProvider {
 mod tests {
     use super::*;
 
-    fn item(id: &str, label: &str, favorite: bool) -> GalleryItem {
-        GalleryItem {
+    fn item(id: &str, label: &str, favorite: bool) -> CaptureItem {
+        CaptureItem {
             id: id.into(),
             label: label.into(),
             favorite,
             is_video: false,
+            media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
         }
     }
 

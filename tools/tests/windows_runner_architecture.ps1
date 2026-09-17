@@ -8,15 +8,15 @@ $Ast = [Management.Automation.Language.Parser]::ParseFile(
 if ($Errors.Count -ne 0) { throw 'Runner script contains syntax errors' }
 $Function = $Ast.Find({ param($Node)
     $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-    $Node.Name -eq 'Resolve-qOSWindowsRunnerLabel'
+    $Node.Name -eq 'Resolve-TiloWindowsRunnerLabel'
 }, $true)
 if (-not $Function) { throw 'Missing native architecture resolver' }
 . ([ScriptBlock]::Create($Function.Extent.Text))
-if ((Resolve-qOSWindowsRunnerLabel @(9)) -ne 'imager-windows-x86_64') { throw 'x86-64 routing failed' }
-if ((Resolve-qOSWindowsRunnerLabel @(12, 12)) -ne 'imager-windows-aarch64') { throw 'ARM64 routing failed' }
+if ((Resolve-TiloWindowsRunnerLabel @(9)) -ne 'imager-windows-x86_64') { throw 'x86-64 routing failed' }
+if ((Resolve-TiloWindowsRunnerLabel @(12, 12)) -ne 'imager-windows-aarch64') { throw 'ARM64 routing failed' }
 foreach ($Invalid in @(@(), @(0), @(9, 12))) {
     $Rejected = $false
-    try { Resolve-qOSWindowsRunnerLabel $Invalid | Out-Null } catch { $Rejected = $true }
+    try { Resolve-TiloWindowsRunnerLabel $Invalid | Out-Null } catch { $Rejected = $true }
     if (-not $Rejected) { throw 'Ambiguous or unsupported hardware was accepted' }
 }
 Write-Output 'PASS: native Windows runner labels; missing, mixed and unsupported architectures rejected.'

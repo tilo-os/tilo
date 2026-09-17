@@ -1,4 +1,4 @@
-//! Authenticator — standard qOS application entry point.
+//! Authenticator — standard Tilo application entry point.
 //!
 //! `--shots PATH` uses a deterministic sample vault. `--screen NAME` selects
 //! `add`, `add-advanced`, `add-picker`, or `empty`; the default is the account
@@ -30,7 +30,7 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-const APP_ID: &str = "dev.qos.totp";
+const APP_ID: &str = "dev.tilo.totp";
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 const SCREENS: &[&str] = &[
     "add",

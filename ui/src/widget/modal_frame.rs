@@ -1,8 +1,7 @@
 //! The one modal chrome: scrim, card, title row, close control, action row.
-//! Factored out (not a second modal widget) so retained `Widget`s
-//! ([`ModalDialog`](super::modal_dialog::ModalDialog)) and immediate-mode
-//! painters (the compositor's overlay host) share one implementation,
-//! rather than each hand-rolling a control with no focus ring or a11y name.
+//! Retained [`Widget`]s ([`ModalDialog`](super::modal_dialog::ModalDialog)) and
+//! immediate-mode painters share this implementation, including the focusable,
+//! accessible controls.
 //!
 //! The action row goes through [`Button::paint`], so a modal button *is* a
 //! `Button`.

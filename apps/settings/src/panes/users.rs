@@ -1,6 +1,6 @@
-//! Local login accounts and qOS signing identities.
+//! Local login accounts and Tilo signing identities.
 //!
-//! A Unix login account owns a home/session; it may contain several qOS
+//! A Unix login account owns a home/session; it may contain several Tilo
 //! identities (personal, work, pseudonymous). Local-account mutations go
 //! through `AccountsService` and polkit. Identity activation writes only a
 //! non-secret selector; the launcher mounts one exact record into new apps.
@@ -171,7 +171,7 @@ fn read_passwd_users(
         .collect()
 }
 
-fn users_for_display() -> Vec<DeviceUser> {
+pub(crate) fn users_for_display() -> Vec<DeviceUser> {
     let current = std::env::var("USER").ok();
     let admins = fs::read_to_string("/etc/group")
         .map(|s| admins_from_group(&s))
@@ -205,6 +205,7 @@ pub struct UsersPane {
     confirm_remove_user: Option<String>,
     confirm_remove_identity: Option<String>,
     error: Option<String>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -229,6 +230,7 @@ impl UsersPane {
             confirm_remove_user: None,
             confirm_remove_identity: None,
             error: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
@@ -252,6 +254,7 @@ impl UsersPane {
             confirm_remove_user: None,
             confirm_remove_identity: None,
             error: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
@@ -291,9 +294,9 @@ impl UsersPane {
                     .collect(),
             )
         };
-        cards.push(card("Your qOS identities", identity_rows));
+        cards.push(card("Your Tilo identities", identity_rows));
         let mut protection_rows: Vec<El> = vec![caption(
-            "Secret Service is preferred. If the desktop keyring is locked, signing pauses and asks the session to unlock it; qOS never silently copies that key into an app.",
+            "Secret Service is preferred. If the desktop keyring is locked, signing pauses and asks the session to unlock it; Tilo never silently copies that key into an app.",
         )];
         if self
             .identities
@@ -321,6 +324,15 @@ impl UsersPane {
             )]),
         ));
         crate::widgets::cards(cards)
+    }
+
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
     }
 
     fn add_form(&self) -> El {
@@ -517,6 +529,20 @@ impl UsersPane {
     }
 
     fn apply(&mut self, result: Result<(), String>) {
+        if let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
+            && token.starts_with(crate::actions::USER_OPERATION_TYPE)
+        {
+            self.operation_status.set(match &result {
+                Ok(()) => crate::actions::LocalOperationStatus::Succeeded {
+                    token,
+                    message: "User account updated.".into(),
+                },
+                Err(error) => crate::actions::LocalOperationStatus::Failed {
+                    token,
+                    message: error.clone(),
+                },
+            });
+        }
         self.error = result.err();
         self.reload();
         self.structure_dirty = true;

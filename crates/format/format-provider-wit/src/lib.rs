@@ -1,4 +1,4 @@
-//! WIT interface + shared Rust mirror types for qOS format providers.
+//! WIT interface + shared Rust mirror types for Tilo format providers.
 //!
 //! The canonical `format-provider` interface is defined in [`wit/format-provider.wit`].
 //! Guest crates compiled to `wasm32-wasip2` use `wit-bindgen` to generate Rust

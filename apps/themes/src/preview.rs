@@ -2,7 +2,7 @@
 //!
 //! This is the one widget that legitimately *constructs* a
 //! [`ui::theme::Theme`] (from the selected [`ThemeSpec`]) and renders a
-//! representative slice of the qOS widget language under it — a window
+//! representative slice of the Tilo widget language under it — a window
 //! card with a title bar, typography, buttons in every variant, a toggle
 //! / checkbox / slider, a selectable list, semantic badges and two charts.
 //! Everything pulls its colour, radius and spacing from the constructed

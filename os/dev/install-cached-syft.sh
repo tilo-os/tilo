@@ -18,10 +18,10 @@ case "$(uname -m)" in
     ;;
 esac
 
-cache_dir="${QOS_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
-QOS_GITHUB_ASSET_CACHE="$cache_dir" "$script_dir/cache-github-assets.sh" "$asset"
+cache_dir="${TILO_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
+TILO_GITHUB_ASSET_CACHE="$cache_dir" "$script_dir/cache-github-assets.sh" "$asset"
 
-tool_dir="$RUNNER_TEMP/qos-syft-tools"
+tool_dir="$RUNNER_TEMP/tilo-syft-tools"
 mkdir -p "$tool_dir"
 umask 077
 tar --extract --gzip --to-stdout --file "$cache_dir/$asset" syft > "$tool_dir/syft"

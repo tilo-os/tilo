@@ -10,15 +10,15 @@ FROM ${FEX_BUILDROOT_REF} AS build
 ARG FEX_BUILDROOT_REF
 ARG FEX_X86_SDK_REF
 ARG BUILD_JOBS=2
-COPY os/external-assets/fex-source.env /qos/os/external-assets/fex-source.env
-COPY os/dev/fetch-fex-source.sh os/dev/build-fex-payload.sh os/dev/validate-fex-payload.py os/dev/apply-fex-patches.py /qos/os/dev/
-COPY os/external-assets/fex-patches/ /qos/os/external-assets/fex-patches/
-COPY os/dev/toolchains/ /qos/os/dev/toolchains/
+COPY os/external-assets/fex-source.env /tilo/os/external-assets/fex-source.env
+COPY os/dev/fetch-fex-source.sh os/dev/build-fex-payload.sh os/dev/validate-fex-payload.py os/dev/apply-fex-patches.py /tilo/os/dev/
+COPY os/external-assets/fex-patches/ /tilo/os/external-assets/fex-patches/
+COPY os/dev/toolchains/ /tilo/os/dev/toolchains/
 RUN --network=none --mount=type=bind,from=fex-source,source=/,target=/src,ro \
     --mount=type=bind,from=x86-sdk,source=/,target=/x86-sdk,ro \
-    bash /qos/os/dev/build-fex-payload.sh
+    bash /tilo/os/dev/build-fex-payload.sh
 
 # Artifact image, not an executable OS or acceptance claim. Release promotion
-# also requires the full upstream suite and the qOS runtime/capsule tests.
+# also requires the full upstream suite and the Tilo runtime/capsule tests.
 FROM scratch
 COPY --from=build /stage/ /

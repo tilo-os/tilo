@@ -1,5 +1,5 @@
 {
-  description = "qOS collaborative desktop";
+  description = "Tilo collaborative desktop";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -11,8 +11,8 @@
       packages = forAllSystems (system:
         let pkgs = import nixpkgs { inherit system; };
         in {
-          qos-session = pkgs.callPackage ./dist/nix/package.nix { };
-          default = self.packages.${system}.qos-session;
+          tilo-session = pkgs.callPackage ./dist/nix/package.nix { };
+          default = self.packages.${system}.tilo-session;
         });
 
       checks = forAllSystems (system: {
@@ -20,10 +20,10 @@
         # each release architecture. `nix flake check --no-build` then catches
         # stale display-manager, PAM, or portal option wiring without building
         # a second system closure.
-        qos-session-module = (nixpkgs.lib.nixosSystem {
+        tilo-session-module = (nixpkgs.lib.nixosSystem {
           inherit system;
           modules = [
-            self.nixosModules.qos-session
+            self.nixosModules.tilo-session
             {
               # Supply the minimal machine shape required by a complete NixOS
               # evaluation; this check validates the session module rather
@@ -33,30 +33,30 @@
                 fsType = "tmpfs";
               };
               boot.loader.grub.devices = [ "nodev" ];
-              services.qos-session.enable = true;
+              services.tilo-session.enable = true;
               system.stateVersion = "24.11";
             }
           ];
         }).config.system.build.toplevel;
       });
 
-      nixosModules.qos-session = { config, lib, pkgs, ... }:
-        let cfg = config.services.qos-session;
+      nixosModules.tilo-session = { config, lib, pkgs, ... }:
+        let cfg = config.services.tilo-session;
         in {
-          options.services.qos-session = {
-            enable = lib.mkEnableOption "the qOS Wayland session";
+          options.services.tilo-session = {
+            enable = lib.mkEnableOption "the Tilo Wayland session";
             package = lib.mkOption {
               type = lib.types.package;
-              default = self.packages.${pkgs.system}.qos-session;
-              description = "qOS session package to install.";
+              default = self.packages.${pkgs.system}.tilo-session;
+              description = "Tilo session package to install.";
             };
           };
           config = lib.mkIf cfg.enable {
             environment.systemPackages = [ cfg.package ];
             services.displayManager.sessionPackages = [ cfg.package ];
-            environment.etc."pam.d/qos-unlock".source = "${cfg.package}/etc/pam.d/qos-unlock";
-            environment.etc."systemd/user/qos-graphical-session.target".source =
-              "${cfg.package}/share/systemd/user/qos-graphical-session.target";
+            environment.etc."pam.d/tilo-unlock".source = "${cfg.package}/etc/pam.d/tilo-unlock";
+            environment.etc."systemd/user/tilo-graphical-session.target".source =
+              "${cfg.package}/share/systemd/user/tilo-graphical-session.target";
             xdg.portal.enable = true;
             xdg.portal.extraPortals = [ cfg.package ];
           };

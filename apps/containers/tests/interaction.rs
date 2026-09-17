@@ -546,7 +546,7 @@ fn create_form_assembles_full_podman_run() {
 
 #[test]
 fn enter_distrobox_builds_terminal_running_distrobox_enter() {
-    // The inner command the qOS terminal runs must invoke `distrobox enter`.
+    // The inner command the Tilo terminal runs must invoke `distrobox enter`.
     let inner = terminal::distrobox_enter_command("my-distrobox");
     assert!(inner.contains("distrobox enter 'my-distrobox'"), "{inner}");
     // And the spawned Command must target the terminal binary with SHELL set
@@ -563,7 +563,7 @@ fn enter_distrobox_builds_terminal_running_distrobox_enter() {
         .and_then(|(_, v)| v)
         .map(|v| v.to_string_lossy().to_string())
         .expect("SHELL env points at the launcher");
-    assert!(shell.contains("qos-term-enter-my-distrobox.sh"), "{shell}");
+    assert!(shell.contains("tilo-term-enter-my-distrobox.sh"), "{shell}");
     // The launcher on disk really runs the distrobox-enter command.
     let body = std::fs::read_to_string(&shell).expect("launcher written");
     assert!(body.contains("distrobox enter 'my-distrobox'"), "{body}");
@@ -725,7 +725,7 @@ fn canonical_log_resource_opens_collaborative_detail_state() {
     assert!(
         d.app
             .invoke_resource_operation(
-                ui::qos_actions::OperationKind::View,
+                ui::tilo_actions::OperationKind::View,
                 "containers.logs",
                 &payload,
                 &d.doc,

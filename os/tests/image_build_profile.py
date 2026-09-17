@@ -11,14 +11,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_INTERCEPTED = 73
-KERNEL_PIN = "registry.invalid/qos/kernel@sha256:" + "1" * 64
-RPMS_PIN = "registry.invalid/qos/rpms@sha256:" + "2" * 64
-TARGET_REF = "code.sandbox.example/qos/qos:board-fixture"
+KERNEL_PIN = "registry.invalid/tilo/kernel@sha256:" + "1" * 64
+RPMS_PIN = "registry.invalid/tilo/rpms@sha256:" + "2" * 64
+TARGET_REF = "code.sandbox.example/qos/tilo:board-fixture"
 
 
 class ImageBuildProfileTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="qos image build test ")
+        self.tmp = tempfile.TemporaryDirectory(prefix="tilo image build test ")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.os_dir = self.root / "os"
@@ -34,14 +34,14 @@ class ImageBuildProfileTests(unittest.TestCase):
         self.write("os/hardware/profiles/lenovo-83ed.json", (REPO / "os/hardware/profiles/lenovo-83ed.json").read_text())
         self.write("os/dev/_common.sh", """\
 set -euo pipefail
-QOS_REPO="$QOS_TEST_REPO"
-QOS_OS_DIR="$QOS_REPO/os"
-QOS_OUTPUT="$QOS_OS_DIR/output"
-QOS_IMAGE="${QOS_IMAGE:-localhost/qos-fixture:latest}"
-QOS_DISK="$QOS_OUTPUT/qcow2/disk.qcow2"
-QOS_INSTALLER_IMAGE=localhost/qos-installer:fixture
-QOS_INSTALLER_OUTPUT="$QOS_OUTPUT/installer"
-QOS_INSTALLER_DISK="$QOS_INSTALLER_OUTPUT/qcow2/disk.qcow2"
+TILO_REPO="$TILO_TEST_REPO"
+TILO_OS_DIR="$TILO_REPO/os"
+TILO_OUTPUT="$TILO_OS_DIR/output"
+TILO_IMAGE="${TILO_IMAGE:-localhost/tilo-fixture:latest}"
+TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
+TILO_INSTALLER_IMAGE=localhost/tilo-installer:fixture
+TILO_INSTALLER_OUTPUT="$TILO_OUTPUT/installer"
+TILO_INSTALLER_DISK="$TILO_INSTALLER_OUTPUT/qcow2/disk.qcow2"
 msg() { printf '%s\\n' "$*" >&2; }
 die() { printf '%s\\n' "$*" >&2; exit 1; }
 """)
@@ -54,17 +54,17 @@ die() { printf '%s\\n' "$*" >&2; exit 1; }
             "os/tests/app_store.sh",
         ):
             self.write(path, "#!/bin/bash\nexit 0\n", executable=True)
-        self.write("os/base-snapshot.env", "BASE_REF=registry.invalid/qos/base:fixture\n")
+        self.write("os/base-snapshot.env", "BASE_REF=registry.invalid/tilo/base:fixture\n")
         self.write("os/rpms-snapshot.env", f"RPMS_REF={RPMS_PIN}\n")
         self.write("os/kernel-snapshot.env", f"KERNEL_RPMS_REF={KERNEL_PIN}\n")
         self.write("bin/uname", """\
 #!/bin/sh
 [ "$#" = 1 ] && [ "$1" = -m ] || exit 72
-printf '%s\\n' "$QOS_TEST_ARCH"
+printf '%s\\n' "$TILO_TEST_ARCH"
 """, executable=True)
         self.write("bin/podman", f"""\
 #!/bin/sh
-printf '%s\\0' "$@" > "$QOS_TEST_PODMAN_LOG"
+printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 [ "$1" = build ] || exit 72
 exit {BUILD_INTERCEPTED}
 """, executable=True)
@@ -75,16 +75,16 @@ exit {BUILD_INTERCEPTED}
             "HOME": str(self.root),
             "LANG": "C.UTF-8",
             "TMPDIR": str(self.root / "scratch"),
-            "QOS_TEST_REPO": str(self.root),
-            "QOS_TEST_ARCH": "aarch64",
-            "QOS_TEST_PODMAN_LOG": str(self.log),
+            "TILO_TEST_REPO": str(self.root),
+            "TILO_TEST_ARCH": "aarch64",
+            "TILO_TEST_PODMAN_LOG": str(self.log),
             "SOURCE_DATE_EPOCH": "1700000000",
-            "QOS_GENERATION": "42",
-            "QOS_WITH_BROWSER": "0",
-            "FEX_PAYLOAD_REF": "registry.invalid/qos/fex@sha256:" + "3" * 64,
-            "WINDOWS_GUEST_REF": "registry.invalid/qos/guest@sha256:" + "4" * 64,
+            "TILO_GENERATION": "42",
+            "TILO_WITH_BROWSER": "0",
+            "FEX_PAYLOAD_REF": "registry.invalid/tilo/fex@sha256:" + "3" * 64,
+            "WINDOWS_GUEST_REF": "registry.invalid/tilo/guest@sha256:" + "4" * 64,
             # Syntactically valid test-only owner key; nothing is signed or built.
-            "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY": "a" * 64,
+            "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY": "a" * 64,
         }
 
     def write(self, relative_path, content, executable=False):
@@ -126,43 +126,43 @@ exit {BUILD_INTERCEPTED}
         arguments = self.build_arguments(self.run_builder())
         self.assertEqual(arguments["KERNEL_RPMS_REF"], KERNEL_PIN)
         self.assertEqual(arguments["RPMS_REF"], RPMS_PIN)
-        self.assertEqual(arguments["QOS_HARDWARE_PROFILE"], "generic")
+        self.assertEqual(arguments["TILO_HARDWARE_PROFILE"], "generic")
         self.assertEqual(arguments["SOURCE_DATE_EPOCH"], "1700000000")
-        self.assertEqual(arguments["QOS_GENERATION"], "42")
-        self.assertEqual(arguments["QOS_WITH_BROWSER"], "0")
+        self.assertEqual(arguments["TILO_GENERATION"], "42")
+        self.assertEqual(arguments["TILO_WITH_BROWSER"], "0")
         self.assertEqual(arguments["FEX_PAYLOAD_REF"], self.env["FEX_PAYLOAD_REF"])
         self.assertEqual(arguments["WINDOWS_GUEST_REF"], self.env["WINDOWS_GUEST_REF"])
 
     def test_arm_provider_requires_both_immutable_inputs_before_build(self):
         for key in ("FEX_PAYLOAD_REF", "WINDOWS_GUEST_REF"):
-            for value in ("", "registry.invalid/qos/provider:mutable"):
+            for value in ("", "registry.invalid/tilo/provider:mutable"):
                 with self.subTest(key=key, value=value):
                     self.assert_rejected_before_build(
                         self.run_builder(**{key: value}), "Windows provider inputs are incomplete")
 
     def test_explicit_unpublished_refs_survive_loading_the_snapshot_pins(self):
-        kernel = "localhost/qos-kernel:lenovo-83ed-fixture"
-        rpms = "localhost/qos-rpms:arm64-fixture"
+        kernel = "localhost/tilo-kernel:lenovo-83ed-fixture"
+        rpms = "localhost/tilo-rpms:arm64-fixture"
         arguments = self.build_arguments(self.run_builder(KERNEL_RPMS_REF=kernel, RPMS_REF=rpms))
         self.assertEqual(arguments["KERNEL_RPMS_REF"], kernel)
         self.assertEqual(arguments["RPMS_REF"], rpms)
 
     def test_lenovo_profile_is_forwarded_with_a_native_builder_and_manifest(self):
         self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
-        arguments = self.build_arguments(self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed", QOS_TARGET_IMGREF=TARGET_REF))
-        self.assertEqual(arguments["QOS_HARDWARE_PROFILE"], "lenovo-83ed")
-        self.assertEqual(arguments["QOS_TARGET_IMGREF"], TARGET_REF)
+        arguments = self.build_arguments(self.run_builder(TILO_HARDWARE_PROFILE="lenovo-83ed", TILO_TARGET_IMGREF=TARGET_REF))
+        self.assertEqual(arguments["TILO_HARDWARE_PROFILE"], "lenovo-83ed")
+        self.assertEqual(arguments["TILO_TARGET_IMGREF"], TARGET_REF)
 
     def test_hardware_profile_requires_explicit_trusted_update_reference(self):
         self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
-        for value in ("", "registry.invalid/qos:fixture", "code.sandbox.example/qos/qos:",
-                      "code.sandbox.example/qos/qos@sha256:bad", TARGET_REF + "\n"):
+        for value in ("", "registry.invalid/tilo:fixture", "code.sandbox.example/qos/tilo:",
+                      "code.sandbox.example/qos/tilo@sha256:bad", TARGET_REF + "\n"):
             with self.subTest(value=value):
-                result = self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed", QOS_TARGET_IMGREF=value)
-                self.assert_rejected_before_build(result, "QOS_TARGET_IMGREF")
+                result = self.run_builder(TILO_HARDWARE_PROFILE="lenovo-83ed", TILO_TARGET_IMGREF=value)
+                self.assert_rejected_before_build(result, "TILO_TARGET_IMGREF")
 
     def test_unknown_profile_fails_before_build(self):
-        result = self.run_builder(QOS_HARDWARE_PROFILE="unknown-board")
+        result = self.run_builder(TILO_HARDWARE_PROFILE="unknown-board")
         self.assert_rejected_before_build(result, "unsupported hardware profile: unknown-board")
 
     def test_registered_profiles_are_not_limited_to_one_board_or_architecture(self):
@@ -172,15 +172,15 @@ exit {BUILD_INTERCEPTED}
                     "schema_version": 1, "id": "other-board", "architecture": architecture,
                     "devicetree": None, "firmware": {},
                 }))
-                result = self.run_builder(QOS_HARDWARE_PROFILE="other-board", QOS_TEST_ARCH=architecture,
-                                          QOS_TARGET_IMGREF=TARGET_REF)
-                self.assertEqual(self.build_arguments(result)["QOS_HARDWARE_PROFILE"], "other-board")
-                result = self.run_builder(QOS_HARDWARE_PROFILE="other-board", QOS_TEST_ARCH=architecture, QOS_SKIP_BUILD="1")
-                self.assert_rejected_before_build(result, "QOS_SKIP_BUILD cannot apply a hardware profile")
+                result = self.run_builder(TILO_HARDWARE_PROFILE="other-board", TILO_TEST_ARCH=architecture,
+                                          TILO_TARGET_IMGREF=TARGET_REF)
+                self.assertEqual(self.build_arguments(result)["TILO_HARDWARE_PROFILE"], "other-board")
+                result = self.run_builder(TILO_HARDWARE_PROFILE="other-board", TILO_TEST_ARCH=architecture, TILO_SKIP_BUILD="1")
+                self.assert_rejected_before_build(result, "TILO_SKIP_BUILD cannot apply a hardware profile")
 
     def test_lenovo_on_x86_builder_fails_even_when_manifest_exists(self):
         self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
-        result = self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed", QOS_TEST_ARCH="x86_64")
+        result = self.run_builder(TILO_HARDWARE_PROFILE="lenovo-83ed", TILO_TEST_ARCH="x86_64")
         self.assert_rejected_before_build(result, "lenovo-83ed requires a native aarch64 builder")
 
     def test_lenovo_requires_a_nonempty_manifest_before_build(self):
@@ -188,13 +188,13 @@ exit {BUILD_INTERCEPTED}
             with self.subTest(manifest="missing" if content is None else "empty"):
                 if content is not None:
                     self.write("os/hardware/firmware/lenovo-83ed/manifest.json", content)
-                result = self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed")
+                result = self.run_builder(TILO_HARDWARE_PROFILE="lenovo-83ed")
                 self.assert_rejected_before_build(result, "stage the lenovo-83ed firmware manifest first")
 
     def test_lenovo_profile_cannot_be_ignored_by_skipping_the_build(self):
         self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
-        result = self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed", QOS_SKIP_BUILD="1")
-        self.assert_rejected_before_build(result, "QOS_SKIP_BUILD cannot apply a hardware profile")
+        result = self.run_builder(TILO_HARDWARE_PROFILE="lenovo-83ed", TILO_SKIP_BUILD="1")
+        self.assert_rejected_before_build(result, "TILO_SKIP_BUILD cannot apply a hardware profile")
 
     def test_installer_layers_on_the_exact_machine_specific_base(self):
         self.script = self.write(
@@ -203,40 +203,40 @@ exit {BUILD_INTERCEPTED}
         )
         self.write("os/Containerfile.installer", (REPO / "os/Containerfile.installer").read_text())
         for path in (
-            "os/qos-installer", "os/dev/uki-cmdline.py",
+            "os/tilo-installer", "os/dev/uki-cmdline.py",
             "os/etc/greetd/config.toml", "os/etc/greetd/config.installer.toml",
-            "os/usr/share/qos/fixture",
+            "os/usr/share/tilo/fixture",
         ):
             self.write(path, "fixture only\n")
         disk_log = self.root / "disk-step"
         probe_log = self.root / "base-probe"
-        self.env.update(QOS_TEST_DISK_LOG=str(disk_log), QOS_TEST_PROBE_LOG=str(probe_log))
+        self.env.update(TILO_TEST_DISK_LOG=str(disk_log), TILO_TEST_PROBE_LOG=str(probe_log))
         self.write("os/dev/disk-image.sh", """\
 #!/bin/sh
-printf 'unexpected disk step\\n' > "$QOS_TEST_DISK_LOG"
+printf 'unexpected disk step\\n' > "$TILO_TEST_DISK_LOG"
 exit 72
 """, executable=True)
         self.write("bin/podman", f"""\
 #!/bin/sh
 if [ "$#" = 3 ] && [ "$1" = image ] && [ "$2" = exists ]; then
-    printf '%s\\0' "$@" > "$QOS_TEST_PROBE_LOG"
+    printf '%s\\0' "$@" > "$TILO_TEST_PROBE_LOG"
     exit 0
 fi
-printf '%s\\0' "$@" > "$QOS_TEST_PODMAN_LOG"
+printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 [ "$1" = build ] || exit 72
 exit {BUILD_INTERCEPTED}
 """, executable=True)
-        base = "localhost/qos:lenovo-83ed-reviewed"
-        arguments = self.build_arguments(self.run_builder("--no-cargo", QOS_IMAGE=base))
-        self.assertEqual(arguments["QOS_BASE_IMAGE"], base)
+        base = "localhost/tilo:lenovo-83ed-reviewed"
+        arguments = self.build_arguments(self.run_builder("--no-cargo", TILO_IMAGE=base))
+        self.assertEqual(arguments["TILO_BASE_IMAGE"], base)
         self.assertEqual(probe_log.read_bytes().decode().split("\0")[:-1], ["image", "exists", base])
         self.assertFalse(disk_log.exists(), "the intercepted build continued into disk imaging")
 
     def test_installer_containerfile_binds_from_to_the_base_argument(self):
         instructions = [line.strip() for line in (REPO / "os/Containerfile.installer").read_text().splitlines()
                         if line.strip() and not line.lstrip().startswith("#")]
-        self.assertEqual(instructions[0], "ARG QOS_BASE_IMAGE=localhost/qos:latest")
-        self.assertEqual(instructions[1], "FROM ${QOS_BASE_IMAGE}")
+        self.assertEqual(instructions[0], "ARG TILO_BASE_IMAGE=localhost/tilo:latest")
+        self.assertEqual(instructions[1], "FROM ${TILO_BASE_IMAGE}")
 
 
 if __name__ == "__main__":

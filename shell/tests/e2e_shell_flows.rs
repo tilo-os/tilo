@@ -1,7 +1,7 @@
-//! Headless end-to-end snapshot harness for nirios-shell flows. Drives the
+//! Headless end-to-end snapshot harness for tilo-shell flows. Drives the
 //! real widget tree through synthesised `winit::WindowEvent`s and a full
 //! build/layout/draw cycle (no window, no compositor), writing frames to
-//! `target/nirios-screenshots/e2e-*.png`. Captures decode to real pixels;
+//! `target/tilo-screenshots/e2e-*.png`. Captures decode to real pixels;
 //! settled decision states are checked against committed goldens.
 //!
 //! No clock test hook, so animations are driven by sleeping past
@@ -34,7 +34,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::room_activity::RoomActivityPane;
 use shell::shell::state::WorkspaceTree;
@@ -77,7 +77,7 @@ const W_U32: u32 = W as u32;
 )]
 const H_U32: u32 = H as u32;
 
-/// PNG output root, under `target/nirios-screenshots/` so it's gitignored.
+/// PNG output root, under `target/tilo-screenshots/` so it's gitignored.
 fn screenshots_dir() -> PathBuf {
     // CARGO_TARGET_DIR respects workspace overrides; default to `target/`
     // under the crate root, which `cargo test` uses.
@@ -90,7 +90,7 @@ fn screenshots_dir() -> PathBuf {
         },
         PathBuf::from,
     );
-    root.join("nirios-screenshots")
+    root.join("tilo-screenshots")
 }
 
 /// `None` when no wgpu adapter is available (catch_unwind-guarded).
@@ -129,12 +129,12 @@ impl Harness {
         // Pin the top-bar clock before the first sync — frames here are compared
         // pixel-for-pixel and a live clock would fail once a minute.
         // SAFETY: single-threaded test setup, under `TEST_LOCK`.
-        unsafe { std::env::set_var("QOS_CLOCK", "09:41") };
+        unsafe { std::env::set_var("TILO_CLOCK", "09:41") };
         let mut owned = tree.clone();
         // Rooms need recorded access, or access-reporting surfaces assert against
         // a state no user has ever been in.
         owned.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&owned);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&owned);
         // Headless snapshots must not inherit the developer machine's persisted
         // seen-frontier. That changes the activity-glance headline while leaving
         // the UI under test untouched, producing a machine- and run-dependent
@@ -222,7 +222,7 @@ impl Harness {
         }
     }
 
-    /// Unused on `nirios-shell` — the sidebar wheel swallows clicks at the
+    /// Unused on `tilo-shell` — the sidebar wheel swallows clicks at the
     /// topbar hit regions — kept for when that regression is fixed.
     #[allow(dead_code)]
     fn click(&mut self, x: f64, y: f64) {
@@ -1470,7 +1470,7 @@ fn e2e_super_k_opens_search_palette_in_live_binary_path() {
     // The concrete-type sibling of what the live binary builds — exercises the
     // real widget tree, not a hand-rolled stub.
     let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     assert!(!host.palette_visible(), "palette starts closed");
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
@@ -1488,7 +1488,7 @@ fn e2e_escape_closes_search_palette() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
 
     // Open via Super+K rather than bypassing the host's state machine, guarding
     // against a mutation-ordering regression.
@@ -1512,7 +1512,7 @@ fn e2e_ctrl_tab_cycles_tabs_without_opening_overview() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
     let before = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab;
 
@@ -1547,7 +1547,7 @@ fn e2e_super_tab_toggles_overview_in_live_binary_path() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
@@ -1572,7 +1572,7 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
         tree.workspaces.len() > 1,
         "precondition: the fixture has somewhere else to go"
     );
-    let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
 
     let super_key = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
     assert!(pump_host(

@@ -57,10 +57,10 @@ pub fn interval_from_mode_timing(clock_khz: u32, htotal: u32, vtotal: u32) -> Op
 ///
 /// Exists because the paced rate is otherwise only observable on hardware (headless has no
 /// display, a nested parent may publish no mode, a DRM run needs a free TTY), so
-/// `QOS_REFRESH_HZ=144` plus the frame trace is the only way to measure the loop's actual cadence on any machine.
+/// `TILO_REFRESH_HZ=144` plus the frame trace is the only way to measure the loop's actual cadence on any machine.
 ///
 /// Values outside the supported range are ignored (with a warning), not obeyed — a diagnostic knob, not a way to wedge the compositor.
-pub const REFRESH_HZ_ENV: &str = "QOS_REFRESH_HZ";
+pub const REFRESH_HZ_ENV: &str = "TILO_REFRESH_HZ";
 
 /// Parse [`REFRESH_HZ_ENV`]. Pure so acceptance rules are testable without touching the process environment; accepts fractional rates so a 59.94 Hz panel can be simulated.
 pub fn parse_refresh_override(raw: Option<&str>) -> Option<Duration> {
@@ -93,7 +93,7 @@ pub fn refresh_override_from_env() -> Option<Duration> {
         Some(d)
     } else {
         eprintln!(
-            "nirios compositor: ignoring {REFRESH_HZ_ENV}={raw:?} \
+            "tilo compositor: ignoring {REFRESH_HZ_ENV}={raw:?} \
              (supported range is {MIN_REFRESH_HZ}..={MAX_REFRESH_HZ} Hz)"
         );
         None

@@ -1,4 +1,4 @@
-//! `identity_flow_demo` — eyeball the Phase 8 identity ceremony.
+//! Interactive identity creation, recovery, pairing, and invitation demo.
 //!
 //! Run with:
 //!
@@ -7,7 +7,7 @@
 //! cargo run -p ui --example ui-lab -- identity_flow_demo
 //!
 //! # Persist to a directory (the demo writes identity.json on success):
-//! cargo run -p ui --example ui-lab -- identity_flow_demo --persist /tmp/qos-alice
+//! cargo run -p ui --example ui-lab -- identity_flow_demo --persist /tmp/tilo-alice
 //!
 //! # Jump to a specific screen pre-seeded with sample data:
 //! cargo run -p ui --example ui-lab -- identity_flow_demo --screen recovery_share

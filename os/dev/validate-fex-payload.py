@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the pinned qOS FEX installation layout, without executing payloads.
+"""Validate the pinned Tilo FEX installation layout, without executing payloads.
 
 This checks packaging, not functional acceptance or dependency/license completeness.
 The pinned upstream builds no i386 Vulkan guest thunk; passing does not imply it.
@@ -97,7 +97,7 @@ def validate(root):
             raise ValueError("expected nonempty object")
     except (ValueError, UnicodeError) as error:
         raise InvalidPayload(f"{metadata}: invalid thunk database") from error
-    license_root = "usr/share/licenses/qos-fex"
+    license_root = "usr/share/licenses/tilo-fex"
     record(f"{license_root}/LICENSE")
     for directory in ("usr/share/fex-emu", license_root):
         for path in sorted((root / directory).rglob("*")):

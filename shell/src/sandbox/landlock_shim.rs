@@ -299,7 +299,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
     let parsed = match ShimArgs::parse(args) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("qos-sandbox-exec: {e}");
+            eprintln!("tilo-sandbox-exec: {e}");
             std::process::exit(2);
         }
     };
@@ -318,7 +318,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         LandlockOutcome::NotEnforced | LandlockOutcome::Errored => {
             // Surface on stderr too: tracing may be filtered, and a
             // missing in-kernel layer is worth a visible line.
-            eprintln!("qos-sandbox-exec: {}", outcome.describe());
+            eprintln!("tilo-sandbox-exec: {}", outcome.describe());
             tracing::warn!("{}", outcome.describe());
         }
     }
@@ -336,12 +336,12 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 fn exec_real_command(command: &[String]) -> ! {
     // `ShimArgs::parse` guarantees a non-empty command, but guard anyway.
     let Some(program) = command.first() else {
-        eprintln!("qos-sandbox-exec: empty command");
+        eprintln!("tilo-sandbox-exec: empty command");
         std::process::exit(2);
     };
 
     let Ok(cprogram) = CString::new(program.as_bytes()) else {
-        eprintln!("qos-sandbox-exec: program path contains an interior NUL");
+        eprintln!("tilo-sandbox-exec: program path contains an interior NUL");
         std::process::exit(2);
     };
 
@@ -350,7 +350,7 @@ fn exec_real_command(command: &[String]) -> ! {
         .map(|a| CString::new(a.as_bytes()))
         .collect::<Result<Vec<_>, _>>()
     else {
-        eprintln!("qos-sandbox-exec: argument contains an interior NUL");
+        eprintln!("tilo-sandbox-exec: argument contains an interior NUL");
         std::process::exit(2);
     };
 
@@ -364,7 +364,7 @@ fn exec_real_command(command: &[String]) -> ! {
     }
 
     let err = std::io::Error::last_os_error();
-    eprintln!("qos-sandbox-exec: failed to exec {program:?}: {err}");
+    eprintln!("tilo-sandbox-exec: failed to exec {program:?}: {err}");
     std::process::exit(127);
 }
 
@@ -572,7 +572,7 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
 
         let base = std::env::temp_dir().join(format!(
-            "qos-landlock-test-{}-{}",
+            "tilo-landlock-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

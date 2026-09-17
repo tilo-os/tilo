@@ -33,7 +33,7 @@ class PayloadTests(unittest.TestCase):
             for family in families:
                 self.write(f"{directory}/lib{family}-{suffix}.so", elf(kind, machine))
         self.write("usr/share/fex-emu/ThunksDB.json", b'{"DB": {}}')
-        self.write("usr/share/licenses/qos-fex/LICENSE", b"Fixture license")
+        self.write("usr/share/licenses/tilo-fex/LICENSE", b"Fixture license")
 
     def write(self, name, data):
         path = self.root / name
@@ -88,11 +88,11 @@ class PayloadTests(unittest.TestCase):
 
     def test_inventory_output_is_not_hashed_recursively(self):
         expected = PAYLOAD.validate(self.root)
-        self.write("usr/lib/qos/fex/payload.json", b"previous inventory")
+        self.write("usr/lib/tilo/fex/payload.json", b"previous inventory")
         self.assertEqual(PAYLOAD.validate(self.root), expected)
 
     def test_empty_license_and_invalid_database_rejected(self):
-        for path, data in (("usr/share/licenses/qos-fex/LICENSE", b""),
+        for path, data in (("usr/share/licenses/tilo-fex/LICENSE", b""),
                            ("usr/share/fex-emu/ThunksDB.json", b"[]")):
             with self.subTest(path=path):
                 original = (self.root / path).read_bytes()
@@ -105,7 +105,7 @@ class PayloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as other:
             external = Path(other) / "LICENSE"
             external.write_text("outside")
-            path = self.root / "usr/share/licenses/qos-fex/LICENSE"
+            path = self.root / "usr/share/licenses/tilo-fex/LICENSE"
             path.unlink()
             try:
                 path.symlink_to(external)

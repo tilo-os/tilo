@@ -35,12 +35,12 @@ pub fn required_capability(
             )
     {
         let verb = match permission {
-            qos_actions::PermissionRequirement::None => return None,
-            qos_actions::PermissionRequirement::Read => Verb::Read,
-            qos_actions::PermissionRequirement::Comment => Verb::Comment,
-            qos_actions::PermissionRequirement::Write => Verb::Write,
-            qos_actions::PermissionRequirement::Invite => Verb::Invite,
-            qos_actions::PermissionRequirement::Admin => Verb::Admin,
+            tilo_actions::PermissionRequirement::None => return None,
+            tilo_actions::PermissionRequirement::Read => Verb::Read,
+            tilo_actions::PermissionRequirement::Comment => Verb::Comment,
+            tilo_actions::PermissionRequirement::Write => Verb::Write,
+            tilo_actions::PermissionRequirement::Invite => Verb::Invite,
+            tilo_actions::PermissionRequirement::Admin => Verb::Admin,
         };
         return Some((
             CapResource::Action {
@@ -287,12 +287,12 @@ mod tests {
     #[test]
     fn launching_an_app_is_gated_on_that_app() {
         let (cap, verb) = required_capability(
-            &resource("applications", "dev.qos.terminal"),
+            &resource("applications", "dev.tilo.terminal"),
             &ResourceKind::Application,
         )
         .expect("launching must be gated");
         assert_eq!(verb, Verb::Write);
-        assert_eq!(cap, CapResource::App("dev.qos.terminal".to_string()));
+        assert_eq!(cap, CapResource::App("dev.tilo.terminal".to_string()));
     }
 
     /// End-to-end: an owner sees gated actions, a member holding nothing

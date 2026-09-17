@@ -256,7 +256,7 @@ pub fn track_object_path(track_id: &str) -> String {
             s.push('_');
         }
     }
-    format!("/org/mpris/qos/track/{s}")
+    format!("/org/mpris/tilo/track/{s}")
 }
 
 /// The single object path both MPRIS interfaces live at.
@@ -599,7 +599,7 @@ mod imp {
         }
 
         std::thread::Builder::new()
-            .name("qos-ui-mpris".into())
+            .name("tilo-ui-mpris".into())
             .spawn(move || {
                 rt.block_on(async move {
                     let mut last = initial;
@@ -630,10 +630,10 @@ mod tests {
 
     #[test]
     fn config_builds_mpris_bus_name() {
-        let c = MprisConfig::new("qos-tube", "qOS Tube");
-        assert_eq!(c.bus_name, "org.mpris.MediaPlayer2.qos-tube");
-        assert_eq!(c.identity, "qOS Tube");
-        assert_eq!(c.desktop_entry, "qos-tube");
+        let c = MprisConfig::new("tilo-tube", "Tilo Tube");
+        assert_eq!(c.bus_name, "org.mpris.MediaPlayer2.tilo-tube");
+        assert_eq!(c.identity, "Tilo Tube");
+        assert_eq!(c.desktop_entry, "tilo-tube");
     }
 
     #[test]
@@ -643,7 +643,7 @@ mod tests {
             "/org/mpris/MediaPlayer2/TrackList/NoTrack"
         );
         let p = track_object_path("yt:abc-123");
-        assert_eq!(p, "/org/mpris/qos/track/yt_abc_123");
+        assert_eq!(p, "/org/mpris/tilo/track/yt_abc_123");
         assert!(
             p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_')
@@ -719,8 +719,8 @@ mod tests {
         };
         let root = imp::RootIface {
             cmd: cmd_tx.clone(),
-            identity: "qOS Player".into(),
-            desktop_entry: "qos-player".into(),
+            identity: "Tilo Player".into(),
+            desktop_entry: "tilo-player".into(),
         };
         let server_builder = Builder::unix_stream(server_sock)
             .server(GUID)
@@ -737,7 +737,7 @@ mod tests {
         let client_conn = client_conn.expect("client conn");
 
         let player_proxy: zbus::Proxy = zbus::proxy::Builder::new(&client_conn)
-            .destination("org.mpris.MediaPlayer2.qos-player")
+            .destination("org.mpris.MediaPlayer2.tilo-player")
             .expect("proxy destination")
             .path(OBJECT_PATH)
             .expect("proxy path")

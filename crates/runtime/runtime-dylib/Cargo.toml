@@ -4,29 +4,12 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Opt-in dynamic-library build of the qOS runtime SDK and UI toolkit. Produces libruntime_dylib.so so thin apps can link the toolkit (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
+description = "Opt-in dynamic-library build of the Tilo runtime SDK and UI toolkit. Produces libruntime_dylib.so so thin apps can link the toolkit (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
 
-# ── Why this crate exists ───────────────────────────────────────────
-# A Rust `dylib` crate-type demands `panic = "unwind"` and is
-# incompatible with fat LTO. The workspace's default `[profile.release]`
-# is `panic = "abort"` + `lto = "fat"` (see the root Cargo.toml), so we
-# CANNOT hang the dylib crate-type off `runtime` / `cli` directly — that
-# would break every normal `cargo build --release`.
-#
-# Instead this is a standalone wrapper crate whose ONLY job is to pull
-# the whole runtime SDK (`runtime` umbrella + `cli` helpers + every
-# sub-crate they reach) into one `dylib` artifact. It is:
-#   * NOT in the workspace's `default-members`, so a bare
-#     `cargo build --release` / `cargo build --release -p <app>` never
-#     touches it (proof: those builds stay `panic = "abort"`-clean).
-#   * built only under `--profile thin-app` (`panic = "unwind"`,
-#     `lto = false`), the profile thin apps compile against.
-#
-# A thin app adds `runtime-dylib` as a dependency and builds with
-# `-C prefer-dynamic --profile thin-app`. rustc then satisfies the app's
-# `runtime` / `cli` crate references out of this dylib (same SVH, same
-# build unit) and links libstd dynamically too — so the app binary holds
-# only its own code. The shared libs ship once in the runtime bundle.
+# A Rust `dylib` requires `panic = "unwind"` and is incompatible with fat LTO,
+# unlike the workspace's normal release profile. This standalone wrapper pulls
+# the runtime SDK into one dylib and is built only with the opt-in `thin-app`
+# profile; thin apps link it with `-C prefer-dynamic`.
 [lib]
 name = "runtime_dylib"
 path = "src/lib.rs"
@@ -35,32 +18,19 @@ crate-type = ["dylib"]
 [dependencies]
 runtime = { path = "../runtime" }
 cli = { path = "../cli" }
-# The UI toolkit. This is the dependency that makes the dylib worth
-# shipping: `runtime` + `cli` are a couple of hundred KB, whereas `ui`
-# drags in wgpu (Vulkan/GL backends + the naga shader compiler), vello,
-# cosmic-text (rustybuzz / swash / Unicode tables), automerge, taffy,
-# fluent and winit. Statically linked, that graph is the ~18 MB of
-# `.text` every graphical qOS app was carrying its own copy of.
-#
-# `portal` is enabled here so the shipped `.so` covers the apps that
-# open host files through the XDG portal (the word processor among
-# them). Features unify across a single cargo invocation, so an app
-# asking for a superset still resolves to this one copy; enabling it
-# here is what makes the standalone-built dylib useful on its own.
+# The UI toolkit and its rendering graph are included in the shared dylib.
+# `portal` covers apps that open host files through the XDG portal.
 ui = { path = "../../../ui", features = ["portal", "webview-adblock"] }
-# Heavy document engines used by shipped apps belong in the versioned runtime,
-# not in one qpkg. Re-exporting them gives rustc one ABI-matched provider for
-# Typst Editor's compile/render graph.
+# Heavy document engines belong in the versioned runtime rather than each qpkg.
 typst = "0.14"
 typst-render = "0.14"
 typst-pdf = "0.14"
 typst-assets = { version = "0.14", features = ["fonts"] }
 tiny-skia = "0.11"
 comemo = "0.5"
-# Versioned live-service engines used by shipped apps. Keeping the codec and
-# stream resolver here avoids making Chat and Music carry private copies while
-# still loading them only when those apps call their feature-gated paths.
-qos-callstream = { path = "../../collab/qos-callstream" }
+# Versioned live-service engines shared by shipped apps and loaded only for
+# their feature-gated paths.
+tilo-callstream = { path = "../../collab/tilo-callstream" }
 rustypipe.workspace = true
 iroh.workspace = true
 

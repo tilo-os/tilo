@@ -1,4 +1,4 @@
-//! Whole-desktop capture and H.264 handoff to `qos-projector`.
+//! Whole-desktop capture and H.264 handoff to `tilo-projector`.
 //!
 //! Capture is dormant until the Win+P controller starts a connection. Scenes
 //! are rendered at a receiver-friendly size on the compositor thread, while
@@ -8,10 +8,10 @@
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
-use qos_projector::{CaptureProfile, DisplayStreamPolicy, VideoPacket};
+use tilo_projector::{CaptureProfile, DisplayStreamPolicy, VideoPacket};
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -20,7 +20,7 @@ use vello::peniko::Color;
 use crate::collab::encoder::openh264::OpenH264Backend;
 use crate::collab::encoder::{Encoder, EncoderInit, FrameInput};
 
-const VIDEO_SOCKET_ENV: &str = "QOS_PROJECTOR_VIDEO_SOCKET";
+const VIDEO_SOCKET_ENV: &str = "TILO_PROJECTOR_VIDEO_SOCKET";
 
 struct RawFrame {
     width: u32,
@@ -29,31 +29,37 @@ struct RawFrame {
     rgba: Vec<u8>,
     fps: u32,
     bitrate_kbps: u32,
+    reset_encoder: bool,
 }
 
 struct EncoderWorker {
     tx: SyncSender<RawFrame>,
+    packets: Receiver<VideoPacket>,
 }
 
 impl EncoderWorker {
     /// Starts the encoder thread. Returns `None` — logging why — if the OS refuses to spawn
     /// it, in which case capture stays unavailable rather than panicking the compositor.
-    fn spawn(socket_path: PathBuf) -> Option<Self> {
+    fn spawn(socket_path: Option<PathBuf>) -> Option<Self> {
         let (tx, rx) = mpsc::sync_channel::<RawFrame>(1);
+        let (packet_tx, packets) = mpsc::sync_channel::<VideoPacket>(1);
         let spawned = std::thread::Builder::new()
-            .name("qos-projection-encoder".to_owned())
+            .name("tilo-projection-encoder".to_owned())
             .spawn(move || {
                 let mut stream: Option<UnixStream> = None;
                 let mut encoder: Option<OpenH264Backend> = None;
                 let mut encoder_profile = None;
                 while let Ok(frame) = rx.recv() {
-                    if stream.is_none() {
-                        match UnixStream::connect(&socket_path) {
-                            Ok(connected) => stream = Some(connected),
-                            Err(_) => continue,
-                        }
-                        // A new broker connection must begin with fresh SPS/PPS
-                        // metadata, so never carry an encoder across reconnects.
+                    if frame.reset_encoder {
+                        encoder = None;
+                        encoder_profile = None;
+                    }
+                    if stream.is_none()
+                        && let Some(socket_path) = socket_path.as_ref()
+                        && let Ok(connected) = UnixStream::connect(socket_path)
+                    {
+                        stream = Some(connected);
+                        // A new broker connection must begin with fresh SPS/PPS.
                         encoder = None;
                     }
                     let profile = (frame.width, frame.height, frame.fps, frame.bitrate_kbps);
@@ -84,12 +90,13 @@ impl EncoderWorker {
                         keyframe: stats.keyframe,
                         annex_b,
                     };
+                    let _ = packet_tx.try_send(packet.clone());
                     // The branch above either just set `stream` to `Some` or `continue`d, so
                     // this is always populated; handled rather than asserted regardless.
-                    let Some(active_stream) = stream.as_mut() else {
-                        continue;
-                    };
-                    if packet.write_to(active_stream).is_err() {
+                    if stream
+                        .as_mut()
+                        .is_some_and(|active_stream| packet.write_to(active_stream).is_err())
+                    {
                         stream = None;
                         encoder = None;
                         encoder_profile = None;
@@ -97,7 +104,7 @@ impl EncoderWorker {
                 }
             });
         match spawned {
-            Ok(_handle) => Some(Self { tx }),
+            Ok(_handle) => Some(Self { tx, packets }),
             Err(e) => {
                 tracing::warn!(
                     target: "shell::compositor::projection",
@@ -107,6 +114,10 @@ impl EncoderWorker {
                 None
             }
         }
+    }
+
+    fn take_packet(&self) -> Option<VideoPacket> {
+        self.packets.try_recv().ok()
     }
 
     fn submit(&self, frame: RawFrame) -> bool {
@@ -129,6 +140,8 @@ pub struct ProjectionCapture {
     hardware_profile: CaptureProfile,
     accepted_since_pressure: u32,
     last_profile_check: Option<Instant>,
+    personal_profile: Option<CaptureProfile>,
+    reset_encoder: bool,
 }
 
 impl Default for ProjectionCapture {
@@ -141,7 +154,7 @@ impl ProjectionCapture {
     fn new(socket_path: Option<PathBuf>) -> Self {
         let profile = DisplayStreamPolicy::default().ceiling(None);
         Self {
-            worker: socket_path.and_then(EncoderWorker::spawn),
+            worker: EncoderWorker::spawn(socket_path),
             renderer: None,
             renderer_size: (0, 0),
             started: Instant::now(),
@@ -151,7 +164,21 @@ impl ProjectionCapture {
             hardware_profile: profile,
             accepted_since_pressure: 0,
             last_profile_check: None,
+            personal_profile: None,
+            reset_encoder: false,
         }
+    }
+
+    pub fn set_personal_profile(&mut self, profile: Option<CaptureProfile>) {
+        self.personal_profile = profile;
+    }
+
+    pub fn request_keyframe(&mut self) {
+        self.reset_encoder = true;
+    }
+
+    pub fn take_packet(&self) -> Option<VideoPacket> {
+        self.worker.as_ref().and_then(EncoderWorker::take_packet)
     }
 
     /// Render and queue a desktop scene. Returns `true` when a frame was
@@ -174,7 +201,10 @@ impl ProjectionCapture {
             }
             self.last_profile_check = Some(now);
         }
-        let effective_profile = clamp_profile(self.hardware_profile, self.profile);
+        let ceiling = self.personal_profile.map_or(self.profile, |personal| {
+            clamp_profile(self.profile, personal)
+        });
+        let effective_profile = clamp_profile(self.hardware_profile, ceiling);
         let frame_interval = Duration::from_secs_f64(1.0 / f64::from(effective_profile.fps.max(1)));
         if self
             .last_frame
@@ -205,6 +235,7 @@ impl ProjectionCapture {
             rgba,
             fps: effective_profile.fps,
             bitrate_kbps: effective_profile.bitrate_kbps,
+            reset_encoder: std::mem::take(&mut self.reset_encoder),
         });
         self.last_frame = Some(now);
         if accepted {
@@ -249,11 +280,11 @@ fn raise_profile(value: CaptureProfile, ceiling: CaptureProfile) -> CaptureProfi
 }
 
 fn default_profile_path() -> Option<PathBuf> {
-    std::env::var_os("QOS_PROJECTOR_PROFILE")
+    std::env::var_os("TILO_PROJECTOR_PROFILE")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| Path::new(&dir).join("qos-projector/capture-profile.json"))
+                .map(|dir| Path::new(&dir).join("tilo-projector/capture-profile.json"))
         })
 }
 
@@ -262,7 +293,7 @@ fn default_socket_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| Path::new(&dir).join("qos-projector/video.sock"))
+                .map(|dir| Path::new(&dir).join("tilo-projector/video.sock"))
         })
 }
 
@@ -330,7 +361,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp runtime dir");
         let socket = dir.path().join("video.sock");
         let listener = UnixListener::bind(&socket).expect("fake broker socket");
-        let worker = EncoderWorker::spawn(socket).expect("encoder worker should start");
+        let worker = EncoderWorker::spawn(Some(socket)).expect("encoder worker should start");
         assert!(worker.submit(RawFrame {
             width: 64,
             height: 64,
@@ -338,6 +369,7 @@ mod tests {
             rgba: vec![0x44; 64 * 64 * 4],
             fps: 30,
             bitrate_kbps: 2_000,
+            reset_encoder: false,
         }));
         let (mut stream, _) = listener.accept().expect("encoder connection");
         stream

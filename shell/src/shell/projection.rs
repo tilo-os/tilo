@@ -5,7 +5,7 @@
 //! Google Cast, `AirPlay` and `FCast` have different discovery and authentication
 //! handshakes, but the UI must not grow four subtly different connection flows.
 //!
-//! The production integration point is `/usr/libexec/qos-projector`. It speaks
+//! The production integration point is `/usr/libexec/tilo-projector`. It speaks
 //! newline-free JSON on stdout for discovery and receives one protocol-neutral
 //! connection request. Tests replace it with an in-memory backend, so every state
 //! transition is exercised without pretending a receiver exists.
@@ -14,7 +14,7 @@ use std::fmt;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-pub use qos_projector::{
+pub use tilo_projector::{
     DisplayResolutionLimit, DisplayStreamPolicy, ProjectionDevice, ProjectionMode,
     ProjectionOptions, ProjectionProtocol,
 };
@@ -66,8 +66,8 @@ pub struct SystemProjectionBackend {
 impl Default for SystemProjectionBackend {
     fn default() -> Self {
         Self {
-            helper: std::env::var("QOS_PROJECTOR_HELPER")
-                .unwrap_or_else(|_| "/usr/libexec/qos-projector".into()),
+            helper: std::env::var("TILO_PROJECTOR_HELPER")
+                .unwrap_or_else(|_| "/usr/libexec/tilo-projector".into()),
         }
     }
 }
@@ -83,10 +83,10 @@ impl SystemProjectionBackend {
         let mut command = Command::new(&self.helper);
         command.args(args);
         if let Some(credential) = credential {
-            command.env("QOS_PROJECTION_CREDENTIAL", credential);
+            command.env("TILO_PROJECTION_CREDENTIAL", credential);
         }
         command.output().map_err(|e| {
-            format!("Projection service is unavailable ({e}). Check the qOS projector service.")
+            format!("Projection service is unavailable ({e}). Check the Tilo projector service.")
         })
     }
 
@@ -249,7 +249,7 @@ impl ProjectionController {
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let spawned = std::thread::Builder::new()
-            .name("qos-projection".into())
+            .name("tilo-projection".into())
             .spawn(move || {
                 while let Ok(command) = command_rx.recv() {
                     let event = match command {

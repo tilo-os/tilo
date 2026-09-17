@@ -6,8 +6,8 @@ FROM ${WINE_BUILDROOT_REF} AS build
 ARG WINE_BUILDROOT_REF
 ARG WINE_TARGET
 ARG BUILD_JOBS=2
-COPY os/dev/wine-source.json os/dev/wine_rpm_contract.py os/dev/build-wine-rpms.sh /qos/
+COPY os/dev/wine-source.json os/dev/wine_rpm_contract.py os/dev/build-wine-rpms.sh /tilo/
 RUN --network=none --mount=type=bind,from=wine-source,source=/,target=/wine-source,ro \
-    bash /qos/build-wine-rpms.sh
+    bash /tilo/build-wine-rpms.sh
 FROM --platform=linux/amd64 scratch
 COPY --from=build /wine-output /wine-output

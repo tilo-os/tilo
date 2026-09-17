@@ -53,16 +53,16 @@ pub enum ConfirmationEvidence {
 }
 
 impl ConfirmationEvidence {
-    pub fn satisfies(&self, policy: &qos_actions::ConfirmationPolicy) -> bool {
+    pub fn satisfies(&self, policy: &tilo_actions::ConfirmationPolicy) -> bool {
         matches!(
             (self, policy),
-            (Self::None, qos_actions::ConfirmationPolicy::None)
-                | (Self::Confirm, qos_actions::ConfirmationPolicy::Confirm)
+            (Self::None, tilo_actions::ConfirmationPolicy::None)
+                | (Self::Confirm, tilo_actions::ConfirmationPolicy::Confirm)
         ) || matches!(
             (self, policy),
             (
                 Self::Phrase(supplied),
-                qos_actions::ConfirmationPolicy::Phrase { phrase }
+                tilo_actions::ConfirmationPolicy::Phrase { phrase }
             ) if supplied == phrase
         )
     }
@@ -216,8 +216,8 @@ impl Instruction {
             supplied.cloned().unwrap_or_default()
         };
         let confirmation = match &offer.descriptor.contract.confirmation {
-            qos_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
-            qos_actions::ConfirmationPolicy::Confirm => {
+            tilo_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
+            tilo_actions::ConfirmationPolicy::Confirm => {
                 if arguments.remove("confirm") != Some(serde_json::Value::Bool(true)) {
                     return Err(Refused::Unusable(format!(
                         "{} requires `confirm: true`",
@@ -226,7 +226,7 @@ impl Instruction {
                 }
                 ConfirmationEvidence::Confirm
             }
-            qos_actions::ConfirmationPolicy::Phrase { phrase } => {
+            tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
                 if arguments
                     .remove("confirmation_phrase")
                     .and_then(|v| v.as_str().map(str::to_owned))
@@ -246,7 +246,7 @@ impl Instruction {
         arguments.remove("confirm");
         arguments.remove("confirmation_phrase");
         if !offer.wants_content() {
-            qos_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
+            tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
                 .map_err(|error| Refused::Unusable(error.to_string()))?;
         }
         Ok(Instruction::Perform {
@@ -1072,12 +1072,12 @@ mod tests {
         resource: &str,
         action: &str,
         label: &str,
-        collects: Option<qos_actions::Collects>,
+        collects: Option<tilo_actions::Collects>,
     ) -> Offer {
         let params = if collects.is_some() {
-            vec![qos_actions::ActionParam::required(
+            vec![tilo_actions::ActionParam::required(
                 "value",
-                qos_actions::ParamType::Text,
+                tilo_actions::ParamType::Text,
                 "value",
             )]
         } else {
@@ -1086,19 +1086,19 @@ mod tests {
         Offer {
             app: app.to_string(),
             broker_peer_id: None,
-            descriptor: qos_actions::door::ActionDescriptor {
-                address: qos_actions::door::ActionAddress::new(resource, action),
+            descriptor: tilo_actions::door::ActionDescriptor {
+                address: tilo_actions::door::ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),
                 resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
                 action_label: label.to_string(),
                 description: None,
-                locus: qos_actions::ExecutionLocus::ClientLocal,
-                kind: qos_actions::OperationKind::Document,
-                contract: qos_actions::ActionContract::default(),
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract::default(),
                 params,
                 input: match collects {
-                    None => qos_actions::InputSpec::None,
-                    Some(c) => qos_actions::InputSpec::Text {
+                    None => tilo_actions::InputSpec::None,
+                    Some(c) => tilo_actions::InputSpec::Text {
                         prompt: "p".into(),
                         placeholder: String::new(),
                         collects: c,
@@ -1249,11 +1249,11 @@ mod tests {
 
         for offer in &offers {
             let supplied = match &offer.descriptor.contract.confirmation {
-                qos_actions::ConfirmationPolicy::None => serde_json::Map::new(),
-                qos_actions::ConfirmationPolicy::Confirm => {
+                tilo_actions::ConfirmationPolicy::None => serde_json::Map::new(),
+                tilo_actions::ConfirmationPolicy::Confirm => {
                     serde_json::Map::from_iter([("confirm".into(), serde_json::Value::Bool(true))])
                 }
-                qos_actions::ConfirmationPolicy::Phrase { phrase } => {
+                tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
                     serde_json::Map::from_iter([(
                         "confirmation_phrase".into(),
                         serde_json::Value::String(phrase.clone()),
@@ -1261,9 +1261,9 @@ mod tests {
                 }
             };
             let confirmation = match &offer.descriptor.contract.confirmation {
-                qos_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
-                qos_actions::ConfirmationPolicy::Confirm => ConfirmationEvidence::Confirm,
-                qos_actions::ConfirmationPolicy::Phrase { phrase } => {
+                tilo_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
+                tilo_actions::ConfirmationPolicy::Confirm => ConfirmationEvidence::Confirm,
+                tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
                     ConfirmationEvidence::Phrase(phrase.clone())
                 }
             };
@@ -1306,7 +1306,7 @@ mod tests {
             "word-processor.section:b7",
             "place-image",
             "Place image below",
-            Some(qos_actions::Collects::Content),
+            Some(tilo_actions::Collects::Content),
         )];
         let answered = Instruction::from_answer(
             "word-processor.section:b7#place-image",
@@ -1334,7 +1334,7 @@ mod tests {
             "files.entry:/a",
             "rename",
             "Rename",
-            Some(qos_actions::Collects::Words),
+            Some(tilo_actions::Collects::Words),
         )];
         assert!(
             matches!(
@@ -1386,14 +1386,14 @@ mod tests {
     fn structured_answers_preserve_types_and_are_bound_before_dispatch() {
         let mut rich = offer("sheets", "sheets.range:r1", "fill", "Fill range", None);
         rich.descriptor.params = vec![
-            qos_actions::ActionParam::required(
+            tilo_actions::ActionParam::required(
                 "count",
-                qos_actions::ParamType::Integer,
+                tilo_actions::ParamType::Integer,
                 "Rows to fill",
             ),
-            qos_actions::ActionParam::required(
+            tilo_actions::ActionParam::required(
                 "enabled",
-                qos_actions::ParamType::Boolean,
+                tilo_actions::ParamType::Boolean,
                 "Whether formulas are enabled",
             ),
         ];
@@ -1433,10 +1433,10 @@ mod tests {
             "Delete file",
             None,
         );
-        destructive.descriptor.contract.confirmation = qos_actions::ConfirmationPolicy::Confirm;
-        destructive.descriptor.params = vec![qos_actions::ActionParam::required(
+        destructive.descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+        destructive.descriptor.params = vec![tilo_actions::ActionParam::required(
             "recursive",
-            qos_actions::ParamType::Boolean,
+            tilo_actions::ParamType::Boolean,
             "Delete descendants",
         )];
         let offers = vec![destructive];
@@ -1480,7 +1480,7 @@ mod tests {
     fn phrase_confirmation_must_match_exactly_before_an_instruction_can_dispatch() {
         let phrase = "delete all archived messages";
         let mut destructive = offer("chat", "chat.archive:2025", "purge", "Purge archive", None);
-        destructive.descriptor.contract.confirmation = qos_actions::ConfirmationPolicy::Phrase {
+        destructive.descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
             phrase: phrase.into(),
         };
         let offers = vec![destructive];
@@ -1603,14 +1603,14 @@ mod tests {
             "photos.picture:1",
             "crop",
             "Crop",
-            Some(qos_actions::Collects::Content),
+            Some(tilo_actions::Collects::Content),
         );
         let words = offer(
             "files",
             "files.entry:/a",
             "rename",
             "Rename",
-            Some(qos_actions::Collects::Words),
+            Some(tilo_actions::Collects::Words),
         );
         let none = offer(
             "word-processor",

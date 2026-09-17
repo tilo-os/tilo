@@ -37,7 +37,7 @@ def target(value):
 
 
 def build_identity(pin):
-    if not re.fullmatch(r'\.fc44\.qos_traditional[1-9][0-9]*', pin['build_dist']):
+    if not re.fullmatch(r'\.fc44\.tilo_traditional[1-9][0-9]*', pin['build_dist']):
         raise ValueError('invalid traditional Wine release namespace')
     if pin['build_release'] != pin['release'].removesuffix('.fc44') + pin['build_dist']:
         raise ValueError('build release does not match unchanged spec dist expansion')
@@ -64,7 +64,7 @@ def source(directory, pin):
     verify_file(key, pin['fedora_key_sha256'])
     # A private trust database prevents unrelated buildroot keys authorizing
     # this source. Hash verification precedes RPM parsing and key import.
-    with tempfile.TemporaryDirectory(prefix='qos-wine-trust-') as database:
+    with tempfile.TemporaryDirectory(prefix='tilo-wine-trust-') as database:
         run(['rpmkeys', '--dbpath', database, '--import', str(key)])
         signature = run(['rpmkeys', '--dbpath', database, '--checksig', '--verbose', str(srpm)])
     # RPM 6 prints lowercase "signature". A zero exit also occurs for unsigned
@@ -82,7 +82,7 @@ def packages():
 def compiler_probe(architecture):
     flags = shlex.split(run(['rpmspec', '--target', architecture, '--eval', '%{optflags}']))
     compiler = ['gcc', '-m32' if architecture == 'i686' else '-m64']
-    with tempfile.TemporaryDirectory(prefix='qos-wine-compiler-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='tilo-wine-compiler-') as temporary:
         root = Path(temporary)
         (root / 'probe.c').write_text('int main(void) { return 0; }\n')
         subprocess.run(compiler + flags + [str(root / 'probe.c'), '-o', str(root / 'probe')], check=True)
@@ -124,7 +124,7 @@ def buildroot(architecture, pin):
     return {'schema': 1, 'target': architecture, 'source_sha256': pin['sha256'],
             'build_identity': build_identity(pin),
             'without': ['new_wow64'], 'compiler': compiler_probe(architecture),
-            'packages': packages(), 'buildrequires_sha256': sha('/usr/lib/qos/wine-buildrequires.txt')}
+            'packages': packages(), 'buildrequires_sha256': sha('/usr/lib/tilo/wine-buildrequires.txt')}
 
 
 def validate_core_layout(architecture, files):
@@ -353,7 +353,7 @@ def output(architecture, pin, buildroot_ref, directory=Path('/wine-output'), wri
         raise ValueError('output has no validated wine-core RPM')
     rebuilt_source = directory / 'provenance' / build_identity(pin)['source_rpm']
     if rebuilt_source.is_symlink() or not rebuilt_source.is_file():
-        raise ValueError('missing rebuilt source RPM for qOS release identity')
+        raise ValueError('missing rebuilt source RPM for Tilo release identity')
     contract = {'schema': 1, 'target': architecture, 'source': pin,
                 'build_identity': build_identity(pin), 'rebuilt_source_sha256': sha(rebuilt_source),
                 'without': ['new_wow64'],
@@ -377,10 +377,10 @@ def main(argv):
     elif operation == 'setting':
         print(build_identity(pin)[value])
     elif operation == 'record-buildroot':
-        Path('/usr/lib/qos/wine-buildroot.json').write_text(json.dumps(buildroot(value, pin), indent=2) + '\n')
+        Path('/usr/lib/tilo/wine-buildroot.json').write_text(json.dumps(buildroot(value, pin), indent=2) + '\n')
     elif operation == 'verify-buildroot':
         reference(rest[0])
-        if buildroot(value, pin) != json.loads(Path('/usr/lib/qos/wine-buildroot.json').read_text()):
+        if buildroot(value, pin) != json.loads(Path('/usr/lib/tilo/wine-buildroot.json').read_text()):
             raise ValueError('buildroot compiler/package/source contract changed')
     elif operation == 'output':
         output(target(value), pin, rest[0])

@@ -12,24 +12,24 @@ use crate::store::{
     CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore, LaunchPaths, validate_id,
 };
 
-const PREFIX_MOUNT: &str = "/run/qos/capsule/prefix";
-pub(crate) const HOME_MOUNT: &str = "/run/qos/capsule/home";
-const FILES_MOUNT: &str = "/run/qos/files";
-const SHIM_HOST: &str = "/usr/bin/qos-launcher";
-const SHIM_MOUNT: &str = "/qos-launcher";
-const LEASE_ROOT: &str = "/run/qos/windows-compat/leases";
+const PREFIX_MOUNT: &str = "/run/tilo/capsule/prefix";
+pub(crate) const HOME_MOUNT: &str = "/run/tilo/capsule/home";
+const FILES_MOUNT: &str = "/run/tilo/files";
+const SHIM_HOST: &str = "/usr/bin/tilo-launcher";
+const SHIM_MOUNT: &str = "/tilo-launcher";
+const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
-const PROTON_HOST: &str = "/usr/lib/qos/windows-runners/proton/UMU-Proton-10.0-4";
-const PROTON_MOUNT: &str = "/opt/qos/proton";
+const PROTON_HOST: &str = "/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4";
+const PROTON_MOUNT: &str = "/opt/tilo/proton";
 const STEAM_RUNTIME_HOST: &str =
-    "/usr/lib/qos/windows-runners/steam-runtime/SteamLinuxRuntime_sniper";
-const UMU_FOLDERS_MOUNT: &str = "/tmp/qos-runtime";
-const STEAM_RUNTIME_MOUNT: &str = "/tmp/qos-runtime/umu/steamrt3";
+    "/usr/lib/tilo/windows-runners/steam-runtime/SteamLinuxRuntime_sniper";
+const UMU_FOLDERS_MOUNT: &str = "/tmp/tilo-runtime";
+const STEAM_RUNTIME_MOUNT: &str = "/tmp/tilo-runtime/umu/steamrt3";
 const STEAM_PLATFORM: &str = "sniper_platform_3.0.20260805.254768";
-const X86_ROOTFS_HOST: &str = "/usr/lib/qos/windows-runners/x86";
-const TRANSLATED_HELPER: &str = "/usr/libexec/qos-windows-runtime";
-const EMULATOR_MANIFEST: &str = "/usr/share/qos/windows/fex-emulator.json";
-const GRAPHICS_MANIFEST: &str = "/usr/share/qos/windows/fex-graphics-provider.json";
+const X86_ROOTFS_HOST: &str = "/usr/lib/tilo/windows-runners/x86";
+const TRANSLATED_HELPER: &str = "/usr/libexec/tilo-windows-runtime";
+const EMULATOR_MANIFEST: &str = "/usr/share/tilo/windows/fex-emulator.json";
+const GRAPHICS_MANIFEST: &str = "/usr/share/tilo/windows/fex-graphics-provider.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeBind {
@@ -52,9 +52,9 @@ impl RuntimeImage {
         if self.needs_nested_runtime {
             None
         } else if self.translated {
-            Some(SeccompProfile::QosJit)
+            Some(SeccompProfile::TiloJit)
         } else {
-            Some(SeccompProfile::QosDefault)
+            Some(SeccompProfile::TiloDefault)
         }
     }
 
@@ -178,7 +178,7 @@ impl SystemRuntimeRegistry {
                     // Exact paths installed by os/Containerfile. UMU owns the
                     // Steam Runtime and protonfix invocation contract.
                     binds: vec![
-                        runtime_bind("/usr/libexec/qos-umu-run", "/usr/libexec/qos-umu-run"),
+                        runtime_bind("/usr/libexec/tilo-umu-run", "/usr/libexec/tilo-umu-run"),
                         runtime_bind("/usr/libexec/umu_run.py", "/usr/libexec/umu_run.py"),
                         // The pinned zipapp's shebang is `/usr/bin/env python3`.
                         runtime_bind("/usr/bin/env", "/usr/bin/env"),
@@ -193,7 +193,7 @@ impl SystemRuntimeRegistry {
                         runtime_bind("/usr/bin/bwrap", "/usr/bin/bwrap"),
                         runtime_bind(PROTON_HOST, PROTON_MOUNT),
                     ],
-                    sandbox_entrypoint: PathBuf::from("/usr/libexec/qos-umu-run"),
+                    sandbox_entrypoint: PathBuf::from("/usr/libexec/tilo-umu-run"),
                     environment: vec![
                         ("PROTONPATH", PROTON_MOUNT.to_string()),
                         ("UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT.to_string()),
@@ -201,7 +201,7 @@ impl SystemRuntimeRegistry {
                         ("PRESSURE_VESSEL_COPY_RUNTIME", "1".to_string()),
                         (
                             "PRESSURE_VESSEL_VARIABLE_DIR",
-                            "/tmp/qos-runtime/var".to_string(),
+                            "/tmp/tilo-runtime/var".to_string(),
                         ),
                     ],
                     needs_nested_runtime: true,
@@ -370,7 +370,7 @@ impl LaunchLease {
         match (network, self.net_gate.as_ref()) {
             (NetworkShape::Filtered, Some(gate)) => {
                 if !gate.host_socket.starts_with(&root)
-                    || gate.sandbox_socket != Path::new("/run/qos/network/gate.sock")
+                    || gate.sandbox_socket != Path::new("/run/tilo/network/gate.sock")
                     || gate.port < 1024
                 {
                     return Err(PlanError::ResourceEscalation("network gate"));
@@ -398,7 +398,7 @@ pub struct CapsuleCommandPlan {
     pub bwrap_argv: Vec<String>,
     /// UMU needs a nested Bubblewrap for Steam Runtime. Proton retains the
     /// outer bwrap, Landlock and network namespace; Wine additionally gets
-    /// the qOS baseline syscall filter.
+    /// the Tilo baseline syscall filter.
     pub seccomp_profile: Option<SeccompProfile>,
     pub capsule_id: String,
     pub runner_label: String,
@@ -494,13 +494,13 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             "/dev".to_string(),
         ]);
         for directory in [
-            "/run/qos",
-            "/run/qos/capsule",
+            "/run/tilo",
+            "/run/tilo/capsule",
             FILES_MOUNT,
-            "/run/qos/files/read",
-            "/run/qos/files/write",
-            "/run/qos/network",
-            "/opt/qos",
+            "/run/tilo/files/read",
+            "/run/tilo/files/write",
+            "/run/tilo/network",
+            "/opt/tilo",
             PROTON_MOUNT,
             "/usr/bin",
             "/usr/libexec",
@@ -742,13 +742,13 @@ fn push_fixed_environment(
 ) -> Result<(), PlanError> {
     for (key, value) in [
         ("HOME", HOME_MOUNT),
-        ("USER", "qos"),
-        ("LOGNAME", "qos"),
-        ("XDG_DATA_HOME", "/run/qos/capsule/home/.local/share"),
-        ("XDG_CONFIG_HOME", "/run/qos/capsule/home/.config"),
-        ("XDG_CACHE_HOME", "/run/qos/capsule/home/.cache"),
+        ("USER", "tilo"),
+        ("LOGNAME", "tilo"),
+        ("XDG_DATA_HOME", "/run/tilo/capsule/home/.local/share"),
+        ("XDG_CONFIG_HOME", "/run/tilo/capsule/home/.config"),
+        ("XDG_CACHE_HOME", "/run/tilo/capsule/home/.cache"),
         ("WINEPREFIX", PREFIX_MOUNT),
-        ("STEAM_COMPAT_DATA_PATH", "/run/qos/capsule"),
+        ("STEAM_COMPAT_DATA_PATH", "/run/tilo/capsule"),
         (
             "WINEARCH",
             match capsule.settings.architecture {
@@ -757,7 +757,7 @@ fn push_fixed_environment(
             },
         ),
         (
-            "QOS_COMPAT_WINDOWS_VERSION",
+            "TILO_COMPAT_WINDOWS_VERSION",
             capsule.settings.windows_version.as_str(),
         ),
     ] {
@@ -883,7 +883,7 @@ pub enum PlanError {
     ResourceEscalation(&'static str),
     #[error("resource broker returned the same audio protocol twice")]
     DuplicateAudioProtocol,
-    #[error("filtered network launch has no qOS egress gate")]
+    #[error("filtered network launch has no Tilo egress gate")]
     MissingNetworkGate,
     #[error("offline or unrestricted launch unexpectedly has a network gate")]
     UnexpectedNetworkGate,
@@ -949,7 +949,7 @@ mod tests {
     fn session() -> HostSession {
         HostSession {
             uid: 1000,
-            wayland_socket: PathBuf::from("/run/user/1000/nirios-ws-test"),
+            wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
             render_node: PathBuf::from("/dev/dri/renderD999"),
         }
     }
@@ -977,7 +977,7 @@ mod tests {
         assert!(
             proton
                 .host_paths()
-                .any(|path| path == Path::new("/usr/libexec/qos-umu-run"))
+                .any(|path| path == Path::new("/usr/libexec/tilo-umu-run"))
         );
         assert!(
             proton
@@ -1033,8 +1033,8 @@ mod tests {
                         .unwrap();
                     let expected_filter = match (host, layer) {
                         (_, Layer::Proton) => None,
-                        ("aarch64", _) => Some(SeccompProfile::QosJit),
-                        _ => Some(SeccompProfile::QosDefault),
+                        ("aarch64", _) => Some(SeccompProfile::TiloJit),
+                        _ => Some(SeccompProfile::TiloDefault),
                     };
                     assert_eq!(command.seccomp_profile, expected_filter);
                     assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
@@ -1156,11 +1156,11 @@ mod tests {
     #[test]
     fn shipped_fex_manifests_match_the_fixed_mount_contract() {
         let emulator: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../os/usr/share/qos/windows/fex-emulator.json"
+            "../../../../os/usr/share/tilo/windows/fex-emulator.json"
         ))
         .unwrap();
         let graphics: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../os/usr/share/qos/windows/fex-graphics-provider.json"
+            "../../../../os/usr/share/tilo/windows/fex-graphics-provider.json"
         ))
         .unwrap();
         assert_eq!(
@@ -1271,7 +1271,7 @@ mod tests {
                 command
                     .bwrap_argv
                     .windows(3)
-                    .any(|args| args == ["--setenv", key, "qos"])
+                    .any(|args| args == ["--setenv", key, "tilo"])
             );
         }
         assert!(command.bwrap_argv.iter().any(|arg| arg == "--unshare-all"));
@@ -1293,7 +1293,7 @@ mod tests {
             command
                 .bwrap_argv
                 .iter()
-                .any(|arg| { arg == "/run/qos/capsule/prefix/drive_c/Program Files/App/app.exe" })
+                .any(|arg| { arg == "/run/tilo/capsule/prefix/drive_c/Program Files/App/app.exe" })
         );
         assert!(
             !command
@@ -1385,9 +1385,9 @@ mod tests {
             .unwrap()
             .push_str("; test ! -s /runtime/.ref; printf private > /runtime/.ref");
         command.bwrap_argv.last_mut().unwrap().push_str(
-            "; test \"$(getent passwd $(id -u))\" = \"qos:x:$(id -u):$(id -g):qOS capsule:/run/qos/capsule/home:/usr/bin/nologin\"; test \"$(getent group $(id -g))\" = \"qos:x:$(id -g):\"; test \"$(wc -l < /etc/passwd)\" = 1; test \"$(wc -l < /etc/group)\" = 1; if (printf bad >> /etc/passwd) 2>/dev/null; then exit 1; fi; if (printf bad >> /etc/group) 2>/dev/null; then exit 1; fi; test ! -e /etc/shadow",
+            "; test \"$(getent passwd $(id -u))\" = \"tilo:x:$(id -u):$(id -g):Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\"; test \"$(getent group $(id -g))\" = \"tilo:x:$(id -g):\"; test \"$(wc -l < /etc/passwd)\" = 1; test \"$(wc -l < /etc/group)\" = 1; if (printf bad >> /etc/passwd) 2>/dev/null; then exit 1; fi; if (printf bad >> /etc/group) 2>/dev/null; then exit 1; fi; test ! -e /etc/shadow",
         );
-        for profile in [None, Some(SeccompProfile::QosDefault)] {
+        for profile in [None, Some(SeccompProfile::TiloDefault)] {
             command.seccomp_profile = profile;
             if profile.is_some() {
                 command.bwrap_argv.splice(
@@ -1406,7 +1406,7 @@ mod tests {
 
     // Run these explicitly in a disposable native ARM container, with the
     // production artifacts mounted at their fixed host paths. Provide a real
-    // architecture-matching Wine/Proton cmd.exe via QOS_ARM_CAPSULE_CMD_EXE,
+    // architecture-matching Wine/Proton cmd.exe via TILO_ARM_CAPSULE_CMD_EXE,
     // writable /run/user/<uid>, and a dummy /dev/dri/renderD128. A Unix listener
     // below supplies the mandatory Wayland bind; it is closed before execution
     // so clients fail promptly instead of waiting for a fake display server.
@@ -1414,7 +1414,7 @@ mod tests {
     // Use an external 240-second timeout and tear down the container on failure:
     // the production executor waits synchronously for its owned process.
     // These tests deliberately omit the Landlock executable shim because WSL's
-    // ABI 3 cannot satisfy qOS's required ABI 5. They prove namespace execution,
+    // ABI 3 cannot satisfy Tilo's required ABI 5. They prove namespace execution,
     // not Landlock or full production sandbox acceptance. No production policy
     // is changed, and every generated mount, fd, environment and seccomp option
     // remains intact. The generated unshare-all retains an offline namespace.
@@ -1477,24 +1477,24 @@ mod tests {
                 abi >= 5,
                 "full capsule acceptance requires Landlock ABI >= 5: {abi}"
             );
-            println!("QOS_ARM_CAPSULE_LANDLOCK_ABI={abi}");
+            println!("TILO_ARM_CAPSULE_LANDLOCK_ABI={abi}");
         }
         let mut route = route(layer);
         route.settings.architecture = architecture;
         route.settings.environment.insert(
             "WINEDEBUG".into(),
-            std::env::var("QOS_ARM_CAPSULE_WINEDEBUG").unwrap_or_else(|_| "-all".into()),
+            std::env::var("TILO_ARM_CAPSULE_WINEDEBUG").unwrap_or_else(|_| "-all".into()),
         );
         if layer == Layer::Proton {
             route.proton_recipe = Some("umu-0".into());
         }
         let (_directory, store, state, mut program) = setup(&route);
-        let marker = "QOS_GENERATED_ARM_CAPSULE_PASS";
-        program.prefix_relative_executable = PathBuf::from("drive_c/qos-console.exe");
+        let marker = "TILO_GENERATED_ARM_CAPSULE_PASS";
+        program.prefix_relative_executable = PathBuf::from("drive_c/tilo-console.exe");
         program.arguments = vec![
             "/d".into(),
             "/c".into(),
-            format!("echo {marker}>C:\\qos-namespace-marker.txt"),
+            format!("echo {marker}>C:\\tilo-namespace-marker.txt"),
         ];
         let prefix = store.prefix_path(&state.id);
         let executable = prefix.join(&program.prefix_relative_executable);
@@ -1504,7 +1504,7 @@ mod tests {
         let uid = unsafe { libc::geteuid() };
         let runtime = PathBuf::from(format!("/run/user/{uid}"));
         std::fs::create_dir_all(&runtime).unwrap();
-        let socket = runtime.join(format!("qos-console-{}", std::process::id()));
+        let socket = runtime.join(format!("tilo-console-{}", std::process::id()));
         let listener = UnixListener::bind(&socket).unwrap();
         drop(listener);
         let host = HostSession {
@@ -1533,7 +1533,7 @@ mod tests {
         assert_eq!(
             command.seccomp_profile,
             if layer == Layer::Wine {
-                Some(SeccompProfile::QosJit)
+                Some(SeccompProfile::TiloJit)
             } else {
                 None
             }
@@ -1568,7 +1568,7 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(
-            std::fs::read_to_string(prefix.join("drive_c/qos-namespace-marker.txt"))
+            std::fs::read_to_string(prefix.join("drive_c/tilo-namespace-marker.txt"))
                 .expect("Windows must create the marker in the retained capsule prefix")
                 .trim(),
             marker,
@@ -1576,8 +1576,8 @@ mod tests {
     }
 
     fn copy_arm_console_fixture(destination: &Path, architecture: Architecture) {
-        let source = std::env::var_os("QOS_ARM_CAPSULE_CMD_EXE")
-            .expect("set QOS_ARM_CAPSULE_CMD_EXE to the matching runtime's cmd.exe");
+        let source = std::env::var_os("TILO_ARM_CAPSULE_CMD_EXE")
+            .expect("set TILO_ARM_CAPSULE_CMD_EXE to the matching runtime's cmd.exe");
         let bytes = std::fs::read(source).unwrap();
         assert_eq!(
             &bytes[..2],
@@ -1715,14 +1715,14 @@ mod tests {
                 AudioBinding {
                     protocol: AudioProtocol::PipeWire,
                     host_socket: PathBuf::from(
-                        "/run/qos/windows-compat/leases/audio-lease/audio/pipewire-0",
+                        "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0",
                     ),
                     input_enabled: true,
                 },
                 AudioBinding {
                     protocol: AudioProtocol::Pulse,
                     host_socket: PathBuf::from(
-                        "/run/qos/windows-compat/leases/audio-lease/audio/pulse/native",
+                        "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native",
                     ),
                     input_enabled: true,
                 },
@@ -1736,13 +1736,13 @@ mod tests {
             command
                 .bwrap_argv
                 .iter()
-                .any(|arg| arg == "/run/qos/windows-compat/leases/audio-lease/audio/pipewire-0")
+                .any(|arg| arg == "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0")
         );
         assert!(
             command
                 .bwrap_argv
                 .iter()
-                .any(|arg| arg == "/run/qos/windows-compat/leases/audio-lease/audio/pulse/native")
+                .any(|arg| arg == "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native")
         );
         assert!(!command.bwrap_argv.iter().any(|arg| arg == "/dev/snd"));
         // The sandbox must name its own runtime destination so clients can
@@ -1810,7 +1810,7 @@ mod tests {
             command
                 .bwrap_argv
                 .iter()
-                .any(|arg| arg == "/usr/libexec/qos-umu-run")
+                .any(|arg| arg == "/usr/libexec/tilo-umu-run")
         );
         assert!(
             command

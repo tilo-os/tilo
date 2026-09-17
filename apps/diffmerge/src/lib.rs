@@ -1,4 +1,4 @@
-//! Diff — a CRDT-native diff & merge tool for qOS, built on the `ui` toolkit.
+//! Diff — a CRDT-native diff & merge tool for Tilo, built on the `ui` toolkit.
 //!
 //! Two modes:
 //!

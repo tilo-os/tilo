@@ -2,9 +2,9 @@
 # fixtures are never executed and no compiler, signer or installer is invoked.
 $ErrorActionPreference = "Stop"
 $Packager = Join-Path $PSScriptRoot "package-host.ps1"
-$Fixture = Join-Path ([IO.Path]::GetTempPath()) "qos-package-arch-$([guid]::NewGuid())"
+$Fixture = Join-Path ([IO.Path]::GetTempPath()) "tilo-package-arch-$([guid]::NewGuid())"
 $Saved = @{}
-foreach ($Name in @("QOS_REQUIRE_SIGNING", "QOS_WINDOWS_CERT_PFX", "QOS_WINDOWS_SIGNER", "QOS_REQUIRE_NATIVE_PACKAGES", "QOS_RELEASE_BASE_URL")) {
+foreach ($Name in @("TILO_REQUIRE_SIGNING", "TILO_WINDOWS_CERT_PFX", "TILO_WINDOWS_SIGNER", "TILO_REQUIRE_NATIVE_PACKAGES", "TILO_RELEASE_BASE_URL")) {
     $Saved[$Name] = [Environment]::GetEnvironmentVariable($Name, "Process")
     [Environment]::SetEnvironmentVariable($Name, $null, "Process")
 }
@@ -28,18 +28,18 @@ Push-Location $Fixture
 try {
     New-Item -ItemType Directory -Force -Path "docs", "apps/imager/packaging/windows" | Out-Null
     Set-Content docs/installer-walkthrough.md "package fixture"
-    Set-Content apps/imager/packaging/windows/Start-qOS-Imager.ps1 "# fixture"
+    Set-Content apps/imager/packaging/windows/Start-Tilo-Imager.ps1 "# fixture"
     foreach ($Architecture in @("x86_64", "aarch64")) {
         $Machine = if ($Architecture -eq "aarch64") { 0xAA64 } else { 0x8664 }
         Write-Fixture $Architecture $Machine
         & $Packager "out/$Architecture" -Architecture $Architecture
-        $Zip = "out/$Architecture/qos-imager-windows-$Architecture.zip"
+        $Zip = "out/$Architecture/tilo-imager-windows-$Architecture.zip"
         if (-not (Test-Path -LiteralPath $Zip)) { throw "Missing $Architecture archive" }
         $Digest = (Get-Content -LiteralPath "$Zip.sha256").Split(' ')[0]
         if ($Digest -ne (Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLowerInvariant()) {
             throw "Incorrect $Architecture archive digest"
         }
-        $Standalone = "out/$Architecture/qos-imager-windows-$Architecture.exe"
+        $Standalone = "out/$Architecture/tilo-imager-windows-$Architecture.exe"
         if ((Get-FileHash -LiteralPath $Standalone).Hash -ne
             (Get-FileHash -LiteralPath "target/$Architecture-pc-windows-msvc/release/imager.exe").Hash) {
             throw "Packaged executable differs from input"

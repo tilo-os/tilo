@@ -125,6 +125,18 @@ pub struct CrossStripDetach {
     pub release_point: Point,
 }
 
+/// Persistable shape of one live window group after a same-strip tab move.
+/// Tile content remains owned by the shell's `WorkspaceTree`; the UI only
+/// reports identities and presentation state, avoiding a second copy of app
+/// data at the widget boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupTopology {
+    pub id: u64,
+    pub tab_ids: Vec<u64>,
+    pub active_tab: u64,
+    pub width: WindowWidth,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag (structure_dirty, scroll_dirty, hidden, shift_armed) is an independent, \
@@ -192,6 +204,10 @@ pub struct GroupRow {
     /// One-shot `(group_id, new_index)` on reorder commit; drained via
     /// [`Self::take_pending_group_reorder`] into the persisted `WorkspaceTree`.
     pending_group_reorder: Option<(u64, usize)>,
+    /// Set after a tab crosses a group boundary within this row. The shell
+    /// drains a compact identity-only snapshot and applies it to the
+    /// persisted workspace tree.
+    pending_topology_change: bool,
     /// Displays this strip spans; each group resolves its [`WindowWidth`]
     /// fraction against the span it's laid out on, not the combined
     /// desktop — otherwise a full-width window could span two monitors.
@@ -305,6 +321,7 @@ impl GroupRow {
             group_drag: None,
             group_reorder_target: None,
             pending_group_reorder: None,
+            pending_topology_change: false,
             output_spans: Vec::new(),
             last_local_x: HashMap::new(),
             shift_armed: false,
@@ -937,7 +954,23 @@ impl GroupRow {
             return false;
         };
         dst_group.insert_detached_tab(target_idx, desc, host);
+        self.prune_empty_group_after_transfer(src);
+        self.pending_topology_change = true;
         true
+    }
+
+    /// A tab merged into a sibling may have emptied its source window.
+    /// Keep the row's structural invariant here so every transfer path uses
+    /// the same pruning rule before publishing its topology.
+    fn prune_empty_group_after_transfer(&mut self, source: usize) {
+        if self
+            .groups
+            .get(source)
+            .is_some_and(|group| group.tab_count() == 0)
+        {
+            self.groups.remove(source);
+            self.structure_dirty = true;
+        }
     }
 
     /// `Some(gap_idx)` if the release landed strictly between two groups
@@ -1015,7 +1048,28 @@ impl GroupRow {
                 self.groups.remove(src_after);
             }
         }
+        self.pending_topology_change = true;
         true
+    }
+
+    /// Drain the current row topology after a same-strip tab transfer.
+    /// Returning the final shape rather than a sequence of move events makes
+    /// multiple transfers in one frame idempotent at the persistence boundary.
+    pub fn take_pending_topology_change(&mut self) -> Option<Vec<GroupTopology>> {
+        if !std::mem::take(&mut self.pending_topology_change) {
+            return None;
+        }
+        Some(
+            self.groups
+                .iter()
+                .map(|group| GroupTopology {
+                    id: group.id,
+                    tab_ids: group.tabs().iter().map(|tab| tab.id).collect(),
+                    active_tab: group.active_tab_id(),
+                    width: group.width(),
+                })
+                .collect(),
+        )
     }
 
     pub fn take_pending_cross_strip_detach(&mut self) -> Option<CrossStripDetach> {
@@ -2275,6 +2329,8 @@ impl GroupRow {
             && let Some(tgt) = self.groups.get_mut(tgt_idx)
         {
             tgt.insert_detached_tab(drop_idx, desc, host);
+            self.prune_empty_group_after_transfer(src_idx);
+            self.pending_topology_change = true;
             *handled = true;
         }
         true
@@ -2337,6 +2393,8 @@ impl GroupRow {
             && let Some(tgt) = self.groups.get_mut(tgt_idx)
         {
             tgt.insert_detached_tab(drop_idx, desc, host);
+            self.prune_empty_group_after_transfer(src_idx);
+            self.pending_topology_change = true;
             *handled = true;
         }
         true

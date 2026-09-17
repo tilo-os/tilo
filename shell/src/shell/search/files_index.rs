@@ -1,6 +1,6 @@
 //! Tantivy-backed content index for the files provider.
 //!
-//! Owns a persistent on-disk index at `~/.cache/qos/files-index` with BM25
+//! Owns a persistent on-disk index at `~/.cache/tilo/files-index` with BM25
 //! scoring over file bodies. A background walker rebuilds only what
 //! changed since the last commit, using each doc's stored `mtime`. A small
 //! LRU query cache absorbs repeated keystrokes; the writer commits every
@@ -151,7 +151,7 @@ impl FilesIndex {
     /// # Errors
     ///
     /// Returns the underlying `tantivy` error if the on-disk index at
-    /// `~/.cache/qos/files-index` can't be opened or created (a missing
+    /// `~/.cache/tilo/files-index` can't be opened or created (a missing
     /// schema field, a corrupt directory, or similar).
     pub fn open_or_create(home: &Path) -> Result<Self, tantivy::error::TantivyError> {
         let dir = files_index_dir()?;
@@ -184,7 +184,7 @@ impl FilesIndex {
             let body = fields.body;
             let mtime = fields.mtime;
             let handle = thread::Builder::new()
-                .name("qos-files-index-walker".into())
+                .name("tilo-files-index-walker".into())
                 .spawn(move || {
                     // Bounded heap + a merge policy capping segment size —
                     // see MAX_FILE_BYTES / MAX_DOCS_BEFORE_MERGE.
@@ -290,13 +290,13 @@ impl FilesIndex {
 
 fn files_index_dir() -> Result<PathBuf, tantivy::error::TantivyError> {
     // Honoured first so tests can point at a scratch dir, not the real ~/.cache.
-    if let Some(explicit) = std::env::var_os("QOS_FILES_INDEX_DIR") {
+    if let Some(explicit) = std::env::var_os("TILO_FILES_INDEX_DIR") {
         return Ok(PathBuf::from(explicit));
     }
     let cache = dirs::cache_dir().ok_or_else(|| {
         tantivy::error::TantivyError::InvalidArgument("no XDG_CACHE_HOME".to_string())
     })?;
-    Ok(cache.join("qos").join("files-index"))
+    Ok(cache.join("tilo").join("files-index"))
 }
 
 fn build_schema() -> Schema {
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn read_head_caps_allocation_regardless_of_file_size() {
-        let dir = std::env::temp_dir().join(format!("qos-read-head-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-read-head-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("big.log");
         let big = vec![b'a'; 5 * 1024 * 1024];
@@ -530,7 +530,7 @@ mod tests {
 
 #[cfg(test)]
 mod content_index_integration {
-    //! End-to-end coverage against a `tempdir`, with `QOS_FILES_INDEX_DIR`
+    //! End-to-end coverage against a `tempdir`, with `TILO_FILES_INDEX_DIR`
     //! overridden so the shared cache isn't touched; `serial` keeps the
     //! env-var mutation from racing.
     use super::*;
@@ -603,10 +603,10 @@ mod content_index_integration {
     fn walks_home_and_finds_content_match() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        let cache_dir = tmp.path().join(".cache/qos/files-index");
+        let cache_dir = tmp.path().join(".cache/tilo/files-index");
         fs::create_dir_all(&cache_dir).ok();
         unsafe {
-            std::env::set_var("QOS_FILES_INDEX_DIR", &cache_dir);
+            std::env::set_var("TILO_FILES_INDEX_DIR", &cache_dir);
         }
 
         fs::write(
@@ -652,10 +652,10 @@ mod content_index_integration {
     fn query_latency_stays_inside_keystroke_budget() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        let cache_dir = tmp.path().join(".cache/qos/files-index");
+        let cache_dir = tmp.path().join(".cache/tilo/files-index");
         fs::create_dir_all(&cache_dir).ok();
         unsafe {
-            std::env::set_var("QOS_FILES_INDEX_DIR", &cache_dir);
+            std::env::set_var("TILO_FILES_INDEX_DIR", &cache_dir);
         }
 
         // Sprinkle enough files that BM25 has something to score.
@@ -700,10 +700,10 @@ mod content_index_integration {
     fn incremental_reindex_skips_untouched_files() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        let cache_dir = tmp.path().join(".cache/qos/files-index");
+        let cache_dir = tmp.path().join(".cache/tilo/files-index");
         fs::create_dir_all(&cache_dir).ok();
         unsafe {
-            std::env::set_var("QOS_FILES_INDEX_DIR", &cache_dir);
+            std::env::set_var("TILO_FILES_INDEX_DIR", &cache_dir);
         }
 
         fs::write(home.join("a.md"), "alpha content").unwrap();

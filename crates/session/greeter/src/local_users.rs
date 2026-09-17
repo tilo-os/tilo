@@ -1,4 +1,4 @@
-//! Conservative discovery of the account to present on a personal qOS device.
+//! Conservative discovery of the account to present on a personal Tilo device.
 //!
 //! The greeter may collapse to a one-field, passcode-only form only when the
 //! machine has exactly one ordinary interactive local account. Ambiguity is a

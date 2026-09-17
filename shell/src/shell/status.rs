@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use os_actions::{LinkKind, LinkStatus, VolumeState};
-use qos_power_mgmt::{BatterySnapshot, BatteryState};
+use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
 /// Fast enough that plugging in a charger shows up while the user is
 /// still thinking about it, slow enough that two `nmcli` calls a
@@ -169,7 +169,7 @@ impl StatusBridge {
         }
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
-            .name("qos-status".to_string())
+            .name("tilo-status".to_string())
             .spawn(move || {
                 loop {
                     bridge.set(read_once());
@@ -177,13 +177,13 @@ impl StatusBridge {
                 }
             });
         if let Err(e) = spawned {
-            tracing::warn!(target: "qos::status", error = %e, "status poller not started");
+            tracing::warn!(target: "tilo::status", error = %e, "status poller not started");
             self.polling.store(false, Ordering::SeqCst);
             return;
         }
         let media_bridge = self.clone();
         let _ = std::thread::Builder::new()
-            .name("qos-media-privacy".to_string())
+            .name("tilo-media-privacy".to_string())
             .spawn(move || {
                 loop {
                     let bridge = media_bridge.clone();
@@ -198,7 +198,7 @@ impl StatusBridge {
 
 /// Public so a diagnostic or a test can take a reading without owning a poller.
 pub fn read_once() -> SystemStatus {
-    let battery = Some(qos_power_mgmt::sysfs_battery_snapshot());
+    let battery = Some(tilo_power_mgmt::sysfs_battery_snapshot());
     // Allowed to fail — a machine without NetworkManager or PipeWire
     // omits the glyph rather than claiming a state.
     let link = os_actions::get_link_status().ok();

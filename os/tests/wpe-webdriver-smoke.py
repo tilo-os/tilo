@@ -44,9 +44,9 @@ try:
     session = result['sessionId']
     prefix = '/session/' + session
     print('CAPABILITIES', json.dumps(result['capabilities']), flush=True)
-    page = '<!doctype html><title>qOS ARM browser</title><style>body{background:#183245;color:white}h1{font-size:36px}</style><h1 id="heading">qOS ARM browser</h1><canvas id="canvas" width="32" height="32"></canvas>'
+    page = '<!doctype html><title>Tilo ARM browser</title><style>body{background:#183245;color:white}h1{font-size:36px}</style><h1 id="heading">Tilo ARM browser</h1><canvas id="canvas" width="32" height="32"></canvas>'
     request('POST', prefix + '/url', {'url': 'data:text/html;base64,' + base64.b64encode(page.encode()).decode()})
-    assert request('GET', prefix + '/title') == 'qOS ARM browser'
+    assert request('GET', prefix + '/title') == 'Tilo ARM browser'
     result = request('POST', prefix + '/execute/sync', {'script': '''
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
@@ -55,7 +55,7 @@ try:
                 background: getComputedStyle(document.body).backgroundColor,
                 pixel: Array.from(ctx.getImageData(1,1,1,1).data)};
         ''', 'args': []})
-    assert result == {'answer': 42, 'text': 'qOS ARM browser', 'background': 'rgb(24, 50, 69)', 'pixel': [255, 0, 0, 255]}, result
+    assert result == {'answer': 42, 'text': 'Tilo ARM browser', 'background': 'rgb(24, 50, 69)', 'pixel': [255, 0, 0, 255]}, result
     print('DOM_JS_CSS_CANVAS_PASS', json.dumps(result), flush=True)
     png = base64.b64decode(request('GET', prefix + '/screenshot'), validate=True)
     assert png[:8] == b'\x89PNG\r\n\x1a\n'

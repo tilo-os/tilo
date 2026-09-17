@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Record a three-pane 1920x1080 demo video of the nirios shell.
+# Record a three-pane 1920x1080 demo video of the tilo shell.
 #
 # Two sources, because they have genuinely different capabilities:
 #
@@ -25,7 +25,7 @@
 # composed source avoids the problem entirely.
 set -euo pipefail
 
-OUT="target/demo/qos-demo.mp4"
+OUT="target/demo/tilo-demo.mp4"
 DURATION=30
 DRY_RUN=0
 SOURCE="composed"
@@ -208,10 +208,10 @@ cleanup() {
 trap cleanup EXIT
 
 for i in 1 2 3; do
-    QOS_TEST_CONTROL="/tmp/qos-demo-pane$i.sock" "$SHELL_BIN" --backend winit &
+    TILO_TEST_CONTROL="/tmp/tilo-demo-pane$i.sock" "$SHELL_BIN" --backend winit &
     PIDS+=("$!")
 done
-echo "spawned 3 nested compositors; control sockets at /tmp/qos-demo-pane{1,2,3}.sock"
+echo "spawned 3 nested compositors; control sockets at /tmp/tilo-demo-pane{1,2,3}.sock"
 echo "arrange the windows now -- recording starts in 8s"
 sleep 8
 

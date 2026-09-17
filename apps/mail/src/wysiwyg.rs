@@ -1297,10 +1297,10 @@ mod tests {
             ed.insert_char(ch);
         }
         ed.select_all();
-        ed.set_link("https://qos.example");
+        ed.set_link("https://tilo.example");
         let html = ed.to_html();
         assert!(
-            html.contains("<a href=\"https://qos.example\">"),
+            html.contains("<a href=\"https://tilo.example\">"),
             "got: {html}"
         );
     }

@@ -59,7 +59,7 @@ they do not prove compatibility or establish a publisher's signature.
 Select the profile when building on native aarch64 Linux, after configuring
 the normal pinned build inputs, registry access, generation and owner key:
 
-Set `QOS_TARGET_IMGREF` explicitly to the reviewed update tag or SHA-256 digest
+Set `TILO_TARGET_IMGREF` explicitly to the reviewed update tag or SHA-256 digest
 in the signature-required `code.sandbox.example/qos/qos` repository. It must identify
 a published channel or artifact that retains this board's firmware and device
 tree; this guide does not designate a release that has not been published.
@@ -69,13 +69,13 @@ identical override, and rejects a conflicting override before any disk work.
 Generic images retain the official `latest` default and trusted overrides.
 
 ```sh
-QOS_HARDWARE_PROFILE=lenovo-83ed ./os/build.sh
+TILO_HARDWARE_PROFILE=lenovo-83ed ./os/build.sh
 ```
 
 The image builder runs `os/dev/prepare-hardware-profile.py` as root after
 installing the selected kernel and before dracut builds the initramfs. It
 reads the profile's local firmware directory through a build mount. An
-explicit profile cannot be combined with `QOS_SKIP_BUILD=1`; the profile
+explicit profile cannot be combined with `TILO_SKIP_BUILD=1`; the profile
 must be included in a newly built image. Set `KERNEL_RPMS_REF` explicitly
 when using a separately built native ARM64 kernel artifact.
 
@@ -84,13 +84,13 @@ rejects symlink redirects, a missing or malformed DTB, architecture mismatch,
 and incomplete manifests. It writes root-owned files with mode `0644`:
 
 - `/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/` contains the six firmware files.
-- `/etc/dracut.conf.d/41-qos-hardware.conf` includes those exact firmware paths
+- `/etc/dracut.conf.d/41-tilo-hardware.conf` includes those exact firmware paths
   in the initramfs, where display and input can need them during disk unlock.
-- `/usr/lib/qos/hardware-profile.json` binds the model, aarch64 architecture,
+- `/usr/lib/tilo/hardware-profile.json` binds the model, aarch64 architecture,
   kernel-specific DTB path, that DTB's SHA-256, and `target_update_ref`. The UKI
   builder validates this immutable image input before embedding the device
   tree and signing.
-- `/usr/lib/qos/hardware-profile-definition.json` holds the reviewed definition
+- `/usr/lib/tilo/hardware-profile-definition.json` holds the reviewed definition
   used to validate that generated profile.
 
 Passing `--profile generic` creates no files and needs no local firmware.

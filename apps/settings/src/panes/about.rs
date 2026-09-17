@@ -1,4 +1,4 @@
-//! About / qOS Identity pane — device identity and transfer.
+//! About / Tilo Identity pane — device identity and transfer.
 //!
 //! Reads real system facts where they're cheap: `/etc/os-release`
 //! (`PRETTY_NAME`), `/proc/sys/kernel/osrelease` (kernel),
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn from_paths_uses_fallbacks_for_missing_files() {
-        let missing = Path::new("/nonexistent/qos/settings/test/path");
+        let missing = Path::new("/nonexistent/tilo/settings/test/path");
         let info = AboutInfo::from_paths(missing, missing, missing, missing, missing, missing);
         assert_eq!(info.pretty_name, "unknown");
         assert_eq!(info.kernel, "unknown");

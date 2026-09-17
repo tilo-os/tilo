@@ -77,10 +77,10 @@ jobs:
           ref="code.sandbox.example/qos/wine-tools@$TOOLS_DIGEST"
           printf '%s\n' "$ref" > wine-input-evidence/runtime-image.txt
           docker pull "$ref"
-          container=$(docker create --entrypoint python3 "$ref" /qos/fetch-wine-source.py /wine-inputs/source)
+          container=$(docker create --entrypoint python3 "$ref" /tilo/fetch-wine-source.py /wine-inputs/source)
           cleanup() {
             docker cp "$container":/wine-inputs/. wine-input-evidence/ || true
-            docker cp "$container":/usr/lib/qos/. wine-input-evidence/ || true
+            docker cp "$container":/usr/lib/tilo/. wine-input-evidence/ || true
             docker rm "$container" >/dev/null || true
           }
           trap cleanup EXIT
@@ -191,9 +191,9 @@ jobs:
           done
           x64=$(cat inputs/x86_64/wine-rpms-image.txt)
           x86=$(cat inputs/i686/wine-rpms-image.txt)
-          docker exec "$merger" python3 /qos/merge-wine-rpms.py \
+          docker exec "$merger" python3 /tilo/merge-wine-rpms.py \
             --x64 /tmp/x86_64 --x86 /tmp/i686 --x64-ref "$x64" --x86-ref "$x86" \
-            --pin /qos/wine-source.json --output /wine-paired
+            --pin /tilo/wine-source.json --output /wine-paired
           tag="code.sandbox.example/qos/wine-paired:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker exec "$merger" tar -C / -cf - wine-paired | docker import --platform linux/amd64 - "$tag"
           docker push "$tag"

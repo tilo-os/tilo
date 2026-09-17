@@ -574,7 +574,7 @@ mod tests {
             id: RecordId::for_file(format!("/scan/{name}.note")),
             kind: RecordKind::new("note"),
             home: Some(rooms[0]),
-            package_id: "dev.qos.notes".into(),
+            package_id: "dev.tilo.notes".into(),
         };
         index
             .borrow_mut()
@@ -624,7 +624,7 @@ mod tests {
             id: book,
             kind: RecordKind::new("book"),
             home: Some(rooms[1]),
-            package_id: "dev.qos.ebook".into(),
+            package_id: "dev.tilo.ebook".into(),
         }]);
         let provider = RecordsProvider::with_index(index);
 
@@ -771,7 +771,7 @@ mod tests {
             id: RecordId::for_file("/shared/minutes.odt"),
             kind: RecordKind::new("document"),
             home: Some(RoomId::new()),
-            package_id: "dev.qos.word-processor".into(),
+            package_id: "dev.tilo.word-processor".into(),
         }]);
         let provider = RecordsProvider::with_index(index);
 

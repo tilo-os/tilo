@@ -1,0 +1,31 @@
+class TiloImager < Formula
+  desc "Create and verify customised Tilo installation media"
+  homepage "@RELEASE_PAGE@"
+  version "@VERSION@"
+  license "AGPL-3.0-only"
+
+  depends_on :linux
+
+  if Hardware::CPU.arm?
+    url "@BASE_URL@/tilo-imager-linux-aarch64.tar.gz"
+    sha256 "@LINUX_ARM64_SHA256@"
+  else
+    url "@BASE_URL@/tilo-imager-linux-x86_64.tar.gz"
+    sha256 "@LINUX_X86_64_SHA256@"
+  end
+
+  def install
+    bin.install "tilo-imager", "tilo-imager-bin"
+  end
+
+  def caveats
+    "Tilo Imager asks polkit for write access only after you confirm a removable drive."
+  end
+
+  test do
+    shot = testpath/"imager.png"
+    system bin/"tilo-imager-bin", "--shots", shot, "--scenario", "source", "--viewport", "900x700"
+    assert_predicate shot, :exist?
+    assert_operator shot.size, :>, 0
+  end
+end

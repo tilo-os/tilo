@@ -27,7 +27,7 @@ use ui::widget::{Column, Text};
 ///     let mut relay = `MemoryRelay::new()`;
 ///     let alice = relay.attach("alice");
 ///     let bob   = relay.attach("bob");
-///     `alice.send(CollabRequest::DocumentIncremental` { data: vec![1,2,3] });
+///     `alice.send(CollabRequest::document_incremental(vec![1,2,3]));`
 ///     `relay.drain_peer_outbox(&alice)`;
 ///     pump(&mut relay);
 ///     let events = `bob.poll()`;
@@ -123,7 +123,9 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
-            CollabRequest::DocumentIncremental { data } => {
+            CollabRequest::Document {
+                mutation: ui::collaboration::DocumentMutation::Incremental(data),
+            } => {
                 let event =
                     document_event(&collab_types::DocumentMutation::Incremental(data), &from);
                 for id in &peer_ids {
@@ -133,7 +135,9 @@ pub fn pump(relay: &mut MemoryRelay) {
                     inboxes.get_mut(id).unwrap().push_back(event.clone());
                 }
             }
-            CollabRequest::DocumentSnapshot { data } => {
+            CollabRequest::Document {
+                mutation: ui::collaboration::DocumentMutation::Snapshot(data),
+            } => {
                 let event = document_event(&collab_types::DocumentMutation::Snapshot(data), &from);
                 for id in &peer_ids {
                     if id == &from {
@@ -187,6 +191,19 @@ pub fn pump(relay: &mut MemoryRelay) {
                     });
                 }
             }
+            CollabRequest::RequestDocumentSnapshot => {
+                // Production chooses the lowest broker peer id other than the
+                // requester. This route-agnostic harness has one shared test
+                // channel, so use the lexical peer id for the same one-holder
+                // invariant.
+                if let Some(id) = peer_ids.iter().filter(|id| *id != &from).min()
+                    && let Some(inbox) = inboxes.get_mut(id)
+                {
+                    inbox.push_back(CollabEvent::DocumentSnapshotRequested {
+                        route: ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
+                    });
+                }
+            }
             CollabRequest::OpenWorkspaceControl { session_id, .. } => {
                 // This harness has no authenticated shell/network boundary;
                 // mirror production's fail-closed response to the requester
@@ -204,9 +221,11 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::WorkspaceControlInput { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
+            | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
             | CollabRequest::ReportContinuation { .. }
+            | CollabRequest::ReportPlayback { .. }
             | CollabRequest::ClearContinuation { .. }
             | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }

@@ -42,7 +42,7 @@ static void prepare(void) {
     attach("sysfs", "/sys", "sysfs", 0, NULL);
     attach("devtmpfs", "/dev", "devtmpfs", 0, NULL);
     long abi = syscall(SYS_landlock_create_ruleset, NULL, 0, 1);
-    printf("QOS_ARM_CAPSULE_VM_ABI=%ld\n", abi);
+    printf("TILO_ARM_CAPSULE_VM_ABI=%ld\n", abi);
     if (abi < 5) { errno = ENOTSUP; fail("Landlock ABI"); }
     module("netfs"); module("9pnet"); module("9pnet_virtio"); module("9p"); module("overlay");
     int guest_block = access("/guest-squashfs", F_OK) == 0;
@@ -55,16 +55,16 @@ static void prepare(void) {
            "lowerdir=/native,upperdir=/scratch/upper,workdir=/scratch/work");
     const char *tags[] = {"inputs", "x86", "proton", "steam"};
     const char *targets[] = {
-        "/vm/inputs", "/vm/usr/lib/qos/windows-runners/x86",
-        "/vm/usr/lib/qos/windows-runners/proton/UMU-Proton-10.0-4",
-        "/vm/usr/lib/qos/windows-runners/steam-runtime/SteamLinuxRuntime_sniper"
+        "/vm/inputs", "/vm/usr/lib/tilo/windows-runners/x86",
+        "/vm/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4",
+        "/vm/usr/lib/tilo/windows-runners/steam-runtime/SteamLinuxRuntime_sniper"
     };
     for (size_t i = 0; i < sizeof(tags)/sizeof(tags[0]); ++i) {
         if (guest_block && i == 1) {
             for (int attempt = 0; attempt < 100 && access("/dev/vda", F_OK); ++attempt)
                 usleep(100000);
             attach("/dev/vda", targets[i], "squashfs", MS_RDONLY, NULL);
-            puts("QOS_ARM_CAPSULE_GUEST_ROOT=squashfs-readonly");
+            puts("TILO_ARM_CAPSULE_GUEST_ROOT=squashfs-readonly");
         } else {
             attach(tags[i], targets[i], "9p", MS_RDONLY,
                    "trans=virtio,version=9p2000.L,msize=1048576,cache=loose");
@@ -93,9 +93,9 @@ int main(void) {
     }
     int status = -1;
     if (child < 0 || waitpid(child, &status, 0) != child) perror("wait init child");
-    printf("QOS_ARM_CAPSULE_VM_STATUS=%d\n", status);
+    printf("TILO_ARM_CAPSULE_VM_STATUS=%d\n", status);
     puts(WIFEXITED(status) && WEXITSTATUS(status) == 0 ?
-         "QOS_ARM_CAPSULE_VM_PASS" : "QOS_ARM_CAPSULE_VM_FAIL");
+         "TILO_ARM_CAPSULE_VM_PASS" : "TILO_ARM_CAPSULE_VM_FAIL");
     sync(); reboot(RB_POWER_OFF);
     for (;;) pause();
 }

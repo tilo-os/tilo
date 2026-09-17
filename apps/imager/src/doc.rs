@@ -50,7 +50,7 @@ impl ImagerDoc {
         }
     }
 
-    /// Seed a fully-populated **demo** document: a pre-selected qOS image and
+    /// Seed a fully-populated **demo** document: a pre-selected Tilo image and
     /// short recent-sources history. Device/release fixtures live in the local
     /// app, never in this collaborative document. This is the single home of
     /// the imager's sample content — used
@@ -227,6 +227,11 @@ impl ImagerDoc {
             ui::doc::put_if_changed(doc, &map, "mode", mode.key());
         }
     }
+    pub fn set_profile_filesystem(doc: &mut AutoCommit, filesystem: crate::model::Filesystem) {
+        if let Some(map) = Self::profile_map(doc) {
+            ui::doc::put_if_changed(doc, &map, "filesystem", filesystem.key());
+        }
+    }
     pub fn set_profile_encrypt(doc: &mut AutoCommit, on: bool) {
         if let Some(map) = Self::profile_map(doc) {
             ui::doc::put_if_changed(doc, &map, "encrypt", on);
@@ -337,7 +342,7 @@ impl ImagerDoc {
         let digest = Self::map_str(doc, map, "expected_sha256");
         Some(Source {
             kind: match Self::map_str(doc, map, "kind").as_str() {
-                "qOS" => crate::model::SourceKind::QosImage,
+                "Tilo" => crate::model::SourceKind::TiloImage,
                 _ => crate::model::SourceKind::IsoFile,
             },
             path: Self::map_str(doc, map, "path"),
@@ -359,7 +364,7 @@ impl ImagerDoc {
         ui::doc::put_if_changed(doc, map, "locale", profile.locale.as_str());
         ui::doc::put_if_changed(doc, map, "keyboard", profile.keyboard.as_str());
         ui::doc::put_if_changed(doc, map, "timezone", profile.timezone.as_str());
-        ui::doc::put_if_changed(doc, map, "layout", profile.layout.key());
+        ui::doc::put_if_changed(doc, map, "filesystem", profile.filesystem.key());
         ui::doc::put_if_changed(doc, map, "encrypt", profile.encrypt);
         ui::doc::put_if_changed(doc, map, "persist_mb", profile.persist_mb as i64);
         let Some(user) = Self::map(doc, map, "user") else {
@@ -390,7 +395,13 @@ impl ImagerDoc {
         if let Some(timezone) = Self::get_str_at(doc, map, "timezone") {
             profile.timezone = timezone;
         }
-        profile.layout = crate::model::DiskLayout::from_key(&Self::map_str(doc, map, "layout"));
+        let filesystem = Self::get_str_at(doc, map, "filesystem")
+            .or_else(|| Self::get_str_at(doc, map, "layout"));
+        if let Some(filesystem) =
+            filesystem.and_then(|value| crate::model::Filesystem::from_key(&value))
+        {
+            profile.filesystem = filesystem;
+        }
         profile.encrypt = Self::read_bool(doc, map, "encrypt");
         profile.persist_mb = Self::read_i64(doc, map, "persist_mb").max(0) as u64;
         if let Some(user) = Self::map_read(doc, map, "user") {
@@ -504,7 +515,7 @@ mod tests {
         let sample = sample_source();
         ImagerDoc::set_source(&mut doc, Some(&sample));
         let src = ImagerDoc::source(&doc).unwrap();
-        assert_eq!(src.kind, SourceKind::QosImage);
+        assert_eq!(src.kind, SourceKind::TiloImage);
         ImagerDoc::set_source(&mut doc, None);
         assert!(ImagerDoc::source(&doc).is_none());
     }
@@ -515,11 +526,13 @@ mod tests {
         let mut prof = ImagerDoc::profile(&doc);
         prof.hostname = "edited-host".into();
         prof.mode = InstallMode::Persistent;
+        prof.filesystem = crate::model::Filesystem::Xfs;
         prof.encrypt = true;
         ImagerDoc::set_profile(&mut doc, &prof);
         let back = ImagerDoc::profile(&doc);
         assert_eq!(back.hostname, "edited-host");
         assert_eq!(back.mode, InstallMode::Persistent);
+        assert_eq!(back.filesystem, crate::model::Filesystem::Xfs);
         assert!(back.encrypt);
         assert!(matches!(
             doc.get(&ROOT, "profile_v2").unwrap(),

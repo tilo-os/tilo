@@ -3,21 +3,21 @@
 //! `actions::execute`) without a compositor.
 //!
 //! Used by `verify-open-flow.sh` to prove, against a real
-//! `qos-install` + a real `.qpkg` served over HTTP, that:
-//!   * clicking **Open** on a qOS card fetches the package on demand
+//! `tilo-install` + a real `.qpkg` served over HTTP, that:
+//!   * clicking **Open** on a Tilo card fetches the package on demand
 //!     and installs (caches) it — no separate "Install" step; and
 //!   * clicking **Mark installed** pins it.
 //!
 //! Env:
-//!   `QOS_STORE_ITEM_ID`   reverse-DNS package id (default dev.qos.hello)
-//!   `QOS_STORE_ITEM_URL`   http(s) URL of the .qpkg (required for `open`)
-//!   `QOS_STORE_ITEM_NAME`  display name (default derived from id)
+//!   `TILO_STORE_ITEM_ID`   reverse-DNS package id (default dev.tilo.hello)
+//!   `TILO_STORE_ITEM_URL`   http(s) URL of the .qpkg (required for `open`)
+//!   `TILO_STORE_ITEM_NAME`  display name (default derived from id)
 //! Arg 1: `open` | `mark-installed`
 //!
 //! Exit code 0 = the driven action's outcome was ok.
 
 use automerge::AutoCommit;
-use ui::qos_actions::{InvocationId, OperationKind};
+use ui::tilo_actions::{InvocationId, OperationKind};
 use ui::widget::Widget;
 
 use store::StoreApp;
@@ -31,9 +31,9 @@ use store::model::{
 )]
 fn main() {
     let action = std::env::args().nth(1).unwrap_or_else(|| "open".into());
-    let id = std::env::var("QOS_STORE_ITEM_ID").unwrap_or_else(|_| "dev.qos.hello".into());
-    let name = std::env::var("QOS_STORE_ITEM_NAME").unwrap_or_else(|_| "Hello".into());
-    let url = std::env::var("QOS_STORE_ITEM_URL").unwrap_or_default();
+    let id = std::env::var("TILO_STORE_ITEM_ID").unwrap_or_else(|_| "dev.tilo.hello".into());
+    let name = std::env::var("TILO_STORE_ITEM_NAME").unwrap_or_else(|_| "Hello".into());
+    let url = std::env::var("TILO_STORE_ITEM_URL").unwrap_or_default();
 
     // The item as the store would render it, from a registry entry.
     let installed = if action == "mark-installed" {
@@ -55,7 +55,7 @@ fn main() {
         homepage_url: None,
         source_url: None,
         install_ref_path: None,
-        source: StoreSource::Qos {
+        source: StoreSource::Tilo {
             registry_name: "local test registry".into(),
         },
         trust: StoreTrust::PublisherSigned,
@@ -132,9 +132,9 @@ fn main() {
         );
     }
 
-    // Execute the action for real (download → qos-install install →
-    // run, or qos-install pin), exactly as the worker thread would.
-    let staging = std::env::temp_dir().join("qos-store-drive-staged");
+    // Execute the action for real (download → tilo-install install →
+    // run, or tilo-install pin), exactly as the worker thread would.
+    let staging = std::env::temp_dir().join("tilo-store-drive-staged");
     let _ = std::fs::create_dir_all(&staging);
     let outcome = store::actions::execute(&item, pact, &staging);
     println!(

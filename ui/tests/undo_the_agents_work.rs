@@ -35,8 +35,8 @@ use ui::state::State;
 const AGENT: &str = "Claude";
 const PERSON: &str = "alice";
 
-const WORD_PROCESSOR: &str = "dev.qos.word-processor";
-const PHOTO_EDITOR: &str = "dev.qos.photos";
+const WORD_PROCESSOR: &str = "dev.tilo.word-processor";
+const PHOTO_EDITOR: &str = "dev.tilo.photos";
 
 fn actor_hex(handle: &str) -> String {
     ActorId::from(handle.as_bytes()).to_hex_string()

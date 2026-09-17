@@ -533,7 +533,7 @@ mod tests {
             "QD",
             "must uppercase lowercase input"
         );
-        let long = Avatar::from_initials("Quickdesktop", 40.0);
+        let long = Avatar::from_initials("Tilo", 40.0);
         assert_eq!(
             long.display_initials(),
             "QU",

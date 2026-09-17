@@ -563,7 +563,7 @@ pub fn build_tree_update_with_resources<S: std::hash::BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
-    resources: &[qos_actions::Resource],
+    resources: &[tilo_actions::Resource],
 ) -> TreeUpdate {
     // Reverse map so we can look up a stable id for any &dyn Widget during the walk.
     let ptr_to_taffy = reverse_node_map(node_map);
@@ -578,7 +578,7 @@ pub fn build_tree_update_with_resources<S: std::hash::BuildHasher>(
 
     // The synthetic window root gathers the top-level accessible nodes.
     let mut root_node = AkNode::new(AkRole::Window);
-    root_node.set_label("qOS application window");
+    root_node.set_label("Tilo application window");
 
     let mut root_children: Vec<AkNodeId> = Vec::new();
     visit(
@@ -620,7 +620,7 @@ pub fn build_tree_update_with_resources<S: std::hash::BuildHasher>(
 }
 
 fn append_resource_nodes(
-    resources: &[qos_actions::Resource],
+    resources: &[tilo_actions::Resource],
     nodes: &mut Vec<(AkNodeId, AkNode)>,
     parent_children: &mut Vec<AkNodeId>,
     claimed: &mut HashMap<AkNodeId, String>,
@@ -646,7 +646,7 @@ fn append_resource_nodes(
             let address = format!(
                 "{}{}{}",
                 resource.id.as_str(),
-                qos_actions::KEY_SEP,
+                tilo_actions::KEY_SEP,
                 action.id
             );
             if let Some(existing) = claimed.insert(action_id, address.clone()) {
@@ -662,7 +662,7 @@ fn append_resource_nodes(
             action_node.set_label(action.label.clone());
             let operation = action.kind.as_str();
             match &action.input {
-                qos_actions::ActionInput::Immediate(_) => {
+                tilo_actions::ActionInput::Immediate(_) => {
                     action_node.add_action(AkAction::Click);
                     if let Some(description) = &action.description {
                         action_node.set_description(format!("{description} ({operation})"));
@@ -670,7 +670,7 @@ fn append_resource_nodes(
                         action_node.set_description(format!("{operation} operation"));
                     }
                 }
-                qos_actions::ActionInput::Prompted { prompt, .. } => {
+                tilo_actions::ActionInput::Prompted { prompt, .. } => {
                     action_node.add_action(AkAction::SetValue);
                     let description = action.description.as_deref().unwrap_or(prompt);
                     action_node.set_description(format!("{description} ({operation})"));
@@ -1667,25 +1667,25 @@ mod tests {
 
     #[test]
     fn live_resources_are_accessible_through_the_same_action_addresses() {
-        let immediate = qos_actions::ActionSpec::operation(
+        let immediate = tilo_actions::ActionSpec::operation(
             "refresh",
             "Refresh",
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             "test.refresh",
             &serde_json::json!({}),
         )
         .unwrap();
-        let prompted = qos_actions::ActionSpec::prompted_operation(
+        let prompted = tilo_actions::ActionSpec::prompted_operation(
             "find",
             "Find",
             "Text to find",
             "query",
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             "test.find",
-            |value| qos_actions::EncodedAction::encode_operation("test.find", &value).unwrap(),
+            |value| tilo_actions::EncodedAction::encode_operation("test.find", &value).unwrap(),
         );
         let resources = [
-            qos_actions::Resource::new("document:1", "test.document", "Document")
+            tilo_actions::Resource::new("document:1", "test.document", "Document")
                 .with_action(immediate)
                 .with_action(prompted),
         ];

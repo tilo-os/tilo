@@ -203,14 +203,14 @@ files-merge-review-menu = Review merge
 files-merge-review-title = Review merge — { $name }
 files-merge-review-summary = No changes have been made yet
 files-merge-review-checking = Checking the exact immutable revisions…
-files-merge-review-checking-detail = qOS is comparing both changes with their shared base. Nothing is changed while this runs.
+files-merge-review-checking-detail = Tilo is comparing both changes with their shared base. Nothing is changed while this runs.
 files-merge-review-safe = Safe to merge
 files-merge-review-needs-review = Needs review — no merge will be applied
 files-merge-review-unavailable = The merge preflight is unavailable. Refresh the file and compare the versions manually.
 files-merge-review-no-apply = Keep Both or choose a version after reviewing the immutable diff.
 files-merge-review-incoming = Incoming revision from device { $device }
 files-merge-review-diff = Version History lets you compare the two immutable revisions before applying this merge.
-files-merge-review-guard = qOS rechecks the exact base and both revisions immediately before saving. If the edits overlap or changed meanwhile, nothing is merged.
+files-merge-review-guard = Tilo rechecks the exact base and both revisions immediately before saving. If the edits overlap or changed meanwhile, nothing is merged.
 files-merge-review-undo = Applying creates one signed history entry, so you can restore either earlier version without undoing later work.
 files-merge-apply-safe = Apply safe merge
 files-merge-apply-safe-detail = This only proceeds when the deterministic preflight still proves both revisions can be preserved.
@@ -449,7 +449,6 @@ files-menu-add-favourite = Add to Favourites
 files-menu-remove-favourite = Remove from Favourites
 files-menu-hide-hidden = Hide Hidden Files
 files-menu-show-hidden = Show Hidden Files
-files-menu-show-hidden-checked = ✓ Show Hidden Files
 files-menu-sort-name = Sort by Name
 files-menu-sort-size = Sort by Size
 files-menu-sort-type = Sort by Type
@@ -461,10 +460,26 @@ files-sort-type = Type
 files-sort-date = Date
 files-sort-ascending = Ascending
 files-sort-descending = Descending
-files-menu-checked = ✓ { $label }
-files-menu-unchecked =      { $label }
 files-new-from-template = New { $name }
 files-drag-items = { $count } items
+
+## Archives
+files-archive-extract = Extract archive…
+files-archive-extract-here = Extract here
+files-archive-compress = Compress to ZIP
+files-archive-select-compress = Select files or folders to compress
+files-archive-read-only = Archives are read-only until extracted
+files-archive-open-after-extract = Extract this archive to open or edit files inside it
+files-archive-select = Select a ZIP, TAR, or TAR.GZ archive to extract
+files-archive-extracted =
+    { $count ->
+        [one] Extracted 1 file
+       *[other] Extracted { $count } files
+    }
+files-archive-extracted-partial = Extracted { $count } files; { $failures }
+files-archive-extract-failed = Could not extract archive: { $error }
+files-archive-created = Created { $name }
+files-archive-create-failed = Could not create archive: { $error }
 
 ## File-operation validation
 files-folder-name-empty = Folder name cannot be empty

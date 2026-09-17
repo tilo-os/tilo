@@ -2,7 +2,7 @@
 # Render sample installer states without running installation actions.
 set -euo pipefail
 if [[ $# != 2 ]]; then
-    echo "Usage: $0 /path/to/qos-installer /path/to/new-output-directory" >&2
+    echo "Usage: $0 /path/to/tilo-installer /path/to/new-output-directory" >&2
     exit 2
 fi
 binary=$(realpath "$1")

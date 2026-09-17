@@ -33,8 +33,7 @@ const CASES: &[(&str, f64, f64, f64, f64, f32, f64)] = &[
     ("toast", 360.0, 68.0, 18.0, 6.0, 0.5, 12.0),
     // The command palette / a settings modal.
     ("palette", 640.0, 470.0, 44.0, 14.0, 0.55, 16.0),
-    // The wheel disc's active spoke card — small and near-square, the
-    // case the old stretched sprite happened to get right.
+    // Small, near-square wheel-disc spoke card.
     ("spoke-card", 44.0, 44.0, 14.0, 0.0, 0.35, 10.0),
     // A window group's title pill, and its close glyph: the smallest
     // shadows in the toolkit, both shorter than twice their spread.

@@ -1,4 +1,4 @@
-//! qOS screen-projection protocol broker.
+//! Tilo screen-projection protocol broker.
 //!
 //! This executable is intentionally separate from the compositor: discovery
 //! touches the LAN, and protocol sessions will own receiver sockets for much
@@ -40,11 +40,11 @@ use fcast_sender_sdk::device::{
 };
 use fcast_sender_sdk::{DeviceDiscovererEventHandler, url_format_ip_addr};
 use mdns_sd::ServiceEvent;
-use qos_projector::{
+use rand::{RngCore, rngs::OsRng};
+use tilo_projector::{
     CaptureProfile, DisplayResolutionLimit, DisplayStreamPolicy, ProjectionDevice, ProjectionMode,
     ProjectionProtocol, VideoPacket,
 };
-use rand::{RngCore, rngs::OsRng};
 
 const DEFAULT_DISCOVERY_MS: u64 = 1_500;
 const AIRPLAY_SERVICE: &str = "_airplay._tcp.local.";
@@ -280,7 +280,7 @@ fn discover_miracast(timeout: Duration) -> Vec<ProjectionDevice> {
 
 fn discover(timeout: Duration) -> Result<Vec<ProjectionDevice>, String> {
     let miracast = std::thread::Builder::new()
-        .name("qos-miracast-discovery".to_owned())
+        .name("tilo-miracast-discovery".to_owned())
         .spawn(move || discover_miracast(timeout))
         .map_err(|error| format!("cannot start Miracast discovery: {error}"))?;
     let context = fcast_sender_sdk::context::CastContext::new()
@@ -352,10 +352,11 @@ struct SessionPaths {
 
 impl SessionPaths {
     fn resolve() -> Result<Self, String> {
-        let root = std::env::var_os("QOS_PROJECTOR_RUNTIME_DIR")
+        let root = std::env::var_os("TILO_PROJECTOR_RUNTIME_DIR")
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("qos-projector"))
+                std::env::var_os("XDG_RUNTIME_DIR")
+                    .map(|dir| Path::new(&dir).join("tilo-projector"))
             })
             .ok_or_else(|| "XDG_RUNTIME_DIR is unavailable".to_owned())?;
         Self::for_root(root)
@@ -416,7 +417,7 @@ struct HlsPipeline {
 impl HlsPipeline {
     fn start(paths: &SessionPaths, audio: bool) -> Result<Self, String> {
         let executable =
-            std::env::var("QOS_GST_LAUNCH").unwrap_or_else(|_| "gst-launch-1.0".to_owned());
+            std::env::var("TILO_GST_LAUNCH").unwrap_or_else(|_| "gst-launch-1.0".to_owned());
         let segment = paths.root.join("segment-%05d.ts");
         let mut args = vec![
             "-q".to_owned(),
@@ -561,9 +562,37 @@ impl Default for MediaTelemetry {
 fn serve_file(mut stream: TcpStream, root: &Path, token: &str, telemetry: &MediaTelemetry) {
     let request_started = Instant::now();
     let mut request = [0u8; 2048];
-    let Ok(read) = stream.read(&mut request) else {
-        return;
-    };
+    let mut read = 0;
+    loop {
+        if read == request.len() {
+            let _ = stream.write_all(
+                b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return;
+        }
+        let Some(remaining) = request.get_mut(read..) else {
+            return;
+        };
+        let Ok(received) = stream.read(remaining) else {
+            return;
+        };
+        if received == 0 {
+            return;
+        }
+        let Some(total) = read.checked_add(received) else {
+            return;
+        };
+        read = total;
+        let Some(received_request) = request.get(..read) else {
+            return;
+        };
+        if received_request
+            .windows(4)
+            .any(|bytes| bytes == b"\r\n\r\n")
+        {
+            break;
+        }
+    }
     let Some(bytes) = request.get(..read) else {
         return;
     };
@@ -640,7 +669,7 @@ fn start_http_server(
         .set_nonblocking(true)
         .map_err(|error| format!("cannot configure projection media server: {error}"))?;
     let thread = std::thread::Builder::new()
-        .name("qos-projection-http".to_owned())
+        .name("tilo-projection-http".to_owned())
         .spawn(move || {
             while !stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -750,7 +779,7 @@ fn cast_load(
                 speed: None,
                 volume: None,
                 metadata: Some(fcast_sender_sdk::device::Metadata {
-                    title: Some("qOS screen".to_owned()),
+                    title: Some("Tilo screen".to_owned()),
                     thumbnail_url: None,
                 }),
                 request_headers: None,
@@ -875,15 +904,15 @@ fn run_airplay_session(args: &[String]) -> Result<(), String> {
         .map_err(|_| "invalid --port".to_owned())?;
     let audio = args.iter().any(|arg| arg == "--audio");
     let stream_policy = parse_stream_policy(args)?;
-    let executable = std::env::var("QOS_DOUBLETAKE")
-        .unwrap_or_else(|_| "/usr/libexec/qos-doubletake".to_owned());
+    let executable = std::env::var("TILO_DOUBLETAKE")
+        .unwrap_or_else(|_| "/usr/libexec/tilo-doubletake".to_owned());
     let paths = SessionPaths::resolve()?;
     paths.clear_markers();
     fs::write(&paths.pid, std::process::id().to_string())
         .map_err(|error| format!("cannot record AirPlay session: {error}"))?;
     let credentials = airplay_credentials_path()?;
     let command_args = airplay_command_args(&address, port, audio, stream_policy, &credentials);
-    let pairing_credential = std::env::var("QOS_PROJECTION_CREDENTIAL")
+    let pairing_credential = std::env::var("TILO_PROJECTION_CREDENTIAL")
         .ok()
         .filter(|value| !value.is_empty());
     run_airplay_process(
@@ -896,7 +925,7 @@ fn run_airplay_session(args: &[String]) -> Result<(), String> {
 
 fn airplay_credentials_path() -> Result<PathBuf, String> {
     airplay_credentials_path_from(
-        std::env::var_os("QOS_PROJECTOR_STATE_DIR"),
+        std::env::var_os("TILO_PROJECTOR_STATE_DIR"),
         std::env::var_os("XDG_STATE_HOME"),
         std::env::var_os("HOME"),
     )
@@ -909,8 +938,8 @@ fn airplay_credentials_path_from(
 ) -> Result<PathBuf, String> {
     let state_root = override_root
         .map(PathBuf::from)
-        .or_else(|| xdg_state_home.map(|dir| Path::new(&dir).join("qos-projector")))
-        .or_else(|| home.map(|dir| Path::new(&dir).join(".local/state/qos-projector")))
+        .or_else(|| xdg_state_home.map(|dir| Path::new(&dir).join("tilo-projector")))
+        .or_else(|| home.map(|dir| Path::new(&dir).join(".local/state/tilo-projector")))
         .ok_or_else(|| "cannot resolve persistent AirPlay pairing storage".to_owned())?;
     fs::create_dir_all(&state_root)
         .map_err(|error| format!("cannot create AirPlay pairing storage: {error}"))?;
@@ -968,7 +997,7 @@ fn run_miracast_session(args: &[String]) -> Result<(), String> {
     let audio = args.iter().any(|arg| arg == "--audio");
     let stream_policy = parse_stream_policy(args)?;
     let executable =
-        std::env::var("QOS_FLUXCAST").unwrap_or_else(|_| "/usr/libexec/qos-fluxcast".to_owned());
+        std::env::var("TILO_FLUXCAST").unwrap_or_else(|_| "/usr/libexec/tilo-fluxcast".to_owned());
     let paths = SessionPaths::resolve()?;
     paths.clear_markers();
     fs::write(&paths.pid, std::process::id().to_string())
@@ -1048,7 +1077,7 @@ fn run_external_process(
     let (line_tx, line_rx) = mpsc::channel();
     let stdout_tx = line_tx.clone();
     let stdout_reader = std::thread::Builder::new()
-        .name("qos-projection-status-out".to_owned())
+        .name("tilo-projection-status-out".to_owned())
         .spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if stdout_tx.send(line).is_err() {
@@ -1058,7 +1087,7 @@ fn run_external_process(
         })
         .map_err(|error| format!("cannot monitor {transport_name} sender output: {error}"))?;
     let stderr_reader = std::thread::Builder::new()
-        .name("qos-projection-status-err".to_owned())
+        .name("tilo-projection-status-err".to_owned())
         .spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 if line_tx.send(line).is_err() {
@@ -1176,9 +1205,9 @@ fn connect_cast_device(
     device
         .connect(
             Some(ApplicationInfo {
-                name: "qos-projector".to_owned(),
+                name: "tilo-projector".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
-                display_name: "qOS Screen Projection".to_owned(),
+                display_name: "Tilo Screen Projection".to_owned(),
             }),
             Arc::new(SessionEvents {
                 connected: Mutex::new(Some(connected_tx)),
@@ -1331,7 +1360,7 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     let video_paths = paths.clone();
     let video_stop = stop.clone();
     let video_thread = std::thread::Builder::new()
-        .name("qos-projection-video".to_owned())
+        .name("tilo-projection-video".to_owned())
         .spawn(move || video_ingest_loop(&video_paths, &video_stop, audio))
         .map_err(|error| format!("cannot start projection video ingest: {error}"))?;
     let media_token = random_media_token();
@@ -1405,7 +1434,7 @@ fn connect_command(args: &[String]) -> Result<(), String> {
     let paths = SessionPaths::resolve()?;
     paths.clear_markers();
     let executable = std::env::current_exe()
-        .map_err(|error| format!("cannot resolve qos-projector executable: {error}"))?;
+        .map_err(|error| format!("cannot resolve tilo-projector executable: {error}"))?;
     let mut child_args = vec![session_command.to_owned()];
     child_args.extend_from_slice(args.get(1..).unwrap_or(&[]));
     let mut child = Command::new(executable)
@@ -1528,7 +1557,7 @@ fn run(args: &[String]) -> Result<(), String> {
             }
         },
         _ => Err(
-            "usage: qos-projector discover --json [--timeout-ms N] | connect ... | disconnect ..."
+            "usage: tilo-projector discover --json [--timeout-ms N] | connect ... | disconnect ..."
                 .to_owned(),
         ),
     }
@@ -1537,7 +1566,7 @@ fn run(args: &[String]) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(error) = run(&args) {
-        eprintln!("qos-projector: {error}");
+        eprintln!("tilo-projector: {error}");
         std::process::exit(2);
     }
 }
@@ -1625,7 +1654,7 @@ mod tests {
 
         #[zbus(property)]
         fn manufacturer(&self) -> &'static str {
-            "qOS Labs"
+            "Tilo Labs"
         }
 
         #[zbus(property)]
@@ -1698,11 +1727,14 @@ mod tests {
     fn request(port: u16, path: &str) -> Vec<u8> {
         let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
             .expect("connect media server");
-        write!(
-            stream,
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-        )
-        .expect("write request");
+        write!(stream, "GET {path} HTTP/1.1\r\n").expect("write request line");
+        // TCP does not preserve write boundaries. Deliberately let the server
+        // observe a fragmented request so closing with unread header bytes
+        // cannot regress into a connection reset for real receivers.
+        std::thread::sleep(Duration::from_millis(30));
+        stream
+            .write_all(b"Host: localhost\r\nConnection: close\r\n\r\n")
+            .expect("write request headers");
         let mut response = Vec::new();
         stream.read_to_end(&mut response).expect("read response");
         response
@@ -1775,9 +1807,9 @@ mod tests {
         device
             .connect(
                 Some(ApplicationInfo {
-                    name: "qos-projector".to_owned(),
+                    name: "tilo-projector".to_owned(),
                     version: env!("CARGO_PKG_VERSION").to_owned(),
-                    display_name: "qOS Screen Projection".to_owned(),
+                    display_name: "Tilo Screen Projection".to_owned(),
                 }),
                 Arc::new(SessionEvents {
                     connected: Mutex::new(Some(connected_tx)),
@@ -1810,7 +1842,7 @@ mod tests {
     #[test]
     fn media_server_serves_hls_without_exposing_other_runtime_files() {
         let root = std::env::temp_dir().join(format!(
-            "qos-projector-http-{}-{:?}",
+            "tilo-projector-http-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -1897,7 +1929,7 @@ mod tests {
         }
 
         let root = std::env::temp_dir().join(format!(
-            "qos-projector-hls-{}-{:?}",
+            "tilo-projector-hls-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -1906,7 +1938,7 @@ mod tests {
         let mut pipeline =
             HlsPipeline::start(&paths, false).expect("start production HLS pipeline");
         let mut encoder =
-            qos_callstream::encoder::H264Encoder::new_with_bitrate_and_keyframe_interval(
+            tilo_callstream::encoder::H264Encoder::new_with_bitrate_and_keyframe_interval(
                 64, 64, 30, 1_000_000, 30,
             )
             .expect("H.264 encoder");
@@ -1922,7 +1954,7 @@ mod tests {
                     width: 64,
                     height: 64,
                     presentation_time_us: frame_index * 33_333,
-                    keyframe: qos_callstream::session::is_h264_keyframe(&annex_b),
+                    keyframe: tilo_callstream::session::is_h264_keyframe(&annex_b),
                     annex_b,
                 })
                 .expect("push projection frame");
@@ -1955,7 +1987,7 @@ mod tests {
     #[test]
     fn airplay_process_readiness_and_disconnect_are_hardware_free() {
         let root = std::env::temp_dir().join(format!(
-            "qos-projector-airplay-{}-{:?}",
+            "tilo-projector-airplay-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -1992,7 +2024,7 @@ mod tests {
     #[test]
     fn airplay_pairing_credentials_use_persistent_private_storage() {
         let root = std::env::temp_dir().join(format!(
-            "qos-projector-state-{}-{:?}",
+            "tilo-projector-state-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -2013,7 +2045,7 @@ mod tests {
     #[test]
     fn miracast_process_readiness_and_disconnect_are_hardware_free() {
         let root = std::env::temp_dir().join(format!(
-            "qos-projector-miracast-{}-{:?}",
+            "tilo-projector-miracast-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -2125,14 +2157,14 @@ mod tests {
     fn local_mdns_receivers_exercise_three_real_discovery_browsers() {
         let daemon = ServiceDaemon::new().expect("mDNS simulator daemon");
         let suffix = std::process::id();
-        let fcast_name = format!("qOS FCast simulator {suffix}");
-        let cast_name = format!("qOS Cast simulator {suffix}");
-        let airplay_name = format!("qOS AirPlay simulator {suffix}");
+        let fcast_name = format!("Tilo FCast simulator {suffix}");
+        let cast_name = format!("Tilo Cast simulator {suffix}");
+        let airplay_name = format!("Tilo AirPlay simulator {suffix}");
 
         let fcast = ServiceInfo::new(
             "_fcast._tcp.local.",
             &fcast_name,
-            &format!("qos-fcast-{suffix}.local."),
+            &format!("tilo-fcast-{suffix}.local."),
             "",
             46899,
             HashMap::from([("id".to_owned(), format!("fcast-{suffix}"))]),
@@ -2141,8 +2173,8 @@ mod tests {
         .enable_addr_auto();
         let cast = ServiceInfo::new(
             "_googlecast._tcp.local.",
-            &format!("qos-cast-{suffix}"),
-            &format!("qos-cast-{suffix}.local."),
+            &format!("tilo-cast-{suffix}"),
+            &format!("tilo-cast-{suffix}.local."),
             "",
             8009,
             HashMap::from([
@@ -2155,7 +2187,7 @@ mod tests {
         let airplay = ServiceInfo::new(
             AIRPLAY_SERVICE,
             &airplay_name,
-            &format!("qos-airplay-{suffix}.local."),
+            &format!("tilo-airplay-{suffix}.local."),
             "",
             7000,
             HashMap::from([

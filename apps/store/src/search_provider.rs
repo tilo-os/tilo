@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use qos_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::search::{SearchCatalog, SearchPage, SearchProvider, SearchResult};
 
@@ -195,7 +195,7 @@ fn resource_id(item: &StoreItem) -> String {
 
 fn searchable_text(item: &StoreItem) -> String {
     let source = match &item.source {
-        StoreSource::Qos { registry_name } => registry_name.as_str(),
+        StoreSource::Tilo { registry_name } => registry_name.as_str(),
         StoreSource::Flathub => "Flathub",
     };
     format!(
@@ -253,7 +253,7 @@ mod tests {
             homepage_url: None,
             source_url: None,
             install_ref_path: None,
-            source: StoreSource::Qos {
+            source: StoreSource::Tilo {
                 registry_name: "main".into(),
             },
             trust: StoreTrust::PublisherSigned,

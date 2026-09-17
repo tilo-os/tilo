@@ -17,7 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::{ActionEmitter, ControlBindingMetadata, TaffyTreeExt, Widget};
 
 /// Lossless `usize -> f64` widening for segment-strip geometry. Segment
@@ -46,13 +46,17 @@ impl Segment {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent cached interaction/layout flags are orthogonal states, not one state machine"
+)]
 pub struct ToggleGroup {
     id: Option<String>,
     segments: Vec<Segment>,
     selected: usize,
     on_change: Option<Box<dyn FnMut(usize)>>,
     action: Option<ActionEmitter<usize>>,
-    native_resource: Option<crate::qos_actions::Resource>,
+    native_resource: Option<crate::tilo_actions::Resource>,
     /// Indices aligned 1:1 with `segments`; drawing also consults this for
     /// the fill.
     segment_rects: Vec<Rect>,
@@ -69,6 +73,14 @@ pub struct ToggleGroup {
     /// `is_focused` at the last cache emit, so a focus change invalidates
     /// the cached scene.
     last_focused: bool,
+    /// Fill the parent's available width, allowing compact app navigation on
+    /// phone-sized windows while retaining equal hit targets.
+    flexible_width: bool,
+    /// Visual treatment shared with the immediate-mode segmented painter.
+    style: SegmentedStyle,
+    /// Finger owning the current gesture. Selection commits on release, so a
+    /// scroll or cancelled touch never changes tabs on initial contact.
+    active_touch: Option<u64>,
 }
 
 impl ToggleGroup {
@@ -94,7 +106,34 @@ impl ToggleGroup {
             last_selected: usize::MAX,
             is_focused: false,
             last_focused: false,
+            flexible_width: false,
+            style: SegmentedStyle::Solid,
+            active_touch: None,
         }
+    }
+
+    /// Use the containing width instead of the 120px-per-segment intrinsic
+    /// width. Labels remain equal-width and elide through the normal painter.
+    #[must_use]
+    pub fn with_flexible_width(mut self) -> Self {
+        self.flexible_width = true;
+        self
+    }
+
+    /// Use the same themed treatment as [`SegmentedFace`].
+    #[must_use]
+    pub fn with_style(mut self, style: SegmentedStyle) -> Self {
+        self.style = style;
+        self.cache_dirty = true;
+        self
+    }
+
+    /// A low-chrome tab treatment with a short accent indicator.
+    #[must_use]
+    pub fn underline(mut self) -> Self {
+        self.style = SegmentedStyle::Underline;
+        self.cache_dirty = true;
+        self
     }
 
     #[must_use]
@@ -108,7 +147,7 @@ impl ToggleGroup {
     /// optimistically only after the document/model reflects that action, so
     /// collaborative filters do not acquire a second callback-only path.
     #[must_use]
-    pub fn on_action(mut self, binding: crate::qos_actions::ActionBinding<usize>) -> Self {
+    pub fn on_action(mut self, binding: crate::tilo_actions::ActionBinding<usize>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.native_resource = None;
         self.on_change = None;
@@ -137,12 +176,12 @@ impl ToggleGroup {
         reason = "the generated integer schema and action are internally consistent"
     )]
     pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
-        use crate::qos_actions::{
+        use crate::tilo_actions::{
             ActionBinding, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
             ParamType, Resource,
         };
 
-        const TYPE_ID: &str = "qos.ui.segmented.select";
+        const TYPE_ID: &str = "tilo.ui.segmented.select";
         self.id = Some(id.to_owned());
         let control_id = id.to_owned();
         let mut spec = ActionSpec::typed_operation(
@@ -168,7 +207,7 @@ impl ToggleGroup {
             },
         );
         spec.contract.discovery = DiscoveryScope::Launchable;
-        let resource = Resource::new(format!("qos.control:{id}"), "qos.control.segmented", id)
+        let resource = Resource::new(format!("tilo.control:{id}"), "tilo.control.segmented", id)
             .with_action(spec.clone());
         let binding = ActionBinding::new(&resource, &spec, |index: usize| {
             serde_json::Map::from_iter([("index".into(), serde_json::json!(index))])
@@ -564,6 +603,108 @@ impl ToggleGroup {
             );
         }
     }
+
+    fn handle_key_event(&mut self, key: &KeyEvent, handled: &mut bool) {
+        if !self.is_focused
+            || !self.is_enabled()
+            || key.state != ElementState::Pressed
+            || key.repeat
+        {
+            return;
+        }
+        let len = self.segments.len();
+        let selection = match key.logical_key {
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => Some(
+                self.selected
+                    .checked_sub(1)
+                    .unwrap_or_else(|| len.saturating_sub(1)),
+            ),
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => {
+                Some(if self.selected == len.saturating_sub(1) {
+                    0
+                } else {
+                    self.selected.saturating_add(1)
+                })
+            }
+            Key::Named(NamedKey::Home) if len > 0 => Some(0),
+            Key::Named(NamedKey::End) if len > 0 => Some(len.saturating_sub(1)),
+            // A segmented control is single-select: activation confirms its
+            // current choice rather than toggling it off.
+            Key::Named(NamedKey::Enter | NamedKey::Space) => Some(self.selected),
+            _ => None,
+        };
+        if let Some(selection) = selection {
+            *handled = true;
+            self.request_selection(selection);
+        }
+    }
+
+    fn handle_pointer_press(
+        &mut self,
+        state: ElementState,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        if state != ElementState::Pressed || !self.is_enabled() {
+            return;
+        }
+        let pos = self.last_cursor.get();
+        if let Some(index) = self
+            .segment_rects
+            .iter()
+            .position(|segment| segment.contains(pos))
+        {
+            *handled = true;
+            *focus_target = Some(node_id);
+            self.request_selection(index);
+        }
+    }
+
+    fn handle_touch_event(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale_factor: f64,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        if !self.is_enabled() {
+            return;
+        }
+        let pos = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            winit::event::TouchPhase::Started
+                if self.active_touch.is_none() && self.rect.contains(pos) =>
+            {
+                self.active_touch = Some(touch.id);
+                *focus_target = Some(node_id);
+                *handled = true;
+            }
+            winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
+                *handled = true;
+            }
+            winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
+                self.active_touch = None;
+                if let Some(index) = self
+                    .segment_rects
+                    .iter()
+                    .position(|segment| segment.contains(pos))
+                {
+                    self.request_selection(index);
+                }
+                *handled = true;
+            }
+            winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
+                self.active_touch = None;
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Widget for ToggleGroup {
@@ -575,18 +716,24 @@ impl Widget for ToggleGroup {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // 120px per segment, 36px tall; segments always share the
+        // 120px per segment, 44px tall; segments always share the
         // available width equally in `apply_layout`.
         let width = usize_to_f32(self.segments.len().max(1)) * 120.0;
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(width),
-                height: Dimension::length(36.0),
+                width: if self.flexible_width {
+                    Dimension::percent(1.0)
+                } else {
+                    Dimension::length(width)
+                },
+                height: Dimension::length(44.0),
             },
             // A segmented strip has an intrinsic label-bearing width. In a
             // horizontal `Scrollable`, shrinking it to the viewport defeats
             // scrolling and makes labels collide. Non-scrollable parents can
             // clip it, which is still more honest than overlapping controls.
+            // Width is already resolved as a percentage in flexible mode;
+            // never let a tall sibling squash the 44px touch target.
             flex_shrink: 0.0,
             ..Default::default()
         });
@@ -640,86 +787,24 @@ impl Widget for ToggleGroup {
         let scene = &mut self.cached;
         let transform = Affine::IDENTITY;
 
-        let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.md);
         let outer_shape = RoundedRect::from_rect(self.rect, radius);
+        let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
+        let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
+            .style(self.style)
+            .radius(radius);
+        Self::paint(scene, transform, text_renderer, theme, &face);
 
-        // Clip each fill against the outer rounded rect so the end segments
-        // inherit the corner radius.
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &outer_shape,
-        );
-        for (i, seg_rect) in self.segment_rects.iter().enumerate() {
-            let fill = if i == self.selected {
-                colors.accent[ACCENT_PRIMARY_IDX]
-            } else {
-                colors.surfaces.raised
-            };
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+        // Keyboard focus must remain unmistakable on every style. For Solid,
+        // this focus stroke intentionally covers the resting standard border.
+        if self.is_focused {
+            scene.stroke(
+                &Stroke::new(2.0),
                 transform,
-                fill,
+                theme.tokens.colors.border_focus,
                 None,
-                seg_rect,
+                &outer_shape,
             );
-        }
-        scene.pop_layer();
-
-        // Each `stroke(Line, ...)` call is a single `DrawTag::COLOR` entry —
-        // what `separator_count` accounts for at the API level.
-        let separator_color = colors.border_standard;
-        let separator_stroke = Stroke::new(1.0);
-        for seg_rect in self
-            .segment_rects
-            .iter()
-            .take(self.segments.len().saturating_sub(1))
-        {
-            let x = seg_rect.x1;
-            let line = Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1));
-            scene.stroke(&separator_stroke, transform, separator_color, None, &line);
-        }
-
-        // Focus ring: prominent focus colour at 2px.
-        let (border_w, border_c) = if self.is_focused {
-            (2.0, colors.border_focus)
-        } else {
-            (1.0, colors.border_standard)
-        };
-        scene.stroke(
-            &Stroke::new(border_w),
-            transform,
-            border_c,
-            None,
-            &outer_shape,
-        );
-
-        // Vertical centering uses the typography scale because cosmic-text's
-        // measure returns the visual line height.
-        let text_size = theme.tokens.typography.scale.sm;
-        for (i, seg_rect) in self.segment_rects.iter().enumerate() {
-            let Some(segment) = self.segments.get(i) else {
-                continue;
-            };
-            let label = &segment.label;
-            let text_color = if i == self.selected {
-                selected_segment_ink(theme)
-            } else {
-                colors.text_primary
-            };
-            let (tw, th) = text_renderer.measure(label, text_size, None);
-            let text_x = seg_rect.center().x - (f64::from(tw) / 2.0);
-            let text_y = seg_rect.y0 + (seg_rect.height() - f64::from(th)) / 2.0;
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition is float matrix multiplication; it cannot \
-                          overflow or panic"
-            )]
-            let label_transform = transform * Affine::translate((text_x, text_y));
-            text_renderer.draw_text(scene, label, text_size, text_color, label_transform, None);
         }
         self.cache_rect = self.rect;
         out_scene.append(&self.cached, Some(out_transform));
@@ -754,43 +839,7 @@ impl Widget for ToggleGroup {
         _taffy: &TaffyTree<()>,
     ) {
         match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        logical_key,
-                        repeat: false,
-                        ..
-                    },
-                ..
-            } if self.is_focused && self.is_enabled() => {
-                let len = self.segments.len();
-                let selection = match logical_key {
-                    Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => Some(
-                        self.selected
-                            .checked_sub(1)
-                            .unwrap_or_else(|| len.saturating_sub(1)),
-                    ),
-                    Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => {
-                        Some(if self.selected == len.saturating_sub(1) {
-                            0
-                        } else {
-                            self.selected.saturating_add(1)
-                        })
-                    }
-                    Key::Named(NamedKey::Home) if len > 0 => Some(0),
-                    Key::Named(NamedKey::End) if len > 0 => Some(len.saturating_sub(1)),
-                    // A segmented control is single-select: activating the
-                    // focused group confirms its current choice rather than
-                    // toggling it off.
-                    Key::Named(NamedKey::Enter | NamedKey::Space) => Some(self.selected),
-                    _ => None,
-                };
-                if let Some(selection) = selection {
-                    *handled = true;
-                    self.request_selection(selection);
-                }
-            }
+            WindowEvent::KeyboardInput { event, .. } => self.handle_key_event(event, handled),
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor.set(logical_pos);
@@ -799,19 +848,9 @@ impl Widget for ToggleGroup {
                 state: element_state,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if *element_state != ElementState::Pressed {
-                    return;
-                }
-                let pos = self.last_cursor.get();
-                for (i, seg_rect) in self.segment_rects.iter().enumerate() {
-                    if seg_rect.contains(pos) {
-                        *handled = true;
-                        *focus_target = Some(node_id);
-                        self.request_selection(i);
-                        break;
-                    }
-                }
+            } => self.handle_pointer_press(*element_state, handled, focus_target, node_id),
+            WindowEvent::Touch(touch) => {
+                self.handle_touch_event(touch, scale_factor, handled, focus_target, node_id);
             }
             _ => {}
         }
@@ -843,27 +882,27 @@ impl Widget for ToggleGroup {
         self.id.as_deref()
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
         self.native_resource.iter().cloned().collect()
     }
 
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.native_resource
             .as_ref()
-            .map(|_| std::iter::once("qos.ui.segmented.select".to_owned()).collect())
+            .map(|_| std::iter::once("tilo.ui.segmented.select".to_owned()).collect())
             .unwrap_or_default()
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<crate::qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<crate::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
@@ -878,14 +917,14 @@ impl Widget for ToggleGroup {
 
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: crate::qos_actions::OperationKind,
+        kind: crate::tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Result<Option<crate::qos_actions::ActionOutput>, String> {
-        if kind != crate::qos_actions::OperationKind::View
-            || type_id != "qos.ui.segmented.select"
+    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
+        if kind != crate::tilo_actions::OperationKind::View
+            || type_id != "tilo.ui.segmented.select"
             || self.action.is_none()
         {
             return Ok(None);
@@ -902,7 +941,7 @@ impl Widget for ToggleGroup {
             .filter(|index| *index < self.segments.len())
             .ok_or_else(|| "segmented action index is out of range".to_owned())?;
         self.apply_selection(index);
-        Ok(Some(crate::qos_actions::ActionOutput::default()))
+        Ok(Some(crate::tilo_actions::ActionOutput::default()))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1033,6 +1072,15 @@ mod tests {
         }
     }
 
+    fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            force: None,
+            id: 7,
+        })
+    }
     fn dispatch(g: &mut ToggleGroup, event: &WindowEvent) {
         let _ = dispatch_handled(g, event);
     }
@@ -1128,6 +1176,71 @@ mod tests {
             0,
             "unfocused controls do not consume keys"
         );
+    }
+
+    #[test]
+    fn unavailable_toggle_group_rejects_pointer_touch_and_keyboard_input() {
+        let mut group = group_at(
+            vec![Segment::new("Light"), Segment::new("Dark")],
+            0,
+            Rect::new(0.0, 0.0, 200.0, 44.0),
+        )
+        .on_view("appearance", |_| {});
+        Widget::refresh_control_action_availability(&mut group, &std::collections::HashSet::new());
+        group.set_focus(true);
+        assert!(!Widget::is_enabled(&group));
+
+        dispatch(&mut group, &cursor_moved(150.0, 22.0));
+        assert!(!dispatch_handled(&mut group, &mouse_press()));
+        assert!(!dispatch_handled(
+            &mut group,
+            &touch(winit::event::TouchPhase::Started, Point::new(150.0, 22.0)),
+        ));
+        assert!(!dispatch_handled(
+            &mut group,
+            &key_press(NamedKey::ArrowRight),
+        ));
+        assert_eq!(group.selected(), 0);
+    }
+
+    #[test]
+    fn retained_group_has_touch_sized_intrinsic_height() {
+        let mut group = ToggleGroup::new(vec![Segment::new("World"), Segment::new("Timers")], 0);
+        let mut tree = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = group.build_layout(&mut tree, &Theme::dark(), &mut map);
+        tree.compute_layout(node, taffy::Size::MAX_CONTENT).unwrap();
+        group.apply_layout(&tree, node, Point::ZERO);
+        assert!(group.get_rect().height() >= 44.0);
+    }
+
+    #[test]
+    fn touch_commits_on_release_and_keyboard_arrows_wrap() {
+        let mut group = group_at(
+            vec![
+                Segment::new("World"),
+                Segment::new("Alarms"),
+                Segment::new("Timers"),
+            ],
+            0,
+            Rect::new(0.0, 0.0, 300.0, 44.0),
+        );
+        dispatch(
+            &mut group,
+            &touch(winit::event::TouchPhase::Started, Point::new(250.0, 22.0)),
+        );
+        assert_eq!(group.selected(), 0, "touch down does not switch a tab");
+        dispatch(
+            &mut group,
+            &touch(winit::event::TouchPhase::Ended, Point::new(250.0, 22.0)),
+        );
+        assert_eq!(group.selected(), 2);
+
+        group.set_focus(true);
+        dispatch(&mut group, &key_press(NamedKey::ArrowRight));
+        assert_eq!(group.selected(), 0, "right arrow wraps to the first tab");
+        dispatch(&mut group, &key_press(NamedKey::End));
+        assert_eq!(group.selected(), 2);
     }
 
     #[test]
@@ -1380,13 +1493,13 @@ mod tests {
         let resources = Widget::resources(&group, &AutoCommit::new());
         assert_eq!(resources.len(), 1);
         let resource = &resources[0];
-        assert_eq!(resource.id.as_str(), "qos.control:appearance");
+        assert_eq!(resource.id.as_str(), "tilo.control:appearance");
         assert_eq!(resource.actions.len(), 1);
         let spec = &resource.actions[0];
-        assert_eq!(spec.kind, crate::qos_actions::OperationKind::View);
+        assert_eq!(spec.kind, crate::tilo_actions::OperationKind::View);
         assert_eq!(
             spec.contract.discovery,
-            crate::qos_actions::DiscoveryScope::Launchable
+            crate::tilo_actions::DiscoveryScope::Launchable
         );
         assert_eq!(spec.params()[0].name, "index");
 
@@ -1407,14 +1520,14 @@ mod tests {
         let invocation = Widget::take_control_invocation(&mut group).unwrap();
         assert_eq!(
             invocation.address,
-            crate::qos_actions::ActionAddress::new("qos.control:appearance", "select")
+            crate::tilo_actions::ActionAddress::new("tilo.control:appearance", "select")
         );
         assert_eq!(invocation.arguments["index"], 1);
         let encoded = spec.build_json(&invocation.arguments).unwrap();
-        assert_eq!(encoded.type_id, "qos.ui.segmented.select");
+        assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
         let output = Widget::invoke_resource_operation_v2(
             &mut group,
-            crate::qos_actions::OperationKind::View,
+            crate::tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &AutoCommit::new(),

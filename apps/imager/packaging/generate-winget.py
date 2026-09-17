@@ -2,6 +2,7 @@
 """Generate one WinGet manifest set from both validated Windows installers."""
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import re
 from urllib.parse import urlparse
@@ -10,14 +11,20 @@ from urllib.parse import urlparse
 def manifests(root, version, base_url):
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("WinGet requires a stable semantic version")
+    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "tilo/releases")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("release repository must be OWNER/REPOSITORY")
+    server = urlparse(os.environ.get("GITHUB_SERVER_URL", "https://code.sandbox.example"))
+    if server.scheme != "https" or not server.netloc or server.path not in ("", "/") or server.query or server.fragment:
+        raise ValueError("release server must be an HTTPS origin")
     parsed = urlparse(base_url)
-    if (parsed.scheme != "https" or parsed.netloc != "code.sandbox.example"
-            or parsed.path != f"/qos/qos/releases/download/imager-v{version}"
+    if (parsed.scheme != "https" or parsed.netloc != server.netloc
+            or parsed.path != f"/{repository}/releases/download/imager-v{version}"
             or parsed.query or parsed.fragment):
         raise ValueError("release URL does not match the selected version")
     entries = []
     for arch, winget_arch in (("x86_64", "x64"), ("aarch64", "arm64")):
-        name = f"qos-imager-setup-windows-{arch}.exe"
+        name = f"tilo-imager-setup-windows-{arch}.exe"
         candidates = list(root.rglob(name))
         if len(candidates) != 1 or not candidates[0].is_file() or candidates[0].is_symlink():
             raise ValueError(f"expected exactly one regular {arch} setup executable")
@@ -35,14 +42,14 @@ def manifests(root, version, base_url):
         entries.append(f"  - Architecture: {winget_arch}\n"
                        f"    InstallerUrl: {base_url}/{name}\n"
                        f"    InstallerSha256: {digest.upper()}\n")
-    prefix = f"PackageIdentifier: qOS.Imager\nPackageVersion: {version}\n"
+    prefix = f"PackageIdentifier: Tilo.Imager\nPackageVersion: {version}\n"
     return {
-        "qOS.Imager.installer.yaml": prefix + "InstallerType: inno\nInstallers:\n"
+        "Tilo.Imager.installer.yaml": prefix + "InstallerType: inno\nInstallers:\n"
         + "".join(entries) + "ManifestType: installer\nManifestVersion: 1.9.0\n",
-        "qOS.Imager.yaml": prefix + "DefaultLocale: en-US\nManifestType: version\nManifestVersion: 1.9.0\n",
-        "qOS.Imager.locale.en-US.yaml": prefix + "PackageLocale: en-US\nPublisher: qOS Project\n"
-        "PackageName: qOS Imager\nLicense: AGPL-3.0-only\n"
-        "ShortDescription: Create and verify customised qOS installation media.\n"
+        "Tilo.Imager.yaml": prefix + "DefaultLocale: en-US\nManifestType: version\nManifestVersion: 1.9.0\n",
+        "Tilo.Imager.locale.en-US.yaml": prefix + "PackageLocale: en-US\nPublisher: Tilo Project\n"
+        "PackageName: Tilo Imager\nLicense: AGPL-3.0-only\n"
+        "ShortDescription: Create and verify customised Tilo installation media.\n"
         "PackageUrl: https://code.sandbox.example/qos/qos\nManifestType: defaultLocale\nManifestVersion: 1.9.0\n",
     }
 

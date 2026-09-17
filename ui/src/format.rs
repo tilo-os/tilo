@@ -1,10 +1,8 @@
 //! Shared value formatters for system apps — byte sizes, transfer rates, media
 //! timecodes, "time ago" labels, compact counts, and month/weekday names.
 //!
-//! A hand-rolled formatter divides by 1024 and labels it `KB`/`MB`/`GB` as
-//! often as it labels the identical math `KiB`/`MiB`/`GiB` — the same number,
-//! two different labels. This module is the single correct home, so every
-//! adopter formats a value the same way; see [`bytes`] for the 1024/1000 rule.
+//! [`bytes`] uses IEC binary units while [`bytes_si`] uses SI decimal units, so
+//! callers choose an unambiguous convention.
 //!
 //! Month/weekday lookups are index-based (not string-keyed) so a caller
 //! wiring `fluent` in can map the index to a translated string without this

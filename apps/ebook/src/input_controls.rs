@@ -21,6 +21,44 @@ use crate::model::{Annotation, FontEntry, Settings};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
 
+/// Native event services shared by the reader's retained input widgets.
+///
+/// Keeping this contract at the toolkit boundary prevents each component from
+/// mirroring the complete [`Widget::handle_event`] argument list.
+pub(crate) struct InputEventCtx<'a> {
+    pub event: &'a WindowEvent,
+    pub scale_factor: f64,
+    pub modifiers: Modifiers,
+    pub state: &'a mut AutoCommit,
+    pub root: &'a ObjId,
+    pub node_id: NodeId,
+    pub taffy: &'a TaffyTree<()>,
+    pub handled: &'a mut bool,
+}
+
+impl InputEventCtx<'_> {
+    pub(crate) fn reborrow<'a>(&'a mut self, handled: &'a mut bool) -> InputEventCtx<'a> {
+        InputEventCtx {
+            event: self.event,
+            scale_factor: self.scale_factor,
+            modifiers: self.modifiers,
+            state: self.state,
+            root: self.root,
+            node_id: self.node_id,
+            taffy: self.taffy,
+            handled,
+        }
+    }
+}
+
+/// Paint services shared by the reader's retained input widgets.
+pub(crate) struct InputPaintCtx<'a> {
+    pub scene: &'a mut Scene,
+    pub transform: Affine,
+    pub text: &'a mut TextRenderer,
+    pub theme: &'a Theme,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum NumberField {
     FontScale,
@@ -128,16 +166,12 @@ impl NumberControls {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
         field: &NumberField,
         value: f64,
         rect: Rect,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut InputPaintCtx<'_>,
     ) {
         let index = self
             .controls
@@ -160,42 +194,31 @@ impl NumberControls {
         }
         control.input.apply_layout_external(rect);
         control.input.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
             &ui::presence::PresenceCtx::empty(),
         );
     }
 
     /// Route an event to controls painted in the current frame and return all
     /// committed values. The app remains responsible only for domain mapping.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) -> Vec<(NumberField, f64)> {
+    pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> Vec<(NumberField, f64)> {
         let mut changes = Vec::new();
         for control in self.controls.iter_mut().filter(|control| control.active) {
             let mut local_handled = false;
             let mut focus_target = None;
             control.input.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                root,
+                ctx.event,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.root,
                 &mut local_handled,
                 &mut focus_target,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
             if focus_target.is_some() {
                 control.input.set_focus(true);
@@ -203,7 +226,7 @@ impl NumberControls {
             if let Some(value) = control.input.take_changed() {
                 changes.push((control.field.clone(), value));
             }
-            *handled |= local_handled;
+            *ctx.handled |= local_handled;
         }
         changes
     }
@@ -254,6 +277,12 @@ struct NoteLayout {
     inner_width: f32,
     excerpt: String,
     input_rect: Rect,
+}
+
+pub(crate) struct NoteView<'a> {
+    pub bounds: Rect,
+    pub anchor_y: Option<f64>,
+    pub annotation: &'a Annotation,
 }
 
 impl Default for NoteComposer {
@@ -377,35 +406,24 @@ impl NoteComposer {
     }
 
     /// Returns a changed text value and whether Enter requested Save.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) -> (Option<String>, bool) {
+    pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> (Option<String>, bool) {
         if self.id.is_none() {
             return (None, false);
         }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        if let WindowEvent::CursorMoved { position, .. } = ctx.event {
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         let mut focus_target = None;
         self.input.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            root,
-            handled,
+            ctx.event,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.root,
+            ctx.handled,
             &mut focus_target,
-            node_id,
-            taffy,
+            ctx.node_id,
+            ctx.taffy,
         );
         if focus_target.is_some() {
             self.input.set_focus(true);
@@ -460,17 +478,13 @@ impl NoteComposer {
 
     /// Shadow, card background/border, the "Note" header, excerpt and the
     /// (already laid-out) shared text input.
-    #[allow(clippy::too_many_arguments)]
     fn draw_note_chrome(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut InputPaintCtx<'_>,
         layout: &NoteLayout,
         annotation: &Annotation,
     ) {
-        let colors = &theme.tokens.colors;
+        let colors = &ctx.theme.tokens.colors;
         let shadow = Rect::new(
             layout.card.x0 - 1.0,
             layout.card.y0 + 4.0,
@@ -478,74 +492,67 @@ impl NoteComposer {
             layout.card.y1 + 7.0,
         );
         paint::fill_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             shadow,
             12.0,
             Color::from_rgba8(0, 0, 0, 80),
         );
         paint::fill_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             layout.card,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             colors.surfaces.raised,
         );
         paint::stroke_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             layout.card,
-            f64::from(theme.tokens.radii.lg),
-            theme.border_focus,
+            f64::from(ctx.theme.tokens.radii.lg),
+            ctx.theme.border_focus,
             1.4,
         );
 
         let y = layout.card.y0 + layout.pad;
         paint::circle(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             Point::new(layout.left + 6.0, y + 7.0),
             6.0,
             ReaderPalette::highlight_swatch(annotation.color),
         );
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "Note",
             13.5,
             colors.text_primary,
-            transform * Affine::translate((layout.left + 20.0, y)),
+            ctx.transform * Affine::translate((layout.left + 20.0, y)),
             None,
             TextWeight::Semibold,
         );
         let excerpt_y = y + 26.0;
-        text_renderer.draw_text(
-            scene,
+        ctx.text.draw_text(
+            ctx.scene,
             &layout.excerpt,
             12.0,
             colors.text_dim,
-            transform * Affine::translate((layout.left, excerpt_y)),
+            ctx.transform * Affine::translate((layout.left, excerpt_y)),
             Some(layout.inner_width),
         );
 
         self.input.apply_layout_external(layout.input_rect);
         self.input.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
             &ui::presence::PresenceCtx::empty(),
         );
     }
 
     /// Delete/Save buttons beneath the input box.
-    fn draw_note_buttons(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        layout: &NoteLayout,
-    ) {
+    fn draw_note_buttons(&mut self, ctx: &mut InputPaintCtx<'_>, layout: &NoteLayout) {
         let button_y = layout.input_rect.y1 + 16.0;
         self.delete = Rect::new(layout.left, button_y, layout.left + 76.0, button_y + 32.0);
         self.save = Rect::new(
@@ -555,10 +562,10 @@ impl NoteComposer {
             button_y + 32.0,
         );
         Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
             &ButtonFace::new(self.delete, "Delete")
                 .danger()
                 .radius(16.0)
@@ -566,10 +573,10 @@ impl NoteComposer {
                 .hovered(self.delete.contains(self.cursor)),
         );
         Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
             &ButtonFace::new(self.save, "Save")
                 .primary()
                 .radius(16.0)
@@ -578,27 +585,18 @@ impl NoteComposer {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        bounds: Rect,
-        anchor_y: Option<f64>,
-        annotation: &Annotation,
-    ) {
-        if self.id != Some(annotation.id) {
+    pub(crate) fn draw(&mut self, ctx: &mut InputPaintCtx<'_>, view: &NoteView<'_>) {
+        if self.id != Some(view.annotation.id) {
             return;
         }
-        if !self.input.is_focused() && self.input.value() != annotation.note {
-            self.input.set_text(&annotation.note);
+        if !self.input.is_focused() && self.input.value() != view.annotation.note {
+            self.input.set_text(&view.annotation.note);
         }
-        let layout = Self::compute_note_layout(text_renderer, bounds, anchor_y, annotation);
+        let layout =
+            Self::compute_note_layout(ctx.text, view.bounds, view.anchor_y, view.annotation);
         self.card = layout.card;
-        self.draw_note_chrome(scene, transform, text_renderer, theme, &layout, annotation);
-        self.draw_note_buttons(scene, transform, text_renderer, theme, &layout);
+        self.draw_note_chrome(ctx, &layout, view.annotation);
+        self.draw_note_buttons(ctx, &layout);
     }
 }
 
@@ -639,28 +637,28 @@ mod tests {
         let taffy = TaffyTree::new();
         let modifiers = Modifiers::default();
         let mut handled = false;
-        let (changed, submitted) = composer.handle_event(
-            &key(Key::Character("world".into())),
-            1.0,
+        let (changed, submitted) = composer.handle_event(&mut InputEventCtx {
+            event: &key(Key::Character("world".into())),
+            scale_factor: 1.0,
             modifiers,
-            &mut doc,
-            &root,
-            NodeId::new(0),
-            &taffy,
-            &mut handled,
-        );
+            state: &mut doc,
+            root: &root,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+            handled: &mut handled,
+        });
         assert_eq!(changed.as_deref(), Some("world"));
         assert!(!submitted);
-        let (_, submitted) = composer.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            1.0,
+        let (_, submitted) = composer.handle_event(&mut InputEventCtx {
+            event: &key(Key::Named(NamedKey::Enter)),
+            scale_factor: 1.0,
             modifiers,
-            &mut doc,
-            &root,
-            NodeId::new(0),
-            &taffy,
-            &mut handled,
-        );
+            state: &mut doc,
+            root: &root,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+            handled: &mut handled,
+        });
         assert!(submitted);
     }
 

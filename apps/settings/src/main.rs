@@ -1,4 +1,4 @@
-//! Settings — standard qOS application entry point.
+//! Settings — standard Tilo application entry point.
 //!
 //! Settings keeps its format-specific screenshot scenario pipeline, while the
 //! shared runner owns CLI validation, headless driving, persistence and the
@@ -30,7 +30,7 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-const APP_ID: &str = "dev.qos.settings";
+const APP_ID: &str = "dev.tilo.settings";
 
 fn root() -> Box<dyn Widget> {
     Box::new(settings::SettingsApp::new())

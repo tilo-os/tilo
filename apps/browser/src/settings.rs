@@ -4,7 +4,7 @@
 //! Two layers live here:
 //!
 //!  * [`Settings`] — a plain serde struct persisted as JSON under
-//!    `dirs::config_dir()/qos-browser/settings.json`. It holds the
+//!    `dirs::config_dir()/tilo-browser/settings.json`. It holds the
 //!    durable preferences (ad-blocking, clear-on-exit, search engine,
 //!    homepage) and knows how to [`Settings::load`] / [`Settings::save`]
 //!    itself.
@@ -31,7 +31,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Toggle, Widget,
+    Button, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
+    Toggle, Widget,
 };
 
 /// Resource bindings injected by Browser when this pane is hosted. They keep
@@ -39,16 +40,16 @@ use ui::widget::{
 /// used by Ctrl+K and agents.
 #[derive(Clone, Default)]
 pub struct SettingsActionBindings {
-    pub adblock: Option<qos_actions::ActionBinding<bool>>,
-    pub clear_on_exit: Option<qos_actions::ActionBinding<bool>>,
-    pub homepage: Option<qos_actions::ActionBinding<String>>,
-    pub search_engine: Option<qos_actions::ActionBinding<String>>,
-    pub clear_history: Option<qos_actions::ActionBinding<()>>,
-    pub clear_site_data: Option<qos_actions::ActionBinding<()>>,
+    pub adblock: Option<tilo_actions::ActionBinding<bool>>,
+    pub clear_on_exit: Option<tilo_actions::ActionBinding<bool>>,
+    pub homepage: Option<tilo_actions::ActionBinding<String>>,
+    pub search_engine: Option<tilo_actions::ActionBinding<String>>,
+    pub clear_history: Option<tilo_actions::ActionBinding<()>>,
+    pub clear_site_data: Option<tilo_actions::ActionBinding<()>>,
     /// Close is presentation-only, but it is still a canonical Browser view
     /// action.  Keeping it here means keyboard and assistive-tech activation
     /// have the same route as the Library's Done button.
-    pub close: Option<qos_actions::ActionBinding<()>>,
+    pub close: Option<tilo_actions::ActionBinding<()>>,
 }
 
 /// Process-local mirrors used only to present the action-applied settings.
@@ -151,10 +152,10 @@ impl Default for Settings {
 
 impl Settings {
     /// Absolute path of the on-disk settings file:
-    /// `dirs::config_dir()/qos-browser/settings.json`. `None` when the
+    /// `dirs::config_dir()/tilo-browser/settings.json`. `None` when the
     /// platform has no config directory.
     pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("qos-browser").join("settings.json"))
+        dirs::config_dir().map(|d| d.join("tilo-browser").join("settings.json"))
     }
 
     /// Load the settings from the standard config path. Any failure —
@@ -301,7 +302,7 @@ impl SettingsPane {
 
     /// Build the composed widget tree from the CRDT-backed controls.
     ///
-    /// The layout follows the qOS settings grammar: a header, then a stack
+    /// The layout follows the Tilo settings grammar: a header, then a stack
     /// of titled "cards", each a group of label/control rows. Vertical
     /// rhythm is done with explicit spacer rows because an intrinsic-height
     /// column lays out as a block stack that ignores taffy's inter-child
@@ -400,11 +401,10 @@ impl Default for SettingsPane {
     }
 }
 
-// === composition helpers (qOS settings grammar) ======================
+// === composition helpers (Tilo settings grammar) ======================
 // Bundle the recurring shapes — titled card, label/control row, labelled
-// field — so the pane reads consistently. Explicit spacer rows give the
-// per-gap control an intrinsic-height column doesn't (its taffy gap is
-// ignored in block layout), matching the system settings app.
+// field — so the pane reads consistently. Repeated vertical rhythm comes from
+// the shared `Section`, matching the system Settings app.
 
 /// Gap between stacked cards.
 const CARD_GAP: f32 = 16.0;
@@ -441,15 +441,7 @@ fn card(title: &str, body: El) -> El {
 
 /// A vertical stack of rows with explicit inter-row spacing.
 fn rows(items: Vec<El>) -> El {
-    let mut col = Column::new().with_no_padding().with_intrinsic_height();
-    let last = items.len().saturating_sub(1);
-    for (i, item) in items.into_iter().enumerate() {
-        col = col.push(item);
-        if i != last {
-            col = col.push(vgap(ROW_GAP));
-        }
-    }
-    Box::new(col)
+    Box::new(Section::with_gap(items, ROW_GAP))
 }
 
 /// A label with a dim helper line beneath it, paired with a trailing
@@ -516,7 +508,7 @@ fn field_block(
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
-    action: Option<qos_actions::ActionBinding<String>>,
+    action: Option<tilo_actions::ActionBinding<String>>,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
@@ -535,14 +527,14 @@ fn field_block(
     )
 }
 
-fn toggle_with_action(toggle: Toggle, action: Option<qos_actions::ActionBinding<bool>>) -> Toggle {
+fn toggle_with_action(toggle: Toggle, action: Option<tilo_actions::ActionBinding<bool>>) -> Toggle {
     match action {
         Some(binding) => toggle.on_action(binding),
         None => toggle,
     }
 }
 
-fn button_with_action(button: Button, action: Option<qos_actions::ActionBinding<()>>) -> Button {
+fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding<()>>) -> Button {
     match action {
         Some(binding) => button.on_action(binding),
         None => button,

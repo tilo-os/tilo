@@ -1,4 +1,4 @@
-//! A large `DocumentSnapshot` payload (a full-document snapshot — the late-join
+//! A large document snapshot payload (the late-join
 //! reply) does not fit in one socket read, so it arrives split across
 //! reads. The typed RPC transport must reassemble it without truncation.
 
@@ -30,7 +30,7 @@ fn large_frame_survives_split_reads() {
     // 256 KB — far larger than a single socket read, so it MUST span
     // multiple reads on B's side.
     let big = vec![0xABu8; 256 * 1024];
-    a.send(CollabRequest::DocumentSnapshot { data: big.clone() });
+    a.send(CollabRequest::document_snapshot(big.clone()));
 
     // Poll B for up to ~2s, accumulating the frame across reads.
     let mut got: Option<Vec<u8>> = None;

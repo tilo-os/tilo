@@ -1,17 +1,17 @@
 //! End-to-end Wayland integration test for the native compositor: spawns
-//! `quick-desktop --mode native --backend winit`, scrapes the listening
+//! `tilo-desktop --mode native --backend winit`, scrapes the listening
 //! socket out of its stderr (`listening on "wayland-N"` is a stable
 //! contract of `compositor::native::run`), drives a raw `wayland-client`
 //! toplevel with a unique app-id, and asserts the compositor's
 //! `WorkspaceTree` adopts then reaps the matching foreign tab — observed
-//! through the `NIRIOS_TEST_STATE_DUMP` introspection hook.
+//! through the `TILO_TEST_STATE_DUMP` introspection hook.
 //!
 //! `#[ignore]` by default: winit needs a real Wayland/X11 display, which
 //! headless CI can't supply.
 //!
 //! ```text
-//! cargo build -p quick-desktop
-//! cargo test -p quick-desktop --test compositor_test -- --ignored
+//! cargo build -p tilo-desktop
+//! cargo test -p tilo-desktop --test compositor_test -- --ignored
 //! ```
 
 #![allow(
@@ -87,14 +87,14 @@ fn poll_for(timeout: Duration, mut probe: impl FnMut() -> Option<bool>) -> bool 
 
 /// Returns (child handle, socket name like `wayland-3`).
 fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String) {
-    // Built by `cargo test`'s pre-build step, at `target/debug/quick-desktop`
+    // Built by `cargo test`'s pre-build step, at `target/debug/tilo-desktop`
     // relative to CARGO_MANIFEST_DIR's parent.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir.parent().expect("workspace root").to_path_buf();
-    let bin = workspace_root.join("target/debug/quick-desktop");
+    let bin = workspace_root.join("target/debug/tilo-desktop");
     assert!(
         bin.exists(),
-        "compositor binary not found at {} — run `cargo build -p quick-desktop` first",
+        "compositor binary not found at {} — run `cargo build -p tilo-desktop` first",
         bin.display()
     );
 
@@ -106,11 +106,11 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
         // Force smithay's `ListeningSocketSource::new_auto` to bind a
         // fresh socket instead of inheriting the host Wayland session.
         .env_remove("WAYLAND_DISPLAY")
-        .env("NIRIOS_TEST_STATE_DUMP", dump_path)
+        .env("TILO_TEST_STATE_DUMP", dump_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn quick-desktop");
+        .expect("spawn tilo-desktop");
 
     // Streamed on a worker thread so it reaches the test logs and is scanned
     // for the "listening on" marker; first matching line wins.
@@ -142,12 +142,12 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
     }
     let _ = child.kill();
     let _ = child.wait();
-    panic!("compositor never printed `nirios compositor listening on …` within 8s");
+    panic!("compositor never printed `tilo compositor listening on …` within 8s");
 }
 
 fn extract_socket_name(line: &str) -> Option<String> {
-    // The contract is `nirios compositor listening on "wayland-N"`.
-    let marker = "nirios compositor listening on ";
+    // The contract is `tilo compositor listening on "wayland-N"`.
+    let marker = "tilo compositor listening on ";
     let rest = line
         .find(marker)
         .and_then(|i| line.get(i.saturating_add(marker.len())..))?;
@@ -291,7 +291,7 @@ fn round_trip_until_bound(
 #[test]
 #[ignore = "requires a host display server (WAYLAND_DISPLAY or DISPLAY) to back winit"]
 fn native_compositor_adopts_and_reaps_foreign_tab() {
-    let dump_path = std::env::temp_dir().join(format!("nirios-state-{}.json", std::process::id()));
+    let dump_path = std::env::temp_dir().join(format!("tilo-state-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&dump_path);
 
     let (mut child, socket_name) = spawn_compositor(&dump_path);
@@ -311,7 +311,7 @@ fn native_compositor_adopts_and_reaps_foreign_tab() {
 }
 
 fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
-    let app_id = format!("nirios-test-{}", std::process::id());
+    let app_id = format!("tilo-test-{}", std::process::id());
 
     // Connect to the freshly-bound socket via `WAYLAND_DISPLAY`, which
     // `wayland-client` reads, set just for the connection scope.

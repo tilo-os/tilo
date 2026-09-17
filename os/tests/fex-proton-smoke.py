@@ -65,7 +65,7 @@ def main():
     if any(args.output_dir.iterdir()):
         parser.error("output directory must be empty")
     results = []
-    with tempfile.TemporaryDirectory(prefix="qos-proton-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="tilo-proton-") as temporary:
         home = Path(temporary)
         for directory in ("compat", "steam"):
             (home / directory).mkdir()
@@ -144,22 +144,22 @@ def main():
                     f"--graphics-provider=i386-linux-gnu={rootfs}",
                     f"--filesystem={proton}:ro", "--",
                 ]
-                marker = "QOS_PROTON_CONSOLE_PASS"
+                marker = "TILO_PROTON_CONSOLE_PASS"
                 command = wrapper + [
                     "/usr/bin/python3", str(proton / "proton"), "run", "cmd.exe",
-                    "/c", rf"echo {marker}>C:\qos-console.txt",
+                    "/c", rf"echo {marker}>C:\tilo-console.txt",
                 ]
                 if umu is not None:
                     command = [
                         "/usr/bin/FEX", "/usr/bin/python3", str(umu), "cmd.exe",
-                        "/c", rf"echo {marker}>C:\qos-console.txt",
+                        "/c", rf"echo {marker}>C:\tilo-console.txt",
                     ]
                 log = args.output_dir / "proton.log"
                 status, timed_out = run(
                     command, environment, args.timeout, log,
                 )
                 prefix = home / ("compat" if umu is not None else "compat/pfx")
-                marker_path = prefix / "drive_c/qos-console.txt"
+                marker_path = prefix / "drive_c/tilo-console.txt"
                 actual = marker_path.read_text().strip() if marker_path.is_file() else None
                 alive = server.poll() is None
                 offline_verified = None

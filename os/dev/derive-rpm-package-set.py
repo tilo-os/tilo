@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the direct RPM specs consumed from qOS's frozen repository."""
+"""Print the direct RPM specs consumed from Tilo's frozen repository."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ SOURCES = (
     "os/Containerfile",
     "os/Containerfile.host",
     "os/dev/composefs/Containerfile",
-    "os/containers/qos-relay/Containerfile",
+    "os/containers/tilo-relay/Containerfile",
     "os/kernel/Containerfile",
 )
 
@@ -36,7 +36,7 @@ def logical_lines(text: str):
 def packages(path: pathlib.Path, arch: str | None = None):
     text = path.read_text()
     for marker in re.finditer(
-        r"^\s*#\s*qos-rpm-snapshot-package(?:\[([^\]]+)\])?:\s*(\S+)\s*$", text, re.MULTILINE
+        r"^\s*#\s*tilo-rpm-snapshot-package(?:\[([^\]]+)\])?:\s*(\S+)\s*$", text, re.MULTILINE
     ):
         target, spec = marker.groups()
         if target is not None and target not in ("x86_64", "aarch64"):

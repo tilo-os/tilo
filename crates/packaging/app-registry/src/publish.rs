@@ -207,7 +207,7 @@ pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> 
     let resp = client
         .post(&url)
         .header("content-type", "application/json")
-        .header("x-qos-publisher", &entry.publisher_identity)
+        .header("x-tilo-publisher", &entry.publisher_identity)
         .body(body)
         .send()
         .await

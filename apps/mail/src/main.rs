@@ -1,4 +1,4 @@
-//! Mail — standard qOS application entry point.
+//! Mail — standard Tilo application entry point.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -54,7 +54,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.mail", mail::app_root)
+        &LaunchSpec::new("dev.tilo.mail", mail::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "wide",

@@ -6,20 +6,21 @@
 
 use std::collections::HashSet;
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
 
-use crate::model::{AnnoKind, Annotation, Book};
+use crate::model::{AnnoKind, Annotation, Book, LibraryEntry};
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
 pub const ANNOTATION_KIND: &str = "Annotations";
+#[derive(Clone)]
 pub struct BookSearchProvider {
-    /// qOS' shared, paged catalogue. It retains every resource row but never
+    /// Tilo' shared, paged catalogue. It retains every resource row but never
     /// forces Ctrl+K to inspect/materialise the entire library in one turn.
     catalogue: SearchCatalog,
 }
@@ -31,11 +32,23 @@ struct SearchEntry {
 
 impl BookSearchProvider {
     pub fn new(books: &[Book], annotations: &[Annotation]) -> Self {
+        Self::new_with_registry(books, annotations, &[])
+    }
+
+    /// Build from both locally hydrated books and the collaborative metadata
+    /// registry. A peer can therefore find a title/author and its annotations
+    /// before the content-addressed EPUB bytes finish hydrating on that device.
+    pub fn new_with_registry(
+        books: &[Book],
+        annotations: &[Annotation],
+        registry: &[LibraryEntry],
+    ) -> Self {
         // Search is a library feature, not a viewport feature: every loaded
         // book, chapter, full chapter body, and live annotation participates.
         // In particular, never use the UI result/index limits while building
         // this durable snapshot; doing so made old books undiscoverable.
-        let book_ids: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
+        let mut book_ids: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
+        book_ids.extend(registry.iter().map(|entry| entry.id.as_str()));
         let live_annotations = annotations
             .iter()
             .filter(|annotation| book_ids.contains(annotation.doc_id.as_str()))
@@ -85,7 +98,33 @@ impl BookSearchProvider {
                 });
             }
         }
-        Self::append_annotation_entries(&mut entries, &live_annotations, books, &highlight_groups);
+        for entry in registry
+            .iter()
+            .filter(|entry| !books.iter().any(|book| book.id == entry.id))
+        {
+            let title = if entry.title.trim().is_empty() {
+                "Untitled"
+            } else {
+                &entry.title
+            };
+            let mut result =
+                SearchResult::for_action(BOOK_KIND, title, Self::book_address(&entry.id))
+                    .with_icon(Icon::FileText);
+            if !entry.author.trim().is_empty() {
+                result = result.with_subtitle(entry.author.clone());
+            }
+            entries.push(SearchEntry {
+                haystack: format!("{} {}", title, entry.author).to_lowercase(),
+                result,
+            });
+        }
+        Self::append_annotation_entries(
+            &mut entries,
+            &live_annotations,
+            books,
+            registry,
+            &highlight_groups,
+        );
 
         let catalogue = SearchCatalog::new("Books");
         for entry in entries {
@@ -104,6 +143,7 @@ impl BookSearchProvider {
         entries: &mut Vec<SearchEntry>,
         annotations: &[&Annotation],
         books: &[Book],
+        registry: &[LibraryEntry],
         highlight_groups: &HashSet<(String, uuid::Uuid)>,
     ) {
         let mut emitted_highlights = HashSet::new();
@@ -116,11 +156,25 @@ impl BookSearchProvider {
             let book_title = books
                 .iter()
                 .find(|book| book.id == annotation.doc_id)
-                .map_or("Unknown book", Self::book_title);
+                .map(Self::book_title)
+                .or_else(|| {
+                    registry
+                        .iter()
+                        .find(|entry| entry.id == annotation.doc_id)
+                        .map(|entry| entry.title.as_str())
+                })
+                .unwrap_or("Unknown book");
             let book_author = books
                 .iter()
                 .find(|book| book.id == annotation.doc_id)
-                .map_or("", |book| book.author.as_str());
+                .map(|book| book.author.as_str())
+                .or_else(|| {
+                    registry
+                        .iter()
+                        .find(|entry| entry.id == annotation.doc_id)
+                        .map(|entry| entry.author.as_str())
+                })
+                .unwrap_or("");
             let kind = annotation.kind.label();
             // A note that belongs to a highlight is the reader's comment
             // model. Index both names so people can search with either term.
@@ -279,6 +333,34 @@ mod tests {
     }
 
     #[test]
+    fn remote_metadata_and_annotations_are_searchable_before_bytes_hydrate() {
+        let entry = LibraryEntry {
+            id: "book:remote-content".into(),
+            title: "The Remote Atlas".into(),
+            author: "Mira Peer".into(),
+            subject: "Maps".into(),
+            shared: true,
+            added: 1,
+        };
+        let annotation = Annotation::new(&entry.id, AnnoKind::Note, 2, 4)
+            .with_note("Remember the hidden estuary");
+        let provider = BookSearchProvider::new_with_registry(&[], &[annotation], &[entry]);
+
+        assert!(
+            provider
+                .search("Mira Peer")
+                .iter()
+                .any(|hit| hit.kind == BOOK_KIND)
+        );
+        assert!(
+            provider
+                .search("hidden estuary")
+                .iter()
+                .any(|hit| hit.kind == ANNOTATION_KIND)
+        );
+    }
+
+    #[test]
     fn search_address_resolves_and_navigates_exactly() {
         let books = sample_books();
         let book_id = books[0].id.clone();
@@ -296,11 +378,11 @@ mod tests {
             .expect("annotation is searchable");
         let address = hit.action_address().expect("canonical address");
         let resources = app.resources(&doc);
-        let encoded = qos_actions::door::encode(&resources, &address, None)
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("search address resolves against the exported tree");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 &doc,

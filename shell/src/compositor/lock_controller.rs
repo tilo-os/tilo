@@ -169,7 +169,7 @@ impl LockController {
         let password = std::mem::take(&mut self.buffer);
         let (tx, rx) = mpsc::channel();
         match std::thread::Builder::new()
-            .name("qos-lock-verify".to_string())
+            .name("tilo-lock-verify".to_string())
             .spawn(move || {
                 let result = verifier.verify(&username, &password);
                 // If the controller reset/unlocked meanwhile, the receiver is

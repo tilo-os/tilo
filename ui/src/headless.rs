@@ -11,7 +11,7 @@
 //!
 //! ```ignore
 //! if let Some(spec) = ui::headless::spec_from_args(&args) {
-//!     std::process::exit(ui::headless::run(spec, my_app::app_root(), "dev.qos.my-app"));
+//!     std::process::exit(ui::headless::run(spec, my_app::app_root(), "dev.tilo.my-app"));
 //! }
 //! ```
 //!
@@ -317,7 +317,7 @@ pub struct AccessibilityAudit {
     pub issues: Vec<AccessibilityIssue>,
 }
 
-/// Current machine-readable qOS-native contract report format.
+/// Current machine-readable Tilo-native contract report format.
 pub const NATIVE_APP_AUDIT_VERSION: u32 = 2;
 
 /// One reason an app cannot yet be certified as fully action-native.
@@ -410,9 +410,9 @@ pub struct FrameHarness {
     author: crate::permissions::UserId,
     /// Same decoder and transport doors used by the live application host.
     /// Tests register document action types explicitly, just as `main` does.
-    action_registry: qos_actions::ActionRegistry,
-    action_transport: Box<dyn qos_actions::ActionTransport>,
-    pending_control_invocations: HashSet<qos_actions::InvocationId>,
+    action_registry: tilo_actions::ActionRegistry,
+    action_transport: Box<dyn tilo_actions::ActionTransport>,
+    pending_control_invocations: HashSet<tilo_actions::InvocationId>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -471,8 +471,8 @@ impl FrameHarness {
             viewport,
             focused: None,
             author: crate::collaboration::local_user_id(),
-            action_registry: qos_actions::ActionRegistry::new(),
-            action_transport: Box::new(qos_actions::LocalTransport::new()),
+            action_registry: tilo_actions::ActionRegistry::new(),
+            action_transport: Box::new(tilo_actions::LocalTransport::new()),
             pending_control_invocations: HashSet::new(),
             profiler: None,
         };
@@ -512,7 +512,7 @@ impl FrameHarness {
 
     /// Register replayable document action decoders for a driven app.
     /// Mirrors [`crate::App::action_registry_mut`].
-    pub fn action_registry_mut(&mut self) -> &mut qos_actions::ActionRegistry {
+    pub fn action_registry_mut(&mut self) -> &mut tilo_actions::ActionRegistry {
         &mut self.action_registry
     }
 
@@ -1410,7 +1410,7 @@ impl FrameHarness {
             .into_iter()
             .filter_map(|binding| match binding.kind {
                 ControlBindingKind::Action(address) => {
-                    qos_actions::door::resolve(&resources, &address)
+                    tilo_actions::door::resolve(&resources, &address)
                         .is_none()
                         .then(|| NativeAppIssue {
                             control: binding.control_id,
@@ -1468,7 +1468,7 @@ impl FrameHarness {
     /// Snapshot the exact resource tree the native host currently publishes.
     /// Tests can assert search/agent visibility without reaching into widget
     /// internals or rebuilding a parallel catalogue.
-    pub fn resources(&self) -> Vec<qos_actions::Resource> {
+    pub fn resources(&self) -> Vec<tilo_actions::Resource> {
         let mut resources = Vec::new();
         crate::widget::collect_widget_resources(
             self.root.as_ref(),
@@ -1629,7 +1629,7 @@ impl FrameHarness {
                 &self.state.doc,
                 &mut resources,
             );
-            if qos_actions::door::resolve(&resources, &intent.address).is_none()
+            if tilo_actions::door::resolve(&resources, &intent.address).is_none()
                 && let Some(resource) = crate::widget::resolve_widget_resource(
                     self.root.as_ref(),
                     &self.state.doc,
@@ -1638,7 +1638,7 @@ impl FrameHarness {
             {
                 resources.push(resource);
             }
-            let Some(spec) = qos_actions::door::resolve(&resources, &intent.address) else {
+            let Some(spec) = tilo_actions::door::resolve(&resources, &intent.address) else {
                 tracing::warn!(
                     resource = %intent.address.resource,
                     action = %intent.address.action,
@@ -1648,7 +1648,7 @@ impl FrameHarness {
             };
             if !matches!(
                 spec.contract.confirmation,
-                qos_actions::ConfirmationPolicy::None
+                tilo_actions::ConfirmationPolicy::None
             ) {
                 tracing::warn!(
                     resource = %intent.address.resource,
@@ -1660,9 +1660,9 @@ impl FrameHarness {
             let kind = spec.kind;
             let execution = spec.contract.execution.clone();
             let result = spec.contract.result.clone();
-            if kind == qos_actions::OperationKind::Document {
+            if kind == tilo_actions::OperationKind::Document {
                 let before = self.state.doc.get_heads();
-                match qos_actions::door::invoke_json(
+                match tilo_actions::door::invoke_json(
                     &mut self.state.doc,
                     &resources,
                     &intent.address,
@@ -1685,7 +1685,7 @@ impl FrameHarness {
                 continue;
             }
 
-            let encoded = match qos_actions::door::encode_json(
+            let encoded = match tilo_actions::door::encode_json(
                 &resources,
                 &intent.address,
                 &intent.arguments,
@@ -1696,7 +1696,7 @@ impl FrameHarness {
                     continue;
                 }
             };
-            let invocation = qos_actions::InvocationId::new();
+            let invocation = tilo_actions::InvocationId::new();
             match self.root.start_resource_operation(
                 invocation,
                 kind,
@@ -1711,7 +1711,7 @@ impl FrameHarness {
                     }
                 }
                 Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-                    if matches!(execution, qos_actions::ExecutionMode::Immediate) =>
+                    if matches!(execution, tilo_actions::ExecutionMode::Immediate) =>
                 {
                     tracing::warn!("headless: an immediate action remained pending");
                 }
@@ -2564,7 +2564,7 @@ fn value_arg(args: &[String], flag: &str) -> Option<String> {
 ///
 /// Returns an error if the JSON is invalid or does not conform to the expected structure.
 pub fn parse_spec(raw: &str) -> Result<Spec, String> {
-    let wire = qos_headless_schema::parse_spec(raw)?;
+    let wire = tilo_headless_schema::parse_spec(raw)?;
     Ok(Spec {
         viewport: wire.viewport,
         actions: wire.actions.into_iter().map(action_from_wire).collect(),
@@ -2576,8 +2576,8 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     })
 }
 
-fn action_from_wire(action: qos_headless_schema::Action) -> Action {
-    use qos_headless_schema::Action as Wire;
+fn action_from_wire(action: tilo_headless_schema::Action) -> Action {
+    use tilo_headless_schema::Action as Wire;
     match action {
         Wire::ClickNamed(target) => Action::ClickNamed(target),
         Wire::ClickAt(x, y) => Action::ClickAt(x, y),
@@ -2620,8 +2620,8 @@ fn action_from_wire(action: qos_headless_schema::Action) -> Action {
     }
 }
 
-fn semantic_action_from_wire(action: qos_headless_schema::SemanticAction) -> crate::a11y::Action {
-    use qos_headless_schema::SemanticAction as Wire;
+fn semantic_action_from_wire(action: tilo_headless_schema::SemanticAction) -> crate::a11y::Action {
+    use tilo_headless_schema::SemanticAction as Wire;
     match action {
         Wire::Activate => crate::a11y::Action::Activate,
         Wire::Focus => crate::a11y::Action::Focus,
@@ -2828,7 +2828,7 @@ mod tests {
     fn native_app_audit_proves_action_binding_and_a11y_together() {
         let resource =
             crate::widget::resource_actions::resource("example", "Example", "save", "Save", false);
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
         let operation_calls = calls.clone();
         let root = crate::widget::resource_actions::immediate(
@@ -2838,7 +2838,7 @@ mod tests {
             resource,
             move |_| {
                 operation_calls.set(operation_calls.get() + 1);
-                Ok(qos_actions::ActionOutput::default())
+                Ok(tilo_actions::ActionOutput::default())
             },
         );
         let mut driver = Driver::new(State::new(), root, (320, 160));
@@ -2893,7 +2893,7 @@ mod tests {
 
         assert!(driver.native_app_audit().is_certified());
         assert!(driver.resources().iter().any(|resource| {
-            resource.id.as_str() == "qos.control:refresh"
+            resource.id.as_str() == "tilo.control:refresh"
                 && resource.actions.iter().any(|action| action.id == "invoke")
         }));
         driver
@@ -2911,7 +2911,7 @@ mod tests {
 
         assert!(driver.native_app_audit().is_certified());
         assert!(driver.resources().iter().any(|resource| {
-            resource.kind == "qos.ui.control"
+            resource.kind == "tilo.ui.control"
                 && resource.label == "Complete"
                 && resource
                     .actions
@@ -4015,8 +4015,8 @@ mod undo_driver_tests {
     }
 }
 
-/// Undo for an app whose edits are dispatched [`qos_actions`] actions — the
-/// shape every migrated qOS app has — driven headlessly.
+/// Undo for an app whose edits are dispatched [`tilo_actions`] actions — the
+/// shape every migrated Tilo app has — driven headlessly.
 ///
 /// The module above drives the *other* editing path, `needs_commit` /
 /// `on_commit`, where the widget writes the document itself. An app built on
@@ -4031,8 +4031,8 @@ mod dispatched_action_driver_tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Role};
     use crate::state::State;
-    use qos_actions::{ActionError, Doc, ExecutionLocus};
     use serde::{Deserialize, Serialize};
+    use tilo_actions::{ActionError, Doc, ExecutionLocus};
 
     /// A real action: append `text` to the document's `body`. Deterministic, as
     /// the executor requires.
@@ -4043,7 +4043,7 @@ mod dispatched_action_driver_tests {
 
     const APPEND: &str = "test.append";
 
-    impl qos_actions::Action for Append {
+    impl tilo_actions::Action for Append {
         fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
             use automerge::{ReadDoc, transaction::Transactable};
             let obj = match doc.get(&automerge::ROOT, "body") {
