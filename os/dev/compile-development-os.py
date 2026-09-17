@@ -46,7 +46,8 @@ CACHE_CREDENTIALS = {'AWS_ACCESS_KEY_ID': 'aws_access_key_id',
 
 
 def validate_inputs(wpe, generation, revision, branch, mode='full-build',
-                    architecture='x86_64', kernel_candidate=''):
+                    architecture='x86_64', kernel_candidate='', wpe_stage_receipt=None,
+                    wpe_adoption_receipt=None, wpe_adoption_sha256=''):
     if architecture not in ARCHITECTURES:
         raise ValueError('unsupported native architecture')
     if mode == 'full-build' and architecture == 'aarch64' and not kernel_candidate:
@@ -55,7 +56,12 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
         immutable_candidate(kernel_candidate)
     if mode not in ('cache-only', 'full-build'):
         raise ValueError('mode must be cache-only or full-build')
-    if mode == 'full-build' and not re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
+    adopting = bool(wpe_adoption_receipt or wpe_adoption_sha256)
+    if adopting and (mode != 'full-build' or not wpe_adoption_receipt
+            or not re.fullmatch(r'[0-9a-f]{64}', wpe_adoption_sha256)
+            or wpe or wpe_stage_receipt):
+        raise ValueError('adoption requires its independent receipt SHA256 and excludes current WPE inputs')
+    if mode == 'full-build' and not adopting and not re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
         raise ValueError('an immutable reviewed WPE candidate reference is required')
     if mode == 'full-build' and not re.fullmatch(r'[1-9][0-9]{0,11}', generation):
         raise ValueError('generation must be an explicit positive decimal integer')
@@ -90,6 +96,26 @@ def completed_wpe_receipt(path, buildroot, architecture='x86_64'):
             or inputs.get('wpe_buildroot') != buildroot):
         raise ValueError('completed WPE receipt does not match this native build')
     return receipt
+
+
+def adopted_wpe_receipt(path, digest, architecture):
+    """Pin original receipt bytes; recipe/archive compatibility is checked by import."""
+    spec = importlib.util.spec_from_file_location('compile_wpe_adoption', REPO / 'os/dev/adopt-development-wpe.py')
+    adoption = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(adoption)
+    receipt = adoption.pinned_json(path, digest)
+    audit = receipt.get('audit', {})
+    adoption.validate_receipt(receipt, audit, receipt.get('audit_sha256'))
+    if (audit.get('architecture') != architecture
+            or 'original_build_epoch' not in audit or audit['original_build_epoch'] is not None
+            or 'original_source_revision' not in audit or audit['original_source_revision'] is not None):
+        raise ValueError('adoption native architecture differs or historical identity was invented')
+    # Preserve exact bytes: write_receipt() canonicalizes formatting and would
+    # invalidate the independently supplied file digest used by the importer.
+    raw = adoption.wpe.read_bounded(path, 65536)
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError('adoption receipt changed while snapshotting')
+    return receipt, raw
 
 
 def cache_configuration(environment):
@@ -399,7 +425,7 @@ def installation_tooling(image):
 
 
 def build_environment(wpe, generation, revision, manifest, signer, cache,
-                      architecture='x86_64', pins=None):
+                      architecture='x86_64', pins=None, adoption_sha256=''):
     # No inherited TILO_BUILD_ARGS, prebuilt payload, skip-build or remote engine
     # settings can change this from a complete, local, source build.
     allowed = ('PATH', 'HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'REGISTRY_AUTH_FILE')
@@ -422,6 +448,13 @@ def build_environment(wpe, generation, revision, manifest, signer, cache,
                TILO_RAW_ROOTFS_ONLY='1',
                TILO_SKIP_BUILD='0', TILO_HARDWARE_PROFILE='generic',
                TILO_BUILD_ARGS='--build-arg TILO_PREBUILT_APPS=0 --build-arg TILO_PREBUILT_DESKTOP=0 --build-arg TILO_CARGO_BUILD_JOBS=2 --build-arg TILO_REQUIRE_COMPILER_CACHE=1')
+    if adoption_sha256:
+        if wpe or not re.fullmatch(r'[0-9a-f]{64}', adoption_sha256):
+            raise ValueError('adoption excludes current WPE buildroot and requires receipt pin')
+        for name in ('WPE_BUILDROOT_REF', 'TILO_WPE_STAGE_RECEIPT', 'TILO_WPE_SOURCE_DATE_EPOCH', 'TILO_WPE_BUILD_JOBS'):
+            env.pop(name, None)
+        env['TILO_WPE_ADOPTION_RECEIPT'] = str(EVIDENCE / 'wpe-adoption.json')
+        env['TILO_WPE_ADOPTION_SHA256'] = adoption_sha256
     if pins is not None:
         env.update({name: pins[name] for name in ('RPMS_REF', 'KERNEL_RPMS_REF')})
     for name, value in cache.items():
@@ -480,6 +513,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('cache-only', 'full-build'), default='cache-only')
     parser.add_argument('--wpe-stage-receipt', type=Path)
+    parser.add_argument('--wpe-adoption-receipt', type=Path)
+    parser.add_argument('--wpe-adoption-sha256', default='')
     parser.add_argument('--architecture', choices=tuple(ARCHITECTURES), default='x86_64')
     parser.add_argument('--kernel-candidate', default='')
     parser.add_argument('--rpms-candidate', default='')
@@ -489,7 +524,8 @@ def main(argv=None):
     for name in ('revision', 'branch'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(argv)
-    validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate)
+    validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate,
+                    args.wpe_stage_receipt, args.wpe_adoption_receipt, args.wpe_adoption_sha256)
     for candidate in (args.rpms_candidate, args.builder_candidate):
         if candidate:
             immutable_candidate(candidate)
@@ -497,7 +533,12 @@ def main(argv=None):
         raise ValueError('already-root matching native Linux guest required')
     if run('git', 'rev-parse', 'HEAD') != args.revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
         raise ValueError('checkout must be clean and match the requested revision')
-    stage = completed_wpe_receipt(args.wpe_stage_receipt, args.wpe, args.architecture) if args.mode == 'full-build' else None
+    stage = adopted = adoption_raw = None
+    if args.mode == 'full-build':
+        if args.wpe_adoption_receipt:
+            adopted, adoption_raw = adopted_wpe_receipt(args.wpe_adoption_receipt, args.wpe_adoption_sha256, args.architecture)
+        else:
+            stage = completed_wpe_receipt(args.wpe_stage_receipt, args.wpe, args.architecture)
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700)
     EVIDENCE.mkdir(mode=0o755)
@@ -511,14 +552,22 @@ def main(argv=None):
             'scope': 'tools-container S3 compiler cache access; nested OS build not exercised'})
         return
     Path('/work/tmp').mkdir()
-    write_receipt('wpe-stage.json', stage)
+    if adopted is not None:
+        (EVIDENCE / 'wpe-adoption.json').write_bytes(adoption_raw)
+    else:
+        write_receipt('wpe-stage.json', stage)
     pins = selected_pins(args.architecture, args.kernel_candidate, args.rpms_candidate)
+    references = pins | {'BUILDER_REF': args.builder_candidate}
+    references.update({'WPE_ADOPTED_REF': adopted['reference']} if adopted is not None
+                      else {'WPE_BUILDROOT_REF': args.wpe})
     native_inputs = {name: verify_native_image(reference, args.architecture)
-                     for name, reference in (pins | {'BUILDER_REF': args.builder_candidate, 'WPE_BUILDROOT_REF': args.wpe}).items()}
+                     for name, reference in references.items()}
     write_receipt('native-inputs.json', native_inputs)
     write_receipt('inputs.json', {'purpose': 'retained-full-source-compilation',
         'installable': False, 'revision': args.revision, 'architecture': args.architecture,
-        'generation': args.generation, 'wpe_candidate': args.wpe, 'builder': args.builder_candidate,
+        'generation': args.generation, 'wpe_candidate': args.wpe or None, 'builder': args.builder_candidate,
+        'wpe_input_mode': 'adopted-development' if adopted is not None else 'current-producer',
+        'wpe_adoption_sha256': args.wpe_adoption_sha256 or None,
         'pins': pins, 'browser': True, 'prebuilt_apps': False, 'prebuilt_desktop': False})
     # Full source builds need real guest backing storage, not a small tmpfs.
     backing = {path: dict(zip(('total', 'used', 'free'), shutil.disk_usage(path)))
@@ -559,7 +608,7 @@ def main(argv=None):
         '--efi-certificate', signer['efi_certificate'], '--registry-owner', str(PRIVATE / 'owner.pub'),
         '--output', str(PRIVATE / 'public')))
     shutil.copytree(PRIVATE / 'public', EVIDENCE / 'public-trust')
-    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache, args.architecture, pins)
+    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache, args.architecture, pins, args.wpe_adoption_sha256)
     epoch = int(run('git', 'show', '-s', '--format=%ct', args.revision))
     env['SOURCE_DATE_EPOCH'] = str(epoch)
     compile_with_capacity_watchdog(env)
