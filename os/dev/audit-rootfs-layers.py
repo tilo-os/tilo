@@ -177,6 +177,12 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
         raise AuditError('immutable image ID required')
     if len(private_values) > 32 or any(not 16 <= len(value) <= 65536 for value in private_values):
         raise AuditError('private match inputs must be bounded nonempty values')
+    # Shell command substitution removes trailing newlines from credential
+    # files. Match the original and a CR/LF-trimmed variant, without implying
+    # coverage of encodings or arbitrary secret transformations.
+    private_values = tuple(dict.fromkeys(
+        variant for value in private_values for variant in (value, value.rstrip(b'\r\n'))
+        if len(variant) >= 16))
     layers, metadata, names = {}, {}, set()
     metadata_findings = set()
     metadata_bytes = 0
