@@ -1502,14 +1502,7 @@ impl DisksApp {
             left,
             drive,
         );
-        Self::draw_smart_card(
-            paint.scene,
-            paint.text,
-            paint.theme,
-            paint.transform,
-            right,
-            drive,
-        );
+        Self::draw_smart_card(paint, right, drive);
     }
 
     /// Natural pixel height of the current tab's content, used to size the
@@ -1814,33 +1807,34 @@ impl DisksApp {
         }
     }
 
-    fn draw_smart_card(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        drive: &Drive,
-    ) {
+    fn draw_smart_card(paint: &mut PaintContext<'_>, area: Rect, drive: &Drive) {
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
-        Self::fill_rr(scene, t, area, 12.0, c.neutral[2]);
-        Self::stroke_rr(scene, t, area, 12.0, c.border_standard, 1.0);
         let pad = 16.0;
         let x = area.x0 + pad;
         let status = drive.smart_status();
-        Self::txt(
-            scene,
-            tr,
-            "SMART HEALTH",
-            11.0,
-            c.text_dim,
-            x,
-            area.y0 + pad,
-            None,
-            TextWeight::Semibold,
-        );
+        {
+            let scene = &mut *paint.scene;
+            let tr = &mut *paint.text;
+            Self::fill_rr(scene, t, area, 12.0, c.neutral[2]);
+            Self::stroke_rr(scene, t, area, 12.0, c.border_standard, 1.0);
+            Self::txt(
+                scene,
+                tr,
+                "SMART HEALTH",
+                11.0,
+                c.text_dim,
+                x,
+                area.y0 + pad,
+                None,
+                TextWeight::Semibold,
+            );
+        }
 
-        let pill = Self::draw_smart_status_pill(scene, tr, theme, t, area, x, pad, status);
+        let pill = Self::draw_smart_status_pill(paint, area, x, pad, status);
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
 
         let Some(smart) = &drive.smart else {
             Self::txt(
@@ -1878,23 +1872,23 @@ impl DisksApp {
             return;
         }
 
-        Self::draw_smart_card_body(scene, tr, theme, t, area, x, pad, pill, smart);
+        Self::draw_smart_card_body(paint, area, x, pad, pill, smart);
     }
 
     /// The status pill under the "SMART HEALTH" label (part of
     /// [`Self::draw_smart_card`]). Returns the pill's rect so the caller can
     /// anchor the rest of the card beneath it.
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_status_pill(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         x: f64,
         pad: f64,
         status: SmartStatus,
     ) -> Rect {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let sc = status_color(theme, status);
         let pill = Rect::new(
             x,
@@ -1921,18 +1915,18 @@ impl DisksApp {
     /// The temperature gauge + stat rows below the status pill, once SMART
     /// telemetry is known to have at least one usable value (part of
     /// [`Self::draw_smart_card`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_card_body(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         x: f64,
         pad: f64,
         pill: Rect,
         smart: &SmartInfo,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         // Temperature gauge.
         let mut yy = pill.y1 + 18.0;
@@ -2023,16 +2017,9 @@ impl DisksApp {
     }
 
     // ---- content: SMART tab -------------------------------------------
-    fn draw_smart_tab(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        drive: &Drive,
-    ) {
+    fn draw_smart_tab(paint: &mut PaintContext<'_>, area: Rect, drive: &Drive) {
         let status = drive.smart_status();
-        let banner = Self::draw_smart_tab_banner(scene, tr, theme, t, area, drive, status);
+        let banner = Self::draw_smart_tab_banner(paint, area, drive, status);
 
         let Some(smart) = &drive.smart else {
             return;
@@ -2040,23 +2027,24 @@ impl DisksApp {
 
         let tiles_top = banner.y1 + 16.0;
         let tile_h = 78.0;
-        Self::draw_smart_tiles(scene, tr, theme, t, area, smart, tiles_top, tile_h);
+        Self::draw_smart_tiles(paint, area, smart, tiles_top, tile_h);
 
         let table_top = tiles_top + tile_h + 18.0;
-        Self::draw_smart_attr_table(scene, tr, theme, t, area, smart, table_top);
+        Self::draw_smart_attr_table(paint, area, smart, table_top);
     }
 
     /// The overall self-assessment banner (part of [`Self::draw_smart_tab`]).
     /// Returns its rect so the caller can anchor the stat tiles beneath it.
     fn draw_smart_tab_banner(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         drive: &Drive,
         status: SmartStatus,
     ) -> Rect {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let sc = status_color(theme, status);
         let banner = Rect::new(area.x0, area.y0, area.x1, area.y0 + 64.0);
@@ -2110,17 +2098,17 @@ impl DisksApp {
 
     /// The temperature / power-on / power-cycles / reallocated / wear stat
     /// tiles row (part of [`Self::draw_smart_tab`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_tiles(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         smart: &SmartInfo,
         tiles_top: f64,
         tile_h: f64,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let tiles: Vec<(String, String)> = vec![
             (
@@ -2192,12 +2180,13 @@ impl DisksApp {
     /// [`Self::draw_smart_attr_table`]). Returns `(header_y, id_x, name_x,
     /// val_x, stat_x)` so each row aligns beneath them.
     fn draw_smart_attr_table_header(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         table_top: f64,
     ) -> (f64, f64, f64, f64, f64) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
         let c = &theme.tokens.colors;
         Self::txt(
             scene,
@@ -2265,18 +2254,18 @@ impl DisksApp {
     /// One row of the SMART attribute table (part of
     /// [`Self::draw_smart_attr_table`]). `xs` is `(id_x, name_x, val_x,
     /// stat_x)` from [`Self::draw_smart_attr_table_header`].
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_attr_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         i: usize,
         a: &SmartAttr,
         xs: (f64, f64, f64, f64),
         ry: f64,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let (id_x, name_x, val_x, stat_x) = xs;
         if i.is_multiple_of(2) {
@@ -2330,32 +2319,19 @@ impl DisksApp {
     }
 
     fn draw_smart_attr_table(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         smart: &SmartInfo,
         table_top: f64,
     ) {
         let (header_y, id_x, name_x, val_x, stat_x) =
-            Self::draw_smart_attr_table_header(scene, tr, theme, area, table_top);
+            Self::draw_smart_attr_table_header(paint, area, table_top);
         let mut ry = header_y + 22.0;
         for (i, a) in smart.attrs.iter().enumerate() {
             if ry > area.y1 - 20.0 {
                 break;
             }
-            Self::draw_smart_attr_row(
-                scene,
-                tr,
-                theme,
-                t,
-                area,
-                i,
-                a,
-                (id_x, name_x, val_x, stat_x),
-                ry,
-            );
+            Self::draw_smart_attr_row(paint, area, i, a, (id_x, name_x, val_x, stat_x), ry);
             ry += 24.0;
         }
     }
@@ -3735,7 +3711,16 @@ impl Widget for DisksApp {
                     &lay,
                     drive,
                 ),
-                Tab::Smart => Self::draw_smart_tab(scene, tr, theme, ct, ext, drive),
+                Tab::Smart => Self::draw_smart_tab(
+                    &mut PaintContext {
+                        scene,
+                        text: tr,
+                        theme,
+                        transform: ct,
+                    },
+                    ext,
+                    drive,
+                ),
                 Tab::Partitions => self.draw_partitions_tab(scene, tr, theme, ct, ext, drive),
             }
             scene.pop_layer();
