@@ -246,6 +246,25 @@ else
         || bad "os/Containerfile does not install /usr/bin/shell, so the compositor-owned 'collab' broker cannot start."
       continue
     fi
+    # Typed tool launches are also compositor-owned session state. Their
+    # handler dispatches into the shell and pumps workspace routes on its UI
+    # loop; a separate systemd daemon cannot supply that ownership.
+    if [ "$svc" = "tools" ]; then
+      native="$REPO/shell/src/compositor/native.rs"
+      service="$REPO/shell/src/shell/tool_intents.rs"
+      if grep -Fq 'let tool_service = match crate::shell::tool_intents::spawn()' "$native" \
+          && grep -Fq 'service.pump_workspace_settings(&frame_builder.chrome_handle())' "$native" \
+          && grep -Fq 'pub const TOOL_SERVICE: &str = "tools";' "$service" \
+          && grep -Fq 'launcher::services::socket_for(TOOL_SERVICE)' "$service"; then
+        ok "the native compositor starts 'tools' on the canonical socket and handles workspace routes"
+      else
+        bad "apps [$users] require 'tools', but its compositor-owned socket and workspace handler are not wired."
+      fi
+      containerfile_has_copy "$CONTAINERFILE" /out/shell /usr/bin/shell builder \
+        && ok "the image installs the compositor that owns 'tools'" \
+        || bad "os/Containerfile does not install the compositor-owned 'tools' service."
+      continue
+    fi
     if [ ! -r "$unit" ]; then
       bad "apps [$users] declare '$svc' as a required service, but $unit_rel does not exist.
       The launcher refuses to start those apps when
