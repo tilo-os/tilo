@@ -393,12 +393,15 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
 
         let fill = theme.tokens.colors.surfaces.overlay;
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+        // Panel role (HIG §9.1): a derived edge as a crisp 1 px inset
+        // stroke; the declared `border_standard` disappeared against the
+        // overlay tier on the dark preset.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(body, radius),
         );
 
         // Arrow: filled in the same overlay colour so it reads as a

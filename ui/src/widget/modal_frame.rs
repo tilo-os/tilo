@@ -329,7 +329,10 @@ pub struct ModalFrame;
 impl ModalFrame {
     /// The card's own fill.
     pub fn card_fill(theme: &Theme) -> Color {
-        theme.tokens.colors.surfaces.raised
+        // Panel role (HIG §9.1): the panel ground, walked clear of both the
+        // desktop and the window card, so the sheet separates by value as
+        // well as by edge on every preset.
+        crate::chrome::panel_ground(theme)
     }
 
     /// Ink that is legible on the modal card, as `(primary, dim)`.
@@ -515,7 +518,6 @@ impl ModalFrame {
         spec: &ModalSpec<'_>,
     ) {
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
         let (ink, _dim) = Self::ink(theme);
 
         crate::chrome::fill_scrim(scene, transform, layout.scrim, MODAL_SCRIM_ALPHA, theme);
@@ -534,10 +536,12 @@ impl ModalFrame {
             None,
             &card,
         );
+        // The derived panel edge (HIG §9.5), never a declared
+        // `border_standard` that sat within rounding distance of the fill.
         scene.stroke(
             &Stroke::new(1.0 * scale),
             transform,
-            colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
             &card,
         );

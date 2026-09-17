@@ -271,20 +271,24 @@ impl PageJumpPalette {
     /// The palette card's background fill and border.
     fn draw_card_chrome(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         let scale = f64::from(theme.text_scale);
-        let shape = RoundedRect::from_rect(rect, 12.0 * scale);
+        let radius = 12.0 * scale;
+        let shape = RoundedRect::from_rect(rect, radius);
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as a
+        // crisp inset stroke; a declared `border_standard` was invisible
+        // against `raised` on the dark preset.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0 * scale),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(rect, radius),
         );
     }
 
