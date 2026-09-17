@@ -11124,7 +11124,7 @@ impl ShellOverlayHost {
                         ),
                         Ok(_) => state.push_notification("Call handoff", "Declined on this device"),
                         Err(error) => state.push_notification("Could not move call", error),
-                    }
+                    };
                     state.bump();
                 }
                 return;
@@ -11205,7 +11205,7 @@ impl ShellOverlayHost {
                             ),
                         ),
                         Err(error) => state.push_notification("Could not move call", error),
-                    }
+                    };
                     state.bump();
                 }
                 return;
