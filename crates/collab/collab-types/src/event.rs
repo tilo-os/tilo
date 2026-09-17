@@ -168,7 +168,7 @@ impl ChannelEvent {
                 owner,
                 created_at,
                 signature: _,
-            } => genesis_signing_bytes(channel_id, space, name, owner, created_at),
+            } => genesis_signing_bytes(channel_id, space, name, owner, *created_at),
             ChannelEvent::AttestationIssued(ra) => attestation_issued_signing_bytes(ra),
             ChannelEvent::AttestationRevoked {
                 attestation,
@@ -233,7 +233,7 @@ fn genesis_signing_bytes(
     space: &SpaceId,
     name: &str,
     owner: &Ed25519PublicKey,
-    created_at: &SystemTime,
+    created_at: SystemTime,
 ) -> Result<Vec<u8>, CanonicalError> {
     #[derive(Serialize)]
     struct View<'a> {
@@ -242,7 +242,7 @@ fn genesis_signing_bytes(
         space: &'a SpaceId,
         name: &'a str,
         owner: &'a Ed25519PublicKey,
-        created_at: &'a SystemTime,
+        created_at: SystemTime,
     }
     canonical_bytes(&View {
         tag: 0,

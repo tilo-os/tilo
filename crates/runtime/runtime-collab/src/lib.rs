@@ -2003,6 +2003,10 @@ impl PresenceHandle {
     /// Publish or clear (`text == ""`) the local participant's short status.
     /// The broker authenticates authorship; `automatic` is presentation
     /// provenance, not authority.
+    ///
+    /// # Errors
+    /// Returns [`NotAvailable`] when the broker rejects the request or its
+    /// connection fails during the call.
     pub async fn publish_status(
         &self,
         key_bytes: &[u8],

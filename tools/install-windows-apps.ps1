@@ -2,8 +2,8 @@
 # Cap'n Proto and the pinned Rust/MSVC toolchain must be available on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad'),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'dev'
 )
@@ -51,7 +51,7 @@ $shortcutShell = New-Object -ComObject WScript.Shell
 foreach ($application in $applications) {
     $destination = Join-Path $installDirectory "$application.exe"
     Copy-Item -LiteralPath $executables[$application] -Destination $destination -Force
-    $title = (Get-Culture).TextInfo.ToTitleCase($application)
+    $title = if ($application -eq 'file-explorer') { 'Files' } else { (Get-Culture).TextInfo.ToTitleCase($application) }
     $shortcutPath = Join-Path $menuDirectory "$title.lnk"
     $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $destination
