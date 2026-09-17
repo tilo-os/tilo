@@ -39,7 +39,6 @@ use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
 use crate::text_metrics::renderer_type_size;
-use crate::color_compat::ColorCompat;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::checkbox::{Checkbox, CheckboxFace};
@@ -538,8 +537,15 @@ pub(super) fn paint_text_in(
 /// focus edge, the standard text inset); the sheet only decides where it
 /// goes and that its text is the sheet's `Value` role, so a field and the
 /// word beside it in a grid are one size.
-pub(super) fn place_field(input: &mut TextInput, rect: Rect, theme: &Theme) {
-    input.set_font_size(Role::Value.size(theme));
+pub(super) fn place_field(
+    input: &mut TextInput,
+    rect: Rect,
+    text_renderer: &TextRenderer,
+    theme: &Theme,
+) {
+    // The shared input hands its size to the renderer, which scales it: give
+    // it the renderer-relative `Value` size, not the theme token.
+    input.set_font_size(Role::Value.size(theme, text_renderer));
     input.apply_layout_external(rect);
 }
 
@@ -583,7 +589,7 @@ pub(super) fn place_code_cell(
     theme: &Theme,
 ) {
     input.set_plain_chrome(true);
-    input.set_font_size(Role::Code.size(theme));
+    input.set_font_size(Role::Code.size(theme, text_renderer));
     let (glyph_w, _) = measure(text_renderer, theme, Role::Code, "0", None);
     let w = (glyph_w + theme.caret_width).min(cell.width());
     let x0 = cell.x0 + (cell.width() - w) / 2.0;
@@ -1139,7 +1145,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut input = TextInput::local();
         let row = Rect::new(100.0, 200.0, 620.0, 234.0);
-        place_field(&mut input, row, &theme);
+        place_field(&mut input, row, &tr, &theme);
         assert_eq!(Widget::get_rect(&input), row);
         assert!(!input.is_plain(), "a field keeps the shared widget's chrome");
 
