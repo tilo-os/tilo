@@ -30,8 +30,8 @@ use ui::widget::{EmptyState, TextInput, WebView};
 
 use crate::account::AccountStore;
 use crate::draw::{
-    ACCOUNT_HEADER_H, BACK_CLEARANCE, CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE, FOLDER_ROW_H,
-    HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect, fill_round, stroke_round,
+    ACCOUNT_HEADER_H, AvatarPaintContext, BACK_CLEARANCE, CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE,
+    FOLDER_ROW_H, HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect, fill_round, stroke_round,
 };
 use crate::model::{Addr, Folder, Message, MessageId};
 use crate::state::{CtxAction, Intent, MailState, Shared};
@@ -651,11 +651,13 @@ impl Pane {
             c.text_dim,
         );
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &st.images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &st.images,
+            },
             Point::new(rect.x0 + 36.0, rect.y0 + ACCOUNT_HEADER_H / 2.0),
             13.0,
             &Addr::new(
@@ -1136,11 +1138,13 @@ impl Pane {
             );
         }
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &self.shared.borrow().images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &self.shared.borrow().images,
+            },
             Point::new(row.x0 + 42.0 * self.scale(), row.y0 + 26.0 * self.scale()),
             17.0 * self.scale(),
             &msg.from,
@@ -2100,11 +2104,13 @@ impl Pane {
         let card_x1 = cx + f64::from(width);
         let st = self.shared.borrow();
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &st.images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &st.images,
+            },
             Point::new(cx + 18.0, cy + 18.0),
             17.0,
             &msg.from,
