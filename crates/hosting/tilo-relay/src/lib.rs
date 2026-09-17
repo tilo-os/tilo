@@ -72,6 +72,7 @@ pub mod antientropy;
 pub mod auth;
 pub mod client;
 pub mod coedit;
+pub mod compute;
 pub mod config;
 pub mod daemon;
 pub mod home_peer;
@@ -88,6 +89,10 @@ pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, sen
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
+pub use compute::{
+    ComputeError, ComputeJobLifecycle, ComputeJobPhase, ComputeJobSpec, ComputeResourceLimits,
+    admit_compute_job,
+};
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
