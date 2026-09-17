@@ -207,6 +207,74 @@ async fn accepted_invocation_preserves_actor_and_cancellation_ownership() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn invocation_preserves_typed_argument_maps_through_the_broker() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut fixture, room, actor) = fixture();
+            let mut server = McpServer::new(fixture.broker.clone(), room, actor);
+            let original = json!({
+                "region": "0.16666666666666666,0,0.6666666666666666,1",
+                "json_looking_text": "{\"nested\":true}",
+                "scale": 0.5,
+                "enabled": true,
+                "content": "sha256:0123456789abcdef"
+            });
+
+            for arguments in [original.clone(), json!({})] {
+                let invoke = server.handle(call(
+                    "qos_invoke",
+                    json!({
+                        "peer_id": 71,
+                        "revision": "directory-r1",
+                        "resource": "workspace:atlas",
+                        "action": "open",
+                        "arguments": arguments
+                    }),
+                ));
+                let (reply, ()) = tokio::join!(invoke, async {
+                    tokio::task::yield_now().await;
+                    drain_directory_bridge(&fixture).await;
+                });
+                let reply = reply.unwrap();
+                assert_eq!(reply["result"]["isError"], false, "{reply}");
+                let delivered = fixture
+                    .take_invocation_argument()
+                    .flatten()
+                    .expect("MCP invocation delivers one encoded argument map");
+                let encoded = delivered
+                    .strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX)
+                    .expect("MCP invocation uses the canonical typed-argument envelope");
+                let decoded: serde_json::Map<String, Value> =
+                    serde_json::from_str(encoded).expect("typed argument envelope contains JSON");
+                assert_eq!(Value::Object(decoded), arguments);
+            }
+
+            let delivered = original.as_object().unwrap();
+            let params = [qos_actions::ActionParam::required(
+                "region",
+                qos_actions::ParamType::Text,
+                "normalized crop region",
+            )];
+            let crop_only = serde_json::Map::from_iter([(
+                "region".to_string(),
+                delivered["region"].clone(),
+            )]);
+            let bound = qos_actions::ActionArgs::bind_json(&params, &crop_only)
+                .expect("a transported crop region remains typed text");
+            assert_eq!(
+                bound.text("region"),
+                Some("0.16666666666666666,0,0.6666666666666666,1")
+            );
+            let numeric_crop = serde_json::Map::from_iter([("region".to_string(), json!(0.5))]);
+            assert!(
+                qos_actions::ActionArgs::bind_json(&params, &numeric_crop).is_err(),
+                "a numeric crop region must fail canonical text validation"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn bridge_errors_and_terminal_content_are_not_fabricated() {
     use crate::shell::collab_broker_capnp::{
         ActionDirectoryBridgeError as Error, StartedDirectoryAction,

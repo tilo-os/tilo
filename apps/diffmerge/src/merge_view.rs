@@ -964,7 +964,9 @@ impl MergeView {
             &mh,
         );
         let conflicts = self.model.conflict_count();
-        let header_label = if conflicts == 0 {
+        let header_label = if self.expected_content.is_none() {
+            "Saved merged output · originals unavailable".to_string()
+        } else if conflicts == 0 {
             if self.is_compact() {
                 "Merged result · resolved".to_string()
             } else {
@@ -1141,6 +1143,10 @@ impl Widget for MergeView {
             &band_clip,
         );
         self.draw_hunks(scene, transform, tr, theme);
+        if self.expected_content.is_none() && !self.merged_output.is_empty() {
+            tr.draw_text(scene, "Original inputs unavailable for this saved output. Load new inputs to resolve hunks.", 14., c.text_dim,
+                transform * Affine::translate((r.x0 + 16., band_top + 16.)), Some((r.width()-32.) as f32));
+        }
         scene.pop_layer();
 
         // Divider between source band and merged band.

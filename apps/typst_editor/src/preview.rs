@@ -131,6 +131,12 @@ impl Default for PreviewPane {
 }
 
 impl PreviewPane {
+    #[cfg(test)]
+    pub(crate) fn history_test_point(&self, page: usize, y: f64) -> Point {
+        let b = self.boxes[page];
+        self.viewport.content_to_screen() * Point::new(b.x_off, b.top+y)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -150,6 +156,7 @@ impl PreviewPane {
     pub(crate) fn set_snapshot_view(&mut self, page: usize, zoom: f64, scroll: (f64, f64)) {
         self.fit_width = false;
         self.viewport.set_zoom(self.viewport.fit_width_zoom() * zoom);
+        self.viewport.set_scroll(0., 0.);
         self.scroll_to_page(page);
         self.viewport.pan_by(scroll.0, scroll.1);
         self.recompute_current();

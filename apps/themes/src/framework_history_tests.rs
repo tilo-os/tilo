@@ -1,18 +1,26 @@
 include!("../../../ui/tests/support/history_adapter_conformance.rs");
 fn malformed_fixture(doc: &mut AutoCommit) {
     let themes = doc.get(ROOT, "themes").unwrap().unwrap().1;
-    let row = doc.put_object(&themes, "broken", automerge::ObjType::Map).unwrap();
+    let row = doc
+        .put_object(&themes, "broken", automerge::ObjType::Map)
+        .unwrap();
     doc.put(&row, "unexpected_effect", "bad").unwrap();
 }
 fn fixture() -> (AutoCommit, automerge::ChangeHash, String) {
     let mut doc = AutoCommit::new();
     let mut s = crate::model::seed_custom();
     s.name = "Selected theme".into();
-    s.accent = [12,34,56];
+    s.accent = [12, 34, 56];
     crate::doc::save_catalog(&mut doc, &ROOT, &[s.clone()]);
     let selected = doc.get_heads()[0];
     crate::doc::set_name(&mut doc, &ROOT, &s.id, "Live theme");
-    crate::doc::set_token(&mut doc, &ROOT, &s.id, crate::model::TokenId::Accent, [200,100,1]);
+    crate::doc::set_token(
+        &mut doc,
+        &ROOT,
+        &s.id,
+        crate::model::TokenId::Accent,
+        [200, 100, 1],
+    );
     doc.put(ROOT, "active", "saved-applied-identity").unwrap();
     doc.put(ROOT, "view_only", "current").unwrap();
     doc.get_heads();
@@ -22,40 +30,227 @@ fn verify_restored(doc: &AutoCommit) {
     let themes = crate::doc::load_catalog(doc, &ROOT).unwrap();
     let s = themes.iter().find(|s| s.id == "sunset").unwrap();
     assert_eq!(s.name, "Selected theme");
-    assert_eq!(s.accent, [12,34,56]);
-    assert_eq!(crate::doc::get_str(doc, &ROOT, "active").as_deref(), Some("saved-applied-identity"));
+    assert_eq!(s.accent, [12, 34, 56]);
+    assert_eq!(
+        crate::doc::get_str(doc, &ROOT, "active").as_deref(),
+        Some("saved-applied-identity")
+    );
 }
 
 #[test]
 fn legacy_library_restore_and_fresh_live_sync_preserve_exact_content() {
     use ui::widget::Widget;
-    let mut doc=AutoCommit::new();
-    let mut one=crate::model::seed_custom();one.name="Legacy selected".into();
-    let mut two=one.clone();two.id="second".into();
-    crate::doc::put_text(&mut doc,&ROOT,"catalog",&serde_json::to_string(&[one,two]).unwrap());
-    doc.put(ROOT,"active","saved-applied-identity").unwrap();
-    let selected=doc.get_heads()[0];
-    let expected=project_content(&doc,&crate::framework_history::SCHEMA).unwrap();
-    crate::doc::save_catalog(&mut doc,&ROOT,&[crate::model::seed_custom()]);doc.get_heads();
-    let prepared=prepare_content_restore(&doc,&crate::framework_history::SCHEMA,&doc.base_heads(),&[selected]).unwrap();
-    apply_prepared_content_restore(&mut doc,&prepared).unwrap();doc.get_heads();
-    for _ in 0..2 { let mut app=crate::ThemesApp::new();app.sync(&mut doc,&ROOT);doc.get_heads();assert_eq!(project_content(&doc,&crate::framework_history::SCHEMA).unwrap(),expected);doc=AutoCommit::load(&doc.save()).unwrap(); }
+    let mut doc = AutoCommit::new();
+    let mut one = crate::model::seed_custom();
+    one.name = "Legacy selected".into();
+    let mut two = one.clone();
+    two.id = "second".into();
+    crate::doc::put_text(
+        &mut doc,
+        &ROOT,
+        "catalog",
+        &serde_json::to_string(&[one, two]).unwrap(),
+    );
+    doc.put(ROOT, "active", "saved-applied-identity").unwrap();
+    let selected = doc.get_heads()[0];
+    let expected = project_content(&doc, &crate::framework_history::SCHEMA).unwrap();
+    crate::doc::save_catalog(&mut doc, &ROOT, &[crate::model::seed_custom()]);
+    doc.get_heads();
+    let prepared = prepare_content_restore(
+        &doc,
+        &crate::framework_history::SCHEMA,
+        &doc.base_heads(),
+        &[selected],
+    )
+    .unwrap();
+    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+    doc.get_heads();
+    for _ in 0..2 {
+        let mut app = crate::ThemesApp::new();
+        app.sync(&mut doc, &ROOT);
+        doc.get_heads();
+        assert_eq!(
+            project_content(&doc, &crate::framework_history::SCHEMA).unwrap(),
+            expected
+        );
+        doc = AutoCommit::load(&doc.save()).unwrap();
+    }
 }
 
 #[test]
 fn valid_legacy_edit_materializes_only_addressed_record_and_invalid_edit_does_nothing() {
     use qos_actions::Action;
-    let mut doc=AutoCommit::new();let one=crate::model::seed_custom();let mut two=one.clone();two.id="second".into();
-    crate::doc::put_text(&mut doc,&ROOT,"catalog",&serde_json::to_string(&[one,two]).unwrap());
-    let before=doc.get_heads();
-    for action in [crate::actions::set_custom_theme_name_action("sunset",""),crate::actions::set_custom_theme_font_action("sunset","unknown"),crate::actions::set_custom_theme_radius_action("sunset",f32::NAN)] { action.apply(&mut doc).unwrap(); }
-    assert_eq!(doc.get_heads(),before);
-    let action=crate::actions::set_custom_theme_name_action("sunset","Explicit legacy edit");
-    qos_actions::apply_local(&mut doc,&action,crate::actions::encode(&action)).unwrap();
-    let themes=doc.get(ROOT,"themes").unwrap().unwrap().1;
-    assert!(doc.get(&themes,"sunset").unwrap().is_some());assert!(doc.get(&themes,"second").unwrap().is_none());
-    assert_eq!(crate::doc::load_catalog(&doc,&ROOT).unwrap().iter().find(|s|s.id=="sunset").unwrap().name,"Explicit legacy edit");
-    assert_eq!(doc.get_changes(&before).len(),1);
+    let mut doc = AutoCommit::new();
+    let one = crate::model::seed_custom();
+    let mut two = one.clone();
+    two.id = "second".into();
+    crate::doc::put_text(
+        &mut doc,
+        &ROOT,
+        "catalog",
+        &serde_json::to_string(&[one, two]).unwrap(),
+    );
+    let before = doc.get_heads();
+    for action in [
+        crate::actions::set_custom_theme_name_action("sunset", ""),
+        crate::actions::set_custom_theme_font_action("sunset", "unknown"),
+        crate::actions::set_custom_theme_radius_action("sunset", f32::NAN),
+    ] {
+        action.apply(&mut doc).unwrap();
+    }
+    assert_eq!(doc.get_heads(), before);
+    let action = crate::actions::set_custom_theme_name_action("sunset", "Explicit legacy edit");
+    qos_actions::apply_local(&mut doc, &action, crate::actions::encode(&action)).unwrap();
+    let themes = doc.get(ROOT, "themes").unwrap().unwrap().1;
+    assert!(doc.get(&themes, "sunset").unwrap().is_some());
+    assert!(doc.get(&themes, "second").unwrap().is_none());
+    assert_eq!(
+        crate::doc::load_catalog(&doc, &ROOT)
+            .unwrap()
+            .iter()
+            .find(|s| s.id == "sunset")
+            .unwrap()
+            .name,
+        "Explicit legacy edit"
+    );
+    assert_eq!(doc.get_changes(&before).len(), 1);
 }
 
-fn test_root() -> Box<dyn ui::widget::Widget> { crate::app_root() }
+fn test_root() -> Box<dyn ui::widget::Widget> {
+    crate::app_root()
+}
+
+#[test]
+fn legacy_restore_actual_storage_reopen_never_applies_os_theme() {
+    if let Ok(stage) = std::env::var("QOS_SLICE5_THEMES_STAGE") {
+        let (mut state, mut saver) = ui::persist::try_open("dev.qos.themes").unwrap();
+        let store = crate::store::store_path().unwrap();
+        if stage == "write" {
+            crate::store::save_to(&store, &crate::model::seed_custom()).unwrap();
+            let store_bytes = std::fs::read(&store).unwrap();
+            let mut spec = crate::model::seed_custom();
+            spec.name = "Legacy stored theme".into();
+            crate::doc::put_text(
+                &mut state.doc,
+                &ROOT,
+                "catalog",
+                &serde_json::to_string(&[spec]).unwrap(),
+            );
+            state.doc.put(ROOT, "active", "preserved-applied").unwrap();
+            let selected = state.doc.get_heads()[0];
+            crate::doc::save_catalog(&mut state.doc, &ROOT, &[crate::model::seed_custom()]);
+            state.doc.get_heads();
+            let mut d = managed_driver(state.doc, selected);
+            d.click_named("history-restore").unwrap();
+            d.key("Enter");
+            d.click_named("history-back-live").unwrap();
+            assert_eq!(std::fs::read(&store).unwrap(), store_bytes);
+            saver.request(&mut d.state_mut().doc);
+            saver.try_flush().unwrap();
+            std::fs::write(
+                saver.document_path().with_extension("selected"),
+                selected.to_string(),
+            )
+            .unwrap();
+        } else {
+            let bytes = std::fs::read(&store).unwrap();
+            let heads = state.doc.base_heads();
+            crate::app_root().sync(&mut state.doc, &ROOT);
+            assert_eq!(state.doc.base_heads(), heads);
+            assert_eq!(state.doc.pending_ops(), 0);
+            let selected =
+                std::fs::read_to_string(saver.document_path().with_extension("selected"))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+            let target = state.doc.fork_at(&[selected]).unwrap();
+            assert_eq!(
+                project_content(&state.doc, &crate::framework_history::SCHEMA).unwrap(),
+                project_content(&target, &crate::framework_history::SCHEMA).unwrap()
+            );
+            assert!(state.doc.get_change_by_hash(&selected).is_some());
+            assert_eq!(std::fs::read(&store).unwrap(), bytes);
+            assert_eq!(
+                crate::doc::get_str(&state.doc, &ROOT, "active").as_deref(),
+                Some("preserved-applied")
+            );
+        }
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("qos-slice5-themes-legacy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for stage in ["write", "read"] {
+        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::legacy_restore_actual_storage_reopen_never_applies_os_theme","--nocapture"]).env("QOS_SLICE5_THEMES_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{stage}: {} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn legacy_reset_delete_and_native_precedence_keep_other_records_and_one_undo() {
+    for action in [
+        crate::actions::reset_custom_theme_action("sunset"),
+        crate::actions::delete_custom_theme_action("sunset"),
+    ] {
+        let mut state = ui::State::new();
+        let mut one = crate::model::seed_custom();
+        one.accent = [1, 2, 3];
+        let mut two = one.clone();
+        two.id = "second".into();
+        let legacy = serde_json::to_string(&[one.clone(), two]).unwrap();
+        crate::doc::put_text(&mut state.doc, &ROOT, "catalog", &legacy);
+        let before = state.doc.get_heads();
+        qos_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action)).unwrap();
+        state.record_committed_action(before.clone(), None, None);
+        assert_eq!(state.doc.get_changes(&before).len(), 1);
+        assert_eq!(
+            crate::doc::get_text(&state.doc, &ROOT, "catalog").as_deref(),
+            Some(legacy.as_str())
+        );
+        let catalog = crate::doc::load_catalog(&state.doc, &ROOT).unwrap();
+        assert!(catalog.iter().any(|s| s.id == "second"));
+        match action {
+            crate::actions::ThemesAction::DeleteCustomTheme { .. } => {
+                assert!(!catalog.iter().any(|s| s.id == "sunset"));
+                let heads = state.doc.base_heads();
+                assert!(!crate::doc::set_name(
+                    &mut state.doc,
+                    &ROOT,
+                    "sunset",
+                    "Resurrect"
+                ));
+                assert_eq!(state.doc.get_heads(), heads);
+            }
+            _ => assert_ne!(
+                catalog.iter().find(|s| s.id == "sunset").unwrap().accent,
+                [1, 2, 3]
+            ),
+        }
+        assert!(state.undo(None, None).is_some());
+        assert_eq!(
+            crate::doc::load_catalog(&state.doc, &ROOT)
+                .unwrap()
+                .iter()
+                .find(|s| s.id == "sunset")
+                .unwrap()
+                .accent,
+            [1, 2, 3]
+        );
+        one.name = "Native precedence".into();
+        crate::doc::create_custom_theme(&mut state.doc, &ROOT, &one);
+        assert_eq!(
+            crate::doc::load_catalog(&state.doc, &ROOT)
+                .unwrap()
+                .iter()
+                .find(|s| s.id == "sunset")
+                .unwrap()
+                .name,
+            "Native precedence"
+        );
+    }
+}

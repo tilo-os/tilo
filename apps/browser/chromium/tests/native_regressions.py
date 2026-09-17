@@ -189,6 +189,22 @@ class NativeRegressions(unittest.TestCase):
         dimensions=self.host.frames.get(timeout=5)
         self.assertEqual(dimensions,(1600,904))
 
+    def test_resize_burst_during_cross_site_navigation_reaches_latest_geometry(self):
+        self.host.send(op='navigate', url=self.cross_site)
+        # Match startup's changing chrome height and later Retina promotion.
+        for width, height, scale in [(800,492,1), (800,484,1), (1600,968,2),
+                                     (1600,984,2), (1600,984,2)]:
+            self.host.send(op='resize', width=width, height=height, scale_factor=scale)
+            time.sleep(.01)
+        deadline = time.monotonic()+10
+        seen = []
+        while time.monotonic() < deadline:
+            dimensions = self.host.frames.get(timeout=max(.01, deadline-time.monotonic()))
+            seen.append(dimensions)
+            if dimensions == (1600,984):
+                return
+        self.fail(f'No final-size frame without additional input: {seen}')
+
     def test_editing_keys_and_text(self):
         h = self.host
         h.send(op='focus',focused=True)

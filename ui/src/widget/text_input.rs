@@ -297,6 +297,7 @@ pub struct TextInput {
     /// Preserved across consecutive `Up`/`Down`; reset on any other move.
     goal_x: Option<f64>,
     scroll_y: f64,
+    preserve_unfocused_scroll: bool,
     gutter: bool,
     /// Width measured from the same scaled line-number style used to paint.
     measured_gutter_width: f64,
@@ -437,6 +438,7 @@ impl TextInput {
             lines: Vec::new(),
             goal_x: None,
             scroll_y: 0.0,
+            preserve_unfocused_scroll: false,
             gutter: false,
             measured_gutter_width: 0.0,
             highlight_current_line: false,
@@ -1128,6 +1130,12 @@ impl TextInput {
         self.scroll_x
     }
 
+    /// Retain bounded multiline scroll when used as an inert, unfocused source view.
+    /// Does not enable focus, caret painting, input handling or document binding.
+    pub fn set_preserve_unfocused_scroll(&mut self, preserve: bool) {
+        self.preserve_unfocused_scroll = preserve;
+    }
+
     pub fn scroll_y(&self) -> f64 {
         self.scroll_y
     }
@@ -1797,7 +1805,7 @@ impl TextInput {
             } else if f64::from(caret_top + caret_height) - self.scroll_y > view_height {
                 self.scroll_y = f64::from(caret_top + caret_height) - view_height;
             }
-        } else if !self.is_focused {
+        } else if !self.is_focused && !self.preserve_unfocused_scroll {
             self.scroll_y = 0.0;
         }
         self.last_scroll_caret = Some(self.cursor_pos);
@@ -2059,7 +2067,7 @@ impl TextInput {
                     self.scroll_y = caret_bot - view_h;
                 }
             }
-        } else {
+        } else if !self.preserve_unfocused_scroll {
             self.scroll_y = 0.0;
         }
         self.last_scroll_caret = Some(self.cursor_pos);
@@ -7370,6 +7378,27 @@ mod tests {
             large_height >= normal_height * 1.9,
             "editor paragraph geometry scales with the theme ({large_height} vs {normal_height})"
         );
+    }
+
+    #[test]
+    fn snapshot_scroll_opt_in_preserves_unfocused_shaped_and_body_views() {
+        for shaped in [false, true] {
+            for preserve in [false, true] {
+                let text = "a long source row\n".repeat(80);
+                let mut input = TextInput::local().multiline(true).with_initial_value(&text);
+                input.set_preserve_unfocused_scroll(preserve);
+                input.rect = Rect::new(0., 0., 300., 100.);
+                input.is_focused = false;
+                if !shaped { input.lines = (0..80).map(|i| VisualLine { start: i*18, end: i*18+17, hard_break: true, y: i as f64*20., char_x: vec![] }).collect(); }
+                input.scroll_y = 60.;
+                if shaped { input.update_ml_scroll(0.,20.,1600.); } else { input.update_ml_body_scroll(20.); }
+                assert_eq!(input.scroll_y, if preserve {60.} else {0.});
+                input.rect = Rect::new(0.,0.,400.,140.);
+                if shaped { input.update_ml_scroll(0.,20.,1600.); } else { input.update_ml_body_scroll(20.); }
+                assert_eq!(input.scroll_y, if preserve {60.} else {0.});
+                assert!(!input.is_focused);
+            }
+        }
     }
 
     #[test]

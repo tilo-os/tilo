@@ -5183,6 +5183,26 @@ mod architecture_tests {
     }
 
     #[test]
+    fn compact_forward_button_exposes_directional_history() {
+        let engine = TestEngine::new();
+        for url in ["https://a.test", "https://b.test"] {
+            engine.send(WebViewCommand::Navigate(url.into()));
+        }
+        engine.send(WebViewCommand::GoBack);
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        widget.debug_set_viewport_width(360);
+        super::tests::layout_at(&mut widget, 360.0, 700.0);
+        widget.apply_engine_events();
+        let forward = widget.find_rect("browser.forward").expect("compact Forward must remain visible");
+        assert!(forward.width() >= 30.0 && forward.x0 >= 0.0 && forward.x1 <= 360.0);
+        widget.cursor = forward.center();
+        assert!(dispatch_back_event(&mut widget, mouse(MouseButton::Right, ElementState::Pressed)));
+        widget.apply_engine_events();
+        assert!(widget.back_menu.is_open());
+        assert_eq!(widget.back_entries.iter().map(|entry| entry.url.as_str()).collect::<Vec<_>>(), ["https://b.test"]);
+    }
+
+    #[test]
     fn current_entry_splits_nearest_back_and_forward_history_and_forward_hold_opens_once() {
         let engine = TestEngine::new();
         for url in ["https://a.test", "https://b.test", "https://c.test"] {
@@ -5896,6 +5916,47 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
+    }
+
+    #[test]
+    fn focused_address_tracks_committed_navigation_but_preserves_new_drafts() {
+        let setup = || {
+            let engine = TestEngine::new();
+            for url in ["https://a.test", "https://b.test"] {
+                engine.send(WebViewCommand::Navigate(url.into()));
+            }
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            layout_at(&mut widget, 900.0, 700.0);
+            widget.apply_engine_events();
+            assert!(widget.focus_address_input());
+            (engine, widget)
+        };
+        let (_, mut widget) = setup();
+        widget.address.set("unsent draft".into());
+        widget.perform_browser_operation(BrowserOperation::Back).unwrap();
+        widget.apply_engine_events();
+        assert_eq!(widget.address.with(Clone::clone), "https://a.test");
+        widget.perform_browser_operation(BrowserOperation::Forward).unwrap();
+        widget.apply_engine_events();
+        assert_eq!(widget.address.with(Clone::clone), "https://b.test");
+
+        let (_, mut widget) = setup();
+        widget.perform_browser_operation(BrowserOperation::Back).unwrap();
+        widget.address.set("new draft after navigation".into());
+        widget.apply_engine_events();
+        assert_eq!(widget.address.with(Clone::clone), "new draft after navigation");
+
+        let (engine, mut widget) = setup();
+        widget.address.set("unsent draft".into());
+        engine.send(WebViewCommand::Navigate("https://redirect.test".into()));
+        widget.apply_engine_events();
+        assert_eq!(widget.address.with(Clone::clone), "unsent draft");
+
+        let (engine, mut widget) = setup();
+        widget.perform_browser_operation(BrowserOperation::Navigate { url: "https://start.test".into() }).unwrap();
+        engine.send(WebViewCommand::Navigate("https://redirect.test".into()));
+        widget.apply_engine_events();
+        assert_eq!(widget.address.with(Clone::clone), "https://redirect.test");
     }
 
     #[test]

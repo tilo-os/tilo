@@ -384,10 +384,12 @@ impl DiffMergeApp {
     /// `None` unless a three-way merge with at least one change hunk is the
     /// active mode — the diff mode is read-only and mutates nothing.
     pub(crate) fn merge_resource_ctx(&self, doc: &AutoCommit) -> Option<crate::actions::MergeResourceCtx> {
-        if self.mode != Mode::Merge || !self.merge.context_matches(doc) {
-            return None;
-        }
-        self.merge.resource_ctx()
+        if self.mode != Mode::Merge { return None; }
+        if self.merge.context_matches(doc) { return self.merge.resource_ctx(); }
+        crate::doc::MergeDoc::has_merged(doc).then(|| crate::actions::MergeResourceCtx {
+            title: "Saved merge output · original inputs unavailable".into(),
+            model: crate::model::MergeModel::default(),
+        })
     }
 
     pub(crate) fn diff_resource_ctx(&self) -> Option<crate::actions::DiffResourceCtx> {
@@ -977,6 +979,16 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
+    fn document_action_applied(&mut self, action: &qos_actions::EncodedAction, before: &[ChangeHash], doc: &AutoCommit, _path: &ObjId) {
+        if action.type_id == crate::actions::DIFFMERGE_ACTION_TYPE
+            && doc.clone().fork_at(before).ok().is_some_and(|prior| self.merge.context_matches(&prior)) {
+            self.merge.acknowledge_content(doc);
+        } else {
+            self.merge.reconcile_content(doc);
+        }
+    }
+
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> { Some(&crate::framework_history::HISTORY) }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
