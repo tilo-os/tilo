@@ -11132,7 +11132,6 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::RealtimeSource(source) => {
                 self.qs_selected_realtime = Some(source.session);
                 self.qs_selected_media = None;
-                self.qs_selected_realtime = None;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
