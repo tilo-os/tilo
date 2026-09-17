@@ -334,6 +334,22 @@ isolates layer reproducibility from any timestamps a signing provider embeds.
 This integration still requires native end-to-end acceptance, followed by signed
 disk and VM validation. The development container-only stop remains enabled.
 
+## Private disk-file allocation boundary
+
+`os/dev/private_disk_image.py` supplies the file-allocation boundary for the
+planned disk consumer. It requires an already-root Linux caller and a canonical,
+root-owned private output directory. It creates a new sparse regular file with
+exclusive creation, holds the directory and file descriptors, and verifies the
+same inode, owner, permissions, link count and size before handoff and retention.
+Existing paths are rejected, including links and special files. Failure cleanup
+removes only the file it created, even if the output directory was renamed.
+
+The consumer must call `validate()` immediately before handing the path to its
+trusted installer and call `retain()` only after independent disk verification.
+This helper does not invoke bootc, allocate a physical disk, prove free-space
+sufficiency, or protect against a malicious root process. Its root Linux tests
+use private sparse temporary files; signed disk and VM acceptance remain separate.
+
 ## Production provisioning later
 
 1. Choose the KMS/HSM provider and release operator. Provision non-exportable OS
