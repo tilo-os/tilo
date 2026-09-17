@@ -52,6 +52,18 @@ use crate::paint as p;
 /// or sidebar (the OS owns window chrome). Gallery and Settings are reached
 /// from the viewfinder as a push and an overlay sheet, not as rail items.
 const EDGE: f64 = 18.0;
+/// Floating over-viewfinder capsules (the top setting pills and the
+/// Photo/Video/Scan switcher) are authored at these 1× heights and grow only
+/// when the measured label line no longer fits — so 200% text is contained
+/// without changing the 1× viewfinder composition. Label sizes stay literal:
+/// these are over-media overlays (see `docs/hand-rolled-ui-audit.md`), drawn
+/// dark-on-light regardless of theme, and the renderer applies the text scale.
+const CTRL_PILL_MIN_H: f64 = 30.0;
+const CTRL_PILL_LABEL_SIZE: f32 = 12.0;
+const CTRL_PILL_PAD_Y: f64 = 7.5;
+const MODE_SWITCHER_MIN_H: f64 = 34.0;
+const MODE_LABEL_SIZE: f32 = 13.0;
+const MODE_LABEL_PAD_Y: f64 = 8.0;
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;";
 /// Single decoded-size budget for gallery thumbnails/previews (one decode
@@ -2538,17 +2550,11 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         center_x: f64,
-        top_y: f64,
+        bottom_y: f64,
     ) {
         // Keep the three mode targets inside a narrow/high-zoom viewport
         // instead of letting the fixed desktop-width pill clip off-screen.
         let seg_w = (self.rect.width() - EDGE * 2.0).clamp(150.0, 240.0);
-        let seg = Rect::new(
-            center_x - seg_w / 2.0,
-            top_y,
-            center_x + seg_w / 2.0,
-            top_y + 34.0,
-        );
         let on_cam = matches!(self.screen, Screen::Camera);
         let items: Vec<(String, bool, Action)> = vec![
             (
@@ -2567,6 +2573,23 @@ impl CameraApp {
                 Action::Nav(Screen::Scanner),
             ),
         ];
+        // The capsule is anchored by its bottom edge — it sits directly above
+        // the shutter — and grows *upward* to contain its labels. At 1× the
+        // measured 13 px line fits the authored 34 px, so nothing moves; at an
+        // accessibility text scale the labels stop painting below the selected
+        // segment's background (corrected-review-1, camera P2). Measured from
+        // the labels actually drawn, so a renamed or localized mode still fits.
+        let label_h = items
+            .iter()
+            .map(|(label, _, _)| p::text_h(tr, label, MODE_LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        let seg_h = (label_h + MODE_LABEL_PAD_Y * 2.0).max(MODE_SWITCHER_MIN_H);
+        let seg = Rect::new(
+            center_x - seg_w / 2.0,
+            bottom_y - seg_h,
+            center_x + seg_w / 2.0,
+            bottom_y,
+        );
         self.segmented(scene, t, tr, theme, seg, items);
     }
 
@@ -2618,7 +2641,7 @@ impl CameraApp {
             } else {
                 p::alpha(c.text_primary, 0.78)
             };
-            p::text_in(scene, tr, seg, &label, 13.0, col);
+            p::text_in(scene, tr, seg, &label, MODE_LABEL_SIZE, col);
             self.push_tap_region(seg, action);
         }
     }
@@ -3198,11 +3221,14 @@ impl CameraApp {
 
         // Settings gear, top-right — opens Settings as an overlay sheet. Drawn
         // whether or not a feed is present so Settings is always reachable.
+        // Centred on the top pill row (pills start at `y0 + 20`), so the two
+        // share one centre line at every text scale — `y0 + 35` at 1×.
+        let row_cy = full.y0 + 20.0 + Self::ctrl_pill_height(tr) / 2.0;
         self.glass_button(
             scene,
             t,
             theme,
-            Circle::new(Point::new(full.x1 - EDGE - 16.0, full.y0 + 35.0), 16.0),
+            Circle::new(Point::new(full.x1 - EDGE - 16.0, row_cy), 16.0),
             "settings",
             Action::Nav(Screen::Settings),
         );
@@ -3269,6 +3295,14 @@ impl CameraApp {
         }
     }
 
+    /// Height of every pill in the top control row: the authored
+    /// [`CTRL_PILL_MIN_H`] at 1×, grown to contain the measured 12 px label
+    /// line plus [`CTRL_PILL_PAD_Y`] at an accessibility text scale. The
+    /// settings button centres on the same row.
+    fn ctrl_pill_height(tr: &mut TextRenderer) -> f64 {
+        (p::text_h(tr, "HDR", CTRL_PILL_LABEL_SIZE) + CTRL_PILL_PAD_Y * 2.0).max(CTRL_PILL_MIN_H)
+    }
+
     /// A floating glass control pill (leading icon optional). `active` fills it
     /// with the accent; otherwise it's dark glass with a hairline border.
     /// Returns the pill's rect so the caller can register a hit region.
@@ -3291,7 +3325,7 @@ impl CameraApp {
         let tw = if label.is_empty() {
             0.0
         } else {
-            f64::from(p::text_w(tr, label, 12.0))
+            f64::from(p::text_w(tr, label, CTRL_PILL_LABEL_SIZE))
         };
         let gap = if icon.is_some() && !label.is_empty() {
             5.0
@@ -3299,7 +3333,10 @@ impl CameraApp {
             0.0
         };
         let width = pad * 2.0 + icon_w + gap + tw;
-        let height = 30.0;
+        // One height for the whole row — labelled and icon-only pills alike —
+        // so the row reads as one control strip at every text scale.
+        let height = Self::ctrl_pill_height(tr);
+        let th = p::text_h(tr, "HDR", CTRL_PILL_LABEL_SIZE);
         let rect = Rect::new(pos.x, pos.y, pos.x + width, pos.y + height);
         if active {
             p::fill_round(scene, t, rect, height / 2.0, theme.accent_primary);
@@ -3338,7 +3375,16 @@ impl CameraApp {
             cx += icon_w + gap;
         }
         if !label.is_empty() {
-            p::text(scene, tr, cx, rect.center().y - 8.0, label, 12.0, fg);
+            // Centre on the measured line, not on `size - k`.
+            p::text(
+                scene,
+                tr,
+                cx,
+                rect.center().y - th / 2.0,
+                label,
+                CTRL_PILL_LABEL_SIZE,
+                fg,
+            );
         }
         rect
     }
@@ -3443,7 +3489,9 @@ impl CameraApp {
         // recording (mode is locked; the stop-square shutter + REC badge carry
         // the state).
         if !state.recording {
-            self.draw_mode_switcher(scene, t, tr, theme, scx, full.y1 - 132.0);
+            // Bottom edge sits on the shutter's top (`cy - 34`): the same place
+            // the 34 px capsule ended before, so 1× geometry is unchanged.
+            self.draw_mode_switcher(scene, t, tr, theme, scx, cy - 34.0);
         }
         self.draw_gallery_thumb_peek(scene, t, tr, theme, full, cy);
         self.draw_shutter(scene, t, theme, scx, cy, state);
@@ -3461,12 +3509,10 @@ impl CameraApp {
         cy: f64,
     ) {
         let ts = 30.0;
-        let thumb = Rect::new(
-            full.x0 + EDGE + 8.0,
-            cy - ts,
-            full.x0 + EDGE + 8.0 + ts * 2.0,
-            cy + ts,
-        );
+        // Same edge inset as every other floating corner control (the top
+        // pills and the settings button), so the four corners read as one
+        // frame around the viewfinder.
+        let thumb = Rect::new(full.x0 + EDGE, cy - ts, full.x0 + EDGE + ts * 2.0, cy + ts);
         if let Some(cap) = self.captures.first().cloned() {
             self.ensure_thumb(&cap);
             p::push_clip_round(scene, t, thumb, 14.0);
@@ -3575,7 +3621,9 @@ impl CameraApp {
         cy: f64,
     ) {
         let c = &theme.tokens.colors;
-        let lx = full.x1 - 60.0;
+        // The 26 px circle's outer edge sits on the same inset as the
+        // top-right settings button, so both right-hand corners align.
+        let lx = full.x1 - EDGE - 26.0;
         p::circle(scene, t, lx, cy, 26.0, p::alpha(c.neutral[0], 0.5));
         p::circle_stroke(
             scene,
@@ -3797,7 +3845,9 @@ impl CameraApp {
         // you switch back to the camera the same way you got here. Centred on
         // the feed (clear of the recent-scans panel) to align with the scan
         // window and result card.
-        self.draw_mode_switcher(scene, t, tr, theme, full.center().x, full.y1 - 56.0);
+        // Bottom edge where the 34 px capsule ended before (`y1 - 56 + 34`), so
+        // 1× placement is unchanged and larger labels grow upward into the feed.
+        self.draw_mode_switcher(scene, t, tr, theme, full.center().x, full.y1 - 22.0);
     }
 
     /// A compact floating glass header (title + subtitle) used as an overlay
@@ -6066,10 +6116,25 @@ mod tests {
     /// given viewport, on the caller's shared doc. CPU-only; no GPU needed
     /// (rasterization is skipped — we only exercise layout + scene build).
     fn render_at(app: &mut CameraApp, doc: &mut AutoCommit, root: &ObjId, w: f32, h: f32) {
-        let theme = Theme::dark();
+        render_at_scaled(app, doc, root, w, h, 1.0);
+    }
+
+    /// [`render_at`] with the accessibility text scale applied the way the
+    /// live host and `ui::headless::FrameHarness` apply it — baked into the
+    /// theme and set on the renderer — so measurement and paint agree.
+    fn render_at_scaled(
+        app: &mut CameraApp,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        w: f32,
+        h: f32,
+        text_scale: f32,
+    ) {
+        let theme = Theme::dark().with_text_scale(text_scale);
         let presence = PresenceCtx::empty();
         let perms = ui::permissions::PermissionContext::permissive();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         app.sync(doc, root);
@@ -6116,6 +6181,89 @@ mod tests {
             &presence,
             &perms,
         );
+    }
+
+    /// corrected-review-1 (2026-09-15) camera P2: at 200% text the "12 MP /
+    /// HDR / Timer" labels ran below their 30 px pills and "Photo" below its
+    /// selected segment. Capsules now grow from the measured label line, so
+    /// every painted control must contain its label at 1× and 2×, and the
+    /// four floating corner controls must sit on one edge inset.
+    #[test]
+    fn viewfinder_capsules_contain_their_labels_at_accessibility_scale() {
+        for scale in [1.0_f32, 2.0] {
+            let (mut app, mut doc, root) = sample_app();
+            render_at_scaled(&mut app, &mut doc, &root, 1366.0, 768.0, scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let pill_label_h = f64::from(tr.measure("HDR", CTRL_PILL_LABEL_SIZE, None).1);
+            let mode_label_h = f64::from(tr.measure("Photo", MODE_LABEL_SIZE, None).1);
+            let tree = app.accessibility().expect("camera has a semantic window");
+            let bounds_of = |target: &str| -> Rect {
+                tree.children
+                    .iter()
+                    .find(|node| node.action_target.as_deref() == Some(target))
+                    .and_then(|node| node.bounds)
+                    .map(ui::a11y::AccessBounds::to_rect)
+                    .unwrap_or_else(|| panic!("{target} is a painted control"))
+            };
+            // Tap regions are the painted rect grown to the 44 px touch minimum
+            // around its centre (`push_tap_region`): anything taller than 44 is
+            // the painted capsule itself, and centres are always painted centres.
+            const TOUCH_MIN: f64 = 44.0;
+            let photo = bounds_of("camera.mode:photo");
+            let shutter = bounds_of("camera.shutter");
+            let pill = bounds_of("camera.hdr");
+            if (scale - 1.0).abs() < f32::EPSILON {
+                // 1× keeps the authored 30 / 34 px capsules (both under the
+                // touch minimum, so their regions read exactly 44) and the
+                // 34 px switcher still ends on the shutter's top edge.
+                assert!((pill.height() - TOUCH_MIN).abs() < 0.5, "1× pill: {pill:?}");
+                assert!(
+                    (photo.height() - TOUCH_MIN).abs() < 0.5,
+                    "1× segment: {photo:?}"
+                );
+                assert!(
+                    (photo.center().y + MODE_SWITCHER_MIN_H / 2.0 - shutter.y0).abs() < 0.5,
+                    "1×: switcher centre {photo:?} puts its bottom on the shutter {shutter:?}"
+                );
+            } else {
+                // 2×: the measured label lines exceed the minima, so the grown
+                // capsules are what the regions report — and they contain the
+                // labels with their padding, bottom edge still on the shutter.
+                for target in ["camera.hdr", "camera.resolution"] {
+                    let pill = bounds_of(target);
+                    assert!(
+                        pill.height() + 0.5 >= pill_label_h + CTRL_PILL_PAD_Y * 2.0,
+                        "2×: {target} pill {pill:?} cannot contain a {pill_label_h} px label"
+                    );
+                }
+                assert!(
+                    photo.height() + 0.5 >= mode_label_h + MODE_LABEL_PAD_Y * 2.0,
+                    "2×: mode segment {photo:?} cannot contain a {mode_label_h} px label"
+                );
+                assert!(
+                    (photo.y1 - shutter.y0).abs() < 0.5,
+                    "2×: switcher {photo:?} is bottom-anchored on the shutter {shutter:?}"
+                );
+            }
+            // Corner controls share one edge inset (checked through their
+            // painted centres, which touch inflation never moves).
+            let thumb = bounds_of("camera.nav:gallery");
+            let lens = bounds_of("camera.facing");
+            let settings = bounds_of("camera.nav:settings");
+            assert!(
+                (thumb.center().x - (app.rect.x0 + EDGE + 30.0)).abs() < 0.5,
+                "thumb (60 px) on EDGE: {thumb:?}"
+            );
+            assert!(
+                (lens.center().x - (app.rect.x1 - EDGE - 26.0)).abs() < 0.5,
+                "lens switch (r 26) on EDGE: {lens:?}"
+            );
+            assert!(
+                (settings.center().x - (app.rect.x1 - EDGE - 16.0)).abs() < 0.5,
+                "settings (r 16) on EDGE: {settings:?}"
+            );
+        }
     }
 
     #[test]
