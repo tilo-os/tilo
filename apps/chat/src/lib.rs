@@ -64,6 +64,7 @@ pub mod call;
 pub mod doc;
 pub mod emoji;
 pub mod events;
+pub mod geometry;
 pub mod i18n;
 pub mod identity;
 pub mod images;
