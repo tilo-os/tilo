@@ -14,7 +14,12 @@
 //! long as the GPU still reads from it, and no longer. An importer that hands
 //! the fd to Vulkan must `dup` it: Vulkan takes ownership of what it is given.
 
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
+// DMA-BUF descriptors cannot exist on Windows. Keep the shared frame and
+// colour vocabulary available without pretending a Windows HANDLE is an fd.
+#[cfg(not(unix))]
+use std::convert::Infallible as OwnedFd;
 
 /// Linear (untiled) layout — the only modifier a plain
 /// `VK_EXT_external_memory_dma_buf` import can interpret.
@@ -190,6 +195,7 @@ impl DmabufImage {
 
 /// Whether two planes' fds refer to the same underlying file description.
 /// dmabufs are anonymous, so device+inode is the only identity available.
+#[cfg(unix)]
 fn same_file(a: &DmabufPlane, b: &DmabufPlane) -> bool {
     use std::os::fd::AsRawFd;
     let stat = |fd: i32| -> Option<(u64, u64)> {
@@ -214,6 +220,7 @@ fn same_file(a: &DmabufPlane, b: &DmabufPlane) -> bool {
 // dependency (it is a pure-Rust crate outside the decode feature), and only
 // two fields are read, so the layout below covers x86_64/aarch64 Linux where
 // `st_dev` and `st_ino` are the first two 64-bit members.
+#[cfg(unix)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct libc_stat {
@@ -222,6 +229,7 @@ struct libc_stat {
     _rest: [u64; 16],
 }
 
+#[cfg(unix)]
 unsafe extern "C" {
     #[link_name = "fstat"]
     fn fstat_raw(fd: i32, buf: *mut libc_stat) -> i32;
@@ -231,6 +239,7 @@ unsafe extern "C" {
 /// implement seek precisely so an importer can size the allocation it needs
 /// when the producer only described plane offsets. `None` when the fd does
 /// not support seeking.
+#[cfg(unix)]
 pub fn dmabuf_size(fd: &OwnedFd) -> Option<u64> {
     use std::os::fd::AsRawFd;
     // Safety: `fd` is a live owned descriptor; `lseek` on it has no effect on
@@ -241,11 +250,18 @@ pub fn dmabuf_size(fd: &OwnedFd) -> Option<u64> {
     u64::try_from(end).ok()
 }
 
+#[cfg(unix)]
 const SEEK_END: i32 = 2;
 
+#[cfg(unix)]
 unsafe extern "C" {
     #[link_name = "lseek64"]
     fn lseek_raw(fd: i32, offset: i64, whence: i32) -> i64;
+}
+
+#[cfg(not(unix))]
+fn same_file(a: &DmabufPlane, _b: &DmabufPlane) -> bool {
+    match a.fd {}
 }
 
 #[cfg(test)]
@@ -297,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dmabuf_size_reads_the_end_offset_of_a_real_fd() {
         // A plain file stands in for a dmabuf here: both answer SEEK_END, and
         // this proves the binding returns the byte length rather than -1.
@@ -315,6 +332,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn planes_sharing_one_fd_are_detected_as_one_buffer() {
         let dir = std::env::temp_dir().join(format!("tilo-dmabuf-share-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

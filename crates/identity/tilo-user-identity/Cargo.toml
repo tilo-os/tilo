@@ -74,6 +74,9 @@ thiserror.workspace = true
 # out loud without garble. Small dep, pinned to 0.5.
 base32.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+private-fs = { path = "../../system/private-fs" }
+
 [dev-dependencies]
 # Isolated on-disk fixtures for the persistence-round-trip tests
 # so we do not touch /var/lib/tilo on the developer's machine.

@@ -7259,7 +7259,13 @@ fn resolve_title_from(
         }
     }
     if let Some(bin) = binary.and_then(non_blank) {
-        let human = humanize_ident(&bin);
+        let bin = bin.as_str();
+        #[cfg(windows)]
+        let bin = bin
+            .rsplit_once('.')
+            .filter(|(_, extension)| extension.eq_ignore_ascii_case("exe"))
+            .map_or(bin, |(name, _)| name);
+        let human = humanize_ident(bin);
         if !human.is_empty() {
             return human;
         }
@@ -12755,10 +12761,14 @@ mod view_presence_tests {
     /// sink) and the frame the receiver applies.
     #[test]
     fn view_subset_broadcasts_through_real_presence_path() {
+        #[cfg(windows)]
+        let file_record = r"file:C:\report.md";
+        #[cfg(not(windows))]
+        let file_record = "file:/report.md";
         let mut sender = app_with_root(ViewRoot {
             scroll: vec![10.0, 20.0],
             mode: Some("grid".into()),
-            resource: Some("file:/report.md".into()),
+            resource: Some(file_record.into()),
             rect: KurboRect::ZERO,
         });
         sender.last_frame_size = Some(winit::dpi::PhysicalSize::new(1024, 768));
@@ -12781,7 +12791,7 @@ mod view_presence_tests {
         assert_eq!(sent.scroll, vec![10.0, 20.0], "scroll rode the frame");
         assert_eq!(
             sent.open_resource.as_deref(),
-            Some("file:/report.md"),
+            Some(file_record),
             "the open resource rode the frame"
         );
         assert_eq!(

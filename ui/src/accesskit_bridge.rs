@@ -361,7 +361,7 @@ fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
         return Some(A11yTarget::Root);
     }
     if is_synthetic_id(id) {
-        return search_synthetic::<BOUND>(root, &reverse_node_map(node_map), id);
+        return search_synthetic::<BOUND>(root, &reverse_node_map::<S, BOUND>(root, node_map), id);
     }
     let widget_id = id.0 & !TEXT_RUN_ID_BASE;
     // A structural fallback id names a widget with no taffy node: nothing to
@@ -380,7 +380,7 @@ fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
 /// [`build_tree_update`] emitted.
 fn search_synthetic<const BOUND: bool>(
     w: &dyn Widget,
-    ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
+    ptr_to_taffy: &WidgetNodeMap,
     wanted: AkNodeId,
 ) -> Option<A11yTarget> {
     let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
@@ -394,8 +394,7 @@ fn search_synthetic<const BOUND: bool>(
     // A presentational widget emits no node, so it owns no synthetic subtree;
     // and only a laid-out widget's subtree is addressable at all.
     let access_node = w.accessibility()?;
-    let w_ptr = std::ptr::from_ref::<dyn Widget>(w).cast::<()>();
-    let owner = ptr_to_taffy.get(&w_ptr).copied()?;
+    let owner = ptr_to_taffy.get(w)?;
     let owner_id = widget_node_id(Some(owner), 0);
 
     let mut key_path = Vec::new();
@@ -455,14 +454,63 @@ fn find_synthetic_path(
 
 /// Reverse of the App's `taffy::NodeId -> *mut dyn Widget` map, so the walk can
 /// look up a stable id for any `&dyn Widget` it meets.
-fn reverse_node_map<S: BuildHasher>(
-    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
-) -> HashMap<*const (), TaffyNodeId> {
-    let mut ptr_to_taffy: HashMap<*const (), TaffyNodeId> = HashMap::new();
-    for (&taffy_id, &w_ptr) in node_map {
-        ptr_to_taffy.insert((w_ptr as *const dyn Widget).cast::<()>(), taffy_id);
+struct WidgetNodeMap {
+    nodes: HashMap<*const (), Vec<(TaffyNodeId, *const dyn Widget)>>,
+    aliases: std::collections::HashSet<*const ()>,
+}
+
+impl WidgetNodeMap {
+    fn get(&self, widget: &dyn Widget) -> Option<TaffyNodeId> {
+        let pointer = std::ptr::from_ref(widget);
+        let address = pointer.cast::<()>();
+        let entries = self.nodes.get(&address)?;
+        // A Rust struct can share its address with its first field. Only
+        // the registered trait object owns this layout id; the wrapper gets
+        // a structural id. For unaliased addresses retain the original rule,
+        // independent of possible compiler duplication of trait vtables.
+        entries.iter().find_map(|&(id, registered)| {
+            (!self.aliases.contains(&address) || std::ptr::eq(pointer, registered)).then_some(id)
+        })
     }
-    ptr_to_taffy
+}
+
+fn reverse_node_map<S: BuildHasher, const BOUND: bool>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+) -> WidgetNodeMap {
+    fn collect<const BOUND: bool>(
+        widget: &dyn Widget,
+        seen: &mut std::collections::HashSet<*const ()>,
+        aliases: &mut std::collections::HashSet<*const ()>,
+    ) {
+        let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(widget) else {
+            return;
+        };
+        let address = std::ptr::from_ref(widget).cast::<()>();
+        if !seen.insert(address) {
+            aliases.insert(address);
+        }
+        for child in widget.children() {
+            collect::<BOUND>(child, seen, aliases);
+        }
+    }
+    let mut result = WidgetNodeMap {
+        nodes: HashMap::new(),
+        aliases: std::collections::HashSet::new(),
+    };
+    collect::<BOUND>(
+        root,
+        &mut std::collections::HashSet::new(),
+        &mut result.aliases,
+    );
+    for (&taffy_id, &pointer) in node_map {
+        result
+            .nodes
+            .entry(pointer.cast::<()>())
+            .or_default()
+            .push((taffy_id, pointer));
+    }
+    result
 }
 
 fn byte_to_grapheme_index(text: &str, byte: usize) -> usize {
@@ -612,7 +660,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
     resources: &[tilo_actions::Resource],
 ) -> TreeUpdate {
     // Reverse map so we can look up a stable id for any &dyn Widget during the walk.
-    let ptr_to_taffy = reverse_node_map(node_map);
+    let ptr_to_taffy = reverse_node_map::<S, BOUND>(root, node_map);
 
     let focused_ak = focused.map(|t| AkNodeId(u64::from(t).saturating_add(1)));
 
@@ -741,7 +789,7 @@ fn append_resource_nodes(
 #[allow(clippy::too_many_arguments)]
 fn visit<const BOUND: bool>(
     w: &dyn Widget,
-    ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
+    ptr_to_taffy: &WidgetNodeMap,
     scale: f64,
     focused: Option<TaffyNodeId>,
     walk_counter: &mut u64,
@@ -753,8 +801,7 @@ fn visit<const BOUND: bool>(
         return;
     };
     let access = w.accessibility();
-    let w_ptr = std::ptr::from_ref::<dyn Widget>(w).cast::<()>();
-    let taffy_id = ptr_to_taffy.get(&w_ptr).copied();
+    let taffy_id = ptr_to_taffy.get(w);
 
     if let Some(access_node) = access {
         let id = widget_node_id(taffy_id, *walk_counter);
@@ -878,7 +925,7 @@ fn visit_synthetic<const BOUND: bool>(
     ordinal: usize,
     in_focused_widget: bool,
     hosted: Vec<HostedWidget<'_>>,
-    ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
+    ptr_to_taffy: &WidgetNodeMap,
     scale: f64,
     focused: Option<TaffyNodeId>,
     walk_counter: &mut u64,
@@ -1231,6 +1278,121 @@ mod tests {
         }
         fn accessibility(&self) -> Option<AccessNode> {
             self.access.clone()
+        }
+    }
+
+    #[repr(C)]
+    struct AliasWrapper {
+        child: TestWidget,
+    }
+
+    impl Widget for AliasWrapper {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            theme: &Theme,
+            nodes: &mut HashMap<TaffyNodeId, *mut dyn Widget>,
+        ) -> TaffyNodeId {
+            self.child.build_layout(tree, theme, nodes)
+        }
+        fn apply_layout(
+            &mut self,
+            _tree: &TaffyTree<()>,
+            _node: TaffyNodeId,
+            _origin: vello::kurbo::Point,
+        ) {
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut vello::Scene,
+            _transform: vello::kurbo::Affine,
+            _text: &mut crate::text_render::TextRenderer,
+            _theme: &Theme,
+            _presence: &crate::presence::PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &winit::event::WindowEvent,
+            _scale: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            _handled: &mut bool,
+            _focus: &mut Option<TaffyNodeId>,
+            _node: TaffyNodeId,
+            _tree: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![&self.child]
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            vec![&mut self.child]
+        }
+        fn name(&self) -> &str {
+            "AliasWrapper"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.child.rect
+        }
+        fn accessibility(&self) -> Option<AccessNode> {
+            self.child.access.clone()
+        }
+    }
+
+    #[test]
+    fn wrapper_and_first_field_have_distinct_nodes_and_child_keeps_focus() {
+        let mut wrapper = AliasWrapper {
+            child: TestWidget::new(Some(AccessNode::new(Role::Button))),
+        };
+        assert_eq!(
+            std::ptr::from_ref(&wrapper).cast::<()>(),
+            std::ptr::from_ref(&wrapper.child).cast::<()>()
+        );
+        let (mut tree, mut nodes, child) = lay_out(&mut wrapper);
+        let update = build_tree_update(&wrapper, &nodes, Some(child), 1.0);
+        let ids: std::collections::HashSet<_> = update.nodes.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids.len(),
+            update.nodes.len(),
+            "every semantic node has a distinct id"
+        );
+        assert_eq!(update.focus, widget_node_id(Some(child), 0));
+        assert_eq!(
+            update.nodes.len(),
+            3,
+            "window, wrapper and child all remain accessible"
+        );
+        for (id, node) in &update.nodes {
+            assert!(
+                !node.children().contains(id),
+                "node cannot be its own child"
+            );
+        }
+        // If both concrete widgets register their own layout nodes, neither
+        // registration may overwrite the other in the reverse lookup.
+        let parent = tree.new_leaf(taffy::Style::default()).unwrap();
+        nodes.insert(parent, std::ptr::from_mut::<dyn Widget>(&mut wrapper));
+        for focused in [parent, child] {
+            let update = build_tree_update(&wrapper, &nodes, Some(focused), 1.0);
+            assert_eq!(update.focus, widget_node_id(Some(focused), 0));
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .any(|(id, _)| *id == widget_node_id(Some(parent), 0))
+            );
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .any(|(id, _)| *id == widget_node_id(Some(child), 0))
+            );
+            let ids: std::collections::HashSet<_> =
+                update.nodes.iter().map(|(id, _)| *id).collect();
+            assert_eq!(ids.len(), update.nodes.len());
         }
     }
 
