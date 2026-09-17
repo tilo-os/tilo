@@ -6,6 +6,8 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 projection="$root/shell/src/shell/projection.rs"
 capture="$root/shell/src/compositor/audio_capture.rs"
 catalogue="$root/shell/src/shell/catalogue.rs"
+history="$root/shell/src/shell/history_narrative.rs"
+firstboot="$root/shell/src/firstboot.rs"
 
 grep -Fq 'bounded_command::run_prepared(' "$projection"
 grep -Fq 'PROJECTOR_OUTPUT_LIMIT' "$projection"
@@ -20,5 +22,12 @@ grep -Fq 'bounded_command::run_prepared(' "$catalogue"
 grep -Fq 'LIST_OUTPUT_LIMIT' "$catalogue"
 grep -Fq 'INSTALL_TIMEOUT' "$catalogue"
 ! grep -Eq '\.output\(\)|wait_with_output\(' "$catalogue"
+
+grep -Fq 'bounded_command::run_prepared(' "$history"
+grep -Fq 'NARRATIVE_TIMEOUT' "$history"
+! grep -Eq '\.spawn\(\)|\.output\(\)|wait_with_output\(' "$history"
+
+grep -Fq 'bounded_command::run_prepared(' "$firstboot"
+! grep -Eq '\.output\(\)|wait_with_output\(' "$firstboot"
 
 echo 'shell subprocess boundary: ok'
