@@ -46,7 +46,7 @@ executable stand-alone; the higher-level flow is described below.
 
 - Rebuilding the bootc qcow2 to measure the boot-time delta against
   the baseline requires pulling the digest-pinned frozen RPM repo,
-  which lives on a private registry (`code.podesta.ai/tilo/rpms`). To
+  which lives on a private registry (`code.podesta.ai/qos/rpms`). To
   run locally: `podman login code.podesta.ai` first. In CI the
   `.forgejo/workflows/build-image.yml` job already has the token; the
   rebuilt image + qcow2 flow through the release channel.

@@ -87,8 +87,8 @@ RPMS_REF="${_tilo_rpms_ref_override:-${RPMS_REF:-}}"
 # building one. The image builds in CI on this project, so the local half of
 # this pipeline is usually the disk step alone:
 #
-#   podman pull code.podesta.ai/tilo/tilo:<tag>
-#   podman tag  code.podesta.ai/tilo/tilo:<tag> localhost/tilo:latest
+#   podman pull code.podesta.ai/qos/tilo:<tag>
+#   podman tag  code.podesta.ai/qos/tilo:<tag> localhost/tilo:latest
 #   TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 #
 # The seal loop further down still runs, and still has to: it rewrites the UKI
@@ -230,8 +230,8 @@ reseal_uki() {
 if [ "$TILO_SKIP_BUILD" = "1" ]; then
   podman image exists "$TILO_IMAGE" || die "TILO_SKIP_BUILD=1, but $TILO_IMAGE is not in local
   storage, so there is nothing to image. Pull the published image and tag it:
-    podman pull code.podesta.ai/tilo/tilo:<tag>
-    podman tag  code.podesta.ai/tilo/tilo:<tag> $TILO_IMAGE"
+    podman pull code.podesta.ai/qos/tilo:<tag>
+    podman tag  code.podesta.ai/qos/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
   msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; generation=$TILO_GENERATION)"
