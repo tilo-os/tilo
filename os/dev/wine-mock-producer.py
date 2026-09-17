@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Two-phase native Wine producer using Mock's supported hermetic lifecycle.
+
+Run resolve in a disposable networked container and build in a NEW container
+from the same digest, with --network=none, separate empty /var/lib/mock and
+the resolved bundle mounted read-only. This exports RPMs, never a prepared OCI
+buildroot. The runtime image digest is provenance, not WINE_BUILDROOT_REF.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import wine_rpm_contract as contract
+
+MOCK_COMMIT = '3b308660a12fb59886f438a59561f023d01586d8'
+
+
+def digest(path):
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def inventory(directory):
+    result = {}
+    for path in sorted(Path(directory).rglob('*')):
+        if path.is_symlink():
+            raise ValueError(f'symlink in retained inputs: {path}')
+        if path.is_file():
+            result[path.relative_to(directory).as_posix()] = {
+                'sha256': digest(path), 'size': path.stat().st_size}
+        elif not path.is_dir():
+            raise ValueError(f'nonregular retained input: {path}')
+    return result
+
+
+def write_json(path, data):
+    Path(path).write_text(json.dumps(data, sort_keys=True, indent=2) + '\n')
+
+
+def run(argv, log):
+    # Persist the exact invocation and all diagnostics even when Mock fails.
+    with Path(log).open('w') as output:
+        output.write(json.dumps(argv) + '\n')
+        output.flush()
+        subprocess.run(argv, stdout=output, stderr=subprocess.STDOUT, check=True)
+
+
+def flags(target, pin, jobs):
+    contract.target(target)
+    if jobs <= 0:
+        raise ValueError('jobs must be positive')
+    return ['--target', target, '--without', 'new_wow64', '--define',
+            'dist ' + contract.build_identity(pin)['dist'], '--define',
+            f'_smp_mflags -j{jobs}']
+
+
+def validate_lock(lock, target):
+    if lock.get('version') != '1.1.0':
+        raise ValueError('unexpected pinned Mock lock schema')
+    config = lock.get('config', {})
+    if config.get('target_arch') != target or config.get('bootstrap_image_ready') is not True:
+        raise ValueError('lock target or ready bootstrap does not match')
+    if not lock.get('bootstrap', {}).get('image_digest'):
+        raise ValueError('lock lacks bootstrap image digest')
+    if not lock.get('buildroot', {}).get('rpms'):
+        raise ValueError('lock lacks resolved RPM inventory')
+
+
+def build_command(bundle, root, result, options, filename):
+    return ['mock', '--hermetic-build', str(bundle / 'resolution/buildroot_lock.json'),
+            str(bundle / 'repository'), '--rootdir', str(root), '--resultdir', str(result),
+            '--no-cleanup-after', *options, str(bundle / 'source' / filename)]
+
+
+def offline_network(interfaces=Path('/sys/class/net')):
+    names = {path.name for path in interfaces.iterdir()}
+    if names - {'lo'}:
+        raise ValueError('offline phase requires a network namespace with only loopback')
+
+
+def tool_record(runtime_image):
+    contract.reference(runtime_image)
+    tools = {}
+    for name in ('mock', 'mock-hermetic-repo', 'rpm', 'podman'):
+        path = shutil.which(name)
+        if not path:
+            raise ValueError(f'missing producer tool: {name}')
+        tools[name] = {'path': path, 'sha256': digest(path)}
+    return {'runtime_image': runtime_image,
+            'mock_api_reference_commit': MOCK_COMMIT,
+            'mock_version': contract.run(['mock', '--version']),
+            'host_rpms': contract.run(['rpm', '-qa', '--qf',
+                '%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n']).splitlines(),
+            'tools': tools}
+
+
+def resolve(args, pin):
+    destination = args.output.resolve()
+    destination.mkdir(parents=True, exist_ok=False)
+    contract.source(args.source, pin)
+    shutil.copytree(args.source, destination / 'source')
+    shutil.copytree(args.config_dir, destination / 'mock-config', symlinks=False)
+    write_json(destination / 'wine-source.json', pin)
+    options = flags(args.target, pin, args.jobs)
+    result = destination / 'resolution'
+    result.mkdir()
+    os.chown(result, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
+    command = ['mock', '--configdir', str(args.config_dir), '-r', args.config,
+               '--resultdir', str(result), *options]
+    run([*command, '--debug-config-expanded'], destination / 'resolved-config.log')
+    run([*command, '--calculate-build-dependencies',
+         str((args.source / pin['filename']).resolve())], destination / 'resolve.log')
+    lockfile = result / 'buildroot_lock.json'
+    validate_lock(json.loads(lockfile.read_text()), args.target)
+    run(['mock-hermetic-repo', '--lockfile', str(lockfile), '--output-repo',
+         str(destination / 'repository')], destination / 'repository.log')
+    record = {'schema': 1, 'mode': 'mock-hermetic', 'target': args.target,
+              'source': pin, 'options': options, 'config': args.config,
+              'tools': tool_record(args.runtime_image),
+              'files': inventory(destination)}
+    write_json(destination / 'manifest.json', record)
+
+
+def verify_bundle(bundle, runtime_image, target, pin, jobs):
+    record = json.loads((bundle / 'manifest.json').read_text())
+    actual = inventory(bundle)
+    actual.pop('manifest.json')
+    if actual != record['files']:
+        raise ValueError('resolved bundle changed')
+    if (record.get('schema'), record.get('mode'), record.get('target'), record.get('source'),
+        record.get('options')) != (1, 'mock-hermetic', target, pin, flags(target, pin, jobs)):
+        raise ValueError('source/target/build options differ from resolution')
+    current = tool_record(runtime_image)
+    # Package order is not identity; preserve original order in evidence.
+    for value in (current, record['tools']):
+        value['host_rpms'] = sorted(value['host_rpms'])
+    if current != record['tools']:
+        raise ValueError('offline tool environment differs from resolution')
+    validate_lock(json.loads((bundle / 'resolution/buildroot_lock.json').read_text()), target)
+    return record
+
+
+def build(args, pin):
+    offline_network()
+    bundle = args.bundle.resolve()
+    record = verify_bundle(bundle, args.runtime_image, args.target, pin, args.jobs)
+    contract.source(bundle / 'source', pin)
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    root = args.root.resolve()
+    if root.exists():
+        raise ValueError('offline root must not exist; use a fresh container/root')
+    result = output / 'rpms-and-logs'
+    result.mkdir()
+    os.chown(result, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
+    lockfile = bundle / 'resolution/buildroot_lock.json'
+    command = build_command(bundle, root, result, record['options'], pin['filename'])
+    run(command, output / 'hermetic-build.log')
+    # Direct read-only RPM queries avoid a second Mock --chroot invocation,
+    # which initializes a root and cannot be combined with --hermetic-build.
+    run(['chroot', str(root), 'rpm', '-qa', '--qf',
+         '%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n'],
+        output / 'installed-rpms.log')
+    for tool in ('gcc', 'g++', 'rpmbuild'):
+        run(['chroot', str(root), tool, '--version'], output / f'{tool}-version.log')
+    optflags = shlex.split(contract.run(['chroot', str(root), 'rpmspec', '--target',
+                                         args.target, '--eval', '%{optflags}']))
+    compiler_evidence = {}
+    with tempfile.TemporaryDirectory(prefix='qos-compiler-', dir=root / 'tmp') as temporary:
+        for compiler, language in (('gcc', 'c'), ('g++', 'c++')):
+            binary = Path(temporary) / compiler
+            command = ['chroot', str(root), compiler,
+                       '-m32' if args.target == 'i686' else '-m64', *optflags,
+                       '-x', language, '-', '-o', '/' + binary.relative_to(root).as_posix()]
+            subprocess.run(command, input='int main(void) { return 0; }\n', text=True, check=True)
+            elf_class, machine = contract.elf_identity(binary.read_bytes()[:20], args.target)
+            compiler_evidence[compiler] = {'elf_class': elf_class, 'elf_machine': machine,
+                                           'rpm_optflags': optflags}
+    write_json(output / 'compiler-probes.json', compiler_evidence)
+    specs = list(root.glob('builddir/build/SPECS/wine.spec'))
+    if len(specs) != 1:
+        raise ValueError('Mock did not retain the Wine spec for post-build verification')
+    contract.verify_file(specs[0], pin['spec_sha256'])
+    spec = '/' + specs[0].relative_to(root).as_posix()
+    run(['chroot', str(root), 'rpmspec', '--target', args.target, '--without', 'new_wow64',
+         '--define', 'dist ' + pin['build_dist'], '-q', '--buildrequires', spec],
+        output / 'buildrequires.log')
+    rebuilt_source = result / contract.build_identity(pin)['source_rpm']
+    if rebuilt_source.is_symlink() or not rebuilt_source.is_file():
+        raise ValueError('Mock did not retain the rebuilt qOS source RPM')
+    # The input transfer must remain identical throughout the offline phase.
+    verify_bundle(bundle, args.runtime_image, args.target, pin, args.jobs)
+    write_json(output / 'producer.json', {
+        'schema': 1, 'mode': 'mock-hermetic', 'target': args.target,
+        'source': pin, 'build_identity': contract.build_identity(pin),
+        'resolution_manifest_sha256': digest(bundle / 'manifest.json'),
+        'lockfile_sha256': digest(lockfile), 'tools': record['tools'],
+        'options': record['options'], 'network_interfaces': ['lo'],
+        'files': inventory(output), 'execution_validated': False})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('phase', choices=('resolve', 'build'))
+    parser.add_argument('--target', required=True, choices=('x86_64', 'i686'))
+    parser.add_argument('--runtime-image', required=True)
+    parser.add_argument('--pin', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--source', type=Path)
+    parser.add_argument('--config')
+    parser.add_argument('--config-dir', type=Path, default=Path('/etc/mock'))
+    parser.add_argument('--bundle', type=Path)
+    parser.add_argument('--root', type=Path, default=Path('/var/lib/mock/qos-wine-offline/root'))
+    args = parser.parse_args()
+    if platform.machine() != 'x86_64' or platform.system() != 'Linux':
+        parser.error('native x86-64 Linux producer required')
+    if os.geteuid() != 0 or not os.environ.get('SUDO_UID') or int(os.environ['SUDO_UID']) == 0:
+        parser.error('invoke using sudo from an unprivileged member of the mock group')
+    if args.phase == 'resolve' and (not args.source or not args.config):
+        parser.error('resolve requires --source and --config')
+    if args.phase == 'build' and not args.bundle:
+        parser.error('build requires --bundle')
+    pin = json.loads(args.pin.read_text())
+    os.environ['SOURCE_DATE_EPOCH'] = str(contract.build_identity(pin)['source_date_epoch'])
+    (resolve if args.phase == 'resolve' else build)(args, pin)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(str(error)) from error
