@@ -33,6 +33,10 @@ pub(super) struct MigrationJob {
     destination: PathBuf,
     journal: PathBuf,
     kind: JobKind,
+    reviewed: Option<(
+        migration_durability::Identity,
+        migration_durability::Identity,
+    )>,
 }
 
 impl MigrationJob {
@@ -62,7 +66,17 @@ impl MigrationJob {
             destination,
             journal,
             kind: JobKind::Fresh,
+            reviewed: None,
         })
+    }
+
+    pub(super) fn with_reviewed_identities(
+        mut self,
+        source: migration_durability::Identity,
+        parent: migration_durability::Identity,
+    ) -> Self {
+        self.reviewed = Some((source, parent));
+        self
     }
 
     #[must_use]
@@ -170,15 +184,29 @@ impl MigrationWorker {
                         *latest = Some(progress);
                     }
                 };
-                let result = match job.kind {
-                    JobKind::Fresh => copy_folder_with_journal(
+                let result = if let Some(reviewed) = &job.reviewed {
+                    super::migration_journal::copy_reviewed(
                         job.source(),
                         job.destination(),
                         job.journal(),
+                        reviewed,
+                        job.kind == JobKind::Resume,
                         &worker_cancelled,
                         progress,
-                    ),
-                    JobKind::Resume => resume_folder(job.journal(), &worker_cancelled, progress),
+                    )
+                } else {
+                    match job.kind {
+                        JobKind::Fresh => copy_folder_with_journal(
+                            job.source(),
+                            job.destination(),
+                            job.journal(),
+                            &worker_cancelled,
+                            progress,
+                        ),
+                        JobKind::Resume => {
+                            resume_folder(job.journal(), &worker_cancelled, progress)
+                        }
+                    }
                 };
                 let outcome = match result {
                     Ok(report) if report.complete() => WorkerOutcome::Complete(report),

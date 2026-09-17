@@ -1,5 +1,6 @@
 pub mod controller;
 pub mod desktop_catalog;
+mod desktop_continuation;
 pub mod desktop_download;
 pub mod desktop_flow;
 pub mod desktop_install;

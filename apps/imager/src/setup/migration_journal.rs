@@ -427,6 +427,15 @@ impl MigrationJournal {
         destination_path: &Path,
         journal_path: &Path,
     ) -> io::Result<Self> {
+        Self::create_reviewed(source_path, destination_path, journal_path, None)
+    }
+
+    fn create_reviewed(
+        source_path: &Path,
+        destination_path: &Path,
+        journal_path: &Path,
+        reviewed: Option<&(Identity, Identity)>,
+    ) -> io::Result<Self> {
         durability::supported()?;
         let source = PinnedDirectory::open_absolute(source_path)?;
         let destination_parent = PinnedDirectory::open_absolute(
@@ -435,6 +444,14 @@ impl MigrationJournal {
                 .ok_or_else(|| changed("destination parent missing"))?,
         )?;
         destination_parent.validate_destination()?;
+        if let Some((expected_source, expected_parent)) = reviewed
+            && (directory_identity(&source)? != *expected_source
+                || directory_identity(&destination_parent)? != *expected_parent)
+        {
+            return Err(changed(
+                "reviewed source or destination parent changed before copy",
+            ));
+        }
         let (parent, name) = journal_parent(journal_path)?;
         if parent.contains_identity(&source.identity)
             || source.contains_identity(&parent.identity)
@@ -1227,6 +1244,35 @@ pub fn copy_folder_with_journal(
         MigrationJournal::create(source, destination, journal_path).map_err(|e| e.to_string())?;
     migration::copy_folder_internal(source, destination, cancelled, progress, Some(journal))
 }
+/// Same engine, with reviewed identities checked on the actual pinned roots
+/// before the fresh journal is published. Resume also compares the existing
+/// receipt identities, so an old journal can never waive the reviewed binding.
+pub(super) fn copy_reviewed(
+    source: &Path,
+    destination: &Path,
+    journal_path: &Path,
+    reviewed: &(Identity, Identity),
+    resume: bool,
+    cancelled: &AtomicBool,
+    progress: impl FnMut(CopyProgress),
+) -> Result<CopyReport, String> {
+    let journal = if resume {
+        let journal = MigrationJournal::open(journal_path).map_err(|e| e.to_string())?;
+        if journal.document.source_identity != reviewed.0
+            || journal.document.destination_parent_identity != reviewed.1
+            || absolute(&journal.document.source).map_err(|e| e.to_string())? != source
+            || absolute(&journal.document.destination).map_err(|e| e.to_string())? != destination
+        {
+            return Err("saved journal does not match the reviewed endpoints".into());
+        }
+        journal
+    } else {
+        MigrationJournal::create_reviewed(source, destination, journal_path, Some(reviewed))
+            .map_err(|e| e.to_string())?
+    };
+    migration::copy_folder_internal(source, destination, cancelled, progress, Some(journal))
+}
+
 /// Reopen a private journal and revalidate native roots, source facts and output
 /// bytes. Changed or unrecorded output is retained as a conflict requiring review.
 /// Linux without a persistent filesystem UUID is restricted to the same boot.
