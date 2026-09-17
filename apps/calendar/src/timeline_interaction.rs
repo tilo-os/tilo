@@ -20,7 +20,11 @@ use ui::theme::Theme;
 use crate::date;
 use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line, stroke_round};
 use crate::model::{Id, Palette};
-use crate::timeline_viewport::{TimelineGeom, TimelineViewport};
+use crate::timeline_viewport::{
+    TIMELINE_BLOCK_PAD, TIMELINE_DAY_TEXT, TIMELINE_HEAD_PAD, TIMELINE_STRIP_TEXT,
+    TIMELINE_SUBTITLE_TEXT, TIMELINE_TITLE_TEXT, TIMELINE_WEEKDAY_TEXT, TimelineGeom,
+    TimelineViewport,
+};
 
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
 
@@ -193,7 +197,7 @@ impl TimelineInteraction {
                 button: MouseButton::Left,
                 ..
             } => {
-                let body = Self::geometry(area).body(area.x0, area.x1);
+                let body = self.geometry(area).body(area.x0, area.x1);
                 if !body.contains(self.pointer) {
                     return TimelineOutcome::ignored();
                 }
@@ -258,7 +262,7 @@ impl TimelineInteraction {
         spans: &[TimelineSpan],
         point: Point,
     ) -> bool {
-        let geom = Self::geometry(area);
+        let geom = self.geometry(area);
         if let Some(span) = self.event_at(area, days, spans, point) {
             let press_min = self.minute_at(geom, point.y);
             self.drag = Some(TimelineDrag::Move {
@@ -304,7 +308,7 @@ impl TimelineInteraction {
         spans: &[TimelineSpan],
         point: Point,
     ) -> Option<TimelineSpan> {
-        let geom = Self::geometry(area);
+        let geom = self.geometry(area);
         if point.x < area.x0 + geom.gutter || point.x > area.x1 {
             return None;
         }
@@ -324,7 +328,7 @@ impl TimelineInteraction {
         days: &[NaiveDate],
         drag: TimelineDrag,
     ) -> Option<TimelineEffect> {
-        let geom = Self::geometry(area);
+        let geom = self.geometry(area);
         match drag {
             TimelineDrag::Create {
                 day,
@@ -375,7 +379,7 @@ impl TimelineInteraction {
         if drag.is_active() {
             return self.effect_for_drag(area, days, drag);
         }
-        let body = Self::geometry(area).body(area.x0, area.x1);
+        let body = self.geometry(area).body(area.x0, area.x1);
         body.contains(self.pointer)
             .then(|| self.event_at(area, days, spans, self.pointer))
             .flatten()
@@ -429,11 +433,11 @@ impl TimelineInteraction {
         let mut hits = Vec::new();
         fill_rect(scene, transform, colors.surfaces.base, area);
 
-        let geom = Self::geometry(area);
+        let geom = self.geometry(area);
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
         Self::draw_headers(
-            scene, transform, text, theme, area, model, grid_x0, col_w, &mut hits,
+            scene, transform, text, theme, area, model, grid_x0, col_w, geom, &mut hits,
         );
         stroke_line(
             scene,
@@ -472,17 +476,19 @@ impl TimelineInteraction {
         model: &TimelineRenderModel<'_, '_>,
         grid_x0: f64,
         col_w: f64,
+        geom: TimelineGeom,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
         let colors = &theme.tokens.colors;
+        // Weekday label, then the day number directly beneath it: both rows
+        // come from the measured lines the header height was solved from.
+        let weekday_h = f64::from(text.measure("Mon", TIMELINE_WEEKDAY_TEXT, None).1);
+        let weekday_y = area.y0 + TIMELINE_HEAD_PAD;
+        let day_y = weekday_y + weekday_h;
+        let strip_text_h = f64::from(text.measure("Ag", TIMELINE_STRIP_TEXT, None).1);
         for (index, day) in model.days.iter().enumerate() {
             let x0 = grid_x0 + col_w * index as f64;
-            let header = Rect::new(
-                x0,
-                area.y0,
-                x0 + col_w,
-                area.y0 + crate::timeline_viewport::TIMELINE_HEAD_H,
-            );
+            let header = Rect::new(x0, area.y0, x0 + col_w, area.y0 + geom.head_h);
             let is_today = *day == model.today;
             let weekend = day.weekday().num_days_from_monday() >= 5;
             if is_today {
@@ -494,37 +500,34 @@ impl TimelineInteraction {
                     .get(day.weekday().num_days_from_monday() as usize)
                     .copied()
                     .unwrap_or(""),
-                11.0,
+                TIMELINE_WEEKDAY_TEXT,
                 if weekend {
                     colors.text_dim
                 } else {
                     colors.neutral[7]
                 },
-                transform * Affine::translate((x0 + 10.0, area.y0 + 8.0)),
+                transform * Affine::translate((x0 + 10.0, weekday_y)),
                 None,
             );
             text.draw_text(
                 scene,
                 &format!("{}", day.day()),
-                20.0,
+                TIMELINE_DAY_TEXT,
                 if is_today {
                     colors.accent[5]
                 } else {
                     colors.neutral[9]
                 },
-                transform * Affine::translate((x0 + 10.0, area.y0 + 24.0)),
+                transform * Affine::translate((x0 + 10.0, day_y)),
                 None,
             );
             hits.push((header, TimelineEffect::OpenDay(*day)));
 
             let strip = Rect::new(
                 x0 + 2.0,
-                area.y0 + crate::timeline_viewport::TIMELINE_HEAD_H + 2.0,
+                area.y0 + geom.head_h + 2.0,
                 x0 + col_w - 2.0,
-                area.y0
-                    + crate::timeline_viewport::TIMELINE_HEAD_H
-                    + crate::timeline_viewport::TIMELINE_ALLDAY_H
-                    - 2.0,
+                area.y0 + geom.head_h + geom.allday_h - 2.0,
             );
             if let Some(event) = model
                 .events
@@ -532,13 +535,18 @@ impl TimelineInteraction {
                 .find(|event| event.day == *day && event.all_day)
             {
                 fill_round(scene, transform, event.color.color(theme), strip, 4.0);
-                let line = elide_to_width(text, event.title, 10.0, strip.width() - 12.0);
+                let line =
+                    elide_to_width(text, event.title, TIMELINE_STRIP_TEXT, strip.width() - 12.0);
                 text.draw_text(
                     scene,
                     &line,
-                    10.0,
+                    TIMELINE_STRIP_TEXT,
                     Color::WHITE,
-                    transform * Affine::translate((strip.x0 + 6.0, strip.y0 + 4.0)),
+                    transform
+                        * Affine::translate((
+                            strip.x0 + 6.0,
+                            strip.y0 + (strip.height() - strip_text_h) / 2.0,
+                        )),
                     None,
                 );
                 hits.push((strip, TimelineEffect::Select(event.id)));
@@ -664,29 +672,38 @@ impl TimelineInteraction {
                     &block,
                 );
                 let text_width = block.width() - 20.0;
-                let title = elide_to_width(text, event.title, 11.0, text_width);
+                let title = elide_to_width(text, event.title, TIMELINE_TITLE_TEXT, text_width);
+                // The subtitle starts where the measured title line ends, and
+                // only appears when both lines fit inside the block's padding.
+                let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
+                let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
                 text.draw_text(
                     scene,
                     &title,
-                    11.0,
+                    TIMELINE_TITLE_TEXT,
                     colors.neutral[9],
-                    transform * Affine::translate((block.x0 + 10.0, block.y0 + 4.0)),
+                    transform * Affine::translate((block.x0 + 10.0, block.y0 + TIMELINE_BLOCK_PAD)),
                     None,
                 );
-                if block.height() > 34.0 {
+                if block.height() > 2.0 * TIMELINE_BLOCK_PAD + title_h + subtitle_h {
                     let subtitle = format!(
                         "{}–{} {}",
                         fmt_event_min(event.start_min),
                         fmt_event_min(event.end_min),
                         event.location
                     );
-                    let subtitle = elide_to_width(text, &subtitle, 10.0, text_width);
+                    let subtitle =
+                        elide_to_width(text, &subtitle, TIMELINE_SUBTITLE_TEXT, text_width);
                     text.draw_text(
                         scene,
                         &subtitle,
-                        10.0,
+                        TIMELINE_SUBTITLE_TEXT,
                         colors.text_dim,
-                        transform * Affine::translate((block.x0 + 10.0, block.y0 + 18.0)),
+                        transform
+                            * Affine::translate((
+                                block.x0 + 10.0,
+                                block.y0 + TIMELINE_BLOCK_PAD + title_h,
+                            )),
                         None,
                     );
                 }
@@ -766,30 +783,40 @@ impl TimelineInteraction {
             transform,
             &block,
         );
-        let title = elide_to_width(text, title, 11.0, block.width() - 16.0);
+        let title = elide_to_width(text, title, TIMELINE_TITLE_TEXT, block.width() - 16.0);
+        let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
+        let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
         text.draw_text(
             scene,
             &title,
-            11.0,
+            TIMELINE_TITLE_TEXT,
             colors.neutral[9],
-            transform * Affine::translate((block.x0 + 8.0, block.y0 + 4.0)),
+            transform * Affine::translate((block.x0 + 8.0, block.y0 + TIMELINE_BLOCK_PAD)),
             None,
         );
-        if block.height() > 30.0 {
+        if block.height() > TIMELINE_BLOCK_PAD + title_h + subtitle_h {
             text.draw_text(
                 scene,
                 &format!("{} – {}", fmt_min(start_min), fmt_min(end_min)),
-                10.0,
+                TIMELINE_SUBTITLE_TEXT,
                 colors.text_dim,
-                transform * Affine::translate((block.x0 + 8.0, block.y0 + 18.0)),
+                transform * Affine::translate((block.x0 + 8.0, block.y0 + TIMELINE_BLOCK_PAD + title_h)),
                 None,
             );
         }
         scene.pop_layer();
     }
 
-    fn geometry(area: Rect) -> TimelineGeom {
-        TimelineViewport::geometry(area)
+    /// Geometry at the viewport's text scale, so paint, hit-testing and drag
+    /// mapping all read one description of the header / strip / body bands.
+    fn geometry(&self, area: Rect) -> TimelineGeom {
+        TimelineViewport::geometry_for(area, self.viewport.text_scale())
+    }
+
+    /// Forward the theme's text scale so header, strip and block heights grow
+    /// with the type they carry. Called from the app's layout pass.
+    pub fn set_text_scale(&mut self, text_scale: f32) {
+        self.viewport.set_text_scale(text_scale);
     }
 
     fn column_width(area: Rect, days_len: usize, geom: TimelineGeom) -> f64 {
@@ -836,7 +863,7 @@ impl TimelineInteraction {
 
     #[cfg(test)]
     pub(super) fn test_geometry(area: Rect) -> TimelineGeom {
-        Self::geometry(area)
+        TimelineViewport::geometry(area)
     }
 
     #[cfg(test)]
@@ -917,7 +944,7 @@ mod tests {
 
     fn point_at(day_col: usize, minute: i64) -> Point {
         let area = area();
-        let geom = TimelineInteraction::geometry(area);
+        let geom = TimelineInteraction::test_geometry(area);
         let col_w = TimelineInteraction::column_width(area, 7, geom);
         Point::new(
             area.x0 + geom.gutter + col_w * (day_col as f64 + 0.5),

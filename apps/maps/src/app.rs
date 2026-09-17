@@ -164,6 +164,10 @@ pub struct MapsApp {
     drag_last: Point,
     drag_moved: bool,
     click_targets: Vec<(Rect, Hit)>,
+    /// The renderer's text scale, captured at the top of each paint so the
+    /// panel's hand-laid rows size and centre their text from the same lines
+    /// the renderer draws.
+    text_scale: f32,
     scroll: f64,
     content_h: f64,
     content_view_h: f64,
@@ -294,6 +298,35 @@ impl MapsApp {
     fn navigation_rect(&self) -> Rect {
         self.navigation_placement
             .rect(self.rect, self.desktop_floating_bounds())
+    }
+
+    /// The area the floating map controls (zoom, locate, traffic) lay
+    /// themselves out in. Normally the whole window; while the navigation
+    /// card floats over the top-right corner, the cluster starts beneath it
+    /// so the controls stay visible and reachable rather than being covered.
+    /// Paint, pointer hit-testing and the accessibility rects all read the
+    /// controls' geometry from this one viewport.
+    /// Top of a `size`-pt line centred in a band, at the captured text scale.
+    fn vmid(&self, y: f64, h: f64, size: f32) -> f64 {
+        text_vmid(y, h, size, self.text_scale)
+    }
+
+    fn map_controls_viewport(&self) -> Rect {
+        let mut viewport = self.rect;
+        if !self.navigation_surface_visible_in_app() {
+            return viewport;
+        }
+        let nav = self.navigation_rect();
+        let column = Rect::new(
+            self.rect.x1 - MARGIN - CTRL_SIZE,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + MARGIN + 4.0 * CTRL_SIZE + 2.0 * GAP,
+        );
+        if nav.intersect(column).area() > 0.0 && nav.y1 < self.rect.y1 {
+            viewport.y0 = nav.y1;
+        }
+        viewport
     }
 
     /// The route card is useful over the map, but duplicates the route summary
@@ -439,13 +472,24 @@ impl MapsApp {
             17.0,
             theme.accent_primary,
         );
+        // Instruction, then its distance directly beneath on the measured
+        // line; the rule and summary row follow the stack instead of sitting
+        // at fixed offsets a scaled instruction runs into. (The card's own
+        // height is fixed by the floating-surface placement — see the review
+        // notes — so at large scales the stack can still exceed the card.)
+        let instr_y = rect.y0 + 47.0;
+        let instr_h = f64::from(tr.measure("Ag", 15.0, None).1);
+        let dist_h = f64::from(tr.measure("Ag", 12.0, None).1);
+        let dist_y = instr_y + instr_h + 2.0;
+        let rule_y = (dist_y + dist_h + 12.0).max(rect.y0 + 98.0);
+        let shift = rule_y - (rect.y0 + 98.0);
         draw::text_clip(
             scene,
             tr,
             visual,
             text,
             rect.x0 + 64.0,
-            rect.y0 + 47.0,
+            instr_y,
             15.0,
             theme.text_primary,
             rect.width() - 82.0,
@@ -457,15 +501,15 @@ impl MapsApp {
             visual,
             &geo::fmt_distance(next_distance),
             rect.x0 + 64.0,
-            rect.y0 + 70.0,
+            dist_y,
             12.0,
             theme.text_dim,
         );
         draw::line(
             scene,
             visual,
-            Point::new(rect.x0 + 16.0, rect.y0 + 98.0),
-            Point::new(rect.x1 - 16.0, rect.y0 + 98.0),
+            Point::new(rect.x0 + 16.0, rule_y),
+            Point::new(rect.x1 - 16.0, rule_y),
             1.0,
             c.border_standard,
         );
@@ -475,7 +519,7 @@ impl MapsApp {
             visual,
             &geo::fmt_duration(route.duration_s),
             rect.x0 + 16.0,
-            rect.y0 + 114.0,
+            rect.y0 + 114.0 + shift,
             16.0,
             theme.accent_primary,
             TextWeight::Bold,
@@ -486,7 +530,7 @@ impl MapsApp {
             visual,
             &format!("{} remaining", geo::fmt_distance(route.distance_m)),
             rect.x1 - 16.0,
-            rect.y0 + 116.0,
+            rect.y0 + 116.0 + shift,
             12.0,
             theme.text_dim,
         );
@@ -548,6 +592,7 @@ impl MapsApp {
             drag_last: Point::ZERO,
             drag_moved: false,
             click_targets: Vec::new(),
+            text_scale: 1.0,
             scroll: 0.0,
             content_h: 0.0,
             content_view_h: 0.0,
@@ -2307,8 +2352,12 @@ fn keyword_match(needle: &str, cat: Category) -> bool {
         .any(|s| s.contains(needle) || needle.contains(*s))
 }
 
-fn vmid(y: f64, h: f64, size: f32) -> f64 {
-    y + (h - f64::from(size) * 1.25) / 2.0
+/// Top of a `size`-pt line vertically centred in a band of height `h` at `y`,
+/// at the renderer's `text_scale`: the renderer draws one line as
+/// `size × text_scale × 1.25`, so centring on the unscaled size would drop the
+/// text below centre at every scale above 1×.
+fn text_vmid(y: f64, h: f64, size: f32, text_scale: f32) -> f64 {
+    y + (h - f64::from(size) * 1.25 * f64::from(text_scale.max(0.5))) / 2.0
 }
 
 // ===========================================================================
@@ -2317,7 +2366,8 @@ fn vmid(y: f64, h: f64, size: f32) -> f64 {
 impl MapsApp {
     fn draw_app(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.click_targets.clear();
-        self.map_controls.set_viewport(self.rect);
+        self.text_scale = tr.text_scale();
+        self.map_controls.set_viewport(self.map_controls_viewport());
         // Point the raster layer at the basemap style for the active theme (dark
         // tiles under a dark theme, light under light) before any tile is drawn,
         // so imagery and the drawn cartography never mix tones. A no-op on the
@@ -2812,7 +2862,7 @@ impl MapsApp {
             "Directions",
             btn.x0,
             btn.x1,
-            vmid(btn.y0, bh, 13.0),
+            self.vmid(btn.y0, bh, 13.0),
             13.0,
             Color::WHITE,
         );
@@ -2886,7 +2936,7 @@ impl MapsApp {
                 t,
                 label,
                 pill.x0 + 27.0,
-                vmid(pill.y0, h, fs),
+                self.vmid(pill.y0, h, fs),
                 fs,
                 c.text_primary,
             );
@@ -3017,7 +3067,7 @@ impl MapsApp {
             t,
             label,
             r.x0 + 28.0,
-            vmid(r.y0, r.height(), size),
+            self.vmid(r.y0, r.height(), size),
             size,
             theme.text_primary,
         );
@@ -3065,7 +3115,7 @@ impl MapsApp {
             t,
             msg,
             r.x0 + 30.0,
-            vmid(r.y0, r.height(), size),
+            self.vmid(r.y0, r.height(), size),
             size,
             theme.text_primary,
         );
@@ -3093,7 +3143,7 @@ impl MapsApp {
             let bar = Rect::new(pr.x0, pr.y0, pr.x1, pr.y0 + PANEL_HEADER_H + 2.0 * inset);
             draw::card(scene, t, bar, 14.0, c.surfaces.raised, c.border_standard);
             self.click_targets.push((bar, Hit::Consume));
-            let by = vmid(bar.y0 + inset, PANEL_HEADER_H, 15.0);
+            let by = self.vmid(bar.y0 + inset, PANEL_HEADER_H, 15.0);
             draw::text_w(
                 scene,
                 tr,
@@ -3119,7 +3169,7 @@ impl MapsApp {
                 "»",
                 btn.x0,
                 btn.x1,
-                vmid(btn.y0, btn.height(), 16.0),
+                self.vmid(btn.y0, btn.height(), 16.0),
                 16.0,
                 theme.text_primary,
             );
@@ -3155,7 +3205,7 @@ impl MapsApp {
                 "‹",
                 back.x0,
                 back.x1,
-                vmid(back.y0, back.height(), 18.0),
+                self.vmid(back.y0, back.height(), 18.0),
                 18.0,
                 theme.text_primary,
             );
@@ -3169,7 +3219,7 @@ impl MapsApp {
             t,
             title,
             hx + 2.0,
-            vmid(header.y0, header.height(), 16.0),
+            self.vmid(header.y0, header.height(), 16.0),
             16.0,
             theme.text_primary,
             TextWeight::Bold,
@@ -3184,7 +3234,7 @@ impl MapsApp {
                 "«",
                 btn.x0,
                 btn.x1,
-                vmid(btn.y0, btn.height(), 16.0),
+                self.vmid(btn.y0, btn.height(), 16.0),
                 16.0,
                 theme.text_dim,
             );
@@ -3351,7 +3401,7 @@ impl MapsApp {
                     label,
                     br.x0,
                     br.x1,
-                    vmid(br.y0, bh, 12.0),
+                    self.vmid(br.y0, bh, 12.0),
                     12.0,
                     fg,
                 );
@@ -3460,7 +3510,7 @@ impl MapsApp {
                     t,
                     q,
                     x + 26.0,
-                    vmid(rr.y0, 30.0, 12.0),
+                    self.vmid(rr.y0, 30.0, 12.0),
                     12.0,
                     theme.text_primary,
                 );
@@ -3663,7 +3713,11 @@ impl MapsApp {
         // compact, content-sized chip (not a full-width bar): it is a secondary
         // helper, so it stays quiet and lets the fields + mode read as the
         // primary controls.
-        let loc_h = 30.0;
+        // Row heights in this panel are the authored 1× values or the measured
+        // label line plus its padding, whichever is taller, so scaled type
+        // never spills out of a chip, a segment or a step band.
+        let line = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("Ag", size, None).1);
+        let loc_h = (line(tr, 13.0) + 12.0).max(30.0);
         let loc_label = if self.locating {
             "Locating…"
         } else {
@@ -3701,7 +3755,7 @@ impl MapsApp {
             t,
             loc_label,
             gx + 16.0,
-            vmid(loc_r.y0, loc_h, 13.0),
+            self.vmid(loc_r.y0, loc_h, 13.0),
             13.0,
             loc_fg,
         );
@@ -3724,7 +3778,8 @@ impl MapsApp {
         // Mode segmented control — Drive / Transit / Cycle / Walk. Transit is
         // a mode here, not a separate tab: selecting it swaps the route summary
         // below for the public-transport departures.
-        let mode_rect = Rect::new(x, y, right, y + 40.0);
+        let mode_h = (line(tr, 12.0) + 16.0).max(40.0);
+        let mode_rect = Rect::new(x, y, right, y + mode_h);
         draw::fill_rrect(scene, t, mode_rect, 9.0, c.surfaces.base);
         let seg_w = mode_rect.width() / TravelMode::ALL.len() as f64;
         for (i, m) in TravelMode::ALL.iter().enumerate() {
@@ -3742,13 +3797,13 @@ impl MapsApp {
                 m.label(),
                 seg.x0,
                 seg.x1,
-                vmid(seg.y0, seg.height(), 12.0),
+                self.vmid(seg.y0, seg.height(), 12.0),
                 12.0,
                 fg,
             );
             self.click_targets.push((seg, Hit::Mode(*m)));
         }
-        y += 52.0;
+        y += mode_h + 12.0;
 
         // Depart / arrive time control — offered for EVERY travel mode. It is
         // most meaningful for Transit (it anchors the planner query) but the
@@ -3776,6 +3831,10 @@ impl MapsApp {
                 theme.accent_primary,
                 TextWeight::Bold,
             );
+            // The distance and the Clear link sit on the duration's line box,
+            // each centred from its own measured height; the row then advances
+            // by that measured line so the arrival clock never overprints it.
+            let big_h = line(tr, 26.0);
             let dist = geo::fmt_distance(route.distance_m);
             let bw = draw::measure_w(tr, &big, 26.0);
             draw::text(
@@ -3784,24 +3843,25 @@ impl MapsApp {
                 t,
                 &format!("· {dist}"),
                 x + bw + 12.0,
-                y + 8.0,
+                self.vmid(y, big_h, 14.0),
                 14.0,
                 theme.text_dim,
             );
             // Clear route link.
-            let clr = Rect::new(right - 64.0, y + 2.0, right, y + 28.0);
+            let clr_w = draw::measure_w(tr, "Clear", 12.0) + 24.0;
+            let clr = Rect::new(right - clr_w, y, right, y + big_h);
             draw::text_right(
                 scene,
                 tr,
                 t,
                 "Clear",
                 right - 4.0,
-                y + 8.0,
+                self.vmid(y, big_h, 12.0),
                 12.0,
                 theme.tokens.colors.semantic.danger,
             );
             self.click_targets.push((clr, Hit::ClearRoute));
-            y += 40.0;
+            y += (big_h + 8.0).max(40.0);
 
             // Planned departure → arrival clock, derived from the time picker.
             // Leaving now, a single ETA reads cleaner than "Leave x → Arrive y";
@@ -3845,7 +3905,7 @@ impl MapsApp {
                     TextWeight::Medium,
                 );
             }
-            y += 28.0;
+            y += (line(tr, 13.0) + 12.0).max(28.0);
 
             draw::line(
                 scene,
@@ -3857,10 +3917,15 @@ impl MapsApp {
             );
             y += 14.0;
 
+            // Each step band holds an instruction line and a distance line on
+            // its own measured row beneath it — at 1× the authored 46px band,
+            // taller once the type grows so the two never overprint.
+            let instr_h = line(tr, 13.0);
+            let dist_h = line(tr, 11.0);
+            let rh = (instr_h + dist_h + 12.0).max(46.0);
             for (i, step) in route.steps.iter().enumerate() {
-                let rh = 46.0;
-                // Glyph badge.
-                let bc = Point::new(x + 16.0, y + rh / 2.0 - 4.0);
+                // Glyph badge, centred on the instruction line.
+                let bc = Point::new(x + 16.0, y + instr_h / 2.0 + 2.0);
                 draw::fill_circle(scene, t, bc, 13.0, draw::alpha(theme.accent_primary, 0.16));
                 draw::text_center(
                     scene,
@@ -3869,7 +3934,7 @@ impl MapsApp {
                     step.maneuver.glyph(),
                     bc.x - 13.0,
                     bc.x + 13.0,
-                    bc.y - 9.0,
+                    self.vmid(bc.y - 13.0, 26.0, 15.0),
                     15.0,
                     theme.accent_primary,
                 );
@@ -3882,7 +3947,7 @@ impl MapsApp {
                     y,
                     13.0,
                     theme.text_primary,
-                    right - x - 80.0,
+                    right - x - 38.0,
                 );
                 if step.distance_m >= 1.0 {
                     draw::text_right(
@@ -3891,18 +3956,19 @@ impl MapsApp {
                         t,
                         &geo::fmt_distance(step.distance_m),
                         right - 4.0,
-                        y + 18.0,
+                        y + instr_h + 2.0,
                         11.0,
                         theme.text_dim,
                     );
                 }
                 // Connector line between steps.
                 if i + 1 < route.steps.len() {
+                    // Down to the top of the next step's badge.
                     draw::line(
                         scene,
                         t,
                         Point::new(bc.x, bc.y + 13.0),
-                        Point::new(bc.x, y + rh + 9.0),
+                        Point::new(bc.x, y + rh + instr_h / 2.0 + 2.0 - 13.0),
                         1.5,
                         draw::alpha(theme.accent_primary, 0.4),
                     );
@@ -3972,7 +4038,9 @@ impl MapsApp {
         // on the right. The old picker stacked two full-width segmented controls
         // plus a separate reset chip and a hairline — a lot of chrome for a
         // control that stays at "Leave now" most of the time.
-        let row_h = 36.0;
+        // The authored 36px row, or the tallest label it carries (the 18pt
+        // stepper glyphs) plus padding once the type has grown.
+        let row_h = (f64::from(tr.measure("Ag", 18.0, None).1) + 12.0).max(36.0);
         let toggle_w = 150.0_f64.min((right - x - 8.0) * 0.5);
 
         // Travel mode above is the person's first decision. Timing is a
@@ -4012,7 +4080,7 @@ impl MapsApp {
                 label,
                 seg.x0,
                 seg.x1,
-                vmid(seg.y0, seg.height(), 12.0),
+                self.vmid(seg.y0, seg.height(), 12.0),
                 12.0,
                 fg,
             );
@@ -4032,7 +4100,7 @@ impl MapsApp {
             "–",
             minus.x0,
             minus.x1,
-            vmid(minus.y0, row_h, 18.0),
+            self.vmid(minus.y0, row_h, 18.0),
             18.0,
             theme.text_primary,
         );
@@ -4043,7 +4111,7 @@ impl MapsApp {
             "+",
             plus.x0,
             plus.x1,
-            vmid(plus.y0, row_h, 18.0),
+            self.vmid(plus.y0, row_h, 18.0),
             18.0,
             theme.text_primary,
         );
@@ -4060,7 +4128,7 @@ impl MapsApp {
             &label,
             minus.x1,
             plus.x0,
-            vmid(y, row_h, 15.0),
+            self.vmid(y, row_h, 15.0),
             15.0,
             theme.accent_primary,
         );
@@ -4083,7 +4151,7 @@ impl MapsApp {
                 "Reset to now",
                 reset.x0,
                 reset.x1,
-                vmid(reset.y0, 26.0, 12.0),
+                self.vmid(reset.y0, 26.0, 12.0),
                 12.0,
                 theme.text_primary,
             );
@@ -4252,7 +4320,7 @@ impl MapsApp {
                         &lbl,
                         pill.x0,
                         pill.x1,
-                        vmid(pill.y0, 22.0, 12.0),
+                        self.vmid(pill.y0, 22.0, 12.0),
                         12.0,
                         fg,
                     );
@@ -5772,6 +5840,67 @@ impl MapsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The floating zoom / locate / traffic cluster shares the top-right
+    /// corner with the navigation card. While the card is showing, the
+    /// cluster must start beneath it — and the painted rects are the hit
+    /// rects, so pointer and accessibility geometry move with it.
+    #[test]
+    fn map_controls_clear_a_visible_navigation_card() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(
+            a.navigation_surface_visible_in_app(),
+            "the offline demo starts with an active route and its card"
+        );
+        let nav = a.navigation_rect();
+        let zoom_in = a.map_controls.rect(MapControlAction::ZoomIn);
+        let traffic = a.map_controls.rect(MapControlAction::ToggleTraffic);
+        assert!(
+            zoom_in.y0 >= nav.y1,
+            "zoom-in {zoom_in:?} must start below the navigation card {nav:?}"
+        );
+        for action in [
+            MapControlAction::ZoomIn,
+            MapControlAction::ZoomOut,
+            MapControlAction::Locate,
+            MapControlAction::ToggleTraffic,
+        ] {
+            let rect = a.map_controls.rect(action);
+            assert!(
+                rect.intersect(nav).area() <= 0.0,
+                "{action:?} {rect:?} overlaps the navigation card {nav:?}"
+            );
+            assert_eq!(
+                a.map_controls.hit_test(rect.center()),
+                Some(action),
+                "hit rect must equal the painted rect"
+            );
+        }
+        assert!(traffic.y1 <= a.rect.y1, "the whole cluster stays on screen");
+
+        // Without a card the cluster returns to the window's top margin.
+        let mut plain = MapsApp::offline_empty();
+        plain.rect = a.rect;
+        plain.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(!plain.navigation_surface_visible_in_app());
+        assert!(
+            plain.map_controls.rect(MapControlAction::ZoomIn).y0 < nav.y1,
+            "with no card the cluster sits at the top-right corner"
+        );
+    }
+
+    #[test]
+    fn text_vmid_centres_the_scaled_line() {
+        // At 1× a 12pt line (15px) centred in a 40px band starts at 12.5.
+        assert!((text_vmid(0.0, 40.0, 12.0, 1.0) - 12.5).abs() < 1e-9);
+        // At 2× the same line is 30px tall, so it starts at 5 — not at 12.5,
+        // which would push half the glyphs out of the band.
+        assert!((text_vmid(0.0, 40.0, 12.0, 2.0) - 5.0).abs() < 1e-9);
+    }
 
     #[test]
     fn location_action_reports_the_real_portal_terminal_result() {
