@@ -41,6 +41,19 @@ pub struct Alarm {
     pub enabled: bool,
     /// Prevents duplicate delivery when wall time moves backwards.
     pub last_fired_local_date: Option<chrono::NaiveDate>,
+    /// Persist the occurrence, not just its time of day: reopening after
+    /// midnight must still complete the alarm that was armed yesterday.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_due_utc: Option<DateTime<Utc>>,
+}
+
+impl Alarm {
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        // A newly enabled alarm is armed at the next tick. Never revive an
+        // expired deadline left over from before the user disabled it.
+        self.next_due_utc = None;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -103,6 +116,7 @@ pub enum DueEvent {
     Alarm {
         id: Uuid,
         label: String,
+        scheduled_for: DateTime<Utc>,
     },
     Timer {
         id: Uuid,
@@ -385,21 +399,32 @@ impl ClockState {
     pub fn tick(&mut self, now_utc: DateTime<Utc>, now_local: DateTime<Local>) -> Vec<DueEvent> {
         let mut due = Vec::new();
         for alarm in &mut self.alarms {
-            let today = now_local.date_naive();
-            let repeats_today =
-                alarm.weekdays.is_empty() || alarm.weekdays.contains(&now_local.weekday().into());
-            if alarm.enabled
-                && repeats_today
-                && alarm.last_fired_local_date != Some(today)
-                && now_local.time() >= alarm.local_time
-            {
+            if !alarm.enabled {
+                alarm.next_due_utc = None;
+                continue;
+            }
+            if alarm.next_due_utc.is_none_or(|deadline| deadline > now_utc) {
+                // Resolve in local time, so future deadlines follow timezone
+                // changes. An elapsed persisted deadline remains due, even
+                // when the application was closed for several days.
+                alarm.next_due_utc =
+                    next_alarm_local(alarm, now_local).map(|deadline| deadline.with_timezone(&Utc));
+            }
+            if let Some(deadline) = alarm.next_due_utc.filter(|deadline| *deadline <= now_utc) {
                 due.push(DueEvent::Alarm {
                     id: alarm.id,
                     label: alarm.label.clone(),
+                    scheduled_for: deadline,
                 });
-                alarm.last_fired_local_date = Some(today);
+                alarm.last_fired_local_date = Some(deadline.with_timezone(&Local).date_naive());
+                alarm.next_due_utc = None;
                 if alarm.weekdays.is_empty() {
                     alarm.enabled = false;
+                } else {
+                    // Catch up once after suspend/exit, then arm the next
+                    // future occurrence instead of replaying missed days.
+                    alarm.next_due_utc = next_alarm_local(alarm, now_local)
+                        .map(|deadline| deadline.with_timezone(&Utc));
                 }
             }
         }
@@ -499,6 +524,162 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_alarm_for_a_past_time_waits_until_tomorrow() {
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 12, 1, 0).unwrap();
+        let mut state = ClockState::default();
+        state.alarms.push(Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        });
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        let before = Local.with_ymd_and_hms(2026, 1, 16, 11, 59, 59).unwrap();
+        assert!(state.tick(before.with_timezone(&Utc), before).is_empty());
+        let deadline = Local.with_ymd_and_hms(2026, 1, 16, 12, 0, 0).unwrap();
+        assert!(
+            matches!(state.tick(deadline.with_timezone(&Utc), deadline).as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch")
+        );
+        assert!(!state.alarms[0].enabled);
+        assert!(
+            state
+                .tick(deadline.with_timezone(&Utc), deadline)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn pending_alarm_survives_restart_on_another_day() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clocks.json");
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let mut state = ClockState::default();
+        state.alarms.push(Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        });
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        state.save_at(&path).unwrap();
+        let mut restored = ClockState::load_at(&path);
+        let reopened = Local.with_ymd_and_hms(2026, 1, 16, 8, 0, 0).unwrap();
+        assert!(
+            matches!(restored.tick(reopened.with_timezone(&Utc), reopened).as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch")
+        );
+        assert!(!restored.alarms[0].enabled);
+        assert_eq!(
+            restored.alarms[0].last_fired_local_date,
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+        );
+    }
+
+    #[test]
+    fn recurring_alarm_catches_up_once_and_persists_the_next_weekday() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clocks.json");
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let mut state = ClockState::default();
+        state.alarms.push(Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::from([WeekdayKey::Thu]),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        });
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        let reopened = Local.with_ymd_and_hms(2026, 1, 23, 8, 0, 0).unwrap();
+        let events = state.tick(reopened.with_timezone(&Utc), reopened);
+        assert!(
+            matches!(events.as_slice(), [DueEvent::Alarm { scheduled_for, .. }]
+            if *scheduled_for == Local.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap().with_timezone(&Utc))
+        );
+        assert_eq!(
+            state.alarms[0].next_due_utc,
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 1, 29, 12, 0, 0)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        state.save_at(&path).unwrap();
+        let mut restored = ClockState::load_at(&path);
+        assert!(
+            restored
+                .tick(reopened.with_timezone(&Utc), reopened)
+                .is_empty()
+        );
+        let next = Local.with_ymd_and_hms(2026, 1, 29, 12, 0, 0).unwrap();
+        assert_eq!(restored.tick(next.with_timezone(&Utc), next).len(), 1);
+        assert!(restored.tick(next.with_timezone(&Utc), next).is_empty());
+    }
+
+    #[test]
+    fn disabling_and_reenabling_an_alarm_discards_the_old_deadline() {
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 12, 1, 0).unwrap();
+        let mut state = ClockState::default();
+        state.alarms.push(Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: Some(
+                Local
+                    .with_ymd_and_hms(2026, 1, 15, 12, 0, 0)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+        });
+        state.alarms[0].set_enabled(false);
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        state.alarms[0].set_enabled(true);
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        assert_eq!(
+            state.alarms[0].next_due_utc,
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 1, 16, 12, 0, 0)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_alarm_state_arms_without_losing_its_settings() {
+        let serialized = r#"{"id":"f33f2200-0e21-44b8-a337-fc7ec3e5f625","label":"Lunch","local_time":"12:00:00","weekdays":["Thu"],"enabled":true,"last_fired_local_date":null}"#;
+        let alarm: Alarm = serde_json::from_str(serialized).unwrap();
+        let mut state = ClockState {
+            alarms: vec![alarm],
+            ..ClockState::default()
+        };
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        assert_eq!(
+            state.alarms[0].next_due_utc,
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 1, 15, 12, 0, 0)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        assert_eq!(state.alarms[0].label, "Lunch");
+        assert_eq!(state.alarms[0].weekdays, BTreeSet::from([WeekdayKey::Thu]));
+    }
+
+    #[test]
     fn next_alarm_keeps_the_requested_time_after_todays_occurrence() {
         let after = Local.with_ymd_and_hms(2026, 1, 15, 12, 1, 0).unwrap();
         let alarm = Alarm {
@@ -508,6 +689,7 @@ mod tests {
             weekdays: BTreeSet::new(),
             enabled: true,
             last_fired_local_date: None,
+            next_due_utc: None,
         };
         assert_eq!(
             next_alarm_local(&alarm, after),
@@ -525,6 +707,7 @@ mod tests {
             weekdays: BTreeSet::from([WeekdayKey::Thu]),
             enabled: true,
             last_fired_local_date: Some(after.date_naive()),
+            next_due_utc: None,
         };
         assert_eq!(
             next_alarm_local(&alarm, after),
@@ -542,6 +725,7 @@ mod tests {
             weekdays: BTreeSet::new(),
             enabled: true,
             last_fired_local_date: None,
+            next_due_utc: None,
         };
         let spring = zone.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap();
         assert_eq!(
@@ -570,6 +754,7 @@ mod tests {
             weekdays: BTreeSet::from([WeekdayKey::Sat]),
             enabled: false,
             last_fired_local_date: None,
+            next_due_utc: None,
         };
         assert_eq!(next_alarm_in_timezone(&alarm, after), None);
         alarm.enabled = true;
