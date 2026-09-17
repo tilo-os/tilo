@@ -1,14 +1,13 @@
 //! Stateful viewport for Calendar's week/day timeline.
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use winit::event::{Modifiers, WindowEvent};
 
 use ui::Widget;
 use ui::theme::Theme;
 use ui::widget::Scrollable;
+
+use crate::input_context::InputContext;
 
 pub(super) const TIMELINE_MIN_HOUR_H: f64 = 44.0;
 pub(super) const TIMELINE_HEAD_H: f64 = 56.0;
@@ -127,31 +126,19 @@ impl TimelineViewport {
         self.pinned_hour = Some(hour);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let mut handled = false;
+    pub fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
         self.scroll.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            focus_target,
-            node_id,
-            taffy,
+            input.event,
+            input.scale_factor,
+            &input.modifiers,
+            input.state,
+            input.path,
+            input.handled,
+            input.focus_target,
+            input.node_id,
+            input.taffy,
         );
-        handled
+        *input.handled
     }
 
     pub fn draw(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {

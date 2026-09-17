@@ -51,20 +51,23 @@ use ui::{
 };
 
 use crate::account::AccountStore;
-use crate::agenda::{AgendaAction, AgendaView};
+use crate::agenda::{AgendaAction, AgendaRenderModel, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
-use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{
+    PaintContext, elide_to_width, fill_rect, fill_round, stroke_line, stroke_round,
+};
 use crate::event_popovers::{
-    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
+    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover, PopoverRenderModel,
 };
 use crate::ics;
-use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
+use crate::input_context::InputContext;
+use crate::mini_month::{MiniMonth, MiniMonthModel, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
-use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
+use crate::sidebar::{Action as SidebarAction, ChromeModel, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
-    TIMELINE_SNAP_MIN, TimelineEffect, TimelineEventCtx, TimelineInteraction, TimelineRenderEvent,
+    TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
     TimelineRenderModel, TimelineSpan,
 };
 #[cfg(test)]
@@ -287,28 +290,6 @@ impl FormRects {
         self.chips_y += offset;
         self.notes_top += offset;
     }
-}
-
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
-/// The shared widget-system inputs needed by Calendar's internal event
-/// handlers. Keeping them together preserves the dispatch contract while the
-/// individual handlers expose only their own semantic arguments.
-struct InputContext<'a> {
-    event: &'a WindowEvent,
-    scale_factor: f64,
-    modifiers: winit::event::Modifiers,
-    state: &'a mut AutoCommit,
-    path: &'a ObjId,
-    handled: &'a mut bool,
-    focus_target: &'a mut Option<NodeId>,
-    node_id: NodeId,
-    taffy: &'a TaffyTree<()>,
 }
 
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
@@ -2499,25 +2480,12 @@ impl CalendarApp {
         let area = self.view_rect();
         let days = self.timeline_days();
         let spans = self.timeline_spans(&days);
-        let outcome = self.timeline.handle_event(
-            TimelineEventCtx {
-                event: input.event,
-                scale_factor: input.scale_factor,
-                modifiers: input.modifiers,
-                state: &mut *input.state,
-                path: input.path,
-                focus_target: &mut *input.focus_target,
-                node_id: input.node_id,
-                taffy: input.taffy,
-            },
-            area,
-            &days,
-            &spans,
-        );
+        let outcome = self.timeline.handle_event(input, area, &days, &spans);
         if let Some(effect) = outcome.effect {
             self.apply_timeline_effect(effect, input.state);
         }
         if outcome.handled {
+            *input.handled = true;
             self.dirty = true;
         }
         outcome.handled
@@ -2555,16 +2523,7 @@ impl CalendarApp {
         ) {
             let p = self.last_mouse;
             if self.agenda.wants_pointer_capture() || self.view_rect().contains(p) {
-                let handled = self.agenda.handle_event(
-                    input.event,
-                    input.scale_factor,
-                    input.modifiers,
-                    input.state,
-                    input.path,
-                    input.focus_target,
-                    input.node_id,
-                    input.taffy,
-                );
+                let handled = self.agenda.handle_event(input);
                 if handled {
                     self.dirty = true;
                 }
@@ -2799,18 +2758,7 @@ impl CalendarApp {
     /// Route input through the self-contained popover controller, then apply
     /// any semantic edit it emits through the calendar action model.
     fn handle_popover_event(&mut self, input: &mut InputContext<'_>) {
-        let (consumed, edit) = self.event_popovers.handle_event(
-            input.event,
-            self.last_mouse,
-            input.scale_factor,
-            input.modifiers,
-            input.state,
-            input.path,
-            input.focus_target,
-            input.node_id,
-            input.taffy,
-        );
-        *input.handled |= consumed;
+        let edit = self.event_popovers.handle_event(input, self.last_mouse);
         match edit {
             Some(PopoverEdit::Date(which, date)) => {
                 self.set_event_date(which, date, input.state);
@@ -3915,25 +3863,24 @@ impl CalendarApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<(Rect, Action)> {
-        let Some(chrome) = self.sidebar.draw_chrome(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            self.content_rect,
-            self.detail_rect,
-            self.topbar.switcher_visible(),
-            self.view,
-            self.last_mouse,
-        ) else {
-            return Vec::new();
-        };
         let mut paint = PaintContext {
             scene,
             transform: t,
             text: tr,
             theme,
+        };
+        let Some(chrome) = self.sidebar.draw_chrome(
+            &mut paint,
+            ChromeModel {
+                window: self.rect,
+                content: self.content_rect,
+                detail: self.detail_rect,
+                switcher_in_topbar: self.topbar.switcher_visible(),
+                view: self.view,
+                pointer: self.last_mouse,
+            },
+        ) else {
+            return Vec::new();
         };
         let mut hits: Vec<_> = chrome
             .hits
@@ -4194,16 +4141,15 @@ impl CalendarApp {
         let event_dates = self.mini_month_event_dates();
         hits.extend(
             MiniMonth::draw(
-                paint.scene,
-                paint.transform,
-                paint.text,
-                paint.theme,
-                r,
-                y,
-                self.anchor,
-                self.today,
-                &event_dates,
-                self.last_mouse,
+                paint,
+                &MiniMonthModel {
+                    sidebar: r,
+                    occupied_until: y,
+                    anchor: self.anchor,
+                    today: self.today,
+                    event_dates: &event_dates,
+                    pointer: self.last_mouse,
+                },
             )
             .into_iter()
             .map(|(rect, outcome)| (rect, Action::MiniMonth(outcome))),
@@ -5370,20 +5316,24 @@ impl CalendarApp {
             _ => None,
         };
         self.event_popovers.draw(
-            scene,
-            t,
-            tr,
-            theme,
-            presence,
-            self.detail_rect,
-            PopoverAnchors {
-                start_date: self.form.start_date,
-                end_date: self.form.end_date,
-                calendar: self.form.calendar,
+            &mut PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
             },
-            self.last_mouse,
-            &options,
-            current,
+            &PopoverRenderModel {
+                presence,
+                panel: self.detail_rect,
+                anchors: PopoverAnchors {
+                    start_date: self.form.start_date,
+                    end_date: self.form.end_date,
+                    calendar: self.form.calendar,
+                },
+                pointer: self.last_mouse,
+                calendar_options: &options,
+                current_calendar: current,
+            },
         );
         Vec::new()
     }
@@ -6617,17 +6567,15 @@ impl Widget for CalendarApp {
         // pushed detail).
         let detail_drawn = self.detail_open && self.detail_rect.area() > 0.0;
         if self.content_rect.area() > 0.0 {
+            let mut topbar_paint = PaintContext {
+                scene,
+                transform: t,
+                text: text_renderer,
+                theme,
+            };
             hits.extend(
                 self.topbar
-                    .draw(
-                        scene,
-                        t,
-                        text_renderer,
-                        theme,
-                        self.view,
-                        self.anchor,
-                        self.last_mouse,
-                    )
+                    .draw(&mut topbar_paint, self.view, self.anchor, self.last_mouse)
                     .iter()
                     .map(|(rect, action)| {
                         let action = match action {
@@ -6650,20 +6598,25 @@ impl Widget for CalendarApp {
                     // identity in the top bar, but present the selected day and
                     // following dates as the readable, focusable shared agenda.
                     let hidden = self.hidden_calendar_ids();
+                    let render = AgendaRenderModel {
+                        area,
+                        model: &self.model,
+                        anchor: self.anchor,
+                        today: self.today,
+                        hidden_calendars: &hidden,
+                        calendar_filter: self.calendar_filter.as_deref(),
+                        pointer: self.last_mouse,
+                    };
                     hits.extend(
                         self.agenda
                             .draw(
-                                scene,
-                                t,
-                                text_renderer,
-                                theme,
-                                area,
-                                &self.model,
-                                self.anchor,
-                                self.today,
-                                &hidden,
-                                self.calendar_filter.as_deref(),
-                                self.last_mouse,
+                                &mut PaintContext {
+                                    scene,
+                                    transform: t,
+                                    text: text_renderer,
+                                    theme,
+                                },
+                                &render,
                             )
                             .into_iter()
                             .map(|(rect, action)| {
@@ -6693,7 +6646,16 @@ impl Widget for CalendarApp {
                     };
                     hits.extend(
                         self.timeline
-                            .draw_timeline(scene, t, text_renderer, theme, area, &model)
+                            .draw_timeline(
+                                &mut PaintContext {
+                                    scene,
+                                    transform: t,
+                                    text: text_renderer,
+                                    theme,
+                                },
+                                area,
+                                &model,
+                            )
                             .into_iter()
                             .filter_map(|(rect, effect)| match effect {
                                 TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
@@ -6704,20 +6666,25 @@ impl Widget for CalendarApp {
                 }
                 View::Agenda => {
                     let hidden = self.hidden_calendar_ids();
+                    let render = AgendaRenderModel {
+                        area,
+                        model: &self.model,
+                        anchor: self.anchor,
+                        today: self.today,
+                        hidden_calendars: &hidden,
+                        calendar_filter: self.calendar_filter.as_deref(),
+                        pointer: self.last_mouse,
+                    };
                     hits.extend(
                         self.agenda
                             .draw(
-                                scene,
-                                t,
-                                text_renderer,
-                                theme,
-                                area,
-                                &self.model,
-                                self.anchor,
-                                self.today,
-                                &hidden,
-                                self.calendar_filter.as_deref(),
-                                self.last_mouse,
+                                &mut PaintContext {
+                                    scene,
+                                    transform: t,
+                                    text: text_renderer,
+                                    theme,
+                                },
+                                &render,
                             )
                             .into_iter()
                             .map(|(rect, action)| {
@@ -9443,7 +9410,7 @@ mod tests {
             );
         }
 
-        fn dispatch(&mut self, event: &winit::event::WindowEvent) {
+        fn dispatch(&mut self, event: &winit::event::WindowEvent) -> bool {
             let mods = winit::event::Modifiers::default();
             let mut handled = false;
             let mut focus = None;
@@ -9458,6 +9425,7 @@ mod tests {
                 self.node,
                 &self.taffy,
             );
+            handled
         }
 
         fn click(&mut self, p: Point) {
@@ -9482,21 +9450,27 @@ mod tests {
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             });
         }
-        fn mouse_button(&mut self, state: ElementState) {
+        fn mouse_button(&mut self, state: ElementState) -> bool {
             let device_id = unsafe { std::mem::zeroed() };
             self.dispatch(&winit::event::WindowEvent::MouseInput {
                 device_id,
                 state,
                 button: MouseButton::Left,
-            });
+            })
         }
 
         /// A full press → drag → release gesture through the real event path.
         fn drag(&mut self, from: Point, to: Point) {
             self.mouse_move(from);
-            self.mouse_button(ElementState::Pressed);
+            assert!(
+                self.mouse_button(ElementState::Pressed),
+                "the timeline must claim a drag press"
+            );
             self.mouse_move(to);
-            self.mouse_button(ElementState::Released);
+            assert!(
+                self.mouse_button(ElementState::Released),
+                "the timeline must claim a drag release"
+            );
         }
 
         /// Press a single character through the real keyboard path.

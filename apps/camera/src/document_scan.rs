@@ -85,6 +85,13 @@ impl Page {
         }
     }
 
+    /// Replaces the crop rectangle and invalidates recognition derived from
+    /// the previous image bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the crop is empty, overflows, or lies outside
+    /// the captured page.
     pub fn set_crop(&mut self, crop: Crop) -> Result<(), &'static str> {
         if crop.width == 0
             || crop.height == 0
@@ -135,6 +142,12 @@ impl Page {
         )
     }
 
+    /// Applies shared crop-editor coordinates to this page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the converted pixel crop is not valid for the
+    /// captured page.
     pub fn set_normalized_crop(&mut self, selection: CropSelection) -> Result<(), &'static str> {
         let width = self.original.width();
         let height = self.original.height();
@@ -163,6 +176,11 @@ impl Page {
         }
     }
 
+    /// Runs OCR on the current rendered page and retains the result.
+    ///
+    /// # Errors
+    ///
+    /// Propagates OCR engine or decoding errors.
     pub fn recognize(&mut self, language: &str) -> Result<&Document, tilo_ocr::Error> {
         let recognition = tilo_ocr::recognize_detailed(&self.rendered(), language)?;
         self.ocr = Some(recognition.document);
@@ -187,6 +205,11 @@ impl ScanSession {
     }
     /// Capture from the system's typed SANE boundary and append only after the
     /// complete PNG has decoded. A failed page never corrupts the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when scanning fails or the scanner response is not a
+    /// valid PNG image.
     pub fn capture_from_sane(
         &mut self,
         device: &str,
@@ -390,7 +413,7 @@ mod tests {
         );
         let (_, width, height, selection) = page.crop_editor_source();
         assert_eq!((width, height), (200, 100));
-        assert_eq!(selection.left, 0.1);
-        assert_eq!(selection.bottom, 0.8);
+        assert!((selection.left - 0.1).abs() < f64::EPSILON);
+        assert!((selection.bottom - 0.8).abs() < f64::EPSILON);
     }
 }
