@@ -373,8 +373,9 @@ COPY . /build
 # Fat LTO with one codegen unit serialized the final links for roughly fifty
 # binaries and made a warm image rebuild spend over an hour in this step.
 # The image-only Cargo overrides below use thin LTO, retaining cross-crate
-# optimization while allowing LLVM to use the runner cores. Other release
-# artifacts keep the workspace's stricter profile unchanged.
+# optimization while allowing LLVM to use the runner cores. Eight codegen
+# units also bound concurrent thin-LTO scratch data on the image runner.
+# Other release artifacts keep the workspace's stricter profile unchanged.
 # Layer timestamp rewriting can make a restored target cache newer than changed
 # workspace sources. Profiles are cleaned before fingerprinting so Cargo never
 # accepts a stale path-dependency rlib; sccache still reuses compiler objects.
@@ -409,10 +410,10 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        fi \
     && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-power -p tilo-rollback -p tilo-cli -p ush -p tilo-projector -p pkg-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
        cargo build --release ${RELEASE_ARGS} -p tilo-relay --bins ${BROWSER_PKG} \
     && CARGO_PROFILE_RELEASE_LTO=thin \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
        cargo build --release -p windows-vm \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && missing=0 \
@@ -424,10 +425,10 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && if [ "$missing" = 1 ]; then \
          cargo clean --release \
          && CARGO_PROFILE_RELEASE_LTO=thin \
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
              cargo build --release ${RELEASE_ARGS} -p tilo-relay --bins ${BROWSER_PKG} \
          && CARGO_PROFILE_RELEASE_LTO=thin \
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
             cargo build --release -p windows-vm \
               --bin tilo-windows-vm-control --bin tilo-windows-rail; \
        fi \
