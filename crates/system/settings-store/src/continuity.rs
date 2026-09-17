@@ -131,6 +131,15 @@ policies! {
         "qos.display.hardware.edid",
         "qos.network.interface.mac",
         "qos.storage.mount.usb",
+        "qos.continuity.enabled",
+        "qos.continuity.clipboard",
+        "qos.continuity.notifications",
+        "qos.continuity.wifi_settings",
+        "qos.continuity.media",
+        "qos.continuity.display_input",
+        "qos.continuity.file_transfer",
+        "qos.continuity.realtime_sessions",
+        "qos.continuity.typed_gamepad",
     ],
     Secret => [
         "qos.agent_providers.api_key",
@@ -139,6 +148,7 @@ policies! {
     Derived => [
         "qos.version",
         "qos.updates.last_checked",
+        "qos.continuity.audit",
     ],
 }
 
@@ -213,10 +223,34 @@ mod tests {
             "qos.audio.output_device",
             "qos.display.scale",
             "qos.input.pen_output",
+            "qos.continuity.clipboard",
+            "qos.continuity.typed_gamepad",
+            "qos.continuity.audit",
         ] {
             assert!(classify(key).is_some(), "{key} must be reviewed");
             assert!(!is_personal(key), "{key} must not roam");
         }
+    }
+
+    #[test]
+    fn continuity_privacy_choices_are_device_local_and_audit_is_derived() {
+        for key in [
+            "qos.continuity.enabled",
+            "qos.continuity.clipboard",
+            "qos.continuity.notifications",
+            "qos.continuity.wifi_settings",
+            "qos.continuity.media",
+            "qos.continuity.display_input",
+            "qos.continuity.file_transfer",
+            "qos.continuity.realtime_sessions",
+            "qos.continuity.typed_gamepad",
+        ] {
+            assert_eq!(classify(key), Some(ContinuityClass::DeviceLocal), "{key}");
+        }
+        assert_eq!(
+            classify("qos.continuity.audit"),
+            Some(ContinuityClass::Derived)
+        );
     }
 
     #[test]
