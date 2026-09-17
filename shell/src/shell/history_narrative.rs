@@ -5,7 +5,7 @@
 //! to a remote endpoint. Generated prose is still admitted only through the
 //! UI crate's citation validator.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -26,6 +26,10 @@ const FAILED_RETRY_DELAY: Duration = Duration::from_secs(60);
 /// evicting the foreground app's working set. `TILO_HISTORY_LLM_MODEL` remains
 /// an explicit opt-in escape hatch for a larger installed model.
 const MAX_AUTOMATIC_MODEL_BYTES: u64 = 5_000_000_000;
+const MODEL_LIST_LIMIT: usize = 1024 * 1024;
+const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(5);
+const NARRATIVE_LIMIT: usize = 1024 * 1024;
+const NARRATIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl LocalHistoryNarrator {
     /// Start one bounded background generation when the evidence changes.
@@ -92,12 +96,10 @@ impl LocalHistoryNarrator {
 }
 
 fn installed_model() -> Option<String> {
-    let output = Command::new("ollama")
-        .arg("list")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut command = Command::new("ollama");
+    command.arg("list");
+    let output =
+        bounded_command::run_prepared(command, None, MODEL_LIST_LIMIT, MODEL_LIST_TIMEOUT).ok()?;
     output.status.success().then_some(())?;
     select_installed_model(
         &String::from_utf8(output.stdout).ok()?,
@@ -151,29 +153,11 @@ fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String>
 
 fn generate(prompt: &str) -> Option<GroundedNarrative> {
     let model = installed_model()?;
-    let mut child = Command::new("ollama")
-        .args(["run", &model, prompt])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if started.elapsed() < Duration::from_secs(20) => {
-                std::thread::sleep(Duration::from_millis(40));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    let output = child.wait_with_output().ok()?;
+    let mut command = Command::new("ollama");
+    command.args(["run", &model, prompt]);
+    let output =
+        bounded_command::run_prepared(command, None, NARRATIVE_LIMIT, NARRATIVE_TIMEOUT).ok()?;
+    output.status.success().then_some(())?;
     let raw = String::from_utf8(output.stdout).ok()?;
     parse_response(&raw, &model)
 }
