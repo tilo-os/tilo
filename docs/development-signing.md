@@ -191,6 +191,47 @@ is an invocation opt-in, **not** a key-injection mechanism or a firmware-trust
 override. Do not set it on the current production-key image expecting a new
 test key to work.
 
+## Independent development source verification
+
+`os/dev/verify-development-source.py` verifies a native OCI child before any
+image code is executed. Supply an independently pinned public bundle, its
+manifest digest, the expected source commit and architecture, and an immutable
+source digest in the exact development repository selected at build time.
+The embedded update reference may be a tag: embedding the image's own digest
+would create a circular dependency. Development builds require a clean committed
+checkout and record that commit in `org.opencontainers.image.revision`.
+
+```sh
+podman unshare python3 os/dev/verify-development-source.py \
+  --source "$SIGNED_NATIVE_DEVELOPMENT_SOURCE" \
+  --target "$DEVELOPMENT_UPDATE_REFERENCE" \
+  --architecture aarch64 --revision "$EXPECTED_SOURCE_COMMIT" \
+  --public-bundle "$PUBLIC_BUNDLE" \
+  --manifest-sha256 "$EXPECTED_PUBLIC_BUNDLE_SHA256"
+```
+
+The host needs local Podman, Cosign and OpenSSL. Rootful storage can run the
+same helper as root. The helper verifies the signature payload's exact repository
+and digest before pulling, validates the native OCI identity, and inspects a
+mounted filesystem with host code. It checks embedded trust, update policy,
+registry owner and any hardware profile. It never starts the image's entrypoint.
+Remote Podman and redirected signature repositories are rejected. If explicitly
+provided, `REGISTRY_AUTH_FILE` is copied privately for both clients and removed
+afterward. Only literal `127.0.0.1` permits HTTP; TLS certificate verification is
+required elsewhere.
+
+Disposable offline signing fixtures may explicitly select
+`--offline-key-signature`; this still requires the pinned key's valid signature
+but does not require a transparency-log entry. The receipt records that choice.
+Normal verification requires the transparency log. The revision label is the
+signer's statement, not independent proof of a reproducible build.
+
+The JSON output is an audit receipt, never an installation authorization token.
+A disk consumer must repeat verification and enforce container signature policy.
+The existing container-only development stop remains in place. Unit tests cover
+identity rejection and failure cleanup; real registry verification, final EFI/PCR
+sealing, disk creation and VM acceptance remain required integration work.
+
 ## Production provisioning later
 
 1. Choose the KMS/HSM provider and release operator. Provision non-exportable OS
