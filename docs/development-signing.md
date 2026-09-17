@@ -393,6 +393,13 @@ executes the verified local image ID with implicit pulling disabled. The
 packaged `bootc` must advertise all required installation flags; source and
 target signature policy and fetch checks remain enabled.
 
+When `REGISTRY_AUTH_FILE` is supplied, the source verifier's private temporary
+snapshot is also mounted read-only into the installation container. The mount
+and environment setting apply only to that invocation; credential bytes are
+not included in the public receipt. Inspect the real installed image for secret
+persistence before accepting it. This handoff does not provision credentials
+for future updates or prove that the eventual update context can fetch them.
+
 This command is for an operator-provisioned disposable native QEMU/KVM guest
 with no device passthrough. It rejects WSL, user namespaces, remote container
 configuration, exposed TPM devices and EFI variables. Those checks cannot prove
