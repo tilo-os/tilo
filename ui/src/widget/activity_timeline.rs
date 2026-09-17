@@ -53,6 +53,12 @@ const REVERT_CHIP_W: f64 = 64.0;
 const TIME_SLOT_W: f64 = 80.0;
 const AUTHOR_SLOT_W: f64 = 160.0;
 const INDENT: f64 = 20.0;
+/// Right-hand gutter shared by every trailing element — a row's relative
+/// time and a band header's — so the time column lines up down the pane.
+/// A constant alongside `PADDING` and `INDENT`, which the row geometry that
+/// hit-testing reads is built from without a theme; pinned to `spacing.s3`
+/// by `gutter_constants_equal_the_spacing_tokens`.
+const TRAILING_INSET: f64 = 12.0;
 /// Budget of auto-expanded rows: a short history should read as a flat
 /// list, a long one has to read as collapsed bands. This is the line
 /// between the two, spent newest-first.
@@ -79,6 +85,16 @@ fn px(n: usize) -> f64 {
 )]
 fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
     transform * Affine::translate(offset)
+}
+
+/// Top edge that centres one line of `size`-px text on `center_y`. The line
+/// box the renderer paints is `line_height × size` — a quarter taller than
+/// the font size at the default 1.25 — and it carries the accessibility text
+/// scale, so centring on the *measured* height (never on `size / 2`) is what
+/// keeps a row's text on the same centre line as its avatar dot at every
+/// type scale.
+fn text_top(tr: &mut TextRenderer, size: f32, center_y: f64) -> f64 {
+    center_y - f64::from(tr.measure("Ag", size, None).1) / 2.0
 }
 
 /// Ordered left-to-right so a flat `[i]` lookup matches the visual.
@@ -1846,24 +1862,26 @@ impl ActivityTimeline {
             text_size,
             name_budget,
         );
+        let name_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
             scene,
             &name,
             text_size,
             theme.tokens.colors.text_primary,
-            translated(transform, (x_cursor, cy - f64::from(text_size) / 2.0)),
+            translated(transform, (x_cursor, name_top)),
             None,
         );
         let (name_w, _) = text_renderer.measure(&name, text_size, None);
         x_cursor += f64::from(name_w) + 6.0;
 
         if short_w > 0.0 {
+            let short_top = text_top(text_renderer, short_size, cy);
             text_renderer.draw_text(
                 scene,
                 short,
                 short_size,
                 theme.tokens.colors.text_dim,
-                translated(transform, (x_cursor, cy - f64::from(short_size) / 2.0)),
+                translated(transform, (x_cursor, short_top)),
                 None,
             );
         }
@@ -1889,17 +1907,18 @@ impl ActivityTimeline {
         text_size: f32,
     ) -> bool {
         let glyph = op_class_glyph(entry.op_class);
+        let line_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
             scene,
             glyph,
             text_size,
             theme.tokens.colors.text_dim,
-            translated(transform, (glyph_x, cy - f64::from(text_size) / 2.0)),
+            translated(transform, (glyph_x, line_top)),
             None,
         );
 
         let summary_x = glyph_x + 24.0;
-        let summary_x_end = row.x1 - self.time_slot_w() - chip_reserve - 12.0;
+        let summary_x_end = row.x1 - self.time_slot_w() - chip_reserve - TRAILING_INSET;
         let (summary_owned, is_redacted_row): (String, bool) =
             if let Some(redaction) = entry.redaction.as_ref() {
                 (
@@ -1935,7 +1954,7 @@ impl ActivityTimeline {
             &drawn_summary,
             text_size,
             summary_color,
-            translated(transform, (summary_x, cy - f64::from(text_size) / 2.0)),
+            translated(transform, (summary_x, line_top)),
             None,
         );
         // Drawn after the text so a regression that forgets to gate on
@@ -1980,14 +1999,14 @@ impl ActivityTimeline {
             text_size,
             self.time_slot_w(),
         );
-        let (tw, _) = text_renderer.measure(&rel, text_size, None);
-        let time_x = row.x1 - chip_reserve - 12.0 - f64::from(tw);
+        let (tw, th) = text_renderer.measure(&rel, text_size, None);
+        let time_x = row.x1 - chip_reserve - TRAILING_INSET - f64::from(tw);
         text_renderer.draw_text(
             scene,
             &rel,
             text_size,
             theme.tokens.colors.text_dim,
-            translated(transform, (time_x, cy - f64::from(text_size) / 2.0)),
+            translated(transform, (time_x, cy - f64::from(th) / 2.0)),
             None,
         );
 
@@ -2204,8 +2223,9 @@ impl ActivityTimeline {
                 None,
             );
             if rg.open {
-                // "Still open" has to read as live, not as a label.
-                let (w, _) = tr.measure(&title, title_size, None);
+                // "Still open" has to read as live, not as a label — and sit
+                // on the title's measured centre line, not the font size's.
+                let (w, h) = tr.measure(&title, title_size, None);
                 let dot_x = title_x + f64::from(w) + 8.0;
                 if dot_x + 5.0 < row.x1 - actions_w {
                     scene.fill(
@@ -2213,10 +2233,7 @@ impl ActivityTimeline {
                         transform,
                         colors.accent[4],
                         None,
-                        &Circle::new(
-                            Point::new(dot_x, title_y + f64::from(title_size) / 2.0),
-                            3.0,
-                        ),
+                        &Circle::new(Point::new(dot_x, title_y + f64::from(h) / 2.0), 3.0),
                     );
                 }
             }
@@ -2241,11 +2258,12 @@ impl ActivityTimeline {
         let colors = &theme.tokens.colors;
         let meta_size = (title_size - 2.0).max(10.0);
         let rel = format_relative_time(rg.last_time, now);
-        let (rel_w, _) = tr.measure(&rel, meta_size, None);
+        let (rel_w, rel_h) = tr.measure(&rel, meta_size, None);
         // Author dots sit between the subtitle and the timestamp; reserve them.
         let dots = rg.authors.len().min(3);
         let dots_w = if dots > 0 { px(dots) * 10.0 + 6.0 } else { 0.0 };
-        let sub_budget = (row.x1 - title_x - f64::from(rel_w) - dots_w - 24.0).max(0.0);
+        let sub_budget =
+            (row.x1 - title_x - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0).max(0.0);
         let subtitle = if rg.expanded {
             rg.subtitle.clone()
         } else {
@@ -2263,17 +2281,23 @@ impl ActivityTimeline {
             translated(transform, (title_x, meta_y)),
             None,
         );
+        // Right-aligned to the same gutter as the rows' time column, so the
+        // band header's "2 h ago" and the rows' "1 h ago" share one edge.
         tr.draw_text(
             scene,
             &rel,
             meta_size,
             colors.text_dim,
-            translated(transform, (row.x1 - 8.0 - f64::from(rel_w), meta_y)),
+            translated(
+                transform,
+                (row.x1 - TRAILING_INSET - f64::from(rel_w), meta_y),
+            ),
             None,
         );
 
-        // Author dots, packed tight.
-        let mut dx = row.x1 - 16.0 - f64::from(rel_w);
+        // Author dots, packed tight, on the meta line's measured centre.
+        let dot_cy = meta_y + f64::from(rel_h) / 2.0;
+        let mut dx = row.x1 - TRAILING_INSET - 8.0 - f64::from(rel_w);
         for a in rg.authors.iter().take(3) {
             let (r, g, b) = hue_to_rgb(a.avatar_hue);
             scene.fill(
@@ -2281,7 +2305,7 @@ impl ActivityTimeline {
                 transform,
                 Color::from_rgba8(r, g, b, 255),
                 None,
-                &Circle::new(Point::new(dx, meta_y + f64::from(meta_size) / 2.0), 4.0),
+                &Circle::new(Point::new(dx, dot_cy), 4.0),
             );
             dx -= 10.0;
         }
@@ -2569,15 +2593,13 @@ impl ActivityTimeline {
         let label = format!("{n} change{} selected", if n == 1 { "" } else { "s" });
         let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
         let shown = fit_text(tr, &label, size, label_budget);
+        let label_top = text_top(tr, size, bar.center().y);
         tr.draw_text(
             scene,
             &shown,
             size,
             colors.text_primary,
-            translated(
-                transform,
-                (bar.x0 + 10.0, bar.center().y - f64::from(size) / 2.0),
-            ),
+            translated(transform, (bar.x0 + 10.0, label_top)),
             None,
         );
 
@@ -5050,5 +5072,44 @@ mod group_tests {
         timeline.set_selection(Some((0, 0)));
         timeline.set_filter(HistoryFilter::default().with_author("Maren"));
         assert_eq!(timeline.selection(), None);
+    }
+
+    /// The gutters are constants because hit-testing has no theme; they must
+    /// nevertheless be the tokens' values, so a token change surfaces here.
+    #[test]
+    fn gutter_constants_equal_the_spacing_tokens() {
+        let spacing = crate::tokens::Spacing::default();
+        assert!(
+            (PADDING - f64::from(spacing.s2)).abs() < 1e-9,
+            "PADDING is s2"
+        );
+        assert!(
+            (TRAILING_INSET - f64::from(spacing.s3)).abs() < 1e-9,
+            "TRAILING_INSET is s3"
+        );
+    }
+
+    /// Row text is centred on the renderer's measured line box, which is
+    /// what keeps it on the avatar's centre line when type is scaled.
+    #[test]
+    fn row_text_centring_tracks_the_measured_line_box_at_every_text_scale() {
+        let theme = Theme::dark();
+        let size = theme.tokens.typography.scale.sm;
+        for scale in [1.0_f32, 2.0] {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let cy = 40.0;
+            let top = text_top(&mut tr, size, cy);
+            let (_, h) = tr.measure("Alice", size, None);
+            assert!(
+                (top + f64::from(h) / 2.0 - cy).abs() < 1e-6,
+                "at {scale}x: top {top} + half of {h} misses the row centre {cy}"
+            );
+            assert!(
+                f64::from(h) > f64::from(size) * f64::from(scale),
+                "the line box {h} is taller than the bare size {size} × {scale}; centring on \
+                 size/2 would sit the text low"
+            );
+        }
     }
 }

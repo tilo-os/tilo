@@ -55,6 +55,8 @@ mod f2_control_row_alignment;
 mod f3_composition_fixtures;
 #[path = "f4_menu_highlight_render.rs"]
 mod f4_menu_highlight_render;
+#[path = "f5_immersive_geometry.rs"]
+mod f5_immersive_geometry;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]
