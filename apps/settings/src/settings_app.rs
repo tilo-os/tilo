@@ -83,6 +83,7 @@ pub struct SettingsApp {
     local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     local_operation: Option<tilo_actions::InvocationId>,
     local_operation_token: Option<String>,
+    local_pane_command: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
     /// Deterministic, secret-free inventory used only by visual acceptance
     /// captures. Live construction always leaves this `None`.
     account_directory_override: Option<crate::accounts::AccountDirectory>,
@@ -130,6 +131,7 @@ impl SettingsApp {
             local_operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             local_operation: None,
             local_operation_token: None,
+            local_pane_command: ui::LocalState::new(None),
             account_directory_override: None,
             account_form_override: None,
             deterministic_hardware_for_shot: false,
@@ -336,10 +338,12 @@ impl SettingsApp {
         match self.selected {
             Category::Network => Box::new(
                 panes::network::NetworkPane::new()
+                    .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Bluetooth => Box::new(
                 panes::bluetooth::BluetoothPane::new()
+                    .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::DeviceMesh => Box::new(
@@ -348,7 +352,9 @@ impl SettingsApp {
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Sound => Box::new(
-                panes::audio::AudioPane::new().with_operation_status(&self.local_operation_status),
+                panes::audio::AudioPane::new()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
             ),
             Category::Displays if self.deterministic_hardware_for_shot => {
                 Box::new(panes::display::DisplayPane::with_dispatcher(
@@ -358,6 +364,7 @@ impl SettingsApp {
             }
             Category::Displays => Box::new(
                 panes::display::DisplayPane::new()
+                    .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::MouseKeyboard => Box::new(
@@ -374,7 +381,9 @@ impl SettingsApp {
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Power => Box::new(
-                panes::power::PowerPane::new().with_operation_status(&self.local_operation_status),
+                panes::power::PowerPane::new()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
             ),
             Category::Appearance => panes::appearance::build(),
             Category::Accessibility => panes::accessibility::build(),
@@ -407,6 +416,7 @@ impl SettingsApp {
             Category::Permissions => panes::permissions::build(),
             Category::Updates => Box::new(
                 panes::updates::UpdatesPane::new()
+                    .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::About => panes::about::build(),
@@ -506,38 +516,14 @@ impl SettingsApp {
                 let operation: crate::actions::UpdateOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Updates);
-                match operation {
-                    crate::actions::UpdateOperation::Check => {
-                        doc.put(path, panes::updates::CHECK_KEY, true)
-                    }
-                    crate::actions::UpdateOperation::Restart => {
-                        doc.put(path, panes::updates::RESTART_KEY, true)
-                    }
-                    crate::actions::UpdateOperation::ReviewRollback => {
-                        doc.put(path, panes::updates::ROLLBACK_KEY, true)
-                    }
-                    crate::actions::UpdateOperation::Rollback => {
-                        doc.put(path, panes::updates::ROLLBACK_CONFIRM_KEY, true)
-                    }
-                    crate::actions::UpdateOperation::RefreshFirmware => {
-                        doc.put(path, panes::updates::FIRMWARE_REFRESH_KEY, true)
-                    }
-                    crate::actions::UpdateOperation::InstallFirmware => {
-                        doc.put(path, panes::updates::FIRMWARE_INSTALL_KEY, true)
-                    }
-                    crate::actions::UpdateOperation::SetAutomatic { enabled } => {
-                        doc.put(path, panes::updates::AUTO_KEY, enabled)
-                    }
-                    crate::actions::UpdateOperation::SetSchedule { schedule } => {
-                        if !["System schedule", "Daily", "Weekly"].contains(&schedule.as_str()) {
-                            return Err("unsupported update schedule".into());
-                        }
-                        doc.put(path, panes::updates::SCHEDULE_KEY, schedule)
-                    }
-                    crate::actions::UpdateOperation::SetMetered { allowed } => {
-                        doc.put(path, panes::updates::METERED_KEY, allowed)
+                if let crate::actions::UpdateOperation::SetSchedule { schedule } = &operation {
+                    if !["System schedule", "Daily", "Weekly"].contains(&schedule.as_str()) {
+                        return Err("unsupported update schedule".into());
                     }
                 }
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::Updates(operation)));
+                Ok(())
             }
             crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE => {
                 let operation: crate::actions::KeyboardSourceOperation =
@@ -591,7 +577,7 @@ impl SettingsApp {
                 let operation: crate::actions::PowerOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Power);
-                match operation {
+                match &operation {
                     crate::actions::PowerOperation::SetChargeLimit { percent } => {
                         let available = os_actions::charge_capability()
                             .is_some_and(|capability| capability.choices.contains(&percent));
@@ -600,17 +586,13 @@ impl SettingsApp {
                                 "battery charge-cap control is unavailable on this device".into()
                             );
                         }
-                        doc.put(path, panes::power::CHARGE_LIMIT_KEY, format!("{percent}%"))
                     }
                     crate::actions::PowerOperation::SetProfile { profile } => {
                         if !["Power Saver", "Balanced", "Performance"].contains(&profile.as_str()) {
                             return Err("unsupported power profile".into());
                         }
-                        doc.put(path, panes::power::PROFILE_KEY, profile)
                     }
-                    crate::actions::PowerOperation::SetAutoSuspend { enabled } => {
-                        doc.put(path, panes::power::AUTO_SUSPEND_KEY, enabled)
-                    }
+                    crate::actions::PowerOperation::SetAutoSuspend { .. } => {}
                     crate::actions::PowerOperation::SetBlankTimeout { label } => {
                         if ![
                             "1 minute",
@@ -624,7 +606,6 @@ impl SettingsApp {
                         {
                             return Err("unsupported screen blank timeout".into());
                         }
-                        doc.put(path, panes::power::BLANK_KEY, label)
                     }
                     crate::actions::PowerOperation::SetSuspendTimeout { profile, label } => {
                         if ![
@@ -640,81 +621,56 @@ impl SettingsApp {
                         {
                             return Err("unsupported suspend timeout".into());
                         }
-                        let key = match profile.as_str() {
-                            "default" => panes::power::SUSPEND_KEY,
-                            "saver" => panes::power::SAVER_SUSPEND_KEY,
-                            "balanced" => panes::power::BALANCED_SUSPEND_KEY,
-                            "performance" => panes::power::PERFORMANCE_SUSPEND_KEY,
+                        match profile.as_str() {
+                            "default" | "saver" | "balanced" | "performance" => {}
                             _ => return Err("unsupported power profile timeout".into()),
-                        };
-                        doc.put(path, key, label)
+                        }
                     }
                     crate::actions::PowerOperation::SetLidAction { action } => {
                         if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
                             return Err("unsupported power action".into());
                         }
-                        doc.put(path, panes::power::LID_KEY, action)
                     }
                     crate::actions::PowerOperation::SetPowerKeyAction { action } => {
                         if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
                             return Err("unsupported power action".into());
                         }
-                        doc.put(path, panes::power::POWER_KEY_KEY, action)
                     }
                     crate::actions::PowerOperation::SetCriticalAction { action } => {
                         if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
                             return Err("unsupported power action".into());
                         }
-                        doc.put(path, panes::power::CRITICAL_KEY, action)
                     }
                 }
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::Power(operation)));
+                Ok(())
             }
             crate::actions::NETWORK_OPERATION_TYPE => {
                 let operation: crate::actions::NetworkOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Network);
-                match operation {
-                    crate::actions::NetworkOperation::Refresh => {
-                        doc.put(path, panes::network::REFRESH_KEY, true)
-                    }
-                    crate::actions::NetworkOperation::SetWifiEnabled { enabled } => {
-                        doc.put(path, panes::network::WIFI_ENABLED_KEY, enabled)
-                    }
-                    crate::actions::NetworkOperation::SetWiredEnabled { enabled } => {
-                        let wired = os_actions::get_wired()?;
-                        if wired.device.is_none() {
-                            return Err("wired networking is unavailable on this device".into());
-                        }
-                        doc.put(path, panes::network::WIRED_ENABLED_KEY, enabled)
-                    }
-                    crate::actions::NetworkOperation::SetAirplaneMode { enabled } => {
-                        doc.put(path, panes::network::AIRPLANE_KEY, enabled)
-                    }
-                    crate::actions::NetworkOperation::SetHotspot { enabled } => {
-                        doc.put(path, panes::network::HOTSPOT_KEY, enabled)
-                    }
-                    crate::actions::NetworkOperation::SetMobileBroadband { enabled } => {
-                        doc.put(path, panes::network::MOBILE_KEY, enabled)
-                    }
-                    crate::actions::NetworkOperation::RunDiagnostics => {
-                        doc.put(path, panes::network::DIAGNOSTICS_KEY, true)
+                if matches!(
+                    operation,
+                    crate::actions::NetworkOperation::SetWiredEnabled { .. }
+                ) {
+                    let wired = os_actions::get_wired()?;
+                    if wired.device.is_none() {
+                        return Err("wired networking is unavailable on this device".into());
                     }
                 }
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::Network(operation)));
+                Ok(())
             }
             crate::actions::BLUETOOTH_OPERATION_TYPE => {
                 let operation: crate::actions::BluetoothOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Bluetooth);
-                match operation {
-                    crate::actions::BluetoothOperation::SetPowered { enabled } => {
-                        doc.put(path, panes::bluetooth::BT_ENABLED_KEY, enabled)
-                    }
-                    crate::actions::BluetoothOperation::StartScan => {
-                        doc.put(path, panes::bluetooth::SCAN_KEY, true)
-                    }
-                    crate::actions::BluetoothOperation::Refresh => {
-                        doc.put(path, panes::bluetooth::REFRESH_KEY, true)
-                    }
+                match &operation {
+                    crate::actions::BluetoothOperation::SetPowered { .. }
+                    | crate::actions::BluetoothOperation::StartScan
+                    | crate::actions::BluetoothOperation::Refresh => {}
                     operation @ (crate::actions::BluetoothOperation::Pair { .. }
                     | crate::actions::BluetoothOperation::Connect { .. }
                     | crate::actions::BluetoothOperation::Disconnect { .. }
@@ -728,11 +684,11 @@ impl SettingsApp {
                                 (path, "disconnect")
                             }
                             crate::actions::BluetoothOperation::Forget { path } => (path, "forget"),
-                            _ => return Err("unsupported Bluetooth operation".into()),
+                            _ => unreachable!(),
                         };
                         let device = os_actions::bluez::devices()?
                             .into_iter()
-                            .find(|device| device.path == device_path)
+                            .find(|device| device.path == *device_path)
                             .ok_or_else(|| "Bluetooth device is no longer available".to_string())?;
                         let allowed = match action {
                             "pair" => !device.paired,
@@ -746,13 +702,11 @@ impl SettingsApp {
                                 "Bluetooth device state changed; refresh and try again".into()
                             );
                         }
-                        doc.put(
-                            path,
-                            panes::bluetooth::device_action_key(&device_path, action),
-                            true,
-                        )
                     }
                 }
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::Bluetooth(operation)));
+                Ok(())
             }
             crate::actions::STORAGE_OPERATION_TYPE => {
                 let operation: crate::actions::StorageOperation =
@@ -778,7 +732,13 @@ impl SettingsApp {
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 let graph = media::audio::enumerate();
                 self.select(Category::Sound);
-                match operation {
+                // Existing validation helpers write the proposed UI scalar;
+                // keep that scratch state process-local rather than using the
+                // collaborative Settings document as a command bus.
+                let mut local_doc = automerge::AutoCommit::new();
+                let doc = &mut local_doc;
+                let path = automerge::ROOT;
+                let validated = match operation.clone() {
                     crate::actions::AudioOperation::SetOutputVolume { value } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
                             return Err("output volume must be between 0 and 1".into());
@@ -802,6 +762,101 @@ impl SettingsApp {
                     }
                     crate::actions::AudioOperation::SetMono { enabled } => {
                         doc.put(path, panes::audio::MONO_KEY, enabled)
+                    }
+                    crate::actions::AudioOperation::SetDeviceProfile {
+                        device_id,
+                        profile_index,
+                    } => {
+                        let hardware = graph
+                            .hardware
+                            .iter()
+                            .find(|device| device.id == device_id)
+                            .ok_or_else(|| "audio hardware is no longer available".to_string())?;
+                        let profile = hardware
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.index == profile_index && profile.available)
+                            .ok_or_else(|| "audio profile is no longer available".to_string())?;
+                        doc.put(
+                            path,
+                            panes::audio::device_profile_key(device_id),
+                            profile.description.as_str(),
+                        )
+                    }
+                    crate::actions::AudioOperation::RouteStream {
+                        stream_id,
+                        playback,
+                        device_id,
+                    } => {
+                        let stream_exists = if playback {
+                            graph
+                                .playback_streams
+                                .iter()
+                                .any(|stream| stream.id == stream_id)
+                        } else {
+                            graph
+                                .record_streams
+                                .iter()
+                                .any(|stream| stream.id == stream_id)
+                        };
+                        if !stream_exists {
+                            return Err("audio stream is no longer available".into());
+                        }
+                        let devices = if playback {
+                            &graph.sinks
+                        } else {
+                            &graph.sources
+                        };
+                        let label = match device_id {
+                            None => panes::audio::FOLLOW_DEFAULT.to_string(),
+                            Some(id) => devices
+                                .iter()
+                                .find(|device| device.id == id)
+                                .ok_or_else(|| "audio route is no longer available".to_string())?
+                                .description
+                                .clone(),
+                        };
+                        doc.put(path, panes::audio::stream_sink_key(stream_id), label)
+                    }
+                    crate::actions::AudioOperation::SetStreamVolume { stream_id, value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("stream volume must be between 0 and 1".into());
+                        }
+                        let exists = graph
+                            .playback_streams
+                            .iter()
+                            .chain(&graph.record_streams)
+                            .any(|stream| stream.id == stream_id);
+                        if !exists {
+                            return Err("audio stream is no longer available".into());
+                        }
+                        doc.put(path, panes::audio::stream_volume_key(stream_id), value)
+                    }
+                    crate::actions::AudioOperation::SetStreamMuted { stream_id, muted } => {
+                        let exists = graph
+                            .playback_streams
+                            .iter()
+                            .chain(&graph.record_streams)
+                            .any(|stream| stream.id == stream_id);
+                        if !exists {
+                            return Err("audio stream is no longer available".into());
+                        }
+                        doc.put(path, panes::audio::stream_muted_key(stream_id), muted)
+                    }
+                    crate::actions::AudioOperation::ToggleDiagnostics => {
+                        doc.put(path, panes::audio::ADVANCED_KEY, true)
+                    }
+                    crate::actions::AudioOperation::TestChannel { left } => doc.put(
+                        path,
+                        if left {
+                            panes::audio::TEST_LEFT_KEY
+                        } else {
+                            panes::audio::TEST_RIGHT_KEY
+                        },
+                        true,
+                    ),
+                    crate::actions::AudioOperation::ToggleMicrophoneMeter => {
+                        doc.put(path, panes::audio::MIC_TEST_KEY, true)
                     }
                     crate::actions::AudioOperation::SelectOutput { device_id } => {
                         let device = graph.sink_by_id(device_id).ok_or_else(|| {
@@ -871,22 +926,30 @@ impl SettingsApp {
                             device.description.as_str(),
                         )
                     }
-                }
+                };
+                validated.map_err(|error| error.to_string())?;
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::Audio(operation)));
+                Ok(())
             }
             crate::actions::DISPLAY_OPERATION_TYPE => {
                 let operation: crate::actions::DisplayOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Displays);
-                let snapshot = settings_store::hardware::DisplayHardwareSnapshot::load()
-                    .ok_or_else(|| "live display capabilities are unavailable".to_string())?;
+                let mut local_doc = automerge::AutoCommit::new();
+                let doc = &mut local_doc;
+                let path = automerge::ROOT;
+                let snapshot = settings_store::hardware::DisplayHardwareSnapshot::load();
                 let output = |connector: &str| {
                     snapshot
+                        .as_ref()
+                        .ok_or_else(|| "live display capabilities are unavailable".to_string())?
                         .outputs
                         .iter()
                         .find(|output| output.descriptor.connector == connector)
                         .ok_or_else(|| "display output is no longer available".to_string())
                 };
-                match operation {
+                let validated = match operation.clone() {
                     crate::actions::DisplayOperation::SetBrightness { value } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
                             return Err("display brightness must be between 0 and 1".into());
@@ -895,6 +958,17 @@ impl SettingsApp {
                     }
                     crate::actions::DisplayOperation::SetAutoBrightness { enabled } => {
                         doc.put(path, panes::display::AUTO_BRIGHTNESS_KEY, enabled)
+                    }
+                    crate::actions::DisplayOperation::SetNightLight { enabled } => {
+                        doc.put(path, panes::display::NIGHT_LIGHT_KEY, enabled)
+                    }
+                    crate::actions::DisplayOperation::SetNightLightTemperature { label } => {
+                        if !["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+                            .contains(&label.as_str())
+                        {
+                            return Err("unsupported Night Light warmth".into());
+                        }
+                        doc.put(path, panes::display::NIGHT_LIGHT_TEMPERATURE_KEY, label)
                     }
                     crate::actions::DisplayOperation::SetScale { label } => {
                         if !["100%", "125%", "150%", "175%", "200%"].contains(&label.as_str()) {
@@ -1066,7 +1140,11 @@ impl SettingsApp {
                     crate::actions::DisplayOperation::Revert => {
                         doc.put(path, panes::display::REVERT_DISPLAY_KEY, true)
                     }
-                }
+                };
+                validated.map_err(|error| error.to_string())?;
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::Display(operation)));
+                Ok(())
             }
             crate::actions::PRINTER_OPERATION_TYPE => {
                 let operation: crate::actions::PrinterOperation =
@@ -2359,11 +2437,10 @@ mod tests {
 
     #[test]
     fn canonical_update_operation_is_accepted_not_completed_until_the_pane_reports() {
-        use automerge::{ReadDoc, Value};
-
         let mut app = SettingsApp::new();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
+        let heads = doc.get_heads();
         let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
         let invocation = tilo_actions::InvocationId::new();
         let start = app
@@ -2381,11 +2458,17 @@ mod tests {
             Some(ui::widget::ResourceOperationStart::Accepted)
         ));
         assert_eq!(app.selected(), Category::Updates);
-        assert!(matches!(
-            doc.get(&root, panes::updates::CHECK_KEY),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-        ));
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "local effects must not touch Automerge"
+        );
+        assert_eq!(
+            app.local_pane_command.get(),
+            Some(crate::actions::LocalPaneCommand::Updates(
+                crate::actions::UpdateOperation::Check
+            ))
+        );
         assert!(
             app.poll_resource_operation(invocation, false, &doc, &root)
                 .is_none(),
@@ -2411,12 +2494,68 @@ mod tests {
     }
 
     #[test]
-    fn network_refresh_is_a_local_lifecycle_not_a_replicated_setting_action() {
-        use automerge::{ReadDoc, Value};
-
+    fn hardware_effect_admission_never_mutates_the_collaborative_document() {
         let mut app = SettingsApp::new();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
+        let cases = [
+            (
+                crate::actions::UPDATE_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap(),
+            ),
+            (
+                crate::actions::POWER_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::PowerOperation::SetAutoSuspend {
+                    enabled: false,
+                })
+                .unwrap(),
+            ),
+            (
+                crate::actions::NETWORK_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::NetworkOperation::Refresh).unwrap(),
+            ),
+            (
+                crate::actions::BLUETOOTH_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::BluetoothOperation::Refresh).unwrap(),
+            ),
+            (
+                crate::actions::AUDIO_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::AudioOperation::SetOutputVolume { value: 0.5 })
+                    .unwrap(),
+            ),
+            (
+                crate::actions::DISPLAY_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::DisplayOperation::SetBrightness { value: 0.5 })
+                    .unwrap(),
+            ),
+        ];
+        for (type_id, payload) in cases {
+            let heads = doc.get_heads();
+            assert!(matches!(
+                app.start_local_device_operation(
+                    tilo_actions::OperationKind::Effect,
+                    type_id,
+                    &payload,
+                    &mut doc,
+                    &root,
+                )
+                .expect("bounded local command is admitted"),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            ));
+            assert_eq!(doc.get_heads(), heads, "{type_id} touched Automerge");
+            assert!(app.local_pane_command.get().is_some());
+            app.local_pane_command.set(None);
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Idle);
+        }
+    }
+
+    #[test]
+    fn network_refresh_is_a_local_lifecycle_not_a_replicated_setting_action() {
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let heads = doc.get_heads();
         let operation = crate::actions::NetworkOperation::Refresh;
         let payload = serde_json::to_vec(&operation).expect("network operation serializes");
         let invocation = tilo_actions::InvocationId::new();
@@ -2435,11 +2574,15 @@ mod tests {
             Some(ui::widget::ResourceOperationStart::Accepted)
         ));
         assert_eq!(app.selected(), Category::Network);
-        assert!(matches!(
-            doc.get(&root, panes::network::REFRESH_KEY),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-        ));
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "local effects must not touch Automerge"
+        );
+        assert_eq!(
+            app.local_pane_command.get(),
+            Some(crate::actions::LocalPaneCommand::Network(operation.clone()))
+        );
         assert!(
             app.poll_resource_operation(invocation, false, &doc, &root)
                 .is_none()
@@ -2499,11 +2642,10 @@ mod tests {
 
     #[test]
     fn bluetooth_refresh_waits_for_its_own_local_completion_token() {
-        use automerge::{ReadDoc, Value};
-
         let mut app = SettingsApp::new();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
+        let heads = doc.get_heads();
         let operation = crate::actions::BluetoothOperation::Refresh;
         let payload = serde_json::to_vec(&operation).expect("Bluetooth operation serializes");
         let invocation = tilo_actions::InvocationId::new();
@@ -2522,11 +2664,13 @@ mod tests {
             Some(ui::widget::ResourceOperationStart::Accepted)
         ));
         assert_eq!(app.selected(), Category::Bluetooth);
-        assert!(matches!(
-            doc.get(&root, panes::bluetooth::REFRESH_KEY),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-        ));
+        assert_eq!(doc.get_heads(), heads);
+        assert_eq!(
+            app.local_pane_command.get(),
+            Some(crate::actions::LocalPaneCommand::Bluetooth(
+                operation.clone()
+            ))
+        );
         app.local_operation_status
             .set(crate::actions::LocalOperationStatus::Succeeded {
                 token: crate::actions::local_operation_token_for(

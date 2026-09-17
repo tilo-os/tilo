@@ -1066,16 +1066,6 @@ impl Widget for MouseKeyboardPane {
     }
 }
 
-fn read_f64(state: &AutoCommit, root: &ObjId, key: &str) -> Option<f64> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::F64(f) => Some(*f),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
     match state.get(root, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {

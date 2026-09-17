@@ -272,6 +272,10 @@ pub struct NetworkPane {
     /// Shared only with the Settings operation host; it is process-local and
     /// never written to the CRDT alongside the radio latches below.
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
+    require_operation_token: bool,
     needs_seed: bool,
     /// Track which `network.join.<ssid>` keys we already dispatched
     /// for, so a single button press doesn't re-fire on every frame.
@@ -361,6 +365,10 @@ impl NetworkPane {
             initial_wifi_enabled: initial_wifi,
             last_wifi_enabled: initial_wifi,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -412,6 +420,10 @@ impl NetworkPane {
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -458,6 +470,10 @@ impl NetworkPane {
             initial_wifi_enabled: true,
             last_wifi_enabled: true,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -512,7 +528,54 @@ impl NetworkPane {
         status: &ui::LocalState<crate::actions::LocalOperationStatus>,
     ) -> Self {
         self.operation_status = status.clone();
+        self.require_operation_token = true;
         self
+    }
+
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
+        self
+    }
+
+    fn execute_local_command(
+        &mut self,
+        local: &mut AutoCommit,
+        operation: crate::actions::NetworkOperation,
+    ) {
+        let root = automerge::ROOT;
+        use crate::actions::NetworkOperation as Op;
+        match &operation {
+            Op::Refresh => {
+                let _ = local.put(&root, REFRESH_KEY, true);
+            }
+            Op::SetWifiEnabled { enabled } => {
+                let _ = local.put(&root, WIFI_ENABLED_KEY, *enabled);
+            }
+            Op::SetWiredEnabled { enabled } => {
+                let _ = local.put(&root, WIRED_ENABLED_KEY, *enabled);
+            }
+            Op::SetAirplaneMode { enabled } => {
+                let _ = local.put(&root, AIRPLANE_KEY, *enabled);
+            }
+            Op::SetHotspot { enabled } => {
+                let _ = local.put(&root, HOTSPOT_KEY, *enabled);
+            }
+            Op::SetMobileBroadband { enabled } => {
+                let _ = local.put(&root, MOBILE_KEY, *enabled);
+            }
+            Op::RunDiagnostics => {
+                let _ = local.put(&root, DIAGNOSTICS_KEY, true);
+            }
+        }
+        self.sync_wifi_and_wired_toggles(local, &root);
+        self.sync_radio_toggles(local, &root);
+        self.sync_refresh(local, &root);
+        self.sync_diagnostics(local, &root);
     }
 
     #[allow(
@@ -538,6 +601,20 @@ impl NetworkPane {
             Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
             Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
         });
+    }
+
+    fn operation_is_running(&self, operation: &crate::actions::NetworkOperation) -> bool {
+        if !self.require_operation_token {
+            return true;
+        }
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::NETWORK_OPERATION_TYPE,
+            operation,
+        );
+        matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: running } if running == token
+        )
     }
 
     fn vpn_key(name: &str) -> String {
@@ -1668,10 +1745,15 @@ impl NetworkPane {
             && *b != self.last_wifi_enabled
         {
             let enabled = *b;
+            let operation = crate::actions::NetworkOperation::SetWifiEnabled { enabled };
+            if !self.operation_is_running(&operation) {
+                let _ = state.put(root, WIFI_ENABLED_KEY, self.last_wifi_enabled);
+                return;
+            }
             self.last_wifi_enabled = enabled;
             match self.dispatcher.set_wifi(enabled) {
                 Ok(()) => self.finish_local_operation(
-                    crate::actions::NetworkOperation::SetWifiEnabled { enabled },
+                    operation,
                     Ok(if enabled {
                         "Wi-Fi enabled.".into()
                     } else {
@@ -1682,7 +1764,7 @@ impl NetworkPane {
                     self.last_wifi_enabled = !enabled;
                     let _ = state.put(root, WIFI_ENABLED_KEY, !enabled);
                     self.finish_local_operation(
-                        crate::actions::NetworkOperation::SetWifiEnabled { enabled },
+                        operation,
                         Err(format!("Could not change Wi-Fi power: {e}")),
                     );
                     warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
@@ -1698,11 +1780,16 @@ impl NetworkPane {
             && self.wired.device.is_some()
         {
             let enabled = *enabled;
+            let operation = crate::actions::NetworkOperation::SetWiredEnabled { enabled };
+            if !self.operation_is_running(&operation) {
+                let _ = state.put(root, WIRED_ENABLED_KEY, self.wired.connected);
+                return;
+            }
             match self.dispatcher.set_wired(enabled) {
                 Ok(()) => {
                     self.wired.connected = enabled;
                     self.finish_local_operation(
-                        crate::actions::NetworkOperation::SetWiredEnabled { enabled },
+                        operation,
                         Ok(if enabled {
                             "Wired networking enabled.".into()
                         } else {
@@ -1718,7 +1805,7 @@ impl NetworkPane {
                         automerge::ScalarValue::Boolean(self.wired.connected),
                     );
                     self.finish_local_operation(
-                        crate::actions::NetworkOperation::SetWiredEnabled { enabled },
+                        operation,
                         Err(format!("Could not change wired networking: {e}")),
                     );
                 }
@@ -2420,33 +2507,50 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for NetworkPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.sync_ca_picker_result(state, root);
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        self.sync_ca_picker_result(&mut state, &root);
         self.sync_connection_jobs();
-        self.seed_if_needed(state, root);
-        self.sync_wifi_and_wired_toggles(state, root);
-        self.sync_radio_toggles(state, root);
-        self.sync_vpn_toggles(state, root);
-        self.sync_profile_autoconnect_and_forget(state, root);
-        self.sync_hotspot_apply(state, root);
-        self.sync_hotspot_qr(state, root);
-        self.sync_profile_selectors(state, root);
-        self.sync_ipv4_apply(state, root);
-        self.sync_mobile_create(state, root);
-        self.sync_advanced_toggle(state, root);
-        self.sync_enterprise_editor(state, root);
-        self.sync_diagnostics(state, root);
-        self.sync_profile_policy(state, root);
-        self.sync_mobile_unlock(state, root);
-        self.sync_enterprise_connect(state, root);
-        self.sync_enterprise_ca_choose(state, root);
-        self.sync_captive_portal(state, root);
-        self.sync_vpn_studio_handoff(state, root);
-        self.sync_refresh(state, root);
-        self.sync_network_connect_actions(state, root);
+        self.seed_if_needed(&mut state, &root);
+        if let Some(crate::actions::LocalPaneCommand::Network(operation)) = self.command_state.get()
+        {
+            self.command_state.set(None);
+            self.execute_local_command(&mut state, operation);
+        }
+        self.sync_wifi_and_wired_toggles(&mut state, &root);
+        self.sync_radio_toggles(&mut state, &root);
+        self.sync_vpn_toggles(&mut state, &root);
+        self.sync_profile_autoconnect_and_forget(&mut state, &root);
+        self.sync_hotspot_apply(&mut state, &root);
+        self.sync_hotspot_qr(&mut state, &root);
+        self.sync_profile_selectors(&mut state, &root);
+        self.sync_ipv4_apply(&mut state, &root);
+        self.sync_mobile_create(&mut state, &root);
+        self.sync_advanced_toggle(&mut state, &root);
+        self.sync_enterprise_editor(&mut state, &root);
+        self.sync_diagnostics(&mut state, &root);
+        self.sync_profile_policy(&mut state, &root);
+        self.sync_mobile_unlock(&mut state, &root);
+        self.sync_enterprise_connect(&mut state, &root);
+        self.sync_enterprise_ca_choose(&mut state, &root);
+        self.sync_captive_portal(&mut state, &root);
+        self.sync_vpn_studio_handoff(&mut state, &root);
+        self.sync_refresh(&mut state, &root);
+        self.sync_network_connect_actions(&mut state, &root);
 
         if let Some(c) = &mut self.composed {
-            c.sync(state, root);
+            c.sync(&mut state, &root);
+        }
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 
@@ -2686,6 +2790,29 @@ mod tests {
         );
         pane.sync(&mut doc, &root);
         assert_eq!(rec.calls(), vec!["set_wifi(false)"]);
+    }
+
+    #[test]
+    fn replicated_radio_toggle_is_inert_without_its_local_token() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+        let commands = ui::LocalState::new(None);
+        let mut pane = NetworkPane::with_dispatcher(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        )
+        .with_command_state(&commands)
+        .with_operation_status(&status);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let initial_heads = doc.get_heads();
+        pane.sync(&mut doc, &root);
+        assert_eq!(doc.get_heads(), initial_heads);
+        let _ = doc.put(&root, WIFI_ENABLED_KEY, false);
+        pane.sync(&mut doc, &root);
+        assert!(rec.calls().is_empty());
+        assert!(pane.last_wifi_enabled);
     }
 
     #[test]

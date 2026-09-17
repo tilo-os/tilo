@@ -170,6 +170,10 @@ pub struct PowerPane {
     charge_cap: Option<ChargeCapCapability>,
     charge_notice: Option<String>,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
+    require_operation_token: bool,
     available_profiles: Vec<PowerProfile>,
     profile_notice: Option<String>,
     profile: PowerProfile,
@@ -190,11 +194,21 @@ impl Default for PowerPane {
 
 impl PowerPane {
     #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
+        self
+    }
+    #[must_use]
     pub fn with_operation_status(
         mut self,
         status: &ui::LocalState<crate::actions::LocalOperationStatus>,
     ) -> Self {
         self.operation_status = status.clone();
+        self.require_operation_token = true;
         self
     }
 
@@ -217,6 +231,133 @@ impl PowerPane {
             Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
             Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
         });
+    }
+
+    fn operation_is_running(&self, operation: &crate::actions::PowerOperation) -> bool {
+        if !self.require_operation_token {
+            return true;
+        }
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::POWER_OPERATION_TYPE,
+            operation,
+        );
+        matches!(self.operation_status.get(), crate::actions::LocalOperationStatus::Running { token: active } if active == token)
+    }
+
+    fn restore_authoritative_controls(&self, state: &mut AutoCommit, root: &ObjId) {
+        fn restore_text(state: &mut AutoCommit, root: &ObjId, key: &str, value: &str) {
+            if read_str(state, root, key).as_deref() != Some(value) {
+                let _ = state.put(root, key, value);
+            }
+        }
+        fn restore_bool(state: &mut AutoCommit, root: &ObjId, key: &str, value: bool) {
+            if read_bool(state, root, key) != Some(value) {
+                let _ = state.put(root, key, value);
+            }
+        }
+        restore_text(state, root, PROFILE_KEY, profile_label(self.last_profile));
+        restore_bool(state, root, AUTO_SUSPEND_KEY, self.last_prefs.auto_suspend);
+        restore_text(
+            state,
+            root,
+            BLANK_KEY,
+            blank_label(self.last_prefs.blank_minutes),
+        );
+        restore_text(
+            state,
+            root,
+            SUSPEND_KEY,
+            suspend_label(self.last_prefs.suspend_minutes),
+        );
+        restore_text(
+            state,
+            root,
+            SAVER_SUSPEND_KEY,
+            suspend_label(self.last_prefs.saver_suspend_minutes),
+        );
+        restore_text(
+            state,
+            root,
+            BALANCED_SUSPEND_KEY,
+            suspend_label(self.last_prefs.balanced_suspend_minutes),
+        );
+        restore_text(
+            state,
+            root,
+            PERFORMANCE_SUSPEND_KEY,
+            suspend_label(self.last_prefs.performance_suspend_minutes),
+        );
+        restore_text(
+            state,
+            root,
+            LID_KEY,
+            self.last_prefs.lid_close_action.display(),
+        );
+        restore_text(
+            state,
+            root,
+            POWER_KEY_KEY,
+            self.last_prefs.power_key_action.display(),
+        );
+        restore_text(
+            state,
+            root,
+            CRITICAL_KEY,
+            self.last_prefs.critical_action.display(),
+        );
+        if let Some(capability) = &self.charge_cap {
+            restore_text(
+                state,
+                root,
+                CHARGE_LIMIT_KEY,
+                &format!("{}%", capability.current),
+            );
+        }
+    }
+
+    fn execute_local_command(
+        &mut self,
+        local: &mut AutoCommit,
+        operation: crate::actions::PowerOperation,
+    ) {
+        let root = automerge::ROOT;
+        use crate::actions::PowerOperation as Op;
+        match &operation {
+            Op::SetChargeLimit { percent } => {
+                let _ = local.put(&root, CHARGE_LIMIT_KEY, format!("{percent}%"));
+            }
+            Op::SetProfile { profile } => {
+                let _ = local.put(&root, PROFILE_KEY, profile.as_str());
+            }
+            Op::SetAutoSuspend { enabled } => {
+                let _ = local.put(&root, AUTO_SUSPEND_KEY, *enabled);
+            }
+            Op::SetBlankTimeout { label } => {
+                let _ = local.put(&root, BLANK_KEY, label.as_str());
+            }
+            Op::SetSuspendTimeout { profile, label } => {
+                let key = match profile.as_str() {
+                    "default" => SUSPEND_KEY,
+                    "saver" => SAVER_SUSPEND_KEY,
+                    "balanced" => BALANCED_SUSPEND_KEY,
+                    _ => PERFORMANCE_SUSPEND_KEY,
+                };
+                let _ = local.put(&root, key, label.as_str());
+            }
+            Op::SetLidAction { action } => {
+                let _ = local.put(&root, LID_KEY, action.as_str());
+            }
+            Op::SetPowerKeyAction { action } => {
+                let _ = local.put(&root, POWER_KEY_KEY, action.as_str());
+            }
+            Op::SetCriticalAction { action } => {
+                let _ = local.put(&root, CRITICAL_KEY, action.as_str());
+            }
+        }
+        self.handle_profile_change(local, &root);
+        self.handle_charge_limit(local, &root);
+        self.handle_idle_prefs(local, &root);
+        self.handle_action_prefs(local, &root);
     }
 
     pub fn new() -> Self {
@@ -260,6 +401,10 @@ impl PowerPane {
             charge_cap: os_actions::charge_capability(),
             charge_notice: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             available_profiles,
             profile_notice,
             profile,
@@ -295,6 +440,10 @@ impl PowerPane {
             charge_cap,
             charge_notice: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             available_profiles: PROFILES.iter().map(|(_, profile)| *profile).collect(),
             profile_notice: None,
             profile,
@@ -670,10 +819,14 @@ impl PowerPane {
         if p == self.last_profile {
             return;
         }
+        let operation = crate::actions::PowerOperation::SetProfile {
+            profile: label.clone(),
+        };
+        if !self.operation_is_running(&operation) {
+            let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
+            return;
+        }
         if self.available_profiles.contains(&p) {
-            let operation = crate::actions::PowerOperation::SetProfile {
-                profile: label.clone(),
-            };
             match self.dispatcher.set_power_profile(p) {
                 Ok(()) => {
                     self.last_profile = p;
@@ -721,20 +874,24 @@ impl PowerPane {
         {
             return;
         }
+        let operation = crate::actions::PowerOperation::SetChargeLimit { percent: limit };
+        if !self.operation_is_running(&operation) {
+            return;
+        }
         match os_actions::set_charge_limit_checked(limit) {
             Ok(actual) => {
                 self.battery.charge_limit = Some(limit);
                 self.charge_cap = Some(actual);
                 self.charge_notice = Some(format!("Hardware confirmed a {limit}% charge cap."));
                 self.operation_finished(
-                    &crate::actions::PowerOperation::SetChargeLimit { percent: limit },
+                    &operation,
                     Ok(format!("hardware confirmed a {limit}% charge cap")),
                 );
             }
             Err(e) => {
                 self.charge_notice = Some(format!("Charge cap was not applied: {e}"));
                 self.operation_finished(
-                    &crate::actions::PowerOperation::SetChargeLimit { percent: limit },
+                    &operation,
                     Err(format!("Charge cap was not applied: {e}")),
                 );
                 warn!(target: "tilo::settings", op = "set_charge_limit", error = %e, "battery cap failed");
@@ -747,6 +904,9 @@ impl PowerPane {
     fn handle_idle_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(b) = read_bool(state, root, AUTO_SUSPEND_KEY)
             && b != self.last_prefs.auto_suspend
+            && self.operation_is_running(&crate::actions::PowerOperation::SetAutoSuspend {
+                enabled: b,
+            })
         {
             self.last_prefs.auto_suspend = b;
             self.prefs.auto_suspend = b;
@@ -762,6 +922,9 @@ impl PowerPane {
         if let Some(label) = read_str(state, root, BLANK_KEY)
             && let Some(m) = blank_from_label(&label)
             && m != self.last_prefs.blank_minutes
+            && self.operation_is_running(&crate::actions::PowerOperation::SetBlankTimeout {
+                label: label.clone(),
+            })
         {
             self.last_prefs.blank_minutes = m;
             self.prefs.blank_minutes = m;
@@ -786,6 +949,10 @@ impl PowerPane {
         if let Some(label) = read_str(state, root, SUSPEND_KEY)
             && let Some(m) = suspend_from_label(&label)
             && m != self.last_prefs.suspend_minutes
+            && self.operation_is_running(&crate::actions::PowerOperation::SetSuspendTimeout {
+                profile: "default".into(),
+                label: label.clone(),
+            })
         {
             self.last_prefs.suspend_minutes = m;
             self.prefs.suspend_minutes = m;
@@ -819,6 +986,18 @@ impl PowerPane {
                 && let Some(minutes) = suspend_from_label(&label)
                 && minutes != current
             {
+                let profile = match set {
+                    0 => "saver",
+                    1 => "balanced",
+                    _ => "performance",
+                };
+                let operation = crate::actions::PowerOperation::SetSuspendTimeout {
+                    profile: profile.into(),
+                    label: label.clone(),
+                };
+                if !self.operation_is_running(&operation) {
+                    continue;
+                }
                 match set {
                     0 => {
                         self.last_prefs.saver_suspend_minutes = minutes;
@@ -833,21 +1012,10 @@ impl PowerPane {
                         self.prefs.performance_suspend_minutes = minutes;
                     }
                 }
-                let profile = match set {
-                    0 => "saver",
-                    1 => "balanced",
-                    _ => "performance",
-                };
                 let result = self
                     .persist()
                     .map(|()| format!("{profile} suspend timeout saved."));
-                self.operation_finished(
-                    &crate::actions::PowerOperation::SetSuspendTimeout {
-                        profile: profile.into(),
-                        label,
-                    },
-                    result,
-                );
+                self.operation_finished(&operation, result);
             }
         }
     }
@@ -858,6 +1026,9 @@ impl PowerPane {
         if let Some(label) = read_str(state, root, LID_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.lid_close_action
+            && self.operation_is_running(&crate::actions::PowerOperation::SetLidAction {
+                action: label.clone(),
+            })
         {
             self.last_prefs.lid_close_action = a;
             self.prefs.lid_close_action = a;
@@ -871,6 +1042,9 @@ impl PowerPane {
         if let Some(label) = read_str(state, root, POWER_KEY_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.power_key_action
+            && self.operation_is_running(&crate::actions::PowerOperation::SetPowerKeyAction {
+                action: label.clone(),
+            })
         {
             self.last_prefs.power_key_action = a;
             self.prefs.power_key_action = a;
@@ -884,6 +1058,9 @@ impl PowerPane {
         if let Some(label) = read_str(state, root, CRITICAL_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.critical_action
+            && self.operation_is_running(&crate::actions::PowerOperation::SetCriticalAction {
+                action: label.clone(),
+            })
         {
             self.last_prefs.critical_action = a;
             self.prefs.critical_action = a;
@@ -903,15 +1080,40 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for PowerPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.seed(state, root);
-        self.handle_profile_change(state, root);
-        self.handle_charge_limit(state, root);
-        self.handle_idle_prefs(state, root);
-        self.handle_action_prefs(state, root);
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        self.seed(&mut state, &root);
+        if let Some(crate::actions::LocalPaneCommand::Power(operation)) = self.command_state.get() {
+            self.command_state.set(None);
+            self.execute_local_command(&mut state, operation);
+        }
+        if self.require_operation_token
+            && !matches!(
+                self.operation_status.get(),
+                crate::actions::LocalOperationStatus::Running { .. }
+            )
+        {
+            self.restore_authoritative_controls(&mut state, &root);
+        } else {
+            self.handle_profile_change(&mut state, &root);
+            self.handle_charge_limit(&state, &root);
+            self.handle_idle_prefs(&state, &root);
+            self.handle_action_prefs(&state, &root);
+        }
 
         if let Some(c) = &mut self.composed {
-            c.sync(state, root);
+            c.sync(&mut state, &root);
+        }
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 
@@ -1187,8 +1389,50 @@ mod tests {
         );
     }
 
-    /// The idle preferences are durable: toggling auto-suspend and choosing
-    /// blank/lock timeouts are adopted into the pane's tracked prefs.
+    #[test]
+    fn replicated_power_latches_never_reach_device_or_persistence() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("power-replay-safety");
+        let rec = Arc::new(RecordingDispatcher::default());
+        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Running {
+            token: crate::actions::local_operation_token_for(
+                crate::actions::POWER_OPERATION_TYPE,
+                &crate::actions::PowerOperation::SetBlankTimeout {
+                    label: "30 minutes".into(),
+                },
+            ),
+        });
+        let commands = ui::LocalState::new(None);
+        let defaults = PowerPrefs::default();
+        let mut pane = PowerPane::with_parts(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            sample_battery(),
+            PowerProfile::Balanced,
+            defaults,
+        )
+        .with_command_state(&commands)
+        .with_operation_status(&status);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let initial_heads = doc.get_heads();
+        pane.sync(&mut doc, &root);
+        assert_eq!(doc.get_heads(), initial_heads);
+
+        // Only the exact blank-timeout command is admitted. Concurrent remote
+        // mutations of every other hardware latch remain inert.
+        let _ = doc.put(&root, PROFILE_KEY, "Performance");
+        let _ = doc.put(&root, AUTO_SUSPEND_KEY, false);
+        let _ = doc.put(&root, LID_KEY, PowerActionPref::Ignore.display());
+        pane.sync(&mut doc, &root);
+
+        assert!(rec.calls().is_empty());
+        assert_eq!(pane.profile(), PowerProfile::Balanced);
+        assert_eq!(pane.prefs().auto_suspend, defaults.auto_suspend);
+        assert_eq!(pane.prefs().lid_close_action, defaults.lid_close_action);
+    }
+
+    /// The idle preferences are durable: toggling auto-suspend and choosing a
+    /// blank timeout are adopted into the pane's tracked prefs (persisted via
+    /// the shared store, asserted against disk in the persistence test).
     #[test]
     fn idle_prefs_are_adopted_on_change() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("power_idle");
