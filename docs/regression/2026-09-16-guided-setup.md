@@ -434,3 +434,49 @@ warnings, and qOS logged one initial buffer-fence timeout before the observed
 successful render. Neither is hidden as a pristine-run claim. Final first-login
 migration, packaged import delivery and broader distro/architecture evidence
 still require the remaining Desktop tasks.
+
+## Reviewed first-login continuation and import delivery
+
+Commits `ee24c0f82` and `3861200a7` add bounded private continuation storage,
+installed import delivery, and a read-only session readiness check authenticated
+against the installed trusted shell. Pending first-login imports wait for
+trusted identity completion and explicit Copy. Ordinary standalone Add folders
+remains available. Copy, per-folder Later choices and real destination review
+reuse the existing durable migration worker and journal.
+
+Independent review identified two defects and approved their fixes: in-place
+source changes after final review now invalidate a saved metadata revision,
+and unpublished jobs retain explicit re-review/retarget controls after a
+collision or destination substitution. The revision is enforced at fresh
+journal creation, ordinary resume, actual copy-entry staging and final scan.
+This is change detection, not a frozen content snapshot. Scans run off the UI
+thread and are limited to 100,000 entries, depth 128 and relative path length
+4096; exceeding those bounds asks for a smaller selection. Previously copied
+valid output is retained when later work fails.
+
+Destination recovery preserves the stable operation ID. An existing journal
+prevents retargeting; eligible unpublished work requires genuine absence checks.
+Both durable-write crash orderings fail closed and remain explicitly repairable.
+Regression tests cover same-size edits with restored modification time, edits
+during copying, ordinary resume, replaced destination parents, same-basename
+folders, asynchronous review and refused-start state preservation.
+
+The amended native Fedora ARM64 setup suite passed 211 tests with five explicit
+fixture ignores; the local suite passed 211 with one ignore. Post-extraction
+focused semantic and late-edit/resume checks also passed. Strict library Clippy
+reported zero findings in the changed files, while 18 native and 13 local
+baseline findings remain outside this fix. The narrow Windows backend compile
+check includes the new inventory module and passes with ten unused-caller
+warnings from omitted UI callers; it proves neither Windows runtime behavior
+nor durable Windows copying. Four refreshed compact/normal screenshots were
+visually checked, including the retained destination controls and disabled Copy
+while waiting or choosing Later.
+
+The host package definition now includes the import binary and desktop entry.
+Native payload fixtures passed except for two explicit private D-Bus fixture
+skips caused by missing dbus-daemon tools. The final four-binary package's actual
+GDM, identity, import and return-to-GNOME lifecycle is still unproved. The earlier
+three-binary RPM's runtime evidence does not apply to it. Login-hint recovery
+for all-Later choices or interrupted completion acknowledgement remains a
+tracked minor finding for final component review. Production catalogs remain
+empty pending genuine authenticated releases and their required runtime proof.
