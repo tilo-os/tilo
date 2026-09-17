@@ -48,10 +48,31 @@ impl CameraSearchProvider {
     /// Atomically replace the finite action directory and its compact exact
     /// materialization context. A rejected catalog never publishes new state.
     pub fn sync(&self, context: &CameraResourceCtx) -> Result<(), SearchCatalogError> {
-        let mut context = context.clone();
-        context
-            .camera_devices
-            .truncate(MAX_PUBLISHED_CAMERA_DEVICES);
+        // Construct the retained seed directly from the bounded prefix. Do
+        // not clone then truncate: a hostile 100k-device input must not create
+        // a second 100k-element corpus, even transiently.
+        let context = CameraResourceCtx {
+            recent: context.recent.clone(),
+            mode: context.mode,
+            facing: context.facing,
+            recording: context.recording,
+            feed_available: context.feed_available,
+            camera_permission_denied: context.camera_permission_denied,
+            camera_devices: context
+                .camera_devices
+                .iter()
+                .take(MAX_PUBLISHED_CAMERA_DEVICES)
+                .cloned()
+                .collect(),
+            selected_camera: context.selected_camera.clone(),
+            settings: context.settings,
+            scan_import_pending: context.scan_import_pending,
+            document_scanner_available: context.document_scanner_available,
+            document_pages: context.document_pages,
+            document_selected: context.document_selected,
+            document_busy: context.document_busy,
+            document_has_text: context.document_has_text,
+        };
         let unchanged = {
             let state = self
                 .state
