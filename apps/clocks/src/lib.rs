@@ -459,6 +459,13 @@ impl ClockState {
 /// times advance minute-by-minute; ambiguous autumn times select the first.
 #[must_use]
 pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTime<Local>> {
+    next_alarm_in_timezone(alarm, after)
+}
+
+fn next_alarm_in_timezone<Tz: TimeZone>(
+    alarm: &Alarm,
+    after: DateTime<Tz>,
+) -> Option<DateTime<Tz>> {
     if !alarm.enabled {
         return None;
     }
@@ -466,15 +473,20 @@ pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTim
         let date = after
             .date_naive()
             .checked_add_signed(chrono::Duration::days(day))?;
-        if !alarm.weekdays.is_empty() && !alarm.weekdays.contains(&date.weekday().into()) {
+        if alarm.last_fired_local_date == Some(date)
+            || (!alarm.weekdays.is_empty() && !alarm.weekdays.contains(&date.weekday().into()))
+        {
             continue;
         }
         let mut naive = date.and_time(alarm.local_time);
         for _ in 0..180 {
-            if let Some(candidate) = Local.from_local_datetime(&naive).earliest() {
+            if let Some(candidate) = after.timezone().from_local_datetime(&naive).earliest() {
                 if candidate > after {
                     return Some(candidate);
                 }
+                // A valid occurrence that has passed belongs to another day.
+                // Only nonexistent spring-forward times advance by a minute.
+                break;
             }
             naive = naive.checked_add_signed(chrono::Duration::minutes(1))?;
         }
@@ -485,6 +497,87 @@ pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTim
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn next_alarm_keeps_the_requested_time_after_todays_occurrence() {
+        let after = Local.with_ymd_and_hms(2026, 1, 15, 12, 1, 0).unwrap();
+        let alarm = Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+        };
+        assert_eq!(
+            next_alarm_local(&alarm, after),
+            Some(Local.with_ymd_and_hms(2026, 1, 16, 12, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn next_alarm_does_not_repeat_a_delivered_date_after_clock_rollback() {
+        let after = Local.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let alarm = Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::from([WeekdayKey::Thu]),
+            enabled: true,
+            last_fired_local_date: Some(after.date_naive()),
+        };
+        assert_eq!(
+            next_alarm_local(&alarm, after),
+            Some(Local.with_ymd_and_hms(2026, 1, 22, 12, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn next_alarm_resolves_dst_gaps_and_never_repeats_the_autumn_hour() {
+        let zone = chrono_tz::Europe::Berlin;
+        let alarm = Alarm {
+            id: Uuid::new_v4(),
+            label: "Wake".into(),
+            local_time: NaiveTime::from_hms_opt(2, 30, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+        };
+        let spring = zone.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap();
+        assert_eq!(
+            next_alarm_in_timezone(&alarm, spring),
+            Some(zone.with_ymd_and_hms(2026, 3, 29, 3, 0, 0).unwrap())
+        );
+        let autumn = zone.with_ymd_and_hms(2026, 10, 25, 1, 0, 0).unwrap();
+        let first = next_alarm_in_timezone(&alarm, autumn).unwrap();
+        assert_eq!(
+            first.with_timezone(&Utc),
+            Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap()
+        );
+        assert_eq!(
+            next_alarm_in_timezone(&alarm, first),
+            Some(zone.with_ymd_and_hms(2026, 10, 26, 2, 30, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn next_alarm_honors_disabled_and_weekday_settings() {
+        let after = Utc.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let mut alarm = Alarm {
+            id: Uuid::new_v4(),
+            label: "Weekend".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::from([WeekdayKey::Sat]),
+            enabled: false,
+            last_fired_local_date: None,
+        };
+        assert_eq!(next_alarm_in_timezone(&alarm, after), None);
+        alarm.enabled = true;
+        assert_eq!(
+            next_alarm_in_timezone(&alarm, after),
+            Some(Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap())
+        );
+    }
 
     #[test]
     fn native_timer_handoff_survives_restart_and_matches_only_its_deadline() {
