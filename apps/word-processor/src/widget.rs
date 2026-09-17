@@ -1515,22 +1515,23 @@ fn spell_spans(dict: &spellcheck::Dictionary, language: &str, text: &str) -> Vec
 /// `RichTextLayout` is reused verbatim. Inputs mirror `shape`'s arguments exactly,
 /// including **wrap width** (so a resize re-shapes); block-level ink is excluded
 /// since it applies at draw time (`Laid::ink`), not baked into the shaped buffer.
-#[allow(clippy::too_many_arguments)] // mirrors `RichTextLayout::shape`'s own argument list
-fn shape_key(
-    spans: &[RichSpan],
-    underlines: &[(usize, usize)],
-    strikes: &[(usize, usize)],
+struct ShapeKeyInput<'a> {
+    spans: &'a [RichSpan],
+    underlines: &'a [(usize, usize)],
+    strikes: &'a [(usize, usize)],
     base_bold: bool,
     size: f32,
     wrap_w: f32,
     align: TextAlign,
     family: FontFamily,
     line_height_mult: f32,
-) -> u64 {
+}
+
+fn shape_key(input: ShapeKeyInput<'_>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    spans.len().hash(&mut h);
-    for s in spans {
+    input.spans.len().hash(&mut h);
+    for s in input.spans {
         s.text.hash(&mut h);
         s.bold.hash(&mut h);
         s.italic.hash(&mut h);
@@ -1542,14 +1543,14 @@ fn shape_key(
         s.background.hash(&mut h);
         (s.baseline as u8).hash(&mut h);
     }
-    underlines.hash(&mut h);
-    strikes.hash(&mut h);
-    base_bold.hash(&mut h);
-    size.to_bits().hash(&mut h);
-    wrap_w.to_bits().hash(&mut h);
-    (align as u8).hash(&mut h);
-    (family as u8).hash(&mut h);
-    line_height_mult.to_bits().hash(&mut h);
+    input.underlines.hash(&mut h);
+    input.strikes.hash(&mut h);
+    input.base_bold.hash(&mut h);
+    input.size.to_bits().hash(&mut h);
+    input.wrap_w.to_bits().hash(&mut h);
+    (input.align as u8).hash(&mut h);
+    (input.family as u8).hash(&mut h);
+    input.line_height_mult.to_bits().hash(&mut h);
     h.finish()
 }
 
@@ -6440,17 +6441,17 @@ impl WordProcessorWidget {
                         block_runs_markup(cell, self.review.is_visible());
                     let wrap_w = num::f32_of_f64((col_w - 2.0 * cell_pad).max(24.0));
                     let align = block_align(cell, TextAlign::Left);
-                    let key = shape_key(
-                        &runs,
-                        &underlines,
-                        &strikes,
-                        false,
-                        16.0,
+                    let key = shape_key(ShapeKeyInput {
+                        spans: &runs,
+                        underlines: &underlines,
+                        strikes: &strikes,
+                        base_bold: false,
+                        size: 16.0,
                         wrap_w,
                         align,
-                        FontFamily::Sans,
-                        1.0,
-                    );
+                        family: FontFamily::Sans,
+                        line_height_mult: 1.0,
+                    });
                     let layout = match old_cache.remove(&cell.id) {
                         Some((k, lay)) if k == key => {
                             self.dbg_layout_hits += 1;
@@ -6763,17 +6764,17 @@ impl WordProcessorWidget {
         // The paragraph's line-spacing multiplier (1.0 = single) scales the
         // shaped line advance, so it is part of the shape key.
         let line_mult = block_line_spacing(b);
-        let key = shape_key(
-            &runs,
-            &underlines,
-            &strikes,
+        let key = shape_key(ShapeKeyInput {
+            spans: &runs,
+            underlines: &underlines,
+            strikes: &strikes,
             base_bold,
             size,
             wrap_w,
             align,
             family,
-            line_mult,
-        );
+            line_height_mult: line_mult,
+        });
         // Reuse the shaped layout if nothing affecting shaping changed
         // (text, marks, resolved style, wrap width, or line spacing), else
         // re-shape.
