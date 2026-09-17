@@ -9,6 +9,10 @@ pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "qos-browser-owned-private-root-v1
 pub const PRIVATE_ROOT_LOCK: &str = ".qos-private-root.lock";
 const PRIVATE_ROOT_OWNER: &str = ".qos-private-owner-pid";
 const PRIVATE_ROOT_HELPER: &str = ".qos-private-helper-pid";
+/// Configure the optional browser data root once for this process.
+///
+/// # Errors
+/// Returns an error for a relative root or a conflicting previous configuration.
 pub fn configure(root: Option<&str>) -> Result<(), String> {
     let root = root
         .map(PathBuf::from)
@@ -49,6 +53,10 @@ pub fn cache_dir() -> Option<PathBuf> {
         .or_else(|| dirs::cache_dir().map(|p| p.join("qos-browser")))
 }
 
+/// Create and mark an isolated private-storage directory.
+///
+/// # Errors
+/// Returns an error if a unique directory cannot be created or initialized securely.
 pub fn allocate_private_root() -> Result<PathBuf, String> {
     sweep_orphaned_private_roots();
     for _ in 0..16 {
@@ -81,7 +89,7 @@ pub fn allocate_private_root() -> Result<PathBuf, String> {
                 }
                 return root.canonicalize().map_err(|error| error.to_string());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(format!("Cannot allocate private browser root: {error}")),
         }
     }
@@ -120,9 +128,7 @@ fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Opening without `create` ensures a writer arriving after cleanup cannot
 /// recreate any part of the path.
 #[cfg(unix)]
-pub(crate) fn private_root_write_guard(
-    directory: &Path,
-) -> Result<Option<std::fs::File>, String> {
+pub(crate) fn private_root_write_guard(directory: &Path) -> Result<Option<std::fs::File>, String> {
     use std::os::fd::AsRawFd;
     let Some(root) = ROOT.get() else {
         return Ok(None);
@@ -149,9 +155,7 @@ pub(crate) fn private_root_write_guard(
 }
 
 #[cfg(not(unix))]
-pub(crate) fn private_root_write_guard(
-    _directory: &Path,
-) -> Result<Option<std::fs::File>, String> {
+pub(crate) fn private_root_write_guard(_directory: &Path) -> Result<Option<std::fs::File>, String> {
     Ok(None)
 }
 
@@ -165,7 +169,23 @@ fn process_is_alive(pid: i32) -> bool {
 
 #[cfg(unix)]
 fn sweep_orphaned_private_roots() {
-    sweep_orphaned_private_roots_in(&std::env::temp_dir());
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    // Directory enumeration can be large. Keep it off the UI thread and admit
+    // only one cleanup worker per process; explicit window cleanup is unchanged.
+    if std::thread::Builder::new()
+        .name("browser-private-orphans".into())
+        .spawn(|| {
+            sweep_orphaned_private_roots_in(&std::env::temp_dir());
+            RUNNING.store(false, Ordering::Release);
+        })
+        .is_err()
+    {
+        RUNNING.store(false, Ordering::Release);
+    }
 }
 
 #[cfg(unix)]
@@ -173,8 +193,21 @@ fn sweep_orphaned_private_roots_in(parent: &Path) {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
     };
-    for entry in entries.flatten().take(256) {
-        let root = entry.path();
+    sweep_orphaned_private_entries(entries.flatten().map(|entry| entry.path()));
+}
+
+#[cfg(unix)]
+fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
+    let mut attempted_removals = 0;
+    for root in entries {
+        // Unrelated entries must not consume the bounded deletion budget.
+        if !root
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|name| name.starts_with(PRIVATE_ROOT_PREFIX))
+        {
+            continue;
+        }
         if !is_owned_private_root(&root) {
             continue;
         }
@@ -191,7 +224,6 @@ fn sweep_orphaned_private_roots_in(parent: &Path) {
         let helper = root.join(PRIVATE_ROOT_HELPER);
         let helper_is_live_or_untrusted = match std::fs::symlink_metadata(&helper) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => true,
             Ok(metadata)
                 if metadata.is_file()
                     && !metadata.file_type().is_symlink()
@@ -202,10 +234,14 @@ fn sweep_orphaned_private_roots_in(parent: &Path) {
                     .and_then(|value| value.parse::<i32>().ok())
                     .is_none_or(|pid| pid <= 1 || process_is_alive(pid))
             }
-            Ok(_) => true,
+            Err(_) | Ok(_) => true,
         };
         if owner_is_dead && !helper_is_live_or_untrusted {
             let _ = std::fs::remove_dir_all(root);
+            attempted_removals += 1;
+            if attempted_removals == 256 {
+                break;
+            }
         }
     }
 }
@@ -216,6 +252,18 @@ fn sweep_orphaned_private_roots() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn root(parent: &Path, owner_pid: u32, helper_pid: Option<u32>) -> PathBuf {
+        let root = parent.join(format!("{PRIVATE_ROOT_PREFIX}{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join(PRIVATE_ROOT_MARKER), PRIVATE_ROOT_MARKER_CONTENT).unwrap();
+        std::fs::write(root.join(PRIVATE_ROOT_OWNER), owner_pid.to_string()).unwrap();
+        if let Some(pid) = helper_pid {
+            std::fs::write(root.join(PRIVATE_ROOT_HELPER), pid.to_string()).unwrap();
+        }
+        root
+    }
 
     #[test]
     fn private_roots_are_unique_owned_and_never_reuse_normal_overrides() {
@@ -235,16 +283,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn allocation_sweeps_only_owned_roots_with_dead_processes() {
-        fn root(parent: &Path, owner_pid: u32, helper_pid: Option<u32>) -> PathBuf {
-            let root = parent.join(format!("{PRIVATE_ROOT_PREFIX}{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&root).unwrap();
-            std::fs::write(root.join(PRIVATE_ROOT_MARKER), PRIVATE_ROOT_MARKER_CONTENT).unwrap();
-            std::fs::write(root.join(PRIVATE_ROOT_OWNER), owner_pid.to_string()).unwrap();
-            if let Some(pid) = helper_pid {
-                std::fs::write(root.join(PRIVATE_ROOT_HELPER), pid.to_string()).unwrap();
-            }
-            root
-        }
         let parent = tempfile::tempdir().unwrap();
         let dead = root(parent.path(), i32::MAX as u32, Some(i32::MAX as u32));
         let live_owner = root(parent.path(), std::process::id(), None);
@@ -255,5 +293,54 @@ mod tests {
         assert!(live_helper.exists());
         std::fs::remove_dir_all(live_owner).unwrap();
         std::fs::remove_dir_all(live_helper).unwrap();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn unrelated_temporary_entries_do_not_starve_private_cleanup() {
+        let parent = tempfile::tempdir().unwrap();
+        let unrelated = (0..300)
+            .map(|index| {
+                let path = parent.path().join(format!("unrelated-{index}"));
+                std::fs::create_dir(&path).unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let orphan = parent.path().join(format!("{PRIVATE_ROOT_PREFIX}orphan"));
+        std::fs::create_dir(&orphan).unwrap();
+        std::fs::write(
+            orphan.join(PRIVATE_ROOT_MARKER),
+            PRIVATE_ROOT_MARKER_CONTENT,
+        )
+        .unwrap();
+        std::fs::write(orphan.join(PRIVATE_ROOT_OWNER), i32::MAX.to_string()).unwrap();
+        sweep_orphaned_private_entries(
+            unrelated
+                .iter()
+                .cloned()
+                .chain(std::iter::once(orphan.clone())),
+        );
+        assert!(
+            !orphan.exists(),
+            "unrelated temporary entries must not consume the cleanup budget"
+        );
+        assert!(unrelated.iter().all(|path| path.is_dir()));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_budget_counts_orphans_and_preserves_live_roots() {
+        let parent = tempfile::tempdir().unwrap();
+        let live = root(parent.path(), std::process::id(), None);
+        let orphans = (0..257)
+            .map(|_| root(parent.path(), i32::MAX as u32, None))
+            .collect::<Vec<_>>();
+        sweep_orphaned_private_entries(
+            std::iter::once(live.clone()).chain(orphans.iter().cloned()),
+        );
+        assert!(live.is_dir());
+        assert!(orphans.iter().take(256).all(|path| !path.exists()));
+        assert!(
+            orphans.last().unwrap().is_dir(),
+            "one pass must attempt at most 256 removals"
+        );
     }
 }

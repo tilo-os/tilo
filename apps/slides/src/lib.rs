@@ -40,6 +40,7 @@ pub mod app;
 pub mod assets;
 pub mod chrome;
 pub mod doc;
+pub mod framework_history;
 mod help_overlay;
 pub mod model;
 pub mod odp;
@@ -68,3 +69,6 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_demo(scenario: Option<&str>) -> Box<dyn Widget> {
     Box::new(SlidesApp::demo(scenario))
 }
+
+#[cfg(test)]
+mod framework_history_tests;

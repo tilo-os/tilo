@@ -306,6 +306,35 @@ pub fn save_catalog(doc: &mut AutoCommit, root: &ObjId, catalog: &[ThemeSpec]) {
         let _ = create_custom_theme(doc, root, s);
     }
 }
+/// Validate the authored catalog without migration, seeding, or OS-store access.
+pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
+    use ui::history_mode::adapter::map_collection;
+    let root = &automerge::ROOT;
+    if let Some(map) = map_collection(doc, KEY_THEMES)? {
+        for id in doc.keys(&map) {
+            let Some((Value::Object(ObjType::Map), row)) = doc.get(&map, &id).map_err(|e|e.to_string())? else { return Err("Invalid theme record".into()); };
+            if read_record(doc, &id, &row).is_none() { return Err("Incomplete or invalid theme record".into()); }
+            for key in doc.keys(&row) {
+                if TokenId::ALL.iter().any(|t|t.key()==key) || ["name","font","radius_norm","spacing_norm","order","dark_base"].contains(&key.as_str()) {} else { return Err(format!("Unknown theme field: {key}")); }
+                if key == "dark_base" && get_bool(doc,&row,&key).is_none() { return Err("Invalid dark_base".into()); }
+                if key == "order" && !get_f64(doc,&row,&key).is_some_and(|v|v.is_finite() && v>=0. && v<=f64::from(u32::MAX)) { return Err("Invalid order".into()); }
+            }
+        }
+    }
+    if let Some(map) = map_collection(doc, KEY_THEME_TOMBSTONES)? {
+        for id in doc.keys(&map) { if !valid_id(&id) || get_bool(doc,&map,&id).is_none() { return Err("Invalid theme tombstone".into()); } }
+    }
+    if let Some((value, obj)) = doc.get(root,KEY_CATALOG).map_err(|e|e.to_string())? {
+        if value != Value::Object(ObjType::Text) { return Err("Legacy catalog must be Text".into()); }
+        let specs: Vec<ThemeSpec> = serde_json::from_str(&doc.text(&obj).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let mut ids = std::collections::HashSet::new();
+        for s in specs {
+            if !valid_id(&s.id) || !valid_name(&s.name) || !valid_font(&s.font) || !s.radius_norm.is_finite() || !s.spacing_norm.is_finite() || !ids.insert(s.id) { return Err("Invalid legacy theme".into()); }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,31 +443,3 @@ mod tests {
     }
 }
 
-/// Validate the authored catalog without migration, seeding, or OS-store access.
-pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
-    use ui::history_mode::adapter::map_collection;
-    let root = &automerge::ROOT;
-    if let Some(map) = map_collection(doc, KEY_THEMES)? {
-        for id in doc.keys(&map) {
-            let Some((Value::Object(ObjType::Map), row)) = doc.get(&map, &id).map_err(|e|e.to_string())? else { return Err("Invalid theme record".into()); };
-            if read_record(doc, &id, &row).is_none() { return Err("Incomplete or invalid theme record".into()); }
-            for key in doc.keys(&row) {
-                if TokenId::ALL.iter().any(|t|t.key()==key) || ["name","font","radius_norm","spacing_norm","order","dark_base"].contains(&key.as_str()) {} else { return Err(format!("Unknown theme field: {key}")); }
-                if key == "dark_base" && get_bool(doc,&row,&key).is_none() { return Err("Invalid dark_base".into()); }
-                if key == "order" && !get_f64(doc,&row,&key).is_some_and(|v|v.is_finite() && v>=0. && v<=f64::from(u32::MAX)) { return Err("Invalid order".into()); }
-            }
-        }
-    }
-    if let Some(map) = map_collection(doc, KEY_THEME_TOMBSTONES)? {
-        for id in doc.keys(&map) { if !valid_id(&id) || get_bool(doc,&map,&id).is_none() { return Err("Invalid theme tombstone".into()); } }
-    }
-    if let Some((value, obj)) = doc.get(root,KEY_CATALOG).map_err(|e|e.to_string())? {
-        if value != Value::Object(ObjType::Text) { return Err("Legacy catalog must be Text".into()); }
-        let specs: Vec<ThemeSpec> = serde_json::from_str(&doc.text(&obj).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-        let mut ids = std::collections::HashSet::new();
-        for s in specs {
-            if !valid_id(&s.id) || !valid_name(&s.name) || !valid_font(&s.font) || !s.radius_norm.is_finite() || !s.spacing_norm.is_finite() || !ids.insert(s.id) { return Err("Invalid legacy theme".into()); }
-        }
-    }
-    Ok(())
-}

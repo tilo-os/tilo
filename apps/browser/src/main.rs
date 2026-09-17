@@ -727,9 +727,9 @@ fn render_live_shot_to_png(
         if let Some(error) = &page.error {
             return Err(format!("{}: {error}", page.uri).into());
         }
-        let frame = engine.frames().lock().unwrap().clone();
+        let frame = engine.frames().lock().map_err(|_| "Capture frame store is unavailable")?.clone();
         if let Some(f) = frame {
-            let painted = f.rgba.chunks_exact(4).any(|px| px[3] != 0);
+            let painted = f.rgba.chunks_exact(4).any(|px| px.last().is_some_and(|alpha| *alpha != 0));
             // Wait for a painted frame at the requested viewport width
             // (edge-to-edge web view, scale 1.0 → frame width ≈ w), so
             // the layout-driven Resize has taken hold rather than the
@@ -759,48 +759,7 @@ fn render_live_shot_to_png(
                         &presence,
                         &permission,
                     );
-                    if let Some(parent) = out.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    let mut renderer = OffscreenRenderer::new(w, h);
-                    renderer.render_png(&scene, vello::peniko::Color::TRANSPARENT, out);
-                    if let Some(request) = pip_request.as_ref() {
-                        let ui::floating_surface::FloatingSource::AppElement {
-                            element_id,
-                            region,
-                            ..
-                        } = &request.source
-                        else {
-                            return Err(
-                                "real browser PiP did not preserve a semantic media element".into(),
-                            );
-                        };
-                        if element_id.trim().is_empty() || region.area() <= 1.0 {
-                            return Err("real browser PiP returned empty semantic geometry".into());
-                        }
-                        let protocol: ui::floating_surface::FloatingSurfaceProtocolRequest =
-                            request.into();
-                        let sidecar =
-                            std::path::PathBuf::from(format!("{}.pip.json", out.display()));
-                        std::fs::write(&sidecar, serde_json::to_vec_pretty(&protocol)?)?;
-                        println!(
-                            "browser: live PiP selected {} at {:.0}×{:.0}; wrote {}",
-                            request.title,
-                            region.width(),
-                            region.height(),
-                            sidecar.display()
-                        );
-                    }
-                    std::fs::write(
-                        format!("{}.page.json", out.display()),
-                        serde_json::to_vec_pretty(&page)?,
-                    )?;
-                    println!(
-                        "browser: wrote live Chromium shot of {} to {}",
-                        page.uri,
-                        out.display()
-                    );
-                    return Ok(());
+                    return write_live_capture(&scene, viewport, out, pip_request.as_ref(), &page);
                 }
             }
         }
@@ -898,6 +857,53 @@ fn render_shot_to_png(
     println!("browser: wrote shot to {}", out.display());
     Ok(())
 }
+
+fn write_live_capture(
+    scene: &Scene,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+    pip_request: Option<&ui::floating_surface::FloatingSurfaceRequest>,
+    page: &live_probe::PageState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(scene, vello::peniko::Color::TRANSPARENT, out);
+    if let Some(request) = pip_request {
+        let ui::floating_surface::FloatingSource::AppElement {
+            element_id, region, ..
+        } = &request.source
+        else {
+            return Err("real browser PiP did not preserve a semantic media element".into());
+        };
+        if element_id.trim().is_empty() || region.area() <= 1.0 {
+            return Err("real browser PiP returned empty semantic geometry".into());
+        }
+        let protocol: ui::floating_surface::FloatingSurfaceProtocolRequest = request.into();
+        let sidecar = std::path::PathBuf::from(format!("{}.pip.json", out.display()));
+        std::fs::write(&sidecar, serde_json::to_vec_pretty(&protocol)?)?;
+        println!(
+            "browser: live PiP selected {} at {:.0}×{:.0}; wrote {}",
+            request.title,
+            region.width(),
+            region.height(),
+            sidecar.display()
+        );
+    }
+    std::fs::write(
+        format!("{}.page.json", out.display()),
+        serde_json::to_vec_pretty(page)?,
+    )?;
+    println!(
+        "browser: wrote live Chromium shot of {} to {}",
+        page.uri,
+        out.display()
+    );
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod resource_claim_tests {

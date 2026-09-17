@@ -956,3 +956,150 @@ fn credential_protocol_rejects_secret_or_unbounded_reply_fields() {
     list["accounts"][0]["password"]=json!("must-not-cross");assert!(validate_event(&list).is_err());
     list["accounts"]=json!(vec![json!({"id":"one","username":"user"});65]);assert!(validate_event(&list).is_err());
 }
+
+#[test]
+fn oversized_favicon_dimensions_cannot_wrap_into_valid_sizes() {
+    for key in ["width", "height"] {
+        let mut event = json!({"event":"favicon", "width":1, "height":1,
+            "png":"AA==", "page_url":"https://example.test"});
+        event[key] = json!(u64::from(u32::MAX) + 2);
+        assert!(decode_event(&event).is_none(), "oversized {key} was truncated");
+    }
+}
+
+#[test]
+fn download_byte_counts_reject_fractional_and_out_of_range_values() {
+    let base = json!({"event":"download", "id":1, "state":"progress",
+        "path":"", "name":"fixture", "url":"https://example.test/file",
+        "retryable":true, "received":12.0, "total":100.0, "error":""});
+    assert!(validate_event(&base).is_ok());
+    assert!(matches!(decode_event(&base), Some(WebViewEvent::DownloadUpdated {
+        received:12, total:100, ..
+    })));
+    for key in ["received", "total"] {
+        for invalid in [-1.0, 0.5, 18_446_744_073_709_551_616.0, 1e30] {
+            let mut event = base.clone();
+            event[key] = json!(invalid);
+            assert!(validate_event(&event).is_err(), "accepted {key}={invalid}");
+            assert!(decode_event(&event).is_none(), "decoded {key}={invalid}");
+        }
+    }
+}
+
+#[test]
+fn poisoned_command_queue_fails_closed_without_panicking() {
+    let queue = CommandQueue::default();
+    let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = queue.state.lock().unwrap();
+        panic!("synthetic queue failure");
+    }));
+    assert!(poison.is_err());
+    assert_eq!(queue.push(json!({"op":"navigate"})), Err("command channel poisoned"));
+    assert!(queue.pop().is_none());
+    queue.close();
+}
+
+#[test]
+#[cfg(unix)]
+fn poisoned_tab_routes_do_not_panic_during_engine_drop() {
+    let (dir, host) = helper_fixture("exec cat >/dev/null");
+    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    let routes = engine.runtime.routes.clone();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = routes.lock().unwrap();
+        panic!("synthetic route failure");
+    }));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(engine))).is_ok());
+}
+
+#[test]
+#[cfg(unix)]
+fn poisoned_tab_waker_returns_creation_error_without_poisoning_routes() {
+    let (dir, host) = helper_fixture("exec cat >/dev/null");
+    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = engine.shared.waker.lock().unwrap();
+        panic!("synthetic waker failure");
+    }));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.create_tab()));
+    let routes_poisoned = engine.runtime.routes.is_poisoned();
+    let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(engine)));
+    assert!(outcome.is_ok(), "tab creation panicked");
+    assert!(outcome.unwrap().is_err());
+    assert!(!routes_poisoned);
+    assert!(dropped.is_ok());
+}
+
+#[test]
+fn poisoned_routes_still_notify_live_tabs_of_helper_failure() {
+    let shared = Arc::new(Shared::default());
+    let routes: Routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = routes.lock().unwrap();
+        panic!("synthetic route failure");
+    }));
+    fail_routes(&routes, "fixture helper disconnected");
+    assert!(shared.failed.load(Ordering::Acquire));
+    assert!(shared.events.lock().unwrap().iter().any(|event| matches!(
+        event, WebViewEvent::LoadFailed { error, .. } if error == "fixture helper disconnected"
+    )));
+}
+
+#[test]
+fn favicon_base64_rejects_trailing_data_and_invalid_padding() {
+    for invalid in ["AA==junk", "=AAA", "A", "AA=", "AB=="] {
+        assert!(decode_base64_bounded(invalid, 16).is_none(), "accepted {invalid}");
+    }
+    assert_eq!(decode_base64_bounded("AA==", 1), Some(vec![0]));
+    assert_eq!(decode_base64_bounded("AQID", 3), Some(vec![1, 2, 3]));
+    assert!(decode_base64_bounded("AQID", 2).is_none());
+    assert_eq!(decode_base64_bounded("", 0), Some(Vec::new()));
+}
+
+#[test]
+fn poisoned_native_event_routes_return_error_instead_of_panicking() {
+    for event in [json!({"event":"closed","tab":1}), json!({"event":"download_runtime", "admitted":0,"detached":0,"accepting":true,"error":""})] {
+        let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = routes.lock().unwrap();
+            panic!("synthetic event route failure");
+        }));
+        let downloads = Mutex::new(VecDeque::new());
+        let (ready, _receiver) = sync_channel(1);
+        assert!(route_native_event(&event, &routes, &downloads, &ready).is_err());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn poisoned_supervisor_slot_can_still_reap_its_child() {
+    let child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+    let slot = Mutex::new(Some(child));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = slot.lock().unwrap();
+        panic!("synthetic supervisor slot failure");
+    }));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| take_supervisor_child(&slot)));
+    if result.is_err() {
+        if let Some(mut child) = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            let _ = child.wait();
+        }
+    }
+    let mut child = result.expect("taking supervisor child panicked").expect("child was lost");
+    assert!(child.wait().unwrap().success());
+    assert!(take_supervisor_child(&slot).is_none());
+}
+
+#[test]
+#[cfg(unix)]
+fn poisoned_new_tab_queue_preserves_already_admitted_requests() {
+    let (dir, host) = helper_fixture("exec cat >/dev/null");
+    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut requests = engine.shared.open_tabs.lock().unwrap();
+        requests.push_back(("https://example.test".into(), true));
+        panic!("synthetic new-tab queue failure");
+    }));
+    assert_eq!(engine.take_new_tab_requests(), vec![("https://example.test".into(), true)]);
+    assert!(engine.take_new_tab_requests().is_empty());
+}

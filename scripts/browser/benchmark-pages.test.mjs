@@ -138,3 +138,22 @@ test("post-load measurement failures preserve load validity and allow later runs
     assert.match(sample.error, /scroll failed/);
   }
 });
+
+test("tabbed benchmark frames require a positive signed native tab ID", () => {
+  const frame = Buffer.alloc(21);
+  frame.writeUInt32LE(17);
+  frame[4] = 3;
+  frame.writeUInt32LE(1, 9);
+  frame.writeUInt32LE(1, 13);
+  for (const id of [0, 0x80000000, 0xffffffff]) {
+    frame.writeUInt32LE(id, 5);
+    assert.throws(() => new FrameParser(() => {}).push(frame), /tab ID/);
+  }
+  for (const id of [1, 0x7fffffff]) {
+    frame.writeUInt32LE(id, 5);
+    const packets = [];
+    new FrameParser((packet) => packets.push(packet)).push(frame);
+    assert.equal(packets.length, 1);
+    assert.equal(packets[0].tab, id);
+  }
+});

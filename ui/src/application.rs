@@ -375,11 +375,25 @@ impl AppComponent {
     pub fn register_document_history(&mut self, definition: &'static crate::history_mode::HistoryDefinition) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         use crate::history_mode::{HistoryOwner, HistoryPresentation, HistoryRegistration, HistorySourceRegistration};
         let owner = HistoryOwner::component(self.callback_binding());
-        let sources = definition.scopes.iter().map(|scope| match scope.presentation {
-            HistoryPresentation::Domain { .. } => HistorySourceRegistration::owned(scope.key, definition.app_id, owner.clone()),
-            HistoryPresentation::External { reason } => Ok(HistorySourceRegistration::Unversioned { scope: scope.key, reason }),
-            HistoryPresentation::CheckedFiles { .. } => Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner),
-        }).collect::<Result<Vec<_>, _>>()?;
+        let sources = definition
+            .scopes
+            .iter()
+            .map(|scope| match scope.presentation {
+                HistoryPresentation::Domain { .. }
+                | HistoryPresentation::DomainWithAssets { .. } => {
+                    HistorySourceRegistration::owned(scope.key, definition.app_id, owner.clone())
+                }
+                HistoryPresentation::External { reason } => {
+                    Ok(HistorySourceRegistration::Unversioned {
+                        scope: scope.key,
+                        reason,
+                    })
+                }
+                HistoryPresentation::CheckedFiles { .. } => {
+                    Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.history = Some(HistoryRegistration::new(definition, sources)?);
         Ok(())
     }

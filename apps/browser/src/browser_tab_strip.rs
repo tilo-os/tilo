@@ -74,7 +74,7 @@ impl BrowserTabStrip {
     pub fn set_active(&mut self, id: u64) {
         self.refresh_visible_for(id);
         self.inner.set_active(id);
-        self.refresh_visible()
+        self.refresh_visible();
     }
     pub fn is_pinned(&self, id: u64) -> bool {
         self.pinned.contains(&id)
@@ -85,7 +85,7 @@ impl BrowserTabStrip {
         } else {
             self.pinned.remove(&id);
         }
-        self.refresh_visible()
+        self.refresh_visible();
     }
     pub fn remove_tab(&mut self, id: u64) -> Option<usize> {
         let i = self.tabs.iter().position(|t| t.id == id)?;
@@ -117,7 +117,7 @@ impl BrowserTabStrip {
         if from < self.tabs.len() && to < self.tabs.len() && from != to {
             let tab = self.tabs.remove(from);
             self.tabs.insert(to, tab);
-            self.refresh_visible()
+            self.refresh_visible();
         }
     }
     pub fn take_close(&mut self) -> Option<u64> {
@@ -178,6 +178,30 @@ impl BrowserTabStrip {
     fn refresh_visible(&mut self) {
         self.refresh_visible_for(self.inner.active_id());
     }
+    // Retain the current window while its selected tab is already visible.
+    // Moving it on activation invalidates the inner bar's pressed-tab index.
+    fn window_start(&self, tabs: &[TabDescriptor], slots: usize, active: u64) -> usize {
+        if tabs.len() <= slots || slots == 0 {
+            return 0;
+        }
+        let previous = tabs
+            .iter()
+            .position(|tab| self.visible_ids.contains(&tab.id));
+        let selected = tabs.iter().position(|tab| tab.id == active);
+        let start = previous
+            .unwrap_or_else(|| {
+                selected
+                    .unwrap_or(0)
+                    .saturating_add(1)
+                    .saturating_sub(slots)
+            })
+            .min(tabs.len() - slots);
+        match selected {
+            Some(index) if index < start => index,
+            Some(index) if index >= start + slots => index + 1 - slots,
+            _ => start,
+        }
+    }
     fn refresh_visible_for(&mut self, active: u64) {
         let mut pinned: Vec<_> = self
             .tabs
@@ -193,18 +217,15 @@ impl BrowserTabStrip {
             .collect();
         let available =
             (self.viewport_width - NEW_TAB_WIDTH - 2.0 * OVERFLOW_WIDTH).max(PINNED_WIDTH);
-        let active_pinned = pinned.iter().position(|tab| tab.id == active);
-        let max_pinned = if active_pinned.is_some() {
+        // Reserve a normal-tab slot consistently; selection must not change
+        // the pinned prefix length beneath an in-progress pointer gesture.
+        let max_pinned = if normal.is_empty() {
             (available / PINNED_WIDTH).floor() as usize
         } else {
-            ((available - MIN_TAB_WIDTH).max(0.0) / PINNED_WIDTH).floor() as usize
+            ((available - MIN_TAB_WIDTH).max(PINNED_WIDTH) / PINNED_WIDTH).floor() as usize
         };
         if pinned.len() > max_pinned {
-            let focus = active_pinned.unwrap_or(0);
-            let start = focus
-                .saturating_add(1)
-                .saturating_sub(max_pinned)
-                .min(pinned.len() - max_pinned);
+            let start = self.window_start(&pinned, max_pinned, active);
             pinned = pinned.into_iter().skip(start).take(max_pinned).collect();
         }
         let budget = (available - pinned.len() as f64 * PINNED_WIDTH).max(if normal.is_empty() {
@@ -213,14 +234,7 @@ impl BrowserTabStrip {
             MIN_TAB_WIDTH
         });
         let slots = ((budget / MIN_TAB_WIDTH).floor() as usize).max(1);
-        let ai = normal.iter().position(|t| t.id == active).unwrap_or(0);
-        let start = if normal.len() <= slots {
-            0
-        } else {
-            ai.saturating_add(1)
-                .saturating_sub(slots)
-                .min(normal.len() - slots)
-        };
+        let start = self.window_start(&normal, slots, active);
         let mut visible = pinned;
         visible.extend(normal.into_iter().skip(start).take(slots));
         for tab in &mut visible {
@@ -230,20 +244,20 @@ impl BrowserTabStrip {
         *self.inner.tabs_mut() = visible;
         for id in &self.visible_ids {
             if self.pinned.contains(id) {
-                self.inner.pin(*id)
+                self.inner.pin(*id);
             } else {
-                self.inner.unpin(*id)
+                self.inner.unpin(*id);
             }
         }
-        self.inner.set_active(active)
+        self.inner.set_active(active);
     }
     #[cfg(any(test, debug_assertions))]
     pub fn debug_layout(&mut self, w: f64) {
-        self.set_viewport_width(w)
+        self.set_viewport_width(w);
     }
     pub fn set_viewport_width(&mut self, w: f64) {
         self.viewport_width = w;
-        self.refresh_visible()
+        self.refresh_visible();
     }
     #[cfg(any(test, debug_assertions))]
     pub fn active_is_visible(&self) -> bool {
@@ -297,7 +311,9 @@ impl BrowserTabStrip {
         } else {
             (current + self.tabs.len() - 1) % self.tabs.len()
         };
-        self.set_active(self.tabs[next].id);
+        if let Some(tab) = self.tabs.get(next) {
+            self.set_active(tab.id);
+        }
     }
     fn overflow_rects(&self) -> (Rect, Rect) {
         let anchor = self.rect.x1;
@@ -367,10 +383,57 @@ impl BrowserTabStrip {
                 }
             })
     }
+    fn draw_overflow_controls(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let ink = theme.tokens.colors.text_primary;
+        let (left, right) = self.overflow_rects();
+        for (rect, enabled, forward) in [
+            (left, self.has_hidden_before(), false),
+            (right, self.has_hidden_after(), true),
+        ] {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &rect.to_rounded_rect(6.0),
+            );
+            let center = rect.center();
+            let mut arrow = BezPath::new();
+            if forward {
+                arrow.move_to((center.x - 2.0, center.y - 5.0));
+                arrow.line_to((center.x + 3.0, center.y));
+                arrow.line_to((center.x - 2.0, center.y + 5.0));
+            } else {
+                arrow.move_to((center.x + 2.0, center.y - 5.0));
+                arrow.line_to((center.x - 3.0, center.y));
+                arrow.line_to((center.x + 2.0, center.y + 5.0));
+            }
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                if enabled {
+                    ink
+                } else {
+                    theme.tokens.colors.text_dim
+                },
+                None,
+                &arrow,
+            );
+        }
+    }
 }
 impl Widget for BrowserTabStrip {
+    fn is_focusable(&self) -> bool {
+        !self.tabs.is_empty()
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.inner.set_focus(focused);
+    }
+    fn is_focused(&self) -> bool {
+        self.inner.is_focused()
+    }
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
-        self.inner.sync(s, p)
+        self.inner.sync(s, p);
     }
     fn build_layout(
         &mut self,
@@ -441,18 +504,19 @@ impl Widget for BrowserTabStrip {
             }
         }
         if let Some(child) = self.inner_node {
-            self.inner.apply_layout(t, child, origin)
+            self.inner.apply_layout(t, child, origin);
         }
     }
     fn draw(
         &mut self,
-        s: &mut Scene,
-        x: Affine,
-        tr: &mut TextRenderer,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
-        p: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        self.inner.draw(s, x, tr, theme, p);
+        self.inner
+            .draw(scene, transform, text_renderer, theme, presence);
         let ink = theme.tokens.colors.text_primary;
         for (index, id) in self.visible_ids.iter().copied().enumerate() {
             let Some(visual) = self.visuals.get(&id) else {
@@ -460,40 +524,45 @@ impl Widget for BrowserTabStrip {
             };
             let icon = self.leading_rect(index, id);
             if visual.loading || visual.favicon.is_some() || visual.media_playing || visual.muted {
-                s.fill(
+                scene.fill(
                     Fill::NonZero,
-                    x,
+                    transform,
                     theme.tokens.colors.surfaces.base,
                     None,
                     &icon.inflate(3.0, 3.0).to_rounded_rect(10.0),
                 );
             }
             if visual.media_playing || visual.muted {
-                let c = icon.center();
-                s.fill(
+                let center = icon.center();
+                scene.fill(
                     Fill::NonZero,
-                    x,
+                    transform,
                     ink,
                     None,
-                    &Rect::new(c.x - 7.0, c.y - 4.0, c.x - 3.0, c.y + 4.0),
+                    &Rect::new(
+                        center.x - 7.0,
+                        center.y - 4.0,
+                        center.x - 3.0,
+                        center.y + 4.0,
+                    ),
                 );
                 let mut wave = BezPath::new();
-                wave.move_to((c.x - 3.0, c.y - 4.0));
-                wave.line_to((c.x + 2.0, c.y - 7.0));
-                wave.line_to((c.x + 2.0, c.y + 7.0));
-                wave.line_to((c.x - 3.0, c.y + 4.0));
+                wave.move_to((center.x - 3.0, center.y - 4.0));
+                wave.line_to((center.x + 2.0, center.y - 7.0));
+                wave.line_to((center.x + 2.0, center.y + 7.0));
+                wave.line_to((center.x - 3.0, center.y + 4.0));
                 wave.close_path();
-                s.fill(Fill::NonZero, x, ink, None, &wave);
+                scene.fill(Fill::NonZero, transform, ink, None, &wave);
                 if visual.muted {
                     let mut slash = BezPath::new();
-                    slash.move_to((c.x - 7.0, c.y - 7.0));
-                    slash.line_to((c.x + 7.0, c.y + 7.0));
-                    // The muted slash reads in the theme's danger tone, so it
+                    slash.move_to((center.x - 7.0, center.y - 7.0));
+                    slash.line_to((center.x + 7.0, center.y + 7.0));
+                    // The muted slash reads in the theme'scene danger tone, so it
                     // follows the palette (and stays legible in high contrast)
-                    // rather than a red chosen for one theme.
-                    s.stroke(
+                    // rather than angle red chosen for one theme.
+                    scene.stroke(
                         &Stroke::new(2.0),
-                        x,
+                        transform,
                         theme.tokens.colors.semantic.danger,
                         None,
                         &slash,
@@ -506,108 +575,101 @@ impl Widget for BrowserTabStrip {
                     (self.spinner_started.elapsed().as_millis() % 1000) as f64 / 1000.0
                 };
                 let mut arc = BezPath::new();
-                let c = icon.center();
+                let center = icon.center();
                 let start = phase * std::f64::consts::TAU;
                 for step in 0..=12 {
-                    let a = start + (step as f64 / 12.0) * std::f64::consts::TAU * 0.72;
-                    let point = Point::new(c.x + a.cos() * 6.5, c.y + a.sin() * 6.5);
+                    let angle = start + (f64::from(step) / 12.0) * std::f64::consts::TAU * 0.72;
+                    let point =
+                        Point::new(center.x + angle.cos() * 6.5, center.y + angle.sin() * 6.5);
                     if step == 0 {
                         arc.move_to(point);
                     } else {
                         arc.line_to(point);
                     }
                 }
-                s.stroke(&Stroke::new(2.0), x, ink, None, &arc);
+                scene.stroke(&Stroke::new(2.0), transform, ink, None, &arc);
             } else if let Some(image) = &visual.favicon {
                 let brush = ImageBrush::new(image.clone());
                 let sx = icon.width() / f64::from(image.width.max(1));
                 let sy = icon.height() / f64::from(image.height.max(1));
                 let bx = Affine::translate((icon.x0, icon.y0)) * Affine::scale_non_uniform(sx, sy);
-                s.fill(Fill::NonZero, x, &brush, Some(bx), &icon);
+                scene.fill(Fill::NonZero, transform, &brush, Some(bx), &icon);
             }
         }
-        let (left, right) = self.overflow_rects();
-        for (rect, enabled, forward) in [
-            (left, self.has_hidden_before(), false),
-            (right, self.has_hidden_after(), true),
-        ] {
-            s.fill(
-                Fill::NonZero,
-                x,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &rect.to_rounded_rect(6.0),
-            );
-            let c = rect.center();
-            let mut arrow = BezPath::new();
-            if forward {
-                arrow.move_to((c.x - 2.0, c.y - 5.0));
-                arrow.line_to((c.x + 3.0, c.y));
-                arrow.line_to((c.x - 2.0, c.y + 5.0));
-            } else {
-                arrow.move_to((c.x + 2.0, c.y - 5.0));
-                arrow.line_to((c.x - 3.0, c.y));
-                arrow.line_to((c.x + 2.0, c.y + 5.0));
-            }
-            s.stroke(
-                &Stroke::new(2.0),
-                x,
-                if enabled {
-                    ink
-                } else {
-                    theme.tokens.colors.text_dim
-                },
-                None,
-                &arrow,
-            );
-        }
+        self.draw_overflow_controls(scene, transform, theme);
     }
     fn handle_event(
         &mut self,
-        e: &WindowEvent,
+        event: &WindowEvent,
         scale: f64,
-        m: &winit::event::Modifiers,
-        s: &mut AutoCommit,
-        p: &ObjId,
-        h: &mut bool,
-        f: &mut Option<NodeId>,
-        n: NodeId,
-        t: &TaffyTree<()>,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        tree: &TaffyTree<()>,
     ) {
-        if let WindowEvent::CursorMoved { position, .. } = e {
+        if self.is_focused()
+            && let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+        {
+            use winit::keyboard::{Key, NamedKey};
+            let target = match &event.logical_key {
+                Key::Named(NamedKey::ArrowLeft) => {
+                    self.overflow_step(false);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    self.overflow_step(true);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Home) => self.tabs.first().map(|tab| tab.id),
+                Key::Named(NamedKey::End) => self.tabs.last().map(|tab| tab.id),
+                _ => None,
+            };
+            if let Some(id) = target {
+                self.set_active(id);
+                *handled = true;
+                return;
+            }
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale, position.y / scale);
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = e
+        } = event
         {
             let (left, right) = self.overflow_rects();
             if left.contains(self.cursor) && self.has_hidden_before() {
                 self.overflow_step(false);
-                *h = true;
+                *handled = true;
                 return;
             }
             if right.contains(self.cursor) && self.has_hidden_after() {
                 self.overflow_step(true);
-                *h = true;
+                *handled = true;
                 return;
             }
             for (index, id) in self.visible_ids.iter().copied().enumerate() {
                 if self
                     .visuals
                     .get(&id)
-                    .is_some_and(|v| v.media_playing || v.muted)
+                    .is_some_and(|visual| visual.media_playing || visual.muted)
                     && self.media_rect(index).contains(self.cursor)
                 {
                     self.pending_toggle_mute = Some(id);
-                    *h = true;
+                    *handled = true;
                     return;
                 }
             }
         }
-        if let WindowEvent::MouseWheel { delta, .. } = e
+        if let WindowEvent::MouseWheel { delta, .. } = event
             && self.inner.bar_rect().contains(self.cursor)
         {
             let forward = match delta {
@@ -619,10 +681,12 @@ impl Widget for BrowserTabStrip {
                 }
             };
             self.overflow_step(forward);
-            *h = true;
+            *handled = true;
             return;
         }
-        self.inner.handle_event(e, scale, m, s, p, h, f, n, t)
+        self.inner.handle_event(
+            event, scale, modifiers, state, path, handled, focus, node, tree,
+        );
     }
     fn perform_semantic_action(
         &mut self,
@@ -659,7 +723,7 @@ impl Widget for BrowserTabStrip {
     }
     fn set_motion_reduced(&mut self, r: bool) {
         self.reduced_motion = r;
-        self.inner.set_motion_reduced(r)
+        self.inner.set_motion_reduced(r);
     }
     fn name(&self) -> &'static str {
         "BrowserTabStrip"
@@ -678,36 +742,35 @@ impl Widget for BrowserTabStrip {
                 .clone()
                 .unwrap_or_else(|| format!("tab-child:{index}"));
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            identity.hash(&mut hasher);
+            identity.as_str().hash(&mut hasher);
             child.key = Some(hasher.finish());
         }
         for (index, id) in self.visible_ids.iter().copied().enumerate() {
-            if let Some(visual) = self.visuals.get(&id) {
-                if let Some(tab) = node
+            if let Some(visual) = self.visuals.get(&id)
+                && let Some(tab) = node
                     .children
                     .iter_mut()
                     .find(|n| n.action_target.as_deref() == Some(&format!("tab:{id}")))
-                {
-                    tab.state.busy = visual.loading;
-                    if visual.media_playing {
-                        tab.description = Some("Media playing".into());
-                    }
-                    if visual.muted {
-                        tab.description = Some("Audio muted".into());
-                    }
-                    if visual.media_playing || visual.muted {
-                        tab.children.push(
-                            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
-                                .with_name(if visual.muted {
-                                    "Unmute tab"
-                                } else {
-                                    "Mute tab"
-                                })
-                                .with_action_target(format!("tab-mute:{id}"))
-                                .with_hashed_key(format!("tab-mute:{id}"))
-                                .with_bounds(self.media_rect(index)),
-                        );
-                    }
+            {
+                tab.state.busy = visual.loading;
+                if visual.media_playing {
+                    tab.description = Some("Media playing".into());
+                }
+                if visual.muted {
+                    tab.description = Some("Audio muted".into());
+                }
+                if visual.media_playing || visual.muted {
+                    tab.children.push(
+                        ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                            .with_name(if visual.muted {
+                                "Unmute tab"
+                            } else {
+                                "Mute tab"
+                            })
+                            .with_action_target(format!("tab-mute:{id}"))
+                            .with_hashed_key(format!("tab-mute:{id}"))
+                            .with_bounds(self.media_rect(index)),
+                    );
                 }
             }
         }
@@ -735,5 +798,228 @@ impl Widget for BrowserTabStrip {
                 .with_bounds(right),
         );
         Some(node)
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+
+    fn layout(strip: &mut BrowserTabStrip) -> (TaffyTree<()>, NodeId) {
+        let mut tree = TaffyTree::new();
+        let node = strip.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+        tree.compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(684.0),
+                height: taffy::AvailableSpace::Definite(44.0),
+            },
+        )
+        .unwrap();
+        strip.apply_layout(&tree, node, Point::ORIGIN);
+        (tree, node)
+    }
+
+    fn dispatch(
+        strip: &mut BrowserTabStrip,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        event: &WindowEvent,
+    ) {
+        strip.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut false,
+            &mut None,
+            node,
+            tree,
+        );
+    }
+
+    #[test]
+    fn overflow_press_activation_and_rebuild_preserve_dragged_tab() {
+        let mut strip = BrowserTabStrip::new(
+            (1..=10)
+                .map(|id| TabDescriptor::new(id, format!("Tab {id}")))
+                .collect(),
+            10,
+        );
+        strip.set_viewport_width(684.0);
+        let (tree, node) = layout(&mut strip);
+        assert_eq!(strip.visible_ids(), &[6, 7, 8, 9, 10]);
+        let start = strip.tab_rects()[0].center();
+        let device_id = winit::event::DeviceId::dummy();
+        dispatch(
+            &mut strip,
+            &tree,
+            node,
+            &WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(start.x, start.y),
+            },
+        );
+        dispatch(
+            &mut strip,
+            &tree,
+            node,
+            &WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(strip.active_id(), 6);
+        strip.set_active(6);
+        let (tree, node) = layout(&mut strip);
+        let destination = strip.tab_rects()[2].center();
+        dispatch(
+            &mut strip,
+            &tree,
+            node,
+            &WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(destination.x + 10.0, destination.y),
+            },
+        );
+        dispatch(
+            &mut strip,
+            &tree,
+            node,
+            &WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(strip.take_reorder(), Some((5, 7)));
+    }
+    #[test]
+    fn mixed_partition_activation_preserves_dragged_tab() {
+        let mut strip = BrowserTabStrip::new(
+            (1..=30)
+                .map(|id| TabDescriptor::new(id, format!("Tab {id}")))
+                .collect(),
+            30,
+        );
+        for id in 1..=20 {
+            strip.set_pinned(id, true);
+        }
+        strip.set_viewport_width(684.0);
+        strip.set_active(30);
+        strip.set_active(20);
+        let (tree, node) = layout(&mut strip);
+        let start = strip.tab_rects().last().unwrap().center();
+        let device_id = winit::event::DeviceId::dummy();
+        dispatch(
+            &mut strip,
+            &tree,
+            node,
+            &WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(start.x, start.y),
+            },
+        );
+        dispatch(
+            &mut strip,
+            &tree,
+            node,
+            &WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(strip.active_id(), 30);
+        strip.set_active(30);
+        let (tree, node) = layout(&mut strip);
+        let destination = Point::new(
+            strip.tab_rects()[0].x0 + 1.0,
+            strip.tab_rects()[0].center().y,
+        );
+        dispatch(
+            &mut strip,
+            &tree,
+            node,
+            &WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(destination.x, destination.y),
+            },
+        );
+        dispatch(
+            &mut strip,
+            &tree,
+            node,
+            &WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(strip.take_reorder(), Some((29, 10)));
+    }
+    #[test]
+    fn focused_overflow_strip_navigates_all_tabs() {
+        use winit::keyboard::{Key, NamedKey};
+        let mut strip = BrowserTabStrip::new(
+            (1..=10)
+                .map(|id| TabDescriptor::new(id, format!("Tab {id}")))
+                .collect(),
+            10,
+        );
+        strip.set_viewport_width(684.0);
+        let (tree, node) = layout(&mut strip);
+        assert!(Widget::is_focusable(&strip));
+        Widget::set_focus(&mut strip, true);
+        for (named, expected) in [
+            (NamedKey::Home, 1),
+            (NamedKey::End, 10),
+            (NamedKey::ArrowRight, 1),
+            (NamedKey::ArrowLeft, 10),
+        ] {
+            let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+            event.logical_key = Key::Named(named);
+            event.state = ElementState::Pressed;
+            dispatch(
+                &mut strip,
+                &tree,
+                node,
+                &WindowEvent::KeyboardInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    event,
+                    is_synthetic: true,
+                },
+            );
+            assert_eq!(strip.active_id(), expected);
+            assert!(strip.active_is_visible());
+        }
+        Widget::set_focus(&mut strip, false);
+        assert!(!Widget::is_focused(&strip));
+    }
+
+    #[test]
+    fn app_focus_traversal_includes_browser_tab_strip() {
+        let strip = BrowserTabStrip::new(vec![TabDescriptor::new(1, "First")], 1);
+        let mut app = ui::App::new(ui::State::new(), Box::new(strip));
+        app.init_layout();
+        app.refresh_focus_order();
+        assert_eq!(app.focusable_order.len(), 1);
+    }
+    #[test]
+    fn narrow_mixed_strip_keeps_selected_pinned_tab_visible() {
+        let mut strip = BrowserTabStrip::new(
+            vec![
+                TabDescriptor::new(1, "Pinned"),
+                TabDescriptor::new(2, "Normal"),
+            ],
+            1,
+        );
+        strip.set_pinned(1, true);
+        strip.set_viewport_width(150.0);
+        strip.set_active(1);
+        assert!(strip.visible_ids().contains(&1));
+        assert_eq!(strip.active_id(), 1);
     }
 }

@@ -101,7 +101,7 @@ impl Default for SiteControls {
             notice: String::new(),
             filters: crate::native_blocker::status(),
             persistent: false,
-            runtime_exceptions: Default::default(),
+            runtime_exceptions: std::sync::Arc::default(),
         }
     }
 }
@@ -190,8 +190,8 @@ impl SiteControls {
                 }
                 self.action = None;
                 self.notice = message;
-                if success && matches!(action.as_str(), "enable" | "disable") {
-                    if let Ok(mut exceptions) = self.runtime_exceptions.lock() {
+                if success && matches!(action.as_str(), "enable" | "disable")
+                    && let Ok(mut exceptions) = self.runtime_exceptions.lock() {
                         exceptions.set(&origin, action == "disable");
                         if self.persistent
                             && let Some(path) =
@@ -202,7 +202,6 @@ impl SiteControls {
                                 "Changed for this session; could not save the preference".into();
                         }
                     }
-                }
                 self.next_poll = Instant::now();
                 true
             }
@@ -551,6 +550,13 @@ mod tests {
 
     #[test]
     fn site_panel_has_a_visible_scroll_viewport_and_actionable_children() {
+        fn find(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
+            if w.test_id() == Some(id) {
+                return Some(w.get_rect());
+            }
+            w.children().iter().find_map(|c| find(*c, id))
+        }
+
         let mut controls = SiteControls::default();
         controls.open = true;
         controls.committed = Some("https://example.test".into());
@@ -580,12 +586,6 @@ mod tests {
             "scroll viewport: {:?}",
             scroll.get_rect()
         );
-        fn find(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
-            if w.test_id() == Some(id) {
-                return Some(w.get_rect());
-            }
-            w.children().iter().find_map(|c| find(*c, id))
-        }
         let done = find(panel.as_ref(), "browser.site.close").unwrap();
         assert!(done.height() > 0.0);
         assert!(scroll.get_rect().contains(done.center()));
@@ -612,7 +612,7 @@ mod tests {
             panel.handle_event(
                 &event,
                 1.0,
-                &Default::default(),
+                &winit::event::Modifiers::default(),
                 &mut doc,
                 &automerge::ROOT,
                 &mut handled,

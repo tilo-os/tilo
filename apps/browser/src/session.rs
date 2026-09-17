@@ -26,6 +26,10 @@ pub struct SessionStore {
     _lock: std::fs::File,
 }
 impl Snapshot {
+    /// Validate session version, URLs, active selection and pinned ordering.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported versions, unsafe URLs or inconsistent tab state.
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1
             || self.tabs.is_empty()
@@ -47,6 +51,10 @@ impl Snapshot {
     }
 }
 impl SessionStore {
+    /// Lock the normal session store; private mode returns no store.
+    ///
+    /// # Errors
+    /// Returns an error for a relative root, an existing process lock, or filesystem failures.
     pub fn open(root: &Path, mode: SessionMode) -> Result<Option<Self>, String> {
         if mode == SessionMode::Private {
             return Ok(None);
@@ -76,6 +84,10 @@ impl SessionStore {
             _lock: lock,
         }))
     }
+    /// Read and validate a saved session if one exists.
+    ///
+    /// # Errors
+    /// Returns an error for unreadable, oversized, malformed or invalid session data.
     pub fn load(&self) -> Result<Option<Snapshot>, String> {
         use std::io::Read;
         let file = match std::fs::File::open(self.root.join("session.json")) {
@@ -94,6 +106,10 @@ impl SessionStore {
         snapshot.validate()?;
         Ok(Some(snapshot))
     }
+    /// Atomically replace the saved session after validation.
+    ///
+    /// # Errors
+    /// Returns an error for invalid session state, serialization or filesystem failures.
     pub fn save(&self, snapshot: &Snapshot) -> Result<(), String> {
         use std::io::Write;
         snapshot.validate()?;

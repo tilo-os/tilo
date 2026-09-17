@@ -646,7 +646,7 @@ impl DocStore {
     ///
     /// # Errors
     /// Refuses empty, corrupt, changed or unsupported documents without publishing a repair.
-    pub fn load_canonical(&mut self) -> Result<Option<CanonicalLoad>, StoreError> {
+    pub fn load_canonical(&self) -> Result<Option<CanonicalLoad>, StoreError> {
         self.load_canonical_with_recovery(true)
     }
 
@@ -655,12 +655,12 @@ impl DocStore {
     ///
     /// # Errors
     /// Refuses empty, incomplete, corrupt, changed or unsupported documents.
-    pub fn load_canonical_complete(&mut self) -> Result<Option<CanonicalLoad>, StoreError> {
+    pub fn load_canonical_complete(&self) -> Result<Option<CanonicalLoad>, StoreError> {
         self.load_canonical_with_recovery(false)
     }
 
     fn load_canonical_with_recovery(
-        &mut self,
+        &self,
         recover_partial: bool,
     ) -> Result<Option<CanonicalLoad>, StoreError> {
         self.check_canonical_source()?;

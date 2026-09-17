@@ -153,13 +153,17 @@ impl PreviewPane {
     }
 
     /// Frozen page navigation: all inputs are bounded local view coordinates.
-    pub(crate) fn set_snapshot_view(&mut self, page: usize, zoom: f64, scroll: (f64, f64)) {
+    pub(crate) fn set_snapshot_view(&mut self, page: usize, zoom: f64, scroll: (f64, f64)) -> (f64, f64) {
         self.fit_width = false;
         self.viewport.set_zoom(self.viewport.fit_width_zoom() * zoom);
         self.viewport.set_scroll(0., 0.);
         self.scroll_to_page(page);
+        // History offsets are relative to this selected page's clamped anchor,
+        // not to the beginning of the whole compiled page stack.
+        let anchor_y = self.viewport.scroll_y();
         self.viewport.pan_by(scroll.0, scroll.1);
         self.recompute_current();
+        (self.viewport.scroll_x(), self.viewport.scroll_y() - anchor_y)
     }
 
     pub fn set_pages(&mut self, pages: &[PageImage]) {

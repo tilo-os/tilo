@@ -110,13 +110,28 @@ impl TypstPreview {
     }
 }
 impl HistoryPreview for TypstPreview {
-    fn layout(&mut self, bounds: Rect, _: &mut TextRenderer, _: &Theme) -> Result<(), String> {
+    fn layout(&mut self, bounds: Rect, tr: &mut TextRenderer, _: &Theme) -> Result<(), String> {
         self.bounds = bounds;
         self.editor.set_rect(bounds);
         self.pane.set_rect(bounds);
         self.diagnostics.set_rect(bounds);
+        if self.view.page.as_deref() == Some("source") {
+            self.editor.prepare_snapshot_layout(tr);
+            self.editor.reset_cursor();
+            self.editor.scroll_by(
+                0.,
+                self.view.scroll.1 as f32,
+                self.source.as_deref().unwrap_or_default(),
+            );
+            self.view.scroll = (0., self.editor.snapshot_scroll_y());
+        } else if self.view.page.as_deref() == Some("diagnostics") {
+            self.diagnostics.scroll_by(-100_000.);
+            self.diagnostics.scroll_by(self.view.scroll.1);
+            self.view.scroll = (0., self.diagnostics.scroll_y());
+        }
         if let Some(page) = self.page_index() {
-            self.pane
+            self.view.scroll = self
+                .pane
                 .set_snapshot_view(page, self.view.zoom, self.view.scroll);
         }
         Ok(())
@@ -137,6 +152,8 @@ impl HistoryPreview for TypstPreview {
             self.pane.draw(s, t, tr, theme);
         } else {
             self.editor.draw(s, t, tr, theme, self.diagnostics.diags());
+            // Drawing may refine wrapped content metrics after a font/size change.
+            self.view.scroll = (0., self.editor.snapshot_scroll_y());
         }
     }
     fn navigate(&mut self, c: PreviewNavigation) -> bool {
@@ -164,9 +181,16 @@ impl HistoryPreview for TypstPreview {
         if self.view.page.as_deref() == Some("source") {
             self.editor
                 .scroll_by(0., dy as f32, self.source.as_deref().unwrap_or_default());
+            self.view.scroll = (0., self.editor.snapshot_scroll_y());
         }
         if self.view.page.as_deref() == Some("diagnostics") {
             self.diagnostics.scroll_by(dy);
+            self.view.scroll = (0., self.diagnostics.scroll_y());
+        }
+        if let Some(page) = self.page_index() {
+            self.view.scroll = self
+                .pane
+                .set_snapshot_view(page, self.view.zoom, self.view.scroll);
         }
         true
     }
@@ -209,11 +233,176 @@ impl HistoryPreview for TypstPreview {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
+    fn scroll_fixture(source: &str) -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        let obj = doc.put_object(ROOT, "source", ObjType::Text).unwrap();
+        doc.splice_text(&obj, 0, 0, source).unwrap();
+        doc.get_heads();
+        doc
+    }
+
+    fn paint_frame(
+        p: &mut TypstPreview,
+        bounds: Rect,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Scene {
+        p.layout(bounds, tr, theme).unwrap();
+        let mut scene = Scene::new();
+        p.draw(&mut scene, Affine::IDENTITY, tr, theme);
+        scene
+    }
+
+    fn content_probe(p: &TypstPreview, theme: &Theme) -> vello::kurbo::Point {
+        match p.view.page.as_deref().unwrap() {
+            "source" => p
+                .editor
+                .history_test_caret_rect(theme, p.source.as_ref().unwrap().rfind("row").unwrap())
+                .origin(),
+            "diagnostics" => vello::kurbo::Point::new(
+                0.,
+                p.diagnostics
+                    .history_test_row_top(p.diagnostics.diags().len() - 3),
+            ),
+            _ => p.pane.history_test_point(2, 495.),
+        }
+    }
+
+    fn scroll_preview(doc: &AutoCommit, view: PreviewView) -> TypstPreview {
+        let mut p = from_document(doc, view).unwrap();
+        if p.view.page.as_deref() == Some("diagnostics") {
+            // Typst stops at its first error. Exercise the same renderer's long
+            // diagnostic-list state using copies of that real compiler result.
+            let diagnostic = p.diagnostics.diags()[0].clone();
+            p.diagnostics.set_diagnostics(vec![diagnostic; 40]);
+        }
+        p
+    }
+
+    // Mirrors HistoryCanvas: navigate, then layout and draw on every frame.
+    fn check_clamped_scroll_cycle(doc: &AutoCommit, page: &str) {
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        for width in [360., 1000.] {
+            let clip = Rect::new(0., 0., width, 240.);
+            let view = PreviewView {
+                page: Some(page.into()),
+                zoom: 2.,
+                ..Default::default()
+            };
+            let mut p = scroll_preview(doc, view.clone());
+            assert_eq!(p.view.page.as_deref(), Some(page));
+            if page == "diagnostics" {
+                assert!(p.diagnostics.diags().len() >= 20);
+            }
+            paint_frame(&mut p, clip, &mut tr, &theme);
+            let origin = content_probe(&p, &theme);
+            p.navigate(PreviewNavigation::Scroll {
+                dx: 0.,
+                dy: -100_000.,
+            });
+            let end_scene = paint_frame(&mut p, clip, &mut tr, &theme);
+            let end = content_probe(&p, &theme);
+            assert!(
+                end.y >= clip.y0 && end.y < clip.y1,
+                "end content reachable: {page} {width}: {end:?}"
+            );
+            p.navigate(PreviewNavigation::Scroll { dx: 0., dy: 32. });
+            let reversed_scene = paint_frame(&mut p, clip, &mut tr, &theme);
+            let reversed = content_probe(&p, &theme);
+            assert!(
+                (reversed.y - end.y - 32.).abs() < 0.02,
+                "immediate reverse: {page} {width}: {end:?} -> {reversed:?}"
+            );
+            assert!((p.view.scroll.1 - (origin.y - reversed.y)).abs() < 0.02);
+            if page == "diagnostics" {
+                for (scene, row) in [(end_scene, end.y), (reversed_scene, reversed.y)] {
+                    assert!(
+                        scene
+                            .encoding()
+                            .resources
+                            .glyph_runs
+                            .iter()
+                            .any(
+                                |run| (f64::from(run.transform.translation[1]) - row - 6.).abs()
+                                    < 0.02
+                            ),
+                        "the diagnostic row's text moves with its viewport geometry"
+                    );
+                }
+            }
+            p.navigate(PreviewNavigation::Scroll {
+                dx: -100_000.,
+                dy: -100_000.,
+            });
+            paint_frame(&mut p, clip, &mut tr, &theme);
+            if page.starts_with("page:") {
+                let right = content_probe(&p, &theme).x;
+                p.navigate(PreviewNavigation::Scroll { dx: 32., dy: 0. });
+                paint_frame(&mut p, clip, &mut tr, &theme);
+                assert!((content_probe(&p, &theme).x - right - 32.).abs() < 0.02);
+                assert!((p.view.scroll.0 - (origin.x - content_probe(&p, &theme).x)).abs() < 0.02);
+            } else {
+                assert!(p.view.scroll.0.abs() < 0.01);
+            }
+            let before_resize = p.view.scroll.1;
+            let larger = Rect::new(0., 0., width, 440.);
+            paint_frame(&mut p, larger, &mut tr, &theme);
+            assert!(
+                p.view.scroll.1 < before_resize,
+                "resize reduces saved range"
+            );
+            let resized = content_probe(&p, &theme);
+            let mut zero = scroll_preview(doc, view);
+            paint_frame(&mut zero, larger, &mut tr, &theme);
+            assert!((p.view.scroll.1 - (content_probe(&zero, &theme).y - resized.y)).abs() < 0.02);
+            let saved = p.view();
+            let mut recreated = scroll_preview(doc, saved.clone());
+            for _ in 0..2 {
+                paint_frame(&mut recreated, larger, &mut tr, &theme);
+                assert_eq!(recreated.view(), saved);
+                assert!((content_probe(&recreated, &theme).y - resized.y).abs() < 0.02);
+                assert!((content_probe(&recreated, &theme).x - resized.x).abs() < 0.02);
+            }
+            recreated.navigate(PreviewNavigation::Scroll { dx: 0., dy: 32. });
+            paint_frame(&mut recreated, larger, &mut tr, &theme);
+            assert!((content_probe(&recreated, &theme).y - resized.y - 32.).abs() < 0.02);
+        }
+    }
+
+    #[test]
+    fn source_overscroll_reverse_resize_and_recreation_use_effective_view() {
+        check_clamped_scroll_cycle(
+            &scroll_fixture(&"row of historical source\n".repeat(80)),
+            "source",
+        );
+    }
+
+    #[test]
+    fn diagnostics_overscroll_reverse_resize_and_recreation_use_effective_view() {
+        check_clamped_scroll_cycle(
+            &scroll_fixture(&"#missing_variable\n".repeat(40)),
+            "diagnostics",
+        );
+    }
+
+    #[test]
+    fn pages_overscroll_reverse_resize_and_recreation_use_effective_view() {
+        check_clamped_scroll_cycle(
+            &scroll_fixture(
+                "#set page(width: 200pt, height: 500pt)\nOne\n#pagebreak()\nTwo\n#pagebreak()\nThree",
+            ),
+            "page:1",
+        );
+    }
+
     #[test]
     fn tall_source_and_compiled_pages_move_content_into_the_clip_at_both_widths() {
-        let source = (0..160)
-            .map(|i| format!("Line {i} of historical source.\n\n"))
-            .collect::<String>();
+        use std::fmt::Write;
+        let source = (0..160).fold(String::new(), |mut text, i| {
+            writeln!(text, "Line {i} of historical source.\n").unwrap();
+            text
+        });
         let byte = source.find("Line 8 ").unwrap();
         let mut doc = AutoCommit::new();
         let obj = doc.put_object(ROOT, "source", ObjType::Text).unwrap();
@@ -239,6 +428,26 @@ mod tests {
                 after.y0 >= clip.y0 && after.y1 <= clip.y1,
                 "{width}: {after:?}"
             );
+            let mut recreated = from_document(&doc, p.view()).unwrap();
+            recreated.layout(clip, &mut tr, &theme).unwrap();
+            recreated.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+            let recreated_caret = recreated.editor.history_test_caret_rect(&theme, byte);
+            assert!((recreated_caret.y0 - after.y0).abs() < 0.01);
+            for _ in 0..2 {
+                recreated.layout(clip, &mut tr, &theme).unwrap();
+                recreated.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+                assert!(
+                    (recreated.editor.history_test_caret_rect(&theme, byte).y0 - after.y0).abs()
+                        < 0.01
+                );
+            }
+            tr.bump_generation();
+            recreated.layout(clip, &mut tr, &theme).unwrap();
+            recreated.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+            assert!(
+                (recreated.editor.history_test_caret_rect(&theme, byte).y0 - after.y0).abs() < 0.01
+            );
+
             p.navigate(PreviewNavigation::SelectPage("page:0".into()));
             p.layout(clip, &mut tr, &theme).unwrap();
             let before = p.pane.history_test_point(0, 400.);

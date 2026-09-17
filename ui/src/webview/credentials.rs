@@ -115,7 +115,7 @@ pub struct CredentialRequest {
 impl CredentialRequest {
     pub(crate) fn valid(&self) -> bool {
         self.request_id > 0
-            && self.request_id <= i32::MAX as u32
+            && i32::try_from(self.request_id).is_ok()
             && !self.origin.is_empty()
             && self.origin.len() <= 8192
             && (matches!(
@@ -129,27 +129,38 @@ impl CredentialRequest {
         if !self.valid() {
             return None;
         }
-        let mut value = json!({"op":"credential_action", "request_id":self.request_id,
-            "origin":self.origin, "document":self.document, "action":self.action.name()});
+        let mut value = serde_json::Map::from_iter([
+            ("op".into(), json!("credential_action")),
+            ("request_id".into(), json!(self.request_id)),
+            ("origin".into(), json!(self.origin)),
+            ("document".into(), json!(self.document)),
+            ("action".into(), json!(self.action.name())),
+        ]);
         match &self.action {
-            CredentialAction::Capture { form } => value["form"] = json!(form),
-            CredentialAction::Save { capture } => value["capture"] = json!(capture),
+            CredentialAction::Capture { form } => {
+                value.insert("form".into(), json!(form));
+            }
+            CredentialAction::Save { capture } => {
+                value.insert("capture".into(), json!(capture));
+            }
             CredentialAction::Update { capture, account } => {
-                value["capture"] = json!(capture);
-                value["account"] = json!(account);
+                value.insert("capture".into(), json!(capture));
+                value.insert("account".into(), json!(account));
             }
             CredentialAction::Fill { form, account } => {
-                value["form"] = json!(form);
-                value["account"] = json!(account);
+                value.insert("form".into(), json!(form));
+                value.insert("account".into(), json!(account));
             }
-            CredentialAction::Delete { account } => value["account"] = json!(account),
+            CredentialAction::Delete { account } => {
+                value.insert("account".into(), json!(account));
+            }
             CredentialAction::FillAddress { form, profile } => {
-                value["form"] = json!(form);
-                value["profile"] = json!(profile);
+                value.insert("form".into(), json!(form));
+                value.insert("profile".into(), json!(profile));
             }
             _ => {}
         }
-        Some(value)
+        Some(Value::Object(value))
     }
 }
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -188,7 +199,7 @@ pub struct CredentialReply {
     pub late: bool,
 }
 impl CredentialReply {
-    pub(crate) fn decode(value: &Value) -> Option<Self> {
+    fn bounded_fields(value: &Value) -> Option<serde_json::Map<String, Value>> {
         let object = value.as_object()?;
         if value["event"].as_str()? != "credential_result"
             || object.keys().any(|key| {
@@ -212,10 +223,10 @@ impl CredentialReply {
         {
             return None;
         }
-        if value
-            .get("tab")
-            .is_some_and(|v| !v.as_u64().is_some_and(|n| n > 0 && n <= i32::MAX as u64))
-        {
+        if value.get("tab").is_some_and(|v| {
+            !v.as_u64()
+                .is_some_and(|n| n > 0 && i32::try_from(n).is_ok())
+        }) {
             return None;
         }
         // Bound collections before cloning/deserializing. Never keep unknown
@@ -243,7 +254,7 @@ impl CredentialReply {
                     }
                     if entry
                         .get("username")
-                        .is_some_and(|v| !v.as_str().is_some_and(|s| s.len() <= 1024))
+                        .is_some_and(|v| v.as_str().is_none_or(|s| s.len() > 1024))
                     {
                         return None;
                     }
@@ -260,7 +271,7 @@ impl CredentialReply {
         ] {
             if value
                 .get(key)
-                .is_some_and(|v| !v.as_str().is_some_and(|s| s.len() <= limit))
+                .is_some_and(|v| v.as_str().is_none_or(|s| s.len() > limit))
             {
                 return None;
             }
@@ -268,6 +279,11 @@ impl CredentialReply {
         let mut fields = object.clone();
         fields.remove("event");
         fields.remove("tab");
+        Some(fields)
+    }
+
+    pub(crate) fn decode(value: &Value) -> Option<Self> {
+        let fields = Self::bounded_fields(value)?;
         let reply: Self = serde_json::from_value(Value::Object(fields)).ok()?;
         if reply.request_id == 0
             || reply.request_id > i32::MAX as u32

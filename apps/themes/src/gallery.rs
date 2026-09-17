@@ -20,6 +20,7 @@ use ui::widget::{ContextMenu, MenuItem, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::draw;
 use crate::model::ThemeSpec;
@@ -28,6 +29,7 @@ use crate::widgets::ThemeRow;
 const HEADER_H: f64 = 34.0;
 const PAD: f32 = 14.0;
 const GAP: f32 = 8.0;
+const NAME_CONFLICT_HINT: &str = "Name changed. Enter: apply draft. Escape: use current name.";
 
 /// Panic-free node construction for [`Widget::build_layout`].
 /// `TaffyTree::new_with_children` is typed `-> TaffyResult<NodeId>` for API
@@ -45,6 +47,9 @@ const GAP: f32 = 8.0;
 fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
     taffy.new_with_children(style, children).unwrap()
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenameState { Current, Conflict }
 
 pub struct Gallery {
     rows: Vec<ThemeRow>,
@@ -64,6 +69,8 @@ pub struct Gallery {
     /// Id whose name currently seeds `name_input`; re-seeded on change only
     /// so typing isn't clobbered mid-edit.
     seeded_id: Option<String>,
+    canonical_name: String,
+    rename_state: RenameState,
     /// A `rename` command asked to focus the inline editor next frame.
     focus_pending: bool,
     commands: Vec<String>,
@@ -97,6 +104,8 @@ impl Gallery {
             active_id: String::new(),
             selected_custom: false,
             seeded_id: None,
+            canonical_name: String::new(),
+            rename_state: RenameState::Current,
             focus_pending: false,
             commands: Vec::new(),
             edited_name: None,
@@ -144,20 +153,32 @@ impl Gallery {
             r.update(s, is_sel, s.id == active_id, suppress);
         }
 
-        // Seed the inline editor with the selected custom theme's name — only
-        // when the selection changes, so live typing isn't overwritten.
+        // Refresh clean cached names, but keep an unfinished local rename
+        // when History or another writer changes the same canonical name.
         if selected_custom {
+            let name = specs.iter().find(|s| s.id == selected)
+                .map(|s| s.name.clone()).unwrap_or_default();
             if self.seeded_id.as_deref() != Some(selected) {
-                let name = specs
-                    .iter()
-                    .find(|s| s.id == selected)
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default();
                 self.name_input.set_text(&name);
+                self.edited_name = None;
+                self.rename_state = RenameState::Current;
                 self.seeded_id = Some(selected.to_string());
+            } else if self.canonical_name != name {
+                let dirty = self.edited_name.is_some()
+                    || self.name_input.value() != self.canonical_name;
+                if dirty && self.name_input.value() != name {
+                    self.rename_state = RenameState::Conflict;
+                    self.edited_name = None;
+                } else {
+                    self.name_input.set_text(&name);
+                    self.rename_state = RenameState::Current;
+                }
             }
+            self.canonical_name = name;
         } else {
             self.seeded_id = None;
+            self.rename_state = RenameState::Current;
+            self.edited_name = None;
         }
 
         if editor_before != self.editor_present() {
@@ -175,14 +196,38 @@ impl Gallery {
     }
 
     pub fn take_edited_name(&mut self) -> Option<String> {
-        self.edited_name.take()
+        if self.rename_state == RenameState::Conflict { None } else { self.edited_name.take() }
     }
 
     /// Stage a local inline-name edit. Used by the app's headless interaction
     /// harness as well as the real `TextInput` event path.
     pub fn stage_edited_name(&mut self, name: impl Into<String>) {
-        self.edited_name = Some(name.into());
+        let name = name.into();
+        self.name_input.set_text(&name);
+        self.edited_name = Some(name);
     }
+
+    /// A conflicting local rename needs a deliberate commit or cancel.
+    pub(crate) fn resolve_name_conflict(&mut self, key: &Key) -> bool {
+        if self.rename_state != RenameState::Conflict { return false; }
+        match key {
+            Key::Named(NamedKey::Enter) => {
+                self.edited_name = Some(self.name_input.value().to_string());
+                self.rename_state = RenameState::Current;
+                true
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.name_input.set_text(&self.canonical_name);
+                self.edited_name = None;
+                self.rename_state = RenameState::Current;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn displayed_name(&self) -> &str { self.name_input.value() }
 
     /// Open the actions menu for the selected row — used by the `--shots`
     /// renderer to capture the menu without a live right-click.
@@ -332,17 +377,15 @@ impl Widget for Gallery {
         // No app-name wordmark: the OS titlebar shows "Themes". The gallery
         // header is just the functional theme count, and the list flows up into
         // the reclaimed space.
-        draw::text_w(
-            tr,
-            scene,
-            t,
-            &format!("{} themes", self.count),
-            12.0,
-            theme.text_dim,
-            self.rect.x0 + f64::from(PAD),
-            self.rect.y0 + 12.0,
-            TextWeight::Semibold,
-        );
+        if self.rename_state == RenameState::Conflict {
+            tr.draw_text(scene, NAME_CONFLICT_HINT, 11., theme.text_dim,
+                t * Affine::translate((self.rect.x0 + f64::from(PAD), self.rect.y0 + 3.)),
+                Some((self.rect.width() - 2. * f64::from(PAD)) as f32));
+        } else {
+            draw::text_w(tr, scene, t, &format!("{} themes", self.count), 12.,
+                theme.text_dim, self.rect.x0 + f64::from(PAD), self.rect.y0 + 12.,
+                TextWeight::Semibold);
+        }
         for r in &mut self.rows {
             r.draw(scene, t, tr, theme, p);
         }
@@ -437,6 +480,14 @@ impl Widget for Gallery {
         if self.editor_present()
             && let Some(n) = self.name_input_node
         {
+            if self.name_input.is_focused()
+                && let WindowEvent::KeyboardInput { event: key, .. } = event
+                && key.state == ElementState::Pressed
+                && self.resolve_name_conflict(&key.logical_key)
+            {
+                *handled = true;
+                return;
+            }
             self.name_input.handle_event(
                 event,
                 scale,
@@ -479,6 +530,11 @@ impl Widget for Gallery {
                 }
             }
         }
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        (self.rename_state == RenameState::Conflict).then(|| ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+            .with_name(NAME_CONFLICT_HINT))
     }
 
     fn name(&self) -> &'static str {

@@ -26,7 +26,7 @@ impl LiveProbe {
     pub fn state(&self) -> PageState {
         self.state
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -51,7 +51,7 @@ impl WebViewEngine for LiveProbe {
         let mut state = self
             .state
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for event in &events {
             match event {
                 WebViewEvent::UriChanged(uri) => {

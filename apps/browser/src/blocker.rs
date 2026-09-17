@@ -336,20 +336,19 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
     };
     match fetch() {
         Ok(text) => {
-            if let Some(p) = &path {
-                if let Some(dir) = p.parent() {
-                    match crate::storage::private_root_write_guard(dir) {
-                        Ok(_private_write) => {
-                            std::fs::create_dir_all(dir).ok();
-                            let temporary =
-                                p.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-                            if std::fs::write(&temporary, &text).is_ok() {
-                                let _ = std::fs::rename(&temporary, p);
-                            }
-                            let _ = std::fs::remove_file(temporary);
+            if let Some(p) = &path
+                && let Some(dir) = p.parent()
+            {
+                match crate::storage::private_root_write_guard(dir) {
+                    Ok(_private_write) => {
+                        std::fs::create_dir_all(dir).ok();
+                        let temporary = p.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+                        if std::fs::write(&temporary, &text).is_ok() {
+                            let _ = std::fs::rename(&temporary, p);
                         }
-                        Err(error) => tracing::warn!(%error, "filter cache is unavailable"),
+                        let _ = std::fs::remove_file(temporary);
                     }
+                    Err(error) => tracing::warn!(%error, "filter cache is unavailable"),
                 }
             }
             Some(text)

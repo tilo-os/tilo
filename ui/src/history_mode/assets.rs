@@ -47,7 +47,8 @@ impl HistoricalAssetResponse {
             wake: crate::wake::WakeHandle::new(),
         }
     }
-    /// Keys must be SHA-256 content digests (bare hex or `sha256:`). Bytes are
+    /// Keys are SHA-256 (bare hex or `sha256:`), or explicit `asset:blake3:`
+    /// content identities. Bare hashes always retain SHA-256 semantics. Bytes are
     /// admitted only after digest and total-size verification. Missing keys
     /// remain missing; no current-media fallback is available to a renderer.
     pub fn complete(self, assets: Result<BTreeMap<String, Arc<[u8]>>, String>) {
@@ -63,8 +64,18 @@ impl HistoricalAssetResponse {
                 if total > 128 * 1024 * 1024 {
                     return Err("Historical media exceeds the 128 MiB preview limit".into());
                 }
-                let digest = format!("{:x}", Sha256::digest(bytes));
-                if hash.strip_prefix("sha256:").unwrap_or(hash) != digest {
+                let (recorded, digest) = if let Some(hex) = hash.strip_prefix("asset:blake3:") {
+                    (hex, blake3::hash(bytes).to_hex().to_string())
+                } else {
+                    (
+                        hash.strip_prefix("sha256:").unwrap_or(hash),
+                        format!("{:x}", Sha256::digest(bytes)),
+                    )
+                };
+                if recorded.len() != 64
+                    || !recorded.bytes().all(|b| b.is_ascii_hexdigit())
+                    || recorded != digest
+                {
                     return Err("Historical media does not match its recorded content hash".into());
                 }
             }
@@ -79,6 +90,23 @@ impl HistoricalAssetResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_blake3_admission_preserves_recorded_key() {
+        let key = AssetResponseKey {
+            host: uuid::Uuid::new_v4(),
+            resource: HistoryResource::new("p", "r", "app", crate::RecordId::for_tab(3)),
+            generation: 4,
+            side: PreviewSide::After,
+            heads: vec![],
+        };
+        let (sender, receiver) = mpsc::channel();
+        let hash = "asset:blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
+        HistoricalAssetResponse::new(key.clone(), sender)
+            .complete(Ok(BTreeMap::from([(hash.into(), Arc::from([]))])));
+        let (received, result) = receiver.recv().unwrap();
+        assert_eq!(received, key);
+        assert_eq!(result.unwrap().get(hash), Some([].as_slice()));
+    }
     #[test]
     fn response_verifies_content_hash_and_keeps_original_request_key() {
         let key = AssetResponseKey {
@@ -103,5 +131,66 @@ mod tests {
         let (received, result) = receiver.recv().unwrap();
         assert_eq!(received, key);
         assert!(result.unwrap_err().contains("recorded content hash"));
+    }
+}
+
+#[cfg(test)]
+mod algorithm_regressions {
+    use super::*;
+    fn admit(assets: BTreeMap<String, Arc<[u8]>>) -> Result<FrozenPreviewAssets, String> {
+        let key = AssetResponseKey {
+            host: uuid::Uuid::new_v4(),
+            resource: HistoryResource::new("p", "w", "a", crate::RecordId::for_tab(9)),
+            generation: 7,
+            side: PreviewSide::Before,
+            heads: vec![],
+        };
+        let (tx, rx) = mpsc::channel();
+        HistoricalAssetResponse::new(key.clone(), tx).complete(Ok(assets));
+        let (received, result) = rx.recv().unwrap();
+        assert_eq!(received, key);
+        result
+    }
+    #[test]
+    fn explicit_algorithms_wrong_bytes_malformed_unknown_and_bare_sha256_semantics() {
+        let bytes: Arc<[u8]> = Arc::from(b"historical image bytes".as_slice());
+        let sha = format!("{:x}", Sha256::digest(&bytes));
+        let blake = blake3::hash(&bytes).to_hex().to_string();
+        for id in [
+            sha.clone(),
+            format!("sha256:{sha}"),
+            format!("asset:blake3:{blake}"),
+        ] {
+            assert_eq!(
+                admit(BTreeMap::from([(id.clone(), bytes.clone())]))
+                    .unwrap()
+                    .get(&id),
+                Some(bytes.as_ref())
+            );
+            assert!(admit(BTreeMap::from([(id, Arc::from(b"replacement".as_slice()))])).is_err());
+        }
+        for id in [
+            blake.clone(),
+            format!("blake3:{blake}"),
+            format!("asset:md5:{blake}"),
+            format!("asset:blake3:{blake}0"),
+            "asset:blake3:xyz".into(),
+            format!("sha256:{blake}"),
+        ] {
+            assert!(admit(BTreeMap::from([(id, bytes.clone())])).is_err());
+        }
+    }
+    #[test]
+    fn count_and_aggregate_limits_precede_delivery() {
+        let too_many = (0..4097).map(|i| (i.to_string(), Arc::from([]))).collect();
+        assert!(admit(too_many).unwrap_err().contains("4096"));
+        let bytes: Arc<[u8]> = vec![0u8; 65 * 1024 * 1024].into();
+        let sha = format!("{:x}", Sha256::digest(&bytes));
+        let blake = format!("asset:blake3:{}", blake3::hash(&bytes).to_hex());
+        assert!(
+            admit(BTreeMap::from([(sha, bytes.clone()), (blake, bytes)]))
+                .unwrap_err()
+                .contains("128 MiB")
+        );
     }
 }

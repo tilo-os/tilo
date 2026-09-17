@@ -29,6 +29,7 @@ pub mod adblock;
 pub mod wpe;
 
 pub(crate) mod frame_trace;
+mod scroll_marker;
 
 use std::sync::{Arc, Mutex};
 

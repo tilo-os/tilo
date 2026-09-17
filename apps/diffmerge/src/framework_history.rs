@@ -1,7 +1,7 @@
 //! Frozen merged output. The unsaved external originals cannot be reconstructed.
 use crate::doc::MergeDoc;
-use std::fmt::Write as _;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use std::fmt::Write as _;
 use ui::history_mode::adapter::{map_collection, navigate_pages};
 use ui::history_mode::restore::{
     HistoryRestoreRoot, HistoryRestoreSchema, RestoreValueType, ScalarType,
@@ -52,15 +52,15 @@ pub static SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
     validate_result: validate,
 };
 fn validate(doc: &AutoCommit) -> Result<(), String> {
-    if let Some((value, _)) = doc.get(ROOT, "merged").map_err(|e| e.to_string())? {
-        if value != Value::Object(ObjType::Text) {
-            return Err("Merged output must be Text".into());
-        }
+    if let Some((value, _)) = doc.get(ROOT, "merged").map_err(|e| e.to_string())?
+        && value != Value::Object(ObjType::Text)
+    {
+        return Err("Merged output must be Text".into());
     }
-    if let Some((value, _)) = doc.get(ROOT, "session").map_err(|e| e.to_string())? {
-        if value.to_str().is_none() {
-            return Err("Session must be a string".into());
-        }
+    if let Some((value, _)) = doc.get(ROOT, "session").map_err(|e| e.to_string())?
+        && value.to_str().is_none()
+    {
+        return Err("Session must be a string".into());
     }
     if let Some(map) = map_collection(doc, "resolutions")? {
         for key in doc.keys(&map) {
@@ -157,10 +157,10 @@ impl HistoryPreview for OutputPreview {
         let description = if self.view.page.as_deref() == Some("originals") {
             let mut s="Original inputs unavailable: base, ours and theirs were not recorded. Recorded choices are metadata only; historical hunk identity cannot be verified.".to_string();
             if let Some(label) = &self.session {
-                let _ = write!(s,"\nSession label: {label}");
+                let _ = write!(s, "\nSession label: {label}");
             }
             for (h, choice) in &self.resolutions {
-                let _ = write!(s,"\nRecorded hunk {h}: {choice}");
+                let _ = write!(s, "\nRecorded hunk {h}: {choice}");
             }
             s
         } else if self.recorded {
@@ -177,6 +177,97 @@ impl HistoryPreview for OutputPreview {
                     "Original inputs unavailable / recorded choices".into(),
                 ),
             ],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn long_output_scroll_reaches_last_line_and_moves_wide_code_at_both_widths() {
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let mut reference = Scene::new();
+        tr.draw_text(
+            &mut reference,
+            "200",
+            12.,
+            theme.text_dim,
+            Affine::IDENTITY,
+            None,
+        );
+        let glyph_ids = |scene: &Scene, range: std::ops::Range<usize>| {
+            scene.encoding().resources.glyphs[range]
+                .iter()
+                .map(|g| g.id)
+                .collect::<Vec<_>>()
+        };
+        let target = glyph_ids(
+            &reference,
+            reference.encoding().resources.glyph_runs[0].glyphs.clone(),
+        );
+        let (_, height) = tr.measure("M", 14., None);
+        let pitch = f64::from(height).max(20.);
+        for width in [360., 1000.] {
+            let clip = Rect::new(0., 0., width, 240.);
+            let mut preview = OutputPreview {
+                output: "abcdefghijklmno ".repeat(100) + "\n",
+                recorded: true,
+                resolutions: vec![],
+                session: None,
+                view: PreviewView {
+                    page: Some("output".into()),
+                    ..Default::default()
+                },
+                bounds: clip,
+            };
+            preview.output = preview.output.repeat(200);
+            let mut before = Scene::new();
+            preview.draw(&mut before, Affine::IDENTITY, &mut tr, &theme);
+            assert!(
+                !before
+                    .encoding()
+                    .resources
+                    .glyph_runs
+                    .iter()
+                    .any(|r| glyph_ids(&before, r.glyphs.clone()) == target)
+            );
+            preview.navigate(PreviewNavigation::Scroll {
+                dx: 0.,
+                dy: -199. * pitch,
+            });
+            let mut after = Scene::new();
+            preview.draw(&mut after, Affine::IDENTITY, &mut tr, &theme);
+            let last_line = after
+                .encoding()
+                .resources
+                .glyph_runs
+                .iter()
+                .find(|r| glyph_ids(&after, r.glyphs.clone()) == target)
+                .unwrap();
+            let y = f64::from(last_line.transform.translation[1]);
+            assert!(y >= clip.y0 && y < clip.y1);
+            let x = after
+                .encoding()
+                .resources
+                .glyph_runs
+                .last()
+                .unwrap()
+                .transform
+                .translation[0];
+            preview.navigate(PreviewNavigation::Scroll { dx: -160., dy: 0. });
+            let mut horizontal = Scene::new();
+            preview.draw(&mut horizontal, Affine::IDENTITY, &mut tr, &theme);
+            let moved = horizontal
+                .encoding()
+                .resources
+                .glyph_runs
+                .last()
+                .unwrap()
+                .transform
+                .translation[0];
+            assert!((x - moved - 160.).abs() < 0.01);
         }
     }
 }

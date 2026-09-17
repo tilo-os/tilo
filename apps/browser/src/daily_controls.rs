@@ -128,21 +128,21 @@ impl DailyControls {
         }
         dirty
     }
-    pub fn apply(&mut self, event: WebViewEvent) -> bool {
+    pub fn apply(&mut self, event: &WebViewEvent) -> bool {
         match event {
             WebViewEvent::FindResult {
                 id, count, active, ..
-            } if self.open && id == self.id => {
-                if count >= 0 {
-                    self.count = count;
+            } if self.open && *id == self.id => {
+                if *count >= 0 {
+                    self.count = *count;
                 }
-                if active >= 0 {
-                    self.active = active;
+                if *active >= 0 {
+                    self.active = *active;
                 }
                 true
             }
             WebViewEvent::ZoomChanged(level) => {
-                self.zoom = level;
+                self.zoom = *level;
                 true
             }
             _ => false,
@@ -227,13 +227,13 @@ mod tests {
         }));
         first.query.set("other".into());
         first.sync(&engine);
-        assert!(!first.apply(WebViewEvent::FindResult {
+        assert!(!first.apply(&WebViewEvent::FindResult {
             id: 1,
             count: 9,
             active: 3,
             final_update: true
         }));
-        assert!(first.apply(WebViewEvent::FindResult {
+        assert!(first.apply(&WebViewEvent::FindResult {
             id: 2,
             count: 2,
             active: 1,
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn buffered_find_text_and_navigation_reset_do_not_lose_or_reuse_matches() {
         let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
+        let engine: SharedEngine = capture;
         let mut controls = DailyControls::default();
         controls.act(Action::Open, &engine);
         controls.buffer_text("N");
@@ -258,7 +258,7 @@ mod tests {
         controls.sync(&engine);
         assert!(controls.navigation_started(&engine));
         assert!(!controls.open);
-        assert!(!controls.apply(WebViewEvent::FindResult {
+        assert!(!controls.apply(&WebViewEvent::FindResult {
             id: 1,
             count: 3,
             active: 1,
@@ -276,8 +276,8 @@ mod tests {
         for _ in 0..20 {
             first.act(Action::Zoom(1), &engine);
         }
-        assert_eq!(first.zoom, 9.0);
-        assert_eq!(second.zoom, 0.0);
+        assert!((first.zoom - 9.0).abs() < f64::EPSILON);
+        assert!(second.zoom.abs() < f64::EPSILON);
         first.act(Action::Zoom(0), &engine);
         assert_eq!(
             capture.commands().last(),
