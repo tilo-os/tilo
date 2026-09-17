@@ -166,7 +166,7 @@ jobs:
     # Keep those system headers in the versioned CI builder image instead of
     # resolving distro packages independently in every release job.
     container:
-      image: code.sandbox.example/tilo/tilo-builder:latest
+      image: code.sandbox.example/qos/qos-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

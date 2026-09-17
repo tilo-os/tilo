@@ -48,7 +48,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 15
     container:
-      image: code.sandbox.example/tilo/tilo-builder:latest
+      image: code.sandbox.example/qos/qos-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -178,7 +178,7 @@ jobs:
       max-parallel: 2
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     container:
-      image: code.sandbox.example/tilo/tilo-builder:latest
+      image: code.sandbox.example/qos/qos-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
