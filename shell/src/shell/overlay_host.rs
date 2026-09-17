@@ -403,10 +403,15 @@ mod device_fabric_ui_tests {
         }));
 
         host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        // The consent and source rows leave the destination just below the
+        // bounded pane on compact displays. Scrolling must preserve the call
+        // selection so that choosing the now-visible device proposes it.
+        host.qs_device_fabric_start = 1;
         host.handle_qs_device_fabric_click(Point::new(
-            host.qs_device_row_rect(4).x0 + 44.0,
-            host.qs_device_row_rect(4).center().y,
+            host.qs_device_row_rect(3).x0 + 44.0,
+            host.qs_device_row_rect(3).center().y,
         ));
+        host.qs_device_fabric_start = 0;
         let (_, decline) =
             ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
