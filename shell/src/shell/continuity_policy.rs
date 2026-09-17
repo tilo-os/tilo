@@ -120,6 +120,10 @@ impl ContinuityPolicySnapshot {
         match action {
             PersonalFabricAction::ResumeMedia { .. }
             | PersonalFabricAction::MediaAccepted { .. }
+            | PersonalFabricAction::RemoteAudioOffer { .. }
+            | PersonalFabricAction::RemoteAudioDecision { .. }
+            | PersonalFabricAction::RemoteAudioFrame { .. }
+            | PersonalFabricAction::RemoteAudioStop { .. }
             | PersonalFabricAction::BluetoothHandoffPrepare { .. }
             | PersonalFabricAction::BluetoothHandoffPrepared { .. }
             | PersonalFabricAction::BluetoothHandoffCommit { .. }
