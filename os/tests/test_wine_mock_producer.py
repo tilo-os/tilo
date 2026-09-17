@@ -3,7 +3,9 @@
 import importlib.util
 import io
 import json
+import platform
 from pathlib import Path
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -20,6 +22,21 @@ IMAGE = 'example.invalid/mock@sha256:' + 'a' * 64
 
 
 class Boundaries(unittest.TestCase):
+    @unittest.skipUnless(platform.machine() == 'x86_64' and shutil.which('gcc'), 'requires native x86-64 gcc')
+    def test_native_i686_futex_probe_accepts_abi_and_rejects_missing_syscall(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            producer.verify_i686_execution(root)
+            original_run = producer.run
+            def unavailable_syscall(argv, log):
+                if argv[0] == 'gcc':
+                    source = root / 'i686-execution.S'
+                    source.write_text(source.read_text().replace('mov $240, %eax', 'mov $-1, %eax'))
+                return original_run(argv, log)
+            with patch.object(producer, 'run', side_effect=unavailable_syscall):
+                with self.assertRaisesRegex(ValueError, 'legacy futex ABI'):
+                    producer.verify_i686_execution(root)
+
     def test_streamed_diagnostics_keep_exact_bytes_and_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / 'command.log'
