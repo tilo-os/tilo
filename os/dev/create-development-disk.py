@@ -11,6 +11,7 @@ disposability or device isolation. Privileged Podman can access guest devices;
 the runner must enforce the no-passthrough boundary outside this program.
 """
 import argparse
+from contextlib import ExitStack
 import importlib.util
 import json
 import os
@@ -67,20 +68,21 @@ def guest_inputs(args):
 
 def create(args):
     guest_inputs(args)
-    with source.verified_source(args) as verified:
-        boot = prediction.verify_prediction(verified.root, verified.public_bundle,
-            args.manifest_sha256, args.architecture, args.generation,
-            args.composefs_digest, args.systemd_version)
-        if not re.fullmatch(r'sha256:[0-9a-f]{64}', verified.image_id):
-            raise ValueError('source verifier did not return an immutable local image ID')
-        run = ['/usr/bin/podman', '--remote=false', 'run', '--rm', '--pull=never']
-        help_text = command([*run, '--network=none', '--cap-drop=ALL',
-                             '--entrypoint=/usr/bin/bootc', verified.image_id,
-                             'install', 'to-disk', '--help'])
-        if any(not re.search(r'(?<![\w-])' + re.escape(flag) + r'(?![\w-])', help_text)
-               for flag in FLAGS):
-            raise ValueError('packaged bootc lacks a required installation flag')
-        with PrivateDiskImage(args.output, args.size_bytes) as disk:
+    with ExitStack() as disks:
+        with source.verified_source(args) as verified:
+            boot = prediction.verify_prediction(verified.root, verified.public_bundle,
+                args.manifest_sha256, args.architecture, args.generation,
+                args.composefs_digest, args.systemd_version)
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', verified.image_id):
+                raise ValueError('source verifier did not return an immutable local image ID')
+            run = ['/usr/bin/podman', '--remote=false', 'run', '--rm', '--pull=never']
+            help_text = command([*run, '--network=none', '--cap-drop=ALL',
+                                 '--entrypoint=/usr/bin/bootc', verified.image_id,
+                                 'install', 'to-disk', '--help'])
+            if any(not re.search(r'(?<![\w-])' + re.escape(flag) + r'(?![\w-])', help_text)
+                   for flag in FLAGS):
+                raise ValueError('packaged bootc lacks a required installation flag')
+            disk = disks.enter_context(PrivateDiskImage(args.output, args.size_bytes))
             path = disk.validate()
             # Only a newly allocated file is bound, never the guest root. The
             # operator must provision this VM without device passthrough;
@@ -94,7 +96,8 @@ def create(args):
                 '--target-imgref=' + args.target,
                 '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'])
             disk.validate()
-            disk.retain()
+        # Source cleanup must succeed before the disk may survive this call.
+        disk.retain()
     return {'schema': 1, 'purpose': 'tilo-development-unaccepted-test-disk',
             'source': verified.receipt, 'boot': boot, 'path': str(args.output),
             'size_bytes': args.size_bytes, 'disk_created': True,
