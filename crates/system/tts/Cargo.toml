@@ -26,6 +26,7 @@ path = "src/lib.rs"
 ssip-client = "0.10"
 thiserror.workspace = true
 log = "0.4"
+bounded-command = { path = "../bounded-command" }
 
 [lints]
 workspace = true

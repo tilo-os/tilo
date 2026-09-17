@@ -15496,6 +15496,7 @@ dependencies = [
 name = "tts"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "log",
  "ssip-client",
  "thiserror 2.0.18",
