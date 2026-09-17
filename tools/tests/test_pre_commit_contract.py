@@ -20,6 +20,12 @@ class PreCommitContractTests(unittest.TestCase):
         self.assertIn("tools/clippy-diff.sh", workflow)
         self.assertIn("Clippy diagnostic diff", workflow)
 
+    def test_manual_ci_retry_has_a_real_clippy_baseline(self) -> None:
+        workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn('if [ -z "$base" ] \\', workflow)
+        self.assertIn("base=HEAD^", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
