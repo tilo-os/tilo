@@ -756,6 +756,14 @@ pub struct ShellOverlayHost {
     /// palette to grow so lower rows aren't painted over. See
     /// [`Self::draw_search_banner`].
     search_chip_rows: usize,
+    /// Height of the filter band's controls, measured from the label the
+    /// band draws with (see [`Self::filter_control_height`]) and cached
+    /// from draw so the scope-switch geometry helpers, which hit-testing
+    /// calls without a theme, agree with what was painted.
+    search_filter_control_h: f64,
+    /// Width of one scope segment: the widest scope label plus `s3` each
+    /// side, measured at draw and cached for the same reason.
+    search_scope_segment_w: f64,
     /// Records each room holds, shared with the records search provider.
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     /// Set whenever [`Self::refresh_search_results`] rewrites the
@@ -788,6 +796,11 @@ pub struct ShellOverlayHost {
     /// goes there, Esc leaves it alone. `None` while closed; re-seeded
     /// from the current room each time it opens.
     overview_selection: Option<usize>,
+    /// Overview panel density for the current theme, refreshed each
+    /// layout pass — see [`OverviewMetrics`]. Cached so the geometry
+    /// helpers hit-testing calls (no theme in hand) read the same numbers
+    /// paint does.
+    overview_metrics: OverviewMetrics,
     /// Interruptible open/close driver for quick-settings, so it fades +
     /// slides out on close instead of vanishing.
     qs_transition: ui::Transition,
@@ -1160,13 +1173,13 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
     v.floor() as usize
 }
 
-/// Gap between two chips in the filter band.
-const CHIP_GAP_PX: f64 = 6.0;
-/// Horizontal padding inside a chip — both sides together.
-const CHIP_PAD_PX: f64 = 18.0;
 /// Narrowest a chip is ever squeezed to before its label is just an
 /// ellipsis.
 const CHIP_MIN_W_PX: f64 = 34.0;
+/// Height of a Selector at 100 % text (HIG §9.6). The filter band's chips
+/// and scope switch rest at this height and grow with their measured
+/// label — see [`ShellOverlayHost::filter_control_height`].
+const SELECTOR_HEIGHT_PX: f64 = 28.0;
 
 /// Where each chip of the filter strip goes.
 #[derive(Debug, Clone, PartialEq)]
@@ -1188,7 +1201,9 @@ struct ChipStrip {
 /// narrow the last row, a transient case the next layout fixes.
 ///
 /// `first_row_x1` bounds the first row, since the scope switch anchors to
-/// its right; later rows have the whole band.
+/// its right; later rows have the whole band. `gap` is the space between
+/// two chips — the caller's live `spacing.s2`, passed in because this is a
+/// pure geometry function without a theme in hand.
 fn lay_out_chip_strip(
     natural: &[f64],
     band: Rect,
@@ -1196,6 +1211,7 @@ fn lay_out_chip_strip(
     rows_available: usize,
     row_h: f64,
     control_h: f64,
+    gap: f64,
 ) -> ChipStrip {
     if natural.is_empty() || band.width() <= 0.0 {
         return ChipStrip {
@@ -1229,7 +1245,7 @@ fn lay_out_chip_strip(
             if let Some(r) = plan.get_mut(row) {
                 r.push(i);
             }
-            x += w + CHIP_GAP_PX;
+            x += w + gap;
         }
         plan
     };
@@ -1267,7 +1283,7 @@ fn lay_out_chip_strip(
                 continue;
             };
             *rect = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
-            x += w + CHIP_GAP_PX;
+            x += w + gap;
         }
     };
 
@@ -1296,6 +1312,7 @@ fn lay_out_chip_strip(
             .map(|&i| natural.get(i).copied().unwrap_or(CHIP_MIN_W_PX))
             .collect::<Vec<_>>(),
         row_x1(last) - band.x0,
+        gap,
     );
     place(last, &leftover, &widths, &mut rects);
 
@@ -1306,12 +1323,12 @@ fn lay_out_chip_strip(
 /// Chips narrower than an equal share keep their natural width and hand
 /// the rest to the ones that are over, so squeezing costs the long
 /// labels and leaves short ones alone.
-fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
+fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
     if natural.is_empty() {
         return Vec::new();
     }
     let n = usize_to_f64_lossy(natural.len());
-    let gaps = CHIP_GAP_PX * (n - 1.0);
+    let gaps = gap * (n - 1.0);
     let total: f64 = natural.iter().sum();
     if total + gaps <= available {
         return natural.iter().map(|w| w.max(CHIP_MIN_W_PX)).collect();
@@ -1355,8 +1372,10 @@ fn draw_filter_chip(
 ) {
     let shape = RoundedRect::from_rect(rect, rect.height() / 2.0);
     scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-    let (lw, lh) = text_renderer.measure(label, text_size, None);
-    text_renderer.draw_text(
+    // Control labels are medium weight (HIG §9.6); measured and drawn at
+    // the same weight so the centring holds.
+    let (lw, lh) = text_renderer.measure_weighted(label, text_size, None, TextWeight::Medium);
+    text_renderer.draw_text_weighted(
         scene,
         label,
         text_size,
@@ -1369,6 +1388,7 @@ fn draw_filter_chip(
                 .into(),
         ),
         None,
+        TextWeight::Medium,
     );
 }
 
@@ -1861,6 +1881,8 @@ impl ShellOverlayHost {
             search_chip_rects: Vec::new(),
             search_all_chip_rect: Rect::ZERO,
             search_chip_rows: 1,
+            search_filter_control_h: SELECTOR_HEIGHT_PX,
+            search_scope_segment_w: 0.0,
             room_records: inputs.room_records,
             palette_layout_dirty: false,
             palette_layout_host_w: f64::NAN,
@@ -1873,6 +1895,7 @@ impl ShellOverlayHost {
             overview_target: 0.0,
             overview_scroll_y: 0.0,
             overview_selection: None,
+            overview_metrics: OverviewMetrics::default(),
             transition_started: None,
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
@@ -5890,6 +5913,153 @@ impl ShellOverlayHost {
         self.last_scrolled_active_group.insert(strip_id, group_id);
     }
 
+    /// Where the filter band sits among the palette's semantic children:
+    /// appended after whatever the palette itself publishes (its query
+    /// field and result list), and only while the palette is open —
+    /// a closed palette publishes no children and then neither does the
+    /// band. Computed from the palette's own tree rather than pinned to a
+    /// literal, so the two can never disagree if the palette grows a child.
+    fn search_filters_child_index(&self) -> Option<usize> {
+        let palette = self.palette.accessibility()?;
+        (!palette.children.is_empty()).then_some(palette.children.len())
+    }
+
+    /// Stable address stem for a chip or segment: ASCII letters and digits
+    /// lower-cased, every other run of characters collapsed to one dash, so
+    /// `palette:filter:host-apps` and `palette:scope:this-app` read the same
+    /// in a script as on screen and never carry a second `:`. Callers add
+    /// an ordinal when two labels would collide.
+    fn search_filter_slug(label: &str) -> String {
+        let mut slug = String::with_capacity(label.len());
+        for c in label.chars() {
+            if c.is_ascii_alphanumeric() {
+                slug.push(c.to_ascii_lowercase());
+            } else if !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+        slug.trim_matches('-').to_string()
+    }
+
+    /// `palette:filter:<slug>` for kind `i`, made unique against the kinds
+    /// before it: two providers may mint custom kinds whose labels differ
+    /// only in case or punctuation, and two nodes sharing one address would
+    /// make both unaddressable ("ambiguous target").
+    fn search_filter_key(kinds: &[crate::shell::search::ResourceKind], i: usize) -> String {
+        let slug = |k: &crate::shell::search::ResourceKind| Self::search_filter_slug(k.label());
+        let Some(kind) = kinds.get(i) else {
+            return format!("palette:filter:{i}");
+        };
+        let mine = slug(kind);
+        let taken = kinds.iter().take(i).any(|k| slug(k) == mine);
+        if mine.is_empty() || taken {
+            format!("palette:filter:{mine}-{i}")
+        } else {
+            format!("palette:filter:{mine}")
+        }
+    }
+
+    /// The filter band as semantics: one toggle per kind chip (plus the
+    /// leading "All" reset) and one radio per scope segment, each carrying
+    /// the rect it was last painted at, so a screen reader, a script and
+    /// the UX bench can name a chip instead of guessing where the strip
+    /// wrapped it to. Names are prefixed ("Filter: Files") so they never
+    /// collide with a window title or a result row that shares the word;
+    /// the `palette:*` keys are the scriptable address. A control with no
+    /// rect yet (before the first paint) is hidden rather than dropped,
+    /// so ordinals stay fixed.
+    fn search_filters_accessibility(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        // `checked` is the toggle/radio state AT reads; `selected` mirrors
+        // it so "which one is chosen" also answers the selection question
+        // a list-style reader (and the bench's `selected` check) asks.
+        let bounded = |node: AccessNode, rect: Rect, checked: bool| {
+            let node = node.with_state(AccessState {
+                checked: Some(checked),
+                selected: checked,
+                hidden: rect.area() <= 0.0,
+                ..AccessState::default()
+            });
+            if rect.area() > 0.0 {
+                node.with_bounds(rect)
+            } else {
+                node
+            }
+        };
+
+        let kinds = self.search_registry.registered_kinds();
+        let mut chips = Vec::with_capacity(kinds.len().saturating_add(1));
+        chips.push(bounded(
+            AccessNode::new(Role::ToggleButton)
+                .with_name("Filter: All")
+                .with_semantic_key("palette:filter:all")
+                .with_action_target("palette:filter:all")
+                .with_key(0),
+            self.search_all_chip_rect,
+            self.active_kind_filter.is_empty(),
+        ));
+        for (i, kind) in kinds.iter().enumerate() {
+            let key = Self::search_filter_key(&kinds, i);
+            chips.push(bounded(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(format!("Filter: {}", kind.label()))
+                    .with_semantic_key(key.clone())
+                    .with_action_target(key)
+                    .with_key(u64::try_from(i.saturating_add(1)).unwrap_or(u64::MAX)),
+                self.search_chip_rects.get(i).copied().unwrap_or(Rect::ZERO),
+                self.active_kind_filter.contains(kind),
+            ));
+        }
+
+        let active_scope = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().search_scope)
+            .unwrap_or_default();
+        let scopes = self
+            .search_scope_list()
+            .into_iter()
+            .enumerate()
+            .map(|(idx, scope)| {
+                let label = self.search_scope_pill_label(scope);
+                let key = format!("palette:scope:{}", Self::search_filter_slug(scope.label()));
+                bounded(
+                    AccessNode::new(Role::RadioButton)
+                        .with_name(format!("Scope: {label}"))
+                        .with_semantic_key(key.clone())
+                        .with_action_target(key)
+                        .with_key(u64::try_from(idx).unwrap_or(u64::MAX)),
+                    self.search_scope_segment_hit_rect(idx),
+                    scope == active_scope,
+                )
+            })
+            .collect();
+
+        AccessNode::new(Role::Group)
+            .with_name("Search filters")
+            .with_semantic_key("palette:filters")
+            .with_children(vec![
+                AccessNode::new(Role::Group)
+                    .with_name("Result kinds")
+                    .with_children(chips),
+                AccessNode::new(Role::Group)
+                    .with_name("Search scope")
+                    .with_children(scopes),
+            ])
+    }
+
+    /// Geometry for a path under [`Self::search_filters_accessibility`]:
+    /// `[0, i]` is chip `i` (0 = "All"), `[1, i]` is scope segment `i`.
+    fn search_filter_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
+        let rect = match path {
+            [0, 0] => self.search_all_chip_rect,
+            [0, i] => self.search_chip_rects.get(i.checked_sub(1)?).copied()?,
+            [1, i] => self.search_scope_segment_hit_rect(*i),
+            _ => return None,
+        };
+        (rect.area() > 0.0).then_some(rect)
+    }
+
     /// Toggle a kind in the chip filter. Multiple kinds may be active
     /// simultaneously; the empty state means "everything shows".
     fn toggle_kind_filter(&mut self, kind: crate::shell::search::ResourceKind) {
@@ -7116,6 +7286,20 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Pointer and semantic target of scope segment `idx`: the segment's
+    /// x-range at the track's full height. The painted pill sits `2 px`
+    /// inside the track (a bezel, see [`SEGMENT_INSET_PX`]); the thing you
+    /// press, and the thing a script names, is the whole slice of the
+    /// control, so it shares the chips' height and edges.
+    fn search_scope_segment_hit_rect(&self, idx: usize) -> Rect {
+        let seg = self.search_scope_pill_rect(idx);
+        if seg.area() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let track = self.search_scope_track_rect();
+        Rect::new(seg.x0, track.y0, seg.x1, track.y1)
+    }
+
     /// Outer track of the scope segmented control — the rounded body the
     /// individual segments sit inside.
     fn search_scope_track_rect(&self) -> Rect {
@@ -7124,9 +7308,13 @@ impl ShellOverlayHost {
             return Rect::ZERO;
         }
         let count = self.search_scope_list().len().max(1);
-        let w = (Self::SCOPE_SEGMENT_WIDTH_PX * usize_to_f64_lossy(count) + 2.0 * SEGMENT_INSET_PX)
+        // Segments are as wide as the widest label needs (measured at
+        // draw), capped at a share of the band so the kind chips keep
+        // their first row.
+        let w = (self.search_scope_segment_w * usize_to_f64_lossy(count)
+            + 2.0 * SEGMENT_INSET_PX)
             .min(b.width() * 0.55);
-        let h = Self::FILTER_CONTROL_HEIGHT_PX;
+        let h = self.search_filter_control_h;
         // Anchored to the *first* row of the band, not to the middle of
         // it: when the kind chips wrap to a second row the switch must
         // stay where it was, beside the row it shares, rather than
@@ -7135,12 +7323,46 @@ impl ShellOverlayHost {
         Rect::new(b.x1 - w, cy - h / 2.0, b.x1, cy + h / 2.0)
     }
 
-    /// Width of one scope segment. Wide enough to hold a truncated app
-    /// title without cramping.
-    const SCOPE_SEGMENT_WIDTH_PX: f64 = 88.0;
+    /// Label size for the filter band's chips and scope segments: the
+    /// chrome control label (HIG §9.6, `scale.sm` medium), which already
+    /// carries the person's text scale.
+    fn filter_label_size(theme: &Theme) -> f32 {
+        theme.tokens.typography.scale.sm
+    }
+
     /// Shared height for every control in the filter band, so the chips
-    /// and the scope switch sit on one baseline.
-    const FILTER_CONTROL_HEIGHT_PX: f64 = 24.0;
+    /// and the scope switch sit on one centre line. The §9.6 Selector
+    /// height at 100 % text; it grows with the measured label line height
+    /// plus `s2` so a 200 % label sits inside its pill rather than
+    /// spilling over it, and stops `s1` short of the band's row so two
+    /// rows of chips keep a gutter instead of touching.
+    fn filter_control_height(theme: &Theme, text_renderer: &mut TextRenderer, row_h: f64) -> f64 {
+        let size = Self::filter_label_size(theme);
+        let (_, lh) = text_renderer.measure_weighted("Ag", size, None, TextWeight::Medium);
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        (f64::from(lh) + f64::from(theme.tokens.spacing.s2))
+            .max(SELECTOR_HEIGHT_PX)
+            .min(row_h - s1)
+    }
+
+    /// Width one scope segment needs: the widest scope label at the
+    /// band's label size plus `s3` either side — measured, so "Everywhere"
+    /// and a long app title get room instead of an ellipsis.
+    fn scope_segment_width(&self, theme: &Theme, text_renderer: &mut TextRenderer) -> f64 {
+        let size = Self::filter_label_size(theme);
+        let pad = 2.0 * f64::from(theme.tokens.spacing.s3);
+        self.search_scope_list()
+            .into_iter()
+            .map(|scope| {
+                let label = self.search_scope_pill_label(scope);
+                f64::from(
+                    text_renderer
+                        .measure_weighted(&label, size, None, TextWeight::Medium)
+                        .0,
+                ) + pad
+            })
+            .fold(0.0, f64::max)
+    }
 
     /// The overview's model of every room, in tree order.
     ///
@@ -7181,9 +7403,8 @@ impl ShellOverlayHost {
             Some(card) => Self::overview_share_rows(card),
             None => 1,
         };
-        OVERVIEW_HERE_HEIGHT_PX
-            + OVERVIEW_CAPTION_HEIGHT_PX
-            + usize_to_f64_lossy(rows) * OVERVIEW_SHARE_ROW_HEIGHT_PX
+        let m = self.overview_metrics;
+        m.here_h + m.caption_h + usize_to_f64_lossy(rows) * m.share_row_h
     }
 
     /// How many rows the "go to" list holds: every room but the one you
@@ -7197,21 +7418,22 @@ impl ShellOverlayHost {
     /// Height the list would take if nothing clipped it.
     fn overview_content_height(&self) -> f64 {
         let k = usize_to_f64_lossy(self.overview_list_slots());
-        (k * (OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX) - OVERVIEW_ROOM_ROW_GAP_PX)
-            .max(0.0)
+        let m = self.overview_metrics;
+        (k * (m.room_row_h + m.room_row_gap) - m.room_row_gap).max(0.0)
     }
 
     /// The panel: a floating surface centred in the viewport, sized to what
     /// it has to say and capped so it never runs off screen. Same width and
     /// centring as the workspace-settings modal — the same kind of object.
     fn overview_panel_rect(&self) -> Rect {
-        let w = OVERVIEW_PANEL_WIDTH_PX.min(self.rect.width() - OVERVIEW_PANEL_MARGIN_PX * 2.0);
-        let natural = OVERVIEW_PANEL_PAD_PX * 2.0
+        let m = self.overview_metrics;
+        let w = OVERVIEW_PANEL_WIDTH_PX.min(self.rect.width() - m.margin * 2.0);
+        let natural = m.pad * 2.0
             + self.overview_here_block_height()
-            + OVERVIEW_SECTION_GAP_PX
-            + OVERVIEW_CAPTION_HEIGHT_PX
+            + m.section_gap
+            + m.caption_h
             + self.overview_content_height();
-        let max_h = self.rect.height() - OVERVIEW_PANEL_MARGIN_PX * 2.0;
+        let max_h = self.rect.height() - m.margin * 2.0;
         let h = natural.min(max_h).max(0.0);
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
@@ -7220,14 +7442,14 @@ impl ShellOverlayHost {
 
     /// The band inside the panel that content is laid out in.
     fn overview_content_rect(&self) -> Rect {
-        self.overview_panel_rect().inset(-OVERVIEW_PANEL_PAD_PX)
+        self.overview_panel_rect().inset(-self.overview_metrics.pad)
     }
 
     /// The "you are here" block — the current room's identity, access
     /// and people, with what it shares beneath.
     fn overview_here_rect(&self) -> Rect {
         let c = self.overview_content_rect();
-        Rect::new(c.x0, c.y0, c.x1, c.y0 + OVERVIEW_HERE_HEIGHT_PX)
+        Rect::new(c.x0, c.y0, c.x1, c.y0 + self.overview_metrics.here_h)
     }
 
     /// Y of the "Shared out of here" caption.
@@ -7239,12 +7461,12 @@ impl ShellOverlayHost {
     fn overview_list_caption_top(&self) -> f64 {
         self.overview_content_rect().y0
             + self.overview_here_block_height()
-            + OVERVIEW_SECTION_GAP_PX
+            + self.overview_metrics.section_gap
     }
 
     /// Y the first room row starts at, before scrolling.
     fn overview_list_top(&self) -> f64 {
-        self.overview_list_caption_top() + OVERVIEW_CAPTION_HEIGHT_PX
+        self.overview_list_caption_top() + self.overview_metrics.caption_h
     }
 
     /// Height of the band the room list scrolls inside.
@@ -7261,9 +7483,10 @@ impl ShellOverlayHost {
     /// Rect of list slot `slot`, panned by `overview_scroll_y`.
     fn overview_list_slot_rect(&self, slot: usize) -> Rect {
         let c = self.overview_content_rect();
+        let m = self.overview_metrics;
         let y0 = self.overview_list_top() - self.overview_scroll_y
-            + usize_to_f64_lossy(slot) * (OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX);
-        Rect::new(c.x0, y0, c.x1, y0 + OVERVIEW_ROOM_ROW_HEIGHT_PX)
+            + usize_to_f64_lossy(slot) * (m.room_row_h + m.room_row_gap);
+        Rect::new(c.x0, y0, c.x1, y0 + m.room_row_h)
     }
 
     /// The list slot a room occupies: the room you are in has none — it
@@ -7304,9 +7527,10 @@ impl ShellOverlayHost {
             // The room you are in is the pinned block, never in the list.
             return;
         };
-        let step = OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX;
+        let m = self.overview_metrics;
+        let step = m.room_row_h + m.room_row_gap;
         let top = usize_to_f64_lossy(slot) * step;
-        let bottom = top + OVERVIEW_ROOM_ROW_HEIGHT_PX;
+        let bottom = top + m.room_row_h;
         let view = self.overview_viewport_height();
         let max = self.overview_max_scroll_y();
         let mut y = self.overview_scroll_y;
@@ -9402,9 +9626,11 @@ impl ShellOverlayHost {
     }
 
     fn handle_palette_pointer_click(&mut self, p: Point) -> bool {
-        // Scope can be swapped without dismissing the palette.
+        // Scope can be swapped without dismissing the palette. The target
+        // is the segment's full-height slice of the track — the same rect
+        // its semantic node publishes.
         for (idx, scope) in self.search_scope_list().iter().enumerate() {
-            if self.search_scope_pill_rect(idx).contains(p) {
+            if self.search_scope_segment_hit_rect(idx).contains(p) {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut state = chrome.borrow_mut();
                     state.search_scope = *scope;
@@ -10532,30 +10758,103 @@ impl ShellOverlayHost {
 /// Widest the rooms panel ever gets, matching the workspace-settings
 /// modal so the shell's floating surfaces are one family.
 const OVERVIEW_PANEL_WIDTH_PX: f64 = 720.0;
-/// Inset from the viewport edge, and the smallest gap the panel keeps
-/// from the top and bottom of the screen.
-const OVERVIEW_PANEL_MARGIN_PX: f64 = 48.0;
-/// Inner padding on the panel.
-const OVERVIEW_PANEL_PAD_PX: f64 = 20.0;
-/// Height of the "you are here" block: the current room's name, who can
-/// reach it, and the faces of the people in it.
-const OVERVIEW_HERE_HEIGHT_PX: f64 = 84.0;
-/// Height of the caption above a section ("Shared out of here", "Go to").
-const OVERVIEW_CAPTION_HEIGHT_PX: f64 = 26.0;
-/// Height of one share row.
-const OVERVIEW_SHARE_ROW_HEIGHT_PX: f64 = 28.0;
 /// Most share rows drawn before the rest collapse into "+N more" — the
 /// panel says whether things leave this room, the permissions pane has
 /// the full list.
 const OVERVIEW_SHARES_MAX_ROWS: usize = 4;
-/// Height of one room row in the "go to" list.
-const OVERVIEW_ROOM_ROW_HEIGHT_PX: f64 = 60.0;
-/// Gutter between room rows.
-const OVERVIEW_ROOM_ROW_GAP_PX: f64 = 6.0;
-/// Gap between the "you are here" block and the room list.
-const OVERVIEW_SECTION_GAP_PX: f64 = 18.0;
-/// Corner radius of one room row.
-const OVERVIEW_ROW_RADIUS_PX: f64 = 10.0;
+
+/// Overview panel density, resolved from the theme once per layout pass
+/// (`ShellOverlayHost::build_layout`) and cached on the host, so the
+/// geometry helpers hit-testing calls — with no theme in hand — read the
+/// same numbers paint does.
+///
+/// Every vertical extent is a line height at the size the text is drawn
+/// with, plus spacing steps. Fixed pixel heights put "Private to you",
+/// "Shared out of here" and the share row on top of one another at 200 %
+/// text; measured ones grow the panel instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OverviewMetrics {
+    /// Inset from the viewport edge, and the smallest gap the panel keeps
+    /// from the top and bottom of the screen (`s12`).
+    margin: f64,
+    /// Inner padding of the panel (HIG §9.6: Panel padding `s4`).
+    pad: f64,
+    /// Gap between the "you are here" block and the room list (§9.6: `s4`).
+    section_gap: f64,
+    /// Corner radius of the panel (Panel role, `radii.xl`).
+    panel_radius: f64,
+    /// Corner radius of a room row and the selection frame (Control role,
+    /// `radii.lg`).
+    row_radius: f64,
+    /// Line height of the current room's name (`x3l`); the face stack is
+    /// centred on it.
+    name_lh: f64,
+    /// Height of the "you are here" block: the name line, `s1`, the
+    /// access line, and `s6` of air before the next caption.
+    here_h: f64,
+    /// Height of a section caption: `s2` above the text, `s1` below it.
+    caption_h: f64,
+    /// Where the caption's text sits inside its band (`s2`).
+    caption_text_dy: f64,
+    /// Height of one share row: a `base` line plus `s3`.
+    share_row_h: f64,
+    /// Height of one room row: an `lg` name line, `s1`, an `sm` sub-line,
+    /// and `s3` above and below.
+    room_row_h: f64,
+    /// Gutter between room rows (`s2`).
+    room_row_gap: f64,
+    /// Inner horizontal padding of a room row and of the add row (`s4`).
+    row_pad: f64,
+    /// Height of the "You are here" chip: its `sm` label plus `s2`.
+    chip_h: f64,
+}
+
+impl OverviewMetrics {
+    fn for_theme(theme: &Theme) -> Self {
+        let tokens = &theme.tokens;
+        let spacing = &tokens.spacing;
+        let scale = &tokens.typography.scale;
+        // The single-line height the renderer will measure for this size:
+        // `TextStyle::new` is the style every `measure`/`draw_text` call
+        // in this panel resolves to.
+        let lh = |size: f32| f64::from(ui::TextStyle::new(size).line_height_px());
+        let s1 = f64::from(spacing.s1);
+        let s2 = f64::from(spacing.s2);
+        let s3 = f64::from(spacing.s3);
+        let s4 = f64::from(spacing.s4);
+        let s6 = f64::from(spacing.s6);
+        let name_lh = lh(scale.x3l);
+        let access_lh = lh(scale.base);
+        let caption_lh = lh(scale.sm);
+        let body_lh = lh(scale.base);
+        let row_name_lh = lh(scale.lg);
+        let row_sub_lh = lh(scale.sm);
+        Self {
+            margin: f64::from(spacing.s12),
+            pad: s4,
+            section_gap: s4,
+            panel_radius: f64::from(tokens.radii.xl),
+            row_radius: f64::from(tokens.radii.lg),
+            name_lh,
+            here_h: name_lh + s1 + access_lh + s6,
+            caption_h: s2 + caption_lh + s1,
+            caption_text_dy: s2,
+            share_row_h: body_lh + s3,
+            room_row_h: row_name_lh + s1 + row_sub_lh + 2.0 * s3,
+            room_row_gap: s2,
+            row_pad: s4,
+            chip_h: lh(scale.sm) + s2,
+        }
+    }
+}
+
+impl Default for OverviewMetrics {
+    /// The default theme's density, for a host that has not laid out yet.
+    fn default() -> Self {
+        Self::for_theme(&Theme::default())
+    }
+}
+
 /// Radius of an avatar in a face stack.
 const OVERVIEW_FACE_RADIUS_PX: f64 = 12.0;
 /// Horizontal step between overlapping faces.
@@ -10999,6 +11298,10 @@ impl Widget for ShellOverlayHost {
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
         }
+        // The overview's row heights follow the theme's type sizes; resolve
+        // them here, where the theme is in hand, so this pass's hit-testing
+        // and paint share one answer.
+        self.overview_metrics = OverviewMetrics::for_theme(theme);
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
         // effect — the latter is what makes a single-frame offscreen
@@ -11762,7 +12065,18 @@ impl Widget for ShellOverlayHost {
         for overlay in self.accessible_overlay_order() {
             match overlay {
                 AccessibleOverlay::CommandPalette => {
-                    if let Some(palette) = self.palette.accessibility() {
+                    if let Some(mut palette) = self.palette.accessibility() {
+                        // The filter band is the host's, painted over the
+                        // palette's reserved strip; it joins the palette's
+                        // tree after the palette's own children (query,
+                        // result list) so the dialog reads as one surface.
+                        // A palette that is visible but not open publishes
+                        // no children, and then neither does the band —
+                        // `search_filters_child_index` is the one answer
+                        // both this and `synthetic_accessibility_rect` use.
+                        if self.search_filters_child_index() == Some(palette.children.len()) {
+                            palette.children.push(self.search_filters_accessibility());
+                        }
                         root.children.push(palette);
                     }
                 }
@@ -11956,9 +12270,14 @@ impl Widget for ShellOverlayHost {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
-            AccessibleOverlay::CommandPalette => {
-                self.palette.synthetic_accessibility_rect(child_path)
-            }
+            AccessibleOverlay::CommandPalette => match child_path {
+                // The trailing child is the host's filter band (see
+                // `accessibility`); everything before it is the palette's.
+                [first, rest @ ..] if Some(*first) == self.search_filters_child_index() => {
+                    self.search_filter_rect_for_path(rest)
+                }
+                _ => self.palette.synthetic_accessibility_rect(child_path),
+            },
             AccessibleOverlay::RoomActivity => {
                 let mut local_path = Vec::with_capacity(path.len());
                 local_path.push(0);
@@ -13865,14 +14184,17 @@ impl ShellOverlayHost {
             } else {
                 transform
             };
-            ui::surface::soft_shadow(
+            // A Panel casts `e4` (HIG §9.1): the token's own offset, blur
+            // and strength, following the card's rounded outline. While
+            // the palette is still arriving the shadow fades in with it.
+            let mut shadow = theme.tokens.elevation.e4;
+            shadow.color = shadow.color.with_alpha_factor(alpha);
+            ui::surface::shadow(
                 scene,
                 palette_xform,
                 palette_rect,
-                theme.tokens.colors.neutral[0],
-                44.0,
-                14.0,
-                0.55 * alpha,
+                self.palette.surface_radius_px(),
+                &shadow,
             );
             // A cloned theme with `surfaces.raised` pre-tinted, since
             // `CommandPalette` (in `quick-ui`) paints its own surface from
@@ -14250,8 +14572,9 @@ impl ShellOverlayHost {
         let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
         let hover = self.last_cursor.is_some_and(|c| rect.contains(c));
+        let m = self.overview_metrics;
 
-        let rr = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
+        let rr = RoundedRect::from_rect(rect, m.row_radius);
         if selected {
             scene.fill(
                 Fill::NonZero,
@@ -14283,7 +14606,7 @@ impl ShellOverlayHost {
             );
         }
 
-        let pad = 14.0_f64;
+        let pad = m.row_pad;
         let x0 = rect.x0 + pad;
         let x1 = rect.x1 - pad;
 
@@ -14301,7 +14624,7 @@ impl ShellOverlayHost {
             &colors_for,
             ground,
         );
-        let text_w = (faces_left - 12.0 - x0).max(40.0);
+        let text_w = (faces_left - f64::from(tokens.spacing.s3) - x0).max(40.0);
 
         let name_size = tokens.typography.scale.lg;
         let name = text_renderer.elide_to_width_weighted(
@@ -14322,7 +14645,9 @@ impl ShellOverlayHost {
         }
         let sub = text_renderer.elide_to_width(&sub, sub_size, f64_to_f32_lossy(text_w));
         let (_, sub_h) = text_renderer.measure(&sub, sub_size, None);
-        let stack_h = f64::from(name_h) + 2.0 + f64::from(sub_h);
+        // Name and sub-line are one stack, `s1` apart, centred on the row.
+        let line_gap = f64::from(tokens.spacing.s1);
+        let stack_h = f64::from(name_h) + line_gap + f64::from(sub_h);
         let top = rect.center().y - stack_h / 2.0;
         text_renderer.draw_text_weighted(
             scene,
@@ -14338,7 +14663,7 @@ impl ShellOverlayHost {
             &sub,
             sub_size,
             colors.text_dim,
-            transform.pre_translate((x0, top + f64::from(name_h) + 2.0).into()),
+            transform.pre_translate((x0, top + f64::from(name_h) + line_gap).into()),
             None,
         );
     }
@@ -14365,8 +14690,11 @@ impl ShellOverlayHost {
         // floating-surface language across the shell's overlays.
         let panel = self.overview_panel_rect();
         let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
-        ui::surface::elevation(scene, transform, panel, &tokens.elevation.e4);
-        let card_rr = RoundedRect::from_rect(panel, f64::from(tokens.radii.lg));
+        let m = self.overview_metrics;
+        // A Panel (HIG §9.1): `radii.xl`, and a shadow that follows its own
+        // rounded outline rather than a square field.
+        ui::surface::shadow(scene, transform, panel, m.panel_radius, &tokens.elevation.e4);
+        let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
         scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -14407,7 +14735,13 @@ impl ShellOverlayHost {
             "Go to",
             caption_size,
             colors.text_tertiary,
-            transform.pre_translate((content.x0, self.overview_list_caption_top() + 6.0).into()),
+            transform.pre_translate(
+                (
+                    content.x0,
+                    self.overview_list_caption_top() + m.caption_text_dy,
+                )
+                    .into(),
+            ),
             None,
         );
 
@@ -14507,11 +14841,15 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let m = self.overview_metrics;
+        let s3 = f64::from(tokens.spacing.s3);
+        let s4 = f64::from(tokens.spacing.s4);
 
-        self.draw_overview_here_selection(scene, transform, content, here_rect, hi, accent);
+        self.draw_overview_here_selection(scene, transform, theme, content, here_rect, hi, accent);
 
-        // Faces claim the right edge; the name is elided against the
-        // room they leave rather than sliding under them.
+        // Faces claim the right edge, centred on the name line; the name
+        // is elided against the room they leave rather than sliding under
+        // them.
         let colors_for = self.overview_face_colors(hi);
         let faces_left = Self::draw_face_stack(
             scene,
@@ -14519,7 +14857,7 @@ impl ShellOverlayHost {
             text_renderer,
             theme,
             content.x1,
-            here_rect.y0 + 22.0,
+            here_rect.y0 + m.name_lh / 2.0,
             &card.people,
             &colors_for,
             ground,
@@ -14528,10 +14866,10 @@ impl ShellOverlayHost {
         // "You are here" states which of these rooms you are in, in
         // the same tinted-chip language every other current-state
         // marker in the shell uses.
-        let chip_h = 22.0_f64;
+        let chip_h = m.chip_h;
         let chip_w =
             Chip::natural_width_at("You are here", chip_h, ChipLead::None, theme, text_renderer);
-        let name_avail = (faces_left - 16.0 - content.x0 - chip_w - 10.0).max(60.0);
+        let name_avail = (faces_left - s4 - content.x0 - chip_w - s3).max(60.0);
         let name = text_renderer.elide_to_width_weighted(
             &card.name,
             name_size,
@@ -14549,7 +14887,7 @@ impl ShellOverlayHost {
             None,
             TextWeight::Bold,
         );
-        let chip_x0 = content.x0 + f64::from(name_w) + 10.0;
+        let chip_x0 = content.x0 + f64::from(name_w) + s3;
         Chip::draw_at(
             scene,
             transform,
@@ -14572,7 +14910,13 @@ impl ShellOverlayHost {
             &access,
             tokens.typography.scale.base,
             colors.text_dim,
-            transform.pre_translate((content.x0, here_rect.y0 + f64::from(name_h) + 6.0).into()),
+            transform.pre_translate(
+                (
+                    content.x0,
+                    here_rect.y0 + f64::from(name_h) + f64::from(tokens.spacing.s1),
+                )
+                    .into(),
+            ),
             None,
         );
     }
@@ -14584,6 +14928,7 @@ impl ShellOverlayHost {
         &self,
         scene: &mut Scene,
         transform: Affine,
+        theme: &Theme,
         content: Rect,
         here_rect: Rect,
         hi: usize,
@@ -14592,13 +14937,17 @@ impl ShellOverlayHost {
         if self.overview_selection != Some(hi) {
             return;
         }
+        // The frame stands `s2` off the block's text on three sides and
+        // stops short of the block's bottom air, so it does not run into
+        // the caption beneath.
+        let s2 = f64::from(theme.tokens.spacing.s2);
         let sel = Rect::new(
-            content.x0 - 10.0,
-            here_rect.y0 - 10.0,
-            content.x1 + 10.0,
-            here_rect.y1 - 2.0,
+            content.x0 - s2,
+            here_rect.y0 - s2,
+            content.x1 + s2,
+            here_rect.y1 - s2,
         );
-        let sel_rr = RoundedRect::from_rect(sel, OVERVIEW_ROW_RADIUS_PX);
+        let sel_rr = RoundedRect::from_rect(sel, self.overview_metrics.row_radius);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -14636,17 +14985,18 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let caption_size = tokens.typography.scale.sm;
 
+        let m = self.overview_metrics;
         let shares_top = self.overview_shares_top();
         text_renderer.draw_text(
             scene,
             "Shared out of here",
             caption_size,
             colors.text_tertiary,
-            transform.pre_translate((content.x0, shares_top + 6.0).into()),
+            transform.pre_translate((content.x0, shares_top + m.caption_text_dy).into()),
             None,
         );
-        let row_h = OVERVIEW_SHARE_ROW_HEIGHT_PX;
-        let sy = shares_top + OVERVIEW_CAPTION_HEIGHT_PX;
+        let row_h = m.share_row_h;
+        let sy = shares_top + m.caption_h;
         let empty_card = crate::shell::overview::RoomCard {
             id: crate::shell::state::WorkspaceId::default(),
             name: String::new(),
@@ -14717,7 +15067,7 @@ impl ShellOverlayHost {
             colors.text_dim,
             transform.pre_translate(
                 (
-                    content.x0 + glyph + 8.0,
+                    content.x0 + glyph + f64::from(tokens.spacing.s2),
                     sy + (row_h - f64::from(body_h)) / 2.0,
                 )
                     .into(),
@@ -14774,7 +15124,7 @@ impl ShellOverlayHost {
                 colors.text_tertiary,
                 transform.pre_translate(
                     (
-                        content.x0 + glyph + 8.0,
+                        content.x0 + glyph + f64::from(tokens.spacing.s2),
                         sy + (row_h - f64::from(more_h)) / 2.0,
                     )
                         .into(),
@@ -14856,8 +15206,9 @@ impl ShellOverlayHost {
             ),
             None,
         );
-        let what_x = content.x0 + glyph + 8.0;
-        let what_avail = (content.x1 - f64::from(with_w) - 12.0 - what_x).max(40.0);
+        let what_x = content.x0 + glyph + f64::from(tokens.spacing.s2);
+        let what_avail =
+            (content.x1 - f64::from(with_w) - f64::from(tokens.spacing.s3) - what_x).max(40.0);
         let what =
             text_renderer.elide_to_width(&share.what, body_size, f64_to_f32_lossy(what_avail));
         text_renderer.draw_text(
@@ -14916,15 +15267,18 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
 
+        let m = self.overview_metrics;
         let add_rect = self.overview_add_workspace_rect_for(cards_len);
         let add_hover = self.last_cursor.is_some_and(|c| add_rect.contains(c));
-        let add_rr = RoundedRect::from_rect(add_rect, OVERVIEW_ROW_RADIUS_PX);
+        let add_rr = RoundedRect::from_rect(add_rect, m.row_radius);
         if add_hover {
             scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &add_rr);
         }
         let add_color = if add_hover { accent } else { colors.text_dim };
         let glyph = 18.0_f64;
-        let gx = add_rect.x0 + 14.0;
+        // Same inner padding as a room row, so the plus sits on the rows'
+        // text edge.
+        let gx = add_rect.x0 + m.row_pad;
         let gcy = add_rect.center().y;
         ui::icons::draw_icon(
             scene,
@@ -14941,7 +15295,13 @@ impl ShellOverlayHost {
             "New workspace",
             add_size,
             add_color,
-            transform.pre_translate((gx + glyph + 10.0, gcy - f64::from(add_h) / 2.0).into()),
+            transform.pre_translate(
+                (
+                    gx + glyph + f64::from(tokens.spacing.s3),
+                    gcy - f64::from(add_h) / 2.0,
+                )
+                    .into(),
+            ),
             None,
         );
         self.add_workspace_rect = add_rect;
@@ -15443,12 +15803,17 @@ impl ShellOverlayHost {
             return;
         }
 
-        let chip_text_size = (tokens.typography.scale.xs).max(10.0);
+        let chip_text_size = Self::filter_label_size(theme);
         let idle_fill = colors.lift(0.35);
         let active_fill = colors.accent[5];
         let active_text = colors.text_primary;
         let idle_text = colors.text_dim;
-        let control_h = Self::FILTER_CONTROL_HEIGHT_PX;
+        let row_h = self.palette.filter_strip_row_height();
+        let control_h = Self::filter_control_height(theme, text_renderer, row_h);
+        // Cached before any geometry helper runs, so the switch painted
+        // below and the hit rects consulted later agree.
+        self.search_filter_control_h = control_h;
+        self.search_scope_segment_w = self.scope_segment_width(theme, text_renderer);
 
         self.draw_search_banner_scope_switch(
             scene,
@@ -15466,9 +15831,21 @@ impl ShellOverlayHost {
         let labels: Vec<&str> = std::iter::once("All")
             .chain(kinds.iter().map(super::search::ResourceKind::label))
             .collect();
+        // Chip padding is `s3` either side — the shared `Chip` primitive's
+        // own padding, so a filter chip and a chip anywhere else in the
+        // shell are one shape — and chips sit `s2` apart. Both are the
+        // live theme's steps, so a custom or scaled theme moves them too.
+        let chip_pad = f64::from(tokens.spacing.s3);
+        let chip_gap = f64::from(tokens.spacing.s2);
         let natural: Vec<f64> = labels
             .iter()
-            .map(|l| f64::from(text_renderer.measure(l, chip_text_size, None).0) + CHIP_PAD_PX)
+            .map(|l| {
+                f64::from(
+                    text_renderer
+                        .measure_weighted(l, chip_text_size, None, TextWeight::Medium)
+                        .0,
+                ) + 2.0 * chip_pad
+            })
             .collect();
         // The scope track's left edge bounds the chip strip. It stayed behind in
         // the other half when this block was split out, so recompute it here —
@@ -15477,10 +15854,11 @@ impl ShellOverlayHost {
         let strip = lay_out_chip_strip(
             &natural,
             band,
-            track.x0 - 10.0,
+            track.x0 - chip_pad,
             self.palette.host_filter_strip_rows(),
-            self.palette.filter_strip_row_height(),
+            row_h,
             control_h,
+            chip_gap,
         );
 
         let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
@@ -15493,11 +15871,13 @@ impl ShellOverlayHost {
                     .and_then(|k| kinds.get(k))
                     .is_some_and(|kind| self.active_kind_filter.contains(kind)),
             };
-            // Only a chip that had to be squeezed loses any of its label.
-            let label = text_renderer.elide_to_width(
+            // Only a chip that had to be squeezed loses any of its label;
+            // it keeps one side's padding before it elides.
+            let label = text_renderer.elide_to_width_weighted(
                 label,
                 chip_text_size,
-                f64_to_f32_lossy((rect.width() - CHIP_PAD_PX / 2.0).max(1.0)),
+                f64_to_f32_lossy((rect.width() - chip_pad).max(1.0)),
+                TextWeight::Medium,
             );
             draw_filter_chip(
                 scene,
@@ -15580,13 +15960,17 @@ impl ShellOverlayHost {
                 );
             }
             let text = self.search_scope_pill_label(*scope);
-            let text = text_renderer.elide_to_width(
+            // A segment that had to be squeezed under its measured width
+            // keeps `s2` of its padding before it elides.
+            let text = text_renderer.elide_to_width_weighted(
                 &text,
                 chip_text_size,
-                f64_to_f32_lossy(seg.width() - 10.0),
+                f64_to_f32_lossy(seg.width() - f64::from(tokens.spacing.s2)),
+                TextWeight::Medium,
             );
-            let (tw, th) = text_renderer.measure(&text, chip_text_size, None);
-            text_renderer.draw_text(
+            let (tw, th) =
+                text_renderer.measure_weighted(&text, chip_text_size, None, TextWeight::Medium);
+            text_renderer.draw_text_weighted(
                 scene,
                 &text,
                 chip_text_size,
@@ -15599,6 +15983,7 @@ impl ShellOverlayHost {
                         .into(),
                 ),
                 None,
+                TextWeight::Medium,
             );
         }
     }
@@ -16855,6 +17240,86 @@ mod overview_panel_tests {
             add.width(),
             last.width(),
             "\"New room\" is a peer row in the same list, not a banner"
+        );
+    }
+
+    /// The panel's density is the spacing scale and the type scale under
+    /// other names — pinned so an edit cannot move it off the grid.
+    #[test]
+    fn overview_metrics_sit_on_the_spacing_scale() {
+        let theme = Theme::default();
+        let m = OverviewMetrics::for_theme(&theme);
+        let spacing = &theme.tokens.spacing;
+        assert_eq!(m.pad, f64::from(spacing.s4), "Panel padding is s4 (HIG §9.6)");
+        assert_eq!(m.section_gap, f64::from(spacing.s4), "section gap is s4");
+        assert_eq!(m.margin, f64::from(spacing.s12));
+        assert_eq!(m.room_row_gap, f64::from(spacing.s2));
+        assert_eq!(m.row_pad, f64::from(spacing.s4));
+        assert_eq!(m.panel_radius, f64::from(theme.tokens.radii.xl), "Panel role");
+        assert_eq!(m.row_radius, f64::from(theme.tokens.radii.lg), "Control role");
+        assert_eq!(OverviewMetrics::default(), m);
+    }
+
+    /// Every row of the panel is at least as tall as the text it holds,
+    /// at 100 % and at 200 % text — fixed heights put "Private to you",
+    /// "Shared out of here" and the share row on top of one another at
+    /// 200 %. The panel itself grows with them rather than clipping.
+    #[test]
+    fn overview_rows_grow_with_the_text_scale_instead_of_stacking() {
+        let lh = |size: f32| f64::from(ui::TextStyle::new(size).line_height_px());
+        let base = Theme::dark();
+        let large = Theme::dark().with_text_scale(2.0);
+        let m1 = OverviewMetrics::for_theme(&base);
+        let m2 = OverviewMetrics::for_theme(&large);
+        for (name, theme, m) in [("100%", &base, m1), ("200%", &large, m2)] {
+            let scale = &theme.tokens.typography.scale;
+            assert!(
+                m.here_h >= lh(scale.x3l) + lh(scale.base),
+                "{name}: the here block ({}) must hold its name and access lines",
+                m.here_h
+            );
+            assert!(
+                m.caption_h >= lh(scale.sm),
+                "{name}: the caption band ({}) must hold its text",
+                m.caption_h
+            );
+            assert!(
+                m.share_row_h >= lh(scale.base),
+                "{name}: a share row ({}) must hold its body line",
+                m.share_row_h
+            );
+            assert!(
+                m.room_row_h >= lh(scale.lg) + lh(scale.sm),
+                "{name}: a room row ({}) must hold its name and sub-line",
+                m.room_row_h
+            );
+            assert!(
+                m.chip_h >= lh(scale.sm),
+                "{name}: the chip ({}) must hold its label",
+                m.chip_h
+            );
+        }
+        for (what, a, b) in [
+            ("here block", m1.here_h, m2.here_h),
+            ("caption", m1.caption_h, m2.caption_h),
+            ("share row", m1.share_row_h, m2.share_row_h),
+            ("room row", m1.room_row_h, m2.room_row_h),
+        ] {
+            assert!(b > a, "{what} must grow with the text scale: {a} -> {b}");
+        }
+
+        // And the host follows: laying out with the large theme grows the
+        // panel by the same rows, so nothing is clipped into a neighbour.
+        let mut h = host();
+        h.overview_metrics = m2;
+        let panel_large = h.overview_panel_rect();
+        h.overview_metrics = m1;
+        let panel_base = h.overview_panel_rect();
+        assert!(
+            panel_large.height() > panel_base.height(),
+            "the panel is sized from its rows: {} at 200% vs {} at 100%",
+            panel_large.height(),
+            panel_base.height()
         );
     }
 
@@ -19811,6 +20276,162 @@ mod overlay_event_absorb_tests {
         let _ = paint_scene(h, theme);
     }
 
+    /// A chip or scope segment rests at the §9.6 Selector height and grows
+    /// with its measured label — at 200 % text the label sat visibly
+    /// outside a fixed 24 px pill — but stops `s1` short of the band's
+    /// row, so two rows of chips keep a gutter rather than touching.
+    #[test]
+    fn filter_controls_grow_with_their_label_and_stay_inside_the_row() {
+        let mut tr = TextRenderer::new();
+        let row_h = CommandPalette::new().filter_strip_row_height();
+        let base = Theme::dark();
+        let at_base = ShellOverlayHost::filter_control_height(&base, &mut tr, row_h);
+        assert_eq!(at_base, SELECTOR_HEIGHT_PX, "resting height is the Selector's");
+
+        let large = Theme::dark().with_text_scale(2.0);
+        let size = ShellOverlayHost::filter_label_size(&large);
+        let (_, lh) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
+        let at_large = ShellOverlayHost::filter_control_height(&large, &mut tr, row_h);
+        assert!(
+            at_large > at_base,
+            "a 200% label needs a taller control: {at_large} vs {at_base}"
+        );
+        assert!(
+            at_large >= f64::from(lh),
+            "the control ({at_large}) must be at least its label's line ({lh})"
+        );
+        let s1 = f64::from(large.tokens.spacing.s1);
+        assert!(
+            at_large <= row_h - s1,
+            "the control ({at_large}) must leave an s1 gutter inside its {row_h} px row"
+        );
+    }
+
+    /// Every kind chip, the "All" reset and every scope segment is a named,
+    /// bounded semantic node carrying the rect production `draw` painted it
+    /// at — so a screen reader, a script and the UX bench can name a chip
+    /// rather than guess where the strip wrapped it to.
+    #[test]
+    fn filter_chips_and_scope_segments_are_bounded_semantic_targets() {
+        use ui::a11y::Role;
+        let (vw, vh) = (1280.0, 800.0);
+        let mut h = build_harness_sized(vw, vh);
+        h.host.set_palette_visible(true);
+        // Open (focused), as Super+K leaves it: only then does the palette
+        // publish its query and result list, which the band follows.
+        h.host.set_palette_focus(true);
+        h.host.force_palette_settled();
+        settle(&mut h, vw, vh);
+
+        let tree = h.host.accessibility().expect("the host publishes a tree");
+        let palette = tree
+            .children
+            .iter()
+            .find(|n| n.name.as_deref() == Some("Command palette"))
+            .expect("the open palette is in the tree");
+        let band_index = h
+            .host
+            .search_filters_child_index()
+            .expect("an open palette places the band after its own children");
+        assert_eq!(band_index, 2, "query, results, then the band");
+        let filters = palette
+            .children
+            .get(band_index)
+            .expect("the filter band is the palette's trailing child");
+        assert_eq!(filters.name.as_deref(), Some("Search filters"));
+        let (kinds_group, scope_group) = (&filters.children[0], &filters.children[1]);
+
+        let kinds = h.host.search_registry.registered_kinds();
+        assert_eq!(kinds_group.children.len(), kinds.len() + 1);
+        let all = &kinds_group.children[0];
+        assert_eq!(all.role, Role::ToggleButton);
+        assert_eq!(all.name.as_deref(), Some("Filter: All"));
+        assert_eq!(all.state.checked, Some(true), "the palette starts unfiltered");
+        assert_eq!(
+            all.bounds.map(ui::AccessBounds::to_rect),
+            Some(h.host.search_all_chip_rect)
+        );
+        for (i, kind) in kinds.iter().enumerate() {
+            let chip = &kinds_group.children[i + 1];
+            assert_eq!(chip.name.as_deref(), Some(format!("Filter: {}", kind.label()).as_str()));
+            assert_ne!(
+                chip.name.as_deref(),
+                Some(kind.label()),
+                "a chip must not publish the bare kind label — a window title may share it"
+            );
+            assert_eq!(chip.state.checked, Some(false));
+            assert_eq!(
+                chip.bounds.map(ui::AccessBounds::to_rect),
+                Some(h.host.search_chip_rects[i]),
+                "chip {i} carries the rect it was painted at"
+            );
+            assert_eq!(
+                h.host.synthetic_accessibility_rect(&[0, band_index, 0, i + 1]),
+                Some(h.host.search_chip_rects[i]),
+                "the routed geometry for chip {i} is the same rect"
+            );
+            assert!(
+                chip.action_target
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("palette:filter:") && t.matches(':').count() == 2),
+                "chip {i} carries a single-segment address: {:?}",
+                chip.action_target
+            );
+        }
+
+        let scopes = h.host.search_scope_list();
+        assert_eq!(scope_group.children.len(), scopes.len());
+        let checked: Vec<_> = scope_group
+            .children
+            .iter()
+            .filter(|n| n.state.checked == Some(true))
+            .collect();
+        assert_eq!(checked.len(), 1, "exactly one scope is current");
+        for (idx, node) in scope_group.children.iter().enumerate() {
+            assert_eq!(node.role, Role::RadioButton);
+            let hit = h.host.search_scope_segment_hit_rect(idx);
+            assert_eq!(node.bounds.map(ui::AccessBounds::to_rect), Some(hit));
+            assert!(
+                hit.contains(h.host.search_scope_pill_rect(idx).center())
+                    && (hit.height() - h.host.search_scope_track_rect().height()).abs() < 0.01,
+                "segment {idx}'s target is its full-height slice of the track: {hit:?}"
+            );
+            assert!(
+                node.name.as_deref().is_some_and(|n| n.starts_with("Scope: ")),
+                "scope names are prefixed: {:?}",
+                node.name
+            );
+        }
+
+        // The controls share one centre line: chips and the scope switch
+        // are laid out to the same control height in the band's first row.
+        // Addresses stay unique and single-segment even for hostile labels.
+        use crate::shell::search::ResourceKind;
+        let odd = [
+            ResourceKind::Custom("Foo Bar".into()),
+            ResourceKind::Custom("foo  bar".into()),
+            ResourceKind::Custom("CI: Builds".into()),
+        ];
+        let keys: Vec<String> = (0..odd.len())
+            .map(|i| ShellOverlayHost::search_filter_key(&odd, i))
+            .collect();
+        assert_eq!(keys[0], "palette:filter:foo-bar");
+        assert_ne!(keys[0], keys[1], "a case/whitespace twin gets its own address");
+        assert_eq!(keys[2], "palette:filter:ci-builds");
+
+        let all_rect = h.host.search_all_chip_rect;
+        let first_scope = h.host.search_scope_segment_hit_rect(0);
+        assert!(
+            (all_rect.y0 - first_scope.y0).abs() < 0.5 && (all_rect.y1 - first_scope.y1).abs() < 0.5,
+            "All chip {all_rect:?} and scope switch {first_scope:?} do not share top and bottom edges"
+        );
+        assert!(
+            (all_rect.height() - SELECTOR_HEIGHT_PX).abs() < 0.01,
+            "a chip rests at the Selector height, got {}",
+            all_rect.height()
+        );
+    }
+
     /// Every filter must be reachable at every width. An unpainted chip has
     /// no rect, so its filter is unclickable even though the registry lists
     /// it — at 1600px five kinds exactly filled the row, hiding a sixth.
@@ -19948,8 +20569,15 @@ mod overlay_event_absorb_tests {
         let band = Rect::new(0.0, 0.0, 240.0, 36.0);
         let natural = [40.0, 44.0, 92.0, 50.0, 46.0, 60.0, 58.0];
         for rows_available in [1usize, 2, 3] {
-            let strip =
-                lay_out_chip_strip(&natural, band, band.x1 - 100.0, rows_available, 36.0, 24.0);
+            let strip = lay_out_chip_strip(
+                &natural,
+                band,
+                band.x1 - 100.0,
+                rows_available,
+                36.0,
+                24.0,
+                8.0,
+            );
             assert_eq!(
                 strip.rects.len(),
                 natural.len(),
@@ -19986,7 +20614,7 @@ mod overlay_event_absorb_tests {
         // And when there is room, nothing is squeezed: the chips keep
         // their natural widths.
         let wide = Rect::new(0.0, 0.0, 900.0, 36.0);
-        let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0);
+        let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0, 8.0);
         assert_eq!(strip.rows_needed, 1);
         for (i, r) in strip.rects.iter().enumerate() {
             assert_eq!(
