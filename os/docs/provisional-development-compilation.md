@@ -41,6 +41,13 @@ embedded trust/origin/generation, verifies the original and signed EFI loader
 against the independent public certificate, and records installed RPM versions.
 CI logs retain build diagnostics.
 
+Before compilation, the pinned base's `bootc install to-disk --help` and bootc/
+bootctl versions are captured in `base-installation-tooling.json`. The completed
+image is probed by immutable image ID in `final-installation-tooling.json`.
+These read-only containers have no network, extra devices or host mounts and
+drop all capabilities. Advertised flags help prepare the next disk test; their
+presence does not prove signature-policy enforcement or successful installation.
+
 Persistent development signing, a retained authenticated source image, a final
 composefs seal, disk inspection and Secure Boot VM acceptance are separate gates
 before an installable candidate exists. Do not reuse this job's ephemeral trust

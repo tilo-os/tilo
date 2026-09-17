@@ -159,6 +159,35 @@ def pinned_inputs():
     return result
 
 
+def installation_tooling(image):
+    """Read CLI evidence without exposing devices, credentials or host mounts."""
+    common = ('podman', '--remote=false', 'run', '--rm', '--pull=never',
+              '--network=none', '--read-only', '--cap-drop=ALL',
+              '--security-opt=no-new-privileges')
+    def probe(executable, *arguments):
+        try:
+            return {'exit_code': 0, 'stdout': run(*common, '--entrypoint', executable,
+                                                 image, *arguments)}
+        except subprocess.CalledProcessError as error:
+            # A minimal base may omit bootctl. Record absence/failure rather
+            # than misreporting the full source compilation as unsuccessful.
+            return {'exit_code': error.returncode, 'stdout': None}
+
+    help_result = probe('/usr/bin/bootc', 'install', 'to-disk', '--help')
+    help_text = help_result['stdout']
+    flags = ('--via-loopback', '--generic-image', '--composefs-backend',
+             '--bootloader', '--source-imgref', '--target-imgref',
+             '--enforce-container-sigpolicy', '--run-fetch-check')
+    return {'image': image, 'disk_created': False,
+            'bootc_version': probe('/usr/bin/bootc', '--version'),
+            'bootctl_version': probe('/usr/bin/bootctl', '--version'),
+            'to_disk_help': help_result,
+            # Presence in help is discovery evidence, not proof that installation
+            # enforces a policy or that undocumented options are unsupported.
+            'flags_advertised': {flag: None if help_text is None else bool(re.search(re.escape(flag) + r'(?=[\s=,\]]|$)', help_text))
+                                 for flag in flags}}
+
+
 def build_environment(wpe, generation, revision, manifest, signer):
     # No inherited TILO_BUILD_ARGS, prebuilt payload, skip-build or remote engine
     # settings can change this from a complete, local, source build.
@@ -208,6 +237,8 @@ def main():
     info = json.loads(run('podman', '--remote=false', 'info', '--format', 'json'))
     if info['store']['graphDriverName'] != 'overlay':
         raise ValueError('private guest volume must support native Podman overlay storage')
+    run('podman', '--remote=false', 'pull', pins['BASE_REF'])
+    write_receipt('base-installation-tooling.json', installation_tooling(pins['BASE_REF']))
     write_receipt('tools.json', {name: run(*command) for name, command in {
         'podman': ('podman', '--version'), 'cargo': ('cargo', '--version'),
         'rustc': ('rustc', '--version'), 'cosign': ('cosign', 'version'),
@@ -234,6 +265,7 @@ def main():
     compile_with_capacity_watchdog(env)
     inspection = inspect_compilation(env['TILO_IMAGE'], args.revision, args.generation,
         env['TILO_TARGET_IMGREF'], trust['manifest_sha256'], trust['identities']['efi-signing.crt'])
+    write_receipt('final-installation-tooling.json', installation_tooling(inspection['image_id']))
     write_receipt('result.json', {'status': 'provisional-compilation-complete',
         'installable': False, 'published': False, 'disk_created': False,
         'reason': 'provisional composefs seal; ephemeral trust; disk/VM acceptance not performed',
