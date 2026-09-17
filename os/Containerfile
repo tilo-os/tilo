@@ -230,7 +230,9 @@ RUN test -s /usr/lib/tilo/wpe-buildroot-packages.txt \
 COPY os/dev/build-wpe.sh /build-wpe.sh
 RUN --mount=type=cache,target=/wpe-cache \
     --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    TILO_WPE_CACHE=/wpe-cache TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1 \
+    started=$(date +%s) \
+    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=wpe elapsed_seconds=%s exit_code=%s\n" "$(( $(date +%s) - started ))" "$status"; exit "$status"' EXIT \
+    && TILO_WPE_CACHE=/wpe-cache TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1 \
     TILO_WPE_PREFIX=/usr TILO_WPE_DESTDIR=/wpe \
     JOBS="$WPE_BUILD_JOBS" \
     bash /build-wpe.sh build \
@@ -441,10 +443,18 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=secret,id=aws_secret_access_key \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
+    && phase=rust-setup && started=$(date +%s) \
+    && build_phase() { \
+         now=$(date +%s); \
+         printf 'TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=0\n' "$phase" "$((now - started))"; \
+         phase=$1; started=$now; \
+       } \
+    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
     && if ! sccache --start-server; then \
          export RUSTC_WRAPPER=; \
          printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
        fi \
+    && { sccache --zero-stats 2>/dev/null || true; } \
     && cargo clean --release \
     && cargo clean --profile thin-app \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then \
@@ -460,13 +470,16 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          DESKTOP_RELEASE_ARGS="-p shell -p launcher -p tilo-unlock-helper"; \
        fi \
     && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-power -p tilo-rollback -p tilo-cli -p ush -p tilo-projector -p pkg-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service" \
+    && build_phase rust-release \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release ${RELEASE_ARGS} -p tilo-relay --bins ${BROWSER_PKG} \
+    && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release -p windows-vm \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
+    && build_phase rust-output-validation \
     && missing=0 \
     && for b in shell tilo-projector fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-power tilo-unlock-helper tilo-rollback tilo tilo-pkg tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper) continue ;; esac; \
@@ -483,6 +496,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
             cargo build --release -p windows-vm \
               --bin tilo-windows-vm-control --bin tilo-windows-rail; \
        fi \
+    && build_phase rust-stage-outputs \
     && mkdir -p /out /out/optional /out/thin-apps \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          cp /build/os/desktop-artifacts/shell \
@@ -527,6 +541,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # Files is also a privileged, directly-invoked system recovery surface.
     # In source mode package that standalone binary. With a release collection,
     # every qpkg already contains its independently built app binary.
+    && build_phase rust-thin-apps \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
          mkdir -p /out/prebuilt-apps /out/browser-app \
          && cp /build/os/app-artifacts/*.qpkg /out/prebuilt-apps/ \
@@ -553,7 +568,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" /out/; \
        fi \
-    && { sccache --show-stats 2>/dev/null || true; } \
+    && build_phase rust-cleanup \
     # Every build product needed below now lives in /out. The target cache is
     # deliberately disposable (sccache holds reusable compiler objects); keep
     # it from starving the later, large Windows compatibility RPM transaction.
