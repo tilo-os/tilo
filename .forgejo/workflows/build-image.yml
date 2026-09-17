@@ -307,7 +307,7 @@ jobs:
           esac
           printf '%s  %s\n' "$PAYLOAD_SHA256" "$work/desktop.tar.gz" \
             | sha256sum --check --strict
-          expected=$'SHA256SUMS\nmanifest.json\ntilo-launcher\ntilo-unlock-helper\nshell'
+          expected=$'SHA256SUMS\nmanifest.json\nshell\ntilo-launcher\ntilo-unlock-helper'
           actual=$(tar -tzf "$work/desktop.tar.gz" | LC_ALL=C sort)
           [[ $actual == "$expected" ]] || {
             printf 'unexpected desktop payload members:\n%s\n' "$actual" >&2

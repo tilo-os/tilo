@@ -48,6 +48,11 @@ grep -Fq 'tilo-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-image.y
   && ok 'OS cache export excludes its multi-gigabyte intermediate build graph' \
   || bad 'OS cache export can duplicate the intermediate build graph and exhaust the runner'
 
+grep -Fq "expected=\$'SHA256SUMS\\nmanifest.json\\nshell\\ntilo-launcher\\ntilo-unlock-helper'" \
+  "$workflows/build-image.yml" \
+  && ok 'desktop payload allow-list matches its sorted archive comparison' \
+  || bad 'desktop payload allow-list is not in archive comparison order'
+
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
   && grep -Fq 'tags: ["v*"]' "$os" \
