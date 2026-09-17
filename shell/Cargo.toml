@@ -61,6 +61,7 @@ dev-session = []
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
 bounded-command = { path = "../crates/system/bounded-command" }
+tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../crates/system/settings-store" }
 desktop-policy = { path = "../crates/system/desktop-policy" }
@@ -300,9 +301,6 @@ wgpu.workspace = true
 # tags without round-tripping pixels through wgpu. Same minor version as
 # the `vello = "0.2.1"` runtime dep; Cargo collapses to a single copy.
 vello_encoding.workspace = true
-# Tempdir helper for `network::behaviour::load_or_create_keypair` tests so we
-# never write a real key to `/var/lib/tilo-fs/peer-key` from the test suite.
-tempfile.workspace = true
 # `tests/portal_test.rs` joins the server- and client-side handshake of an
 # in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
 # transitively (Iroh, zbus, tokio) — pinning it here is just for the
