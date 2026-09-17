@@ -104,6 +104,44 @@ class IdentityTests(unittest.TestCase):
                     source.verify(args)
             self.assertEqual(run.call_args.args[0], ['podman', 'image', 'unmount', 'c' * 64])
 
+    def test_consumer_keeps_exact_image_and_public_snapshot_until_cleanup(self):
+        for fail in (False, True):
+            with self.subTest(consumer_failure=fail), tempfile.TemporaryDirectory() as directory:
+                bundle = Path(directory) / 'bundle'
+                bundle.mkdir()
+                (bundle / 'cosign.pub').write_text('independently pinned public fixture')
+                args = SimpleNamespace(source=self.reference, target=self.repository + ':test',
+                    architecture='aarch64', revision=self.revision, public_bundle=bundle,
+                    manifest_sha256='d' * 64, offline_key_signature=True)
+                with mock.patch.object(source.os, 'getuid', return_value=0), \
+                        mock.patch.dict(source.os.environ, {}, clear=True), \
+                        mock.patch.object(source.trust, 'validate'), \
+                        mock.patch.object(source, 'mounted_identity', return_value='fixture'), \
+                        mock.patch.object(source, 'command', side_effect=[json.dumps(self.payload), '',
+                            json.dumps(self.image), '/image/root', '']) as run:
+                    try:
+                        with source.verified_source(args) as verified:
+                            snapshot = verified.public_bundle
+                            self.assertTrue(snapshot.is_dir())
+                            self.assertEqual(verified.image_id, 'sha256:' + 'c' * 64)
+                            self.assertEqual(verified.receipt['image_id'], verified.image_id)
+                            self.assertEqual(verified.root, Path('/image/root'))
+                            self.assertEqual(len(run.call_args_list), 4)
+                            # Replacing the caller's bundle or moving its target
+                            # tag cannot change the held consumer inputs.
+                            (bundle / 'cosign.pub').write_text('replacement')
+                            self.assertEqual((snapshot / 'cosign.pub').read_text(),
+                                             'independently pinned public fixture')
+                            if fail:
+                                raise RuntimeError('consumer failed')
+                    except RuntimeError as error:
+                        self.assertTrue(fail)
+                        self.assertEqual(str(error), 'consumer failed')
+                    self.assertEqual(run.call_args.args[0],
+                                     ['podman', 'image', 'unmount', 'c' * 64])
+                    self.assertEqual(len(run.call_args_list), 5)
+                    self.assertFalse(snapshot.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
