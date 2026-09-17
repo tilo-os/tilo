@@ -147,9 +147,13 @@ when no inherited qOS connection exists; it is not the ordinary default.
 
 ## Native acceptance proof
 
-Build the host, then run the ordinary-launch proof:
+Capture the host inputs, build the host from those inputs, then run the
+ordinary-launch proof in that order. Do not rebuild or edit the captured source
+between these commands:
 
 ```sh
+python3 scripts/runtime-auto-attach-proof.py \
+  --capture-host-source-snapshot /absolute/path/to/host-build-source-hashes.json
 cargo build -p shell --bin qos-runtime-mcp --no-default-features
 python3 scripts/runtime-auto-attach-proof.py \
   --host-source-snapshot /absolute/path/to/host-build-source-hashes.json \
@@ -169,8 +173,9 @@ Evidence includes exact commands, relevant source hashes before and after the
 run, executable hashes, actual app/runtime/MCP PIDs, the complete MCP transcript,
 terminal action output, app logs, and exact-PID cleanup. App data and runtime
 authority use separate isolated directories. `proof.json` appears only after
-the proxy exits cleanly and every known PID is absent; failed attempts retain
-`failure.txt` instead.
+the proxy exits cleanly, every known PID is absent, and the temporary runtime
+profile has been removed. `cleanup.json` records profile-removal success or its
+exact error; failed attempts retain `failure.txt` instead.
 
 Verified on macOS on 2026-09-17 at
 `target/runtime-proof/runtime-auto-attach/native-3/proof.json`: Writer, Files,

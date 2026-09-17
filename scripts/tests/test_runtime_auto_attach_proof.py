@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,6 +16,24 @@ SPEC.loader.exec_module(PROOF)
 
 
 class RuntimeAutoAttachProofTests(unittest.TestCase):
+    def test_supported_cli_captures_host_source_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "host-sources.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--capture-host-source-snapshot",
+                    str(output),
+                ],
+                cwd=SCRIPT.parents[1],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            snapshot = json.loads(output.read_text())
+        self.assertEqual(snapshot, PROOF.source_snapshot(SCRIPT.parents[1]))
+
     def test_launch_commands_are_ordinary_cargo_run(self):
         fixture = pathlib.Path("/tmp/proof/source.png")
         self.assertEqual(
@@ -93,6 +113,14 @@ class RuntimeAutoAttachProofTests(unittest.TestCase):
         self.assertIn(pid, known)
         self.assertEqual(status, -PROOF.signal.SIGTERM)
         self.assertEqual(PROOF.processes_for_pids({pid}), [])
+
+    def test_profile_cleanup_rejects_a_remaining_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory) / "profile"
+            profile.mkdir()
+            with mock.patch.object(PROOF.shutil, "rmtree", return_value=None):
+                with self.assertRaisesRegex(PROOF.ProofError, "runtime profile remains"):
+                    PROOF.remove_profile(profile)
 
 
 if __name__ == "__main__":
