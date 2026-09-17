@@ -70,13 +70,21 @@ struct Capture {
 }
 
 fn capture(name: &str, root: Element, viewport: (u32, u32), scale: f32) -> Capture {
-    let harness = FrameHarness::new_with_theme(
-        State::new(),
-        root,
-        viewport,
-        Theme::dark().with_text_scale(scale),
-    );
-    let path = out_dir().join(format!("{name}-{scale}x.png"));
+    capture_with_theme(name, root, viewport, Theme::dark().with_text_scale(scale))
+}
+
+/// [`capture`] under an explicit theme. The dark preset keeps the historical
+/// `<name>-<scale>x.png` file name; any other theme writes
+/// `<name>-<theme>-<scale>x.png` beside it.
+fn capture_with_theme(name: &str, root: Element, viewport: (u32, u32), theme: Theme) -> Capture {
+    let scale = theme.text_scale;
+    let stem = if theme.name == Theme::dark().name {
+        format!("{name}-{scale}x.png")
+    } else {
+        format!("{name}-{}-{scale}x.png", theme.name)
+    };
+    let harness = FrameHarness::new_with_theme(State::new(), root, viewport, theme);
+    let path = out_dir().join(stem);
     harness.render_window_png(&path);
     let image = image::open(&path)
         .unwrap_or_else(|e| panic!("decode {}: {e}", path.display()))
@@ -816,4 +824,45 @@ fn legacy_card_titles_use_the_title_role_and_the_theme_gap() {
         title_heights[0],
         title_heights[1]
     );
+}
+
+/// HIG §9.5 "Rest edges" on the conflict surfaces, at 1× on the dark and the
+/// light preset: the banner's `Review` / `Dismiss` chips are Neutral faces
+/// whose fill and edge derive from the theme, replacing the
+/// `surface_white_*` / `border_white_*` veneers that were invisible on a
+/// light palette. A glyph-free column through the trailing chip must carry a
+/// face or edge pixel that registers against the banner's own fill in both
+/// themes. (Centring is pinned by `conflict_surfaces_centre_the_title_and_scale_once`;
+/// its `ink` helper reads light-on-dark and is not reused here.)
+#[test]
+fn conflict_surfaces_keep_a_visible_chip_edge_in_both_themes() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let name = theme.name.clone();
+        let cap = capture_with_theme("conflict", conflict(1.0), (820, 400), theme);
+        let snapshot = cap.harness.inspection();
+        let banner = rect(find(&snapshot.root, "ConflictBanner"));
+
+        // The banner fill, sampled on its centre line in the empty band
+        // between the label and the chips.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (mid_x, mid_y) = (banner.center().x as u32, banner.center().y as u32);
+        let fill = luma(cap.image.get_pixel(mid_x, mid_y).0);
+        // The trailing chip ends inside the banner's 8 px padding; three
+        // pixels further in is inside the chip's own horizontal padding, so
+        // the column holds only the chip's edge and face, never a glyph.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let x = (banner.x1 - 8.0 - 3.0) as u32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (y0, y1) = (banner.y0 as u32 + 1, banner.y1 as u32 - 1);
+        let best = (y0..y1)
+            .map(|y| (luma(cap.image.get_pixel(x, y).0) - fill).abs())
+            .fold(0.0_f64, f64::max);
+        // `luma` is the 0..255 weighted average; HIG's floor is 0.02 in
+        // relative-luminance units, which sits well above 4/255 here.
+        assert!(
+            best >= 4.0,
+            "{name}: the trailing chip's face/edge does not register against the banner fill \
+             (max |Δluma| = {best:.2} down column x={x})"
+        );
+    }
 }

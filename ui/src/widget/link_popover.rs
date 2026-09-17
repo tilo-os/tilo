@@ -354,20 +354,24 @@ impl LinkPopover {
         rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        let shape = RoundedRect::from_rect(rect, 6.0);
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as
+        // a crisp 1 px inset stroke; the declared `border_standard` vanished
+        // against `raised` on the dark preset.
+        let radius = 6.0;
+        let shape = RoundedRect::from_rect(rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(rect, radius),
         );
 
         let filter_rect = Rect::new(
@@ -383,6 +387,16 @@ impl LinkPopover {
             tokens.colors.surfaces.base,
             None,
             &filter_shape,
+        );
+        // A field reads as a field on every preset: its rest edge derives
+        // from its own fill (HIG §9.5), painted as a crisp 1 px inset stroke;
+        // on the light preset `base` and the panel ground are a shade apart.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(tokens.colors.surfaces.base),
+            None,
+            &crate::surface::edge_outline(filter_rect, 4.0),
         );
         self.filter_composition.draw(
             scene,

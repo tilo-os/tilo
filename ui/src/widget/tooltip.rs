@@ -7,7 +7,7 @@ use automerge::{AutoCommit, ObjId};
 use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::text_metrics::renderer_type_size;
@@ -99,20 +99,23 @@ pub fn draw_chip(
     // translucent copies approximating it.
     crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        theme.tokens.colors.surfaces.overlay,
-        None,
-        &shape,
+    // Fill + a rest edge derived from the fill itself (HIG §9.5 "Tooltip:
+    // as today, `edge_on(fill)`"), as a crisp 1 px inset stroke. The chip is
+    // centred under its anchor and so usually lands on a half pixel; snap
+    // the painted box to the grid or the hairline smears across two
+    // columns at half strength and stops registering on the dark preset.
+    let snapped = Rect::new(
+        rect.x0.round(),
+        rect.y0.round(),
+        rect.x1.round(),
+        rect.y1.round(),
     );
-    scene.stroke(
-        &Stroke::new(1.0),
+    crate::surface::card(
+        scene,
         transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &shape,
+        snapped,
+        radius,
+        theme.tokens.colors.surfaces.overlay,
     );
 
     let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
