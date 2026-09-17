@@ -729,6 +729,14 @@ fn topbar_with_overview_btn_hit() -> (
 /// same viewport — topbar geometry is DPI/width-driven, so the rects match.
 #[test]
 fn full_root_click_toggles_overview_via_topbar_button() {
+    fn overview_hit(widget: &dyn Widget) -> Option<Point> {
+        widget
+            .test_rects()
+            .into_iter()
+            .find(|(name, rect)| name == "topbar_overview_button" && rect.area() > 0.0)
+            .map(|(_, rect)| rect.center())
+            .or_else(|| widget.children().into_iter().find_map(overview_hit))
+    }
     use automerge::AutoCommit;
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
@@ -787,14 +795,6 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     let presence = PresenceCtx::default();
     root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    fn overview_hit(widget: &dyn Widget) -> Option<Point> {
-        widget
-            .test_rects()
-            .into_iter()
-            .find(|(name, rect)| name == "topbar_overview_button" && rect.area() > 0.0)
-            .map(|(_, rect)| rect.center())
-            .or_else(|| widget.children().into_iter().find_map(overview_hit))
-    }
     let hit = overview_hit(root.as_ref()).expect("painted root exports its overview button");
 
     let mut state = AutoCommit::new();

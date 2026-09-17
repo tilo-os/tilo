@@ -294,7 +294,7 @@ pub fn run() -> std::process::ExitCode {
             "error: --firstboot and --firstboot-only are mutually exclusive; \
              --firstboot continues into the compositor while --firstboot-only exits."
         );
-        std::process::exit(2);
+        return std::process::ExitCode::from(2);
     }
 
     if portal_only {
@@ -304,7 +304,7 @@ pub fn run() -> std::process::ExitCode {
     if firstboot_only_requested {
         if let Err(e) = firstboot::run() {
             tracing::error!("firstboot-only: setup failed: {e}");
-            std::process::exit(1);
+            return std::process::ExitCode::FAILURE;
         }
         return std::process::ExitCode::SUCCESS;
     }

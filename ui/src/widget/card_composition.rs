@@ -267,11 +267,12 @@ mod tests {
 
     fn long_fixture() -> Element {
         Box::new(CardGrid::content_sized(
-            (0..3)
+            (0_usize..3)
                 .map(|index| {
                     Box::new(
                         Card::composed(Box::new(Text::new(
-                            &"Manage your documents and shared workspace. ".repeat(index + 1),
+                            &"Manage your documents and shared workspace. "
+                                .repeat(index.checked_add(1).unwrap()),
                         )))
                         .with_title("Workspace connections and documents")
                         .with_footer(Box::new(
@@ -298,6 +299,14 @@ mod tests {
 
     #[test]
     fn narrow_scaled_regions_contain_content_and_resize_matches_fresh() {
+        fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
+            let mut all = vec![node.rect];
+            for child in &node.children {
+                all.extend(geometry(child));
+            }
+            all
+        }
+
         for scale in [1.0, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
             let mut resized = FrameHarness::new_with_theme(
@@ -316,13 +325,6 @@ mod tests {
             );
             let a = resized.inspection();
             let b = fresh.inspection();
-            fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
-                let mut all = vec![node.rect];
-                for child in &node.children {
-                    all.extend(geometry(child));
-                }
-                all
-            }
             assert_eq!(geometry(&a.root), geometry(&b.root));
             for card in &a.root.children {
                 assert!(rect(card).width() <= 240.0);
@@ -429,6 +431,8 @@ mod tests {
 
     #[test]
     fn retained_regions_align_footers_before_paint() {
+        use automerge::ReadDoc;
+
         let mut harness =
             FrameHarness::new_with_theme(crate::State::new(), fixture(), (700, 800), Theme::dark());
         let inspection = harness.inspection();
@@ -448,7 +452,6 @@ mod tests {
         );
         let action = rect(&cards[0].children[2].children[0]);
         harness.click_at(action.center().x, action.center().y);
-        use automerge::ReadDoc;
         assert!(
             harness
                 .state_mut()
