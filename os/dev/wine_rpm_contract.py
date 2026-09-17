@@ -67,8 +67,11 @@ def source(directory, pin):
     with tempfile.TemporaryDirectory(prefix='qos-wine-trust-') as database:
         run(['rpmkeys', '--dbpath', database, '--import', str(key)])
         signature = run(['rpmkeys', '--dbpath', database, '--checksig', '--verbose', str(srpm)])
-    if 'Signature' not in signature or 'NOKEY' in signature or 'NOT OK' in signature:
-        raise ValueError('source signature is not authenticated')
+    # RPM 6 prints lowercase "signature". A zero exit also occurs for unsigned
+    # digest-only packages, so require an indented positive signature result.
+    if (not re.search(r'(?m)^[ \t]+[^\r\n]*[Ss]ignature[^\r\n]*: OK$', signature)
+            or 'NOKEY' in signature or 'NOT OK' in signature):
+        raise ValueError('source signature is not authenticated:\n' + signature)
     return signature
 
 
