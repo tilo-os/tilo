@@ -125,6 +125,8 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::RemoteAudioFrame { .. }
             | PersonalFabricAction::RemoteAudioStop { .. }
             | PersonalFabricAction::RemoteAudioCancel { .. }
+            | PersonalFabricAction::RemoteCaptureSignal { .. }
+            | PersonalFabricAction::RemoteCaptureChunk { .. }
             | PersonalFabricAction::BluetoothHandoffPrepare { .. }
             | PersonalFabricAction::BluetoothHandoffPrepared { .. }
             | PersonalFabricAction::BluetoothHandoffCommit { .. }

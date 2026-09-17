@@ -307,6 +307,47 @@ impl RemoteCaptureRegistry {
         Ok((session_id, grant))
     }
 
+    /// Install a grant minted by the certified source after matching it to an
+    /// outstanding target request. The caller owns that request correlation;
+    /// this registry owns the exact data-plane binding from this point on.
+    pub fn accept_grant(
+        &mut self,
+        request: &RemoteCaptureRequest,
+        source: DeviceId,
+        target: DeviceId,
+        session_id: [u8; 16],
+        grant: RemoteCaptureGrant,
+        profile: RemoteCaptureProfile,
+        now: Instant,
+    ) -> bool {
+        self.expire(now);
+        if !request.valid()
+            || source == target
+            || session_id == [0; 16]
+            || !grant.valid()
+            || profile != request.profile
+            || self.sessions.contains_key(&session_id)
+            || self.sessions.len() >= MAX_REMOTE_CAPTURE_SESSIONS
+        {
+            return false;
+        }
+        self.sessions.insert(
+            session_id,
+            RemoteCaptureBinding {
+                source,
+                target,
+                app_id: request.app_id.clone(),
+                workspace_id: request.workspace_id.clone(),
+                profile,
+                grant,
+                phase: RemoteCapturePhase::Granted,
+                last_sequence: None,
+                expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
+            },
+        );
+        true
+    }
+
     pub fn accept_chunk(
         &mut self,
         source: &DeviceId,

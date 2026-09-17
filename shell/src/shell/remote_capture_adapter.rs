@@ -41,6 +41,15 @@ pub(crate) trait RemoteCaptureAdapter {
     ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError>;
 
     fn revoke(&mut self, _session_id: [u8; 16]) {}
+
+    fn ingest(
+        &mut self,
+        _session_id: [u8; 16],
+        _profile: &RemoteCaptureProfile,
+        _chunk: &RemoteCaptureChunk,
+    ) -> Result<(), RemoteCaptureAdapterError> {
+        Err(RemoteCaptureAdapterError::WrongEndpoint)
+    }
 }
 
 /// Fresh, single-use proof that the target user approved one exact local app
@@ -72,6 +81,7 @@ struct LocalSession {
     endpoint: PreparedEndpoint,
     approval: Option<(RemoteCaptureApproval, Option<CaptureAuthorizationId>)>,
     lease: Option<CaptureLeaseId>,
+    active: bool,
 }
 
 /// Owns only target-local state. The caller remains responsible for validating
@@ -164,6 +174,7 @@ impl RemoteCaptureTargetBridge {
                 endpoint,
                 approval: None,
                 lease: None,
+                active: false,
             },
         );
         Ok(())
@@ -243,7 +254,38 @@ impl RemoteCaptureTargetBridge {
                 .map_err(|error| RemoteCaptureAdapterError::Broker(error.to_string()))?;
             session.lease = Some(lease);
         }
+        session.active = true;
         Ok(())
+    }
+
+    pub(crate) fn accepts_chunk(
+        &self,
+        app: &VerifiedAppRegistration,
+        source: &DeviceId,
+        target: &DeviceId,
+        session_id: [u8; 16],
+        grant: RemoteCaptureGrant,
+    ) -> bool {
+        self.exact_session(app, source, target, session_id, grant)
+            .is_ok_and(|session| session.active)
+    }
+
+    pub(crate) fn append_media_chunk(
+        &mut self,
+        app: &VerifiedAppRegistration,
+        source: &DeviceId,
+        target: &DeviceId,
+        chunk: &RemoteCaptureChunk,
+        adapter: &mut dyn RemoteCaptureAdapter,
+    ) -> Result<(), RemoteCaptureAdapterError> {
+        let session = self.exact_session_mut(app, source, target, chunk.session_id, chunk.grant)?;
+        if !session.active || !matches!(session.endpoint, PreparedEndpoint::Media) {
+            return Err(RemoteCaptureAdapterError::ApprovalRequired);
+        }
+        if !chunk.valid_for(session.profile.kind()) {
+            return Err(RemoteCaptureAdapterError::InvalidChunk);
+        }
+        adapter.ingest(chunk.session_id, &session.profile, chunk)
     }
 
     /// Append one registry-validated scanner chunk to an unnamed, bounded file.
@@ -255,7 +297,7 @@ impl RemoteCaptureTargetBridge {
         chunk: &RemoteCaptureChunk,
     ) -> Result<(), RemoteCaptureAdapterError> {
         let session = self.exact_session_mut(app, source, target, chunk.session_id, chunk.grant)?;
-        if session.approval.is_some() || !matches!(session.endpoint, PreparedEndpoint::Scanner(_)) {
+        if !session.active || !matches!(session.endpoint, PreparedEndpoint::Scanner(_)) {
             return Err(RemoteCaptureAdapterError::ApprovalRequired);
         }
         let PreparedEndpoint::Scanner(spool) = &mut session.endpoint else {
