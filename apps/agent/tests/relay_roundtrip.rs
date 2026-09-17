@@ -280,7 +280,6 @@ fn drive_peer_to_table(
                     "the relay names presence by the announced handle"
                 );
                 saw_scribe_presence = true;
-                publish_word_processor_actions(&mut peer, &replica);
             }
             CollabEvent::DocumentSnapshotRequested { .. } => {
                 let snap = CollabRequest::document_snapshot(replica.save());
@@ -401,6 +400,11 @@ fn the_agent_inserts_a_table_on_the_peers_replica() {
     };
     send(&mut peer, &hello).unwrap();
     let replica = seed_document();
+    // A real app publishes its action surface when the document opens, not
+    // after a prospective invoker announces itself. Publishing here also
+    // removes the race where the agent can inspect the snapshot before the
+    // peer has processed its arrival event.
+    publish_word_processor_actions(&mut peer, &replica);
     // Let the relay register the peer's Hello before the agent's frames
     // can race it (the relay handles each connection on its own thread).
     std::thread::sleep(Duration::from_millis(100));
