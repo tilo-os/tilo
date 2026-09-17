@@ -1,3 +1,11 @@
+#![allow(
+    clippy::expect_used,
+    clippy::items_after_statements,
+    clippy::needless_pass_by_value,
+    clippy::panic,
+    reason = "Updates consumes a closed static resource contract; missing action ids are programmer invariants"
+)]
+
 //! Updates pane — the system update manager surface.
 //!
 //! Tilo is an immutable bootc image: updates are atomic image pulls staged

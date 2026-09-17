@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unreachable,
+    reason = "static Time & Date controls always publish their closed typed bindings"
+)]
+
 //! Time & Date pane — clock, time zone, and date/time display format.
 //!
 //! The clock-format controls here are a *local* view onto the same locale
