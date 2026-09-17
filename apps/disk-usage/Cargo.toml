@@ -1,0 +1,26 @@
+[package]
+name = "disk-usage"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "disk_usage"
+path = "src/lib.rs"
+
+[[bin]]
+name = "disk-usage"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

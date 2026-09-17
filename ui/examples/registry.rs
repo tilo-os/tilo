@@ -81,6 +81,7 @@ pub(crate) use scenario_modules;
 const LAB_SOURCES: &[&str] = &[
     "activity_timeline.rs",
     "channel_browser.rs",
+    "chart_gallery.rs",
     "collaboration_overview.rs",
     "conflict_picker.rs",
     "dashboard.rs",
@@ -90,6 +91,7 @@ const LAB_SOURCES: &[&str] = &[
     "widget_showcase.rs",
 ];
 const SHOT_SOURCES: &[&str] = &[
+    "chart_gallery_shots.rs",
     "ctrl_k_palette.rs",
     "data_table.rs",
     "denied_state_shots.rs",
