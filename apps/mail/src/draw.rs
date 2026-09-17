@@ -18,6 +18,14 @@ use ui::widget::Avatar;
 
 use crate::model::Addr;
 
+pub struct AvatarPaintContext<'a> {
+    pub scene: &'a mut Scene,
+    pub text: &'a mut TextRenderer,
+    pub transform: Affine,
+    pub theme: &'a Theme,
+    pub images: &'a ImageStore,
+}
+
 /// Height of a per-pane header strip (folder title / actions / account switch).
 pub const HEADER_H: f64 = 56.0;
 /// Height of one message row in the list.
@@ -124,19 +132,18 @@ pub fn gravatar_url(email: &str) -> String {
 
 /// Draw a sender avatar centred at `center`. Uses a real Gravatar when the
 /// [`ImageStore`] has one decoded; otherwise a coloured initials disc.
-#[allow(clippy::too_many_arguments)]
 pub fn draw_avatar(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    theme: &Theme,
-    images: &ImageStore,
+    ctx: &mut AvatarPaintContext<'_>,
     center: Point,
     radius: f64,
     addr: &Addr,
     tint: u8,
 ) {
-    if let Some(img) = images.get(&gravatar_url(&addr.email)) {
+    let scene = &mut *ctx.scene;
+    let tr = &mut *ctx.text;
+    let t = ctx.transform;
+    let theme = ctx.theme;
+    if let Some(img) = ctx.images.get(&gravatar_url(&addr.email)) {
         let iw = f64::from(img.width);
         let ih = f64::from(img.height);
         if iw > 0.0 && ih > 0.0 {
