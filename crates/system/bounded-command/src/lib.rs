@@ -7,6 +7,7 @@
 
 use std::ffi::OsStr;
 use std::io::{Read, Write as _};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
@@ -287,8 +288,9 @@ fn run_prepared_inner(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command.spawn()?;
     let input_writer = if let Some(bytes) = input {
         let mut stdin = child
@@ -319,6 +321,7 @@ fn run_prepared_inner(
         }
         let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
         if cancelled || Instant::now() >= deadline {
+            #[cfg(unix)]
             if let Ok(pid) = i32::try_from(child.id())
                 && let Some(group) = pid.checked_neg()
             {
@@ -364,7 +367,7 @@ fn run_prepared_inner(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::fs;
