@@ -1097,6 +1097,31 @@ impl App {
         })
     }
 
+    /// Construct a live app without discovering workspace services or identity.
+    ///
+    /// Local effects and wake ownership remain available. The caller still owns
+    /// storage policy; private windows must supply memory-only state/autosave.
+    pub fn from_scoped_parts_local(
+        wake_scope: crate::wake::WakeScope,
+        state: State,
+        root_widget: Box<dyn Widget>,
+    ) -> Self {
+        Self::from_scoped_parts_with_inputs(wake_scope, state, root_widget, || {
+            let identity = uuid::Uuid::new_v4();
+            let author = crate::permissions::UserId(format!("local:{identity}"));
+            let mut presence = PresenceCtx::empty();
+            presence.set_own_identity([author.0.clone()]);
+            let mut inputs = AppConstructionInputs::production(CollaborationManager::disabled());
+            inputs.local_author = ConstructionValue::Ready(author);
+            inputs.presence_ctx = ConstructionValue::Ready(presence);
+            inputs.surface_id = ConstructionValue::Ready(format!("local-surface:{identity}"));
+            inputs.pending_continuation_restore = || None;
+            inputs.floating_surface_client = || None;
+            inputs.startup_presence_scope = || None;
+            inputs
+        })
+    }
+
     fn from_scoped_parts_with_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
@@ -6016,7 +6041,7 @@ impl App {
                     }
                     return None;
                 }
-                let actor = crate::collaboration::local_user_id().0;
+                let actor = self.local_author.0.clone();
                 if self
                     .invoke_resource_action(
                         &address, argument, &actor, false, false, None, None, None,
@@ -18906,3 +18931,7 @@ mod document_routes;
 #[cfg(test)]
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
+
+#[cfg(test)]
+#[path = "app/local_privacy_tests.rs"]
+mod local_privacy_tests;
