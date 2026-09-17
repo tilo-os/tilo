@@ -54,6 +54,77 @@ mod tests {
             }
         });
     }
+    thread_local! { static BEFORE_PUBLICATION_REREAD: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None); }
+    pub(in crate::setup::connection::transaction) fn run_before_publication_reread() {
+        BEFORE_PUBLICATION_REREAD.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
+    }
+    #[test]
+    #[ignore = "authorized Linux filesystem and QOS_LEASE_HELPER executable required"]
+    fn native_final_publication_rejects_substituted_destination_ancestry() {
+        let tree = fixture();
+        // The source is deliberately outside the ancestry being substituted.
+        std::fs::write(tree.path().join("source"), b"proposal").unwrap();
+        std::fs::create_dir(tree.path().join("destination-parent")).unwrap();
+        let endpoint = endpoint(tree.path());
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let source = epoch
+            .pin_parent(Side::Source, &RelativePath::unix(b"source").unwrap())
+            .unwrap();
+        let guard = epoch.guard_regular(&source).unwrap();
+        let target = epoch
+            .pin_parent(
+                Side::Target,
+                &RelativePath::unix(b"destination-parent/file").unwrap(),
+            )
+            .unwrap();
+        let absent = epoch.observe_absent(&target).unwrap();
+        let private = epoch.create_namespace(&target).unwrap();
+        let stage = epoch.stage_from_guard(&guard, &private).unwrap();
+        let expected = stage.guard.actual.clone();
+        let raced_root = tree.path().to_owned();
+        BEFORE_PUBLICATION_REREAD.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                std::fs::rename(
+                    raced_root.join("destination-parent"),
+                    raced_root.join("saved-parent"),
+                )
+                .unwrap();
+                std::fs::create_dir(raced_root.join("destination-parent")).unwrap();
+                std::fs::write(raced_root.join("destination-parent/file"), b"raced").unwrap();
+            }));
+        });
+        let result = epoch.publish_absent(stage, &target, absent, &guard);
+        assert!(matches!(
+            result,
+            Err(Failure {
+                cause: EndpointError::IdentityChanged,
+                boundary: Boundary::Uncertain,
+                ..
+            })
+        ));
+        assert_eq!(epoch.boundary, Boundary::Uncertain);
+        assert!(epoch.check().is_err());
+        assert_eq!(
+            std::fs::read(tree.path().join("source")).unwrap(),
+            b"proposal"
+        );
+        assert_eq!(
+            std::fs::read(tree.path().join("saved-parent/file")).unwrap(),
+            b"proposal"
+        );
+        assert_eq!(
+            object(&File::open(tree.path().join("saved-parent/file")).unwrap()).unwrap(),
+            expected
+        );
+        assert_eq!(
+            std::fs::read(tree.path().join("destination-parent/file")).unwrap(),
+            b"raced"
+        );
+    }
     thread_local! { static FAIL_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
     pub(in crate::setup::connection::transaction) fn take_barrier_failure() -> bool {
         FAIL_BARRIER.with(|value| value.replace(false))
@@ -1117,6 +1188,8 @@ impl<'a> NativeEpoch<'a> {
         if !before.relocated_eq(&staged.guard.stamp) {
             return Err(self.failure(EndpointError::Unstable));
         }
+        #[cfg(test)]
+        tests::run_before_publication_reread();
         let bytes = self.read_hash(&actual, None)?;
         if before != Stamp::new(&self.io(actual.metadata())?) {
             return Err(self.failure(EndpointError::Unstable));
@@ -1133,6 +1206,10 @@ impl<'a> NativeEpoch<'a> {
         if self.ep(object(&named))? != staged.guard.actual {
             return Err(self.failure(EndpointError::IdentityChanged));
         }
+        // The reread and source postflight can take time. A retained directory
+        // fd still names a detached old parent, so recheck its ancestry/security
+        // at the final proof boundary rather than trusting the earlier check.
+        self.parent_check(target)?;
         self.boundary = Boundary::Published;
         Ok(NativePublication {
             source: staged.source,

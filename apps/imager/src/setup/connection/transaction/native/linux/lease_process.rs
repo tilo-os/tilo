@@ -939,43 +939,137 @@ mod tests {
                 assert!(receive(b.as_raw_fd()).is_err());
             }
             "parent-death" => {
-                // Re-exec a test parent, wait for its acquisition marker, kill it,
-                // then verify the orphan receiver observes EOF and unlocks.
-                let marker = tree.path().join("marker");
-                let mut parent = Command::new(std::env::current_exe().unwrap())
-                    .args(["--exact", TEST, "--ignored", "--nocapture"])
-                    .env("QOS_LEASE_CASE", "orphan-holder")
-                    .env("QOS_LEASE_FILE", &path)
-                    .env("QOS_LEASE_MARKER", &marker)
-                    .spawn()
-                    .unwrap();
-                let deadline = Instant::now() + STARTUP + ACK;
-                while !marker.exists() {
-                    assert!(Instant::now() < deadline);
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                parent.kill().unwrap();
-                parent.wait().unwrap();
-                let deadline = Instant::now() + SHUTDOWN + ACK;
-                loop {
-                    if writer(&path).is_ok() {
-                        break;
-                    }
-                    assert!(Instant::now() < deadline);
-                    std::thread::sleep(Duration::from_millis(10));
-                }
+                parent_death_checks_eof(&path, &tree.path().join("marker"));
             }
             "orphan-holder" => {
                 let mut receiver = start();
                 receiver
                     .acquire(File::open(std::env::var_os("QOS_LEASE_FILE").unwrap()).unwrap())
                     .unwrap();
-                std::fs::write(std::env::var_os("QOS_LEASE_MARKER").unwrap(), b"acquired").unwrap();
+                // Publish the actual receiver PID atomically after acquisition.
+                // The observer opens a pidfd before killing this test parent.
+                let marker =
+                    std::path::PathBuf::from(std::env::var_os("QOS_LEASE_MARKER").unwrap());
+                let pending = marker.with_extension("pending");
+                std::fs::write(
+                    &pending,
+                    receiver.child.as_ref().unwrap().id().to_le_bytes(),
+                )
+                .unwrap();
+                std::fs::rename(pending, marker).unwrap();
                 std::thread::sleep(Duration::from_secs(10));
                 panic!("test parent was not terminated");
             }
             _ => panic!("unknown isolated case"),
         }
+    }
+    // Test-only coordination: no signal disposition changes, subreaper setting,
+    // production environment override, or conflicting file open is needed.
+    struct TestParent(Child);
+    impl Drop for TestParent {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn receiver_exited(pidfd: &OwnedFd, deadline: Instant) -> bool {
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let mut item = libc::pollfd {
+                fd: pidfd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one initialized pidfd poll entry; bounded timeout. A pidfd
+            // becomes readable on exit even if the orphan has not been reaped.
+            let status = unsafe {
+                libc::poll(
+                    &raw mut item,
+                    1,
+                    remaining.min(POLL).as_millis().max(1) as i32,
+                )
+            };
+            if status < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return false;
+            }
+            if item.revents & libc::POLLIN != 0 {
+                return true;
+            }
+            if item.revents != 0 {
+                return false;
+            }
+        }
+    }
+    fn parent_death_checks_eof(path: &std::path::Path, marker: &std::path::Path) {
+        let mut parent = TestParent(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--ignored", "--nocapture"])
+                .env("QOS_LEASE_CASE", "orphan-holder")
+                .env("QOS_LEASE_FILE", path)
+                .env("QOS_LEASE_MARKER", marker)
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + STARTUP + ACK;
+        while !marker.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "test parent did not acquire a lease"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let bytes: [u8; 4] = std::fs::read(marker).unwrap().try_into().unwrap();
+        let receiver_pid = i32::try_from(u32::from_le_bytes(bytes)).unwrap();
+        // SAFETY: PID comes from our isolated test parent's real owned receiver.
+        // Retain pidfd before terminating that parent to avoid PID reuse races.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, receiver_pid, 0_u32) };
+        assert!(fd >= 0, "pidfd_open: {}", io::Error::last_os_error());
+        // SAFETY: successful pidfd_open returned an independently owned fd.
+        let pidfd = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).unwrap()) };
+        let mut before = libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: initialized poll entry; zero timeout verifies it is still alive.
+        assert_eq!(
+            unsafe { libc::poll(&raw mut before, 1, 0) },
+            0,
+            "receiver exited before its parent"
+        );
+        parent.0.kill().unwrap();
+        parent.0.wait().unwrap();
+        // No writer(), truncation or signal can trigger lease revocation here.
+        // Ignoring EOF with working SIGIO handling must fail this independent
+        // exit observation well before the receiver's 30-second work deadline.
+        let exited_on_eof = receiver_exited(&pidfd, Instant::now() + SHUTDOWN + ACK);
+        if !exited_on_eof {
+            // Cleanup is not evidence: retain the failed observation before
+            // terminating only this owned receiver through its retained pidfd.
+            // SAFETY: retained pidfd identifies exactly our test receiver.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0_u32,
+                );
+            }
+            let _ = receiver_exited(&pidfd, Instant::now() + SHUTDOWN);
+        }
+        assert!(
+            exited_on_eof,
+            "receiver did not terminate independently on parent EOF"
+        );
+        // Only after independent termination evidence may this request a writer.
+        assert!(writer(path).is_ok());
     }
     #[test]
     #[ignore = "real kernel forced lease timeout; authorized Linux fixture required"]
