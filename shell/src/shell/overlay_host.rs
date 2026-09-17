@@ -5268,6 +5268,27 @@ impl ShellOverlayHost {
                 event.kind,
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
             ) {
+                // A client can map before its launcher reports a terminal
+                // failure.  Its foreign tab has no content yet, and keeping
+                // it leaves an "Opening…" pane beside the failure toast.
+                // The launcher only yields a surface when this is the sole
+                // in-flight launch for the package, so concurrent launches
+                // cannot make one failure close another app's window.
+                if let Some(surface_id) =
+                    crate::shell::launcher::take_sole_claimed_surface_for_failed_launch(
+                        &event.package_id,
+                    )
+                    && {
+                        let chrome = chrome_handle.borrow();
+                        let mut tree = chrome.tree_mut();
+                        crate::compositor::tab_binding::retire_starting_foreign_surface(
+                            &mut tree, surface_id,
+                        )
+                    }
+                {
+                    chrome_handle.borrow_mut().bump();
+                    posted = true;
+                }
                 // A host app launched during a terminal Xwayland outage has
                 // no synchronous window result. If its launcher chain does
                 // report failure, return a symbolic restore to the retryable

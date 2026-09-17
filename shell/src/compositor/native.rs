@@ -4352,11 +4352,7 @@ pub fn run() -> ! {
     };
     let display_handle = display.handle();
 
-    let mut state = State::new(event_loop.handle(), display_handle.clone());
     spawn_auto_brightness_worker();
-    // Point `ui`'s clipboard at the compositor's selection mirror — everything
-    // hosted here isn't a Wayland client, so without this they'd share no buffer.
-    crate::compositor::selection::install_host_clipboard(state.selection_store());
 
     // `--backend drm|winit` selects the real native backend implementation.
     let backend_kind = parse_backend_from_args();
@@ -4440,6 +4436,14 @@ pub fn run() -> ! {
     // The desktop's own state, loaded from disk not bootstrapped fresh — room
     // identity, owner and capability list all have to survive a restart.
     let (tree_handle, enable_peer_sync, state_notice) = load_session_tree(enable_peer_sync);
+    let mut state = State::new_with_workspace_tree(
+        event_loop.handle(),
+        display_handle.clone(),
+        tree_handle.clone(),
+    );
+    // Point `ui`'s clipboard at the compositor's selection mirror — everything
+    // hosted here isn't a Wayland client, so without this they'd share no buffer.
+    crate::compositor::selection::install_host_clipboard(state.selection_store());
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
@@ -5770,10 +5774,12 @@ pub fn run() -> ! {
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
-                let _ = crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
-                    &mut state.workspace_tree,
-                    surface_id,
-                );
+                let _ = {
+                    let mut tree = state.workspace_tree.write();
+                    crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
+                        &mut tree, surface_id,
+                    )
+                };
                 if let Some(toplevel) = state
                     .xdg_shell_state
                     .toplevel_surfaces()
@@ -5787,21 +5793,13 @@ pub fn run() -> ! {
                 }
             }
 
-            // Mirror foreign toplevels adopted at the protocol layer into the rendered
-            // tab tree, reaping tabs whose client went away — a diff of protocol tree
-            // against rendered, so idempotent and self-healing (no phantom tabs from a
-            // dropped event). A real change bumps the chrome revision, driving the strip resync that splices the tab into the widget tree next layout.
-            let mirrored = {
-                let chrome = frame_builder.chrome();
-                let mut rendered = chrome.tree_mut();
-                foreign::reconcile_foreign_tabs(&state.workspace_tree, &mut rendered)
-            };
-            if mirrored {
+            // Protocol callbacks and the frame builder share one tree handle, so
+            // adoption/destruction is immediately visible to chrome and persistence.
+            // The input router's queues remain bookkeeping and are drained each
+            // tick so they cannot grow across a long session.
+            if state.client_input.clear_pending() {
                 frame_builder.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
             }
-            // The mirror above is the single source of tab adoption, so the input
-            // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
-            state.client_input.clear_pending();
         }
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
@@ -6879,7 +6877,7 @@ pub fn run() -> ! {
         // Serialize the live `WorkspaceTree` to the requested path, via a
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
         if let Some(path) = test_dump_path.as_ref()
-            && let Ok(json) = serde_json::to_vec(&state.workspace_tree)
+            && let Ok(json) = serde_json::to_vec(&*state.workspace_tree.read())
             && let Err(e) = atomic_file::write_creating_parent(std::path::Path::new(path), &json)
         {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
