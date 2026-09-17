@@ -149,6 +149,10 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::RealtimeMediaReady { .. }
             | PersonalFabricAction::RealtimeStopSource { .. }
             | PersonalFabricAction::RealtimeCancel { .. } => ContinuityCapability::RealtimeSessions,
+            PersonalFabricAction::GamepadForwardRequest { .. }
+            | PersonalFabricAction::GamepadForwardGrant { .. }
+            | PersonalFabricAction::GamepadForwardEvent { .. }
+            | PersonalFabricAction::GamepadForwardStop { .. } => ContinuityCapability::TypedGamepad,
             PersonalFabricAction::SetDisplayPlacement { .. }
             | PersonalFabricAction::InputLeaseGranted { .. }
             | PersonalFabricAction::InputLeaseRevoked { .. }

@@ -33,6 +33,10 @@ use crate::shell::device_fabric::{
 };
 use crate::shell::network::ShellNetwork;
 
+type ProductionGamepadFactory =
+    os_actions::LinuxVirtualGamepadFactory<os_actions::UinputGamepadDeviceProvider>;
+type ProductionGamepadBroker = os_actions::ForwardedPeripheralBroker<ProductionGamepadFactory>;
+
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const PRESENCE_HEARTBEAT: Duration = Duration::from_secs(10);
 const MAX_QUEUED_SPATIAL_INPUT: usize = 256;
@@ -45,6 +49,83 @@ const MAX_BLUETOOTH_HANDOFFS: usize = 32;
 const DISPLAY_OFFER_RETRY: Duration = Duration::from_secs(2);
 const DISPLAY_KEEPALIVE: Duration = Duration::from_secs(5);
 const DISPLAY_SESSION_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_GAMEPAD_FORWARDINGS: usize = 8;
+
+struct InboundGamepadForwarding {
+    source: crate::shell::personal_continuity::DeviceId,
+    lease_nonce: [u8; 16],
+    identity: os_actions::ForwardedPeripheralIdentity,
+    device: os_actions::PeripheralDeviceId,
+    lease: os_actions::PeripheralLeaseId,
+}
+
+#[derive(Clone, Debug)]
+struct OutboundGamepadForwarding {
+    target: crate::shell::personal_continuity::DeviceId,
+    lease_nonce: Option<[u8; 16]>,
+    sequence: u64,
+}
+
+#[derive(Default)]
+struct OutboundGamepadState {
+    sessions: BTreeMap<[u8; 16], OutboundGamepadForwarding>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingGamepadAuthorization {
+    source: crate::shell::personal_continuity::DeviceId,
+    target: crate::shell::personal_continuity::DeviceId,
+    app_id: String,
+    workspace_id: String,
+    session_id: String,
+    label: String,
+    received: Instant,
+}
+
+#[derive(Default)]
+struct GamepadAuthorizationState {
+    pending: BTreeMap<[u8; 16], PendingGamepadAuthorization>,
+    decisions: VecDeque<([u8; 16], bool)>,
+}
+
+impl GamepadAuthorizationState {
+    fn queue(
+        &mut self,
+        forwarding_id: [u8; 16],
+        request: PendingGamepadAuthorization,
+        inbound_exists: bool,
+        inbound_count: usize,
+    ) -> bool {
+        if inbound_exists
+            || self.pending.contains_key(&forwarding_id)
+            || inbound_count + self.pending.len() >= MAX_GAMEPAD_FORWARDINGS
+        {
+            return false;
+        }
+        self.pending.insert(forwarding_id, request);
+        true
+    }
+
+    fn decide(&mut self, forwarding_id: [u8; 16], approved: bool) -> bool {
+        if !self.pending.contains_key(&forwarding_id)
+            || self.decisions.iter().any(|(id, _)| *id == forwarding_id)
+        {
+            return false;
+        }
+        self.decisions.push_back((forwarding_id, approved));
+        true
+    }
+}
+
+fn outbound_gamepad_state() -> &'static Mutex<OutboundGamepadState> {
+    static STATE: OnceLock<Mutex<OutboundGamepadState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(OutboundGamepadState::default()))
+}
+
+fn gamepad_authorization_state() -> &'static Mutex<GamepadAuthorizationState> {
+    static STATE: OnceLock<Mutex<GamepadAuthorizationState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(GamepadAuthorizationState::default()))
+}
 
 #[derive(Clone, Debug)]
 struct OutboundDisplaySession {
@@ -631,6 +712,8 @@ pub struct DeviceFabricRuntime {
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
+    gamepad_broker: ProductionGamepadBroker,
+    inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     policy: Option<ContinuityPolicySnapshot>,
 }
 
@@ -650,6 +733,12 @@ impl DeviceFabricRuntime {
             notification_bridge,
             realtime_adapter: None,
             realtime_online_peers: BTreeSet::new(),
+            gamepad_broker: os_actions::ForwardedPeripheralBroker::new(
+                os_actions::LinuxVirtualGamepadFactory::new(
+                    os_actions::UinputGamepadDeviceProvider,
+                ),
+            ),
+            inbound_gamepads: BTreeMap::new(),
             policy: None,
         }
     }
@@ -674,6 +763,7 @@ impl DeviceFabricRuntime {
             pump_bluetooth_handoffs(network);
         }
         self.handle_fabric_actions(network, policy);
+        self.maintain_gamepad_forwarding(network, policy);
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
         if policy.permits(ContinuityCapability::FileTransfer) {
@@ -888,6 +978,9 @@ impl DeviceFabricRuntime {
             if !policy.permits_action(&envelope.action) {
                 continue;
             }
+            if self.handle_gamepad_action(network, &envelope) {
+                continue;
+            }
             if self.handle_notification_action(network, &envelope) {
                 continue;
             }
@@ -968,6 +1061,329 @@ impl DeviceFabricRuntime {
                     );
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
+            }
+        }
+    }
+
+    fn handle_gamepad_action(
+        &mut self,
+        network: &ShellNetwork,
+        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    ) -> bool {
+        match &envelope.action {
+            PersonalFabricAction::GamepadForwardRequest {
+                forwarding_id,
+                app_id,
+                workspace_id,
+                session_id,
+                label,
+            } => {
+                self.queue_gamepad_request(
+                    network,
+                    &envelope.source,
+                    &envelope.target,
+                    *forwarding_id,
+                    app_id,
+                    workspace_id,
+                    session_id,
+                    label,
+                );
+            }
+            PersonalFabricAction::GamepadForwardGrant {
+                forwarding_id,
+                accepted,
+                lease_nonce,
+            } => {
+                if let Ok(mut state) = outbound_gamepad_state().lock()
+                    && let Some(session) = state.sessions.get_mut(forwarding_id)
+                    && session.target == envelope.source
+                {
+                    if *accepted {
+                        session.lease_nonce = Some(*lease_nonce);
+                        session.sequence = 0;
+                    } else {
+                        state.sessions.remove(forwarding_id);
+                    }
+                }
+            }
+            PersonalFabricAction::GamepadForwardEvent {
+                forwarding_id,
+                lease_nonce,
+                sequence,
+                event,
+            } => {
+                let result = self
+                    .inbound_gamepads
+                    .get(forwarding_id)
+                    .filter(|session| {
+                        session.source == envelope.source && session.lease_nonce == *lease_nonce
+                    })
+                    .map(|session| {
+                        self.gamepad_broker.submit(
+                            session.lease,
+                            &session.identity,
+                            *sequence,
+                            *event,
+                            Instant::now(),
+                        )
+                    });
+                if matches!(
+                    result,
+                    Some(Err(os_actions::PeripheralBrokerError::InvalidLease))
+                ) {
+                    self.remove_inbound_gamepad(*forwarding_id);
+                }
+            }
+            PersonalFabricAction::GamepadForwardStop {
+                forwarding_id,
+                lease_nonce,
+            } => {
+                let inbound = self
+                    .inbound_gamepads
+                    .get(forwarding_id)
+                    .is_some_and(|session| {
+                        session.source == envelope.source && session.lease_nonce == *lease_nonce
+                    });
+                if inbound {
+                    self.remove_inbound_gamepad(*forwarding_id);
+                }
+                if let Ok(mut state) = outbound_gamepad_state().lock()
+                    && state.sessions.get(forwarding_id).is_some_and(|session| {
+                        session.target == envelope.source
+                            && session.lease_nonce == Some(*lease_nonce)
+                    })
+                {
+                    state.sessions.remove(forwarding_id);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every authenticated wire binding stays explicit at the privileged broker boundary"
+    )]
+    fn queue_gamepad_request(
+        &mut self,
+        network: &ShellNetwork,
+        source: &crate::shell::personal_continuity::DeviceId,
+        target: &crate::shell::personal_continuity::DeviceId,
+        forwarding_id: [u8; 16],
+        app_id: &str,
+        workspace_id: &str,
+        session_id: &str,
+        label: &str,
+    ) {
+        let reject = PersonalFabricAction::GamepadForwardGrant {
+            forwarding_id,
+            accepted: false,
+            lease_nonce: [0; 16],
+        };
+        let Ok(mut authorizations) = gamepad_authorization_state().lock() else {
+            let _ = network.send_personal_fabric_action(source, reject);
+            return;
+        };
+        let request = PendingGamepadAuthorization {
+            source: source.clone(),
+            target: target.clone(),
+            app_id: app_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            session_id: session_id.to_owned(),
+            label: label.to_owned(),
+            received: Instant::now(),
+        };
+        if !authorizations.queue(
+            forwarding_id,
+            request,
+            self.inbound_gamepads.contains_key(&forwarding_id),
+            self.inbound_gamepads.len(),
+        ) {
+            let _ = network.send_personal_fabric_action(source, reject);
+        }
+    }
+
+    fn resolve_gamepad_authorizations(&mut self, network: &ShellNetwork) {
+        let decisions = gamepad_authorization_state().lock().map_or_else(
+            |_| Vec::new(),
+            |mut state| state.decisions.drain(..).collect::<Vec<_>>(),
+        );
+        for (forwarding_id, approved) in decisions {
+            let pending = gamepad_authorization_state()
+                .lock()
+                .ok()
+                .and_then(|mut state| state.pending.remove(&forwarding_id));
+            let Some(pending) = pending else {
+                continue;
+            };
+            if !approved {
+                let _ = network.send_personal_fabric_action(
+                    &pending.source,
+                    PersonalFabricAction::GamepadForwardGrant {
+                        forwarding_id,
+                        accepted: false,
+                        lease_nonce: [0; 16],
+                    },
+                );
+                continue;
+            }
+            let source_online = network
+                .device_fabric()
+                .snapshots()
+                .get(&pending.source)
+                .is_some_and(|snapshot| snapshot.presence.online);
+            if !source_online {
+                continue;
+            }
+            self.grant_gamepad_request(network, forwarding_id, pending);
+        }
+    }
+
+    fn grant_gamepad_request(
+        &mut self,
+        network: &ShellNetwork,
+        forwarding_id: [u8; 16],
+        pending: PendingGamepadAuthorization,
+    ) {
+        let reject = || PersonalFabricAction::GamepadForwardGrant {
+            forwarding_id,
+            accepted: false,
+            lease_nonce: [0; 16],
+        };
+        // The exact certified route and claimed app session were displayed to
+        // the local user before this branch. The privileged shell, not the
+        // remote device, is the authority that turns that consent into focus.
+        let Ok(identity) = os_actions::ForwardedPeripheralIdentity::new_after_verification(
+            pending.source.as_str(),
+            pending.target.as_str(),
+            &pending.app_id,
+            &pending.workspace_id,
+            &pending.session_id,
+        ) else {
+            let _ = network.send_personal_fabric_action(&pending.source, reject());
+            return;
+        };
+        self.gamepad_broker.set_focus(Some(identity.clone()));
+        let Ok(device) = self.gamepad_broker.register_gamepad(&pending.label) else {
+            let _ = network.send_personal_fabric_action(&pending.source, reject());
+            return;
+        };
+        let now = Instant::now();
+        let lease = self
+            .gamepad_broker
+            .authorize(&identity, device, now)
+            .and_then(|proof| self.gamepad_broker.acquire(proof, &identity, device, now));
+        let Ok(lease) = lease else {
+            self.gamepad_broker.remove_device(device);
+            let _ = network.send_personal_fabric_action(&pending.source, reject());
+            return;
+        };
+        let Some(lease_nonce) = secure_nonce() else {
+            self.gamepad_broker.revoke(lease);
+            self.gamepad_broker.remove_device(device);
+            let _ = network.send_personal_fabric_action(&pending.source, reject());
+            return;
+        };
+        if let Some(previous) = self.inbound_gamepads.insert(
+            forwarding_id,
+            InboundGamepadForwarding {
+                source: pending.source.clone(),
+                lease_nonce,
+                identity,
+                device,
+                lease,
+            },
+        ) {
+            self.gamepad_broker.revoke(previous.lease);
+            self.gamepad_broker.remove_device(previous.device);
+        }
+        let _ = network.send_personal_fabric_action(
+            &pending.source,
+            PersonalFabricAction::GamepadForwardGrant {
+                forwarding_id,
+                accepted: true,
+                lease_nonce,
+            },
+        );
+    }
+
+    fn remove_inbound_gamepad(&mut self, forwarding_id: [u8; 16]) {
+        if let Some(session) = self.inbound_gamepads.remove(&forwarding_id) {
+            self.gamepad_broker.revoke(session.lease);
+            self.gamepad_broker.remove_device(session.device);
+        }
+        if self.inbound_gamepads.is_empty() {
+            self.gamepad_broker.set_focus(None);
+        }
+    }
+
+    fn maintain_gamepad_forwarding(
+        &mut self,
+        network: &ShellNetwork,
+        policy: ContinuityPolicySnapshot,
+    ) {
+        if policy.permits(ContinuityCapability::TypedGamepad) {
+            self.resolve_gamepad_authorizations(network);
+        } else if let Ok(mut state) = gamepad_authorization_state().lock() {
+            state.pending.clear();
+            state.decisions.clear();
+        }
+        self.gamepad_broker.reap_expired(Instant::now());
+        let online = network
+            .device_fabric()
+            .snapshots()
+            .values()
+            .filter(|snapshot| snapshot.presence.online)
+            .map(|snapshot| snapshot.owner.clone())
+            .collect::<BTreeSet<_>>();
+        if let Ok(mut state) = gamepad_authorization_state().lock() {
+            state.pending.retain(|_, request| {
+                online.contains(&request.source)
+                    && request.received.elapsed() <= os_actions::AUTHORIZATION_TTL
+            });
+        }
+        let ended = self
+            .inbound_gamepads
+            .iter()
+            .filter_map(|(id, session)| {
+                (!policy.permits(ContinuityCapability::TypedGamepad)
+                    || !online.contains(&session.source)
+                    || !self.gamepad_broker.has_lease(session.lease))
+                .then_some((*id, session.source.clone(), session.lease_nonce))
+            })
+            .collect::<Vec<_>>();
+        for (forwarding_id, source, lease_nonce) in ended {
+            self.remove_inbound_gamepad(forwarding_id);
+            let _ = network.send_personal_fabric_action(
+                &source,
+                PersonalFabricAction::GamepadForwardStop {
+                    forwarding_id,
+                    lease_nonce,
+                },
+            );
+        }
+        if let Ok(mut state) = outbound_gamepad_state().lock() {
+            let ended = state
+                .sessions
+                .iter()
+                .filter_map(|(id, session)| {
+                    (!policy.permits(ContinuityCapability::TypedGamepad)
+                        || !online.contains(&session.target))
+                    .then_some((*id, session.clone()))
+                })
+                .collect::<Vec<_>>();
+            for (forwarding_id, session) in ended {
+                state.sessions.remove(&forwarding_id);
+                if let Some(lease_nonce) = session.lease_nonce {
+                    let _ = network.send_personal_fabric_action(
+                        &session.target,
+                        PersonalFabricAction::GamepadForwardStop {
+                            forwarding_id,
+                            lease_nonce,
+                        },
+                    );
+                }
             }
         }
     }
@@ -1718,7 +2134,11 @@ fn handle_spatial_action(
         | PersonalFabricAction::RealtimeAccept { .. }
         | PersonalFabricAction::RealtimeMediaReady { .. }
         | PersonalFabricAction::RealtimeStopSource { .. }
-        | PersonalFabricAction::RealtimeCancel { .. } => {}
+        | PersonalFabricAction::RealtimeCancel { .. }
+        | PersonalFabricAction::GamepadForwardRequest { .. }
+        | PersonalFabricAction::GamepadForwardGrant { .. }
+        | PersonalFabricAction::GamepadForwardEvent { .. }
+        | PersonalFabricAction::GamepadForwardStop { .. } => {}
     }
 }
 
@@ -3817,6 +4237,227 @@ fn require_continuity(capability: ContinuityCapability) -> Result<(), String> {
         })
 }
 
+/// Ask one certified device to expose a constrained virtual gamepad for an
+/// exact app/workspace/session binding. The target's grant is asynchronous;
+/// callers can poll [`typed_gamepad_forwarding_ready`] before sending input.
+///
+/// # Errors
+///
+/// Returns an error when continuity policy denies forwarding, the identity is
+/// malformed, capacity is exhausted, or the authenticated route cannot send.
+pub fn request_typed_gamepad_forwarding(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    app_id: &str,
+    workspace_id: &str,
+    session_id: &str,
+    label: &str,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::TypedGamepad)?;
+    let (local, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| "local certified-device identity is unavailable".to_string())?;
+    os_actions::ForwardedPeripheralIdentity::new_after_verification(
+        local.as_str(),
+        target.as_str(),
+        app_id,
+        workspace_id,
+        session_id,
+    )
+    .map_err(|error| error.to_string())?;
+    if label.is_empty() || label.len() > 128 || label.chars().any(char::is_control) {
+        return Err("gamepad label is invalid".into());
+    }
+    let forwarding_id =
+        secure_nonce().ok_or_else(|| "secure randomness is unavailable".to_string())?;
+    {
+        let state = outbound_gamepad_state()
+            .lock()
+            .map_err(|_| "typed-gamepad state is unavailable".to_string())?;
+        if state.sessions.len() >= MAX_GAMEPAD_FORWARDINGS {
+            return Err("typed-gamepad forwarding capacity is exhausted".into());
+        }
+    }
+    network.send_personal_fabric_action(
+        target,
+        PersonalFabricAction::GamepadForwardRequest {
+            forwarding_id,
+            app_id: app_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            session_id: session_id.to_owned(),
+            label: label.to_owned(),
+        },
+    )?;
+    outbound_gamepad_state()
+        .lock()
+        .map_err(|_| "typed-gamepad state is unavailable".to_string())?
+        .sessions
+        .insert(
+            forwarding_id,
+            OutboundGamepadForwarding {
+                target: target.clone(),
+                lease_nonce: None,
+                sequence: 0,
+            },
+        );
+    Ok(forwarding_id)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingTypedGamepadAuthorization {
+    pub forwarding_id: [u8; 16],
+    pub source: crate::shell::personal_continuity::DeviceId,
+    pub app_id: String,
+    pub workspace_id: String,
+    pub session_id: String,
+    pub label: String,
+}
+
+/// Snapshot locally pending requests for a shell consent surface. Merely
+/// reading a request never creates a virtual input device.
+#[must_use]
+pub fn pending_typed_gamepad_authorizations() -> Vec<PendingTypedGamepadAuthorization> {
+    gamepad_authorization_state().lock().map_or_else(
+        |_| Vec::new(),
+        |state| {
+            state
+                .pending
+                .iter()
+                .map(
+                    |(forwarding_id, request)| PendingTypedGamepadAuthorization {
+                        forwarding_id: *forwarding_id,
+                        source: request.source.clone(),
+                        app_id: request.app_id.clone(),
+                        workspace_id: request.workspace_id.clone(),
+                        session_id: request.session_id.clone(),
+                        label: request.label.clone(),
+                    },
+                )
+                .collect()
+        },
+    )
+}
+
+/// Record an explicit local consent decision. The session runtime consumes
+/// this command and creates the fixed virtual device only on approval.
+///
+/// # Errors
+///
+/// Returns an error for disabled policy, an unknown request, or a duplicate
+/// decision. The remote peer cannot call this local shell boundary.
+pub fn authorize_typed_gamepad_forwarding(
+    forwarding_id: [u8; 16],
+    approved: bool,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::TypedGamepad)?;
+    let mut state = gamepad_authorization_state()
+        .lock()
+        .map_err(|_| "typed-gamepad authorization state is unavailable".to_string())?;
+    if !state.decide(forwarding_id, approved) {
+        return Err("typed-gamepad authorization is unknown or already decided".into());
+    }
+    Ok(())
+}
+
+#[must_use]
+pub fn typed_gamepad_forwarding_ready(forwarding_id: [u8; 16]) -> bool {
+    outbound_gamepad_state().lock().is_ok_and(|state| {
+        state
+            .sessions
+            .get(&forwarding_id)
+            .is_some_and(|session| session.lease_nonce.is_some())
+    })
+}
+
+/// Send one sanitized logical controller event. No raw transport report,
+/// descriptor, key code, or caller-selected device capability can cross this
+/// interface.
+///
+/// # Errors
+///
+/// Returns an error for disabled policy, unknown/ungranted forwarding, invalid
+/// semantic input, sequence exhaustion, or delivery failure.
+pub fn send_typed_gamepad_event(
+    network: &ShellNetwork,
+    forwarding_id: [u8; 16],
+    event: os_actions::ForwardedGamepadEvent,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::TypedGamepad)?;
+    if !event.is_valid() {
+        return Err("invalid sanitized gamepad event".into());
+    }
+    let (target, lease_nonce, sequence) = {
+        let state = outbound_gamepad_state()
+            .lock()
+            .map_err(|_| "typed-gamepad state is unavailable".to_string())?;
+        let session = state
+            .sessions
+            .get(&forwarding_id)
+            .ok_or_else(|| "typed-gamepad forwarding is unknown".to_string())?;
+        let lease_nonce = session
+            .lease_nonce
+            .ok_or_else(|| "typed-gamepad target has not granted a lease".to_string())?;
+        let sequence = session
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| "typed-gamepad event sequence is exhausted".to_string())?;
+        (session.target.clone(), lease_nonce, sequence)
+    };
+    network.send_personal_fabric_action(
+        &target,
+        PersonalFabricAction::GamepadForwardEvent {
+            forwarding_id,
+            lease_nonce,
+            sequence,
+            event,
+        },
+    )?;
+    if let Ok(mut state) = outbound_gamepad_state().lock()
+        && let Some(session) = state.sessions.get_mut(&forwarding_id)
+        && session.target == target
+        && session.lease_nonce == Some(lease_nonce)
+    {
+        session.sequence = sequence;
+    }
+    Ok(())
+}
+
+/// End an exact forwarding and ask the target to neutralize every control.
+/// Local state is removed even when delivery fails.
+///
+/// # Errors
+///
+/// Returns an error when the forwarding is unknown or teardown delivery fails.
+pub fn stop_typed_gamepad_forwarding(
+    network: &ShellNetwork,
+    forwarding_id: [u8; 16],
+) -> Result<(), String> {
+    let session = outbound_gamepad_state()
+        .lock()
+        .map_err(|_| "typed-gamepad state is unavailable".to_string())?
+        .sessions
+        .remove(&forwarding_id)
+        .ok_or_else(|| "typed-gamepad forwarding is unknown".to_string())?;
+    let Some(lease_nonce) = session.lease_nonce else {
+        return Ok(());
+    };
+    network
+        .send_personal_fabric_action(
+            &session.target,
+            PersonalFabricAction::GamepadForwardStop {
+                forwarding_id,
+                lease_nonce,
+            },
+        )
+        .map(|_| ())
+}
+
+fn secure_nonce() -> Option<[u8; 16]> {
+    let mut nonce = [0; 16];
+    OsRng.try_fill_bytes(&mut nonce).ok()?;
+    (nonce != [0; 16]).then_some(nonce)
+}
+
 fn tear_down_display_and_input(network: &ShellNetwork) {
     if let Some((local, _)) = network.local_device_fabric_identity()
         && let Ok(mut state) = personal_display_state().lock()
@@ -4236,5 +4877,34 @@ mod tests {
         assert!(!state.accept_frame([9; 16], &source, 1, 1280, 720, Instant::now()));
         assert!(!state.accept_frame([9; 16], &source, 2, 1280, 720, Instant::now()));
         assert_eq!(state.inbound.as_ref().unwrap().last_sequence, 2);
+    }
+
+    fn pending_gamepad(source: &str) -> PendingGamepadAuthorization {
+        PendingGamepadAuthorization {
+            source: DeviceId::new(source).unwrap(),
+            target: DeviceId::new("target").unwrap(),
+            app_id: "dev.tilo.game".into(),
+            workspace_id: "workspace".into(),
+            session_id: "session".into(),
+            label: "Controller".into(),
+            received: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn gamepad_request_requires_one_local_decision_and_rejects_duplicate_id() {
+        let mut state = GamepadAuthorizationState::default();
+        assert!(state.queue([1; 16], pending_gamepad("source"), false, 0));
+        assert!(!state.queue([1; 16], pending_gamepad("attacker"), false, 0));
+        assert!(state.decide([1; 16], true));
+        assert!(!state.decide([1; 16], false));
+        assert_eq!(state.decisions, VecDeque::from([([1; 16], true)]));
+    }
+
+    #[test]
+    fn active_gamepad_lease_blocks_same_forwarding_id_before_consent() {
+        let mut state = GamepadAuthorizationState::default();
+        assert!(!state.queue([2; 16], pending_gamepad("source"), true, 1));
+        assert!(state.pending.is_empty());
     }
 }

@@ -99,9 +99,10 @@ pub use network::{
     set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
 };
 pub use peripheral_forwarding::{
-    ForwardedGamepadEvent, ForwardedPeripheralBroker, ForwardedPeripheralIdentity, GamepadAxis,
-    GamepadButton, PeripheralAuditEvent, PeripheralDeviceId, PeripheralLeaseId,
-    PeripheralRevocation, VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
+    AUTHORIZATION_TTL, ForwardedGamepadEvent, ForwardedPeripheralBroker,
+    ForwardedPeripheralIdentity, GamepadAxis, GamepadButton, PeripheralAuditEvent,
+    PeripheralBrokerError, PeripheralDeviceId, PeripheralLeaseId, PeripheralRevocation,
+    VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
 };
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
