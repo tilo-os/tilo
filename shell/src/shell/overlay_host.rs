@@ -40,6 +40,9 @@ use ui::widget::{
 };
 use ui::{CommandEntry, CommandPalette};
 
+use crate::shell::capture_surface::{
+    CaptureMirrorImage, CaptureSurfaceKind, CaptureSurfaceRequest,
+};
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::collaborators_overlay::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
@@ -785,293 +788,6 @@ pub enum WifiSecretAction {
 
 pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
 
-pub struct CaptureMirrorHandoffLayer {
-    pub rgba: std::sync::Arc<[u8]>,
-    pub width: u32,
-    pub height: u32,
-    /// Normalized position inside the selected source union.
-    pub source: Rect,
-    /// Normalized position inside the final Grid/Stack composition.
-    pub target: Rect,
-}
-
-struct CaptureMirrorLayer {
-    image: Image,
-    source: Rect,
-    target: Rect,
-}
-
-/// A compositor-fed image that always occupies its floating window's content
-/// box. The general `Image` widget is intrinsically sized; capture mirrors are
-/// viewport content and therefore need explicit fill semantics.
-struct CaptureMirrorImage {
-    image: Image,
-    /// Independently movable source regions. Keeping them separate lets a
-    /// Grid/Stack `PiP` pack itself during the flight without crossfading or
-    /// teleporting high-contrast pixels.
-    handoff_layers: Vec<CaptureMirrorLayer>,
-    /// Pinned stills use their receipt-scale preview as a calm launch proxy,
-    /// then resolve into the exact artifact as the surface becomes readable.
-    /// Multi-source live `PiP` uses spatial layer motion instead.
-    crossfade_handoff: bool,
-    /// Original pixel aspect for tall frozen documents. `Some` switches the
-    /// image from whole-artifact preview into a width-fitted scroll viewport
-    /// as the handoff lands.
-    document_aspect: Option<f64>,
-    document_scroll_y: f64,
-    handoff_started_at: Instant,
-    handoff_progress_override: Option<f64>,
-    rect: Rect,
-}
-
-impl CaptureMirrorImage {
-    fn new(image: Image, handoff_layers: Vec<CaptureMirrorHandoffLayer>) -> Self {
-        Self {
-            image,
-            handoff_layers: handoff_layers
-                .into_iter()
-                .map(|layer| CaptureMirrorLayer {
-                    image: Image::from_rgba(layer.rgba, layer.width, layer.height)
-                        .with_fit(ImageFit::Fill),
-                    source: layer.source,
-                    target: layer.target,
-                })
-                .collect(),
-            crossfade_handoff: false,
-            document_aspect: None,
-            document_scroll_y: 0.0,
-            handoff_started_at: Instant::now(),
-            handoff_progress_override: None,
-            rect: Rect::ZERO,
-        }
-    }
-
-    fn new_crossfade(image: Image, preview: Image, document_aspect: Option<f64>) -> Self {
-        Self {
-            image,
-            handoff_layers: vec![CaptureMirrorLayer {
-                image: preview,
-                source: Rect::new(0.0, 0.0, 1.0, 1.0),
-                target: Rect::new(0.0, 0.0, 1.0, 1.0),
-            }],
-            crossfade_handoff: true,
-            document_aspect,
-            document_scroll_y: 0.0,
-            handoff_started_at: Instant::now(),
-            handoff_progress_override: None,
-            rect: Rect::ZERO,
-        }
-    }
-
-    fn set_image(&mut self, image: Image) {
-        // Preserve `rect`: the frame payload changes continuously, but its
-        // layout does not. Replacing the whole widget here would zero its rect
-        // after every compositor readback.
-        self.image = image;
-    }
-
-    fn set_handoff_progress(&mut self, permille: u16) {
-        if !self.handoff_layers.is_empty() {
-            self.handoff_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
-        }
-    }
-
-    fn handoff_mix(&self) -> f64 {
-        const HANDOFF_DURATION: Duration = Duration::from_millis(360);
-        let raw = self.handoff_progress_override.unwrap_or_else(|| {
-            (self.handoff_started_at.elapsed().as_secs_f64() / HANDOFF_DURATION.as_secs_f64())
-                .clamp(0.0, 1.0)
-        });
-        raw * raw * (3.0 - 2.0 * raw)
-    }
-
-    fn painted_image_rect(&mut self, mix: f64) -> Rect {
-        let Some(aspect) = self.document_aspect else {
-            return self.rect;
-        };
-        let raw = ((mix - 0.14) / 0.86).clamp(0.0, 1.0);
-        let unfold = raw * raw * (3.0 - 2.0 * raw);
-        let document_height = self.rect.width() / aspect.max(0.05);
-        let height = self.rect.height() + (document_height - self.rect.height()) * unfold;
-        let max_scroll = (height - self.rect.height()).max(0.0);
-        self.document_scroll_y = self.document_scroll_y.clamp(0.0, max_scroll);
-        Rect::new(
-            self.rect.x0,
-            self.rect.y0 - self.document_scroll_y,
-            self.rect.x1,
-            self.rect.y0 - self.document_scroll_y + height,
-        )
-    }
-
-    fn draw_document_scrollbar(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        mix: f64,
-    ) {
-        let Some(aspect) = self.document_aspect else {
-            return;
-        };
-        let raw = ((mix - 0.58) / 0.42).clamp(0.0, 1.0);
-        let alpha = f64_to_f32_lossy(raw * raw * (3.0 - 2.0 * raw) * 0.46);
-        if alpha <= 0.001 {
-            return;
-        }
-        let document_height = self.rect.width() / aspect.max(0.05);
-        let max_scroll = (document_height - self.rect.height()).max(0.0);
-        if max_scroll <= 0.0 {
-            return;
-        }
-        let rail = Rect::new(
-            self.rect.x1 - 5.0,
-            self.rect.y0 + 10.0,
-            self.rect.x1 - 2.0,
-            self.rect.y1 - 10.0,
-        );
-        let thumb_height =
-            (rail.height() * self.rect.height() / document_height).clamp(28.0, rail.height());
-        let travel = (rail.height() - thumb_height).max(0.0);
-        let y = rail.y0 + travel * (self.document_scroll_y / max_scroll);
-        let thumb = Rect::new(rail.x0, y, rail.x1, y + thumb_height);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.text_dim.with_alpha_factor(alpha),
-            None,
-            &RoundedRect::from_rect(thumb, thumb.width() / 2.0),
-        );
-    }
-}
-
-impl Widget for CaptureMirrorImage {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = match taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            Err(error) => {
-                tracing::error!(%error, "capture mirror leaf allocation failed");
-                NodeId::from(0_u64)
-            }
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _: &mut TextRenderer,
-        theme: &Theme,
-        _: &PresenceCtx,
-    ) {
-        let mix = self.handoff_mix();
-        if self.handoff_layers.is_empty() {
-            self.image.paint_at(scene, transform, self.rect);
-            return;
-        }
-        if self.crossfade_handoff {
-            let target = self.painted_image_rect(mix);
-            if mix >= 0.999 {
-                self.image.paint_at(scene, transform, target);
-                self.draw_document_scrollbar(scene, transform, theme, mix);
-                return;
-            }
-            if let Some(layer) = self.handoff_layers.first_mut() {
-                layer.image.paint_at(scene, transform, target);
-            }
-            if mix > 0.001 {
-                scene.push_layer(
-                    Fill::NonZero,
-                    BlendMode::default(),
-                    f64_to_f32_lossy(mix),
-                    transform,
-                    &self.rect,
-                );
-                self.image.paint_at(scene, transform, target);
-                scene.pop_layer();
-            }
-            self.draw_document_scrollbar(scene, transform, theme, mix);
-            return;
-        }
-        if mix >= 0.999 {
-            self.image.paint_at(scene, transform, self.rect);
-            return;
-        }
-        for layer in &mut self.handoff_layers {
-            let normalized = lerp_normalized_rect(layer.source, layer.target, mix);
-            let target = Rect::new(
-                self.rect.x0 + normalized.x0 * self.rect.width(),
-                self.rect.y0 + normalized.y0 * self.rect.height(),
-                self.rect.x0 + normalized.x1 * self.rect.width(),
-                self.rect.y0 + normalized.y1 * self.rect.height(),
-            );
-            layer.image.paint_at(scene, transform, target);
-        }
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-        let Some(aspect) = self.document_aspect else {
-            return;
-        };
-        let WindowEvent::MouseWheel { delta, .. } = event else {
-            return;
-        };
-        let movement = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 54.0,
-            MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor.max(0.1),
-        };
-        let document_height = self.rect.width() / aspect.max(0.05);
-        let max_scroll = (document_height - self.rect.height()).max(0.0);
-        if max_scroll > 0.0 {
-            self.document_scroll_y = (self.document_scroll_y + movement).clamp(0.0, max_scroll);
-            *handled = true;
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "CaptureMirrorImage"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
 fn capture_mirror_origin(
     bounds: Rect,
     source: Option<Rect>,
@@ -1139,15 +855,6 @@ fn visible_capture_spawn(bounds: Rect, source: Option<Rect>) -> Option<Rect> {
             .clamp(bounds.y0 + TOP_SAFE, bounds.y1 - EDGE_INSET - PORTAL_HEIGHT)
     };
     Some(Rect::new(x, y, x + PORTAL_WIDTH, y + PORTAL_HEIGHT))
-}
-
-fn lerp_normalized_rect(from: Rect, to: Rect, progress: f64) -> Rect {
-    Rect::new(
-        from.x0 + (to.x0 - from.x0) * progress,
-        from.y0 + (to.y0 - from.y0) * progress,
-        from.x1 + (to.x1 - from.x1) * progress,
-        from.y1 + (to.y1 - from.y1) * progress,
-    )
 }
 
 fn capture_mirror_initial_size(
@@ -1972,25 +1679,35 @@ fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
 
 /// One pill in the search card's filter band, shared by the kind chips
 /// and the "All" reset chip.
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+struct FilterChipStyle {
+    text_size: f32,
+    fill: vello::peniko::Color,
+    text: vello::peniko::Color,
+}
+
 fn draw_filter_chip(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
     rect: Rect,
     label: &str,
-    text_size: f32,
-    fill: vello::peniko::Color,
-    text_color: vello::peniko::Color,
+    style: FilterChipStyle,
 ) {
     let shape = RoundedRect::from_rect(rect, rect.height() / 2.0);
-    scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-    let (lw, lh) = text_renderer.measure(label, text_size, None);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        style.fill,
+        None,
+        &shape,
+    );
+    let (lw, lh) = text_renderer.measure(label, style.text_size, None);
     text_renderer.draw_text(
         scene,
         label,
-        text_size,
-        text_color,
+        style.text_size,
+        style.text,
         transform.pre_translate(
             (
                 rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
@@ -3108,111 +2825,66 @@ impl ShellOverlayHost {
         rects
     }
 
-    /// Create or refresh a live captured-region `PiP`. Updating replaces only
-    /// the image payload; the window's user-controlled position and size stay
-    /// untouched across frames.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "capture payload geometry and handoff metadata form one lifecycle operation"
-    )]
-    pub fn upsert_capture_mirror(
-        &mut self,
-        id: &str,
-        title: &str,
-        rgba: std::sync::Arc<[u8]>,
-        width: u32,
-        height: u32,
-        preferred_size: Option<vello::kurbo::Size>,
-        spawn_from: Option<Rect>,
-        handoff_layers: Vec<CaptureMirrorHandoffLayer>,
-    ) {
-        let image = Image::from_rgba(rgba, width, height)
-            .with_fit(ImageFit::Contain)
-            .with_alt(format!("Live capture: {title}"));
-        self.upsert_capture_surface(
+    /// Create or refresh a capture-owned presentation surface. Live requests
+    /// update only their pixels when the id already exists, preserving the
+    /// user's window geometry; pinned requests use unique ids and remain
+    /// immutable after insertion.
+    pub(crate) fn upsert_capture_surface(&mut self, request: CaptureSurfaceRequest<'_>) {
+        let CaptureSurfaceRequest {
             id,
             title,
-            image,
+            rgba,
             width,
             height,
-            preferred_size,
             spawn_from,
-            handoff_layers,
-            None,
-            None,
-        );
-    }
-
-    /// Create a frozen screenshot reference. Unlike a PiP/live capture this is
-    /// inserted once and thereafter owned entirely by the surface host, so its
-    /// pixels cannot drift when the underlying application changes.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pinned capture creation carries the immutable artifact and its geometry"
-    )]
-    pub fn insert_pinned_capture(
-        &mut self,
-        id: &str,
-        title: &str,
-        rgba: std::sync::Arc<[u8]>,
-        width: u32,
-        height: u32,
-        spawn_from: Option<Rect>,
-        preview: ui::widget::CapturePreview,
-    ) {
+            kind,
+        } = request;
         let pixel_aspect = f64::from(width) / f64::from(height.max(1));
-        let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
-        let fit = if document_aspect.is_some() {
-            ImageFit::Fill
-        } else {
-            ImageFit::Contain
+        let (image, preferred_size, handoff_layers, crossfade_preview, document_aspect) = match kind
+        {
+            CaptureSurfaceKind::Live {
+                preferred_size,
+                handoff_layers,
+            } => (
+                Image::from_rgba(rgba, width, height)
+                    .with_fit(ImageFit::Contain)
+                    .with_alt(format!("Live capture: {title}")),
+                preferred_size,
+                handoff_layers,
+                None,
+                None,
+            ),
+            CaptureSurfaceKind::Pinned { preview } => {
+                let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
+                let fit = if document_aspect.is_some() {
+                    ImageFit::Fill
+                } else {
+                    ImageFit::Contain
+                };
+                let image = Image::from_rgba(rgba, width, height)
+                    .with_fit(fit)
+                    .with_alt(format!("Pinned screenshot: {title}"));
+                let preview_rgba: Vec<u8> = preview
+                    .pixels
+                    .into_iter()
+                    .flat_map(std::iter::IntoIterator::into_iter)
+                    .collect();
+                let preview_image = Image::from_rgba(
+                    std::sync::Arc::from(preview_rgba),
+                    u32::from(preview.columns.max(1)),
+                    u32::from(preview.rows.max(1)),
+                )
+                .with_fit(ImageFit::Fill)
+                .with_alt(format!("Pinned screenshot preview: {title}"));
+                (
+                    image,
+                    document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
+                    Vec::new(),
+                    Some(preview_image),
+                    document_aspect,
+                )
+            }
         };
-        let image = Image::from_rgba(rgba, width, height)
-            .with_fit(fit)
-            .with_alt(format!("Pinned screenshot: {title}"));
-        let preview_rgba: Vec<u8> = preview
-            .pixels
-            .into_iter()
-            .flat_map(std::iter::IntoIterator::into_iter)
-            .collect();
-        let preview_image = Image::from_rgba(
-            std::sync::Arc::from(preview_rgba),
-            u32::from(preview.columns.max(1)),
-            u32::from(preview.rows.max(1)),
-        )
-        .with_fit(ImageFit::Fill)
-        .with_alt(format!("Pinned screenshot preview: {title}"));
-        self.upsert_capture_surface(
-            id,
-            title,
-            image,
-            width,
-            height,
-            document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
-            spawn_from,
-            Vec::new(),
-            Some(preview_image),
-            document_aspect,
-        );
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "capture image identity, geometry and one-shot handoff state are independent"
-    )]
-    fn upsert_capture_surface(
-        &mut self,
-        id: &str,
-        title: &str,
-        image: Image,
-        width: u32,
-        height: u32,
-        preferred_size: Option<vello::kurbo::Size>,
-        spawn_from: Option<Rect>,
-        handoff_layers: Vec<CaptureMirrorHandoffLayer>,
-        crossfade_preview: Option<Image>,
-        document_aspect: Option<f64>,
-    ) {
         if let Some((_, window)) = self
             .capture_mirrors
             .iter_mut()
@@ -3221,8 +2893,7 @@ impl ShellOverlayHost {
             window.content_mut().set_image(image);
             return;
         }
-        let aspect = f64::from(width) / f64::from(height.max(1));
-        let initial_size = capture_mirror_initial_size(self.rect, aspect, preferred_size);
+        let initial_size = capture_mirror_initial_size(self.rect, pixel_aspect, preferred_size);
         let body_w = initial_size.width;
         let body_h = initial_size.height;
         let visible_spawn = visible_capture_spawn(self.rect, spawn_from);
@@ -3238,7 +2909,7 @@ impl ShellOverlayHost {
             .with_initial_size(body_w, body_h)
             .spawn_from(visible_spawn);
         if document_aspect.is_none() {
-            window = window.with_aspect_ratio(aspect);
+            window = window.with_aspect_ratio(pixel_aspect);
         }
 
         let window_size = vello::kurbo::Size::new(
@@ -16431,13 +16102,15 @@ impl ShellOverlayHost {
                 text_renderer,
                 *rect,
                 choice,
-                14.0,
-                if selected {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
+                FilterChipStyle {
+                    text_size: 14.0,
+                    fill: if selected {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    text: theme.tokens.colors.text_primary,
                 },
-                theme.tokens.colors.text_primary,
             );
         }
         // USB is intentionally a real multi-select sheet, rather than a
@@ -16469,13 +16142,15 @@ impl ShellOverlayHost {
                 text_renderer,
                 *rect,
                 &label,
-                14.0,
-                if focused {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
+                FilterChipStyle {
+                    text_size: 14.0,
+                    fill: if focused {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    text: theme.tokens.colors.text_primary,
                 },
-                theme.tokens.colors.text_primary,
             );
         }
         if let Some(editor) = view.launcher_editor() {
@@ -16487,13 +16162,15 @@ impl ShellOverlayHost {
                     text_renderer,
                     name_rect,
                     self.portal_dialogs.launcher_name().unwrap_or(editor.name),
-                    14.0,
-                    if focused {
-                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                    } else {
-                        theme.tokens.colors.surfaces.base
+                    FilterChipStyle {
+                        text_size: 14.0,
+                        fill: if focused {
+                            theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                        } else {
+                            theme.tokens.colors.surfaces.base
+                        },
+                        text: theme.tokens.colors.text_primary,
                     },
-                    theme.tokens.colors.text_primary,
                 );
             }
             for (index, (label, rect)) in editor
@@ -16509,13 +16186,15 @@ impl ShellOverlayHost {
                     text_renderer,
                     *rect,
                     label,
-                    14.0,
-                    if selected {
-                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                    } else {
-                        theme.tokens.colors.surfaces.base
+                    FilterChipStyle {
+                        text_size: 14.0,
+                        fill: if selected {
+                            theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                        } else {
+                            theme.tokens.colors.surfaces.base
+                        },
+                        text: theme.tokens.colors.text_primary,
                     },
-                    theme.tokens.colors.text_primary,
                 );
             }
         }
@@ -16536,13 +16215,15 @@ impl ShellOverlayHost {
                 text_renderer,
                 *rect,
                 &label,
-                14.0,
-                if selected {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
+                FilterChipStyle {
+                    text_size: 14.0,
+                    fill: if selected {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    text: theme.tokens.colors.text_primary,
                 },
-                theme.tokens.colors.text_primary,
             );
             if let Some(status) = &row.status {
                 text_renderer.draw_text(
@@ -16561,9 +16242,11 @@ impl ShellOverlayHost {
             text_renderer,
             layout.cancel,
             "Cancel",
-            14.0,
-            theme.tokens.colors.surfaces.base,
-            theme.tokens.colors.text_primary,
+            FilterChipStyle {
+                text_size: 14.0,
+                fill: theme.tokens.colors.surfaces.base,
+                text: theme.tokens.colors.text_primary,
+            },
         );
         draw_filter_chip(
             scene,
@@ -16571,9 +16254,11 @@ impl ShellOverlayHost {
             text_renderer,
             layout.confirm,
             view.confirm_label(),
-            14.0,
-            theme.tokens.colors.accent[5],
-            theme.tokens.colors.text_primary,
+            FilterChipStyle {
+                text_size: 14.0,
+                fill: theme.tokens.colors.accent[5],
+                text: theme.tokens.colors.text_primary,
+            },
         );
     }
 
@@ -17952,9 +17637,11 @@ impl ShellOverlayHost {
                 text_renderer,
                 rect,
                 &label,
-                chip_text_size,
-                if is_active { active_fill } else { idle_fill },
-                if is_active { active_text } else { idle_text },
+                FilterChipStyle {
+                    text_size: chip_text_size,
+                    fill: if is_active { active_fill } else { idle_fill },
+                    text: if is_active { active_text } else { idle_text },
+                },
             );
             match i {
                 0 => self.search_all_chip_rect = rect,
@@ -24277,7 +23964,7 @@ mod tests {
     }
 
     #[test]
-    fn tall_pinned_screenshot_uses_a_readable_scrollable_document_viewport() {
+    fn tall_pinned_screenshot_uses_a_readable_initial_viewport() {
         let compact = Rect::new(0.0, 0.0, 800.0, 600.0);
         let size = capture_mirror_initial_size(
             compact,
@@ -24286,73 +23973,60 @@ mod tests {
         );
         assert_eq!(size.width, 340.0);
         assert_eq!(size.height, 330.0);
-
-        let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![20_u8, 30, 40, 255]);
-        let image = Image::from_rgba(pixel.clone(), 1, 1).with_fit(ImageFit::Fill);
-        let preview = Image::from_rgba(pixel, 1, 1).with_fit(ImageFit::Fill);
-        let mut mirror = CaptureMirrorImage::new_crossfade(image, preview, Some(524.0 / 3_021.0));
-        mirror.rect = Rect::new(0.0, 0.0, 340.0, 300.0);
-        mirror.set_handoff_progress(1_000);
-        let mix = mirror.handoff_mix();
-        let painted = mirror.painted_image_rect(mix);
-        assert_eq!(painted.width(), 340.0);
-        assert!(painted.height() > 1_900.0, "full pixels fit the card width");
-
-        let event = WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        let mut state = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        mirror.handle_event(
-            &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::from(0_u64),
-            &TaffyTree::new(),
-        );
-        assert!(handled);
-        assert_eq!(mirror.document_scroll_y, 54.0);
     }
 
     #[test]
-    fn rearranged_pip_holds_spatial_pixels_then_yields_to_live_layout() {
-        let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0_u8, 0, 0, 0]);
-        let target = Image::from_rgba(pixel.clone(), 1, 1);
-        let mut mirror = CaptureMirrorImage::new(
-            target,
-            vec![CaptureMirrorHandoffLayer {
-                rgba: pixel,
-                width: 1,
-                height: 1,
-                source: Rect::new(0.0, 0.0, 0.4, 0.5),
-                target: Rect::new(0.0, 0.0, 0.5, 1.0),
-            }],
-        );
+    fn capture_surface_requests_reuse_live_id_and_add_pinned_surface() {
+        let mut h = build_harness();
+        let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0_u8, 0, 0, 255]);
+        h.host.upsert_capture_surface(CaptureSurfaceRequest {
+            id: "live",
+            title: "Live region",
+            rgba: pixel.clone(),
+            width: 1,
+            height: 1,
+            spawn_from: None,
+            kind: CaptureSurfaceKind::Live {
+                preferred_size: None,
+                handoff_layers: Vec::new(),
+            },
+        });
+        assert_eq!(h.host.capture_mirrors.len(), 1);
 
-        mirror.set_handoff_progress(0);
-        assert_eq!(mirror.handoff_mix(), 0.0);
-        mirror.set_handoff_progress(400);
-        assert!((mirror.handoff_mix() - 0.352).abs() < 0.000_001);
-        mirror.set_handoff_progress(600);
-        assert!((mirror.handoff_mix() - 0.648).abs() < 0.000_001);
-        mirror.set_handoff_progress(1_000);
-        assert_eq!(mirror.handoff_mix(), 1.0);
-
+        h.host.upsert_capture_surface(CaptureSurfaceRequest {
+            id: "live",
+            title: "Live region",
+            rgba: pixel,
+            width: 1,
+            height: 1,
+            spawn_from: Some(Rect::new(600.0, 400.0, 700.0, 500.0)),
+            kind: CaptureSurfaceKind::Live {
+                preferred_size: Some(vello::kurbo::Size::new(640.0, 360.0)),
+                handoff_layers: Vec::new(),
+            },
+        });
         assert_eq!(
-            lerp_normalized_rect(
-                Rect::new(0.0, 0.0, 0.4, 0.5),
-                Rect::new(0.0, 0.0, 0.5, 1.0),
-                0.0,
-            ),
-            Rect::new(0.0, 0.0, 0.4, 0.5)
+            h.host.capture_mirrors.len(),
+            1,
+            "a live frame refresh must update the existing surface"
         );
+
+        h.host.upsert_capture_surface(CaptureSurfaceRequest {
+            id: "pinned",
+            title: "Tall screenshot",
+            rgba: std::sync::Arc::from(vec![0_u8; 16]),
+            width: 1,
+            height: 4,
+            spawn_from: None,
+            kind: CaptureSurfaceKind::Pinned {
+                preview: ui::widget::CapturePreview {
+                    columns: 1,
+                    rows: 1,
+                    pixels: vec![[0, 0, 0, 255]],
+                },
+            },
+        });
+        assert_eq!(h.host.capture_mirrors.len(), 2);
     }
 
     /// Recording mock content for the host's `content` slot. The palette
