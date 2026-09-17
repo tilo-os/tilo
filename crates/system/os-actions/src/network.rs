@@ -657,6 +657,20 @@ pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// Disconnect the exact NetworkManager connection used for a remote
+/// tethering grant. This does not forget the profile or affect other radios.
+///
+/// # Errors
+///
+/// Returns an error when `ssid` is invalid or NetworkManager rejects the
+/// targeted disconnect.
+pub fn disconnect_wifi(ssid: &str) -> Result<(), String> {
+    if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(char::is_control) {
+        return Err("Wi-Fi name is invalid".into());
+    }
+    run("nmcli", &["connection", "down", "id", ssid])
+}
+
 /// `NetworkManager`'s connectivity result, including the portal state used by
 /// captive-portal helpers. Values intentionally mirror the daemon rather than
 /// deriving "online" from a local address.
@@ -1558,47 +1572,25 @@ pub struct CertificateInfo {
 
 /// # Errors
 ///
-/// Returns an error message if `path` is not an existing absolute file, `openssl` is not
-/// installed, the certificate cannot be parsed or is missing a subject/expiry/fingerprint, or
-/// the certificate has expired.
+/// Returns an error message if `path` is not an existing absolute regular file, is larger than
+/// 1 MiB, cannot be parsed as one PEM/DER certificate, or the certificate has expired.
 pub fn inspect_certificate(path: &str) -> Result<CertificateInfo, String> {
     let p = std::path::Path::new(path);
     if !p.is_absolute() || !p.is_file() {
         return Err("certificate must be an existing absolute file".into());
     }
-    let out = run_capture(
-        "openssl",
-        &[
-            "x509",
-            "-in",
-            path,
-            "-noout",
-            "-subject",
-            "-enddate",
-            "-fingerprint",
-            "-sha256",
-        ],
-    )?;
-    let field = |prefix: &str| {
-        out.lines()
-            .find_map(|l| l.trim().strip_prefix(prefix))
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-    };
-    let info = CertificateInfo {
-        subject: field("subject=").ok_or("certificate has no subject")?,
-        expires: field("notAfter=").ok_or("certificate has no expiry")?,
-        sha256_fingerprint: field("sha256 Fingerprint=")
-            .or_else(|| field("SHA256 Fingerprint="))
-            .ok_or("certificate has no SHA-256 fingerprint")?,
-    };
-    run(
-        "openssl",
-        &["x509", "-in", path, "-noout", "-checkend", "0"],
-    )
-    .map_err(|_| format!("certificate expired at {}", info.expires))?;
-    Ok(info)
+    let metadata =
+        std::fs::metadata(p).map_err(|error| format!("cannot read certificate: {error}"))?;
+    if metadata.len() > 1024 * 1024 {
+        return Err("certificate must be no larger than 1 MiB".into());
+    }
+    let bytes = std::fs::read(p).map_err(|error| format!("cannot read certificate: {error}"))?;
+    let info = tilo_crypto::inspect_certificate(&bytes)?;
+    Ok(CertificateInfo {
+        subject: info.subject,
+        expires: info.expires,
+        sha256_fingerprint: info.sha256_fingerprint,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

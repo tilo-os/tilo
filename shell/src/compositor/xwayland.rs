@@ -72,6 +72,7 @@ struct KeyboardUpdate {
 
 impl XwaylandSupervisor {
     pub(crate) fn start(wayland_socket: &OsStr) -> Self {
+        crate::shell::host_apps::set_x11_starting();
         let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
         let mut supervisor = Self {
             bridge: None,
@@ -287,6 +288,7 @@ impl XwaylandSupervisor {
     }
 
     fn record_failure(&mut self, now: Instant, chrome: &crate::shell::chrome_state::Chrome) {
+        crate::shell::host_apps::set_x11_starting();
         if self
             .ready_since
             .is_some_and(|ready_since| now.saturating_duration_since(ready_since) >= STABLE_UPTIME)
@@ -299,6 +301,7 @@ impl XwaylandSupervisor {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         if self.consecutive_failures >= MAX_RECOVERY_ATTEMPTS {
             self.retry_at = None;
+            crate::shell::host_apps::set_x11_unavailable();
             self.announce_unavailable(chrome);
             return;
         }
@@ -930,6 +933,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn stable_uptime_resets_the_rapid_failure_budget_but_crash_loops_exhaust_it() {
         let chrome = crate::shell::chrome_state::ChromeState::new(
             crate::shell::state::WorkspaceTree::default(),
@@ -956,6 +960,10 @@ mod tests {
         assert_eq!(supervisor.consecutive_failures, MAX_RECOVERY_ATTEMPTS);
         assert!(supervisor.retry_at.is_none());
         assert!(supervisor.unavailable_announced);
+        assert_eq!(
+            crate::shell::host_apps::x11_availability(),
+            crate::shell::host_apps::X11Availability::Unavailable
+        );
     }
 
     #[test]

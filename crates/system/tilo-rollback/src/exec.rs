@@ -7,9 +7,9 @@
 
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 /// Result of one external invocation.
 #[derive(Debug, Clone)]
@@ -108,27 +108,11 @@ impl Runner for Real {
         if let Some(dir) = &self.cwd {
             cmd.current_dir(dir);
         }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        cmd.stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        });
-
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("spawning {program}: is it installed in the image?"))?;
-        if let Some(bytes) = stdin {
-            child
-                .stdin
-                .as_mut()
-                .context("child process has no stdin pipe despite one being requested")?
-                .write_all(bytes)
-                .with_context(|| format!("writing stdin to {program}"))?;
-        }
-        let out = child
-            .wait_with_output()
-            .with_context(|| format!("waiting for {program}"))?;
+        let out =
+            bounded_command::run_prepared(cmd, stdin, 8 * 1024 * 1024, Duration::from_secs(120))
+                .with_context(|| {
+                    format!("running bounded {program}: is it installed in the image?")
+                })?;
         Ok(Output {
             code: out.status.code().unwrap_or(-1),
             stdout: out.stdout,

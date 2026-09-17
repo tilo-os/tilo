@@ -96,6 +96,18 @@ authorization.
   state rather than a local path or PipeWire node. The destination must be
   online and advertise the required audio/video capabilities, and the old
   output is paused before the new one resumes.
+- **Live audio route** covers streams that have no portable media identity:
+  all system playback or the currently focused application's playback can be
+  sent to a certified device advertising an audio output. Source choices are
+  fresh compositor-minted tokens; applications and peers never receive a
+  PipeWire node id. The target compositor prompts locally, starts its local
+  sink, and returns a random capability bound to the exact peer and session.
+  Version 1 is negotiated as bounded 20 ms, 48 kHz stereo S16LE frames with
+  bounded capture and playback queues. Replay, reordering, oversized frames,
+  stale consent, and a different peer are rejected. Policy disable, peer loss,
+  session expiry, send failure, or focus loss for an application route tears
+  down the workers and revokes the route; the Devices surface always exposes
+  pending/streaming status and a stop action.
 - **Universal clipboard** is a content-addressed, de-duplicated 50-item
   history. Entries are explicitly classified as shareable and capped at
   256 KiB. Primary selection, secret fields, and Tilo's secret MIME type never
@@ -111,10 +123,40 @@ authorization.
 - **App continuation** remains in `personal_continuity`. The fabric advertises
   capability but does not duplicate launch intents, CRDT records, topology, or
   focus state.
+- **Notifications** project only the app-authorized redacted or full payload.
+  Dismiss and action replies return to the exact originating device instead of
+  turning a mirrored notification into ambient remote-control authority.
+- **Nearby Send** uses the resumable content transport, but Files sees only
+  short-lived handles bound to its authenticated workspace and connection.
+  The receiver consents locally, source traversal is anchored to an opened
+  capability, and staging work is bounded and canceled on teardown. Receive
+  destinations are likewise opaque handles minted only from that Files
+  instance's writable grants. The receiver chooses a destination for the exact
+  transfer; “remember” lasts only for the live authenticated Files session and
+  never turns a path into ambient authority. Installation stays anchored to an
+  open directory descriptor, uses collision-safe names, and retains bounded
+  completion/failure health so interrupted receives can be recovered without
+  silently falling back to Downloads.
+- **Call handoff** moves a typed call session and its controls, not an app's
+  capture handles. The target compositor asks once, mints local camera,
+  microphone, or screen grants only after consent, and revokes the whole batch
+  if the handoff cannot commit.
+- **Controller forwarding** normalizes a locally classified physical gamepad
+  into fixed axes, buttons, and hat events. Raw HID descriptors, serials,
+  evdev codes, keyboard events, and pointer events are not representable on the
+  wire. Both compositors continuously enforce the exact focused app and
+  workspace and neutralize the virtual controller when that binding changes.
+
+The Devices surface exposes these capabilities individually. Disabling a
+capability tears down its active leases; disabling continuity tears down all of
+them. Device identities and transport routes stay compositor-owned rather than
+being disclosed to applications.
 
 This separation is an intentional Tilo advantage over product-specific
 continuity silos: collaborative documents remain multi-person CRDT state,
 personal interaction state remains private to certified devices, and physical
-machine state remains local. The fabric model is bounded and convergent before
-transport wiring. It can be carried by a future negotiated relay protocol
-without breaking older Postcard enum decoders.
+machine state remains local. Continuity is carried over negotiated certified
+peer channels with explicit capability and schema versions; older peers can
+continue using the collaboration protocol without being asked to decode new
+continuity messages. Proximity improves discovery and layout, but never grants
+authority by itself.

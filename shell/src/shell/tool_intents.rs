@@ -17,7 +17,7 @@ use crate::shell::workspace_settings::WsTab;
 
 pub const TOOL_SERVICE: &str = "tools";
 const MAX_WIRE_BYTES: u64 = 4 * 1024;
-const MAX_PENDING_WORKSPACE_ROUTES: usize = 16;
+const MAX_PENDING_SHELL_ROUTES: usize = 16;
 
 type Handler = Arc<dyn Fn(ToolRequest) -> Result<(), String> + Send + Sync>;
 
@@ -25,10 +25,11 @@ pub struct ToolServiceHandle {
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     path: PathBuf,
-    workspace_requests: Arc<Mutex<Vec<WorkspaceRequest>>>,
+    workspace_requests: Arc<Mutex<Vec<ShellRequest>>>,
+    identity_backup_requests: Arc<Mutex<Vec<ShellRequest>>>,
 }
 
-struct WorkspaceRequest {
+struct ShellRequest {
     request: ToolRequest,
     reply: mpsc::SyncSender<Result<(), String>>,
 }
@@ -55,39 +56,49 @@ pub fn spawn() -> std::io::Result<ToolServiceHandle> {
     launcher::services::ensure_services_root()?;
     let path = launcher::services::socket_for(TOOL_SERVICE);
     let workspace_requests = Arc::new(Mutex::new(Vec::new()));
-    let pending = Arc::clone(&workspace_requests);
+    let pending_workspace = Arc::clone(&workspace_requests);
+    let identity_backup_requests = Arc::new(Mutex::new(Vec::new()));
+    let pending_identity_backup = Arc::clone(&identity_backup_requests);
     spawn_at(
         path,
         Arc::new(move |request| {
             let room = crate::shell::state::RoomId::parse(&request.workspace_id)
                 .ok_or_else(|| "invalid workspace identity".to_string())?;
             request.intent.validate()?;
-            if matches!(&request.intent, ToolIntent::WorkspaceSettings { .. }) {
+            let pending = match &request.intent {
+                ToolIntent::WorkspaceSettings { .. } => &pending_workspace,
+                ToolIntent::IdentityBackup => &pending_identity_backup,
+                _ => {
+                    return crate::shell::launcher::launch_tool_intent(&request.intent, room)
+                        .map(|_| ())
+                        .map_err(|e| e.user_message());
+                }
+            };
+            {
                 let (reply, result) = mpsc::sync_channel(1);
                 let mut routes = pending
                     .lock()
-                    .map_err(|_| "workspace route queue is unavailable".to_string())?;
-                if routes.len() >= MAX_PENDING_WORKSPACE_ROUTES {
-                    return Err("too many workspace routes are pending".into());
+                    .map_err(|_| "shell route queue is unavailable".to_string())?;
+                if routes.len() >= MAX_PENDING_SHELL_ROUTES {
+                    return Err("too many shell routes are pending".into());
                 }
-                routes.push(WorkspaceRequest { request, reply });
+                routes.push(ShellRequest { request, reply });
                 drop(routes);
-                return result
+                result
                     .recv_timeout(Duration::from_secs(2))
-                    .map_err(|_| "the shell did not accept the workspace route".to_string())?;
+                    .map_err(|_| "the shell did not accept the requested route".to_string())?
             }
-            crate::shell::launcher::launch_tool_intent(&request.intent, room)
-                .map(|_| ())
-                .map_err(|e| e.user_message())
         }),
         workspace_requests,
+        identity_backup_requests,
     )
 }
 
 fn spawn_at(
     path: PathBuf,
     handler: Handler,
-    workspace_requests: Arc<Mutex<Vec<WorkspaceRequest>>>,
+    workspace_requests: Arc<Mutex<Vec<ShellRequest>>>,
+    identity_backup_requests: Arc<Mutex<Vec<ShellRequest>>>,
 ) -> std::io::Result<ToolServiceHandle> {
     if path.exists() {
         if UnixStream::connect(&path).is_ok() {
@@ -128,6 +139,7 @@ fn spawn_at(
         thread: Some(thread),
         path,
         workspace_requests,
+        identity_backup_requests,
     })
 }
 
@@ -147,21 +159,31 @@ impl ToolServiceHandle {
             let _ = pending.reply.send(result);
         }
     }
+
+    /// Open trusted portable-backup chrome on the compositor thread. Like
+    /// workspace Settings routes, it is bound to the caller's active room.
+    pub fn pump_identity_backup<F>(&self, chrome: &Chrome, mut open: F)
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        let requests = self
+            .identity_backup_requests
+            .lock()
+            .map(|mut pending| std::mem::take(&mut *pending))
+            .unwrap_or_default();
+        for pending in requests {
+            let result = apply_identity_backup(chrome, &pending.request, &mut open);
+            let _ = pending.reply.send(result);
+        }
+    }
 }
 
 fn apply_workspace_settings(chrome: &Chrome, request: &ToolRequest) -> Result<(), String> {
     let ToolIntent::WorkspaceSettings { route } = &request.intent else {
         return Err("not a workspace settings route".into());
     };
+    ensure_active_workspace_matches(chrome, request)?;
     let mut state = chrome.borrow_mut();
-    let active_room = state
-        .tree()
-        .active_workspace()
-        .map(|workspace| workspace.room.to_string())
-        .ok_or_else(|| "there is no active workspace".to_string())?;
-    if active_room != request.workspace_id {
-        return Err("Personal Settings is attached to a different workspace".into());
-    }
     let tab = match route {
         os_actions::WorkspaceSettingsRoute::General => WsTab::General,
         os_actions::WorkspaceSettingsRoute::Members => WsTab::Members,
@@ -170,6 +192,34 @@ fn apply_workspace_settings(chrome: &Chrome, request: &ToolRequest) -> Result<()
     };
     state.open_workspace_settings(tab);
     state.bump();
+    Ok(())
+}
+
+fn apply_identity_backup<F>(
+    chrome: &Chrome,
+    request: &ToolRequest,
+    open: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut() -> Result<(), String>,
+{
+    if !matches!(&request.intent, ToolIntent::IdentityBackup) {
+        return Err("not an identity backup route".into());
+    }
+    ensure_active_workspace_matches(chrome, request)?;
+    open()
+}
+
+fn ensure_active_workspace_matches(chrome: &Chrome, request: &ToolRequest) -> Result<(), String> {
+    let state = chrome.borrow();
+    let active_room = state
+        .tree()
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string())
+        .ok_or_else(|| "there is no active workspace".to_string())?;
+    if active_room != request.workspace_id {
+        return Err("Personal Settings is attached to a different workspace".into());
+    }
     Ok(())
 }
 
@@ -250,6 +300,7 @@ mod tests {
                 Ok(())
             }),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
         )
         .unwrap();
 
@@ -318,5 +369,55 @@ mod tests {
         let state = chrome.borrow();
         assert!(!state.overlays.ws_settings);
         assert_eq!(state.ws_settings_tab, WsTab::General);
+    }
+
+    #[test]
+    fn identity_backup_route_opens_trusted_flow_for_current_workspace() {
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::bootstrap_demo(),
+        );
+        let room = chrome
+            .borrow()
+            .tree()
+            .active_workspace()
+            .unwrap()
+            .room
+            .to_string();
+        let request = ToolRequest {
+            protocol: TOOL_PROTOCOL_VERSION,
+            workspace_id: room,
+            intent: ToolIntent::IdentityBackup,
+        };
+        let mut opens = 0;
+
+        apply_identity_backup(&chrome, &request, &mut || {
+            opens += 1;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(opens, 1);
+    }
+
+    #[test]
+    fn identity_backup_route_cannot_target_another_workspace() {
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::bootstrap_demo(),
+        );
+        let request = ToolRequest {
+            protocol: TOOL_PROTOCOL_VERSION,
+            workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
+            intent: ToolIntent::IdentityBackup,
+        };
+        let mut opens = 0;
+
+        assert!(
+            apply_identity_backup(&chrome, &request, &mut || {
+                opens += 1;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(opens, 0);
     }
 }

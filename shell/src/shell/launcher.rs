@@ -1123,9 +1123,9 @@ pub enum InstalledContinuityRequirements {
     /// No installed package owns this id (development/legacy callers use the
     /// framework presentation baseline).
     NotInstalled,
-    /// Facets parsed from the installed manifest. An old manifest produces
-    /// the presentation default.
-    Required(Vec<launcher::manifest::ContinuityFacet>),
+    /// Signed contract parsed from the installed manifest. An old manifest
+    /// produces the presentation-only default.
+    Required(launcher::manifest::ContinuityContract),
     /// Registry or manifest authority was present but unreadable/inconsistent.
     /// Callers must reject rather than silently weaken the signed contract.
     Invalid,
@@ -1134,7 +1134,7 @@ pub enum InstalledContinuityRequirements {
 /// Read the signed continuity contract for an installed package without using
 /// the UI-oriented app cache. This keeps every checkpoint tied to current
 /// install authority and distinguishes legacy absence from corruption.
-pub fn installed_continuity_required_facets(package_id: &str) -> InstalledContinuityRequirements {
+pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityRequirements {
     let Ok(entries) = launcher::registry::list_installed() else {
         return InstalledContinuityRequirements::Invalid;
     };
@@ -1147,7 +1147,7 @@ pub fn installed_continuity_required_facets(package_id: &str) -> InstalledContin
     if !manifest.package_id.is_empty() && manifest.package_id != package_id {
         return InstalledContinuityRequirements::Invalid;
     }
-    InstalledContinuityRequirements::Required(manifest.continuity.required)
+    InstalledContinuityRequirements::Required(manifest.continuity)
 }
 
 /// Installed packages, memoised for [`APP_CACHE_TTL`]. Errors are not
@@ -2142,8 +2142,12 @@ pub fn spawn_launch(
             kind: LaunchEventKind::Started { pid: child.id() },
         });
 
-        // Relay stdout on its own thread so a chatty app can't fill the
-        // pipe and wedge the process while we're reading stderr.
+        // Drain both pipes concurrently. A GUI normally keeps both streams
+        // open for its entire lifetime, so reading either one to EOF before
+        // `wait` would turn the launch supervisor into a second lifetime
+        // wait. Worse, a child filling the other pipe would deadlock both
+        // processes. The joins below happen only after the child exits and
+        // closes its inherited descriptors.
         if let Some(stdout) = child.stdout.take() {
             let tag = app.package_id.clone();
             let _ = std::thread::Builder::new()
@@ -2157,19 +2161,29 @@ pub fn spawn_launch(
 
         // stderr is both echoed and kept (last N lines) for the failure
         // notification.
-        let mut tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
-        if let Some(stderr) = child.stderr.take() {
-            relay_capped_lines(stderr, |line| {
-                eprintln!("[app {} stderr] {line}", app.package_id);
-                if tail.len() == STDERR_TAIL_LINES {
-                    tail.pop_front();
-                }
-                tail.push_back(line);
-            });
-        }
+        let stderr_tag = app.package_id.clone();
+        let stderr_drain = child.stderr.take().and_then(|stderr| {
+            std::thread::Builder::new()
+                .name("qos-app-stderr".to_string())
+                .spawn(move || {
+                    let mut tail = VecDeque::with_capacity(STDERR_TAIL_LINES);
+                    relay_capped_lines(stderr, |line| {
+                        eprintln!("[app {stderr_tag} stderr] {line}");
+                        if tail.len() == STDERR_TAIL_LINES {
+                            tail.pop_front();
+                        }
+                        tail.push_back(line);
+                    });
+                    tail
+                })
+                .ok()
+        });
 
         let launcher_pid = child.id();
         let status = child.wait();
+        let tail = stderr_drain
+            .and_then(|drain| drain.join().ok())
+            .unwrap_or_default();
         unregister_launched_process(launcher_pid);
         let kind = match status {
             Ok(status) if status.success() => LaunchEventKind::Exited,
@@ -2447,6 +2461,32 @@ pub fn clear_pending_placement(package_id: &str) {
     {
         pending.remove(index);
     }
+}
+
+/// Forget the one claimed placement belonging to a launch that reported a
+/// terminal failure after its toplevel was already adopted.
+///
+/// A claim normally lives briefly so the rendered and protocol trees can
+/// agree on a just-mapped client.  A failed launcher is different: retaining
+/// that claim leaves the unpainted foreign tab with no future producer.  We
+/// only take it when it is the sole in-flight launch for the key; launch
+/// events have no per-process token, so guessing during concurrent launches
+/// could close the other launch's real window.
+pub(crate) fn take_sole_claimed_surface_for_failed_launch(package_id: &str) -> Option<u64> {
+    let mut pending = lock(&PENDING_PLACEMENT);
+    let matching: Vec<usize> = pending
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| note.key == package_id)
+        .map(|(index, _)| index)
+        .collect();
+    if matching.len() != 1 {
+        return None;
+    }
+    let index = matching[0];
+    let surface_id = pending.get(index)?.claimed_by?;
+    pending.remove(index);
+    Some(surface_id)
 }
 
 /// Allow a cleanly-exited launcher parent a bounded handoff window for a
@@ -2739,6 +2779,55 @@ mod tests {
         );
     }
     #[cfg(target_os = "linux")]
+    #[test]
+    fn live_child_with_open_stderr_does_not_block_exit_supervision() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("live-gui");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'starting without closing stderr\\n' >&2\nsleep 0.15\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+
+        let _ = drain_events();
+        spawn_launch(
+            "dev.tilo.live-gui".into(),
+            "Live GUI".into(),
+            LaunchCommand {
+                program: script,
+                args: Vec::new(),
+                env: Vec::new(),
+                service_identity: None,
+                portal_workspace_id: None,
+                managed_agent_id: None,
+            },
+        )
+        .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_started = false;
+        let mut saw_exit = false;
+        while Instant::now() < deadline && !saw_exit {
+            for event in drain_events() {
+                match event.kind {
+                    LaunchEventKind::Started { .. } => saw_started = true,
+                    LaunchEventKind::Exited => saw_exit = true,
+                    other => panic!("unexpected launch event: {other:?}"),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(saw_started, "the child was reported started");
+        assert!(
+            saw_exit,
+            "the supervisor must wait for a live GUI child without synchronously blocking on its open stderr pipe"
+        );
+    }
     use std::io::Write;
 
     #[test]
@@ -2873,7 +2962,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn installed_continuity_lookup_reads_signed_manifest_facets() {
+    fn installed_continuity_lookup_reads_signed_manifest_contract() {
         let tmp = tempfile::tempdir().unwrap();
         let payload = install_fixture(tmp.path(), "dev.tilo.browser", "gui");
         let manifest_path = payload.join("manifest.toml");
@@ -2883,22 +2972,25 @@ mod tests {
             .unwrap();
         writeln!(
             manifest,
-            "\n[continuity]\nrequired = [\"presentation\", \"semantic\"]"
+            "\n[continuity]\nrequired = [\"presentation\", \"semantic\"]\nsemantic-schema = \"web-location-v1\""
         )
         .unwrap();
 
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let required = installed_continuity_required_facets("dev.tilo.browser");
-        let legacy = installed_continuity_required_facets("dev.tilo.not-installed");
+        let required = installed_continuity_contract("dev.tilo.browser");
+        let legacy = installed_continuity_contract("dev.tilo.not-installed");
         unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
 
         assert_eq!(
             required,
-            InstalledContinuityRequirements::Required(vec![
-                launcher::manifest::ContinuityFacet::Presentation,
-                launcher::manifest::ContinuityFacet::Semantic,
-            ])
+            InstalledContinuityRequirements::Required(launcher::manifest::ContinuityContract {
+                required: vec![
+                    launcher::manifest::ContinuityFacet::Presentation,
+                    launcher::manifest::ContinuityFacet::Semantic,
+                ],
+                semantic_schema: Some(launcher::manifest::ContinuitySemanticSchema::WebLocationV1,),
+            })
         );
         assert_eq!(legacy, InstalledContinuityRequirements::NotInstalled);
     }

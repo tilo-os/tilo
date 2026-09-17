@@ -15,6 +15,7 @@ pub(crate) const HOME_CHILD_FD: i32 = 34;
 pub(crate) const RUNTIME_LOCK_CHILD_FD: i32 = 35;
 pub(crate) const PASSWD_CHILD_FD: i32 = 36;
 pub(crate) const GROUP_CHILD_FD: i32 = 37;
+use launcher::performance::apply_game_performance_hints;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionOutcome {
@@ -86,12 +87,16 @@ impl SandboxExecutor for BwrapExecutor {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        let latency_sensitive = plan.latency_sensitive;
         // SAFETY: the closure only iterates preallocated mappings and calls
-        // async-signal-safe dup2. Every source differs from every target, so
+        // async-signal-safe syscalls (performance hints and dup2). Every source differs from every target, so
         // dup2 also clears CLOEXEC on the inherited target descriptors.
         // The owned source descriptors remain alive until spawn returns.
         unsafe {
             command.pre_exec(move || {
+                if latency_sensitive {
+                    apply_game_performance_hints()?;
+                }
                 for &(source, target) in &mappings {
                     if libc::dup2(source, target) == -1 {
                         return Err(std::io::Error::last_os_error());

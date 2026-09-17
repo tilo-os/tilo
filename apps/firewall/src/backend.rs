@@ -14,8 +14,13 @@
 //! would persist changes.
 
 use std::process::Command;
+use std::time::Duration;
 
 use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind};
+
+const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
+const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+const APPLY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 
 /// How the backend will treat apply requests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,10 +122,11 @@ impl Backend {
             return Ok(());
         }
         for invocation in &plan {
-            let output = Command::new(invocation.program)
-                .args(&invocation.args)
-                .output()
-                .map_err(|error| format!("could not start {}: {error}", invocation.program))?;
+            let mut command = Command::new(invocation.program);
+            command.args(&invocation.args);
+            let output =
+                bounded_command::run_prepared(command, None, COMMAND_OUTPUT_LIMIT, APPLY_TIMEOUT)
+                    .map_err(|error| format!("could not run {}: {error}", invocation.program))?;
             if !output.status.success() {
                 return Err(command_failure(invocation, &output));
             }
@@ -129,7 +135,7 @@ impl Backend {
     }
 }
 
-fn command_failure(invocation: &Invocation, output: &std::process::Output) -> String {
+fn command_failure(invocation: &Invocation, output: &bounded_command::Output) -> String {
     let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let guidance = if detail.contains("Access denied")
         || detail.contains("not authorized")
@@ -168,10 +174,14 @@ fn which_firewall_cmd() -> bool {
 /// firewall has no side effects and needs no elevation on a normal
 /// polkit-configured host.
 fn query(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("firewall-cmd")
-        .args(args)
-        .output()
-        .map_err(|e| format!("spawn firewall-cmd: {e}"))?;
+    let out = bounded_command::run(
+        "firewall-cmd",
+        args,
+        None,
+        COMMAND_OUTPUT_LIMIT,
+        QUERY_TIMEOUT,
+    )
+    .map_err(|e| format!("run firewall-cmd: {e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }

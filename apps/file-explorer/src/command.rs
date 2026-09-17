@@ -92,6 +92,29 @@ pub enum FileCommand {
     /// does not depend on a synthetic in-archive row being selected.
     ExtractCurrentArchive,
     CompressSelection,
+    /// Ask the host for the current certified-device picker. The eventual
+    /// target remains an exact, short-lived shell-issued capability.
+    OpenNearbySend,
+    /// Send the single revalidated selection to one exact certified device.
+    SendNearby {
+        target: ui::collaboration::NearbyTargetHandle,
+    },
+    /// Resolve an incoming Nearby Send offer locally; consent is never inferred
+    /// from device certification or from merely opening Files.
+    ChooseNearbyDestination {
+        handle: ui::collaboration::NearbyTransferHandle,
+    },
+    DecideNearby {
+        handle: ui::collaboration::NearbyTransferHandle,
+        destination: ui::collaboration::NearbyDestinationHandle,
+        remember_for_session: bool,
+    },
+    RetryNearby {
+        handle: ui::collaboration::NearbyTransferHandle,
+    },
+    CancelNearby {
+        handle: ui::collaboration::NearbyTransferHandle,
+    },
     /// Open the "New File" flyout populated from the Templates directory.
     /// Handled by the app's menu routing (opens a submenu), not applied.
     OpenTemplatesMenu,

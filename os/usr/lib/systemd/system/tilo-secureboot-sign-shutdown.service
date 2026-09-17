@@ -19,10 +19,49 @@ ConditionPathExists=/var/lib/tilo/secureboot/db.key
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/true
-ExecStop=/usr/libexec/tilo-secureboot sign
+ExecStop=/usr/libexec/tilo-secureboot sign-at-shutdown
 # Signing a handful of PE binaries is fast; do not let a wedged run hold the
 # shutdown open indefinitely.
 TimeoutStopSec=90
+UMask=0077
+LimitCORE=0
+RuntimeDirectory=tilo-secureboot
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# The key is unsealed only inside ExecStop. Permit exactly the TPM character
+# devices while keeping every other non-pseudo device closed.
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+PrivateIPC=yes
+PrivateNetwork=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/var/lib/tilo/secureboot
+ReadWritePaths=/boot
+RestrictAddressFamilies=AF_UNIX
 StandardOutput=journal
 StandardError=journal+console
 

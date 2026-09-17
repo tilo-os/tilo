@@ -90,6 +90,9 @@ pub enum ToolIntent {
         #[serde(default)]
         route: WorkspaceSettingsRoute,
     },
+    /// Open the trusted shell flow that creates and verifies an encrypted
+    /// portable copy of the active personal identity.
+    IdentityBackup,
 }
 
 impl ToolIntent {
@@ -121,7 +124,8 @@ impl ToolIntent {
             Self::Firewall { .. }
             | Self::Disks { .. }
             | Self::Backups { .. }
-            | Self::WorkspaceSettings { .. } => Ok(()),
+            | Self::WorkspaceSettings { .. }
+            | Self::IdentityBackup => Ok(()),
         }
     }
 
@@ -133,7 +137,7 @@ impl ToolIntent {
             Self::Firewall { .. } => Some("dev.tilo.firewall"),
             Self::Disks { .. } => Some("dev.tilo.disks"),
             Self::Backups { .. } => Some("dev.tilo.backups"),
-            Self::WorkspaceSettings { .. } => None,
+            Self::WorkspaceSettings { .. } | Self::IdentityBackup => None,
         }
     }
 }
@@ -275,5 +279,15 @@ mod tests {
         assert_eq!(json["route"], "privacy_security");
         assert!(json.get("program").is_none());
         assert!(json.get("package_id").is_none());
+    }
+
+    #[test]
+    fn identity_backup_is_a_shell_owned_typed_intent() {
+        let intent = ToolIntent::IdentityBackup;
+        assert_eq!(intent.package_id(), None);
+        assert!(intent.validate().is_ok());
+        let json = serde_json::to_value(intent).unwrap();
+        assert_eq!(json["tool"], "identity_backup");
+        assert!(json.get("program").is_none());
     }
 }

@@ -33,14 +33,6 @@ ukify_args=(
   --json pretty
 )
 
-if [ "${SIGN:-0}" = "1" ]; then
-  ukify_args+=(
-    --signtool sbsign
-    --secureboot-private-key /run/secrets/secureboot_key
-    --secureboot-certificate /run/secrets/secureboot_cert
-  )
-fi
-
 if [ -n "${CFS_DIGEST:-}" ]; then
   # Assemble the command line by hand: the kargs the image declares, in
   # kargs.d order, then the digest install told us it wants.
@@ -72,6 +64,13 @@ else
     --rootfs "$target" \
     --kernel-dir "/kernel/${kver}" \
     -- "${ukify_args[@]}" | tee /out/ukify.json
+fi
+
+if [ "${SIGN:-0}" = "1" ]; then
+  tilo-crypto sign-efi /run/secrets/secureboot_key \
+    /run/secrets/secureboot_cert "/out/${kver}.efi" "/out/${kver}.efi.signed"
+  tilo-crypto verify-efi /run/secrets/secureboot_cert "/out/${kver}.efi.signed"
+  mv -f "/out/${kver}.efi.signed" "/out/${kver}.efi"
 fi
 
 # The sealed command line, extracted back out of the PE image. Nothing else can

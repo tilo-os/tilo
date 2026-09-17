@@ -13,6 +13,12 @@ case ":$PATH:" in
     *) PATH="$_tilo_user_apps:$PATH" ;;
 esac
 case ":$PATH:" in
+    *":/usr/lib/tilo-apps/bin:"*) ;;
+    *) PATH="$PATH:/usr/lib/tilo-apps/bin" ;;
+esac
+# Full Tilo images use /usr/share for the immutable store; the host package
+# keeps architecture-dependent executable payloads under /usr/lib.
+case ":$PATH:" in
     *":/usr/share/tilo-apps/bin:"*) ;;
     *) PATH="$PATH:/usr/share/tilo-apps/bin" ;;
 esac

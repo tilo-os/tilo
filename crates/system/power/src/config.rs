@@ -11,6 +11,7 @@
 //! "power": {
 //!   "auto_suspend": true,
 //!   "blank_minutes": 10,
+//!   "lock_minutes": 5,
 //!   "suspend_minutes": 15,
 //!   "lid_close_action": "suspend",
 //!   "power_key_action": "suspend",
@@ -37,10 +38,17 @@ pub const DEFAULT_SUSPEND_MINUTES: u32 = 15;
 /// persisted spelling of "Never".
 pub const DEFAULT_BLANK_MINUTES: u32 = 10;
 
+/// The Settings default idle-lock timeout, in minutes. `0` is the persisted
+/// spelling of "Never".
+pub const DEFAULT_LOCK_MINUTES: u32 = 5;
+
 /// The largest screen-blank timeout the Settings UI can express. Rejecting
 /// larger persisted values keeps corrupt/manual configuration from making the
 /// display effectively never blank while still accepting every UI choice.
 pub const MAX_BLANK_MINUTES: u32 = 30;
+
+/// The largest idle-lock timeout exposed by Settings.
+pub const MAX_LOCK_MINUTES: u32 = 30;
 
 /// Resolve the shared settings path (`$XDG_CONFIG_HOME/tilo/settings.json`,
 /// falling back to `~/.config/tilo/settings.json`) — the same file the
@@ -156,6 +164,14 @@ pub fn policy_from_section_for_profile(
     let idle_blank =
         (blank_minutes > 0).then(|| Duration::from_secs(u64::from(blank_minutes) * 60));
 
+    let lock_minutes = section
+        .get("lock_minutes")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|minutes| u32::try_from(minutes).ok())
+        .filter(|minutes| *minutes <= MAX_LOCK_MINUTES)
+        .unwrap_or(DEFAULT_LOCK_MINUTES);
+    let idle_lock = (lock_minutes > 0).then(|| Duration::from_secs(u64::from(lock_minutes) * 60));
+
     let action = |key: &str, fallback: PowerAction| -> PowerAction {
         section
             .get(key)
@@ -172,6 +188,7 @@ pub fn policy_from_section_for_profile(
 
     PowerPolicy {
         idle_blank,
+        idle_lock,
         idle_suspend,
         lid_close_action: action("lid_close_action", defaults.lid_close_action),
         power_key_action: action("power_key_action", defaults.power_key_action),
@@ -185,10 +202,14 @@ pub fn policy_from_section_for_profile(
 }
 
 fn active_power_profile() -> Option<String> {
-    let output = std::process::Command::new("powerprofilesctl")
-        .arg("get")
-        .output()
-        .ok()?;
+    let output = bounded_command::run(
+        "powerprofilesctl",
+        &["get"],
+        None,
+        64 * 1024,
+        Duration::from_secs(3),
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -205,6 +226,7 @@ mod tests {
         let p = policy_from_settings_json("");
         assert_eq!(p, default_policy());
         assert_eq!(p.idle_blank, Some(Duration::from_secs(600)));
+        assert_eq!(p.idle_lock, Some(Duration::from_secs(300)));
         assert_eq!(p.idle_suspend, Some(Duration::from_secs(900)));
     }
 
@@ -222,6 +244,7 @@ mod tests {
             "power": {
                 "auto_suspend": true,
                 "blank_minutes": 5,
+                "lock_minutes": 10,
                 "suspend_minutes": 20,
                 "lid_close_action": "lock",
                 "power_key_action": "ignore",
@@ -232,6 +255,7 @@ mod tests {
         }"#;
         let p = policy_from_settings_json(json);
         assert_eq!(p.idle_blank, Some(Duration::from_secs(300)));
+        assert_eq!(p.idle_lock, Some(Duration::from_secs(600)));
         assert_eq!(p.idle_suspend, Some(Duration::from_secs(1200)));
         assert_eq!(p.lid_close_action, PowerAction::Lock);
         assert_eq!(p.power_key_action, PowerAction::Ignore);
@@ -256,6 +280,23 @@ mod tests {
     fn zero_blank_minutes_means_never_blank() {
         let json = r#"{"power":{"blank_minutes":0}}"#;
         assert_eq!(policy_from_settings_json(json).idle_blank, None);
+    }
+
+    #[test]
+    fn zero_lock_minutes_means_never_auto_lock() {
+        let json = r#"{"power":{"lock_minutes":0}}"#;
+        assert_eq!(policy_from_settings_json(json).idle_lock, None);
+    }
+
+    #[test]
+    fn lock_minutes_is_bounded_and_malformed_values_repair_to_default() {
+        for value in ["31", "999999999999999999999"] {
+            let json = format!(r#"{{"power":{{"lock_minutes":{value}}}}}"#);
+            assert_eq!(
+                policy_from_settings_json(&json).idle_lock,
+                Some(Duration::from_secs(u64::from(DEFAULT_LOCK_MINUTES) * 60))
+            );
+        }
     }
 
     #[test]
@@ -292,6 +333,7 @@ mod tests {
         assert_eq!(p.power_key_action, d.power_key_action);
         assert_eq!(p.low_battery_percent, d.low_battery_percent);
         assert_eq!(p.idle_blank, d.idle_blank);
+        assert_eq!(p.idle_lock, d.idle_lock);
         assert_eq!(p.idle_suspend, d.idle_suspend);
     }
 

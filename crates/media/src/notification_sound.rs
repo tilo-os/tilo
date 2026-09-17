@@ -7,7 +7,7 @@
 //! fallback. Missing audio support is reported as a capability, never faked.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
@@ -67,7 +67,7 @@ fn themed_sound() -> Option<PathBuf> {
 }
 
 fn play_one(backend: SoundBackend) {
-    let mut command = match backend {
+    let command = match backend {
         #[cfg(windows)]
         SoundBackend::WindowsSystem => {
             #[link(name = "user32")]
@@ -99,33 +99,8 @@ fn play_one(backend: SoundBackend) {
     };
     // One cue at a time. The bounded sender coalesces bursts while the worker
     // waits, preventing notification storms from becoming a process storm.
-    let Ok(mut child) = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return;
-    };
-    // A broken audio route must not strand the session worker or make final
-    // compositor shutdown wait forever. Five seconds is far beyond a desktop
-    // cue, while still bounding a wedged helper.
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(5))
-        .unwrap_or_else(std::time::Instant::now);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) | Err(_) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break;
-            }
-        }
-    }
+    // A broken audio route cannot strand the worker or leave descendants.
+    let _ = bounded_command::run_prepared(command, None, 1024, std::time::Duration::from_secs(5));
 }
 
 #[derive(Debug)]

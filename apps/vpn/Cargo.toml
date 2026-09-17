@@ -25,6 +25,7 @@ ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["po
 # and the Ctrl+K command palette all work from a single implementation.
 tilo-actions = { path = "../../crates/collab/actions" }
 os-actions = { path = "../../crates/system/os-actions" }
+bounded-command = { path = "../../crates/system/bounded-command" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

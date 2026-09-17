@@ -59,11 +59,15 @@ pub fn ring_dot(scene: &mut Scene, t: Affine, center: Point, r: f64, fill: Color
     scene.fill(Fill::NonZero, t, fill, None, &Circle::new(center, r));
 }
 
-// Every draw call below takes the same shape: scene + renderer + transform,
-// then style, then position — one argument per independent knob, called from
-// hundreds of sites in `app.rs`. Bundling them into a struct would just move
-// the same field list into every call-site literal.
-#[allow(clippy::too_many_arguments)]
+// These leaf adapters deliberately mirror Vello's immediate-mode vocabulary:
+// target, renderer, transform, content, style, then geometry. The values are
+// independent per draw and carry no domain invariant; wrapping each call's
+// coordinates and colours in one-use structs would add ceremony without making
+// invalid states unrepresentable. Higher-level view helpers use typed contexts.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf graphics adapter exposes independent Vello text and anchor values"
+)]
 /// Left-top anchored text on a single line.
 pub fn text(
     scene: &mut Scene,
@@ -78,7 +82,10 @@ pub fn text(
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf graphics adapter exposes independent Vello text and anchor values"
+)]
 pub fn text_bold(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -100,7 +107,10 @@ pub fn text_bold(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf graphics adapter exposes independent Vello text and anchor values"
+)]
 /// Text whose right edge sits at `x_right`.
 pub fn text_right(
     scene: &mut Scene,
@@ -123,7 +133,10 @@ pub fn text_right(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf graphics adapter exposes independent Vello text and bounds values"
+)]
 /// Text centred horizontally within `[x0, x1]`.
 pub fn text_center(
     scene: &mut Scene,
@@ -141,7 +154,10 @@ pub fn text_center(
     tr.draw_text(scene, s, size, color, t * Affine::translate((cx, y)), None);
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf graphics adapter exposes independent Vello text and row values"
+)]
 /// Vertically-centred left text within a row of height `h` starting at `y0`.
 pub fn text_vc(
     scene: &mut Scene,
@@ -161,7 +177,10 @@ pub fn text_vc(
 /// Draw a pill (rounded chip) with a centred label. Returns the pill width so
 /// callers can lay out chips left-to-right. The pill is vertically centred on
 /// `cy` with a fixed height derived from `size`.
-#[allow(clippy::too_many_arguments)] // one arg per independent knob; see `text` above.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf graphics adapter exposes independent label, anchor, and palette values"
+)]
 pub fn pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -193,7 +212,10 @@ pub fn pill(
 
 /// Pill with a translucent fill derived from `accent` plus a matching
 /// stroke — the "tag" look used for retention classes.
-#[allow(clippy::too_many_arguments)] // one arg per independent knob; see `text` above.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf graphics adapter exposes independent label, anchor, and accent values"
+)]
 pub fn tag_pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -237,7 +259,10 @@ pub fn bar(scene: &mut Scene, t: Affine, rect: Rect, frac: f64, fill: Color, tra
 
 /// Circular gauge: a faint full ring plus an arc sweeping `frac` of the way
 /// round from 12 o'clock, clockwise.
-#[allow(clippy::too_many_arguments)] // one arg per independent knob; see `text` above.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf graphics adapter exposes independent ring geometry and palette values"
+)]
 pub fn ring(
     scene: &mut Scene,
     t: Affine,

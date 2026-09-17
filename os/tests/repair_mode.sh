@@ -127,6 +127,25 @@ else
   bad "nothing removes a tilo-repair.conf left by an older version of this script.
       On a machine that has one, every later boot has a broken bootc."
 fi
+if grep -Fq '[ -f /var/lib/tilo/secureboot/db.key.cred ]' \
+      "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'systemctl start --wait tilo-secureboot-sign.service' \
+      "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'tilo-crypto verify-efi /var/lib/tilo/secureboot/db.crt "$dest"' \
+      "$OS/usr/libexec/tilo-deployment"; then
+  ok "TPM-sealed machines synchronously sign and verify a repair UKI before retaining it"
+else
+  bad "TPM-sealed machines can publish an unsigned repair UKI and rely on a later path hook"
+fi
+if grep -Fq 'exec 7<"$repair_lock_dir"' "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'exec 6<"$esp"' "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'exec 8<"$esp"' "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'flock -u 8' "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'exec 8<"$ESP"' "$OS/usr/libexec/tilo-secureboot"; then
+  ok "repair publication and Secure Boot signing serialize ESP replacement without deadlocking sealed-key activation"
+else
+  bad "repair publication and Secure Boot signing do not share a stable ESP-inode lock"
+fi
 
 # --- the health gate is wired the way systemd expects -------------------------
 h="$OS/usr/lib/systemd/system/tilo-boot-health.service"
@@ -194,6 +213,14 @@ for phrase in '/var does NOT' 'packages do NOT'; do
     bad "the caveats no longer mention: $phrase"
   fi
 done
+
+if sed '/^[[:space:]]*#/d' "$d" | grep -Fq '/proc/cmdline'; then
+  bad "tilo-deployment reads /proc/cmdline even though boot-entry maintenance runs with ProcSubset=pid"
+elif grep -Fq 'cmdline="$($UKI_CMDLINE show "$esp/${uki_rel#/}"' "$d"; then
+  ok "running generation comes from the bootloader-selected signed UKI inside the service sandbox"
+else
+  bad "running generation is not bound to the bootloader-selected signed UKI"
+fi
 
 # --- shell syntax -------------------------------------------------------------
 for s in "$OS/usr/libexec/tilo-deployment" "$OS/usr/libexec/tilo-repair" \

@@ -2,7 +2,7 @@
 //! production `policy`/`keyslots`/`counter` code paths without root, loop devices or a VM.
 //! Mounting and `tilo-rollback unlock` on a booted machine are not covered.
 //!
-//! Requires `swtpm`, `tpm2-tools`, `cryptsetup`, `openssl`; run with
+//! Requires `swtpm`, `tpm2-tools`, and `cryptsetup`; run with
 //! `cargo test -p tilo-rollback --test mechanism -- --test-threads 1` (each test gets its own
 //! `swtpm` since several drive dictionary-attack lockout, which a shared instance would leak).
 
@@ -40,7 +40,7 @@ fn have(tool: &str) -> bool {
 }
 
 fn missing_tools() -> Vec<&'static str> {
-    ["swtpm", "tpm2_startup", "cryptsetup", "openssl"]
+    ["swtpm", "tpm2_startup", "cryptsetup"]
         .into_iter()
         .filter(|t| !have(t))
         .collect()
@@ -90,7 +90,7 @@ impl Tpm {
         if !missing.is_empty() {
             eprintln!(
                 "SKIP: this test needs {missing:?}, which are not installed. Install swtpm, tpm2-tools, \
-                 cryptsetup and openssl to run it."
+                 and cryptsetup to run it."
             );
             return None;
         }
@@ -455,28 +455,12 @@ impl Fixture {
 }
 
 fn gen_rsa(priv_path: &Path, pub_path: &Path) {
-    let ok = Command::new("openssl")
-        .args(["genrsa", "-out"])
-        .arg(priv_path)
-        .arg("2048")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("openssl genrsa")
-        .success();
-    assert!(ok, "openssl genrsa failed");
-    let ok = Command::new("openssl")
-        .args(["rsa", "-in"])
-        .arg(priv_path)
-        .arg("-pubout")
-        .arg("-out")
-        .arg(pub_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("openssl rsa")
-        .success();
-    assert!(ok, "openssl rsa -pubout failed");
+    let generated = tilo_crypto::generate_secure_boot_certificate("Tilo rollback test")
+        .expect("generate RSA key");
+    let public =
+        tilo_crypto::rsa_public_key_pem(&generated.private_key_pem).expect("derive RSA public key");
+    std::fs::write(priv_path, generated.private_key_pem.as_bytes()).expect("write private key");
+    std::fs::write(pub_path, public).expect("write public key");
 }
 
 /// A LUKS2 image on a plain file, slot 0 holding `recovery`.

@@ -46,6 +46,8 @@ pub enum ManifestError {
     DuplicateContinuityFacet(ContinuityFacet),
     #[error("continuity.required semantic state also requires presentation state")]
     SemanticContinuityWithoutPresentation,
+    #[error("continuity.required semantic state requires continuity.semantic-schema")]
+    SemanticContinuityWithoutSchema,
     #[error("kind=app requires presentation in continuity.required")]
     AppContinuityMissingPresentation,
     #[error(
@@ -115,6 +117,9 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         && !facets.contains(&ContinuityFacet::Presentation)
     {
         return Err(ManifestError::SemanticContinuityWithoutPresentation);
+    }
+    if facets.contains(&ContinuityFacet::Semantic) && m.continuity.semantic_schema.is_none() {
+        return Err(ManifestError::SemanticContinuityWithoutSchema);
     }
     if m.package.kind == Kind::App && !facets.contains(&ContinuityFacet::Presentation) {
         return Err(ManifestError::AppContinuityMissingPresentation);
@@ -358,6 +363,16 @@ mode = "off"
         assert_eq!(
             validate_manifest(&m),
             Err(ManifestError::SemanticContinuityWithoutPresentation)
+        );
+    }
+
+    #[test]
+    fn semantic_continuity_requires_a_signed_portable_schema() {
+        let mut m = minimal_runtime_manifest();
+        m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic];
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::SemanticContinuityWithoutSchema)
         );
     }
 

@@ -297,13 +297,14 @@ pub fn install_app_reporting(
         return Err(error);
     }
 
-    let output = Command::new(tilo_install_bin())
-        .args(install_argv(
-            &dest,
-            &app.publisher_pubkey_hex,
-            &app.qpkg_root_hash_hex,
-        ))
-        .output();
+    let mut command = Command::new(tilo_install_bin());
+    command.args(install_argv(
+        &dest,
+        &app.publisher_pubkey_hex,
+        &app.qpkg_root_hash_hex,
+    ));
+    let output =
+        bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600));
     let _ = std::fs::remove_file(&dest);
 
     match output {

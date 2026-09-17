@@ -25,9 +25,9 @@ Provides:       installonlypkg(kernel)
 
 # Empty %prep + %build + %install — everything is already staged.
 %description
-Tilo custom kernel with statically-linked storage/net/USB/paravirt
-drivers on the boot path (no initramfs required) and PREEMPT + HZ=1000
-+ THP=always tuning for interactive throughput.
+Tilo custom kernel with statically linked storage/USB/paravirt drivers on the
+boot path, signed modular network drivers outside it, and PREEMPT + HZ=1000 +
+THP=madvise and dynamic full preemption tuning for consistent frame latency.
 
 %install
 mkdir -p %{buildroot}

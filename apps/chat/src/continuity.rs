@@ -50,6 +50,10 @@ pub(crate) struct ChatRealtimeContinuity {
     pub(crate) pending_restore: Option<ChatCallContinuation>,
     pub(crate) offer: Option<(String, ChatCallContinuation)>,
     pub(crate) stop_source: Option<String>,
+    /// Set by the accepted command result and consumed from `sync`, so the
+    /// target call is locally established before `MediaReady` is emitted.
+    pub(crate) accepted_target: bool,
+    pub(crate) target_media_ready: bool,
     pub(crate) requests: Vec<ui::collaboration::CollabRequest>,
     next_request: u64,
 }
@@ -140,10 +144,10 @@ impl ChatApp {
         self.realtime.requests.push(request);
     }
 
-    /// Called only after the target obtained fresh local capture permission.
-    /// A restored checkpoint alone never reaches this edge.
-    pub fn accept_realtime_offer(&mut self, capture_authorized: bool) -> bool {
-        if !capture_authorized {
+    /// Called only with fresh opaque capabilities issued by the target-local
+    /// capture broker. A restored checkpoint alone never reaches this edge.
+    pub(crate) fn accept_realtime_offer(&mut self, capture_authorizations: Vec<String>) -> bool {
+        if capture_authorizations.is_empty() {
             return false;
         }
         let Some((session, offered)) = self.realtime.offer.clone() else {
@@ -154,7 +158,10 @@ impl ChatApp {
         }
         let request = self
             .realtime
-            .request(ui::realtime_continuity::RealtimeCommand::Accept { session });
+            .request(ui::realtime_continuity::RealtimeCommand::Accept {
+                session,
+                capture_authorizations,
+            });
         self.realtime.requests.push(request);
         true
     }
@@ -162,7 +169,7 @@ impl ChatApp {
     /// Notify the broker only after Chat's target media endpoint is actually
     /// established. This is separate from Accept so failures leave the source
     /// call live.
-    pub fn realtime_target_media_ready(&mut self) -> bool {
+    pub(crate) fn realtime_target_media_ready(&mut self) -> bool {
         let Some((session, offered)) = self.realtime.offer.clone() else {
             return false;
         };
@@ -174,6 +181,37 @@ impl ChatApp {
             .request(ui::realtime_continuity::RealtimeCommand::MediaReady { session });
         self.realtime.requests.push(request);
         true
+    }
+
+    pub(crate) fn establish_realtime_target(&mut self) {
+        if !self.realtime.accepted_target {
+            return;
+        }
+        self.realtime.accepted_target = false;
+        let Some((session, offered)) = self.realtime.offer.clone() else {
+            return;
+        };
+        if self.realtime.pending_restore.as_ref() != Some(&offered) {
+            return;
+        }
+        self.call.join(&offered.channel_id);
+        self.call.muted = offered.controls.microphone_muted;
+        self.call.audio_only = !offered.media.camera || offered.controls.camera_muted;
+        let resume_screen = offered.media.screen_share && !offered.controls.screen_share_paused;
+        if resume_screen && !self.acquire_screen() {
+            self.call.leave();
+            let request =
+                self.realtime
+                    .request(ui::realtime_continuity::RealtimeCommand::TargetFailed {
+                        session: session.clone(),
+                    });
+            self.realtime.requests.push(request);
+            self.realtime.offer = None;
+            return;
+        }
+        self.call.sharing = resume_screen;
+        self.realtime.session = Some(session);
+        self.realtime.target_media_ready = true;
     }
 
     pub(crate) fn apply_realtime_stop(&mut self, doc: &mut AutoCommit) {
@@ -287,7 +325,7 @@ mod tests {
                 microphone: true,
                 ..Default::default()
             },
-            controls: Default::default(),
+            controls: ui::realtime_continuity::RealtimeControlIntent::default(),
         };
         let metadata = ui::collaboration::ContinuationMetadata {
             schema_version: CHAT_CONTINUATION_SCHEMA,
@@ -295,9 +333,11 @@ mod tests {
         };
         assert!(app.restore_call_continuation(&metadata, &doc));
         app.realtime.offer = Some(("session-1".into(), projection));
-        assert!(!app.accept_realtime_offer(false));
+        assert!(!app.accept_realtime_offer(Vec::new()));
         assert!(app.realtime.requests.is_empty());
-        assert!(app.accept_realtime_offer(true));
+        assert!(app.accept_realtime_offer(vec![
+            "ab".repeat(ui::realtime_continuity::OPAQUE_CAPTURE_AUTHORIZATION_BYTES,)
+        ]));
         assert!(matches!(
             app.realtime.requests.pop(),
             Some(ui::collaboration::CollabRequest::RealtimeCommand {
@@ -357,5 +397,65 @@ mod tests {
         );
         Widget::sync(&mut app, &mut doc, &ROOT);
         assert!(!app.call.active);
+    }
+
+    #[test]
+    fn shell_consent_drives_target_accept_then_media_ready() {
+        let (mut app, mut doc) = app_and_doc();
+        let offered = ChatCallContinuation {
+            workspace_id: "ws_acme".into(),
+            channel_id: "c_huddle".into(),
+            media: ui::realtime_continuity::RealtimeMediaFacets {
+                microphone: true,
+                camera: true,
+                ..Default::default()
+            },
+            controls: ui::realtime_continuity::RealtimeControlIntent {
+                microphone_muted: true,
+                ..Default::default()
+            },
+        };
+        let metadata = ui::collaboration::ContinuationMetadata {
+            schema_version: CHAT_CONTINUATION_SCHEMA,
+            bytes: serde_json::to_vec(&offered).unwrap(),
+        };
+        assert!(app.restore_call_continuation(&metadata, &doc));
+        app.realtime.offer = Some(("target-session".into(), offered));
+        Widget::handle_collab_event(
+            &mut app,
+            &ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
+                    session: "target-session".into(),
+                    capture_authorizations: vec![
+                        "ab".repeat(ui::realtime_continuity::OPAQUE_CAPTURE_AUTHORIZATION_BYTES),
+                    ],
+                },
+            ),
+        );
+        assert!(matches!(
+            Widget::take_collab_requests(&mut app).as_slice(),
+            [ui::collaboration::CollabRequest::RealtimeCommand {
+                command: ui::realtime_continuity::RealtimeCommand::Accept { .. },
+                ..
+            }]
+        ));
+        Widget::handle_collab_event(
+            &mut app,
+            &ui::collaboration::CollabEvent::RealtimeCommandResult {
+                request_id: 1,
+                result: Ok(ui::realtime_continuity::RealtimeReply::Accepted),
+            },
+        );
+        assert!(!app.call.active);
+        Widget::sync(&mut app, &mut doc, &ROOT);
+        assert!(app.call.active && app.call.muted && !app.call.audio_only);
+        assert_eq!(app.realtime.session.as_deref(), Some("target-session"));
+        assert!(matches!(
+            Widget::take_collab_requests(&mut app).as_slice(),
+            [ui::collaboration::CollabRequest::RealtimeCommand {
+                command: ui::realtime_continuity::RealtimeCommand::MediaReady { .. },
+                ..
+            }]
+        ));
     }
 }

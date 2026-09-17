@@ -24,6 +24,15 @@ use crate::model::{
     Container, ContainerStatus, DistroBox, Engine, Image, Mount, PortMapping, Stats, Volume,
 };
 
+const PROBE_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const ACTION_OUTPUT_LIMIT: usize = 1024 * 1024;
+const ACTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+fn run_probe(program: &str, args: &[&str]) -> Option<bounded_command::Output> {
+    bounded_command::run(program, args, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT).ok()
+}
+
 /// A lifecycle verb the UI can request against a container.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -74,12 +83,8 @@ pub struct Probe {
 /// True when a `podman` binary is on PATH and responds to `info`. Cached by
 /// the caller — this spawns a process so it isn't free.
 pub fn engine_available() -> bool {
-    Command::new("podman")
-        .arg("info")
-        .arg("--format")
-        .arg("{{.Host.Arch}}")
-        .output()
-        .is_ok_and(|o| o.status.success())
+    run_probe("podman", &["info", "--format", "{{.Host.Arch}}"])
+        .is_some_and(|out| out.status.success())
 }
 
 /// Collect a full snapshot from the live engine, or an honest empty snapshot
@@ -123,10 +128,7 @@ fn probe_live() -> Option<Engine> {
 }
 
 fn podman_connection_label() -> String {
-    let version = Command::new("podman")
-        .args(["version", "--format", "{{.Client.Version}}"])
-        .output()
-        .ok()
+    let version = run_probe("podman", &["version", "--format", "{{.Client.Version}}"])
         .filter(|o| o.status.success())
         .map_or_else(
             || "unknown".into(),
@@ -168,10 +170,7 @@ struct PsPort {
 }
 
 fn list_containers() -> Option<Vec<Container>> {
-    let out = Command::new("podman")
-        .args(["ps", "--all", "--format", "json"])
-        .output()
-        .ok()?;
+    let out = run_probe("podman", &["ps", "--all", "--format", "json"])?;
     if !out.status.success() {
         return None;
     }
@@ -243,11 +242,8 @@ struct StatEntry {
 /// One-shot stats sample for every running container. Returns
 /// `(id, stats)` pairs; failures yield an empty vec (columns read zero).
 fn collect_stats() -> Vec<(String, Stats)> {
-    let out = match Command::new("podman")
-        .args(["stats", "--no-stream", "--format", "json"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
+    let out = match run_probe("podman", &["stats", "--no-stream", "--format", "json"]) {
+        Some(o) if o.status.success() => o,
         _ => return Vec::new(),
     };
     let entries: Vec<StatEntry> = match serde_json::from_slice(&out.stdout) {
@@ -331,10 +327,7 @@ struct ImageEntry {
 }
 
 fn list_images() -> Option<Vec<Image>> {
-    let out = Command::new("podman")
-        .args(["images", "--format", "json"])
-        .output()
-        .ok()?;
+    let out = run_probe("podman", &["images", "--format", "json"])?;
     if !out.status.success() {
         return None;
     }
@@ -383,10 +376,7 @@ struct VolumeEntry {
 }
 
 fn list_volumes() -> Option<Vec<Volume>> {
-    let out = Command::new("podman")
-        .args(["volume", "ls", "--format", "json"])
-        .output()
-        .ok()?;
+    let out = run_probe("podman", &["volume", "ls", "--format", "json"])?;
     if !out.status.success() {
         return None;
     }
@@ -417,11 +407,8 @@ fn list_volumes() -> Option<Vec<Volume>> {
 
 /// Names of volumes referenced by any container (for the in-use count).
 fn volume_usage() -> Vec<String> {
-    let out = match Command::new("podman")
-        .args(["ps", "--all", "--format", "{{.Mounts}}"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
+    let out = match run_probe("podman", &["ps", "--all", "--format", "{{.Mounts}}"]) {
+        Some(o) if o.status.success() => o,
         _ => return Vec::new(),
     };
     // `{{.Mounts}}` prints comma-separated mount sources; named volumes show
@@ -440,11 +427,8 @@ fn volume_usage() -> Vec<String> {
 /// `distrobox list` is the canonical reader; when the CLI is absent we fall
 /// back to filtering podman's container list by label.
 fn list_distroboxes() -> Vec<DistroBox> {
-    let out = match Command::new("distrobox")
-        .args(["list", "--no-color"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
+    let out = match run_probe("distrobox", &["list", "--no-color"]) {
+        Some(o) if o.status.success() => o,
         _ => return Vec::new(),
     };
     let text = String::from_utf8_lossy(&out.stdout);
@@ -487,7 +471,8 @@ pub fn run_action(action: Action, container_id: &str) -> Result<(), String> {
         cmd.args(["--time", "10"]);
     }
     cmd.arg(container_id);
-    let out = cmd.output().map_err(|e| e.to_string())?;
+    let out = bounded_command::run_prepared(cmd, None, ACTION_OUTPUT_LIMIT, ACTION_TIMEOUT)
+        .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {
@@ -500,11 +485,10 @@ pub fn fetch_logs(container_id: &str, tail: usize) -> Vec<String> {
     if !engine_available() {
         return Vec::new();
     }
-    let out = Command::new("podman")
-        .args(["logs", "--tail", &tail.to_string(), container_id])
-        .output();
+    let tail_arg = tail.to_string();
+    let out = run_probe("podman", &["logs", "--tail", &tail_arg, container_id]);
     match out {
-        Ok(o) => {
+        Some(o) => {
             let mut lines: Vec<String> = String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .chain(String::from_utf8_lossy(&o.stderr).lines())
@@ -515,7 +499,7 @@ pub fn fetch_logs(container_id: &str, tail: usize) -> Vec<String> {
             }
             lines
         }
-        Err(_) => Vec::new(),
+        None => Vec::new(),
     }
 }
 
@@ -525,11 +509,8 @@ pub fn inspect_into(container: &mut Container) {
     if !engine_available() {
         return;
     }
-    let out = match Command::new("podman")
-        .args(["inspect", "--type", "container", &container.id])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
+    let out = match run_probe("podman", &["inspect", "--type", "container", &container.id]) {
+        Some(o) if o.status.success() => o,
         _ => return,
     };
     let value: serde_json::Value = match serde_json::from_slice(&out.stdout) {
@@ -639,11 +620,9 @@ pub fn inspect_image(reference: &str) -> String {
     if !engine_available() {
         return String::new();
     }
-    let out = Command::new("podman")
-        .args(["image", "inspect", reference])
-        .output();
+    let out = run_probe("podman", &["image", "inspect", reference]);
     match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Some(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => String::new(),
     }
 }
@@ -789,13 +768,25 @@ pub fn exec_args(container_id: &str, shell: &str) -> Vec<String> {
 }
 
 /// Run completion helper shared by the simple (non-streaming) ops.
-fn finish(mut cmd: Command) -> Result<(), String> {
-    let out = cmd.output().map_err(|e| e.to_string())?;
+fn finish(cmd: Command) -> Result<(), String> {
+    let out = bounded_command::run_prepared(cmd, None, ACTION_OUTPUT_LIMIT, ACTION_TIMEOUT)
+        .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
+}
+
+/// Run one finite podman operation with bounded diagnostics and a deadline.
+///
+/// # Errors
+///
+/// Returns bounded runner failures or the command's capped stderr.
+pub fn run_once(args: &[String]) -> Result<(), String> {
+    let mut command = Command::new("podman");
+    command.args(args);
+    finish(command)
 }
 
 /// Polling cadence for live stats refresh in the running app.

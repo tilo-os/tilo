@@ -11,8 +11,8 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use agent_provider_config::local::{
@@ -438,31 +438,27 @@ impl ProcessSupervisor for SystemdSupervisor {
     ) -> Result<(), ServiceError> {
         // `podman load` receives a verified, content-addressed archive path;
         // it is never given a registry tag or caller-controlled image string.
-        let status = Command::new("podman")
-            .args(["load", "--input"])
-            .arg(archive)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(ServiceError::Io)?;
-        if !status.success() {
+        let mut load = Command::new("podman");
+        load.args(["load", "--input"]).arg(archive);
+        let output =
+            bounded_command::run_prepared(load, None, 1024 * 1024, Duration::from_secs(1800))
+                .map_err(|error| ServiceError::Backend(error.to_string()))?;
+        if !output.status.success() {
             return Err(ServiceError::Backend(
                 "podman could not import verified runtime archive".into(),
             ));
         }
-        let output = Command::new("podman")
-            .args([
-                "image",
-                "inspect",
-                "--format",
-                "{{json .RepoDigests}}",
-                signed_image,
-            ])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .map_err(ServiceError::Io)?;
+        let mut inspect = Command::new("podman");
+        inspect.args([
+            "image",
+            "inspect",
+            "--format",
+            "{{json .RepoDigests}}",
+            signed_image,
+        ]);
+        let output =
+            bounded_command::run_prepared(inspect, None, 1024 * 1024, Duration::from_secs(30))
+                .map_err(|error| ServiceError::Backend(error.to_string()))?;
         if !output.status.success() {
             return Err(ServiceError::Backend(
                 "podman cannot inspect imported signed runtime image".into(),
@@ -481,7 +477,8 @@ impl ProcessSupervisor for SystemdSupervisor {
     fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
         let digest = hex::encode(Sha256::digest(command.endpoint.model_id.as_bytes()));
         let unit = format!("tilo-vllm-{}", &digest[..16]);
-        let status = Command::new("systemd-run")
+        let mut launch = Command::new("systemd-run");
+        launch
             .args([
                 "--user",
                 "--collect",
@@ -491,13 +488,11 @@ impl ProcessSupervisor for SystemdSupervisor {
                 "--",
                 "podman",
             ])
-            .args(podman_vllm_argv(command))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(ServiceError::Io)?;
-        if !status.success() {
+            .args(podman_vllm_argv(command));
+        let output =
+            bounded_command::run_prepared(launch, None, 1024 * 1024, Duration::from_secs(30))
+                .map_err(|error| ServiceError::Backend(error.to_string()))?;
+        if !output.status.success() {
             return Err(ServiceError::Backend(
                 "systemd-run rejected the verified vLLM command".into(),
             ));
@@ -524,25 +519,19 @@ impl ProcessSupervisor for SystemdSupervisor {
             }
             std::thread::sleep(Duration::from_millis(150));
         }
-        let _ = Command::new("systemctl")
-            .args(["--user", "stop", &unit])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let mut stop = Command::new("systemctl");
+        stop.args(["--user", "stop", &unit]);
+        let _ = bounded_command::run_prepared(stop, None, 64 * 1024, Duration::from_secs(30));
         return Err(ServiceError::Backend(
             "verified vLLM service did not become ready".into(),
         ));
     }
     fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError> {
-        let status = Command::new("systemctl")
-            .args(["--user", "stop", &handle.id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(ServiceError::Io)?;
-        if status.success() {
+        let mut stop = Command::new("systemctl");
+        stop.args(["--user", "stop", &handle.id]);
+        let output = bounded_command::run_prepared(stop, None, 64 * 1024, Duration::from_secs(30))
+            .map_err(|error| ServiceError::Backend(error.to_string()))?;
+        if output.status.success() {
             Ok(())
         } else {
             Err(ServiceError::Backend(
@@ -570,14 +559,13 @@ fn local_hardware() -> HardwareSnapshot {
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
     // caller-provided argument. Sysfs discovery keeps absence honest.
-    if let Ok(output) = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=memory.total,driver_version",
-            "--format=csv,noheader,nounits",
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
+    let mut nvidia = Command::new("nvidia-smi");
+    nvidia.args([
+        "--query-gpu=memory.total,driver_version",
+        "--format=csv,noheader,nounits",
+    ]);
+    if let Ok(output) =
+        bounded_command::run_prepared(nvidia, None, 1024 * 1024, Duration::from_secs(5))
         && output.status.success()
     {
         for line in String::from_utf8_lossy(&output.stdout).lines() {
@@ -1090,6 +1078,21 @@ fn serve_client(mut stream: UnixStream) {
 }
 
 fn serve(socket: &PathBuf) -> Result<Option<String>, String> {
+    let listener = if let Some(listener) = systemd_listener(socket)? {
+        listener
+    } else {
+        bind_listener(socket)?
+    };
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => serve_client(stream),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(None)
+}
+
+fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -1103,13 +1106,46 @@ fn serve(socket: &PathBuf) -> Result<Option<String>, String> {
     let listener = UnixListener::bind(socket).map_err(|error| error.to_string())?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())?;
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => serve_client(stream),
-            Err(error) => return Err(error.to_string()),
-        }
+    Ok(listener)
+}
+
+fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
+    const SYSTEMD_LISTEN_FD: RawFd = 3;
+
+    let pid_matches = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        == Some(std::process::id());
+    if !pid_matches {
+        return Ok(None);
     }
-    Ok(None)
+    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
+        return Err("systemd must pass exactly one model-manager listener".into());
+    }
+    // SAFETY: fcntl only validates whether fd 3 is open; it consumes no pointer.
+    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
+        return Err("systemd model-manager listener fd is closed".into());
+    }
+    // SAFETY: systemd's LISTEN_PID/FDS contract transfers ownership of fd 3
+    // to this process exactly once.
+    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
+    let actual = listener.local_addr().map_err(|error| error.to_string())?;
+    if actual.as_pathname() != Some(expected) {
+        return Err("systemd model-manager listener has an unexpected path".into());
+    }
+    // The manager starts Podman/model processes. Keep the authenticated
+    // control listener and systemd's one-shot activation metadata out of every
+    // child process spawned after activation.
+    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        return Err("cannot mark systemd model-manager listener close-on-exec".into());
+    }
+    // SAFETY: activation is consumed once, before worker threads exist.
+    unsafe {
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+    }
+    Ok(Some(listener))
 }
 fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     // The model manager is deliberately a per-user service: Settings never
@@ -1436,18 +1472,13 @@ fn enqueue_worker(
             .arg("--keys")
             .arg(keys);
     }
-    command
-        .args(["worker", "--model", model])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.args(["worker", "--model", model]);
     if let Some(revision) = revision {
         command.args(["--revision", revision]);
     }
-    let status = command
-        .status()
+    let output = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(30))
         .map_err(|error| format!("could not enqueue model worker: {error}"))?;
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
         Err("systemd-run rejected the durable model worker".into())
@@ -1478,14 +1509,11 @@ fn enqueue_start_worker(
             .arg("--keys")
             .arg(keys);
     }
-    let status = command
-        .args(["worker-start", "--model", model])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    command.args(["worker-start", "--model", model]);
+    let output = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(30))
         .map_err(|error| format!("could not enqueue model start: {error}"))?;
-    status
+    output
+        .status
         .success()
         .then_some(())
         .ok_or_else(|| "systemd-run rejected the durable model start".to_string())

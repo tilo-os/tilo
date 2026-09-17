@@ -657,14 +657,26 @@ pub struct TerminalWidget {
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
     /// attributed to this pane rather than colliding with another terminal.
     pane_id: String,
+    /// Identifies the local PTY whose presentation is mirrored into this
+    /// record. A terminal tab is durable, but its process is not: after a
+    /// logout the next login spawns a new shell. Without an incarnation
+    /// marker that new shell inherited the previous process' persisted grid
+    /// and appended a second prompt to it, making a fresh session look as if
+    /// several terminals had been restored. Headless/replica widgets leave
+    /// this `None` because they intentionally render an existing transcript.
+    local_session_id: Option<String>,
+    /// The record scope arrives before the first sync. We reset stale
+    /// process-owned presentation exactly once at that boundary, never on a
+    /// collaborator's ordinary document update.
+    local_session_bound: bool,
 
     /// Wakes the `ui::App` event loop when the PTY reader has new output, so a
     /// standalone terminal can idle (`ControlFlow::Wait`) instead of polling at
     /// ~60 Hz. The binary arms it via `App::run_with_setup` (see
     /// [`waker_handle`](Self::waker_handle)); it stays `None` when the terminal
-    /// is embedded in a host that pumps it, or before the loop starts, in which
-    /// case [`needs_animation_frame`](Widget::needs_animation_frame) keeps
-    /// requesting frames.
+    /// is embedded in a host that pumps it. Embedded hosts call `sync`/`update`
+    /// independently of painting, so they can remain visually idle until the
+    /// channel actually contains output.
     waker: Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
     /// Coalesces reader wakes: set when a wake is in flight, cleared when the
     /// App delivers the resulting `External` event (`on_external_event`), so a
@@ -760,11 +772,84 @@ impl TerminalWidget {
             image_cache: HashMap::new(),
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
+            local_session_id: None,
+            local_session_bound: false,
             waker: Arc::new(Mutex::new(None)),
             wake_pending: Arc::new(AtomicBool::new(false)),
             mouse_buttons: 0,
             focused: false,
         }
+    }
+
+    /// Mark this widget as the presentation of a newly spawned local PTY.
+    /// The transcript is collaborative state only while the process that
+    /// produced it is alive; a new process must start from a clean screen.
+    fn with_local_session(mut self) -> Self {
+        self.local_session_id = Some(uuid::Uuid::new_v4().to_string());
+        self
+    }
+
+    fn reset_stale_local_session(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(session_id) = self.local_session_id.as_deref() else {
+            return;
+        };
+        if self.local_session_bound {
+            return;
+        }
+        self.local_session_bound = true;
+
+        let stored_session = state
+            .get(root, "terminal_local_session")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(value) => value.to_str().map(ToOwned::to_owned),
+                Value::Object(_) => None,
+            });
+        if stored_session.as_deref() == Some(session_id) {
+            return;
+        }
+
+        // These objects describe one live PTY, not the durable identity of
+        // the tab. Delete the old objects atomically before `init_crdt`
+        // creates blank replacements for the new process. Notes/editor data
+        // and the tab itself are separate records and remain untouched.
+        for key in [
+            "terminal_grid",
+            "terminal_grid_alt",
+            "cursor",
+            "terminal_links",
+            "terminal_images",
+            "terminal_title",
+            "terminal_pane_id",
+        ] {
+            let _ = state.delete(root, key);
+        }
+        let _ = state.put(root, "terminal_local_session", session_id);
+
+        self.grid_id = None;
+        self.alt_grid_id = None;
+        self.cursor_id = None;
+        self.links_id = None;
+        self.images_id = None;
+        self.line_ids.clear();
+        self.alt_line_ids.clear();
+        self.grid.clear();
+        self.grid_attrs.clear();
+        self.links.clear();
+        self.image_placements.clear();
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.alt_active = false;
+        self.saved_cursor = None;
+        self.mirror_valid = false;
+        self.force_resync = true;
+        self.pending_local_edit = true;
+        self.synced_len = 0;
+        self.trimmed_front = 0;
+        self.ever_nonblank = false;
+        self.title = "Terminal".to_string();
+        self.pane_id = uuid::Uuid::new_v4().to_string();
     }
 
     /// Handle used to arm the event-loop waker. A binary running the terminal
@@ -2031,13 +2116,14 @@ impl Widget for TerminalWidget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.reset_stale_local_session(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
         // through the vte parser *here*, before reading the grid back out.
         // The plain `ui::App` event loop only ever calls `sync` (never
         // `update`), so if the pty were only pumped from `update` the live
         // terminal would never advance. Pumping from `sync` — combined with
-        // `needs_animation_frame` keeping the loop ticking — is what makes a
-        // standalone or embedded terminal actually show output.
+        // the standalone waker (or an embedding host's app pump) driving the
+        // loop — is what makes a terminal actually show output.
         self.pump(state, root);
 
         let current_heads = state.get_heads();
@@ -2084,21 +2170,17 @@ impl Widget for TerminalWidget {
         self.pump(state, root)
     }
 
-    /// Whether the App should keep ticking at ~60 Hz. Once the PTY reader can
-    /// wake the loop (a standalone terminal that armed its `waker` via
-    /// `App::run_with_setup`), we idle instead: the reader sends a
-    /// `UserEvent::External` on new output, which drives a re-sync + redraw, so
-    /// there is no reason to poll while nothing is happening. Until the waker is
-    /// armed — embedded in a host that pumps us, or during startup before the
-    /// loop runs — we keep requesting frames so output still surfaces.
+    /// Whether queued output needs another visual frame. A standalone terminal
+    /// is woken by its event-loop proxy; an embedded terminal is pumped by its
+    /// host independently of painting. Treating an absent standalone proxy as
+    /// animation demand made every idle embedded terminal repaint the complete
+    /// desktop continuously.
     fn needs_animation_frame(&self) -> bool {
         // A bounded pump deliberately leaves excess output queued. Keep frames
         // flowing until it is drained even when the reader's coalesced wake is
         // already in flight; otherwise a saturated producer could strand the
         // final queue behind `ControlFlow::Wait`.
-        self.deferred_output.is_some()
-            || !self.output_rx.is_empty()
-            || self.waker.lock().map_or(true, |g| g.is_none())
+        self.deferred_output.is_some() || !self.output_rx.is_empty()
     }
 
     /// The event-loop wake we requested has been delivered. Clear the coalescing
@@ -6144,7 +6226,7 @@ impl TerminalWidget {
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
         let (output_tx, output_rx) = bounded(PTY_QUEUE_CHUNKS);
 
-        let widget = TerminalWidget::new(writer, master, output_rx);
+        let widget = TerminalWidget::new(writer, master, output_rx).with_local_session();
         // Share the waker + coalescing flag with the reader thread so fresh PTY
         // output can wake an idle `ui::App` loop (instead of a ~60 Hz poll).
         let waker = widget.waker.clone();

@@ -124,8 +124,8 @@ RUN chmod 0755 /usr/bin/tilo-rollback /usr/libexec/tilo-rollback-common \
         /usr/lib/systemd/system-generators/tilo-boot-mode-generator \
     && printf 'd /var/lib/tilo 0755 root root -\n' \
         > /usr/lib/tmpfiles.d/tilo-rollback.conf \
-    && systemctl enable tilo-rollback-harden.service tilo-rollback-confirm.timer \
-    && systemctl enable tilo-boot-entries.service tilo-boot-health.service
+    && systemctl enable tilo-rollback-harden.timer tilo-rollback-confirm.timer \
+    && systemctl enable tilo-boot-entries.timer tilo-boot-health.service
 
 # --- what "the session came up" means on an image with no session ------------
 # tilo-boot-health waits for greetd, which this image does not have — it is the
@@ -184,9 +184,10 @@ FROM ${BASE_REF} AS tools
 # comes from this stage's systemd-boot-unsigned and does not have to match the
 # systemd in the rootfs.
 RUN dnf install -y --disablerepo=updates --disablerepo=updates-archive \
-        systemd-ukify sbsigntools binutils \
+        systemd-ukify binutils \
     && dnf clean all
 COPY uki.sh /usr/local/bin/uki.sh
+COPY stage/tree/usr/bin/tilo-crypto /usr/local/bin/tilo-crypto
 
 FROM tools AS uki
 ARG SIGN=0

@@ -12,12 +12,22 @@ containerfile="$repo/os/Containerfile"
 # and three validation tools under /run before installing validated bytes.
 # test_public_trust_install.py proves default keys and development provenance;
 # the contract below covers these explicit staging inputs plus existing payload.
-# Sorting intentionally ignores instruction order:
+# Captured from the effective rootfs copy mappings. The current change
+# deliberately removes the obsolete root-owned shell-firstboot unit and adds
+# non-blocking boot timers, a background-resource policy, and two model-service
+# activation sockets, the staged-image owner trust gate, and the deferred
+# BootPack status-projection timer, the physical-disk BFQ policy, the
+# root-owned device-key initializer, the off-critical-path TPM hardening timer,
+# the authenticated Chrony policy used by the image-trust freshness floor, and
+# the build-only residual OpenSSL ABI package gate (removed after it runs).
+# Rustls now compiles the fixed CA-bundle path
+# into its loader, so the former systemd environment override is absent. Sorting
+# intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=2c17dd92c06a86898d9d64e3c8efee2789f04ef5c993fd1f57265c6b55f6408c
+expected_contract=d96563dc483f3085d71060493b57f723d97e35630118bc61a71b96a7fcddf511
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

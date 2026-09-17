@@ -70,7 +70,16 @@ pub enum InstalledState {
         available: String,
         #[serde(default)]
         pinned: bool,
+        /// Whether this package can be changed through the app-host
+        /// capability. Immutable system RPM packages are launchable but
+        /// cannot be pinned or removed from the user store.
+        #[serde(default = "default_user_managed")]
+        user_managed: bool,
     },
+}
+
+fn default_user_managed() -> bool {
+    true
 }
 
 impl InstalledState {
@@ -285,13 +294,18 @@ impl StoreItem {
     /// cached yet or for Flatpak apps (whose install *is* the pin).
     pub fn pin_action(&self) -> Option<ActionKind> {
         match (&self.source, &self.installed) {
-            (StoreSource::Tilo { .. }, InstalledState::Installed { pinned, .. }) => {
-                Some(if *pinned {
-                    ActionKind::Unmark
-                } else {
-                    ActionKind::MarkInstalled
-                })
-            }
+            (
+                StoreSource::Tilo { .. },
+                InstalledState::Installed {
+                    pinned,
+                    user_managed,
+                    ..
+                },
+            ) if *user_managed => Some(if *pinned {
+                ActionKind::Unmark
+            } else {
+                ActionKind::MarkInstalled
+            }),
             _ => None,
         }
     }
@@ -304,9 +318,12 @@ impl StoreItem {
     /// re-derive which is which is a caller that can get it wrong.
     pub fn remove_action(&self) -> Option<ActionKind> {
         match (&self.source, &self.installed) {
-            (StoreSource::Tilo { .. }, InstalledState::Installed { .. }) => {
-                Some(ActionKind::Remove)
-            }
+            (
+                StoreSource::Tilo { .. },
+                InstalledState::Installed {
+                    user_managed: true, ..
+                },
+            ) => Some(ActionKind::Remove),
             (StoreSource::Flathub, InstalledState::Installed { .. }) => {
                 Some(ActionKind::FlatpakRemove)
             }
@@ -479,6 +496,7 @@ mod tests {
             version: version.into(),
             available: available.into(),
             pinned,
+            user_managed: true,
         }
     }
 

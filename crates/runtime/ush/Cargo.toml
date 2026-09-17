@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
+bounded-command = { path = "../../system/bounded-command" }
 
 anyhow.workspace = true
 dirs.workspace = true

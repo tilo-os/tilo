@@ -44,6 +44,10 @@ EOF
 }
 
 require_root() { [ "${EUID}" -eq 0 ] || die 'must be invoked by pkexec'; }
+ensure_vm_network() {
+    systemctl start tilo-windows-vm-network.service \
+        || die 'could not prepare the isolated Windows network'
+}
 require_exact_action() {
     [ "$#" -ge 1 ] || { usage; exit 2; }
     case "$1" in import-iso|recovery-start|consume-recovery) [ "$#" -eq 1 ] || { usage; exit 2; } ;;
@@ -106,6 +110,7 @@ validate_optical_image() {
 
 import_iso() {
     require_root
+    ensure_vm_network
     [ -x "$PROVISION" ] || die 'singleton provisioning machinery is not installed'
     command -v isoinfo >/dev/null || die 'ISO9660 validator is not installed'
     command -v udfinfo >/dev/null || die 'UDF validator is not installed'
@@ -150,6 +155,7 @@ import_iso() {
 
 recovery_start() {
     require_root
+    ensure_vm_network
     [ -x "$VM_CONTROL" ] || die 'singleton VM controller is not installed'
     [ -f "$ROOT/system.qcow2" ] && [ -f "$ROOT/domain.uuid" ] \
         || die 'Windows is not provisioned; select installation media first'
@@ -197,12 +203,14 @@ consume_recovery() {
 lifecycle() {
     require_root
     case "$1" in status|start|shutdown|force-shutdown|restart|suspend|resume) ;; *) die 'invalid lifecycle action' ;; esac
+    case "$1" in start|restart|resume) ensure_vm_network ;; esac
     exec "$VM_CONTROL" "$1"
 }
 
 egress_open() {
     require_root
     [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die 'invalid egress-open arguments'
+    ensure_vm_network
     exec "$VM_CONTROL" egress-open "$@"
 }
 

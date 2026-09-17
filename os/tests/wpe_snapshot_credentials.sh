@@ -50,37 +50,13 @@ if run_helper >/dev/null 2>&1; then
   exit 1
 fi
 
-if run_helper WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP=1 \
-    WPE_STATIC_BOOTSTRAP_EXPIRES_AT="$(( $(date +%s) + 86401 ))" \
-    REGISTRY_TOKEN=secret >/dev/null 2>&1; then
-  printf 'credential helper accepted an overlong bootstrap window\n' >&2
-  exit 1
-fi
-
-if run_helper WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP=1 \
-    WPE_STATIC_BOOTSTRAP_EXPIRES_AT="$(( $(date +%s) - 1 ))" \
-    REGISTRY_TOKEN=secret >/dev/null 2>&1; then
-  printf 'credential helper accepted an expired bootstrap window\n' >&2
-  exit 1
-fi
-
-expiry="$(( $(date +%s) + 300 ))"
-run_helper WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP=1 \
-  WPE_STATIC_BOOTSTRAP_EXPIRES_AT="$expiry" REGISTRY_TOKEN=secret
-grep -Fxq tilo-ci "$tmp/login.log"
-
-mode=publish-x86_64
-run_helper WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP=1 \
-  WPE_STATIC_BOOTSTRAP_EXPIRES_AT="$expiry" REGISTRY_TOKEN=secret
-grep -Fxq TILO_WPE_STATIC_BOOTSTRAP=1 "$tmp/github.env"
-
 if [ "$(id -u)" = 0 ]; then
   root_do=()
 elif sudo -n true >/dev/null 2>&1; then
   root_do=(sudo -n)
 else
   printf 'skip  broker-path adversarial tests need root fixture installation\n'
-  printf 'ok    WPE credential acquisition fails closed and bounds static bootstrap\n'
+  printf 'ok    WPE credential acquisition fails closed without a broker\n'
   exit 0
 fi
 
@@ -181,5 +157,5 @@ if run_broker TILO_TEST_BROKER_CASE=promote-signer >/dev/null 2>&1; then
   exit 1
 fi
 
-printf 'ok    WPE credential acquisition fails closed and bounds static bootstrap\n'
+printf 'ok    WPE credential acquisition fails closed without a broker\n'
 printf 'ok    WPE broker leases reject unsafe paths, lifetimes, and output shapes\n'

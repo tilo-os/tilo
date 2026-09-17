@@ -28,6 +28,20 @@ const CATALOGUE_TTL: Duration = Duration::from_secs(120);
 /// Without this an unreachable registry would start a fresh HTTP
 /// attempt every time the palette opened.
 const FAILED_REFRESH_BACKOFF: Duration = Duration::from_secs(30);
+const LIST_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
+const LIST_TIMEOUT: Duration = Duration::from_secs(30);
+const INSTALL_OUTPUT_LIMIT: usize = 1024 * 1024;
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+fn safe_diagnostic(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|character| !character.is_control() || *character == ' ')
+        .take(512)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
 
 /// **Wire contract.** These field names are what `tilo-catalogue list
 /// --json` prints; the crate that prints them pins the same names in
@@ -219,9 +233,9 @@ fn schedule_refresh() {
     let spawned = std::thread::Builder::new()
         .name("tilo-catalogue-refresh".to_string())
         .spawn(move || {
-            let out = std::process::Command::new(&bin)
-                .args(["list", "--json"])
-                .output();
+            let mut command = std::process::Command::new(&bin);
+            command.args(["list", "--json"]);
+            let out = bounded_command::run_prepared(command, None, LIST_OUTPUT_LIMIT, LIST_TIMEOUT);
             let (apps, expiry) = match out {
                 Ok(o) if o.status.success() => {
                     let text = String::from_utf8_lossy(&o.stdout);
@@ -253,7 +267,7 @@ fn schedule_refresh() {
                     eprintln!(
                         "[catalogue] list failed ({}): {}",
                         o.status,
-                        String::from_utf8_lossy(&o.stderr).trim()
+                        safe_diagnostic(&o.stderr)
                     );
                     (Vec::new(), false)
                 }
@@ -335,9 +349,10 @@ pub fn install_and_launch(
     let builder = std::thread::Builder::new().name("tilo-catalogue-install".to_string());
     let identity = (package_id.clone(), display_name.clone());
     let spawn_result = builder.spawn(move || {
-        let out = std::process::Command::new(&bin)
-            .args(["install", &package_id])
-            .output();
+        let mut command = std::process::Command::new(&bin);
+        command.args(["install", &package_id]);
+        let out =
+            bounded_command::run_prepared(command, None, INSTALL_OUTPUT_LIMIT, INSTALL_TIMEOUT);
         match out {
             Err(e) => {
                 push_failure(
@@ -348,7 +363,7 @@ pub fn install_and_launch(
                 return;
             }
             Ok(o) if !o.status.success() => {
-                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                let detail = safe_diagnostic(&o.stderr);
                 let detail = if detail.is_empty() {
                     format!("the app catalogue exited {}", o.status)
                 } else {

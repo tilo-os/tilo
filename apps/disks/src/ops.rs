@@ -30,6 +30,7 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::process::Command;
+use std::time::Duration;
 use std::time::Instant;
 
 /// The privileged operations the app can perform.
@@ -166,12 +167,19 @@ pub fn eject_cli(dev_leaf: &str) -> Vec<CommandSpec> {
 pub fn run_command_chain(specs: &[CommandSpec]) -> Result<String, String> {
     let mut last = String::from("no command available");
     for spec in specs {
-        match Command::new(&spec.program).args(&spec.args).output() {
+        let mut command = Command::new(&spec.program);
+        command.args(&spec.args);
+        match bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(5 * 60))
+        {
             Ok(out) if out.status.success() => {
                 return Ok(format!("{} succeeded", spec.program));
             }
             Ok(out) => {
-                let err = String::from_utf8_lossy(&out.stderr);
+                let err = String::from_utf8_lossy(&out.stderr)
+                    .chars()
+                    .filter(|character| !character.is_control() || *character == ' ')
+                    .take(512)
+                    .collect::<String>();
                 last = format!("{} failed: {}", spec.program, err.trim());
             }
             Err(e) => {

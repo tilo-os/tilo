@@ -3,15 +3,11 @@
 //! `AccountsService` is the authority and performs the polkit challenge.  Tilo
 //! never invokes `useradd` with UI strings, edits `/etc/passwd`, or stores a
 //! login password in the Settings document.  Password bytes travel only over
-//! an anonymous stdin pipe to `openssl passwd`, then as a salted hash in the
-//! D-Bus request; neither value appears in argv or diagnostics.
-
-use std::time::Duration;
+//! a narrow in-process Rust SHA-crypt implementation, then as a salted hash in
+//! the D-Bus request; neither value appears in argv or diagnostics.
 
 use zbus::zvariant::OwnedObjectPath;
-use zeroize::{Zeroize, Zeroizing};
-
-use crate::process::run_with_input;
+use zeroize::Zeroizing;
 
 const DEST: &str = "org.freedesktop.Accounts";
 const ROOT: &str = "/org/freedesktop/Accounts";
@@ -254,27 +250,10 @@ pub fn set_avatar(username: &str, path: &std::path::Path) -> Result<(), String> 
 /// # Errors
 ///
 /// Returns an error message if `username` fails validation, `password` is outside 10–1024
-/// bytes or contains a newline, hashing via `openssl passwd` fails or returns an unexpected
-/// result, or `AccountsService` refuses the request.
+/// bytes or contains a newline, hashing fails, or `AccountsService` refuses the request.
 pub fn set_password(username: &str, password: &mut [u8]) -> Result<(), String> {
     validate_username(username)?;
-    if password.len() < 10 || password.len() > 1024 || password.contains(&b'\n') {
-        password.zeroize();
-        return Err("password must contain 10–1024 characters and no newline".into());
-    }
-    let mut input = Zeroizing::new(password.to_vec());
-    input.push(b'\n');
-    password.zeroize();
-    let hash = run_with_input(
-        "openssl",
-        &["passwd", "-6", "-stdin"],
-        &input,
-        Duration::from_secs(5),
-    )?;
-    let hash = Zeroizing::new(hash.trim().to_string());
-    if !hash.starts_with("$6$") {
-        return Err("password hashing service returned an unexpected result".into());
-    }
+    let hash = Zeroizing::new(tilo_crypto::hash_account_password(password)?);
     block(call_user(username, "SetPassword", &(hash.as_str(), "")))
 }
 

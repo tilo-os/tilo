@@ -176,6 +176,8 @@ has "$BRIDGE" "LicenseStatus -eq 1" 'guest health reports real Windows activatio
 has "$BRIDGE" 'catalogGeneration = $catalog.generation' 'guest health reports the manifest catalogue generation'
 has "$BRIDGE" 'generation = $source.generation' 'guest catalogue preserves its persisted generation'
 has "$CONTAINERFILE" 'tilo-windows-vm-network.service' 'image wires network service'
+has "$OWNER" 'systemctl start tilo-windows-vm-network.service' 'Windows network is activated only at the privileged VM boundary'
+lacks "$CONTAINERFILE" 'systemctl enable tilo-windows-vm-network.service' 'Windows network setup is absent from the normal boot transaction'
 has "$CONTAINERFILE" 'tilo-windows-vm-egress-reaper.timer' 'image enables crash-safe egress lease reaper'
 has "$CONTAINERFILE" 'tilo-windows-provision' 'image wires provision tool'
 if python3 - "$CONTAINERFILE" <<'PY'
@@ -276,17 +278,22 @@ has "$COMPAT_DOC" 'The raw `UninstallString` is neither stored nor run.' 'EXE un
 
 VM_ROOT="$(cd "$OS_ROOT/../crates/system/windows-vm" 2>/dev/null && pwd)"
 REMOTE_APP="$VM_ROOT/src/remote_app.rs"
+COMMAND_RUNNER="$VM_ROOT/src/command.rs"
 PRESENTATION="$VM_ROOT/src/presentation.rs"
 LIBVIRT="$VM_ROOT/src/libvirt.rs"
 SESSION_WIRING="$VM_ROOT/../../../shell/src/shell/windows_compat.rs"
 need "$REMOTE_APP"
 need "$PRESENTATION"
 need "$LIBVIRT"
+need "$COMMAND_RUNNER"
 need "$SESSION_WIRING"
 has "$REMOTE_APP" 'OsString::from("xfreerdp")' 'RAIL uses the upstream FreeRDP client'
 lacks "$REMOTE_APP" 'binary: OsString::from("wlfreerdp")' 'RAIL does not assume a nonexistent Wayland wrapper'
 has "$REMOTE_APP" 'AppFocusedSpiceLauncher' 'SPICE is an explicit app-focused fallback'
 has "$REMOTE_APP" 'qemu:///system' 'SPICE attaches through local libvirt only'
+has "$COMMAND_RUNNER" 'bounded_command::run_prepared(' 'VM and RemoteApp helpers have bounded execution'
+lacks "$COMMAND_RUNNER" 'wait_with_output()' 'VM broker cannot allocate unbounded helper output'
+has "$LIBVIRT" 'Duration::from_secs(300)' 'libvirt control operations have a short hard deadline'
 has "$REMOTE_APP" '/clipboard:direction-to:all,files-to:off' 'clipboard needs an explicit grant without ambient file exposure'
 has "$REMOTE_APP" '"-home-drive"' 'RAIL never redirects the owner home directory'
 has "$REMOTE_APP" '/cert:fingerprint:sha256:' 'RAIL pins the authenticated guest certificate'

@@ -508,7 +508,7 @@ impl Action {
         chrome(
             "shortcut-help.toggle",
             "Show desktop help",
-            "F1 opens it anywhere; Super+? is the configurable shortcut for the same guide",
+            "F1 opens it anywhere; Super+/ is the configurable shortcut for the same guide",
             |st, _| {
                 st.overlays.shortcut_help = !st.overlays.shortcut_help;
                 Ok(())
@@ -797,7 +797,7 @@ impl Action {
             "Open quick settings",
             "Brightness, volume, Wi-Fi, Bluetooth, power profile",
             |st, _| {
-                st.overlays.quick_settings = true;
+                st.open_quick_settings();
                 Ok(())
             },
         ),
@@ -1604,7 +1604,7 @@ mod tests {
             .find(|action| action.id == "shortcut-help.toggle")
             .expect("shortcut help action");
         assert_eq!(action.label, "Show desktop help");
-        assert!(action.subtitle.contains("Super+?"));
+        assert!(action.subtitle.contains("Super+/"));
         assert!(action.subtitle.contains("F1"));
         assert!(action.subtitle.contains("same guide"));
     }

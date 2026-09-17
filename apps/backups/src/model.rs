@@ -262,6 +262,42 @@ pub struct Snapshot {
     pub files: Vec<SnapFile>,
 }
 
+/// Named input for demo snapshots. Keeping the seed shape separate from the
+/// runtime model makes fixture rows compact without relying on a long,
+/// transposition-prone positional argument list.
+struct SampleSnapshot<'a> {
+    id: &'a str,
+    source_id: &'a str,
+    dest_id: &'a str,
+    day: u32,
+    time: &'a str,
+    kind: SnapType,
+    retention: Retention,
+    size_bytes: u64,
+    delta_bytes: u64,
+    files_changed: u32,
+    status: SnapStatus,
+}
+
+impl From<SampleSnapshot<'_>> for Snapshot {
+    fn from(seed: SampleSnapshot<'_>) -> Self {
+        Self {
+            id: seed.id.into(),
+            source_id: seed.source_id.into(),
+            dest_id: seed.dest_id.into(),
+            day: seed.day,
+            time: seed.time.into(),
+            kind: seed.kind,
+            retention: seed.retention,
+            size_bytes: seed.size_bytes,
+            delta_bytes: seed.delta_bytes,
+            files_changed: seed.files_changed,
+            status: seed.status,
+            files: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Destination {
     pub id: String,
@@ -474,39 +510,6 @@ impl Catalog {
         }
     }
 
-    /// Push one sample [`Snapshot`] built from its flattened fields — the
-    /// single place [`Self::sample`]'s per-day helpers construct one.
-    #[allow(clippy::too_many_arguments)]
-    fn push_snapshot(
-        snaps: &mut Vec<Snapshot>,
-        id: &str,
-        src: &str,
-        dest: &str,
-        day: u32,
-        time: &str,
-        kind: SnapType,
-        ret: Retention,
-        size: u64,
-        delta: u64,
-        files: u32,
-        status: SnapStatus,
-    ) {
-        snaps.push(Snapshot {
-            id: id.into(),
-            source_id: src.into(),
-            dest_id: dest.into(),
-            day,
-            time: time.into(),
-            kind,
-            retention: ret,
-            size_bytes: size,
-            delta_bytes: delta,
-            files_changed: files,
-            status,
-            files: Vec::new(),
-        });
-    }
-
     /// Today's (day 0) sample snapshots. Split out of [`Self::sample`] to
     /// keep it under the line budget.
     fn sample_snapshots_today(snaps: &mut Vec<Snapshot>) {
@@ -514,75 +517,75 @@ impl Catalog {
         use SnapStatus::{Complete, Verifying};
         use SnapType::{Auto, Manual};
 
-        Self::push_snapshot(
-            snaps,
-            "w-0-1700",
-            "workspace",
-            "pool",
-            0,
-            "17:00",
-            Auto,
-            Hourly,
-            9 * GB + 700 * MB,
-            240 * MB,
-            312,
-            Verifying,
-        );
-        Self::push_snapshot(
-            snaps,
-            "w-0-1600",
-            "workspace",
-            "pool",
-            0,
-            "16:00",
-            Auto,
-            Hourly,
-            9 * GB + 500 * MB,
-            180 * MB,
-            211,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "m-0-1422",
-            "home",
-            "pool",
-            0,
-            "14:22",
-            Manual,
-            Keep,
-            48 * GB + 200 * MB,
-            GB + 100 * MB,
-            1840,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "w-0-1500",
-            "workspace",
-            "pool",
-            0,
-            "15:00",
-            Auto,
-            Hourly,
-            9 * GB + 300 * MB,
-            96 * MB,
-            142,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "h-0-0300",
-            "home",
-            "pool",
-            0,
-            "03:00",
-            Auto,
-            Daily,
-            47 * GB + 800 * MB,
-            820 * MB,
-            1320,
-            Complete,
+        snaps.extend(
+            [
+                SampleSnapshot {
+                    id: "w-0-1700",
+                    source_id: "workspace",
+                    dest_id: "pool",
+                    day: 0,
+                    time: "17:00",
+                    kind: Auto,
+                    retention: Hourly,
+                    size_bytes: 9 * GB + 700 * MB,
+                    delta_bytes: 240 * MB,
+                    files_changed: 312,
+                    status: Verifying,
+                },
+                SampleSnapshot {
+                    id: "w-0-1600",
+                    source_id: "workspace",
+                    dest_id: "pool",
+                    day: 0,
+                    time: "16:00",
+                    kind: Auto,
+                    retention: Hourly,
+                    size_bytes: 9 * GB + 500 * MB,
+                    delta_bytes: 180 * MB,
+                    files_changed: 211,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "m-0-1422",
+                    source_id: "home",
+                    dest_id: "pool",
+                    day: 0,
+                    time: "14:22",
+                    kind: Manual,
+                    retention: Keep,
+                    size_bytes: 48 * GB + 200 * MB,
+                    delta_bytes: GB + 100 * MB,
+                    files_changed: 1840,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "w-0-1500",
+                    source_id: "workspace",
+                    dest_id: "pool",
+                    day: 0,
+                    time: "15:00",
+                    kind: Auto,
+                    retention: Hourly,
+                    size_bytes: 9 * GB + 300 * MB,
+                    delta_bytes: 96 * MB,
+                    files_changed: 142,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "h-0-0300",
+                    source_id: "home",
+                    dest_id: "pool",
+                    day: 0,
+                    time: "03:00",
+                    kind: Auto,
+                    retention: Daily,
+                    size_bytes: 47 * GB + 800 * MB,
+                    delta_bytes: 820 * MB,
+                    files_changed: 1320,
+                    status: Complete,
+                },
+            ]
+            .map(Snapshot::from),
         );
     }
 
@@ -601,47 +604,49 @@ impl Catalog {
         use SnapStatus::Complete;
         use SnapType::Auto;
 
-        Self::push_snapshot(
-            snaps,
-            "h-1-0300",
-            "home",
-            "pool",
-            1,
-            "03:00",
-            Auto,
-            Daily,
-            47 * GB,
-            640 * MB,
-            980,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "w-1-0900",
-            "workspace",
-            "usb",
-            1,
-            "09:00",
-            Auto,
-            Daily,
-            9 * GB,
-            120 * MB,
-            88,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "e-1-0400",
-            "etc",
-            "pool",
-            1,
-            "04:00",
-            Auto,
-            Daily,
-            220 * MB,
-            4 * MB,
-            23,
-            Complete,
+        snaps.extend(
+            [
+                SampleSnapshot {
+                    id: "h-1-0300",
+                    source_id: "home",
+                    dest_id: "pool",
+                    day: 1,
+                    time: "03:00",
+                    kind: Auto,
+                    retention: Daily,
+                    size_bytes: 47 * GB,
+                    delta_bytes: 640 * MB,
+                    files_changed: 980,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "w-1-0900",
+                    source_id: "workspace",
+                    dest_id: "usb",
+                    day: 1,
+                    time: "09:00",
+                    kind: Auto,
+                    retention: Daily,
+                    size_bytes: 9 * GB,
+                    delta_bytes: 120 * MB,
+                    files_changed: 88,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "e-1-0400",
+                    source_id: "etc",
+                    dest_id: "pool",
+                    day: 1,
+                    time: "04:00",
+                    kind: Auto,
+                    retention: Daily,
+                    size_bytes: 220 * MB,
+                    delta_bytes: 4 * MB,
+                    files_changed: 23,
+                    status: Complete,
+                },
+            ]
+            .map(Snapshot::from),
         );
     }
 
@@ -653,64 +658,62 @@ impl Catalog {
         use SnapStatus::Complete;
         use SnapType::{Auto, Manual};
 
-        // --- 2 days ago ---
-        Self::push_snapshot(
-            snaps,
-            "m-2-0910",
-            "home",
-            "usb",
-            2,
-            "09:10",
-            Manual,
-            Keep,
-            46 * GB + 500 * MB,
-            2 * GB,
-            3210,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "h-2-0300",
-            "home",
-            "pool",
-            2,
-            "03:00",
-            Auto,
-            Daily,
-            46 * GB,
-            700 * MB,
-            1110,
-            Complete,
-        );
-
-        // --- 3 days ago ---
-        Self::push_snapshot(
-            snaps,
-            "h-3-0300",
-            "home",
-            "pool",
-            3,
-            "03:00",
-            Auto,
-            Weekly,
-            45 * GB + 200 * MB,
-            590 * MB,
-            870,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "e-3-0400",
-            "etc",
-            "b2",
-            3,
-            "04:00",
-            Auto,
-            Weekly,
-            215 * MB,
-            11 * MB,
-            41,
-            Complete,
+        snaps.extend(
+            [
+                SampleSnapshot {
+                    id: "m-2-0910",
+                    source_id: "home",
+                    dest_id: "usb",
+                    day: 2,
+                    time: "09:10",
+                    kind: Manual,
+                    retention: Keep,
+                    size_bytes: 46 * GB + 500 * MB,
+                    delta_bytes: 2 * GB,
+                    files_changed: 3210,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "h-2-0300",
+                    source_id: "home",
+                    dest_id: "pool",
+                    day: 2,
+                    time: "03:00",
+                    kind: Auto,
+                    retention: Daily,
+                    size_bytes: 46 * GB,
+                    delta_bytes: 700 * MB,
+                    files_changed: 1110,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "h-3-0300",
+                    source_id: "home",
+                    dest_id: "pool",
+                    day: 3,
+                    time: "03:00",
+                    kind: Auto,
+                    retention: Weekly,
+                    size_bytes: 45 * GB + 200 * MB,
+                    delta_bytes: 590 * MB,
+                    files_changed: 870,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "e-3-0400",
+                    source_id: "etc",
+                    dest_id: "b2",
+                    day: 3,
+                    time: "04:00",
+                    kind: Auto,
+                    retention: Weekly,
+                    size_bytes: 215 * MB,
+                    delta_bytes: 11 * MB,
+                    files_changed: 41,
+                    status: Complete,
+                },
+            ]
+            .map(Snapshot::from),
         );
     }
 
@@ -721,80 +724,75 @@ impl Catalog {
         use SnapStatus::{Complete, Failed};
         use SnapType::Auto;
 
-        // --- 4 days ago ---
-        Self::push_snapshot(
-            snaps,
-            "h-4-0300",
-            "home",
-            "pool",
-            4,
-            "03:00",
-            Auto,
-            Weekly,
-            44 * GB + 900 * MB,
-            510 * MB,
-            760,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "w-4-1200",
-            "workspace",
-            "b2",
-            4,
-            "12:00",
-            Auto,
-            Daily,
-            8 * GB + 800 * MB,
-            70 * MB,
-            51,
-            Failed,
-        );
-
-        // --- 5 days ago ---
-        Self::push_snapshot(
-            snaps,
-            "h-5-0300",
-            "home",
-            "pool",
-            5,
-            "03:00",
-            Auto,
-            Monthly,
-            44 * GB,
-            480 * MB,
-            690,
-            Complete,
-        );
-
-        // --- 6 days ago ---
-        Self::push_snapshot(
-            snaps,
-            "h-6-0300",
-            "home",
-            "usb",
-            6,
-            "03:00",
-            Auto,
-            Monthly,
-            43 * GB + 600 * MB,
-            450 * MB,
-            610,
-            Complete,
-        );
-        Self::push_snapshot(
-            snaps,
-            "e-6-0400",
-            "etc",
-            "b2",
-            6,
-            "04:00",
-            Auto,
-            Monthly,
-            210 * MB,
-            9 * MB,
-            33,
-            Complete,
+        snaps.extend(
+            [
+                SampleSnapshot {
+                    id: "h-4-0300",
+                    source_id: "home",
+                    dest_id: "pool",
+                    day: 4,
+                    time: "03:00",
+                    kind: Auto,
+                    retention: Weekly,
+                    size_bytes: 44 * GB + 900 * MB,
+                    delta_bytes: 510 * MB,
+                    files_changed: 760,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "w-4-1200",
+                    source_id: "workspace",
+                    dest_id: "b2",
+                    day: 4,
+                    time: "12:00",
+                    kind: Auto,
+                    retention: Daily,
+                    size_bytes: 8 * GB + 800 * MB,
+                    delta_bytes: 70 * MB,
+                    files_changed: 51,
+                    status: Failed,
+                },
+                SampleSnapshot {
+                    id: "h-5-0300",
+                    source_id: "home",
+                    dest_id: "pool",
+                    day: 5,
+                    time: "03:00",
+                    kind: Auto,
+                    retention: Monthly,
+                    size_bytes: 44 * GB,
+                    delta_bytes: 480 * MB,
+                    files_changed: 690,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "h-6-0300",
+                    source_id: "home",
+                    dest_id: "usb",
+                    day: 6,
+                    time: "03:00",
+                    kind: Auto,
+                    retention: Monthly,
+                    size_bytes: 43 * GB + 600 * MB,
+                    delta_bytes: 450 * MB,
+                    files_changed: 610,
+                    status: Complete,
+                },
+                SampleSnapshot {
+                    id: "e-6-0400",
+                    source_id: "etc",
+                    dest_id: "b2",
+                    day: 6,
+                    time: "04:00",
+                    kind: Auto,
+                    retention: Monthly,
+                    size_bytes: 210 * MB,
+                    delta_bytes: 9 * MB,
+                    files_changed: 33,
+                    status: Complete,
+                },
+            ]
+            .map(Snapshot::from),
         );
     }
 
@@ -870,6 +868,35 @@ mod tests {
         assert_eq!(c.sources.len(), 3);
         assert_eq!(c.destinations.len(), 3);
         assert!(c.snapshots.len() >= 15);
+    }
+
+    #[test]
+    fn sample_snapshots_reference_unique_known_entities() {
+        use std::collections::HashSet;
+
+        let catalog = Catalog::sample();
+        let mut ids = HashSet::new();
+        for snapshot in &catalog.snapshots {
+            assert!(
+                ids.insert(&snapshot.id),
+                "duplicate snapshot {}",
+                snapshot.id
+            );
+            assert!(
+                catalog.source(&snapshot.source_id).is_some(),
+                "snapshot {} references missing source {}",
+                snapshot.id,
+                snapshot.source_id
+            );
+            assert!(
+                catalog.destination(&snapshot.dest_id).is_some(),
+                "snapshot {} references missing destination {}",
+                snapshot.id,
+                snapshot.dest_id
+            );
+            assert!(snapshot.delta_bytes <= snapshot.size_bytes);
+            assert!(!snapshot.files.is_empty());
+        }
     }
 
     #[test]

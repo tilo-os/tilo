@@ -19,7 +19,7 @@ reject() {
 # failed the Containerfile's unconditional x86 assertions.
 cat > "$tmp/shared.config" <<'EOF'
 CONFIG_MODULE_SIG=y
-CONFIG_MODULE_SIG_ALL=y
+# CONFIG_MODULE_SIG_ALL is not set
 CONFIG_MODULE_SIG_FORCE=y
 CONFIG_USER_NS=y
 CONFIG_SECCOMP_FILTER=y

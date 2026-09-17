@@ -1,34 +1,20 @@
-//! The on-disk capture history.
+//! Bounded file encoding and image decoding for Camera effects.
 //!
-//! Captures are ordinary files in a directory — the file system is the
-//! source of truth for captured media, not a bundled sample list.
-//! On a Tilo install this directory lives under the user's Pictures (or the
-//! P2P workspace mount), so recent captures reflect real content the moment
-//! the app opens and stays in sync with anything else writing there.
+//! On a Tilo install captured bytes may be projected into the user's Pictures
+//! directory, while ownership and collection management remain with Photos or
+//! Video Player.
 //!
 //! Responsibilities kept here (pure IO, no rendering / no CRDT):
 //!   * [`resolve_dir`]   — where captures live (overridable for tests).
-//!   * [`scan`]          — index the directory into [`Capture`] metadata.
 //!   * [`write_photo`]   — encode an RGBA frame to a timestamped JPEG/PNG.
-//!   * [`load_thumb`]    — decode + downscale a file for the recent-capture peek.
-//!   * [`delete`]        — remove a backing file.
+//!   * [`load_thumb`]    — decode + downscale the recent-capture peek.
 
-use std::collections::HashSet;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::frame::{self, FrameBuf};
-use crate::model::{Capture, CaptureKind, Facing, PhotoFormat};
-use crate::video;
-
-/// File extensions we surface as photos / videos. `avi` is included because
-/// the recorder writes Motion-JPEG AVI clips (see [`crate::video`]).
-const PHOTO_EXT: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
-const VIDEO_EXT: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi"];
-/// Capture history is an index, not an unbounded filesystem crawl. Keep enough for
-/// an active device while preserving predictable startup memory/time.
-const MAX_LIBRARY_ITEMS: usize = 10_000;
+use crate::model::PhotoFormat;
 const MAX_IMAGE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECODE_PIXELS: u64 = 33_554_432;
 
@@ -45,114 +31,6 @@ pub fn resolve_dir() -> PathBuf {
         dirs::home_dir().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
     });
     pics.join("Camera")
-}
-
-fn ext_lower(path: &Path) -> Option<String> {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-}
-
-fn kind_for(ext: &str) -> Option<CaptureKind> {
-    if PHOTO_EXT.contains(&ext) {
-        Some(CaptureKind::Photo)
-    } else if VIDEO_EXT.contains(&ext) {
-        Some(CaptureKind::Video)
-    } else {
-        None
-    }
-}
-
-fn mtime_secs(path: &Path) -> i64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
-/// Scan `dir` for image/video files, newest first. Missing directory ⇒ empty
-/// (a fresh install simply has no captures until the first capture).
-/// `favorites` marks which file names are starred.
-pub fn scan<S: std::hash::BuildHasher>(dir: &Path, favorites: &HashSet<String, S>) -> Vec<Capture> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten().take(MAX_LIBRARY_ITEMS) {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(ext) = ext_lower(&path) else {
-            continue;
-        };
-        let Some(kind) = kind_for(&ext) else { continue };
-        let id = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        if !safe_capture_id(&id) {
-            continue;
-        }
-        // Photos: read dimensions from the header. Videos: best-effort probe
-        // of a recorded AVI for its real dimensions + duration.
-        let (mut w, mut h, mut dur_ms) = (0u32, 0u32, 0i64);
-        match kind {
-            CaptureKind::Photo => {
-                if let Some((pw, ph)) = bounded_image_dimensions(&path) {
-                    w = pw;
-                    h = ph;
-                }
-            }
-            CaptureKind::Video => {
-                if ext == "avi"
-                    && let Some((vw, vh, d)) = video::probe_avi(&path)
-                {
-                    w = vw;
-                    h = vh;
-                    dur_ms = d;
-                }
-            }
-        }
-        let label = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map_or_else(|| id.clone(), prettify_stem);
-        out.push(Capture {
-            id: id.clone(),
-            kind,
-            ts: mtime_secs(&path),
-            w,
-            h,
-            dur_ms,
-            label,
-            favorite: favorites.contains(&id),
-            facing: Facing::Back,
-            scene: 0,
-            path: Some(path),
-            media_id: None,
-        });
-    }
-    // Newest first; ties broken by name for stable ordering.
-    out.sort_by(|a, b| b.ts.cmp(&a.ts).then_with(|| a.id.cmp(&b.id)));
-    out
-}
-
-/// Turn a file stem like `IMG_20260701_193000` or `coast-drive` into a
-/// friendlier label for the capture resource.
-fn prettify_stem(stem: &str) -> String {
-    let cleaned = stem.replace(['_', '-'], " ");
-    let cleaned = cleaned.trim();
-    if cleaned.is_empty() {
-        return stem.to_string();
-    }
-    // Capitalize the first character; leave the rest as-is.
-    let mut chars = cleaned.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        None => cleaned.to_string(),
-    }
 }
 
 /// Encode `frame` to `dir` in the requested `format` (a real JPEG or a real
@@ -233,7 +111,7 @@ pub fn load_thumb_bytes(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<u8>, u32, u
 /// Decode `path` to a greyscale (luma) buffer, downscaled so its longest
 /// side is at most `max` pixels. Returns the buffer plus its dimensions.
 /// This is what the scanner feeds to the QR detector when scanning a code
-/// out of a photo that already lives in the library (no camera required).
+/// out of a portal-selected image (no camera required).
 pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
     bounded_image_dimensions(path)?;
     let img = image::open(path).ok()?;
@@ -266,32 +144,6 @@ fn bounded_bytes_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
         .ok()?;
     let (w, h) = reader.into_dimensions().ok()?;
     (u64::from(w).checked_mul(u64::from(h))? <= MAX_DECODE_PIXELS).then_some((w, h))
-}
-
-/// Remove the backing file for a capture id in `dir`.
-///
-/// # Errors
-///
-/// Returns an error if the file exists but could not be removed.
-pub fn delete(dir: &Path, id: &str) -> std::io::Result<()> {
-    if !safe_capture_id(id) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "invalid capture id",
-        ));
-    }
-    let path = dir.join(id);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-fn safe_capture_id(id: &str) -> bool {
-    !id.is_empty()
-        && Path::new(id).file_name().and_then(|name| name.to_str()) == Some(id)
-        && !id.contains(['/', '\\'])
 }
 
 fn bounded_image_dimensions(path: &Path) -> Option<(u32, u32)> {
@@ -358,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn write_then_scan_round_trips() {
+    fn write_round_trips_real_dimensions() {
         let dir = tmp();
         let frame = crate::frame::viewfinder(1, 48, 32);
         let name = write_photo(&dir, &frame, PhotoFormat::Png).expect("write");
@@ -368,12 +220,7 @@ mod tests {
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("png"))
         );
-        let caps = scan(&dir, &HashSet::new());
-        assert_eq!(caps.len(), 1);
-        assert_eq!(caps[0].id, name);
-        assert_eq!(caps[0].w, 48);
-        assert_eq!(caps[0].h, 32);
-        assert!(caps[0].path.is_some());
+        assert_eq!(image::image_dimensions(dir.join(&name)).unwrap(), (48, 32));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -392,11 +239,6 @@ mod tests {
         assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
         let (w, h) = image::image_dimensions(dir.join(&name)).unwrap();
         assert_eq!((w, h), (64, 48));
-        // The scan surfaces it as a photo with its dimensions.
-        let caps = scan(&dir, &HashSet::new());
-        assert_eq!(caps.len(), 1);
-        assert_eq!(caps[0].kind, CaptureKind::Photo);
-        assert_eq!((caps[0].w, caps[0].h), (64, 48));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -412,24 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_file_and_is_idempotent() {
+    fn malformed_frames_are_refused_before_io() {
         let dir = tmp();
-        let name =
-            write_photo(&dir, &crate::frame::viewfinder(0, 16, 16), PhotoFormat::Png).unwrap();
-        assert!(dir.join(&name).exists());
-        delete(&dir, &name).unwrap();
-        assert!(!dir.join(&name).exists());
-        delete(&dir, &name).unwrap(); // second delete is a no-op
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn hostile_ids_and_malformed_frames_are_refused_before_io() {
-        let dir = tmp();
-        let outside = dir.parent().unwrap().join("camera-library-outside-marker");
-        std::fs::write(&outside, b"keep").unwrap();
-        assert!(delete(&dir, "../camera-library-outside-marker").is_err());
-        assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
         assert!(
             write_photo(
                 &dir,
@@ -442,41 +268,7 @@ mod tests {
             )
             .is_err()
         );
-        std::fs::remove_file(outside).ok();
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn scan_lists_a_recorded_video_with_duration() {
-        // A recorded MJPEG/AVI clip must surface in the library as a video
-        // with real dimensions and a probed duration — not a photo.
-        let dir = tmp();
-        let mut rec = crate::video::Recorder::new(crate::video::FPS);
-        for _ in 0..15 {
-            rec.push(&crate::frame::viewfinder(2, 64, 48));
-        }
-        let bytes = rec.finish().unwrap();
-        let name = crate::video::write_clip(&dir, &bytes, &timestamp_name()).unwrap();
-        assert!(
-            Path::new(&name)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("avi"))
-        );
-
-        let caps = scan(&dir, &HashSet::new());
-        assert_eq!(caps.len(), 1);
-        assert_eq!(caps[0].kind, CaptureKind::Video);
-        assert!(caps[0].is_video());
-        assert_eq!((caps[0].w, caps[0].h), (64, 48));
-        // 15 frames at 30 fps ≈ 500 ms.
-        assert_eq!(caps[0].dur_ms, 500);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn missing_dir_scans_empty() {
-        let dir = std::env::temp_dir().join("camera-lib-does-not-exist-xyz");
-        assert!(scan(&dir, &HashSet::new()).is_empty());
     }
 
     #[test]

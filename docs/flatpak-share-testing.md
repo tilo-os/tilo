@@ -78,7 +78,7 @@ distrobox enter tilo-dev-44 -- bash -c '
         mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel pipewire-devel \
         ffmpeg ffmpeg-devel libva-devel libva-utils capnproto capnproto-devel \
         fuse3-devel dbus-devel harfbuzz-devel freetype-devel glibc-devel \
-        openssl-devel systemd-devel wayland-devel wayland-protocols-devel \
+        systemd-devel wayland-devel wayland-protocols-devel \
         xz-devel zlib-devel bzip2-devel kernel-headers rust cargo
 '
 ```

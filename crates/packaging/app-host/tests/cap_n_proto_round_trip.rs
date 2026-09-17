@@ -124,6 +124,7 @@ fn install_list_pin_resolve_over_capnp() {
         assert_eq!(entries.len(), 1);
         let entry = entries.get(0);
         assert_eq!(entry.get_pinning().unwrap(), WirePinning::Tried);
+        assert!(entry.get_user_managed(), "app-host entries are mutable");
         let id_bytes: Vec<u8> = entry.get_id().unwrap().to_vec();
         assert_eq!(&id_bytes[..], expected_id.as_bytes());
 

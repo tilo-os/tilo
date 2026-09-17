@@ -34,6 +34,10 @@ checked=0
 #              silently — there is no error, the protection just isn't there.
 #              Stable Rust emits no property note at all, hence the explicit
 #              `-Wl,-z,shstk` in .cargo/config.toml.
+# noopenssl    No direct DT_NEEDED edge to libssl or libcrypto. Tilo-owned TLS
+#              and signing paths are Rust-native; checking the final ELF catches
+#              feature unification or a native dependency that source grep and
+#              Cargo manifest review cannot see.
 #
 # Deliberately NOT required: IBT. endbr64 landing pads have to come from the
 # compiler and stable rustc does not emit them, so a binary claiming IBT would
@@ -67,6 +71,9 @@ check_one() {
     grep -q 'Type:.*DYN' <<<"$hdr" || errs+=("not a PIE (ET_DYN)")
     grep -q 'GNU_RELRO' <<<"$seg" || errs+=("no PT_GNU_RELRO segment")
     grep -qE 'BIND_NOW|Flags:.*\bNOW\b' <<<"$dyn" || errs+=("not bound at load (no BIND_NOW / FLAGS_1 NOW)")
+    if grep -qE 'Shared library: \[lib(ssl|crypto)\.so([.0-9]*)?\]' <<<"$dyn"; then
+        errs+=("direct OpenSSL ABI dependency (DT_NEEDED libssl/libcrypto)")
+    fi
 
     # PT_GNU_STACK line: columns end with the flags field, e.g. "RW  0x10".
     local stackline
@@ -87,7 +94,7 @@ check_one() {
 
     checked=$((checked + 1))
     if [ ${#errs[@]} -eq 0 ]; then
-        printf '[ OK ]   %-24s PIE, full RELRO, noexecstack, %s (%s)\n' "$name" "$cet" "$canary"
+        printf '[ OK ]   %-24s PIE, full RELRO, noexecstack, no OpenSSL, %s (%s)\n' "$name" "$cet" "$canary"
     else
         fail=1
         printf '[FAIL]   %-24s %s\n' "$name" "${errs[0]}"

@@ -672,6 +672,16 @@ impl BrokerHandle {
             .map(|state| AppActionBroker { state })
     }
 
+    /// Cloneable bridge used by the compositor to install and pump realtime
+    /// device-fabric continuity for this exact application broker instance.
+    pub fn realtime_fabric_bridge(
+        &self,
+    ) -> Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge> {
+        self.fanout.capnp_state().map(|state| {
+            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::from_state(state)
+        })
+    }
+
     /// Number of typed connections accepted since this broker started.
     pub fn peer_count(&self) -> usize {
         // Saturates rather than truncates on a 32-bit target — this is a

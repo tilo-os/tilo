@@ -221,6 +221,7 @@ impl Harness {
 fn foreign_id(state: &shell::compositor::state::State, app_id: &str) -> u64 {
     state
         .workspace_tree
+        .read()
         .workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
