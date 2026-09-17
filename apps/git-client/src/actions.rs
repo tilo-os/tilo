@@ -855,7 +855,7 @@ mod tests {
         let repo = &resources[0];
         assert_eq!(repo.kind, "git_client.repo");
         assert_eq!(repo.label, "tilo");
-        assert_eq!(repo.id.as_str(), "git_client.repo:716f73");
+        assert_eq!(repo.id.as_str(), "git_client.repo:74696c6f");
 
         let ids: Vec<&str> = repo.actions.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
