@@ -14,6 +14,57 @@ import subprocess
 import sys
 import tempfile
 
+TWAIN_FILES = b'%{_libdir}/wine/%{winepedirs}/twain_32.dll\n'
+TWAIN_FILES_FIXED = (b'%ifarch %{ix86}\n' + TWAIN_FILES + b'%endif\n'
+                     b'%ifarch x86_64\n%if %{with new_wow64}\n'
+                     b'%{_libdir}/wine/i386-windows/twain_32.dll\n%endif\n%endif\n')
+
+
+def prepare_spec(original, destination, pin):
+    """Apply the one pinned packaging correction, preserving all source/features."""
+    verify_file(original, pin['spec_sha256'])
+    data = Path(original).read_bytes()
+    if data.count(TWAIN_FILES) != 1:
+        raise ValueError('unexpected Wine TWAIN file list')
+    derived = data.replace(TWAIN_FILES, TWAIN_FILES_FIXED)
+    if hashlib.sha256(derived).hexdigest() != pin['build_spec_sha256']:
+        raise ValueError('derived Wine spec identity mismatch')
+    with Path(destination).open('xb') as output:
+        output.write(derived)
+
+
+def verify_prepared_source(directory, pin):
+    directory = Path(directory)
+    verify_file(directory / 'upstream.spec', pin['spec_sha256'])
+    verify_file(directory / 'wine.spec', pin['build_spec_sha256'])
+    with tempfile.TemporaryDirectory(prefix='tilo-wine-spec-') as temporary:
+        prepare_spec(directory / 'upstream.spec', Path(temporary) / 'wine.spec', pin)
+    record = json.loads((directory / 'derivation.json').read_text())
+    expected = {'schema': 1, 'correction': 'wine11-twain-32-i386-file-list',
+                'upstream_srpm_sha256': pin['sha256'],
+                'upstream_spec_sha256': pin['spec_sha256'],
+                'build_spec_sha256': pin['build_spec_sha256'],
+                'source_rpm': build_identity(pin)['source_rpm']}
+    if any(record.get(key) != value for key, value in expected.items()):
+        raise ValueError('Wine source derivation identity mismatch')
+    verify_file(directory / expected['source_rpm'], record['source_rpm_sha256'])
+    verify_srpm_spec(directory / expected['source_rpm'], pin['build_spec_sha256'])
+    return record
+
+
+def verify_srpm_spec(path, expected):
+    # Read only the spec member; never extract arbitrary RPM paths or execute it.
+    with subprocess.Popen(['rpm2cpio', str(path)], stdout=subprocess.PIPE) as archive:
+        try:
+            selected = subprocess.run(['cpio', '--quiet', '-i', '--to-stdout', './wine.spec'],
+                                      stdin=archive.stdout, stdout=subprocess.PIPE, check=True)
+        finally:
+            archive.stdout.close()
+        if archive.wait() != 0:
+            raise ValueError('cannot read source RPM spec')
+    if hashlib.sha256(selected.stdout).hexdigest() != expected:
+        raise ValueError('source RPM spec identity mismatch')
+
 
 def run(argv):
     return subprocess.check_output(argv, text=True).rstrip('\n')
@@ -40,7 +91,7 @@ def build_identity(pin):
     if not re.fullmatch(r'\.fc44\.tilo_traditional[1-9][0-9]*', pin['build_dist']):
         raise ValueError('invalid traditional Wine release namespace')
     if pin['build_release'] != pin['release'].removesuffix('.fc44') + pin['build_dist']:
-        raise ValueError('build release does not match unchanged spec dist expansion')
+        raise ValueError('build release does not match spec dist expansion')
     if type(pin['source_date_epoch']) is not int or pin['source_date_epoch'] <= 0:
         raise ValueError('source_date_epoch must be a positive integer')
     return {'dist': pin['build_dist'], 'release': pin['build_release'],
@@ -218,6 +269,7 @@ def validate_mock(directory, architecture, pin):
     retained = retained_resolution_files(resolution['files'], pin)
     if tree_inventory(provenance / 'resolution') != retained:
         raise ValueError('resolution/source metadata changed')
+    verify_prepared_source(provenance / 'resolution/build-source', pin)
     if (lock.get('version') != '1.1.0' or lock.get('config', {}).get('target_arch') != architecture
             or lock.get('config', {}).get('bootstrap_image_ready') is not True
             or not lock.get('bootstrap', {}).get('image_digest') or not lock.get('buildroot', {}).get('rpms')):
@@ -354,6 +406,7 @@ def output(architecture, pin, buildroot_ref, directory=Path('/wine-output'), wri
     rebuilt_source = directory / 'provenance' / build_identity(pin)['source_rpm']
     if rebuilt_source.is_symlink() or not rebuilt_source.is_file():
         raise ValueError('missing rebuilt source RPM for Tilo release identity')
+    verify_srpm_spec(rebuilt_source, pin['build_spec_sha256'])
     contract = {'schema': 1, 'target': architecture, 'source': pin,
                 'build_identity': build_identity(pin), 'rebuilt_source_sha256': sha(rebuilt_source),
                 'without': ['new_wow64'],
@@ -374,6 +427,8 @@ def main(argv):
         print(source(value, pin))
     elif operation == 'spec':
         verify_file(value, pin['spec_sha256'])
+    elif operation == 'prepare-spec':
+        prepare_spec(value, rest[0], pin)
     elif operation == 'setting':
         print(build_identity(pin)[value])
     elif operation == 'record-buildroot':

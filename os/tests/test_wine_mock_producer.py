@@ -155,7 +155,7 @@ class Boundaries(unittest.TestCase):
             str(self.root / 'resolution/buildroot_lock.json'), str(self.root / 'repository')])
         for forbidden in ('-r', '--init', '--calculate-build-dependencies', '--no-clean', '--short-circuit'):
             self.assertNotIn(forbidden, command)
-        self.assertEqual(command[-1], str(self.root / 'source' / PIN['filename']))
+        self.assertEqual(command[-1], str(self.root / 'build-source' / PIN['filename']))
 
 
 if __name__ == '__main__':

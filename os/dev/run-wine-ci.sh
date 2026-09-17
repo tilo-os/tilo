@@ -34,6 +34,7 @@ cleanup() {
         # Mock root.log includes package-manager/scriptlet diagnostics omitted
         # from its console summary; retain the full result directory on failure.
         docker cp "$resolver:/work/bundle/resolution" "$evidence/resolution" || true
+        docker cp "$resolver:/work/bundle/build-source" "$evidence/build-source" || true
         for file in resolve.log repository.log resolved-config.log manifest.json \
             i686-execution.S i686-execution i686-compile.log i686-execution.log; do
             docker cp "$resolver:/work/bundle/$file" "$evidence/$file" || true
