@@ -1089,7 +1089,14 @@ impl PairingHandshake {
         }
     }
 
-    pub fn publish_host_round2(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
+    /// Publish the host contribution, returning whether the broker persisted it.
+    /// A contended durable mailbox must be retried before reporting completion.
+    pub fn publish_host_round2(
+        &self,
+        nonce: &[u8; 16],
+        reply: EnrolmentRound2,
+        mac: [u8; 64],
+    ) -> bool {
         let key = hex::encode(nonce);
         match &self.backend {
             PairingBackend::Memory(inner) => {
@@ -1099,27 +1106,29 @@ impl PairingHandshake {
                     .entry(key)
                     .or_default()
                     .host_round2 = Some((reply, PairingMac::from_bytes(mac)));
+                true
             }
-            PairingBackend::Durable(backend) => {
-                let _ = Self::durable_update(backend, nonce, |state| {
-                    if state.host_round2.is_none() {
-                        state.host_round2 = Some((reply, PairingMac::from_bytes(mac)));
-                    }
-                });
-            }
+            PairingBackend::Durable(backend) => Self::durable_update(backend, nonce, |state| {
+                if state.host_round2.is_none() {
+                    state.host_round2 = Some((reply, PairingMac::from_bytes(mac)));
+                }
+            }),
             PairingBackend::Remote {
                 endpoint,
                 certificate,
             } => {
-                let _ = Self::remote_call(
-                    endpoint,
-                    certificate,
-                    &PairingBrokerRequest::PutHostRound2(
-                        *nonce,
-                        reply,
-                        PairingMac::from_bytes(mac),
+                matches!(
+                    Self::remote_call(
+                        endpoint,
+                        certificate,
+                        &PairingBrokerRequest::PutHostRound2(
+                            *nonce,
+                            reply,
+                            PairingMac::from_bytes(mac),
+                        ),
                     ),
-                );
+                    Some(PairingBrokerResponse::Ok)
+                )
             }
         }
     }
