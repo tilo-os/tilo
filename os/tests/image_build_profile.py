@@ -184,6 +184,37 @@ print(json.dumps({'signed_rootfs_id': identity}))
         result = self.run_builder(TILO_RAW_ROOTFS_RECEIPT='/evidence/raw-rootfs.json')
         self.assert_rejected_before_build(result, 'raw rootfs handoff is development-only')
 
+    def test_raw_only_stops_after_handoff_without_invoking_signer_or_final_build(self):
+        inputs = self.development_pipeline_inputs()
+        with tempfile.TemporaryDirectory() as external:
+            output = Path(external) / 'raw.json'
+            inputs.update(TILO_RAW_ROOTFS_ONLY='1', TILO_RAW_ROOTFS_RECEIPT=str(output),
+                          TILO_TEST_ARCH=platform.machine(), TILO_TEST_SIGNER_FAIL='exit')
+            result = self.run_builder(**inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(output.read_text())['raw_rootfs_id'], 'sha256:' + '1' * 64)
+            args = self.log.read_bytes().decode().split('\0')
+            self.assertEqual(args.count('build'), 1)
+            self.assertIn('rootfs', args)
+            self.assertNotIn('final', args)
+            self.assertNotIn('-t', args)
+            self.assertIn('Unsealed and not installable', result.stderr)
+            self.assertNotIn('Development container staged', result.stderr)
+            self.assertNotIn('2/2 disk image', result.stderr)
+
+    def test_raw_only_rejects_production_missing_receipt_skip_and_malformed_flags(self):
+        result = self.run_builder(TILO_RAW_ROOTFS_ONLY='1')
+        self.assert_rejected_before_build(result, 'raw-only builds are development-only')
+        inputs = self.development_inputs()
+        for overrides, message in (
+            ({'TILO_RAW_ROOTFS_ONLY': '1'}, 'require TILO_RAW_ROOTFS_RECEIPT'),
+            ({'TILO_RAW_ROOTFS_ONLY': '1', 'TILO_SKIP_BUILD': '1'}, 'require a fresh source build'),
+            ({'TILO_RAW_ROOTFS_ONLY': 'yes'}, 'must be 0 or 1'),
+            ({'TILO_RAW_ROOTFS_ONLY': '01'}, 'must be 0 or 1'),
+        ):
+            with self.subTest(overrides=overrides):
+                self.assert_rejected_before_build(self.run_builder(**(inputs | overrides)), message)
+
     def test_development_wpe_cache_overrides_only_immutable_dependency_stage(self):
         inputs = self.development_pipeline_inputs()
         self.write('os/dev/prepare-wpe-stage.py', '''import sys
