@@ -518,15 +518,19 @@ impl Autocomplete {
                 transform.pre_translate(Vec2::new(dx, row.y0 + (ROW_H - f64::from(dh)) / 2.0)),
                 None,
             );
-            label_x1 = dx - 8.0;
+            label_x1 = dx - f64::from(tokens.spacing.s2);
         }
+        // The row was measured one line tall, so a label longer than the
+        // room left of the detail elides — handing `draw_text` a max width
+        // wraps it onto a second line that paints over the next row.
+        let shown = text_renderer.elide_to_width(&s.label, text_size, px((label_x1 - x).max(0.0)));
         text_renderer.draw_text(
             scene,
-            &s.label,
+            &shown,
             text_size,
             text_color,
             transform.pre_translate(Vec2::new(x, ty)),
-            Some(px((label_x1 - x).max(0.0))),
+            None,
         );
     }
 }
