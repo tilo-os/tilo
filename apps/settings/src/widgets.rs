@@ -28,6 +28,7 @@
 //! limit of theme-less composition (recorded for the toolkit's layout unit).
 
 use ui::icons::Icon;
+use ui::tokens::{Spacing, SpacingStep};
 use ui::widget::{Badge, Column, Container, IconWidget, Row, Spacer, Text, Widget};
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
@@ -38,8 +39,12 @@ pub type El = Box<dyn Widget>;
 /// resolved, so this is the one scale every helper (and the sidebar's row
 /// geometry) reads; keeping them on one source is what lets the pill, the
 /// section headers and the shell's search field share edges.
-pub fn spacing() -> ui::tokens::Spacing {
-    ui::tokens::Spacing::default()
+///
+/// Where a gap is a lone spacer rather than a column's rhythm, prefer
+/// [`gap`]: it names a [`SpacingStep`] the toolkit resolves against the
+/// *live* theme at layout time, so a retuned custom scale reaches it.
+pub fn spacing() -> Spacing {
+    Spacing::default()
 }
 
 /// Vertical gap (logical px) between stacked cards in a panel. The page
@@ -54,26 +59,21 @@ pub const CARD_GAP: f32 = 20.0;
 /// Vertical gap (logical px) between rows inside a single card — the toolkit's
 /// `s3` step. Smaller than [`CARD_GAP`] so rows feel related within a group
 /// while still having visible separation.
-pub const ROW_GAP: f32 = 12.0;
+pub const ROW_GAP: f32 = Spacing::BASE.s3;
 
-/// A fixed-height empty box for a deliberate one-off vertical gap.
+/// One spacing step of empty space, resolved against the theme the host
+/// hands the tree at layout time (so it follows `ui_scale` and a custom
+/// theme's spacing preference — the one composition gap here that does).
+/// Reads as a vertical gap in a `Column` and a horizontal one in a `Row`.
 ///
 /// Stacks of cards and rows do **not** need this: an intrinsic-height
 /// [`Column`] honours its `with_gap` between every child, and [`cards`] /
-/// [`rows`] rely on exactly that. Reach for `vgap` only where a single gap is
-/// deliberately asymmetric (air above a lone caption, say) and name the token
-/// you pass.
-pub fn vgap(px: f32) -> El {
-    Box::new(Container::new().with_no_padding().with_height(px))
-}
-
-/// A fixed-width empty box for deliberate *horizontal* space inside a `Row`
-/// (e.g. a gutter between an icon and its label). Pinned width, so it never
-/// flex-grows like a bare spacer would. Note that a `Row` already separates
-/// its children by the theme gap; an `hgap` adds to that rather than replacing
-/// it.
-pub fn hgap(px: f32) -> El {
-    Box::new(Container::new().with_no_padding().with_size(px, 1.0))
+/// [`rows`] rely on exactly that. Reach for `gap` only where a single gap is
+/// deliberately asymmetric (air above a lone caption, a gutter between an
+/// icon and its label). A `Row` already separates its children by the theme
+/// gap; a `gap` inside one adds to that rather than replacing it.
+pub fn gap(step: SpacingStep) -> El {
+    Box::new(Spacer::token(step))
 }
 
 /// Stack a list of cards with a deliberate [`CARD_GAP`] of air between each
@@ -231,6 +231,46 @@ pub fn choice_row(label: &str, control: El) -> El {
 /// [`choice_row`] with a helper line under the label.
 pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
     setting_row_described(label, description, compact_control(control))
+}
+
+/// The narrow-screen form of [`choice_row`]: the label on its own line and
+/// the chooser beneath it, spanning the card. A phone-width card cannot seat
+/// a label beside a compact chooser, and letting each `Row` wrap on its own
+/// leaves one short-labelled row inline while its neighbours stack — so a
+/// pane switches a whole card to this form at once (see
+/// [`choice_rows_stack_below`]), and every row in the card reads the same
+/// way. Label and control are one caption gap (`s1`) apart, the same rhythm
+/// a described row uses for text that belongs to its label.
+///
+/// This is the app-side composition; the toolkit's `Field` does not yet
+/// offer a trailing-control placement that switches per section (recorded
+/// for the composition unit), which is where this policy ultimately belongs.
+pub fn choice_row_stacked(label: &str, control: El) -> El {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing().s1)
+            .push(Box::new(Text::new(label).with_scaled_size(13.0)))
+            .push(control),
+    )
+}
+
+/// The card width (logical px) below which a pane composes its choice rows
+/// with [`choice_row_stacked`] instead of [`choice_row`]: the compact
+/// chooser, one `s3` gap, room for a typical settings label at its
+/// [`choice_row`] type size, and the card's own `s3` inset on both sides.
+/// Above it every row's label and chooser fit on one line; below it none
+/// are asked to.
+pub fn choice_rows_stack_below() -> f32 {
+    /// Room reserved for the label beside a compact chooser: the longest
+    /// label the Formats card uses ("First day of week", ~92 px at 13 px)
+    /// with a little air, so a card stacks only when the chooser genuinely no
+    /// longer fits beside any of its labels — a 368 px card (a 440 px window)
+    /// stays inline, a 318 px phone card stacks.
+    const CHOICE_LABEL_RESERVE: f32 = 100.0;
+    let sp = spacing();
+    COMPACT_CONTROL_W + sp.s3 + CHOICE_LABEL_RESERVE + 2.0 * sp.s3
 }
 
 /// A small rounded status chip (e.g. "Connected", "Paired", "Offline").
