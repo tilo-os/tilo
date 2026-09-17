@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
-use std::os::fd::OwnedFd;
+use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -148,7 +148,7 @@ impl RemoteCaptureTargetBridge {
                 else {
                     unreachable!("endpoint kind was checked above")
                 };
-                let file = tempfile::tempfile().map_err(RemoteCaptureAdapterError::Spool)?;
+                let file = unnamed_scanner_spool().map_err(RemoteCaptureAdapterError::Spool)?;
                 (
                     None,
                     PreparedEndpoint::Scanner(ScannerSpool {
@@ -494,6 +494,24 @@ fn mint_approval() -> RemoteCaptureApproval {
         OsRng.fill_bytes(&mut value);
     }
     RemoteCaptureApproval(value)
+}
+
+fn unnamed_scanner_spool() -> std::io::Result<File> {
+    let directory = c"/tmp";
+    // SAFETY: `directory` is a static NUL-terminated path and a successful
+    // O_TMPFILE open returns a new descriptor owned exclusively by this call.
+    let fd = unsafe {
+        libc::open(
+            directory.as_ptr(),
+            libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: ownership of the fresh descriptor transfers to `File` once.
+    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 #[derive(Debug, Error)]
