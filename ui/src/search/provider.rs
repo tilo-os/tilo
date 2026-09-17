@@ -656,6 +656,27 @@ impl SearchCatalog {
         Ok(())
     }
 
+    /// Set this freshly-built catalogue's generation immediately after a
+    /// published predecessor. This supports providers that construct a full
+    /// replacement off their public snapshot lock, then make one short atomic
+    /// swap without allowing a cursor from the predecessor to remain current.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchCatalogError::GenerationExhausted`] when advancing the
+    /// predecessor generation would overflow.
+    pub fn advance_after(&self, predecessor_generation: u64) -> Result<(), SearchCatalogError> {
+        let generation = predecessor_generation
+            .checked_add(1)
+            .ok_or(SearchCatalogError::GenerationExhausted)?;
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.generation = generation;
+        Ok(())
+    }
+
     /// Insert or replace one durable resource. `searchable_text` may combine
     /// title, metadata and body; `result` is materialised only after an exact
     /// query match.

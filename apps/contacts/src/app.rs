@@ -12,7 +12,7 @@
 //! with `apply_layout_external` and routed events directly.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -405,9 +405,93 @@ struct EditForm {
 #[derive(Default)]
 struct ContactsResourceIndex {
     contacts: HashMap<ContactId, usize>,
-    ordered_contacts: Vec<ContactId>,
+    ordered_contacts: BTreeSet<ContactOrder>,
     groups: HashMap<String, String>,
-    ordered_groups: Vec<String>,
+    ordered_groups: BTreeSet<String>,
+    group_variants: BTreeMap<String, BTreeMap<String, usize>>,
+}
+
+/// The display sort key for a contact resource.  Keeping it as a tree rather
+/// than a sorted vector makes a normal one-contact edit O(log n), leaving the
+/// bounded palette snapshot to iterate only its first page.
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct ContactOrder {
+    label: String,
+    id: ContactId,
+}
+
+impl ContactOrder {
+    fn for_contact(contact: &Contact) -> Self {
+        Self {
+            label: normalize_text(&contact.display_name()),
+            id: contact.id,
+        }
+    }
+}
+
+/// A successful local Contacts action has already updated the authoritative
+/// document and is immediately mirrored by the UI call site.  Remembering
+/// just its old record lets `sync` update retained derived state without
+/// reparsing/reindexing a whole address book.
+struct LocalContactChange {
+    id: ContactId,
+    before: Option<Contact>,
+}
+
+fn update_resource_groups(
+    index: &mut ContactsResourceIndex,
+    contact: &Contact,
+    add: bool,
+    affected: &mut BTreeSet<String>,
+) {
+    for entry in &contact.groups {
+        let name = entry.value.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let key = normalize_text(name);
+        affected.insert(key.clone());
+        if add {
+            *index
+                .group_variants
+                .entry(key)
+                .or_default()
+                .entry(name.to_string())
+                .or_default() += 1;
+            continue;
+        }
+        let remove_key = {
+            let Some(variants) = index.group_variants.get_mut(&key) else {
+                continue;
+            };
+            let Some(count) = variants.get_mut(name) else {
+                continue;
+            };
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                variants.remove(name);
+            }
+            variants.is_empty()
+        };
+        if remove_key {
+            index.group_variants.remove(&key);
+        }
+    }
+}
+
+fn refresh_resource_group_labels(index: &mut ContactsResourceIndex, affected: BTreeSet<String>) {
+    for key in affected {
+        let Some(variants) = index.group_variants.get(&key) else {
+            index.groups.remove(&key);
+            index.ordered_groups.remove(&key);
+            continue;
+        };
+        let Some(label) = variants.keys().next().cloned() else {
+            continue;
+        };
+        index.groups.insert(key.clone(), label);
+        index.ordered_groups.insert(key);
+    }
 }
 
 impl EditForm {
@@ -728,6 +812,10 @@ pub struct ContactsApp {
     resource_snapshot_materialized: Cell<usize>,
     #[cfg(test)]
     resource_exact_materialized: Cell<usize>,
+    #[cfg(test)]
+    resource_index_rebuilds: Cell<usize>,
+    #[cfg(test)]
+    local_change_index_lookups: Cell<usize>,
     selected: Option<ContactId>,
     mode: Mode,
     form: Option<EditForm>,
@@ -852,6 +940,12 @@ pub struct ContactsApp {
     /// or a peer's change merged in — the next `sync` re-reads the store so those
     /// mutations show up in the list, exactly as an on-screen edit already does.
     model_heads: Vec<ChangeHash>,
+    /// Heads produced by local actions whose one-contact store mutations have
+    /// already been applied by their UI call sites.  `sync` can safely take
+    /// the incremental retained-index path only for this exact generation;
+    /// any unseen peer/bulk change falls back to authoritative reconciliation.
+    local_projection_heads: Option<Vec<ChangeHash>>,
+    pending_local_changes: Vec<LocalContactChange>,
 }
 
 impl ContactsApp {
@@ -896,6 +990,10 @@ impl ContactsApp {
             resource_snapshot_materialized: Cell::new(0),
             #[cfg(test)]
             resource_exact_materialized: Cell::new(0),
+            #[cfg(test)]
+            resource_index_rebuilds: Cell::new(0),
+            #[cfg(test)]
+            local_change_index_lookups: Cell::new(0),
             selected: None,
             mode: Mode::View,
             form: None,
@@ -949,6 +1047,8 @@ impl ContactsApp {
             pending_conflict_resolution: None,
             actions: ui::ActionHost::new(),
             model_heads: Vec::new(),
+            local_projection_heads: None,
+            pending_local_changes: Vec::new(),
         }
     }
 
@@ -1267,12 +1367,45 @@ impl ContactsApp {
         doc: &mut AutoCommit,
         action: &crate::actions::ContactsAction,
     ) -> Result<(), tilo_actions::ActionError> {
-        self.actions.try_dispatch_with_context(
+        let heads_before = doc.get_heads();
+        let local_change = (heads_before == self.model_heads)
+            .then(|| self.local_change_for(action))
+            .flatten();
+        let outcome = self.actions.try_dispatch_with_context(
             doc,
             crate::actions::CONTACTS_ACTION_TYPE,
             action,
             crate::actions::history_context(action),
-        )
+        );
+        if outcome.is_ok()
+            && let Some(change) = local_change
+        {
+            self.pending_local_changes.push(change);
+            self.local_projection_heads = Some(doc.get_heads());
+        }
+        outcome
+    }
+
+    fn local_change_for(
+        &self,
+        action: &crate::actions::ContactsAction,
+    ) -> Option<LocalContactChange> {
+        use crate::actions::ContactsAction;
+
+        let id = match action {
+            ContactsAction::CreateContact(data) => data.id.parse().ok()?,
+            ContactsAction::PatchContact { id, .. }
+            | ContactsAction::DeleteContact { id }
+            | ContactsAction::SetFavorite { id, .. } => id.parse().ok()?,
+        };
+        let before = self.indexed_contact(id).cloned();
+        if matches!(action, ContactsAction::CreateContact(_)) || before.is_some() {
+            Some(LocalContactChange { id, before })
+        } else {
+            // The document knew a row the UI did not: retain the authoritative
+            // reconciliation path rather than trusting an incomplete delta.
+            None
+        }
     }
 
     /// Restore the local projection from the durable source after a rejected
@@ -1297,14 +1430,20 @@ impl ContactsApp {
     /// Every painted, semantic, keyboard, and menu affordance calls this so a
     /// stale local contact cannot mutate the projection after a refusal.
     fn toggle_favorite(&mut self, doc: &mut AutoCommit, id: ContactId) -> bool {
-        let Some(contact) = self.store.get(id) else {
+        let Some(favorite) = self.indexed_contact(id).map(|contact| !contact.favorite) else {
             return false;
         };
-        let favorite = !contact.favorite;
         let action = crate::actions::set_favorite_action(id.to_string(), favorite);
         match self.try_perform_action(doc, &action) {
             Ok(()) => {
-                if let Some(contact) = self.store.get_mut(id) {
+                if let Some(contact) = self
+                    .resource_index
+                    .contacts
+                    .get(&id)
+                    .copied()
+                    .and_then(|position| self.store.contacts.get_mut(position))
+                    .filter(|contact| contact.id == id)
+                {
                     contact.favorite = favorite;
                 }
                 Self::persist();
@@ -1360,37 +1499,103 @@ impl ContactsApp {
     }
 
     fn rebuild_resource_index(&mut self) {
+        #[cfg(test)]
+        self.resource_index_rebuilds
+            .set(self.resource_index_rebuilds.get().saturating_add(1));
         let mut index = ContactsResourceIndex::default();
         for (position, contact) in self.store.contacts.iter().enumerate() {
             index.contacts.insert(contact.id, position);
+            index
+                .ordered_contacts
+                .insert(ContactOrder::for_contact(contact));
         }
-        index.ordered_contacts = self
-            .store
-            .contacts
-            .iter()
-            .map(|contact| contact.id)
-            .collect();
-        index.ordered_contacts.sort_by(|left, right| {
-            let left = index
-                .contacts
-                .get(left)
-                .and_then(|position| self.store.contacts.get(*position));
-            let right = index
-                .contacts
-                .get(right)
-                .and_then(|position| self.store.contacts.get(*position));
-            match (left, right) {
-                (Some(left), Some(right)) => normalize_text(&left.display_name())
-                    .cmp(&normalize_text(&right.display_name()))
-                    .then_with(|| left.id.cmp(&right.id)),
-                _ => left.is_some().cmp(&right.is_some()),
-            }
-        });
-        for group in crate::actions::ordered_groups(&self.store.contacts) {
-            index.groups.insert(normalize_text(&group), group.clone());
-            index.ordered_groups.push(group);
+        let mut all_groups = BTreeSet::new();
+        for contact in &self.store.contacts {
+            update_resource_groups(&mut index, contact, true, &mut all_groups);
         }
+        refresh_resource_group_labels(&mut index, all_groups);
         self.resource_index = index;
+    }
+
+    fn apply_local_resource_change(&mut self, before: Option<&Contact>, after: Option<&Contact>) {
+        if let Some(before) = before {
+            self.resource_index
+                .ordered_contacts
+                .remove(&ContactOrder::for_contact(before));
+            if after.is_none() {
+                // `ContactStore::delete` compacts the source vector, so only
+                // positions after this one need refreshing; no contact data is
+                // cloned or sorted.
+                if let Some(position) = self.resource_index.contacts.remove(&before.id)
+                    && let Some(contacts) = self.store.contacts.get(position..)
+                {
+                    for (offset, contact) in contacts.iter().enumerate() {
+                        self.resource_index
+                            .contacts
+                            .insert(contact.id, position + offset);
+                    }
+                }
+            }
+        }
+        if let Some(after) = after {
+            let position = self
+                .resource_index
+                .contacts
+                .get(&after.id)
+                .copied()
+                .or_else(|| {
+                    // New contacts append to the authoritative store. Earlier
+                    // pending creates have already populated the map, so its
+                    // cardinality is the next append position without a scan.
+                    let position = self.resource_index.contacts.len();
+                    self.store
+                        .contacts
+                        .get(position)
+                        .filter(|contact| contact.id == after.id)
+                        .map(|_| position)
+                });
+            if let Some(position) = position {
+                self.resource_index.contacts.insert(after.id, position);
+            }
+            self.resource_index
+                .ordered_contacts
+                .insert(ContactOrder::for_contact(after));
+        }
+        let mut affected = BTreeSet::new();
+        if let Some(before) = before {
+            update_resource_groups(&mut self.resource_index, before, false, &mut affected);
+        }
+        if let Some(after) = after {
+            update_resource_groups(&mut self.resource_index, after, true, &mut affected);
+        }
+        refresh_resource_group_labels(&mut self.resource_index, affected);
+    }
+
+    fn indexed_contact(&self, id: ContactId) -> Option<&Contact> {
+        #[cfg(test)]
+        self.local_change_index_lookups
+            .set(self.local_change_index_lookups.get().saturating_add(1));
+        let position = *self.resource_index.contacts.get(&id)?;
+        self.store
+            .contacts
+            .get(position)
+            .filter(|contact| contact.id == id)
+    }
+
+    fn apply_pending_local_changes(&mut self) {
+        let changes = std::mem::take(&mut self.pending_local_changes);
+        for change in changes {
+            let after = self.indexed_contact(change.id).cloned();
+            self.apply_local_resource_change(change.before.as_ref(), after.as_ref());
+            if let Err(error) = self
+                .search_provider
+                .apply_contact_change(change.before.as_ref(), after.as_ref())
+            {
+                self.show_toast(format!("Contacts search update failed: {error}"));
+                return;
+            }
+        }
+        self.search_heads.clone_from(&self.model_heads);
     }
 
     fn refresh_search_provider(&mut self) {
@@ -1411,18 +1616,21 @@ impl ContactsApp {
                 .ordered_contacts
                 .iter()
                 .take(crate::actions::MAX_CONTEXT_CONTACT_RESOURCES)
-                .filter_map(|id| {
-                    self.resource_index
+                .filter_map(|order| {
+                    let id = order.id;
+                    let contact = self
+                        .resource_index
                         .contacts
-                        .get(id)
+                        .get(&id)
                         .and_then(|position| self.store.contacts.get(*position))
-                        .filter(|contact| contact.id == *id)
-                        .map(|contact| {
-                            #[cfg(test)]
-                            self.resource_snapshot_materialized
-                                .set(self.resource_snapshot_materialized.get().saturating_add(1));
-                            contact.clone()
-                        })
+                        .filter(|contact| contact.id == id)
+                        .cloned();
+                    #[cfg(test)]
+                    if contact.is_some() {
+                        self.resource_snapshot_materialized
+                            .set(self.resource_snapshot_materialized.get().saturating_add(1));
+                    }
+                    contact
                 })
                 .collect(),
             groups: self
@@ -1430,7 +1638,7 @@ impl ContactsApp {
                 .ordered_groups
                 .iter()
                 .take(crate::actions::MAX_CONTEXT_GROUP_RESOURCES)
-                .cloned()
+                .filter_map(|key| self.resource_index.groups.get(key).cloned())
                 .collect(),
             contact_count: self.store.contacts.len(),
             import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
@@ -5159,16 +5367,24 @@ impl Widget for ContactsApp {
         // eagerly, so this is a no-op for it beyond re-adopting the same records.
         let heads = state.get_heads();
         if heads != self.model_heads {
-            self.store.contacts = ContactsDoc::list_contacts(state);
-            self.model_heads = heads;
-            self.rebuild_resource_index();
-            if let Some(sel) = self.selected
-                && self.store.get(sel).is_none()
-            {
-                self.selected = self.visible_ids().first().copied();
+            if self.local_projection_heads.as_ref() == Some(&heads) {
+                self.model_heads = heads;
+                self.local_projection_heads = None;
+                self.apply_pending_local_changes();
+            } else {
+                self.pending_local_changes.clear();
+                self.local_projection_heads = None;
+                self.store.contacts = ContactsDoc::list_contacts(state);
+                self.model_heads = heads;
+                self.rebuild_resource_index();
+                if let Some(sel) = self.selected
+                    && self.store.get(sel).is_none()
+                {
+                    self.selected = self.visible_ids().first().copied();
+                }
+                self.relayout = true;
+                self.dirty = true;
             }
-            self.relayout = true;
-            self.dirty = true;
         }
 
         crate::priority_contacts::publish_if_changed(&self.store);
@@ -8199,6 +8415,69 @@ mod tests {
             "a stale exact id must not redirect to the preceding contact"
         );
         assert_eq!(app.resource_exact_materialized.get(), 0);
+    }
+
+    #[test]
+    fn ordinary_local_update_syncs_a_large_book_without_full_retained_rebuild() {
+        const LARGE: usize = 100_001;
+
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let template = app.store.contacts[0].clone();
+        let mut contacts = Vec::with_capacity(LARGE);
+        contacts.extend((0..LARGE - 1).map(|index| Contact {
+            id: uuid::Uuid::from_u128(9_000_000 + index as u128),
+            first: format!("Directory {index}"),
+            ..Contact::default()
+        }));
+        // Keep the one document-backed row at the late position so this test
+        // detects any accidental linear local lookup during `sync`.
+        contacts.push(template.clone());
+        app.store.contacts = contacts;
+        app.rebuild_resource_index();
+        app.refresh_search_provider();
+        app.search_heads.clone_from(&app.model_heads);
+        app.resource_index_rebuilds.set(0);
+        app.local_change_index_lookups.set(0);
+        let refreshes_before = app.search_provider.full_refreshes();
+
+        let id = template.id;
+        let action = crate::actions::set_favorite_action(id.to_string(), !template.favorite);
+        app.try_perform_action(&mut doc, &action)
+            .expect("current local row accepts an action");
+        let position = *app
+            .resource_index
+            .contacts
+            .get(&id)
+            .expect("late contact has a retained stable-id position");
+        assert_eq!(position, LARGE - 1, "the edited record is the late row");
+        app.store.contacts[position].favorite = !template.favorite;
+        app.sync(&mut doc, &ROOT);
+
+        assert_eq!(
+            app.resource_index_rebuilds.get(),
+            0,
+            "a one-contact local update must not sort/rebuild the 100k resource index"
+        );
+        assert_eq!(
+            app.search_provider.full_refreshes(),
+            refreshes_before,
+            "sync applies a one-contact search delta instead of rebuilding the catalogue"
+        );
+        assert!(
+            app.local_change_index_lookups.get() <= 2,
+            "the local change inspected {} records instead of using the stable-id map",
+            app.local_change_index_lookups.get()
+        );
+        assert!(
+            ui::search::SearchProvider::resolve_action_resource(
+                &app.search_provider,
+                &crate::actions::open_contact_address(id),
+            )
+            .is_some(),
+            "the incrementally maintained generation still resolves the late edited record"
+        );
     }
 
     /// Contacts folds its address book into the unified Ctrl+K palette. A
