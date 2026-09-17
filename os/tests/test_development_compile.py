@@ -25,6 +25,49 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_firmware_artifact_selection_is_explicit_and_independently_pinned(self):
+        reference = 'code.podesta.ai/qos/tilo-firmware@sha256:' + '1' * 64
+        valid = dict(mode='full-build', profile='lenovo-83ed', reference=reference,
+                     manifest_sha256='2' * 64, required=True)
+        driver.validate_firmware_selection(**valid)
+        driver.validate_firmware_selection('full-build', 'lenovo-83ed', '', '')  # Local staging.
+        driver.validate_firmware_selection('full-build', 'generic', '', '', True)
+        driver.validate_firmware_selection('cache-only', 'lenovo-83ed', '', '', True)
+        for change in ({'reference': ''}, {'manifest_sha256': ''}, {'manifest_sha256': 'latest'},
+                       {'reference': 'code.podesta.ai/qos/tilo-firmware:latest'},
+                       {'reference': reference.replace('/qos/', '/other/')},
+                       {'profile': 'generic'}, {'mode': 'cache-only'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                driver.validate_firmware_selection(**(valid | change))
+
+    def test_firmware_import_invokes_only_the_inert_data_importer(self):
+        reference = 'code.podesta.ai/qos/tilo-firmware@sha256:' + '1' * 64
+        receipt = {'reference': reference, 'profile': 'lenovo-83ed', 'manifest_sha256': '2' * 64}
+        with patch.object(driver, 'run', return_value=json.dumps(receipt)) as command:
+            self.assertEqual(driver.import_hardware_inputs(reference, '2' * 64, 'lenovo-83ed', 'aarch64'), receipt)
+        command.assert_called_once_with('python3', 'os/dev/hardware-firmware-artifact.py', 'import',
+            '--reference', reference, '--manifest-sha256', '2' * 64, '--profile', 'lenovo-83ed',
+            '--architecture', 'aarch64', '--repo', str(driver.REPO))
+
+    def test_firmware_import_failure_never_uses_local_fallback_or_starts_cache(self):
+        with patch.object(driver.os, 'getuid', return_value=0, create=True), \
+             patch.object(driver.platform, 'machine', return_value='aarch64'), \
+             patch.object(driver, 'run', side_effect=[REVISION, '']), \
+             patch.object(driver, 'import_hardware_inputs', side_effect=ValueError('invalid artifact')), \
+             patch.object(driver, 'local_hardware_inputs') as local, \
+             patch.object(driver, 'verify_remote_cache') as cache, \
+             patch.object(driver, 'compile_with_capacity_watchdog') as build:
+            with self.assertRaisesRegex(ValueError, 'invalid artifact'):
+                driver.main(['--mode', 'full-build', '--architecture', 'aarch64',
+                    '--hardware-profile', 'lenovo-83ed', '--firmware-candidate', WPE,
+                    '--firmware-manifest-sha256', '2' * 64, '--kernel-candidate', WPE,
+                    '--fex-payload-candidate', WPE, '--windows-guest-candidate', WPE,
+                    '--wpe', WPE, '--generation', '7', '--revision', REVISION,
+                    '--branch', 'refs/heads/codex/test'])
+            local.assert_not_called()
+            cache.assert_not_called()
+            build.assert_not_called()
+
     def test_hardware_profile_selection_rejects_mismatch_and_ignores_inherited_value(self):
         with patch.dict(os.environ, {'TILO_HARDWARE_PROFILE': 'untrusted'}):
             generic = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE)
