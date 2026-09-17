@@ -74,6 +74,33 @@ const PIP_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// rows visually related instead of leaving the actions in a disconnected
 /// expanse of empty canvas. Compact chrome deliberately remains fluid.
 const LIBRARY_DESKTOP_CONTENT_WIDTH: f32 = 920.0;
+/// Below this window width the toolbar shrinks its navigation buttons, hides
+/// Forward and the optional commands, and protects the address field.
+const COMPACT_CHROME_MAX_WIDTH: f64 = 600.0;
+/// Below this window width the toolbar drops the optional commands that have
+/// another route — bookmark (Ctrl+D, `browser.page/bookmark`), history pause
+/// (`browser.session/toggle-history-pause`, and the Library heading exactly as
+/// in compact chrome) and Picture in Picture (`browser.page/picture-in-picture`)
+/// — so the address field keeps a readable width. Between the compact
+/// breakpoint and this one, keeping every command left a tablet-width window
+/// an address field some 56px wide: room for "https:/" and nothing else. The
+/// site-information launcher stays: it has no action route yet, so hiding it
+/// would make site information click-only through the protection panel.
+const ROOMY_CHROME_MIN_WIDTH: f64 = 1000.0;
+/// The height of every control on the toolbar row — navigation buttons, site
+/// launchers, DevTools, Find and zoom, Private, Settings — and of the address
+/// field they sit beside, so the row has one top and one bottom edge. Also the
+/// find bar's controls, which sit beside a field of the same height.
+pub(crate) const TOOLBAR_CONTROL_HEIGHT: f32 = 40.0;
+
+/// The responsive tiers for a window `width`: `(compact, roomy)`. One rule for
+/// the retained layout pass and the one-frame capture seed.
+fn chrome_tiers(width: f64) -> (bool, bool) {
+    (
+        width < COMPACT_CHROME_MAX_WIDTH,
+        width >= ROOMY_CHROME_MIN_WIDTH,
+    )
+}
 
 fn decode_favicon_png(
     bytes: &[u8],
@@ -435,6 +462,9 @@ pub struct BrowserWidget {
     pending_capture_studio: Option<ui::widget::CaptureMode>,
     cursor: Point,
     compact_chrome: bool,
+    /// Wide enough for the optional toolbar commands; see
+    /// [`ROOMY_CHROME_MIN_WIDTH`].
+    roomy_chrome: bool,
     motion_reduced: bool,
     pending_controls: std::collections::VecDeque<ControlInvocation>,
 }
@@ -772,6 +802,7 @@ impl BrowserWidget {
             pending_capture_studio: None,
             cursor: Point::ZERO,
             compact_chrome: false,
+            roomy_chrome: true,
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
         }
@@ -832,7 +863,7 @@ impl BrowserWidget {
 
     /// Seed the responsive breakpoint before a single-frame offscreen render.
     pub fn debug_set_viewport_width(&mut self, width: u32) {
-        self.compact_chrome = width < 600;
+        (self.compact_chrome, self.roomy_chrome) = chrome_tiers(f64::from(width));
         // The desktop Library cap also needs the viewport before its first
         // retained layout pass. Production windows already have this rect by
         // the time a user opens Library; headless review does not.
@@ -1509,7 +1540,10 @@ impl BrowserWidget {
         // target) instead of the toolkit's 120×40 label-button default,
         // so three of them leave the address bar the rest of the width
         // even on a narrow / mobile-width window.
-        let nav_btn: (f32, f32) = (if self.compact_chrome { 33.0 } else { 44.0 }, 40.0);
+        let nav_btn: (f32, f32) = (
+            if self.compact_chrome { 33.0 } else { 44.0 },
+            TOOLBAR_CONTROL_HEIGHT,
+        );
         let back = self.bind_button(
             Button::new("browser.back", "", None)
                 .with_icon(Icon::ArrowLeft)
@@ -1656,13 +1690,18 @@ impl BrowserWidget {
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(forward));
         }
+        // Site information has no action route yet, so it stays on every
+        // non-compact tier — see `ROOMY_CHROME_MIN_WIDTH`.
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(self.site.launcher(true)));
         }
+        // Every control on this row is `TOOLBAR_CONTROL_HEIGHT` tall — the
+        // address field's height — so the row has one top and one bottom
+        // edge. The two site launchers were 32px in a 40px row.
         toolbar = toolbar
             .push(Box::new(self.site.launcher(false).with_size(
                 if self.compact_chrome { 32.0 } else { 56.0 },
-                32.0,
+                nav_btn.1,
             )))
             .push(Box::new(url_input));
         let bookmark_label = if self.bookmarks.contains(&self.current_uri) {
@@ -1712,28 +1751,28 @@ impl BrowserWidget {
         // consuming the only useful address-bar width. Bookmarks remain in
         // the Library/resource surface; keep the toolbar focused on finding
         // or entering a destination and recovering history.
-        if !self.compact_chrome {
+        if self.roomy_chrome {
             toolbar = toolbar.push(Box::new(bookmark_btn));
         }
-        // Compact chrome protects the address field first.  History capture
+        // Narrower chrome protects the address field first.  History capture
         // remains available from the History section itself, where the
         // longer privacy label is understandable and touch-sized, instead
         // of reducing an address/search field to an unusable sliver.
-        if !self.compact_chrome {
+        if self.roomy_chrome {
             toolbar = toolbar.push(Box::new(history_pause_btn));
         }
         toolbar = toolbar.push(Box::new(library_btn));
         if let Some(download_status) = download_status {
             toolbar = toolbar.push(Box::new(download_status));
         }
-        if !self.compact_chrome {
+        if self.roomy_chrome {
             toolbar = toolbar.push(Box::new(pip_btn));
         }
         if !self.compact_chrome && self.rect.width() >= 1100.0 {
             let developer_engine = self.engine.clone();
             toolbar = toolbar.push(Box::new(
                 Button::new("browser.devtools", "DevTools", None)
-                    .with_size(82.0, 36.0)
+                    .with_size(82.0, nav_btn.1)
                     .on_effect(move || developer_engine.send(WebViewCommand::ShowDeveloperTools)),
             ));
         }
@@ -1865,7 +1904,7 @@ impl BrowserWidget {
         let mut heading = Row::new()
             .push(Box::new(Text::new("Library").with_size(24.0)))
             .push(Box::new(Spacer::new()));
-        if self.compact_chrome && self.library_section == LibrarySection::History {
+        if !self.roomy_chrome && self.library_section == LibrarySection::History {
             let label = if self.history_paused() {
                 "Resume history"
             } else {
@@ -3909,8 +3948,17 @@ impl Widget for BrowserWidget {
         let mut children = vec![child_node];
         self.site_panel = None;
         if self.site.open {
-            let width = (self.rect.width() as f32 - 24.0).clamp(240.0, 480.0);
-            let height = (self.rect.height() as f32 - 112.0).clamp(180.0, 510.0);
+            // The panel hangs directly under the toolbar row — its controls'
+            // height plus the toolbar Container's padding either side, the
+            // same sum the toolbar itself lays out to, so the two agree at
+            // every UI scale — with one `s3` gutter from the window's left
+            // edge (and the same kept free on the right) and `s12` kept free
+            // at the foot.
+            let gutter = theme.tokens.spacing.s3;
+            let top = TOOLBAR_CONTROL_HEIGHT + 2.0 * theme.padding_standard;
+            let width = (self.rect.width() as f32 - 2.0 * gutter).clamp(240.0, 480.0);
+            let height = (self.rect.height() as f32 - top - theme.tokens.spacing.s12)
+                .clamp(180.0, 510.0);
             let mut panel = self.site.panel(width, height);
             let panel_node = panel.build_layout(taffy, theme, node_map);
             #[allow(
@@ -3919,8 +3967,8 @@ impl Widget for BrowserWidget {
             )]
             let mut panel_style = taffy.style(panel_node).unwrap().clone();
             panel_style.position = taffy::Position::Absolute;
-            panel_style.inset.left = taffy::LengthPercentageAuto::length(12.0);
-            panel_style.inset.top = taffy::LengthPercentageAuto::length(64.0);
+            panel_style.inset.left = taffy::LengthPercentageAuto::length(gutter);
+            panel_style.inset.top = taffy::LengthPercentageAuto::length(top);
             let _ = taffy.set_style(panel_node, panel_style);
             children.push(panel_node);
             self.site_panel = Some(panel);
@@ -3944,9 +3992,10 @@ impl Widget for BrowserWidget {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let compact = self.rect.width() < 600.0;
-        if compact != self.compact_chrome {
+        let (compact, roomy) = chrome_tiers(self.rect.width());
+        if (compact, roomy) != (self.compact_chrome, self.roomy_chrome) {
             self.compact_chrome = compact;
+            self.roomy_chrome = roomy;
             self.structure_dirty = true;
         }
         if let Some(c) = &mut self.composed

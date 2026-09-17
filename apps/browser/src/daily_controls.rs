@@ -150,8 +150,11 @@ impl DailyControls {
     }
     fn button(&self, id: &str, label: &str, action: Action) -> Button {
         let pending = self.pending.clone();
+        // As tall as the address field and the find field these sit beside,
+        // so the toolbar row and the find bar each keep one top and one
+        // bottom edge. The 32px face left a step down on either side of them.
         Button::new(id, label, None)
-            .with_size(72.0, 32.0)
+            .with_size(72.0, crate::browser_widget::TOOLBAR_CONTROL_HEIGHT)
             .on_effect(move || pending.set(Some(action)))
     }
     pub fn launcher(&self) -> Button {
@@ -167,7 +170,13 @@ impl DailyControls {
         .tooltip("Zoom: ⌘/Ctrl + Plus or Minus; reset: ⌘/Ctrl+0")
     }
     pub fn bar(&self) -> Box<dyn Widget> {
+        // `no_wrap`, as the toolbar row above it: a wrapping row let the
+        // full-width find field claim the line and pushed the match count,
+        // Previous, Next and Done onto a second line beneath it, so the bar
+        // read as a field with a stray button row rather than one control
+        // cluster on one centre line.
         let row = Row::new()
+            .no_wrap()
             .push(Box::new(
                 TextInput::from_state(&self.query)
                     .with_id(FIND_INPUT)

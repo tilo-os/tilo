@@ -13,7 +13,7 @@ use ui::{
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, Stroke},
-    peniko::{Color, Fill, ImageBrush},
+    peniko::{Fill, ImageBrush},
 };
 use winit::event::{ElementState, MouseButton, WindowEvent};
 const PINNED_WIDTH: f64 = 44.0;
@@ -488,10 +488,13 @@ impl Widget for BrowserTabStrip {
                     let mut slash = BezPath::new();
                     slash.move_to((c.x - 7.0, c.y - 7.0));
                     slash.line_to((c.x + 7.0, c.y + 7.0));
+                    // The muted slash reads in the theme's danger tone, so it
+                    // follows the palette (and stays legible in high contrast)
+                    // rather than a red chosen for one theme.
                     s.stroke(
                         &Stroke::new(2.0),
                         x,
-                        Color::from_rgba8(220, 65, 75, 255),
+                        theme.tokens.colors.semantic.danger,
                         None,
                         &slash,
                     );
