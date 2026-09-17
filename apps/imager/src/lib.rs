@@ -128,6 +128,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "setup-folders-connected",
     "setup-folders-later",
     "setup-review",
+    "setup-desktop-installed",
     "import-progress",
     "import-retry-progress",
     "import-partial",
