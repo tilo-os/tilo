@@ -64,7 +64,21 @@ fn capture_rgba(w: u32, h: u32) -> Arc<[u8]> {
 #[test]
 fn video_player_controls_are_reachable_targets_on_one_centre_line() {
     let dir = out_dir();
-    for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+    for (theme_name, theme, viewport, min_controls) in [
+        ("dark", Theme::dark(), (960_u32, 540_u32), 7_usize),
+        ("light", Theme::light(), (960, 540), 7),
+        // 2× type through the owned-palette convention (the theme carries
+        // the scale): the time label yields before any control does.
+        ("dark-2x", Theme::dark().with_text_scale(2.0), (960, 540), 7),
+        // Narrow and 2×: the setting icons fold into the gear and the label
+        // goes entirely, but every control that remains is still a target.
+        (
+            "dark-2x-narrow",
+            Theme::dark().with_text_scale(2.0),
+            (320, 240),
+            4,
+        ),
+    ] {
         // Real media (a synthesized engine with an open source) so the
         // transport, seek, mute and volume controls are in the tree, plus a
         // promoted setting so a setting icon and the gear are too.
@@ -89,8 +103,7 @@ fn video_player_controls_are_reachable_targets_on_one_centre_line() {
             0,
         ));
         player.reveal_controls();
-        let harness =
-            FrameHarness::new_with_theme(State::new(), Box::new(player), (960, 540), theme);
+        let harness = FrameHarness::new_with_theme(State::new(), Box::new(player), viewport, theme);
         harness.render_png(&dir.join(format!("video-player-controls-{theme_name}.png")));
 
         let controls: Vec<(String, accesskit::Rect)> = harness
@@ -107,9 +120,9 @@ fn video_player_controls_are_reachable_targets_on_one_centre_line() {
         // Play/pause, seek, mute, volume, the promoted setting, the gear and
         // fullscreen: the bar's whole control set, every one observed.
         assert!(
-            controls.len() >= 7,
-            "{theme_name}: expected the bar's seven controls in the accessibility tree, got \
-             {controls:?}"
+            controls.len() >= min_controls,
+            "{theme_name}: expected at least {min_controls} of the bar's controls in the \
+             accessibility tree, got {controls:?}"
         );
         let mid_y = {
             let (_, first) = &controls[0];
@@ -127,6 +140,66 @@ fn video_player_controls_are_reachable_targets_on_one_centre_line() {
                 "{theme_name}: {name} centre {cy} is off the shared centre line {mid_y}"
             );
         }
+    }
+}
+
+/// Round two: pointer pills (one an agent), and two off-screen peers whose
+/// edge tags must stay inside their mist bands, at 1× and at 2× through the
+/// renderer (the host-palette convention) — so the scaled insets and the
+/// band-bound tag can be seen, not only asserted.
+#[test]
+fn presence_pills_and_edge_tags_render_at_one_and_two_x() {
+    use ui::presence::{PeerCursor, draw_peer_presence};
+    use vello::peniko::Color;
+    let dir = out_dir();
+    let theme = Theme::dark();
+    let (w, h) = (480_u32, 240_u32);
+    let viewport = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+    for scale in [1.0_f32, 2.0] {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(scale);
+        let peers = vec![
+            PeerCursor {
+                pos: (120.0, 90.0),
+                label: "Alice".into(),
+                color: Color::from_rgb8(0xec, 0x48, 0x99),
+                is_agent: false,
+            },
+            PeerCursor {
+                pos: (170.0, 150.0),
+                label: "Ada".into(),
+                color: Color::from_rgb8(0x0e, 0xa5, 0xe9),
+                is_agent: true,
+            },
+            // Past the right edge, with a name no side band can hold whole.
+            PeerCursor {
+                pos: (900.0, 120.0),
+                label: "Charlotte Okonkwo".into(),
+                color: Color::from_rgb8(0xf9, 0x73, 0x16),
+                is_agent: false,
+            },
+            // Above the top edge.
+            PeerCursor {
+                pos: (300.0, -300.0),
+                label: "Bob".into(),
+                color: Color::from_rgb8(0x10, 0xb9, 0x81),
+                is_agent: false,
+            },
+        ];
+        let mut scene = Scene::new();
+        draw_peer_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            viewport,
+            &mut tr,
+            &theme,
+            &peers,
+        );
+        OffscreenRenderer::new(w, h).render_png(
+            &scene,
+            theme.bg_app,
+            &dir.join(format!("presence-pills-{scale}x.png")),
+        );
     }
 }
 

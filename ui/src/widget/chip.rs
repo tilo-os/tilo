@@ -966,7 +966,7 @@ mod tests {
         let theme = Theme::dark().with_text_scale(2.0);
         let mut text = TextRenderer::new();
         text.set_text_scale(2.0);
-        let size = super::super::data_table::renderer_type_size(&text, theme.tokens.typography.scale.sm);
+        let size = crate::text_metrics::renderer_type_size(&text, theme.tokens.typography.scale.sm);
         let (_, line_h) = text.measure("Filter", size, None);
         assert!((line_h - 30.0).abs() < 1e-3, "2× sm line: {line_h}");
         let expected = (f64::from(line_h) + f64::from(theme.tokens.spacing.s1) * 2.0).ceil();
