@@ -17,6 +17,14 @@ on:
         description: Optional reviewed immutable native RPM snapshot override
         required: false
         type: string
+      fex_payload_candidate:
+        description: Reviewed immutable compatibility runtime payload; required for ARM full-build
+        required: false
+        type: string
+      windows_guest_candidate:
+        description: Reviewed immutable Windows guest payload; required for ARM full-build
+        required: false
+        type: string
       builder_candidate:
         description: Reviewed immutable native tools and application builder
         required: true
@@ -82,12 +90,14 @@ jobs:
           BUILDER_CANDIDATE: ${{ inputs.builder_candidate }}
           WPE_ADOPTION_RECEIPT: ${{ inputs.wpe_adoption_receipt }}
           WPE_ADOPTION_SHA256: ${{ inputs.wpe_adoption_sha256 }}
+          FEX_PAYLOAD_CANDIDATE: ${{ inputs.fex_payload_candidate }}
+          WINDOWS_GUEST_CANDIDATE: ${{ inputs.windows_guest_candidate }}
         run: |
           set -euo pipefail
           bash os/dev/assert-native-arch.sh "$ARCHITECTURE"
           python3 os/tests/test_development_compile.py
           python3 os/tests/test_compile_retention.py
-          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"], wpe_adoption_receipt=os.environ["WPE_ADOPTION_RECEIPT"] or None, wpe_adoption_sha256=os.environ["WPE_ADOPTION_SHA256"])'
+          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"], wpe_adoption_receipt=os.environ["WPE_ADOPTION_RECEIPT"] or None, wpe_adoption_sha256=os.environ["WPE_ADOPTION_SHA256"], fex_payload_candidate=os.environ["FEX_PAYLOAD_CANDIDATE"], windows_guest_candidate=os.environ["WINDOWS_GUEST_CANDIDATE"])'
           python3 - <<'PY'
           import os, re
           for name in ('KERNEL_CANDIDATE', 'RPMS_CANDIDATE', 'BUILDER_CANDIDATE'):
@@ -119,6 +129,8 @@ jobs:
           BUILDER_CANDIDATE: ${{ inputs.builder_candidate }}
           WPE_ADOPTION_RECEIPT: ${{ inputs.wpe_adoption_receipt }}
           WPE_ADOPTION_SHA256: ${{ inputs.wpe_adoption_sha256 }}
+          FEX_PAYLOAD_CANDIDATE: ${{ inputs.fex_payload_candidate }}
+          WINDOWS_GUEST_CANDIDATE: ${{ inputs.windows_guest_candidate }}
         shell: bash
         run: |
           set -euo pipefail
@@ -189,6 +201,7 @@ jobs:
             "$name:tools" --mode "$COMPILE_MODE" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
               --architecture "$ARCHITECTURE" --kernel-candidate "$KERNEL_CANDIDATE" \
               --rpms-candidate "$RPMS_CANDIDATE" --builder-candidate "$BUILDER_CANDIDATE" \
+              --fex-payload-candidate "$FEX_PAYLOAD_CANDIDATE" --windows-guest-candidate "$WINDOWS_GUEST_CANDIDATE" \
               "${wpe_receipt_args[@]}" \
               --revision "$GITHUB_SHA" --branch "$GITHUB_REF"
           docker cp . "$name:/work/repo"
