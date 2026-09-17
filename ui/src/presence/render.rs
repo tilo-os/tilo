@@ -387,8 +387,14 @@ const TETHER_AFTER: f64 = 4.0;
 
 /// Padding inside a peer's name pill. One pair of numbers because there is
 /// one pill: the pointer's and the caret's chip must size identically.
+///
+/// The vertical pad wraps the *measured line box* (1.25 × the type size),
+/// not the bare font size: at `scale.sm` that is the same 18 px pill as
+/// before, but the label is centred in it instead of sitting flush to its
+/// bottom edge, and the pill grows with the renderer's text scale instead
+/// of the label spilling out of it.
 pub(crate) const PILL_PAD_X: f64 = 7.0;
-pub(crate) const PILL_PAD_Y: f64 = 3.0;
+pub(crate) const PILL_PAD_Y: f64 = 1.5;
 
 /// Peer name type size: `scale.sm`, not `scale.xs` — xs measured ~34x15px
 /// with ~8px of glyph, present but not readable for a whole-session label.
@@ -414,10 +420,12 @@ fn peer_pill_size_for(
     is_agent: bool,
 ) -> (f64, f64) {
     let size = pill_label_size(theme);
-    let (tw, _th) = text_renderer.measure(label, size, None);
+    // Both axes come from the same measurement the painter draws with, so
+    // the pill fits its label at every renderer text scale.
+    let (tw, th) = text_renderer.measure(label, size, None);
     (
         f64::from(tw) + PILL_PAD_X * 2.0 + if is_agent { 14.0 } else { 0.0 },
-        f64::from(size) + PILL_PAD_Y * 2.0,
+        f64::from(th) + PILL_PAD_Y * 2.0,
     )
 }
 
@@ -747,12 +755,17 @@ fn draw_peer_pill_kind(
             );
         }
     }
+    // Centre the measured line box in whatever rect the placer handed us,
+    // rather than pinning it to the top pad: a caller-supplied rect may be
+    // taller than the pill asked for.
+    let (_, th) = text_renderer.measure(label, label_size, None);
+    let text_y = rect.y0 + (rect.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
         label_size,
         contrast_ink(peer),
-        transform * Affine::translate((text_x, rect.y0 + PILL_PAD_Y)),
+        transform * Affine::translate((text_x, text_y)),
         None,
     );
 }
@@ -834,10 +847,14 @@ const CHIP_GAP: f64 = 2.0;
 /// can decide where the chip goes.
 fn chip_size(theme: &Theme, text_renderer: &mut TextRenderer, name: &str) -> (f64, f64) {
     let label_size = theme.tokens.typography.scale.xs;
-    let (tw, _th) = text_renderer.measure(name, label_size, None);
+    // Height from the measured line box, not the font size: the box is a
+    // quarter taller than the size and carries the renderer's text scale,
+    // so sizing from `label_size` clipped descenders at 1× and lost the
+    // whole label below the chip at 2×.
+    let (tw, th) = text_renderer.measure(name, label_size, None);
     (
         f64::from(tw) + CHIP_PAD_X * 2.0,
-        f64::from(label_size) + CHIP_PAD_Y * 2.0,
+        f64::from(th) + CHIP_PAD_Y * 2.0,
     )
 }
 
@@ -858,13 +875,17 @@ fn draw_name_chip_in(
     let chip = RoundedRect::from_rect(chip_rect, f64::from(theme.tokens.radii.sm));
     // Solid fill in the peer's colour so the chip reads as "them".
     scene.fill(Fill::NonZero, transform, color, None, &chip);
-    // Label ink: white or near-black for contrast against the colour.
+    // Label ink: white or near-black for contrast against the colour; the
+    // measured line box is centred in the chip.
+    let label_size = theme.tokens.typography.scale.xs;
+    let (_, th) = text_renderer.measure(name, label_size, None);
+    let text_y = chip_rect.y0 + (chip_rect.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
         scene,
         name,
-        theme.tokens.typography.scale.xs,
+        label_size,
         contrast_ink(color),
-        transform * Affine::translate((chip_rect.x0 + CHIP_PAD_X, chip_rect.y0 + CHIP_PAD_Y)),
+        transform * Affine::translate((chip_rect.x0 + CHIP_PAD_X, text_y)),
         None,
     );
 }
@@ -993,10 +1014,12 @@ fn draw_edge_mist(
 
     let tokens = &theme.tokens;
     let label_size = tokens.typography.scale.xs;
-    let (tw, _th) = text_renderer.measure(name, label_size, None);
+    // Sized from the measured line box so the tag holds its label at every
+    // text scale (see `chip_size`).
+    let (tw, th) = text_renderer.measure(name, label_size, None);
     let pad = 4.0_f64;
     let tag_w = f64::from(tw) + pad * 2.0;
-    let tag_h = f64::from(label_size) + pad;
+    let tag_h = f64::from(th) + pad;
     // Anchor the tag near the band centre, nudged inward from the edge.
     let (tx, ty) = match mist.edge {
         MistEdge::Left => (band.x0 + 4.0, band.center().y - tag_h / 2.0),
@@ -2171,6 +2194,89 @@ mod tests {
         assert!(
             scene.encoding().draw_tags.len() >= 4,
             "an off-screen desktop peer produced no directional mist",
+        );
+    }
+
+    /// The pill and chip are sized from the measured line box, so they hold
+    /// their label at every renderer text scale — the label used to spill
+    /// out of a font-size-derived box at 2×.
+    #[test]
+    fn pill_and_chip_heights_follow_the_measured_label_at_every_text_scale() {
+        let theme = Theme::dark();
+        for scale in [1.0_f32, 2.0] {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+            let (_, label_h) = tr.measure("Alice", pill_label_size(&theme), None);
+            assert!(
+                (pill_h - (f64::from(label_h) + PILL_PAD_Y * 2.0)).abs() < 1e-6,
+                "at {scale}x the pill is {pill_h} tall around a {label_h} label"
+            );
+            let (_, chip_h) = chip_size(&theme, &mut tr, "Alice");
+            let (_, chip_label_h) = tr.measure("Alice", theme.tokens.typography.scale.xs, None);
+            assert!(
+                (chip_h - (f64::from(chip_label_h) + CHIP_PAD_Y * 2.0)).abs() < 1e-6,
+                "at {scale}x the chip is {chip_h} tall around a {chip_label_h} label"
+            );
+        }
+    }
+
+    /// Re-deriving the pad from the line box must not have changed the pill
+    /// every consumer already lays out around: `scale.sm` at 1× is still an
+    /// 18 px pill.
+    #[test]
+    fn the_default_pill_height_is_unchanged_at_one_x() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+        assert!(
+            (pill_h - 18.0).abs() < 1e-6,
+            "pill height {pill_h}; the 1x default is 18px"
+        );
+    }
+
+    /// At 2× the label ink of a pointer pill stays inside the pill it was
+    /// laid out for, top and bottom.
+    #[test]
+    fn pill_label_stays_inside_its_pill_at_two_x() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let (pw, ph) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+        let (w, h) = (160_u32, 96_u32);
+        let rect = Rect::new(20.0, 30.0, 20.0 + pw, 30.0 + ph);
+        let mut scene = Scene::new();
+        // A dark peer colour so the light label ink is unambiguous.
+        let peer = Color::from_rgb8(0x1e, 0x29, 0x3b);
+        draw_peer_pill_kind(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            rect,
+            "Alice",
+            peer,
+            false,
+        );
+        let rgba = OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
+        let mut ink_rows = Vec::new();
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let i = (y * w as usize + x) * 4;
+                // Label ink is white-ish; the pill and background are dark.
+                if rgba[i] > 160 && rgba[i + 1] > 160 && rgba[i + 2] > 160 {
+                    ink_rows.push(y);
+                    break;
+                }
+            }
+        }
+        let (top, bottom) = (
+            *ink_rows.first().expect("label painted some ink"),
+            *ink_rows.last().expect("label painted some ink"),
+        );
+        assert!(
+            f64::from(top as u32) >= rect.y0.floor() && f64::from(bottom as u32) < rect.y1.ceil(),
+            "label ink rows {top}..={bottom} leave the pill {rect:?} at 2x"
         );
     }
 }
