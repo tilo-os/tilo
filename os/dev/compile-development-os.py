@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Compile the full x86-64 development OS in a disposable CI guest.
+"""Prove the remote cache, or explicitly compile the full development OS.
+
+The default cache-only mode creates no signing identity or OS image. Full-build
+requires an explicit mode, immutable WPE input and development generation.
 
 The resulting local container has a provisional composefs seal. It is never
 published, exported or installed; only public trust and build receipts leave
@@ -40,10 +43,12 @@ CACHE_CREDENTIALS = {'AWS_ACCESS_KEY_ID': 'aws_access_key_id',
                      'AWS_SECRET_ACCESS_KEY': 'aws_secret_access_key'}
 
 
-def validate_inputs(wpe, generation, revision, branch):
-    if not re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
+def validate_inputs(wpe, generation, revision, branch, mode='full-build'):
+    if mode not in ('cache-only', 'full-build'):
+        raise ValueError('mode must be cache-only or full-build')
+    if mode == 'full-build' and not re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
         raise ValueError('an immutable reviewed WPE candidate reference is required')
-    if not re.fullmatch(r'[1-9][0-9]{0,11}', generation):
+    if mode == 'full-build' and not re.fullmatch(r'[1-9][0-9]{0,11}', generation):
         raise ValueError('generation must be an explicit positive decimal integer')
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('full committed source revision required')
@@ -360,12 +365,15 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
     return env
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('wpe', 'generation', 'revision', 'branch'):
+    parser.add_argument('--mode', choices=('cache-only', 'full-build'), default='cache-only')
+    for name in ('wpe', 'generation'):
+        parser.add_argument('--' + name, default='')
+    for name in ('revision', 'branch'):
         parser.add_argument('--' + name, required=True)
-    args = parser.parse_args()
-    validate_inputs(args.wpe, args.generation, args.revision, args.branch)
+    args = parser.parse_args(argv)
+    validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode)
     if os.getuid() != 0 or platform.machine() != 'x86_64':
         raise ValueError('already-root native x86-64 Linux guest required')
     if run('git', 'rev-parse', 'HEAD') != args.revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
@@ -373,9 +381,16 @@ def main():
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700)
     EVIDENCE.mkdir(mode=0o755)
-    Path('/work/tmp').mkdir()
     cache = cache_configuration(os.environ)
     verify_remote_cache(cache)
+    if args.mode == 'cache-only':
+        write_receipt('result.json', {'status': 'remote-cache-probe-complete',
+            'mode': args.mode, 'revision': args.revision, 'builder': BUILDER,
+            'installable': False, 'published': False, 'disk_created': False,
+            'os_compiled': False, 'signing_identities_created': False,
+            'scope': 'tools-container S3 compiler cache access; nested OS build not exercised'})
+        return
+    Path('/work/tmp').mkdir()
     pins = pinned_inputs()
     write_receipt('inputs.json', {'purpose': 'provisional-full-source-compilation',
         'installable': False, 'revision': args.revision, 'architecture': 'x86_64',
@@ -438,4 +453,4 @@ if __name__ == '__main__':
         main()
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         # Captured key-generation output is intentionally never reproduced.
-        raise SystemExit(f'provisional full compilation failed: {type(error).__name__}: {error}') from None
+        raise SystemExit(f'development compile workflow failed: {type(error).__name__}: {error}') from None
