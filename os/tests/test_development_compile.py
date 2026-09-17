@@ -19,6 +19,26 @@ REVISION = 'b' * 40
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_installation_discovery_exposes_no_disks_or_network(self):
+        image = 'sha256:' + 'a' * 64
+        with patch.object(driver, 'run', side_effect=['--via-loopback --generic-image-extra',
+                                                     'bootc 1.0',
+                                                     subprocess.CalledProcessError(127, ['podman'])]) as run:
+            receipt = driver.installation_tooling(image)
+        self.assertTrue(receipt['flags_advertised']['--via-loopback'])
+        self.assertFalse(receipt['flags_advertised']['--generic-image'])
+        self.assertEqual(receipt['bootctl_version']['exit_code'], 127)
+        self.assertFalse(receipt['disk_created'])
+        for call in run.call_args_list:
+            args = call.args
+            for flag in ('--remote=false', '--pull=never', '--network=none', '--read-only',
+                         '--cap-drop=ALL', '--security-opt=no-new-privileges'):
+                self.assertIn(flag, args)
+            self.assertIn(image, args)
+            self.assertNotIn('--privileged', args)
+            self.assertNotIn('--volume', args)
+            self.assertNotIn('--device', args)
+
     def test_capacity_admission_and_abort_reserve_boundaries(self):
         for starting, threshold in ((True, 80), (False, 8)):
             with self.subTest(starting=starting):
