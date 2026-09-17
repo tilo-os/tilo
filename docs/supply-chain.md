@@ -1,7 +1,7 @@
-# qOS supply-chain security (operations)
+# Tilo supply-chain security (operations)
 
 Status of security-plan §9 (signing / reproducibility / transparency) and how to
-operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-architecture-plan.md`.
+operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-architecture-plan.md`.
 
 ## What's in place
 
@@ -12,9 +12,9 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   `keys/cosign.pub` is the
   verifier; signing requires `COSIGN_KEY_REF` to name a non-exportable
   KMS/HSM key. Exportable private-key material is rejected by the workflow.
-- **Verify-before-update.** The image ships `/usr/share/qos/cosign.pub` + an
+- **Verify-before-update.** The image ships `/usr/share/tilo/cosign.pub` + an
   `/etc/containers/policy.json` that **requires** a valid signature for
-  `code.podesta.ai/qos/qos` (+ `registries.d` sigstore-attachment lookup). So
+  `code.podesta.ai/tilo/tilo` (+ `registries.d` sigstore-attachment lookup). So
   `bootc upgrade` refuses an unsigned/tampered OS image.
 - **SBOM.** CI generates an SPDX SBOM (syft) and attaches it as a **signed**
   in-toto attestation to the image (`cosign attest`). Audit with
@@ -33,7 +33,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
   set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built +
-  pushed by the `snapshot-rpms` CI job to `code.podesta.ai/qos/rpms`), pinned in
+  pushed by the `snapshot-rpms` CI job to `code.podesta.ai/tilo/rpms`), pinned in
   `os/rpms-snapshot.env` (`RPMS_REF=…@sha256`). Every `os/Containerfile` `dnf
   install` mounts that repo and installs from it only
   (`--setopt=reposdir=/repo`), never live Fedora mirrors.
@@ -48,7 +48,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   `FROM quay.io/fedora/fedora-bootc@sha256:…` pin stops resolving after roughly
   a day (`manifest unknown`) and every build fails at its first `FROM` — the
   `snapshot-rpms` job included, which made the package set unrefreshable too.
-  So the base is **mirrored into `code.podesta.ai/qos/fedora-bootc`** and every
+  So the base is **mirrored into `code.podesta.ai/tilo/fedora-bootc`** and every
   Containerfile takes it as `--build-arg BASE_REF`, pinned in
   `os/base-snapshot.env`. Our registry collects nothing, so the pin keeps
   resolving. The copy uses `skopeo copy --all --preserve-digests`, so the
@@ -114,7 +114,7 @@ The signing key is the root of update trust — rotate on exposure or schedule.
 ## Still missing (§9 follow-ups)
 
 - **Installed-client transparency enforcement.** Release CI publishes Rekor
-  evidence, but the installed update path currently enforces the qOS signature
+  evidence, but the installed update path currently enforces the Tilo signature
   through containers-policy; it does not independently require a fresh Rekor
   inclusion proof and checkpoint before booting the image.
 - **Independent transparency witness.** Rekor provides public append-only

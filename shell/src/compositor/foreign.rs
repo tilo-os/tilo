@@ -519,7 +519,7 @@ impl AsyncDmabufCapture {
         // compositor even while the worker is stuck on a GPU fence.
         let (wake, wakes) = sync_channel::<()>(1);
         std::thread::Builder::new()
-            .name("qos-foreign-capture".into())
+            .name("tilo-foreign-capture".into())
             .spawn(move || {
                 let mut scratch = HashMap::<SurfaceId, Vec<u8>>::new();
                 while wakes.recv().is_ok() {
@@ -2181,14 +2181,14 @@ mod tests {
     /// What a person reads on a window's own card is the app's name, never the wayland app-id — a machine identifier the user never chose.
     #[test]
     fn a_card_in_a_windows_place_names_the_app_not_its_id() {
-        let w = ForeignSurfaceWidget::new(sid(53), "dev.qos.never-launched-fixture".into());
+        let w = ForeignSurfaceWidget::new(sid(53), "dev.tilo.never-launched-fixture".into());
         let name = w.display_name();
         assert_eq!(
             name, "Never Launched Fixture",
             "a window's card must carry the app's name; got {name:?}",
         );
         assert!(
-            !name.contains("dev.qos."),
+            !name.contains("dev.tilo."),
             "a reverse-DNS package id reached a card somebody is reading",
         );
     }
@@ -2203,7 +2203,7 @@ mod tests {
     fn a_window_that_cannot_be_shown_says_so_in_plain_words() {
         let id = sid(54);
         store().forget(id);
-        let w = ForeignSurfaceWidget::new(id, "dev.qos.never-launched-fixture".into());
+        let w = ForeignSurfaceWidget::new(id, "dev.tilo.never-launched-fixture".into());
 
         let (headline, detail) = w.unshowable_text();
         assert_eq!(headline, "Never Launched Fixture", "the app's own name");
@@ -2219,7 +2219,7 @@ mod tests {
             let lower = text.to_lowercase();
             for jargon in [
                 "frame", "buffer", "surface", "dmabuf", "modifier", "wayland", "toplevel",
-                "dev.qos", "install",
+                "dev.tilo", "install",
             ] {
                 assert!(
                     !lower.contains(jargon),
@@ -2689,7 +2689,7 @@ mod tests {
         crate::compositor::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.qos.word-processor".into()),
+            Some("dev.tilo.word-processor".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         assert_eq!(
@@ -2735,7 +2735,7 @@ mod tests {
         crate::compositor::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.qos.photos".into()),
+            Some("dev.tilo.photos".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
 
@@ -2779,7 +2779,7 @@ mod tests {
         crate::compositor::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.qos.photos".into()),
+            Some("dev.tilo.photos".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
 
@@ -2842,7 +2842,7 @@ mod tests {
         crate::compositor::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.qos.photos".into()),
+            Some("dev.tilo.photos".into()),
         );
         source.seed_doc_from_cache();
         let mut rendered = source.clone();
@@ -3301,10 +3301,10 @@ mod tests {
     /// The window itself has to answer with the same name its tab does.
     ///
     /// The tab title was fixed once already; the widget kept handing back
-    /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `dev.qos.chat`, an address nobody chose.
+    /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `dev.tilo.chat`, an address nobody chose.
     #[test]
     fn a_foreign_window_answers_with_its_name_not_its_app_id() {
-        let w = ForeignSurfaceWidget::new(3, "dev.qos.chat".into());
+        let w = ForeignSurfaceWidget::new(3, "dev.tilo.chat".into());
         assert_eq!(
             w.app_title(),
             "Chat",
@@ -3312,7 +3312,7 @@ mod tests {
         );
 
         // A dotted id with a multi-word tail humanises the same way the package registry does, so an app reaches one name by either route.
-        let w = ForeignSurfaceWidget::new(4, "dev.qos.word-processor".into());
+        let w = ForeignSurfaceWidget::new(4, "dev.tilo.word-processor".into());
         assert_eq!(w.app_title(), "Word Processor");
     }
 

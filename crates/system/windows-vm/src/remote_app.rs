@@ -35,7 +35,7 @@ impl<R> FreeRdpLauncher<R> {
         Self {
             runner,
             // FreeRDP's upstream RAIL client is xfreerdp.  It is only used
-            // when qOS has explicitly provisioned a RAIL-capable local
+            // when Tilo has explicitly provisioned a RAIL-capable local
             // surface; there is no upstream `wlfreerdp` binary to assume.
             binary: OsString::from("xfreerdp"),
         }
@@ -94,9 +94,9 @@ impl<R> FreeRdpLauncher<R> {
             // windows and have caused resize faults in recent FreeRDP/X11
             // combinations. RAIL carries each remote window's own geometry.
             .arg("-grab-keyboard")
-            .arg(format!("/wm-class:qos-windows-{}", guest.remote_app_alias))
+            .arg(format!("/wm-class:tilo-windows-{}", guest.remote_app_alias))
             // Playback is output-only; the Pulse endpoint may itself be a
-            // short-lived qOS proxy. Capture remains a separate redirector.
+            // short-lived Tilo proxy. Capture remains a separate redirector.
             .arg("/sound:sys:pulse,latency:50,quality:high")
             // RAIL is an application surface, not a hidden full-desktop
             // session. Audio output is safe by default; input is not.
@@ -127,11 +127,11 @@ impl<R> FreeRdpLauncher<R> {
             // not to an advisory FreeRDP switch (RDPDR has no trustworthy
             // read-only command-line mode).
             if share.read_only {
-                // Consumed by `/usr/libexec/qos-windows-rail`, never passed
+                // Consumed by `/usr/libexec/tilo-windows-rail`, never passed
                 // to FreeRDP. The helper overlays this broker-owned directory
                 // read-only in its rootless mount namespace.
                 request = request.arg(format!(
-                    "--qos-read-only-drive={}",
+                    "--tilo-read-only-drive={}",
                     share.host_path.display()
                 ));
             }
@@ -168,9 +168,9 @@ impl<R: CommandRunner> RemoteAppLauncher for FreeRdpLauncher<R> {
 /// Upstream virt-viewer fallback for hosts without a local RAIL
 /// surface. The guest bridge is responsible for focusing the requested
 /// application before this command is issued. This is a whole guest display,
-/// not a seamless window; the qOS UI must label that distinction. No
+/// not a seamless window; the Tilo UI must label that distinction. No
 /// application path or guest shell text crosses this boundary; the viewer
-/// attaches only to qOS's fixed singleton domain.
+/// attaches only to Tilo's fixed singleton domain.
 #[derive(Clone, Debug)]
 pub struct AppFocusedSpiceLauncher<R> {
     runner: R,
@@ -224,7 +224,7 @@ impl<R> AppFocusedSpiceLauncher<R> {
                 "--zoom=100",
                 "--cursor=local",
             ])
-            .arg(format!("--title=qOS — {}", guest.remote_app_alias))
+            .arg(format!("--title=Tilo — {}", guest.remote_app_alias))
             .arg(crate::APPLIANCE_DOMAIN_NAME))
     }
 }
@@ -295,7 +295,7 @@ pub enum RemoteAppError {
     FreeRdp { code: Option<i32>, stderr: String },
     #[error("SPICE viewer exited with code {code:?}: {stderr}")]
     Spice { code: Option<i32>, stderr: String },
-    #[error("SPICE fallback cannot carry qOS capability redirects; use a RAIL surface")]
+    #[error("SPICE fallback cannot carry Tilo capability redirects; use a RAIL surface")]
     SpiceCapabilityRequiresRail,
     #[error("guest selected a different presentation backend than this launcher")]
     PresentationMismatch,
@@ -346,11 +346,11 @@ mod tests {
         GuestLaunch {
             endpoint: RdpEndpoint {
                 address: (IpAddr::V4(Ipv4Addr::LOCALHOST), 3389).into(),
-                username: "qos-remoteapp".to_string(),
+                username: "tilo-remoteapp".to_string(),
                 certificate_sha256: "a".repeat(64),
             },
             password: Secret::new(b"one-time-password".to_vec()),
-            remote_app_alias: "qos-word".to_string(),
+            remote_app_alias: "tilo-word".to_string(),
             launch_nonce: "nonce".to_string(),
             presentation: ApplicationPresentation::NativeRail,
         }
@@ -383,7 +383,7 @@ mod tests {
             clipboard: true,
             microphone: true,
             shares: vec![ShareBinding {
-                drive_name: "QOS1".to_string(),
+                drive_name: "TILO1".to_string(),
                 portal_document_id: "document-42".to_string(),
                 host_path: crate::portal_lease_root().join("lease/document-42"),
                 read_only: true,
@@ -400,7 +400,7 @@ mod tests {
             args.iter()
                 .any(|arg| arg == "/clipboard:direction-to:all,files-to:off")
         );
-        assert!(args.iter().any(|arg| arg.starts_with("/drive:QOS1,")));
+        assert!(args.iter().any(|arg| arg.starts_with("/drive:TILO1,")));
         assert!(args.iter().any(|arg| arg.starts_with("/microphone:")));
         assert!(args.iter().any(|arg| arg.starts_with("/sound:sys:pulse")));
         assert!(args.iter().any(|arg| arg == "/network:lan"));
@@ -417,7 +417,7 @@ mod tests {
             request
                 .args
                 .iter()
-                .any(|arg| arg == "/app:program:||qos-word")
+                .any(|arg| arg == "/app:program:||tilo-word")
         );
         assert!(request.args.iter().any(|arg| arg == "+auto-reconnect"));
         assert!(
@@ -462,7 +462,7 @@ mod tests {
             clipboard: false,
             microphone: false,
             shares: vec![ShareBinding {
-                drive_name: "QOS1".to_string(),
+                drive_name: "TILO1".to_string(),
                 portal_document_id: "document-42".to_string(),
                 host_path: crate::portal_lease_root().join("lease/document-42"),
                 read_only: true,

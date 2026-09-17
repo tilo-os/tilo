@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep every graphical qOS app on the production AT-SPI endpoint.
+"""Keep every graphical Tilo app on the production AT-SPI endpoint.
 
 Accessibility metadata in an app crate is not an endpoint.  The single
 production endpoint is ``ui::App``: on Linux its winit AccessKit adapter owns
@@ -27,7 +27,7 @@ def audit(root: Path = ROOT) -> list[str]:
         if not main.is_file():
             continue
         source = main.read_text(encoding="utf-8")
-        # `qos-agent` links the lightweight app-model facade to consume
+        # `tilo-agent` links the lightweight app-model facade to consume
         # resource descriptors, but deliberately has no window.  The launch
         # specification and direct App construction are the two windowed
         # entrypoint shapes; do not turn a headless collaboration participant

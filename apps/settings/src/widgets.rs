@@ -74,7 +74,7 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
 }
 
 /// A titled "card": a heading line followed by a bordered, padded surface
-/// holding `body`. The qOS grouping primitive — every panel is a stack of
+/// holding `body`. The Tilo grouping primitive — every panel is a stack of
 /// these. Delegates to the shared [`ui::widget::Card`] so every card in the OS
 /// reads identically and tracks the theme (radius/border/fill all from
 /// `Theme`); the heading sits inside the surface, above the body.

@@ -2,7 +2,7 @@
 //! `/usr/bin/shell --firstboot-only`.
 //!
 //! The systemd unit guards re-runs with a `ConditionPathExists` on
-//! `/etc/qos/.firstboot-done`, so this module is a one-shot "make sure the
+//! `/etc/tilo/.firstboot-done`, so this module is a one-shot "make sure the
 //! user-facing config dir exists" hook. It is cheap and idempotent. It never
 //! creates a personal signing identity: that is an acknowledged interactive
 //! ceremony owned by the compositor OOBE.
@@ -18,15 +18,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use qos_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use ui::widget::identity_flow::IdentityRecord;
 
 /// Human-facing name of the Unix account running this session.
 ///
-/// This is only used by the compatibility path where qDesktop is installed
-/// on top of an existing Linux distribution. Native qOS setup has its own
+/// This is only used by the compatibility path where Tilo Desktop is installed
+/// on top of an existing Linux distribution. Native Tilo setup has its own
 /// identity ceremony and must not derive identity metadata from a Unix
 /// account that happens to run the session.
 #[cfg(unix)]
@@ -98,7 +98,7 @@ static OWNER_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Process-global entry point. Resolves the user's XDG config dir from
 /// `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and creates
-/// `quick-desktop/` under it. Returns `Ok(())` on success and on the "no HOME / no XDG" no-op path so boot continues.
+/// `tilo-desktop/` under it. Returns `Ok(())` on success and on the "no HOME / no XDG" no-op path so boot continues.
 ///
 /// # Errors
 ///
@@ -113,9 +113,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// Import existing GNOME input preferences on the first host-session login.
 ///
 /// Version 2 splits pointer settings by device class and preserves the host's
-/// physical keyboard repeat values. Existing qOS choices always win. The
+/// physical keyboard repeat values. Existing Tilo choices always win. The
 /// migration marker is only written after at least one host setting could be
-/// read (or the qOS section was already complete), so a temporarily unavailable
+/// read (or the Tilo section was already complete), so a temporarily unavailable
 /// settings service is retried on the next login.
 ///
 /// # Errors
@@ -405,7 +405,7 @@ pub fn run_with_env(
     };
     ensure_dirs(&config_dir)?;
     tracing::info!(
-        "firstboot: ensured quick-desktop config dir at {}",
+        "firstboot: ensured tilo-desktop config dir at {}",
         config_dir.display()
     );
     Ok(())
@@ -424,26 +424,26 @@ pub enum ProvisionOutcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IdentityProvisioningContext {
-    /// Native qOS: the dedicated OOBE owns the identity and storage policy.
-    NativeQos,
-    /// qDesktop added to a pre-existing Linux distribution and user account.
+    /// Native Tilo: the dedicated OOBE owns the identity and storage policy.
+    NativeTilo,
+    /// Tilo Desktop added to a pre-existing Linux distribution and user account.
     LegacyLinuxHost,
 }
 
-/// Compute the quick-desktop config dir (`<config-base>/quick-desktop`) following the same XDG fallback rules the peer-sync marker uses.
+/// Compute the tilo-desktop config dir (`<config-base>/tilo-desktop`) following the same XDG fallback rules the peer-sync marker uses.
 fn resolve_config_dir(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
 ) -> Option<PathBuf> {
     if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
         let mut p = PathBuf::from(xdg);
-        p.push("quick-desktop");
+        p.push("tilo-desktop");
         return Some(p);
     }
     let home = home.filter(|v| !v.is_empty())?;
     let mut p = PathBuf::from(home);
     p.push(".config");
-    p.push("quick-desktop");
+    p.push("tilo-desktop");
     Some(p)
 }
 
@@ -462,7 +462,7 @@ fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
 ///
 /// Returns an error if file system operations fail (permission denied, I/O error, etc.).
 pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
-    ensure_primary_identity_in_context(identity_dir, IdentityProvisioningContext::NativeQos)
+    ensure_primary_identity_in_context(identity_dir, IdentityProvisioningContext::NativeTilo)
 }
 
 fn ensure_primary_identity_in_context(
@@ -471,7 +471,7 @@ fn ensure_primary_identity_in_context(
 ) -> Result<ProvisionOutcome, io::Error> {
     let path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     if path.exists() {
-        if context == IdentityProvisioningContext::NativeQos {
+        if context == IdentityProvisioningContext::NativeTilo {
             protect_identity_record(identity_dir)?;
         }
         return Ok(ProvisionOutcome::Existing);
@@ -484,7 +484,7 @@ fn ensure_primary_identity_in_context(
         .map_err(|e| io::Error::other(e.to_string()))?;
     let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
     let display_name = match context {
-        IdentityProvisioningContext::NativeQos => String::new(),
+        IdentityProvisioningContext::NativeTilo => String::new(),
         IdentityProvisioningContext::LegacyLinuxHost => login_account_display_name(),
     };
     let record = IdentityRecord::from_threshold_identity(
@@ -525,11 +525,11 @@ pub fn ensure_collaboration_identity(
     ensure_collaboration_identity_in_context(
         identity_dir,
         paths,
-        IdentityProvisioningContext::NativeQos,
+        IdentityProvisioningContext::NativeTilo,
     )
 }
 
-/// Provision collaboration identity for qDesktop installed on an existing
+/// Provision collaboration identity for Tilo Desktop installed on an existing
 /// Linux distribution.
 ///
 /// A newly minted identity is labelled from the current passwd entry so it is
@@ -591,7 +591,7 @@ fn ensure_collaboration_identity_in_context(
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     let (selected_path, outcome) =
         if let Some(path) = runtime_identity::resolve_active_identity(identity_dir) {
-            if context == IdentityProvisioningContext::NativeQos {
+            if context == IdentityProvisioningContext::NativeTilo {
                 protect_identity_record_at(identity_dir, &path)?;
             }
             (path, ProvisionOutcome::Existing)
@@ -621,7 +621,7 @@ fn ensure_collaboration_identity_in_context(
     if device_owner && paths.device_cert.exists() {
         let cert = persist::read_device_cert(&paths.device_cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
-        qos_user_identity::verify_device_cert(&cert)
+        tilo_user_identity::verify_device_cert(&cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
         if cert.user_public_key != root_public
             || cert.device_public_key != device.verifying_key().to_bytes()
@@ -642,12 +642,12 @@ fn ensure_collaboration_identity_in_context(
             expires_at_ns: None,
             signature: [0; 64],
         };
-        let digest = qos_user_identity::device_cert_signing_digest(&cert)
+        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
         cert.signature = signer
             .sign(&digest)
             .map_err(|e| io::Error::other(e.to_string()))?;
-        qos_user_identity::verify_device_cert(&cert)
+        tilo_user_identity::verify_device_cert(&cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
         persist::write_device_cert(&paths.device_cert, &cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
@@ -692,7 +692,7 @@ fn ensure_collaboration_identity_in_context(
 ///
 /// A hard link is deliberately used instead of `rename`: `rename` atomically
 /// replaces an existing target, which is exactly the election race we must
-/// avoid.  qOS stores this identity tree on a local Linux filesystem, where
+/// avoid.  Tilo stores this identity tree on a local Linux filesystem, where
 /// hard links are available and both paths share a directory/filesystem.
 fn claim_device_owner(path: &Path, root_public: &[u8; 32]) -> io::Result<bool> {
     let parent = path.parent().ok_or_else(|| {
@@ -744,7 +744,7 @@ fn create_owner_claim_temp(parent: &Path, root_public: &[u8; 32]) -> io::Result<
     for _ in 0..16 {
         let sequence = OWNER_CLAIM_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let temp = parent.join(format!(
-            ".qos-owner-claim-{}-{sequence}",
+            ".tilo-owner-claim-{}-{sequence}",
             std::process::id()
         ));
         match fs::OpenOptions::new()
@@ -804,7 +804,7 @@ fn ensure_device_certificate_for_identity(
     if cert_path.exists() {
         let cert =
             persist::read_device_cert(&cert_path).map_err(|e| io::Error::other(e.to_string()))?;
-        qos_user_identity::verify_device_cert(&cert)
+        tilo_user_identity::verify_device_cert(&cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
         if cert.user_public_key != user_public_key
             || cert.device_public_key != device.verifying_key().to_bytes()
@@ -827,12 +827,12 @@ fn ensure_device_certificate_for_identity(
         expires_at_ns: None,
         signature: [0; 64],
     };
-    let digest = qos_user_identity::device_cert_signing_digest(&cert)
+    let digest = tilo_user_identity::device_cert_signing_digest(&cert)
         .map_err(|e| io::Error::other(e.to_string()))?;
     cert.signature = identity
         .sign(&digest)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    qos_user_identity::verify_device_cert(&cert).map_err(|e| io::Error::other(e.to_string()))?;
+    tilo_user_identity::verify_device_cert(&cert).map_err(|e| io::Error::other(e.to_string()))?;
     persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(cert_path)
 }
@@ -887,7 +887,7 @@ pub fn verify_collaboration_identity(
         .map_err(|e| io::Error::other(e.to_string()))?;
     let cert = persist::read_device_cert(&paths.device_cert)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    qos_user_identity::verify_device_cert_at(&cert, now_ns)
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns)
         .map_err(|e| io::Error::other(e.to_string()))?;
 
     let expected_root = identity.group_public_key();
@@ -909,7 +909,7 @@ pub fn verify_collaboration_identity(
 /// Resolve the system identity root, with the same test/development override
 /// used by the filesystem synchroniser.
 pub fn collaboration_identity_paths() -> IdentityPaths {
-    std::env::var_os("QOS_IDENTITY_ROOT")
+    std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|value| !value.is_empty())
         .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
 }
@@ -961,7 +961,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_pointer_speed_maps_libinput_range_to_qos_range() {
+    fn host_pointer_speed_maps_libinput_range_to_tilo_range() {
         assert_eq!(host_pointer_speed(-1.0), 0.0);
         assert_eq!(host_pointer_speed(0.0), 0.5);
         assert_eq!(host_pointer_speed(1.0), 1.0);
@@ -1027,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn host_keyboard_import_is_complete_and_never_overwrites_qos_choices() {
+    fn host_keyboard_import_is_complete_and_never_overwrites_tilo_choices() {
         let empty = serde_json::Map::new();
         let imported = host_keyboard_updates(&empty, &mut |_, key| match key {
             "sources" => Some("[('xkb', 'de+nodeadkeys'), ('xkb', 'us')]".into()),
@@ -1053,12 +1053,12 @@ mod tests {
         ]);
         assert!(
             host_keyboard_updates(&existing, &mut |_, _| Some("[('xkb', 'de')]".into())).is_empty(),
-            "an existing qOS keyboard selection must win as one coherent preference"
+            "an existing Tilo keyboard selection must win as one coherent preference"
         );
     }
 
     #[test]
-    fn host_input_migration_preserves_explicit_per_device_qos_choices() {
+    fn host_input_migration_preserves_explicit_per_device_tilo_choices() {
         let existing = serde_json::Map::from_iter([
             ("touchpad_natural_scroll".into(), serde_json::json!(false)),
             ("mouse_natural_scroll".into(), serde_json::json!(true)),
@@ -1138,7 +1138,7 @@ mod tests {
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos());
-            let path = base.join(format!("quick-desktop-firstboot-{name}-{pid}-{nonce}"));
+            let path = base.join(format!("tilo-desktop-firstboot-{name}-{pid}-{nonce}"));
             std::fs::create_dir_all(&path).expect("create tmpdir");
             TmpDir(path)
         }
@@ -1153,10 +1153,10 @@ mod tests {
     }
 
     #[test]
-    fn run_with_xdg_creates_quick_desktop_dir() {
+    fn run_with_xdg_creates_tilo_desktop_dir() {
         let tmp = TmpDir::new("xdg");
         run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot succeeds");
-        let expected = tmp.path().join("quick-desktop");
+        let expected = tmp.path().join("tilo-desktop");
         assert!(
             expected.exists() && expected.is_dir(),
             "expected {expected:?} to be created"
@@ -1167,7 +1167,7 @@ mod tests {
     fn run_with_home_falls_back_to_dot_config() {
         let tmp = TmpDir::new("home");
         run_with_env(None, Some(OsString::from(tmp.path()))).expect("firstboot succeeds via HOME");
-        let expected = tmp.path().join(".config").join("quick-desktop");
+        let expected = tmp.path().join(".config").join("tilo-desktop");
         assert!(
             expected.exists() && expected.is_dir(),
             "expected {expected:?} to be created"
@@ -1179,7 +1179,7 @@ mod tests {
         let tmp = TmpDir::new("idempotent");
         run_with_env(Some(OsString::from(tmp.path())), None).expect("first run ok");
         run_with_env(Some(OsString::from(tmp.path())), None).expect("second run ok");
-        let expected = tmp.path().join("quick-desktop");
+        let expected = tmp.path().join("tilo-desktop");
         assert!(expected.exists());
     }
 
@@ -1215,7 +1215,7 @@ mod tests {
         run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
         let identity_file = tmp
             .path()
-            .join("qos")
+            .join("tilo")
             .join("identity")
             .join(PRIMARY_IDENTITY_FILE);
         assert!(
@@ -1227,7 +1227,7 @@ mod tests {
     #[test]
     fn run_does_not_touch_an_existing_identity() {
         let tmp = TmpDir::new("existing-identity");
-        let dir = tmp.path().join("qos").join("identity");
+        let dir = tmp.path().join("tilo").join("identity");
         std::fs::create_dir_all(&dir).unwrap();
         let identity_file = dir.join(PRIMARY_IDENTITY_FILE);
         std::fs::write(&identity_file, b"MARKER: hands off").unwrap();
@@ -1251,7 +1251,7 @@ mod tests {
     #[test]
     fn ensure_primary_identity_reports_existing_vs_created() {
         let tmp = TmpDir::new("outcome");
-        let dir = tmp.path().join("qos").join("identity");
+        let dir = tmp.path().join("tilo").join("identity");
         // Fresh run creates.
         match ensure_primary_identity(&dir).expect("provision ok") {
             ProvisionOutcome::Created { pubkey_hex } => {
@@ -1266,7 +1266,7 @@ mod tests {
         assert_eq!(
             identity.display_name(),
             "",
-            "native qOS must not infer personal identity from its Unix implementation account"
+            "native Tilo must not infer personal identity from its Unix implementation account"
         );
         // Second run leaves it alone.
         assert_eq!(
@@ -1278,7 +1278,7 @@ mod tests {
     #[test]
     fn legacy_linux_host_associates_a_fresh_identity_with_the_unix_account() {
         let tmp = TmpDir::new("legacy-host-account");
-        let personal = tmp.path().join("config/qos/identity");
+        let personal = tmp.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
 
         assert!(matches!(
@@ -1294,7 +1294,7 @@ mod tests {
     #[test]
     fn legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity() {
         let tmp = TmpDir::new("legacy-host-existing");
-        let personal = tmp.path().join("config/qos/identity");
+        let personal = tmp.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
         ensure_primary_identity(&personal).expect("seed existing identity");
         let record_path = personal.join(PRIMARY_IDENTITY_FILE);
@@ -1315,7 +1315,7 @@ mod tests {
     #[test]
     fn collaboration_setup_creates_one_verified_identity_chain() {
         let tmp = TmpDir::new("collaboration-identity");
-        let personal = tmp.path().join("config/qos/identity");
+        let personal = tmp.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
 
         assert!(matches!(
@@ -1333,7 +1333,7 @@ mod tests {
         );
         assert_eq!(cert.user_public_key, signer.group_public_key());
         assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
-        qos_user_identity::verify_device_cert(&cert).unwrap();
+        tilo_user_identity::verify_device_cert(&cert).unwrap();
         assert_eq!(
             ensure_collaboration_identity(&personal, &paths).unwrap(),
             ProvisionOutcome::Existing
@@ -1358,8 +1358,8 @@ mod tests {
     #[test]
     fn collaboration_verifier_rejects_a_mismatched_personal_root() {
         let tmp = TmpDir::new("collaboration-identity-mismatch");
-        let personal = tmp.path().join("config/qos/identity");
-        let other_personal = tmp.path().join("other/qos/identity");
+        let personal = tmp.path().join("config/tilo/identity");
+        let other_personal = tmp.path().join("other/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
         ensure_collaboration_identity(&personal, &paths).unwrap();
         ensure_primary_identity(&other_personal).unwrap();
@@ -1378,7 +1378,7 @@ mod tests {
     #[test]
     fn collaboration_verifier_rejects_a_permissive_primary_secret() {
         let tmp = TmpDir::new("collaboration-identity-permissions");
-        let personal = tmp.path().join("config/qos/identity");
+        let personal = tmp.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
         ensure_collaboration_identity(&personal, &paths).unwrap();
 
@@ -1392,7 +1392,7 @@ mod tests {
     #[test]
     fn collaboration_setup_repairs_the_active_import_without_minting_primary() {
         let tmp = TmpDir::new("active-import");
-        let personal = tmp.path().join("config/qos/identity");
+        let personal = tmp.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
         ensure_primary_identity(&personal).expect("seed exported identity");
         let imported = personal.join("identity-imported.json");
@@ -1414,15 +1414,15 @@ mod tests {
         let cert =
             persist::read_device_cert(&paths.device_cert_for_user(&signer.group_public_key()))
                 .expect("identity-specific certificate");
-        qos_user_identity::verify_device_cert(&cert).expect("valid imported chain");
+        tilo_user_identity::verify_device_cert(&cert).expect("valid imported chain");
     }
 
     #[test]
     fn multiple_os_users_share_one_device_without_replacing_its_owner() {
         let tmp = TmpDir::new("multi-user-device");
         let paths = IdentityPaths::under(tmp.path().join("system"));
-        let alice = tmp.path().join("alice/qos/identity");
-        let bob = tmp.path().join("bob/qos/identity");
+        let alice = tmp.path().join("alice/tilo/identity");
+        let bob = tmp.path().join("bob/tilo/identity");
         ensure_collaboration_identity(&alice, &paths).expect("alice provisions owner");
         let owner = persist::read_public_key(&paths.user_pubkey).expect("owner key");
 
@@ -1439,7 +1439,7 @@ mod tests {
         assert_ne!(bob_key, owner);
         let bob_cert = persist::read_device_cert(&paths.device_cert_for_user(&bob_key))
             .expect("bob device cert");
-        qos_user_identity::verify_device_cert(&bob_cert).expect("valid bob chain");
+        tilo_user_identity::verify_device_cert(&bob_cert).expect("valid bob chain");
         assert_eq!(bob_cert.user_public_key, bob_key);
         assert_eq!(
             bob_cert.device_public_key,
@@ -1454,8 +1454,8 @@ mod tests {
     fn simultaneous_user_provisioning_builds_one_consistent_device_chain() {
         let tmp = TmpDir::new("simultaneous-user-provisioning");
         let paths = IdentityPaths::under(tmp.path().join("system"));
-        let alice = tmp.path().join("alice/qos/identity");
-        let bob = tmp.path().join("bob/qos/identity");
+        let alice = tmp.path().join("alice/tilo/identity");
+        let bob = tmp.path().join("bob/tilo/identity");
         ensure_primary_identity(&alice).expect("seed alice identity");
         ensure_primary_identity(&bob).expect("seed bob identity");
 
@@ -1492,7 +1492,7 @@ mod tests {
         let legacy = persist::read_device_cert(&paths.device_cert).expect("legacy owner cert");
         assert_eq!(legacy.user_public_key, owner);
         assert_eq!(legacy.device_public_key, device);
-        qos_user_identity::verify_device_cert(&legacy).expect("valid legacy certificate");
+        tilo_user_identity::verify_device_cert(&legacy).expect("valid legacy certificate");
 
         for identity_dir in [&alice, &bob] {
             let signer = runtime_identity::load_from_path(identity_dir.join(PRIMARY_IDENTITY_FILE))
@@ -1501,7 +1501,7 @@ mod tests {
                 persist::read_device_cert(&paths.device_cert_for_user(&signer.group_public_key()))
                     .expect("identity-specific certificate");
             assert_eq!(cert.device_public_key, device);
-            qos_user_identity::verify_device_cert(&cert)
+            tilo_user_identity::verify_device_cert(&cert)
                 .expect("identity-specific chain remains valid");
         }
     }
@@ -1558,7 +1558,7 @@ mod tests {
     #[test]
     fn ensure_primary_identity_writes_a_private_file() {
         let tmp = TmpDir::new("mode");
-        let identity_dir = tmp.path().join("qos").join("identity");
+        let identity_dir = tmp.path().join("tilo").join("identity");
         ensure_primary_identity(&identity_dir).expect("provision identity");
         let identity_file = identity_dir.join(PRIMARY_IDENTITY_FILE);
         let meta = std::fs::metadata(&identity_file).unwrap();

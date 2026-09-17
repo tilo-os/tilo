@@ -1189,7 +1189,7 @@ mod tests {
                     epoch: [7; 16],
                     token: [token; 16],
                 },
-                app_id: "dev.qos.mail".into(),
+                app_id: "dev.tilo.mail".into(),
                 app_name: "Mail".into(),
                 title: title.into(),
                 body: if redacted {

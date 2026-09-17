@@ -1,4 +1,4 @@
-//! API Tester — a Postman/Insomnia-class HTTP client for qOS.
+//! API Tester — a Postman/Insomnia-class HTTP client for Tilo.
 //!
 //! Build requests (method, URL, params, headers, auth, body), send them
 //! with `reqwest`, and inspect the response: status, timing, size, headers,

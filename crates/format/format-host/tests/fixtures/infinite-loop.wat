@@ -1,5 +1,5 @@
 ;; A minimal Component Model component that exports the
-;; `qos:format-provider/format-provider` interface. Every entry point spins
+;; `tilo:format-provider/format-provider` interface. Every entry point spins
 ;; forever, so the host's epoch-based wallclock budget kills it. We hand-write
 ;; the WAT to avoid a second cargo build in the test pipeline.
 ;;
@@ -36,17 +36,17 @@
   (alias core export $i "cabi_realloc"  (core func $realloc))
 
   ;; Bind the WIT exports onto the core funcs.
-  (func (export "qos:format-provider/format-provider#detect")
+  (func (export "tilo:format-provider/format-provider#detect")
         (param "head" (list u8)) (result $detected)
     (canon lift (core func $i "detect")
                 (memory $mem) (realloc $realloc))
   )
-  (func (export "qos:format-provider/format-provider#import-doc")
+  (func (export "tilo:format-provider/format-provider#import-doc")
         (param "bytes" (list u8)) (result (result (list u8) (error $codec-error)))
     (canon lift (core func $i "import-doc")
                 (memory $mem) (realloc $realloc))
   )
-  (func (export "qos:format-provider/format-provider#export-doc")
+  (func (export "tilo:format-provider/format-provider#export-doc")
         (param "canonical" (list u8)) (result (result (list u8) (error $codec-error)))
     (canon lift (core func $i "export-doc")
                 (memory $mem) (realloc $realloc))

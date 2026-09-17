@@ -1,4 +1,4 @@
-//! Feeds — standard qOS application entry point.
+//! Feeds — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -39,7 +39,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.feeds", feeds::app_root)
+        &LaunchSpec::new("dev.tilo.feeds", feeds::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "sidebar-open",

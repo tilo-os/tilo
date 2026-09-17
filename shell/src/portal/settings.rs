@@ -72,7 +72,7 @@ pub fn spawn_signal_emitter(
         .detach();
 }
 
-/// Mirror qOS's live appearance store into the standard portal namespace.
+/// Mirror Tilo's live appearance store into the standard portal namespace.
 /// The compositor watches the same file on the same cadence, so applications
 /// and shell chrome switch coherently and `SettingChanged` is emitted only
 /// when a value truly changes.

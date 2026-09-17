@@ -133,9 +133,9 @@ pub struct HexView {
     open_rx: Option<PortalChannel>,
     /// An in-flight XDG-portal save-destination request.
     save_rx: Option<PortalChannel>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    pending_resource_io: Option<(qos_actions::InvocationId, crate::actions::HexOperation)>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    pending_resource_io: Option<(tilo_actions::InvocationId, crate::actions::HexOperation)>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
     /// A transient status message (e.g. "Saved 4.2 kB") with its birth time.
     flash: Option<(String, bool, Instant)>,
     /// Hit rect of the empty-state "Open file…" button, recorded during draw.
@@ -478,17 +478,17 @@ impl HexView {
             return;
         };
         self.resource_result = Some(match result {
-            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
-            Err(message) if message == "cancelled" => qos_actions::InvocationUpdate::Cancelled {
+            Err(message) if message == "cancelled" => tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some(message),
             },
-            Err(message) => qos_actions::InvocationUpdate::Failed {
+            Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "hex.io_failed".into(),
                     message,
                     details: None,
@@ -1684,13 +1684,13 @@ impl Widget for HexView {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -1730,8 +1730,8 @@ impl Widget for HexView {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -1768,11 +1768,11 @@ impl Widget for HexView {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .pending_resource_io
@@ -1780,7 +1780,7 @@ impl Widget for HexView {
                 .is_some_and(|(id, _)| *id == invocation)
         {
             self.pending_resource_io = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("cancelled before file I/O".into()),
             });
@@ -1789,7 +1789,7 @@ impl Widget for HexView {
             self.resource_invocation = None;
             self.open_rx = None;
             self.save_rx = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file selection cancelled".into()),
             });
@@ -1813,13 +1813,13 @@ impl Widget for HexView {
                 _ => Err("missing direct path".into()),
             };
             self.resource_result = Some(match result {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "hex.io_failed".into(),
                         message,
                         details: None,
@@ -2018,10 +2018,10 @@ impl Widget for HexView {
 
     /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
     /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn name(&self) -> &'static str {
@@ -2571,7 +2571,7 @@ mod tests {
         std::fs::write(&source, [1_u8, 2, 3]).unwrap();
         let mut view = HexView::empty();
         let mut doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::HexOperation::Open {
             path: Some(source.display().to_string()),
         })
@@ -2579,7 +2579,7 @@ mod tests {
         let started = Widget::start_resource_operation(
             &mut view,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::HEX_EDITOR_OPERATION_TYPE,
             &payload,
             &doc,
@@ -2591,7 +2591,7 @@ mod tests {
         view.sync(&mut doc, &automerge::ROOT);
         assert!(matches!(
             view.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert_eq!(view.model.bytes(), &[1, 2, 3]);
         std::fs::remove_dir_all(dir).ok();
@@ -2607,7 +2607,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut view,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::HEX_EDITOR_OPERATION_TYPE,
                 &undo,
                 &doc,
@@ -2625,7 +2625,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut view,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::HEX_EDITOR_OPERATION_TYPE,
                 &edit,
                 &doc,
@@ -2645,7 +2645,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut view,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::HEX_EDITOR_OPERATION_TYPE,
                 &undo,
                 &doc,
@@ -2659,7 +2659,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut view,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::HEX_EDITOR_OPERATION_TYPE,
                 &redo,
                 &doc,

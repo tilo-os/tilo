@@ -828,7 +828,7 @@ mod tests {
 
     /// A stream-start label the receiver can't honour must never cost the
     /// viewer the share. Not hypothetical: Fedora's `libavcodec-free`
-    /// (which qOS images ship) is built
+    /// (which Tilo images ship) is built
     /// `--disable-decoder='h264,hevc,vc1,vvc'`, so `HevcDecoder::new`
     /// fails on a stock image.
     #[test]

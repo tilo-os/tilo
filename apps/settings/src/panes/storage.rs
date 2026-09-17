@@ -240,7 +240,7 @@ impl StoragePane {
             "Largest items",
             if self.snapshot.entries.is_empty() {
                 rows(vec![caption(
-                    "No qOS application storage was found on this device.",
+                    "No Tilo application storage was found on this device.",
                 )])
             } else {
                 rows(largest_rows)
@@ -607,8 +607,8 @@ mod tests {
     fn pane_reports_only_real_roots() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
-        std::fs::create_dir_all(cache.join("dev.qos.browser")).unwrap();
-        std::fs::write(cache.join("dev.qos.browser/http"), vec![0u8; 24]).unwrap();
+        std::fs::create_dir_all(cache.join("dev.tilo.browser")).unwrap();
+        std::fs::write(cache.join("dev.tilo.browser/http"), vec![0u8; 24]).unwrap();
         let pane = StoragePane::with_roots(StorageRoots {
             app_payloads: None,
             room_data: None,

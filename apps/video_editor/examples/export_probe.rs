@@ -72,7 +72,7 @@ fn main() {
     p.clip_mut(cid).unwrap().out_point = 2.0_f64.min(probed.duration.max(0.5));
 
     // Safety: single-threaded, before the export reads it.
-    unsafe { std::env::set_var("QOS_VE_EXPORT_OUT", &out) };
+    unsafe { std::env::set_var("TILO_VE_EXPORT_OUT", &out) };
     let settings = ExportSettings::default();
     match begin_export(&p, &settings) {
         ExportStatus::Done { path } => {

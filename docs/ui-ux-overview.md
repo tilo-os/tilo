@@ -1,4 +1,4 @@
-# qOS UI/UX release ledger
+# Tilo UI/UX release ledger
 
 Status: active implementation ledger, updated 2026-09-05.
 
@@ -43,7 +43,7 @@ to infer present product behaviour.
 - Settings category chrome uses theme-driven vector icons instead of optional
   private-use font glyphs, so its navigation remains legible in deterministic
   rendering and minimal installations.
-- Chat has exactly two contextual destinations: the active qOS Workspace and a
+- Chat has exactly two contextual destinations: the active Tilo Workspace and a
   system Inbox that groups cross-workspace messages by their source. Chat no
   longer creates a second, contradictory kind of "workspace".
 - Git Client, Notes, Monitor and Maps expose their primary controls through the
@@ -67,7 +67,7 @@ to infer present product behaviour.
 
 ## Capability honesty
 
-- Remote Desktop offers SSH, VNC, and qOS device connections. qOS sessions use
+- Remote Desktop offers SSH, VNC, and Tilo device connections. Tilo sessions use
   the shell's authenticated exact-target device route, stay waiting until the
   target shares a workspace surface, and fail closed on unavailable relays,
   denial, revocation, or route loss. Existing RDP profiles remain
@@ -122,7 +122,7 @@ acceptance record.
   rejected, including operations delivered after an offline period.
 - Revocation is not retroactive deletion. Data already downloaded to another
   device cannot be clawed back, and the UI says so plainly.
-- qOS does not add a second encryption/governance stack for this. Existing
+- Tilo does not add a second encryption/governance stack for this. Existing
   signed workspace authority remains the source of truth; future content-key
   rotation is a separate confidentiality feature, not a prerequisite for
   correct membership enforcement.

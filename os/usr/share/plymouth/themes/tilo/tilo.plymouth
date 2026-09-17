@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Tilo
+Description=A quiet Tilo boot and encrypted-disk unlock experience
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/tilo
+ScriptFile=/usr/share/plymouth/themes/tilo/tilo.script

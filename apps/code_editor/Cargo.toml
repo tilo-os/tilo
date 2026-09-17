@@ -23,10 +23,10 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # app is confined to. An app never draws its own picker (HIG §5), and the
 # portal is where the sandbox's file-access grant is made — so it is the only
 # way in, not merely the tidy one.
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
-# The qOS resource + action model: the serializable, replayable buffer-creation
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+# The Tilo resource + action model: the serializable, replayable buffer-creation
 # action Code exports, plus the Resource tree it publishes to Ctrl+K.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 # The IDE's terminal panel embeds the real system terminal as a widget, rather
 # than shipping a second, weaker terminal implementation.
 terminal = { path = "../terminal" }

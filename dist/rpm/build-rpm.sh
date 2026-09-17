@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the qos-session RPM: the qOS compositor as a Wayland session on a host
+# Build the tilo-session RPM: the Tilo compositor as a Wayland session on a host
 # that runs something else the rest of the time.
 #
 #   dist/rpm/build-rpm.sh              build binaries, then the RPM
@@ -9,8 +9,8 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-out=${QOS_PACKAGE_OUT:-$repo_root/dist/rpm/build}
-name=qos-session
+out=${TILO_PACKAGE_OUT:-$repo_root/dist/rpm/build}
+name=tilo-session
 version=$(<"$repo_root/dist/VERSION")
 
 run_cargo=1
@@ -32,16 +32,16 @@ say() { printf '\n== %s\n' "$*"; }
 # stream. Everything else, including sending, is unaffected.
 if (( run_cargo )); then
     say "cargo build --release (launcher, unlock helper)"
-    ( cd "$repo_root" && cargo build --release --locked -p launcher -p qos-unlock-helper )
+    ( cd "$repo_root" && cargo build --release --locked -p launcher -p tilo-unlock-helper )
     say "cargo build --release (compositor, no default features)"
-    # `shell` also owns developer tools such as `shots` and `qos-control`.
+    # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
     # those large binaries even though stage-payload never ships them.
     ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --no-default-features )
 fi
 
-rel=${QOS_BIN_DIR:-$repo_root/target/release}
-for bin in shell qos-launcher qos-unlock-helper; do
+rel=${TILO_BIN_DIR:-$repo_root/target/release}
+for bin in shell tilo-launcher tilo-unlock-helper; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
 
@@ -51,7 +51,7 @@ done
 say "staging $name-$version"
 stage=$out/stage/$name-$version
 # Each invocation produces one self-contained artifact set. Leaving an older
-# version under RPMS makes the documented qos-session-*.rpm globs select both
+# version under RPMS makes the documented tilo-session-*.rpm globs select both
 # versions, which package managers reject (and the transient unpacker would
 # misleadingly overlay in lexical order).
 rm -rf "$out/stage" "$out/SOURCES" "$out/BUILD" "$out/BUILDROOT" \
@@ -71,7 +71,7 @@ say "rpmbuild"
 rpmbuild_cmd=(
     rpmbuild -bb
     --define "_topdir $out"
-    --define "qos_version $version"
+    --define "tilo_version $version"
     "$out/SPECS/$name.spec"
 )
 if command -v rpmbuild >/dev/null 2>&1; then

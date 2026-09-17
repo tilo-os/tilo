@@ -4,7 +4,7 @@
 //! Workspace Settings surface.
 //!
 //! The compositor writes every workspace's granted capabilities to
-//! `~/.config/qos/state.json` (its `WorkspaceTree`); the FUSE mount and the
+//! `~/.config/tilo/state.json` (its `WorkspaceTree`); the FUSE mount and the
 //! launcher sandbox enforce exactly that list. This pane reads that same file
 //! and renders the live grants — which app in which workspace holds camera,
 //! microphone, screen-sharing, file, or network access, and for how long —
@@ -568,12 +568,12 @@ mod tests {
     /// shape exactly.
     fn sample_state() -> String {
         let cam = CapOverride::grant(
-            Subject::app("org.qos.Camera"),
+            Subject::app("org.tilo.Camera"),
             Scope::Device("camera".into()),
             Verb::Read,
         );
         let file = CapOverride::grant(
-            Subject::app("org.qos.Camera"),
+            Subject::app("org.tilo.Camera"),
             Scope::FsPath("/var/workspace/Photos".into()),
             Verb::Read,
         );
@@ -619,7 +619,7 @@ mod tests {
         assert_eq!(all.len(), 1, "one workspace holds grants");
         assert_eq!(all[0].name, "Studio");
         assert_eq!(all[0].apps.len(), 1, "one app");
-        assert_eq!(all[0].apps[0].app, "org.qos.Camera");
+        assert_eq!(all[0].apps[0].app, "org.tilo.Camera");
         assert_eq!(all[0].apps[0].caps.len(), 2, "camera + file grant");
         assert_eq!(grant_count(&all), 2);
         // The file grant carries the real path + mode; the camera grant its kind.

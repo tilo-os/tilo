@@ -1,4 +1,4 @@
-//! Spawns the nirios shell headless, embeds a real terminal and a real
+//! Spawns the tilo shell headless, embeds a real terminal and a real
 //! file-explorer and browser in tabs, and asserts their `AppWidget` metadata reaches
 //! the live `Shell::workspace_tree()`. Also drives them through an
 //! abbreviated render pipeline and asserts visible content: a non-empty

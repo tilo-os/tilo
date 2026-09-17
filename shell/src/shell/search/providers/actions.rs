@@ -31,7 +31,7 @@ const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ),
 ];
 
-/// What `agent.invite` may be told. Naming is optional because `qos-agent`
+/// What `agent.invite` may be told. Naming is optional because `tilo-agent`
 /// defaults to `Claude`; the profile is optional because the safe Observer
 /// starting point still requires an explicit per-surface review.
 const AGENT_INVITE_PARAMS: &[ActionParam] = &[
@@ -47,7 +47,7 @@ const AGENT_INVITE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
-/// The agent this OS ships. Kept in step with `qos-agent`'s own default by
+/// The agent this OS ships. Kept in step with `tilo-agent`'s own default by
 /// being the same string, not by being imported — the shell does not
 /// depend on the agent binary.
 const DEFAULT_AGENT_NAME: &str = "Claude";
@@ -55,7 +55,7 @@ const DEFAULT_AGENT_NAME: &str = "Claude";
 const IDENTITY_CONNECT_PARAMS: &[ActionParam] = &[ActionParam::required(
     "path",
     ParamType::Text,
-    "Absolute path to an exported qOS identity JSON record.",
+    "Absolute path to an exported Tilo identity JSON record.",
 )];
 
 const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[ActionParam::required(
@@ -715,7 +715,7 @@ impl Action {
                     .and_then(|store| {
                         store.mint_enrollment(
                             &profile.id,
-                            qos_user_identity::DeviceCapabilities::member(),
+                            tilo_user_identity::DeviceCapabilities::member(),
                             expires,
                         )
                     })
@@ -740,7 +740,7 @@ impl Action {
                     .and_then(|store| {
                         store.mint_enrollment(
                             &profile.id,
-                            qos_user_identity::DeviceCapabilities::host(),
+                            tilo_user_identity::DeviceCapabilities::host(),
                             expires,
                         )
                     })
@@ -768,10 +768,10 @@ impl Action {
                     .to_ascii_lowercase()
                     .as_str()
                 {
-                    "lost" => qos_user_identity::RevocationReason::Lost,
-                    "stolen" => qos_user_identity::RevocationReason::Stolen,
-                    "retired" => qos_user_identity::RevocationReason::Retired,
-                    "compromised" => qos_user_identity::RevocationReason::Compromised,
+                    "lost" => tilo_user_identity::RevocationReason::Lost,
+                    "stolen" => tilo_user_identity::RevocationReason::Stolen,
+                    "retired" => tilo_user_identity::RevocationReason::Retired,
+                    "compromised" => tilo_user_identity::RevocationReason::Compromised,
                     _ => {
                         return Err(ActionError::Refused(
                             "reason must be lost, stolen, retired, or compromised".into(),
@@ -1744,7 +1744,7 @@ mod tests {
         assert!(
             !ws.allows(
                 &ws.actor_for_agent("operator"),
-                &crate::shell::state::ResourceRef::App("dev.qos.notes".into()),
+                &crate::shell::state::ResourceRef::App("dev.tilo.notes".into()),
                 crate::shell::state::Verb::Write,
             ),
             "even the Operator profile requires an explicit scoped grant"
@@ -1819,11 +1819,11 @@ mod tests {
         let contract = proposal.contract.as_ref().expect("ownership contract");
         assert_eq!(
             contract.permission,
-            qos_actions::PermissionRequirement::Admin
+            tilo_actions::PermissionRequirement::Admin
         );
         assert_eq!(
             contract.confirmation,
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::Confirm
         );
         assert!(
             Action::ALL
@@ -1842,7 +1842,7 @@ mod tests {
         let provider = ActionsProvider::new();
         let rules = serde_json::to_string(&vec![collab_types::PermissionProfileRule::grant(
             collab_types::Scope::Action {
-                app: "dev.qos.notes".into(),
+                app: "dev.tilo.notes".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -1911,7 +1911,7 @@ mod tests {
         assert!(workspace.allows(
             &workspace.actor_for_agent("researcher"),
             &crate::shell::state::ResourceRef::Action {
-                app: "dev.qos.notes".into(),
+                app: "dev.tilo.notes".into(),
                 action: "note.open".into(),
             },
             crate::shell::state::Verb::Read,

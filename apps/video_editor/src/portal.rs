@@ -108,7 +108,7 @@ fn container_filter(ext: &str) -> FileFilter {
 /// Ask the host where to write an export, on a worker thread.
 ///
 /// Export previously had no destination UI at all: the output path came from
-/// `QOS_VE_EXPORT_OUT` / `QOS_VE_EXPORT_DIR` or fell back to the temp
+/// `TILO_VE_EXPORT_OUT` / `TILO_VE_EXPORT_DIR` or fell back to the temp
 /// directory, so a user could not choose where their render landed and, under
 /// `landlock = "strict"`, the app has no standing grant to write into
 /// `~/Videos` anyway. Routing the destination through the Save portal is what
@@ -135,7 +135,7 @@ pub fn request_export_destination(suggested_name: &str, ext: &str) -> ExportDest
 fn project_filter() -> FileFilter {
     FileFilter::new(crate::project_file::KIND_LABEL)
         .glob(&format!("*.{}", crate::project_file::EXTENSION))
-        .mimetype("application/x-qos-video-project")
+        .mimetype("application/x-tilo-video-project")
 }
 
 /// Which of the two project dialogs a chosen path came back from.

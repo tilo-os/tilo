@@ -1617,7 +1617,7 @@ impl WorkspaceSettingsOverlay {
             &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
         );
         let invite_url = if can_invite {
-            "Choose a person and role; qOS signs a one-hour invite."
+            "Choose a person and role; Tilo signs a one-hour invite."
         } else {
             "Only a governing administrator can create workspace invites."
         };

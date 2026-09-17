@@ -15,7 +15,7 @@
 //! own namespaced section so it grows independently of every other writer:
 //!
 //! ```text
-//! $XDG_CONFIG_HOME/qos/settings.json   (falls back to ~/.config/qos/settings.json)
+//! $XDG_CONFIG_HOME/tilo/settings.json   (falls back to ~/.config/tilo/settings.json)
 //! ```
 //!
 //! ```json
@@ -148,7 +148,7 @@ pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
 }
 
 /// Persist `spec` as the active OS theme, preserving foreign sections.
-/// Creates the `qos` config directory if needed. Returns the path written.
+/// Creates the `tilo` config directory if needed. Returns the path written.
 ///
 /// # Errors
 ///
@@ -239,7 +239,7 @@ mod tests {
         // against an explicit temp file — no process-global env mutation, so
         // it is safe under the default parallel test runner.
         let path = std::env::temp_dir()
-            .join(format!("qos-themes-store-{}", std::process::id()))
+            .join(format!("tilo-themes-store-{}", std::process::id()))
             .join("settings.json");
         let _ = std::fs::remove_file(&path);
         // A pre-existing foreign section must survive the write.

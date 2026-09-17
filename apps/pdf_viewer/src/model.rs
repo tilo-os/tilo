@@ -575,13 +575,13 @@ fn sample_page_abstract() -> Page {
         number: 1,
         blocks: vec![
             Block::Spacer(40.0),
-            Block::Title("qOS: A Collaborative Spatial Operating System".to_string()),
+            Block::Title("Tilo: A Collaborative Spatial Operating System".to_string()),
             Block::Spacer(6.0),
             Block::Caption("Technical Overview  ·  Revision 7  ·  Daskju Systems".to_string()),
             Block::Spacer(20.0),
             Block::H1("Abstract".to_string()),
             sample_body(
-                "qOS is an immutable, container-based Linux platform that treats \
+                "Tilo is an immutable, container-based Linux platform that treats \
 collaboration and spatial organisation as first-class primitives rather than \
 features bolted onto a single-user desktop. This document describes the layered \
 architecture: an immutable bootc image, a tiling Wayland compositor with a \
@@ -729,7 +729,7 @@ fn sample_page_security() -> Page {
             Block::Spacer(28.0),
             Block::H1("4  Security Model".to_string()),
             sample_body(
-                "Trust in qOS flows outward from the compositor. The sandbox is the \
+                "Trust in Tilo flows outward from the compositor. The sandbox is the \
 unit of isolation; a cluster cannot read files, capture input, or stream buffers \
 beyond the grants the user has approved for it. Collaboration never relaxes this: \
 an invited peer is granted presence inside one cluster, not access to the host.",
@@ -882,7 +882,7 @@ fn sample_outline() -> Vec<OutlineItem> {
 /// operate on genuine content.
 pub fn sample_document() -> Document {
     Document {
-        title: "qOS Technical Overview".into(),
+        title: "Tilo Technical Overview".into(),
         author: "Daskju Systems".into(),
         subject: "Architecture specification".into(),
         pages: sample_pages(),
@@ -975,7 +975,7 @@ mod tests {
             subject: "s".into(),
             pages: vec![Page {
                 number: 1,
-                blocks: vec![Block::Body("The qOS shell. the OS.".into())],
+                blocks: vec![Block::Body("The Tilo shell. the OS.".into())],
             }],
             outline: vec![],
             page_w: PAGE_W,

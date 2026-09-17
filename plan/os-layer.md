@@ -1,6 +1,6 @@
 # OS layer: Fedora bootc
 
-The qOS image is an immutable Fedora bootc deployment. The current base is
+The Tilo image is an immutable Fedora bootc deployment. The current base is
 Fedora 44, mirrored and pinned by digest in `os/base-snapshot.env`; update the
 source and frozen RPM snapshot together when changing Fedora releases.
 
@@ -12,23 +12,23 @@ filesystem (`fs`) projects metadata at `/var/workspace` and hydrates
 content-addressed data into `/var/cache/quick-fs`. Its service is required by
 the session and fails when FUSE or the device identity is unavailable.
 
-The image contains the native qOS compositor and system services, the shared
+The image contains the native Tilo compositor and system services, the shared
 runtime, and the standard applications. Optional application bundles and
 developer environments remain separate: Flatpak and distrobox are integration
-paths, not replacements for the qOS sandbox or update mechanism.
+paths, not replacements for the Tilo sandbox or update mechanism.
 
 ## Login and session flow
 
 ```text
 UEFI → systemd-boot → unified kernel image → systemd
-  → greetd → cage → qos-greeter
-  → authenticated greetd session → qos-session
-  → fs.service + qOS graphical-session targets → shell
+  → greetd → cage → tilo-greeter
+  → authenticated greetd session → tilo-session
+  → fs.service + Tilo graphical-session targets → shell
 ```
 
-`qos-greeter` is a graphical qOS UI running inside Cage; it is not
+`tilo-greeter` is a graphical Tilo UI running inside Cage; it is not
 `tuigreet`. The session entries in `os/usr/share/wayland-sessions/` invoke
-`/usr/libexec/qos-session`, which owns the lifetime of the qOS user targets
+`/usr/libexec/tilo-session`, which owns the lifetime of the Tilo user targets
 and starts `/usr/bin/shell` as the native Wayland compositor. The peer-sync
 entry is an explicit opt-in variant.
 
@@ -60,10 +60,10 @@ and recovery behavior are specified in `docs/security/boot-chain.md`,
 
 ```text
 /usr/bin/shell
-/usr/libexec/qos-session
+/usr/libexec/tilo-session
 /usr/share/wayland-sessions/shell.desktop
 /usr/lib/systemd/system/fs.service
-/etc/qos/desktop.toml
+/etc/tilo/desktop.toml
 /var/workspace
 /var/cache/quick-fs
 ```

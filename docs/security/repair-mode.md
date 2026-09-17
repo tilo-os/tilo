@@ -10,10 +10,10 @@ built and what it is allowed to do.
 Repair mode is **the same rootfs, booted to a different systemd target, selected
 by a second UKI whose sealed command line differs by one token.**
 
-That token is `qos.mode=`. `04-mode.toml` puts `qos.mode=normal` on every image's
-kernel command line; the repair entry carries `qos.mode=repair`;
-`qos-boot-mode-generator` reads `/proc/cmdline` and, for `repair`, points
-`default.target` at `qos-repair.target` and masks the desktop's units.
+That token is `tilo.mode=`. `04-mode.toml` puts `tilo.mode=normal` on every image's
+kernel command line; the repair entry carries `tilo.mode=repair`;
+`tilo-boot-mode-generator` reads `/proc/cmdline` and, for `repair`, points
+`default.target` at `tilo-repair.target` and masks the desktop's units.
 
 Three other shapes were considered and each fails on something specific to this
 image's constraints:
@@ -26,14 +26,14 @@ corrupt primary rootfs — it does not actually buy either, because a second
 deployment on the same disk fails the same way.
 
 **A UKI addon.** systemd-stub does load separately signed PE addons that append
-kernel arguments, and `qos.mode=repair` is exactly the kind of argument they carry.
+kernel arguments, and `tilo.mode=repair` is exactly the kind of argument they carry.
 But addons are picked up for *every* boot of the UKI they sit beside; there is no
 way to select one from the boot menu. An addon that makes repair mode selectable
 would have to make it unavoidable.
 
 **An initramfs target.** Break in the initramfs and give a shell there. It is
 generation-independent, which is genuinely attractive — but every verb repair
-mode actually needs (`bootc`, `qos-rollback`, `journalctl -b -1`, a package
+mode actually needs (`bootc`, `tilo-rollback`, `journalctl -b -1`, a package
 manager's worth of diagnosis) lives in the rootfs, and putting them in the
 initramfs means a second copy of them inside every UKI on the ESP. The initramfs
 is already ~120 MB of the 134 MB UKI.
@@ -50,13 +50,13 @@ one tree excluded from the digest, so a second UKI could live there, but then
 pick the right one, and the two-pass digest reseal `bootc#2334` forces would have
 to rewrite both.
 
-Deriving instead sidesteps all of it. `/usr/libexec/qos-deployment repair-entry`
+Deriving instead sidesteps all of it. `/usr/libexec/tilo-deployment repair-entry`
 takes whichever UKI `bootc install` actually wrote, copies it, and rewrites
-`qos.mode=normal` to `qos.mode=repair` **in place**. Both values are 15 bytes, so
+`tilo.mode=normal` to `tilo.mode=repair` **in place**. Both values are 15 bytes, so
 the `.cmdline` section keeps its size, every following PE section keeps its file
 offset, and the image still loads — the same length-preserving edit
 `os/dev/uki-cmdline.py` already performs to close the composefs seal.
-`qos-uki-cmdline` refuses a length-changing replacement, so a future rename of
+`tilo-uki-cmdline` refuses a length-changing replacement, so a future rename of
 either value fails loudly here instead of producing a UKI that will not boot.
 
 The result is always sealed against the deployment that is really on the disk,
@@ -70,10 +70,10 @@ The obvious shape is a Type #1 loader entry — a small text file in
 and this was established by putting one on a booted machine rather than by
 reading:
 
-- With the image at `EFI/qos/repair.efi`, `bootc status` fails outright with
+- With the image at `EFI/tilo/repair.efi`, `bootc status` fails outright with
   `Getting composefs deployment status: Listing bootloader entries: efi does not
   start with custom prefix`, and everything that reads it — `bootc upgrade`, the
-  Settings pane, `qos status` — goes with it.
+  Settings pane, `tilo status` — goes with it.
 - Moving the image under bootc's own prefix does not help. It then fails with
   `Could not determine boot type`, and bootc rewrites the ESP around the entry it
   cannot understand, renaming the deployment's own entry in the process.
@@ -89,8 +89,8 @@ image present, and `bootctl list` shows it.
 The cost is that a Type #2 entry has no text file to carry its title or its
 ordering; both come from the image's own `.osrel` section. Left alone, the repair
 image appears in the boot menu as *Fedora Linux 44 (Forty Four)* —
-indistinguishable from the thing it exists to repair. `qos-uki-cmdline set-osrel`
-writes `PRETTY_NAME=qOS Repair Mode` and `SORT_KEY=zz-qos-repair` into it. That
+indistinguishable from the thing it exists to repair. `tilo-uki-cmdline set-osrel`
+writes `PRETTY_NAME=Tilo Repair Mode` and `SORT_KEY=zz-tilo-repair` into it. That
 edit cannot be length-preserving, so it uses the other room the PE allows:
 `.osrel` is a small text section with raw slack after it (629 bytes of content in
 a 1024-byte raw section), the new text is written into that slack, and the
@@ -98,13 +98,13 @@ section's `VirtualSize` header field is updated. No file offset moves, so every
 following section is untouched — the same property the `.cmdline` edit has,
 bought a different way.
 
-`zz-qos-repair` sorts after everything bootc emits (`bootc-<stateroot>-<n>`), and
+`zz-tilo-repair` sorts after everything bootc emits (`bootc-<stateroot>-<n>`), and
 the image carries **no boot counter**, which puts it below every healthy
 deployment and above every exhausted one. See
 [../recovery.md](../recovery.md#automatic-rollback) for the ladder.
 
 A machine installed before this shape existed may still carry the Type #1 entry.
-`qos-deployment repair-entry` deletes it on sight, which is the upgrade path
+`tilo-deployment repair-entry` deletes it on sight, which is the upgrade path
 rather than tidiness: left in place, it breaks `bootc` on every subsequent boot.
 
 ## Threat model
@@ -137,7 +137,7 @@ of which someone diagnosing the machine needs before they can decide what to try
 ### Why a gate at all, when the disk is already open
 
 Because an open mapper proves that some unlock factor was supplied earlier; it
-does not prove that the same person is still at the keyboard. qOS currently
+does not prove that the same person is still at the keyboard. Tilo currently
 ships no TPM auto-unlock slot: normal and repair boots use the strong passphrase,
 recovery key, or an explicitly enrolled FIDO2 token. Without a fresh gate,
 repair mode would become an unattended physical-access root shell after any of
@@ -152,7 +152,7 @@ the disk whether it is open — it asks the LUKS header whether this is a key.
 
 The bounded-rollback design will additionally ensure an optional future TPM
 factor cannot auto-unlock repair mode once enrollment is enabled:
-`qos-rollback` seals against **PCR 7 and 11** with a signed prediction, and a
+`tilo-rollback` seals against **PCR 7 and 11** with a signed prediction, and a
 repair-mode command line produces a different PCR 11, so its keyslot would not
 open and the recovery key would be the only way in. The initramfs consumer now
 ships and preserves that fallback, but the installer still enrolls no such slot
@@ -192,7 +192,7 @@ the specific thing that stops it.
 The same reasoning is why the *derivation* of the repair UKI runs as root on a
 booted system and signs its output when the machine has enrolled its own Secure
 Boot key. An unsigned repair image on a Secure Boot machine is a menu entry the
-firmware refuses, so `qos-deployment repair-entry` declines to install one at all
+firmware refuses, so `tilo-deployment repair-entry` declines to install one at all
 rather than leaving a decoy.
 
 ## What it does not defend against
@@ -200,7 +200,7 @@ rather than leaving a decoy.
 Stated plainly, because the gate above is easy to over-read:
 
 - **Secure Boot not enrolled.** Owner enrolment is a deliberate act
-  (`qos-secureboot enroll`), and until it happens anyone can boot their own kernel
+  (`tilo-secureboot enroll`), and until it happens anyone can boot their own kernel
   on this machine. There is no TPM slot for that kernel to auto-unlock, but it can
   imitate the genuine prompt and capture a passphrase the owner enters. Repair
   mode neither causes nor worsens this; it is the reason verified boot remains

@@ -1,4 +1,4 @@
-//! The open project as a complete, bounded qOS global-search source.
+//! The open project as a complete, bounded Tilo global-search source.
 //!
 //! Timeline data is a durable namespace, not a viewport. Do not use
 //! `DEFAULT_SEARCH_INDEX_LIMIT` here: a marker near the end of a large
@@ -411,8 +411,8 @@ mod tests {
         for hit in provider.search("") {
             let address = hit.action_address().expect("search is canonical");
             assert!(
-                qos_actions::door::resolve(&resources, &address)
-                    .is_some_and(|spec| spec.kind == qos_actions::OperationKind::View),
+                tilo_actions::door::resolve(&resources, &address)
+                    .is_some_and(|spec| spec.kind == tilo_actions::OperationKind::View),
                 "{} resolves through the current resource tree",
                 hit.title
             );
@@ -469,7 +469,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            qos_actions::door::resolve(&resources, &address).is_some(),
+            tilo_actions::door::resolve(&resources, &address).is_some(),
             "search address resolves through the canonical resource tree",
         );
 
@@ -483,7 +483,7 @@ mod tests {
                 ..Default::default()
             });
         assert!(
-            qos_actions::door::resolve(&current_resources, &address).is_none(),
+            tilo_actions::door::resolve(&current_resources, &address).is_none(),
             "the stale duplicate's canonical address cannot resolve to its neighbour",
         );
     }

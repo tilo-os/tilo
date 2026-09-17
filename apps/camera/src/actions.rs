@@ -31,7 +31,7 @@
 use automerge::{AutoCommit, ROOT};
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
     OperationKind, Resource, ResourceProvider,
 };
@@ -44,7 +44,7 @@ use crate::model::{
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
 pub const CAMERA_OPERATION_TYPE: &str = "camera.operation";
-pub const APPLICATION_LAUNCH_TYPE: &str = "qos.application.launch";
+pub const APPLICATION_LAUNCH_TYPE: &str = "tilo.application.launch";
 /// The open-resource snapshot is contextual, not a dump of a 10,000-item
 /// camera roll. Exact/search results outside this page remain addressable via
 /// [`resolve_resource`].
@@ -372,9 +372,9 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
         .and_then(|id| id.strip_prefix(crate::media::MEDIA_PREFIX))
     {
         let app_id = if it.is_video {
-            "dev.qos.video-player"
+            "dev.tilo.video-player"
         } else {
-            "dev.qos.photos"
+            "dev.tilo.photos"
         };
         let label = if it.is_video {
             "Open in Video Player"
@@ -703,7 +703,7 @@ mod tests {
     use super::*;
     use crate::app::CameraApp;
     use automerge::transaction::Transactable;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -749,7 +749,7 @@ mod tests {
             .iter()
             .find(|r| r.kind == "camera.video")
             .expect("a video resource");
-        for (resource, app_id) in [(photo, "dev.qos.photos"), (video, "dev.qos.video-player")] {
+        for (resource, app_id) in [(photo, "dev.tilo.photos"), (video, "dev.tilo.video-player")] {
             let action = resource
                 .actions
                 .iter()
@@ -797,7 +797,7 @@ mod tests {
         let encoded = encode(&action).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -834,8 +834,8 @@ mod tests {
 
         let action = set_favorite_action("c5", true);
         let encoded = encode(&action).unwrap();
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -863,16 +863,16 @@ mod tests {
             "precondition: same base state"
         );
 
-        let action = record_scan_action("https://qos.example/hello", 1234);
+        let action = record_scan_action("https://tilo.example/hello", 1234);
         let encoded = encode(&action).unwrap();
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "scan replayed identically");
         let scans = doc::read_scans(&b, &ROOT);
         assert_eq!(
             scans.first().map(|s| s.raw.as_str()),
-            Some("https://qos.example/hello"),
+            Some("https://tilo.example/hello"),
             "the scan landed at the front of the peer's history"
         );
     }
@@ -887,8 +887,8 @@ mod tests {
 
         let action = CameraAction::SetGrid { on: false };
         let encoded = encode(&action).unwrap();
-        let envelope = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
 
         assert!(!doc::read_settings(&a, &ROOT).grid);
         assert!(!doc::read_settings(&b, &ROOT).grid);
@@ -917,8 +917,9 @@ mod tests {
             label: "Peer photo".into(),
             facing: Facing::Back,
         };
-        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action).unwrap()).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope =
+            tilo_actions::apply_local(&mut a, &action, encode(&action).unwrap()).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
         let captures = doc::read_shared_captures(&b, &ROOT);
         assert_eq!(captures.len(), 1);
@@ -942,13 +943,14 @@ mod tests {
             label: "Remove me".into(),
             facing: Facing::Back,
         };
-        qos_actions::apply_local(&mut a, &register, encode(&register).unwrap()).unwrap();
+        tilo_actions::apply_local(&mut a, &register, encode(&register).unwrap()).unwrap();
         let mut b = AutoCommit::load(&a.save()).unwrap();
         let remove = CameraAction::RemoveCapture {
             id: "IMG_remove.jpg".into(),
         };
-        let envelope = qos_actions::apply_local(&mut a, &remove, encode(&remove).unwrap()).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope =
+            tilo_actions::apply_local(&mut a, &remove, encode(&remove).unwrap()).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         assert!(doc::read_shared_captures(&a, &ROOT).is_empty());
         assert!(doc::read_shared_captures(&b, &ROOT).is_empty());
         assert_eq!(

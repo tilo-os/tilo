@@ -1,6 +1,6 @@
 # OS Architecture Documentation
 
-qOS is a bootable, container-based operating system built on the **Fedora Bootc** framework.
+Tilo is a bootable, container-based operating system built on the **Fedora Bootc** framework.
 
 ## Core Components
 
@@ -29,7 +29,7 @@ A P2P collaborative filesystem mounted at `/var/workspace`.
 
 The OS is built using `Containerfile` and converted to a bootable image via `os/dev/disk-image.sh`, which partitions with `systemd-repart` and installs with `bootc install to-filesystem`.
 
--   **Base**: Fedora bootc 44, mirrored into `code.podesta.ai/qos/fedora-bootc` and pinned by digest in `os/base-snapshot.env` (see `docs/supply-chain.md` for why the mirror exists).
+-   **Base**: Fedora bootc 44, mirrored into `code.podesta.ai/tilo/fedora-bootc` and pinned by digest in `os/base-snapshot.env` (see `docs/supply-chain.md` for why the mirror exists).
 -   **FUSE Support**: `fuse3` installed for userspace filesystem mounting.
 -   **Persistence**: Caching is directed to `/var/cache/quick-fs` and mounting happens in `/var/workspace` to ensure compatibility with the read-only root.
 
@@ -37,11 +37,11 @@ The OS is built using `Containerfile` and converted to a bootable image via `os/
 
 1.  **UEFI/systemd-boot**: Firmware starts the signed unified kernel image and
     systemd.
-2.  **greetd + Cage**: Starts the qOS greeter Wayland session. The greeter
-    hands an authenticated login to `qos-session`; it is not `tuigreet`.
+2.  **greetd + Cage**: Starts the Tilo greeter Wayland session. The greeter
+    hands an authenticated login to `tilo-session`; it is not `tuigreet`.
 3.  **`fs.service`**: Mounts the collaborative filesystem at `/var/workspace`
     before the graphical session.
-4.  **`qos-session`**: Verifies or provisions the local identity, then starts
-    the qOS Wayland session and its compositor-owned desktop targets.
+4.  **`tilo-session`**: Verifies or provisions the local identity, then starts
+    the Tilo Wayland session and its compositor-owned desktop targets.
 5.  **`shell`**: Runs as the native Wayland compositor on the DRM backend (or
     the winit/headless backend during development).

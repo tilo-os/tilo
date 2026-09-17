@@ -260,7 +260,7 @@ fn export_as(project: &Project, container: Container) -> std::path::PathBuf {
 /// somewhere specific — then they are there to be looked at, which is the
 /// point of running this by hand.
 fn tidy(path: &std::path::Path) {
-    if std::env::var_os("QOS_VE_EXPORT_DIR").is_none() {
+    if std::env::var_os("TILO_VE_EXPORT_DIR").is_none() {
         std::fs::remove_file(path).ok();
     }
 }
@@ -764,7 +764,7 @@ fn write_fixture_wav(path: &std::path::Path) {
 /// the same path the editor's mixer uses and checked to carry the tones it was
 /// built from — before any test is allowed to draw a conclusion from it.
 fn audio_fixture() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("qos-ve-tone-{}.wav", std::process::id()));
+    let path = std::env::temp_dir().join(format!("tilo-ve-tone-{}.wav", std::process::id()));
     if !path.exists() {
         write_fixture_wav(&path);
     }
@@ -1447,7 +1447,7 @@ fn write_plate(path: &std::path::Path) {
 /// green plate with an orange band on it, every key assertion below becomes
 /// a statement about nothing.
 fn green_plate() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("qos-ve-plate-{}.mp4", std::process::id()));
+    let path = std::env::temp_dir().join(format!("tilo-ve-plate-{}.mp4", std::process::id()));
     if !path.exists() {
         write_plate(&path);
     }
@@ -1820,7 +1820,7 @@ fn band_u(i: usize) -> f64 {
 /// if the bands do not come back as a monotonically rising neutral ramp,
 /// every tone assertion below is a statement about nothing.
 fn grey_wedge() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("qos-ve-wedge-{}.mp4", std::process::id()));
+    let path = std::env::temp_dir().join(format!("tilo-ve-wedge-{}.mp4", std::process::id()));
     if !path.exists() {
         write_wedge(&path);
     }
@@ -2052,7 +2052,7 @@ fn a_relative_media_path_is_resolved_or_refused_never_stood_in_for() {
     video_editor::media::set_project_anchor(None);
     let pid = std::process::id();
     let mut lost = project_over(&clip, 0.5, &format!("ve relative lost {pid}"));
-    lost.media[0].path = format!("qos-not-here-{pid}/{file}");
+    lost.media[0].path = format!("tilo-not-here-{pid}/{file}");
     let settings = ExportSettings {
         resolution: Resolution::P720,
         container: Container::Mp4,

@@ -40,9 +40,9 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
 }
 
 /// Locate a usable pdfium without ever bundling one (same search order the PDF
-/// viewer uses: `QOS_PDFIUM_LIB`, common system paths, `~/.local/lib/pdfium`).
+/// viewer uses: `TILO_PDFIUM_LIB`, common system paths, `~/.local/lib/pdfium`).
 fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
-    if let Ok(path) = std::env::var("QOS_PDFIUM_LIB")
+    if let Ok(path) = std::env::var("TILO_PDFIUM_LIB")
         && !path.is_empty()
         && let Ok(b) = Pdfium::bind_to_library(&path)
     {

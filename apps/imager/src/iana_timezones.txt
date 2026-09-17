@@ -263,7 +263,7 @@ Asia/Phnom_Penh
 Asia/Pontianak
 Asia/Pyongyang
 Asia/Qatar
-Asia/Qostanay
+Asia/Tilotanay
 Asia/Qyzylorda
 Asia/Riyadh
 Asia/Sakhalin

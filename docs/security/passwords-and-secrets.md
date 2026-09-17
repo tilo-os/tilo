@@ -1,6 +1,6 @@
 # Passwords and app credentials
 
-Passwords is the user-facing inventory for qOS's encrypted secret store. Titles,
+Passwords is the user-facing inventory for Tilo's encrypted secret store. Titles,
 usernames, service origins, notes, custom fields and passwords are all inside the
 authenticated vault ciphertext. The plaintext account store never contains them.
 
@@ -21,7 +21,7 @@ Password generation uses OS randomness, rejection sampling (no modulo bias), a
 
 The Passwords UI keeps search and edit drafts in process-local state. Reveal is
 masked again after ten seconds. Copies are offered through native effect actions
-and expire after thirty seconds; qOS clears only if the clipboard still contains
+and expire after thirty seconds; Tilo clears only if the clipboard still contains
 the copied password, so it never erases newer user content. Editing with a blank
 password preserves the existing one, and deletion requires a second explicit
 confirmation.

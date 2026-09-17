@@ -92,7 +92,7 @@ pub use identity::{
 pub use named_share_delivery::{
     MAX_NAMED_SHARE_INBOX_ENTRIES, NamedShareDeliveryClient, NamedShareDeliveryError,
     NamedShareEnvelopeV1, NamedShareInbox, NamedShareInboxError, NamedShareInboxProtocol,
-    NamedShareOutbox, NamedShareOutboxEntryV1, QOS_FS_NAMED_SHARE_INBOX_ALPN,
+    NamedShareOutbox, NamedShareOutboxEntryV1, TILO_FS_NAMED_SHARE_INBOX_ALPN,
 };
 pub use namespace::{Namespace, ROOT_INO, TransactionProjectionError};
 pub use peer_auth::{
@@ -111,11 +111,11 @@ pub use record_materializer::{
     RecordMaterializer, RecordMaterializerError, RecordReconciliationReport,
 };
 pub use record_protocol::{
-    MAX_RECORD_PROTOCOL_FRAME_BYTES, QOS_FS_RECORD_ALPN, RECORD_PROTOCOL_VERSION,
-    RecordMutationSink, RecordMutationSinkError, RecordProtocol, RecordProtocolClient,
-    RecordProtocolClientError, RecordProtocolCredentialV1, RecordProtocolError,
-    RecordProtocolOperationV1, RecordProtocolRequestV1, RecordProtocolResponseV1,
-    RecordProtocolSessionV1, RecordProtocolSnapshotV1,
+    MAX_RECORD_PROTOCOL_FRAME_BYTES, RECORD_PROTOCOL_VERSION, RecordMutationSink,
+    RecordMutationSinkError, RecordProtocol, RecordProtocolClient, RecordProtocolClientError,
+    RecordProtocolCredentialV1, RecordProtocolError, RecordProtocolOperationV1,
+    RecordProtocolRequestV1, RecordProtocolResponseV1, RecordProtocolSessionV1,
+    RecordProtocolSnapshotV1, TILO_FS_RECORD_ALPN,
 };
 pub use record_publisher::{
     BindingPublishStatus, LocalOwnerAuthorizer, MetadataPublishStatus, PublishReport,
@@ -142,9 +142,9 @@ pub use record_transaction::{
     RecordTransactionJournalError, RecordTransactionParticipantBatch, RecordTransactionPhase,
 };
 pub use replica_ack::{
-    MAX_REPLICA_ACK_FRAME_BYTES, MAX_REPLICA_ACK_LIFETIME_MS, QOS_FS_REPLICA_ACK_ALPN,
-    REPLICA_ACK_PROTOCOL_VERSION, ReplicaAckError, ReplicaAckRequestV1, ReplicaAckResponseV1,
-    ReplicaAckV1,
+    MAX_REPLICA_ACK_FRAME_BYTES, MAX_REPLICA_ACK_LIFETIME_MS, REPLICA_ACK_PROTOCOL_VERSION,
+    ReplicaAckError, ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1,
+    TILO_FS_REPLICA_ACK_ALPN,
 };
 pub use share_authority::{
     MAX_SHARE_PROJECTION_BYTES, MAX_SHARES_PER_RECORD, Redemption, SHARE_PROJECTION_VERSION,

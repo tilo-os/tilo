@@ -1,4 +1,4 @@
-//! Git — standard qOS application entry point.
+//! Git — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -68,7 +68,7 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
 }
 
 fn render(root: Box<dyn Widget>, viewport: (u32, u32), out: &std::path::Path) {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => ui::Theme::light(),
         Some("high-contrast") => ui::Theme::high_contrast(),
         _ => ui::Theme::dark(),
@@ -93,7 +93,7 @@ fn stage_and_commit(message: &str) -> Result<(), LaunchError> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.git-client", git_client::app_root)
+        &LaunchSpec::new("dev.tilo.git-client", git_client::app_root)
             .shot_root(shot_root)
             .shot_viewport(|_| WIDE_VIEWPORT)
             .allowed_live_options(&["--stage-commit", "--shots-narrow"])

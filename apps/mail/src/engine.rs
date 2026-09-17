@@ -1456,7 +1456,7 @@ pub mod live {
         #[test]
         fn imap_fetch_over_a_real_socket_parses_a_message() {
             let eml = b"From: Ada Lovelace <ada@analytical.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Live inbox works\r\n\
 Date: Fri, 01 Jan 2021 09:30:00 +0000\r\n\
 Message-ID: <live-1@analytical.example>\r\n\
@@ -1593,7 +1593,7 @@ mod tests {
         let (tx, rx) = spawn_with(Box::new(StubEngine));
         let account = AccountConfig {
             display_name: "Me".into(),
-            email: "me@qos.example".into(),
+            email: "me@tilo.example".into(),
             ..Default::default()
         };
         let draft = Draft {

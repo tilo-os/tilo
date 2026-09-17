@@ -12,7 +12,7 @@
 //!   this payload").
 //!
 //! The identity-flow ceremony uses this widget to encode both the
-//! pairing-channel handshake payload and the `qos://invite/...` URL.
+//! pairing-channel handshake payload and the `tilo://invite/...` URL.
 
 use std::collections::HashMap;
 

@@ -38,7 +38,7 @@ pub fn pick_image_native() -> ui::PortalChannel {
 #[cfg(target_os = "macos")]
 fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
     let script = r#"try
-set picked to choose file with prompt "Choose a qOS or disk image"
+set picked to choose file with prompt "Choose a Tilo or disk image"
 POSIX path of picked
 on error number -128
 return ""
@@ -53,7 +53,7 @@ end try"#;
 
 #[cfg(target_os = "windows")]
 fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
-    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a qOS or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
+    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a Tilo or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
     let out = Command::new("powershell.exe")
         .args(["-NoProfile", "-STA", "-Command", script])
         .output()?;
@@ -88,7 +88,7 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
     let json: Value = serde_json::from_slice(&out.stdout).ok()?;
     let drives = parse_lsblk(&json)?;
     #[cfg(feature = "flatpak-media-writer")]
-    if std::env::var("QOS_IMAGER_FLATPAK").as_deref() == Ok("1") {
+    if std::env::var("TILO_IMAGER_FLATPAK").as_deref() == Ok("1") {
         return harden_flatpak_inventory(drives);
     }
     Some(drives)
@@ -228,7 +228,7 @@ fn udisks_object_path(device_name: &str) -> String {
 
 /// macOS: enumerate external physical media only. Internal disks are omitted
 /// because raw imaging the running APFS container is never a valid media-
-/// creation operation; the live qOS installer handles internal installation.
+/// creation operation; the live Tilo installer handles internal installation.
 #[cfg(target_os = "macos")]
 fn probe_platform() -> Option<Vec<TargetDrive>> {
     let plist = Command::new("diskutil")
@@ -518,7 +518,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         });
 
     // Local files have no authenticated release-catalog provenance. Even a
-    // qOS-looking filename or volume label is therefore write-only.
+    // Tilo-looking filename or volume label is therefore write-only.
     let looks_like_image = matches!(ext.as_str(), "iso" | "img" | "raw" | "bin" | "dd");
     if !looks_like_image {
         return None;
@@ -733,21 +733,21 @@ mod tests {
 
     #[test]
     fn reads_real_iso9660_volume_label() {
-        let iso = iso_with_label("QOS_1_0_X86_64");
+        let iso = iso_with_label("TILO_1_0_X86_64");
         assert_eq!(
             read_iso_label(iso.path()).as_deref(),
-            Some("QOS_1_0_X86_64")
+            Some("TILO_1_0_X86_64")
         );
     }
 
     #[test]
-    fn qos_looking_local_source_remains_unverified_and_write_only() {
-        let iso = iso_with_label("QOS_1_0");
+    fn tilo_looking_local_source_remains_unverified_and_write_only() {
+        let iso = iso_with_label("TILO_1_0");
         let src = inspect_source(iso.path()).expect("inspect");
         assert_eq!(src.kind, SourceKind::IsoFile);
         assert!(!src.installable);
         assert!(src.expected_sha256.is_none());
-        assert_eq!(src.label, "QOS_1_0");
+        assert_eq!(src.label, "TILO_1_0");
         assert!(src.size > 0);
         assert!(
             std::path::Path::new(&src.name)
@@ -774,9 +774,9 @@ mod tests {
     }
 
     #[test]
-    fn qos_filename_does_not_turn_non_image_into_official_media() {
+    fn tilo_filename_does_not_turn_non_image_into_official_media() {
         let f = tempfile::Builder::new()
-            .prefix("qos-official-")
+            .prefix("tilo-official-")
             .suffix(".txt")
             .tempfile()
             .unwrap();

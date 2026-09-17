@@ -395,7 +395,7 @@ impl RecordPublisher {
         &self,
         record_id: FileRecordId,
     ) -> Result<bool, RecordPublisherError> {
-        const DOMAIN: &[u8] = b"qos.fs.record.concurrent-head-conflict.v1\0";
+        const DOMAIN: &[u8] = b"tilo.fs.record.concurrent-head-conflict.v1\0";
 
         let _guard = self
             .publish_lock

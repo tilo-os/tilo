@@ -1,4 +1,4 @@
-# qOS Human Interface Guidelines
+# Tilo Human Interface Guidelines
 
 ## Purpose & philosophy
 
@@ -6,7 +6,7 @@ These guidelines are **as strict and detailed as the GNOME HIG**, but with one
 deliberate difference: they are meant to be **auto-enforcing at the code level**.
 
 GTK's age and history let you build applications that badly violate the GNOME
-HIG while still "working". qOS avoids that by making the right thing the *default*
+HIG while still "working". Tilo avoids that by making the right thing the *default*
 thing in the `ui` toolkit, and by having the toolkit **nudge or refuse** the
 wrong thing. When a rule here recurs across apps, the correct response is to
 promote a `ui` primitive that bakes the rule in — not to reimplement it (and
@@ -156,14 +156,14 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 - **File open/save goes through the XDG Desktop Portal**
   (`org.freedesktop.portal.FileChooser`, via `ashpd`) — an app **never draws its
   own file picker**. The *host desktop* provides the picker: on GNOME the user
-  sees GNOME's file chooser; on qOS the **compositor implements the portal
-  backend** and renders qOS's picker (which is also where the per-cluster
+  sees GNOME's file chooser; on Tilo the **compositor implements the portal
+  backend** and renders Tilo's picker (which is also where the per-cluster
   sandbox / file-access prompt lives — the portal is the security boundary). A
   bespoke in-app "OpenDialog", or an app-drawn `ui::FilePicker` used for OS file
   open/save, is a bug. (`ui::FilePicker` exists only for the compositor's own
   portal-backend rendering, or non-filesystem in-cluster pickers.)
 - Prefer host/portal services generally (screenshot, sharing, notifications)
-  over reinventing them in-app, so a qOS app behaves like a native app on
+  over reinventing them in-app, so a Tilo app behaves like a native app on
   whatever desktop it runs.
 
 ## 6. Performance (felt responsiveness)

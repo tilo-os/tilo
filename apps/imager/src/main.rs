@@ -3,7 +3,7 @@
 //! Modes:
 //!   * default — run the live winit event loop via `ui::App`, starting blank
 //!     with a real `lsblk` drive probe.
-//!   * `--demo` — run live but seed sample content (drives, a qOS image,
+//!   * `--demo` — run live but seed sample content (drives, a Tilo image,
 //!     recent history) for a walkthrough / review.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit.
 //!     `--scenario NAME` picks which wizard station (defaults to `source`);
@@ -70,12 +70,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Packaging smoke probe: reaching this point proves the executable and
     // all runtime-linked libraries load without starting graphics, portals,
     // device discovery, or a privileged path.
-    if args.iter().any(|arg| arg == "--qos-package-smoke") {
+    if args.iter().any(|arg| arg == "--tilo-package-smoke") {
         return Ok(());
     }
-    if args.iter().any(|arg| arg == "--qos-flatpak-probe-smoke") {
+    if args.iter().any(|arg| arg == "--tilo-flatpak-probe-smoke") {
         if !cfg!(feature = "flatpak-media-writer")
-            || std::env::var("QOS_IMAGER_FLATPAK").as_deref() != Ok("1")
+            || std::env::var("TILO_IMAGER_FLATPAK").as_deref() != Ok("1")
         {
             return Err("the Flatpak probe smoke test is outside its sandbox".into());
         }
@@ -105,7 +105,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.imager", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.imager", live_root)
             .shot_handler(render_shot)
             .allowed_live_flags(&["--demo"])
             .scenarios(imager::SHOT_SCENARIOS)
@@ -181,9 +181,9 @@ fn render_scenario(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme
     // so the same frame can be graded in both light and dark (default dark).
-    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),

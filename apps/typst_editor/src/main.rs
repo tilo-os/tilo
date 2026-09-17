@@ -60,7 +60,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.typst-editor", typst_editor::app_root)
+        &LaunchSpec::new("dev.tilo.typst-editor", typst_editor::app_root)
             .shot_handler(shot_handler)
             .allowed_options(&["--theme"])
             .scenarios(&[
@@ -89,12 +89,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .as_deref()
         .map_or_else(typst_editor::demo_root, typst_editor::demo_root_scenario);
     // Keep the app-specific switch for existing scripts, while matching the
-    // standard qOS screenshot contract.  In particular, review captures must
+    // standard Tilo screenshot contract.  In particular, review captures must
     // be able to exercise the actual high-contrast and motion preferences.
     let theme_name = args
         .value("--theme")
         .map(str::to_owned)
-        .or_else(|| std::env::var("QOS_SHOTS_THEME").ok());
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok());
     let theme = match theme_name.as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
@@ -105,7 +105,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
             )));
         }
     };
-    let reduced_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    let reduced_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| {

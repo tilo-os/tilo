@@ -1,4 +1,4 @@
-//! Hosted-mode `QOS_TEST_CONTROL` socket listener.
+//! Hosted-mode `TILO_TEST_CONTROL` socket listener.
 //!
 //! Headless mode binds the same socket via `compositor::native::
 //! bind_test_control_socket` and drives the `FrameBuilder` directly.
@@ -66,7 +66,7 @@ enum HostedResponse {
 /// backed internally).
 pub fn spawn(socket_path: PathBuf, proxy: EventLoopProxy<UserEvent>) {
     let spawned = thread::Builder::new()
-        .name("qos-hosted-test-control".to_string())
+        .name("tilo-hosted-test-control".to_string())
         .spawn(move || {
             // Scrub a stale socket from a previous run. Same logic as
             // `native::bind_test_control_socket`.

@@ -1,4 +1,4 @@
-# qOS OS-integration architecture record
+# Tilo OS-integration architecture record
 
 **Record type:** Historical planning rationale. Current delivery state is established by the checkout, tests, and release evidence rather than this document.
 
@@ -24,7 +24,7 @@ serving and compute placement must not create a parallel sync or identity stack.
   package-boundary guarantees.
 - Prefer local rendering from collaborative state for native peer collaboration;
   surface streaming is a compatibility mechanism, not the semantic model for
-  qOS-native apps.
+  Tilo-native apps.
 - Treat desktop polish features as user-facing subsystems with explicit evidence,
   including accessibility, notifications, input, scaling, lock, audio, and power.
 

@@ -8,9 +8,9 @@
 use std::io;
 use std::time::Duration;
 
-use qos_user_identity::RevocationList;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_user_identity::RevocationList;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::identity::PeerCredentials;
@@ -292,7 +292,7 @@ where
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use qos_user_identity::{
+    use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
         adopt_device_key, persist::write_device_cert, sign_device_cert, sign_revocation_entry,
     };

@@ -69,7 +69,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.terminal", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.terminal", live_root)
             .live_handler(run_live)
             .shot_handler(run_shot)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
@@ -100,7 +100,7 @@ fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
     // polling at ~60 Hz: grab the handle before moving the widget into the App,
     // then store the loop's proxy once it exists.
     let waker = widget.waker_handle();
-    let (state, autosave) = ui::persist::open("dev.qos.terminal");
+    let (state, autosave) = ui::persist::open("dev.tilo.terminal");
     let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     app.run_with_setup(move |proxy| {
         if let Ok(mut g) = waker.lock() {
@@ -151,16 +151,16 @@ fn render_shot_to_png(
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
     theme.reduce_motion = matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
     );
-    if let Some(scale) = std::env::var("QOS_SHOTS_TEXT_SCALE")
+    if let Some(scale) = std::env::var("TILO_SHOTS_TEXT_SCALE")
         .ok()
         .and_then(|raw| raw.parse::<f32>().ok())
         .filter(|scale| scale.is_finite())
@@ -265,7 +265,7 @@ fn drive_live_shell(
     // A short demo: identify the shell, print some content, and end with a
     // green "done" so the shot shows real SGR-coloured output.
     widget.write_input(
-        b"clear; printf 'qOS terminal - live PTY session\\n'; \
+        b"clear; printf 'Tilo terminal - live PTY session\\n'; \
           printf 'primes below 20: 2 3 5 7 11 13 17 19\\n'; \
           printf '\\033[1;32mdone\\033[0m\\n'\r",
     );
@@ -305,7 +305,7 @@ fn run_scenario(
         // truecolor gradient, and the four style bits.
         "colors" => {
             let mut s = String::new();
-            s.push_str("\x1b[1mqOS terminal — SGR palette\x1b[0m\r\n\r\n");
+            s.push_str("\x1b[1mTilo terminal — SGR palette\x1b[0m\r\n\r\n");
             s.push_str(" 16-color ANSI:  ");
             for n in 0..8 {
                 let _ = write!(s, "\x1b[4{n}m  \x1b[0m");
@@ -328,7 +328,7 @@ fn run_scenario(
             s.push_str("\x1b[1mbold\x1b[0m  \x1b[2mdim\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
             s.push_str("\r\n foreground:     ");
             s.push_str("\x1b[38;2;255;90;90mred \x1b[38;2;90;220;120mgreen \x1b[38;2;110;160;255mblue\x1b[0m\r\n");
-            s.push_str("\r\n$ \x1b[38;5;120mecho\x1b[0m \x1b[38;5;223m\"hello, qOS\"\x1b[0m\r\n");
+            s.push_str("\r\n$ \x1b[38;5;120mecho\x1b[0m \x1b[38;5;223m\"hello, Tilo\"\x1b[0m\r\n");
             widget.feed(doc, root, s.as_bytes());
         }
         // A full-screen alternate-screen redraw resembling a text editor.
@@ -336,7 +336,7 @@ fn run_scenario(
             let mut s = String::new();
             s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
             // Reverse-video title bar across the top.
-            s.push_str("\x1b[1;1H\x1b[7m qOS EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
+            s.push_str("\x1b[1;1H\x1b[7m Tilo EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
             #[allow(
                 clippy::literal_string_with_formatting_args,
                 reason = "demo source text shown verbatim in the tui shot; the braces are \
@@ -345,7 +345,7 @@ fn run_scenario(
             let lines = [
                 "fn main() {",
                 "    // alternate-screen redraw via CSI ?1049h",
-                "    let greeting = \"hello, qOS\";",
+                "    let greeting = \"hello, Tilo\";",
                 "    for i in 0..3 {",
                 "        println!(\"{i}: {greeting}\");",
                 "    }",

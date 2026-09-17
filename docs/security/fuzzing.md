@@ -1,6 +1,6 @@
 # Security fuzzing
 
-qOS continuously fuzzes the parsers that accept data before a user has decided
+Tilo continuously fuzzes the parsers that accept data before a user has decided
 to trust its sender. The harnesses live in `fuzz/` and run daily under
 libFuzzer's sanitizer instrumentation:
 

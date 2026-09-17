@@ -1,12 +1,12 @@
-# qOS App Registry
+# Tilo App Registry
 
-The registry is qOS's semi-federated marketplace for `.qpkg`
+The registry is Tilo's semi-federated marketplace for `.qpkg`
 bundles. It advertises signed metadata so users can browse,
 install, and update packages from the shell. Anyone can host
-their own registry; the qOS org runs one at
-`apps.qos.dev` (source under `crates/packaging/registry-server`)
+their own registry; the Tilo org runs one at
+`apps.tilo.dev` (source under `crates/packaging/registry-server`)
 and ships **the registry client itself as a `.qpkg` app** so it
-can be swapped out or forked like any other qOS app.
+can be swapped out or forked like any other Tilo app.
 
 This document covers the architecture, how to bootstrap a
 self-hosted instance, publisher-allowlist workflow, TLS setup,
@@ -71,16 +71,16 @@ Trust flow on the client:
 
 ```
 publisher entry sig  = ed25519_sign(publisher_key,
-                                    blake3(b"qos-registry-entry-v1\0"
+                                    blake3(b"tilo-registry-entry-v1\0"
                                            || postcard(entry_without_signature)))
 
 publisher change sig = ed25519_sign(publisher_key,
-                                    blake3(b"qos-registry-entry-v1\0"
+                                    blake3(b"tilo-registry-entry-v1\0"
                                            || postcard((action,
                                                         entry_without_signature))))
 
 owner index sig      = ed25519_sign(owner_key,
-                                    blake3(b"qos-registry-index-v1\0"
+                                    blake3(b"tilo-registry-index-v1\0"
                                            || postcard(index_manifest)))
 ```
 
@@ -131,21 +131,21 @@ in a hardware token if you can; publish only the pubkey.
 ### 2. Init the data dir
 
 ```
-qos-registry-server init \
+tilo-registry-server init \
     --owner-pubkey <hex> \
     --name "acme registry" \
     --description "Apps for the acme fleet" \
     --base-url https://apps.acme.example
 ```
 
-This writes `handshake.toml` under `$XDG_STATE_HOME/qos-registry`
-(default: `~/.local/state/qos-registry`, or `/var/lib/qos-registry`
+This writes `handshake.toml` under `$XDG_STATE_HOME/tilo-registry`
+(default: `~/.local/state/tilo-registry`, or `/var/lib/tilo-registry`
 under the systemd unit).
 
 ### 3. Allowlist your first publisher
 
 ```
-qos-registry-server add-publisher \
+tilo-registry-server add-publisher \
     --pubkey <publisher-hex> \
     --can-add-new \
     --note "in-house team"
@@ -159,7 +159,7 @@ entry.
 ### 4. Serve
 
 ```
-qos-registry-server serve --port 8443 --bind 127.0.0.1
+tilo-registry-server serve --port 8443 --bind 127.0.0.1
 ```
 
 Behind nginx / Caddy — see TLS below.
@@ -178,11 +178,11 @@ package. The owner reviews them locally; there is intentionally no
 remotely callable approval endpoint.
 
 ```text
-qos-registry-server review list --json
-qos-registry-server review show dev.example.app --json
-qos-registry-server review approve dev.example.app \
+tilo-registry-server review list --json
+tilo-registry-server review show dev.example.app --json
+tilo-registry-server review approve dev.example.app \
     --reviewer alice --reason "capabilities and core journeys verified"
-qos-registry-server review reject dev.example.app \
+tilo-registry-server review reject dev.example.app \
     --reviewer alice --reason "misleading subscription disclosure"
 ```
 
@@ -198,7 +198,7 @@ Publish the next bounded-lifetime snapshot from an offline signing environment:
 
 ```text
 chmod 0600 /secure/registry-owner.seed
-qos-registry-server sign-snapshot \
+tilo-registry-server sign-snapshot \
   --owner-key-file /secure/registry-owner.seed \
   --valid-for-seconds 86400
 ```
@@ -288,7 +288,7 @@ safe — the worst case is that you capture a subset of
 in-flight changes; nothing gets torn.
 
 For a restore, drop the same tarball back in place and start
-`qos-registry-server serve`. There's no daemon-side state
+`tilo-registry-server serve`. There's no daemon-side state
 outside the data-dir — the server is stateless across restarts.
 
 ## Moderation policy and operations
@@ -322,11 +322,11 @@ outside the data-dir — the server is stateless across restarts.
   stop in-flight substitution; human review is still fallible, so
   operators should quarantine suspicious entries and revoke the key.
   Publishers should keep signing keys in hardware and rotate on
-  compromise; the qOS threshold
+  compromise; the Tilo threshold
   identity work (`crates/collab/threshold-identity`) is the
   long-term path to publisher-key resilience.
 - **Denial of service** — no rate limiting is built in. Put the
   reverse proxy in front, or run `fail2ban` against
-  `journalctl -u qos-registry-server`. All POSTs perform an
+  `journalctl -u tilo-registry-server`. All POSTs perform an
   Ed25519 verification before touching disk, so unsigned junk
   is cheap to reject.

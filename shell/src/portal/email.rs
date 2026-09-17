@@ -207,6 +207,6 @@ mod tests {
         // The helper additionally verifies that a file URI lies under the
         // live document portal mount; arbitrary host paths fail that check.
         assert!(!attachment_uris(&["file:///home/me/private.pdf".into()]));
-        assert!(!attachment_uris(&["document://qos/abc".into()]));
+        assert!(!attachment_uris(&["document://tilo/abc".into()]));
     }
 }

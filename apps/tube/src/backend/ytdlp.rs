@@ -21,7 +21,7 @@
 //!
 //! It is a subprocess, not a crate, so it adds **no** compile-time dependency:
 //! the only requirement is that `yt-dlp` is on `PATH` (it is, in the distrobox
-//! build env and on the qOS image — see the module notes). Construction probes
+//! build env and on the Tilo image — see the module notes). Construction probes
 //! `yt-dlp --version` so a missing binary degrades cleanly to the offline
 //! sample rather than erroring at query time.
 

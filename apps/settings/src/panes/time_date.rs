@@ -632,7 +632,7 @@ fn persist_time_format(h24: bool) {
     let mut region = RegionSettings::load();
     region.locale.time_format = if h24 { TimeStyle::H24 } else { TimeStyle::H12 };
     if let Err(e) = region.save() {
-        warn!(target: "qos::settings", op = "time_format_save", error = %e, "failed to persist clock format");
+        warn!(target: "tilo::settings", op = "time_format_save", error = %e, "failed to persist clock format");
     }
 }
 
@@ -849,7 +849,7 @@ impl TimeDatePane {
 
         let mapped = self.timezone_points.len();
         let map_note = if mapped == 0 {
-            "This tzdata installation does not publish map coordinates. The searchable selector remains complete; qOS does not guess your location."
+            "This tzdata installation does not publish map coordinates. The searchable selector remains complete; Tilo does not guess your location."
                 .to_string()
         } else {
             format!(
@@ -904,7 +904,7 @@ impl TimeDatePane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
         );
     }
 }
@@ -974,7 +974,7 @@ impl Widget for TimeDatePane {
                     self.structure_dirty = true;
                 }
                 Err(error) => {
-                    warn!(target: "qos::settings", op = "set_timezone", error = %error, "time-zone change failed");
+                    warn!(target: "tilo::settings", op = "set_timezone", error = %error, "time-zone change failed");
                     self.dispatch(
                         state,
                         &set_text_action(TIMEZONE_KEY, self.last_timezone.clone()),
@@ -1001,7 +1001,7 @@ impl Widget for TimeDatePane {
                     let _ = state.put(root, draft_key(AUTO_TIME_KEY), *b);
                 }
                 Err(e) => {
-                    warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
+                    warn!(target: "tilo::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
                     self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, previous));
                     let _ = state.put(root, draft_key(AUTO_TIME_KEY), previous);
                     self.notice = Some(format!("Automatic time could not be changed: {e}"));
@@ -1128,7 +1128,7 @@ impl Widget for TimeDatePane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed

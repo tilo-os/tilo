@@ -37,7 +37,7 @@
 
 use automerge::AutoCommit;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec, RetryPolicy,
@@ -1326,7 +1326,7 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
                 },
             )
             .unwrap_or_else(|error| EncodedAction {
-                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                 payload: format!("photos file operation could not be serialized: {error}")
                     .into_bytes(),
             })
@@ -1353,9 +1353,9 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
 /// This used to be `format!("{IMAGE_KIND}:{path}")`, and the path is true on
 /// exactly one machine. Content handed to a room is staged by each session
 /// under its own runtime directory, so one photograph had one address per
-/// participant — `…/qlva…/qos-opened/<hash>.png` here, `…/qlvx…/` there,
+/// participant — `…/qlva…/tilo-opened/<hash>.png` here, `…/qlvx…/` there,
 /// `…/qlvq…/` in the third. An address is resolved by string equality
-/// ([`qos_actions::door::resolve`]), so an operation invoked on one of them
+/// ([`tilo_actions::door::resolve`]), so an operation invoked on one of them
 /// reached exactly one session: the one whose path had won. An agent cropped
 /// the editor in `qlva…` while the person watching the editor in `qlvx…` saw
 /// their picture sit there unchanged. The run before, the same invocation
@@ -1374,7 +1374,7 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
 /// was handed the same bytes staged as `<hash>.png` would be back to two
 /// addresses for one picture. What a person reads is the resource's **label**,
 /// which is the file's own name and travels beside the id everywhere one is
-/// rendered — the palette row, `qos_actions::FlatAction::resource_label`, the
+/// rendered — the palette row, `tilo_actions::FlatAction::resource_label`, the
 /// agent's survey line, the chip on a remark.
 ///
 /// # A photograph with no content hash
@@ -1434,12 +1434,12 @@ mod tests {
         LibraryPhoto::from_image(OpenImage::from_path(path, width, height).with_content(hash))
     }
     use crate::model::OpenImage;
-    use qos_actions::flatten;
+    use tilo_actions::flatten;
 
     fn doc_with_image() -> AutoCommit {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let img = OpenImage::from_path("/var/tmp/qos/home/quinten/harbour.png", 800, 400);
+        let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 800, 400);
         PhotosDoc::set_image(&mut doc, Some(&img));
         doc
     }
@@ -1453,7 +1453,7 @@ mod tests {
         const HASH: &str = "623fdbf0c19749ddd1116f8c68b561ad648e3023ca4f304a732bf7b06d1ffb82";
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let img = OpenImage::from_path("/run/user/1000/qlva3099960/qos-opened/x.png", 800, 400)
+        let img = OpenImage::from_path("/run/user/1000/qlva3099960/tilo-opened/x.png", 800, 400)
             .with_content(HASH);
         PhotosDoc::set_image(&mut doc, Some(&img));
 
@@ -1493,7 +1493,7 @@ mod tests {
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].kind, "photos.library");
         assert_eq!(resources[0].actions[0].id, "open");
-        let qos_actions::ActionInput::Immediate(open) = &resources[0].actions[0].input else {
+        let tilo_actions::ActionInput::Immediate(open) = &resources[0].actions[0].input else {
             panic!("library view is an immediate local operation");
         };
         assert_eq!(
@@ -1519,7 +1519,7 @@ mod tests {
         assert_eq!(image.label, "harbour.png");
         assert_eq!(
             image.id.0,
-            "photos.image:/var/tmp/qos/home/quinten/harbour.png"
+            "photos.image:/var/tmp/tilo/home/quinten/harbour.png"
         );
         // The size is discoverable from titles alone.
         assert_eq!(image.children.len(), 1);
@@ -1570,7 +1570,7 @@ mod tests {
             .expect("the selected photo still offers removal");
         let mut registry = ActionRegistry::new();
         register(&mut registry);
-        let qos_actions::ActionInput::Immediate(encoded) = &remove.input else {
+        let tilo_actions::ActionInput::Immediate(encoded) = &remove.input else {
             panic!("removal is immediate");
         };
         registry.decode(encoded).unwrap().apply(&mut doc).unwrap();
@@ -1601,7 +1601,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "share-reference")
             .expect("an addressable library photo can be shared");
-        let qos_actions::ActionInput::Immediate(encoded) = &share.input else {
+        let tilo_actions::ActionInput::Immediate(encoded) = &share.input else {
             panic!("share is a local effect operation");
         };
         assert_eq!(
@@ -1783,7 +1783,7 @@ mod tests {
             .iter()
             .find(|a| a.id == "crop")
             .expect("crop is published");
-        let qos_actions::ActionInput::Prompted { build, .. } = &crop.input else {
+        let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
             panic!("crop collects an argument");
         };
         let mut registry = ActionRegistry::new();
@@ -1806,7 +1806,7 @@ mod tests {
         let mut doc = doc_with_image();
         let res = PhotosResources.resources(&doc);
         let crop = res[0].actions.iter().find(|a| a.id == "crop").unwrap();
-        let qos_actions::ActionInput::Prompted { build, .. } = &crop.input else {
+        let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
             panic!("crop collects an argument");
         };
         let mut registry = ActionRegistry::new();
@@ -1832,9 +1832,9 @@ mod tests {
         let open = res[0].actions.iter().find(|a| a.id == "open").unwrap();
         assert_eq!(
             open.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: true }
+            tilo_actions::ExecutionMode::Background { cancellable: true }
         );
-        assert_eq!(open.contract.result, qos_actions::ResultSpec::Job);
+        assert_eq!(open.contract.result, tilo_actions::ResultSpec::Job);
         assert_eq!(open.params()[0].name.as_ref(), "path");
         let copy = res[0].actions.iter().find(|a| a.id == "copy").unwrap();
         assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);

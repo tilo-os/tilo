@@ -340,7 +340,7 @@ pub const AUDIO_BITRATE_BPS: u64 = 128_000;
 pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<String> {
     let enc = audio_encoder(container);
     Some(format!(
-        "appsrc name=qos_audio is-live=false format=time \
+        "appsrc name=tilo_audio is-live=false format=time \
          caps=audio/x-raw,format=S16LE,channels={ch},rate={rate},layout=interleaved \
          ! audioconvert ! audioresample ! {enc} {bitrate} ! {muxer_name}.",
         ch = crate::audio::CHANNELS,
@@ -429,14 +429,14 @@ pub fn pipeline_desc_with_audio(
     let bitrate_arg = enc.spec.bitrate_arg(bitrate);
     let enc = enc.spec.element;
     let audio = with_audio
-        .then(|| audio_branch_desc(settings.container, "qos_mux"))
+        .then(|| audio_branch_desc(settings.container, "tilo_mux"))
         .flatten()
         .map(|b| format!(" {b}"))
         .unwrap_or_default();
     format!(
-        "appsrc name=qos_src is-live=false format=time \
+        "appsrc name=tilo_src is-live=false format=time \
          caps=video/x-raw,format=RGBA,width={w},height={h},framerate={fps}/1 \
-         ! videoconvert ! {enc} {bitrate_arg} ! {parse}{mux} name=qos_mux \
+         ! videoconvert ! {enc} {bitrate_arg} ! {parse}{mux} name=tilo_mux \
          ! filesink location={out}{audio}"
     )
 }
@@ -502,14 +502,14 @@ impl RenderPlan {
     }
 }
 
-/// The absolute path the export writes to. Honours `$QOS_VE_EXPORT_OUT` (a full
-/// path, used by tests) or `$QOS_VE_EXPORT_DIR` (a directory), else the system
+/// The absolute path the export writes to. Honours `$TILO_VE_EXPORT_OUT` (a full
+/// path, used by tests) or `$TILO_VE_EXPORT_DIR` (a directory), else the system
 /// temp dir, always with the settings-derived filename.
 pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::PathBuf {
-    if let Some(full) = std::env::var_os("QOS_VE_EXPORT_OUT") {
+    if let Some(full) = std::env::var_os("TILO_VE_EXPORT_OUT") {
         return std::path::PathBuf::from(full);
     }
-    let dir = std::env::var_os("QOS_VE_EXPORT_DIR")
+    let dir = std::env::var_os("TILO_VE_EXPORT_DIR")
         .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     dir.join(settings.suggested_filename(&project.name))
 }
@@ -815,14 +815,14 @@ mod gst_pipeline {
             .map_err(|_| "export pipeline is not a Pipeline".to_string())?;
 
         let appsrc = pipeline
-            .by_name("qos_src")
+            .by_name("tilo_src")
             .and_then(|e| e.downcast::<gst_app::AppSrc>().ok())
             .ok_or_else(|| "export appsrc not found".to_string())?;
         appsrc.set_format(gst::Format::Time);
 
         let audio_src = if with_audio {
             match pipeline
-                .by_name("qos_audio")
+                .by_name("tilo_audio")
                 .and_then(|e| e.downcast::<gst_app::AppSrc>().ok())
             {
                 Some(a) => {
@@ -1081,7 +1081,7 @@ mod tests {
     fn a_render_reports_progress_and_finishes_where_it_was_told() {
         let clip = demo_clip();
         let project = project_over(&clip, 4.0, 1.0);
-        let out = std::env::temp_dir().join(format!("qos-ve-job-{}.mp4", std::process::id()));
+        let out = std::env::temp_dir().join(format!("tilo-ve-job-{}.mp4", std::process::id()));
         std::fs::remove_file(&out).ok();
 
         let job = start_export(&project, &ExportSettings::default(), out.clone());
@@ -1126,7 +1126,7 @@ mod tests {
         let clip = demo_clip();
         // Long enough that the cancel lands mid-encode rather than after it.
         let project = project_over(&clip, 2.0, 20.0);
-        let out = std::env::temp_dir().join(format!("qos-ve-cancel-{}.mp4", std::process::id()));
+        let out = std::env::temp_dir().join(format!("tilo-ve-cancel-{}.mp4", std::process::id()));
         std::fs::remove_file(&out).ok();
 
         let job = start_export(
@@ -1174,7 +1174,7 @@ mod tests {
         let job = start_export(
             &p,
             &ExportSettings::default(),
-            std::env::temp_dir().join("qos-ve-never.mp4"),
+            std::env::temp_dir().join("tilo-ve-never.mp4"),
         );
         let status = job.join();
         match (unavailable_reason(), &status) {
@@ -1320,14 +1320,14 @@ mod tests {
             };
             let silent = pipeline_desc_with_audio(&s, 64, 64, "/tmp/o", false);
             assert!(
-                !silent.contains("qos_audio"),
+                !silent.contains("tilo_audio"),
                 "a project with no audio gets no audio branch: {silent}",
             );
 
             let voiced = pipeline_desc_with_audio(&s, 64, 64, "/tmp/o", true);
             let selected = audio_encoder(container);
             let enc = selected.spec.element;
-            assert!(voiced.contains("appsrc name=qos_audio"), "{voiced}");
+            assert!(voiced.contains("appsrc name=tilo_audio"), "{voiced}");
             assert!(
                 voiced.contains(enc),
                 "{container:?} encodes audio with {enc}: {voiced}"
@@ -1337,8 +1337,8 @@ mod tests {
             // it carries the rate the size estimate quotes on the way there.
             let arg = selected.spec.bitrate_arg(AUDIO_BITRATE_BPS);
             assert!(
-                voiced.contains("name=qos_mux")
-                    && voiced.contains(&format!("{enc} {arg} ! qos_mux.")),
+                voiced.contains("name=tilo_mux")
+                    && voiced.contains(&format!("{enc} {arg} ! tilo_mux.")),
                 "the audio branch encodes at {arg} and links into the video's muxer: {voiced}",
             );
             assert!(
@@ -1358,7 +1358,7 @@ mod tests {
     fn the_export_muxes_the_timelines_audio() {
         let clip = demo_clip();
         let pid = std::process::id();
-        let tone = std::env::temp_dir().join(format!("qos-ve-tone-{pid}.wav"));
+        let tone = std::env::temp_dir().join(format!("tilo-ve-tone-{pid}.wav"));
         write_tone(&tone, 1.5);
         assert!(
             audio_peak(&tone) > 0.5,
@@ -1368,7 +1368,7 @@ mod tests {
         let p = project_with_tone(&clip, &tone, 1.5, false);
         assert!(crate::audio::has_audio(&p), "the project has an audio lane");
 
-        let out = std::env::temp_dir().join(format!("qos-ve-audio-{pid}.mp4"));
+        let out = std::env::temp_dir().join(format!("tilo-ve-audio-{pid}.mp4"));
         std::fs::remove_file(&out).ok();
         match start_export(&p, &ExportSettings::default(), out.clone()).join() {
             ExportStatus::Done { .. } => {}
@@ -1417,12 +1417,12 @@ mod tests {
     fn volume_and_mute_reach_the_encoded_audio() {
         let clip = demo_clip();
         let pid = std::process::id();
-        let tone = std::env::temp_dir().join(format!("qos-ve-tone2-{pid}.wav"));
+        let tone = std::env::temp_dir().join(format!("tilo-ve-tone2-{pid}.wav"));
         write_tone(&tone, 1.0);
 
         let dir = std::env::temp_dir();
         let render = |p: &Project, name: &str| {
-            let out = dir.join(format!("qos-ve-{name}-{pid}.mp4"));
+            let out = dir.join(format!("tilo-ve-{name}-{pid}.mp4"));
             std::fs::remove_file(&out).ok();
             match start_export(p, &ExportSettings::default(), out.clone()).join() {
                 ExportStatus::Done { .. } => {}
@@ -1500,7 +1500,7 @@ mod tests {
                 );
                 // And with audio, exactly that plus the rate the audio branch
                 // is given — which is written into the same graph.
-                let audio_branch = audio_branch_desc(container, "qos_mux").expect("audio branch");
+                let audio_branch = audio_branch_desc(container, "tilo_mux").expect("audio branch");
                 assert!(
                     audio_branch.contains(&format!("={AUDIO_BITRATE_BPS} !")),
                     "{container:?} must encode audio at the quoted {AUDIO_BITRATE_BPS} bps: \
@@ -1869,7 +1869,7 @@ mod tests {
         };
         let d = pipeline_desc(&mp4, 1920, 1080, "/tmp/out.mp4");
         assert!(
-            d.contains("appsrc name=qos_src"),
+            d.contains("appsrc name=tilo_src"),
             "an appsrc feeds real frames: {d}"
         );
         assert!(
@@ -1986,11 +1986,11 @@ mod tests {
         );
         assert_eq!(missing[0].0, "clip");
 
-        let out = std::env::temp_dir().join(format!("qos-ve-missing-{}.mp4", std::process::id()));
+        let out = std::env::temp_dir().join(format!("tilo-ve-missing-{}.mp4", std::process::id()));
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("QOS_VE_EXPORT_OUT", &out) };
+        unsafe { std::env::set_var("TILO_VE_EXPORT_OUT", &out) };
         let status = begin_export(&p, &ExportSettings::default());
-        unsafe { std::env::remove_var("QOS_VE_EXPORT_OUT") };
+        unsafe { std::env::remove_var("TILO_VE_EXPORT_OUT") };
 
         match status {
             ExportStatus::Failed { reason } => {
@@ -2131,16 +2131,16 @@ mod tests {
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 0.2;
 
-        let out = std::env::temp_dir().join(format!("qos-ve-export-{}.mp4", std::process::id()));
+        let out = std::env::temp_dir().join(format!("tilo-ve-export-{}.mp4", std::process::id()));
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("QOS_VE_EXPORT_OUT", &out) };
+        unsafe { std::env::set_var("TILO_VE_EXPORT_OUT", &out) };
         let s = ExportSettings {
             resolution: Resolution::P720,
             container: Container::Mp4,
             frame_rate: FrameRate::F24,
         };
         let status = begin_export(&p, &s);
-        unsafe { std::env::remove_var("QOS_VE_EXPORT_OUT") };
+        unsafe { std::env::remove_var("TILO_VE_EXPORT_OUT") };
 
         match status {
             ExportStatus::Done { path } => {
@@ -2286,14 +2286,14 @@ mod tests {
     fn export_to(project: &Project, out: &std::path::Path) -> ExportStatus {
         // Safety: these gst tests run serially in one process and the env
         // is restored immediately after the call.
-        unsafe { std::env::set_var("QOS_VE_EXPORT_OUT", out) };
+        unsafe { std::env::set_var("TILO_VE_EXPORT_OUT", out) };
         let settings = ExportSettings {
             resolution: Resolution::P720,
             container: Container::Mp4,
             frame_rate: FrameRate::F30,
         };
         let status = begin_export(project, &settings);
-        unsafe { std::env::remove_var("QOS_VE_EXPORT_OUT") };
+        unsafe { std::env::remove_var("TILO_VE_EXPORT_OUT") };
         status
     }
 
@@ -2310,7 +2310,7 @@ mod tests {
         // A second and a half of real video, from a second in — far enough
         // past the head that the picture has content.
         let project = project_over(&clip, 8.0, 1.5);
-        let out = std::env::temp_dir().join(format!("qos-ve-footage-{}.mp4", std::process::id()));
+        let out = std::env::temp_dir().join(format!("tilo-ve-footage-{}.mp4", std::process::id()));
         match export_to(&project, &out) {
             ExportStatus::Done { .. } => {}
             other => panic!("the export must write a file, got {other:?}"),
@@ -2388,9 +2388,9 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let pid = std::process::id();
-        let a = dir.join(format!("qos-ve-grade-neutral-{pid}.mp4"));
-        let b = dir.join(format!("qos-ve-grade-bright-{pid}.mp4"));
-        let c = dir.join(format!("qos-ve-grade-grey-{pid}.mp4"));
+        let a = dir.join(format!("tilo-ve-grade-neutral-{pid}.mp4"));
+        let b = dir.join(format!("tilo-ve-grade-bright-{pid}.mp4"));
+        let c = dir.join(format!("tilo-ve-grade-grey-{pid}.mp4"));
         for (p, out) in [(&neutral, &a), (&bright, &b), (&grey, &c)] {
             match export_to(p, out) {
                 ExportStatus::Done { .. } => {}
@@ -2476,7 +2476,7 @@ mod tests {
             Transition::DipToBlack,
             Transition::Wipe,
         ] {
-            let out = dir.join(format!("qos-ve-tr-{}-{pid}.mp4", kind.as_str()));
+            let out = dir.join(format!("tilo-ve-tr-{}-{pid}.mp4", kind.as_str()));
             match export_to(&build(kind), &out) {
                 ExportStatus::Done { .. } => {}
                 other => panic!("{kind:?} export failed: {other:?}"),

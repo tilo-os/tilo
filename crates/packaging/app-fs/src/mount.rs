@@ -1,4 +1,4 @@
-//! Mount / unmount lifecycle handle around a [`QosAppFs`].
+//! Mount / unmount lifecycle handle around a [`TiloAppFs`].
 //!
 //! `fuser::spawn_mount2` gives a `BackgroundSession` that runs the
 //! FUSE event loop on a spawned thread and unmounts on drop. [`Mount`]
@@ -13,7 +13,7 @@ use fuser::{BackgroundSession, Config, MountOption, SessionACL};
 use thiserror::Error;
 
 use crate::collection::Collection;
-use crate::fs::{BuildError, QosAppFs};
+use crate::fs::{BuildError, TiloAppFs};
 use crate::store::BlobStore;
 
 /// Options for building a [`Mount`]. Defaults are conservative:
@@ -24,9 +24,9 @@ pub struct MountOptions {
     /// `user_allow_other` in /etc/fuse.conf. Off by default so the
     /// launcher opts in explicitly.
     pub allow_other: bool,
-    /// The filesystem's advertised name in /proc/self/mounts and `mount` output; defaults to "qos-app".
+    /// The filesystem's advertised name in /proc/self/mounts and `mount` output; defaults to "tilo-app".
     pub fs_name: Option<String>,
-    /// The filesystem's subtype in `mount` output; defaults to "qos-app-fs".
+    /// The filesystem's subtype in `mount` output; defaults to "tilo-app-fs".
     pub subtype: Option<String>,
     /// Override owner uid stamped on every getattr; `None` = use the mounting process's uid.
     pub uid: Option<u32>,
@@ -63,9 +63,9 @@ impl Mount {
     ) -> Result<Self, MountError> {
         let mountpoint = mountpoint.to_path_buf();
         let mut fs = if let Some(pages) = options.cache_pages {
-            QosAppFs::with_cache_pages(collection, store, pages)?
+            TiloAppFs::with_cache_pages(collection, store, pages)?
         } else {
-            QosAppFs::new(collection, store)?
+            TiloAppFs::new(collection, store)?
         };
         if let (Some(uid), Some(gid)) = (options.uid, options.gid) {
             fs = fs.with_owner(uid, gid);
@@ -79,13 +79,13 @@ impl Mount {
                 options
                     .fs_name
                     .clone()
-                    .unwrap_or_else(|| "qos-app".to_string()),
+                    .unwrap_or_else(|| "tilo-app".to_string()),
             ),
             MountOption::Subtype(
                 options
                     .subtype
                     .clone()
-                    .unwrap_or_else(|| "qos-app-fs".to_string()),
+                    .unwrap_or_else(|| "tilo-app-fs".to_string()),
             ),
         ];
 
@@ -139,7 +139,7 @@ impl Drop for Mount {
 /// Errors from [`Mount::spawn`] + [`Mount::unmount`].
 #[derive(Debug, Error)]
 pub enum MountError {
-    /// Building the [`QosAppFs`] from the collection failed.
+    /// Building the [`TiloAppFs`] from the collection failed.
     #[error("build filesystem: {0}")]
     Build(#[from] BuildError),
     /// `fuser` reported a mount / session error.

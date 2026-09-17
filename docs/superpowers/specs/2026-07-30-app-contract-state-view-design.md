@@ -1,4 +1,4 @@
-# qOS app contract: state and view
+# Tilo app contract: state and view
 
 **Date:** 2026-07-30
 **Record type:** Historical design rationale. The public app and view interfaces, plus their tests, define current behavior.

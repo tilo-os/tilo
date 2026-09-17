@@ -1,6 +1,6 @@
 //! The compositor-owned `org.freedesktop.Notifications` D-Bus service.
 //!
-//! In qOS the desktop *chrome* is owned by the compositor, and
+//! In Tilo the desktop *chrome* is owned by the compositor, and
 //! notifications are chrome too: this module makes the compositor own
 //! `org.freedesktop.Notifications` so `libnotify`/freedesktop-API calls
 //! render as OS-drawn, OS-themed toasts (see
@@ -241,10 +241,10 @@ pub struct IncomingNotification {
     pub urgency: u8,
     /// Workspace/app the call was attributed to (`None` if the sender couldn't be mapped — e.g. an unsandboxed caller).
     pub caller: Option<PortalCaller>,
-    /// qOS extension: exact unread count. It is ignored unless `caller` was
+    /// Tilo extension: exact unread count. It is ignored unless `caller` was
     /// launcher-verified and policy permits badges for that package.
     pub badge_count: Option<u32>,
-    /// qOS extension: sender endpoint asserted by an explicitly authorized
+    /// Tilo extension: sender endpoint asserted by an explicitly authorized
     /// communications app. The shell hashes and checks it against its private
     /// Contacts-owned registry before it can affect focus policy.
     pub contact_endpoint: Option<String>,
@@ -836,7 +836,7 @@ fn parse_urgency(hints: &HashMap<String, OwnedValue>) -> u8 {
 
 fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
     hints
-        .get("x-qos-badge-count")
+        .get("x-tilo-badge-count")
         .and_then(|value| value.try_clone().ok())
         .and_then(|value| u32::try_from(value).ok())
         .map(|value| value.min(9_999))
@@ -844,7 +844,7 @@ fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
 
 fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String> {
     let value = hints
-        .get("x-qos-contact-handle")?
+        .get("x-tilo-contact-handle")?
         .try_clone()
         .ok()
         .and_then(|value| String::try_from(value).ok())?;
@@ -852,7 +852,7 @@ fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String>
 }
 
 fn parse_notification_sharing(hints: &HashMap<String, OwnedValue>) -> NotificationSharing {
-    let Some(value) = hints.get("x-qos-device-sharing") else {
+    let Some(value) = hints.get("x-tilo-device-sharing") else {
         return NotificationSharing::Full;
     };
     match value
@@ -933,7 +933,7 @@ impl NotificationService {
     }
 
     /// Resolve the identity used solely for ordinary notification policy.
-    /// The bool reports a foreign Flatpak fallback so wire-only qOS
+    /// The bool reports a foreign Flatpak fallback so wire-only Tilo
     /// extensions (badges/contact handles) remain unavailable to it.
     async fn resolve_notification_caller(
         &self,
@@ -942,14 +942,14 @@ impl NotificationService {
         // A palette-launched Flatpak can also appear in the generic launch
         // registry under its desktop-file id. Its sandbox runtime ID is more
         // canonical (and is what Settings exposes), so prefer it before that
-        // fallback. A qOS package is not a Flatpak and proceeds unchanged.
+        // fallback. A Tilo package is not a Flatpak and proceeds unchanged.
         if let (Some(connection), Some(sender)) = (self.connection.as_ref(), sender)
             && let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await
             && let Ok(name) = zbus::names::BusName::try_from(sender.as_str())
             && let Ok(pid) = bus.get_connection_unix_process_id(name).await
             && let Some(app_id) = verified_foreign_notification_identity(pid)
         {
-            // Foreign callers have no qOS workspace capability. This default
+            // Foreign callers have no Tilo workspace capability. This default
             // workspace is an attribution placeholder only; policy keys come
             // from the verified id, never this workspace or Notify's name.
             return (
@@ -968,7 +968,7 @@ impl NotificationService {
 /// when the process is demonstrably inside an installed Flatpak sandbox.
 ///
 /// Plain RPM/host processes are deliberately not guessed from their argv or
-/// the `Notify.app_name` field: when qOS launched one, the trusted launcher
+/// the `Notify.app_name` field: when Tilo launched one, the trusted launcher
 /// ancestry above supplies its desktop id; otherwise it remains global-policy
 /// only. Flatpak provides two independent pieces of immutable runtime
 /// metadata — its per-process `.flatpak-info` and systemd cgroup — which are
@@ -1114,7 +1114,7 @@ impl NotificationService {
                 urgency: parse_urgency(&hints),
                 caller,
                 // Per-app banner/sound rules may use a verified Flatpak identity,
-                // but badges and contact routing are qOS-only extensions. Do not
+                // but badges and contact routing are Tilo-only extensions. Do not
                 // let foreign identity prove authority for either extension.
                 badge_count: (!foreign_identity)
                     .then(|| parse_badge_count(&hints))
@@ -1128,17 +1128,17 @@ impl NotificationService {
         id
     }
 
-    /// qOS extension used by Contacts. The complete favourite projection is
+    /// Tilo extension used by Contacts. The complete favourite projection is
     /// replaced atomically; only a launcher-verified Contacts process can call
     /// it. Other apps cannot mutate the host registry even on the same UID.
-    async fn x_qos_replace_priority_contacts(
+    async fn x_tilo_replace_priority_contacts(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         contacts: Vec<(String, String, Vec<String>)>,
     ) -> zbus::fdo::Result<u32> {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = self.resolve_caller(sender.as_ref()).await;
-        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("dev.qos.contacts") {
+        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("dev.tilo.contacts") {
             return Err(zbus::fdo::Error::AccessDenied(
                 "only the verified Contacts provider may replace priority contacts".into(),
             ));
@@ -1184,8 +1184,8 @@ impl NotificationService {
     )]
     fn get_server_information(&self) -> (String, String, String, String) {
         (
-            "qOS Notifications".to_string(),
-            "qOS".to_string(),
+            "Tilo Notifications".to_string(),
+            "Tilo".to_string(),
             env!("CARGO_PKG_VERSION").to_string(),
             "1.2".to_string(),
         )
@@ -1317,7 +1317,7 @@ mod tests {
     fn continuity_draft(sharing: NotificationSharing) -> ContinuityNotificationDraft {
         ContinuityNotificationDraft {
             dbus_id: 7,
-            app_id: "dev.qos.mail".into(),
+            app_id: "dev.tilo.mail".into(),
             app_name: "Mail".into(),
             title: "Private subject".into(),
             body: "Private body".into(),
@@ -1420,7 +1420,7 @@ mod tests {
                 epoch: [1; 16],
                 token: [token; 16],
             },
-            app_id: "dev.qos.mail".into(),
+            app_id: "dev.tilo.mail".into(),
             app_name: "Mail".into(),
             title: title.into(),
             body: "Message".into(),
@@ -1590,7 +1590,7 @@ mod tests {
     #[test]
     fn malformed_sharing_hint_fails_closed() {
         let hints = HashMap::from([(
-            "x-qos-device-sharing".to_string(),
+            "x-tilo-device-sharing".to_string(),
             OwnedValue::from(zbus::zvariant::Str::from("surprise")),
         )]);
         assert_eq!(
@@ -1695,11 +1695,11 @@ mod tests {
     }
 
     #[test]
-    fn qos_hints_are_bounded_before_they_reach_chrome() {
+    fn tilo_hints_are_bounded_before_they_reach_chrome() {
         let mut hints = HashMap::new();
-        hints.insert("x-qos-badge-count".into(), OwnedValue::from(u32::MAX));
+        hints.insert("x-tilo-badge-count".into(), OwnedValue::from(u32::MAX));
         hints.insert(
-            "x-qos-contact-handle".into(),
+            "x-tilo-contact-handle".into(),
             OwnedValue::from(zbus::zvariant::Str::from("ada@example.test")),
         );
         assert_eq!(parse_badge_count(&hints), Some(9_999));
@@ -1708,7 +1708,7 @@ mod tests {
             Some("ada@example.test")
         );
         hints.insert(
-            "x-qos-contact-handle".into(),
+            "x-tilo-contact-handle".into(),
             OwnedValue::from(zbus::zvariant::Str::from("bad\nhandle")),
         );
         assert_eq!(parse_contact_endpoint(&hints), None);
@@ -1905,8 +1905,8 @@ mod tests {
             .body()
             .deserialize()
             .expect("deserialize server info");
-        assert_eq!(name, "qOS Notifications");
-        assert_eq!(vendor, "qOS");
+        assert_eq!(name, "Tilo Notifications");
+        assert_eq!(vendor, "Tilo");
         assert_eq!(spec, "1.2");
     }
 }

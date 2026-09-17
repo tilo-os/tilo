@@ -36,8 +36,8 @@ RUN sed -i \
 # its moving `stable` repository as trusted would therefore be dishonest: fetch
 # the reviewed version through the shared external-input cache, whose manifest
 # pins its SHA-256, and expose only that exact byte sequence as a local repo.
-RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
-    install -D -m 0644 /qos-assets/virtio-win-0.1.302-1.noarch.rpm \
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    install -D -m 0644 /tilo-assets/virtio-win-0.1.302-1.noarch.rpm \
       /vendor/virtio-win-0.1.302-1.noarch.rpm \
  && createrepo_c --quiet /vendor \
  && printf '[virtio-win-pinned]\nname=Pinned virtio-win 0.1.302-1\nbaseurl=file:///vendor\ngpgcheck=0\nenabled=1\n' \
@@ -50,7 +50,7 @@ ARG PACKAGES
 # Resolve the REAL install transaction against the base (captures rich/
 # conditional deps like greetd-selinux and the exact non-conflicting versions),
 # download-only, then collect the cached RPMs into a repo. qemu-user-static-*
-# (foreign-arch emulators, weak Recommends qOS doesn't need) are excluded.
+# (foreign-arch emulators, weak Recommends Tilo doesn't need) are excluded.
 #
 # We ALSO download the Fedora kernel SRPM so os/kernel/Containerfile can
 # rebuild it offline against this same digest-pinned base (no live-mirror
@@ -67,8 +67,8 @@ RUN dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
       || dnf --enablerepo='*-source' download --source --destdir=/repo kernel ) \
  && ls -1 /repo/kernel-*.src.rpm >/dev/null \
  && createrepo_c --quiet /repo \
- && printf '[frozen]\nname=qOS frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo \
- && printf '%s\n' ${PACKAGES} | sort -u > /repo/qos-direct-package-specs.txt \
+ && printf '[frozen]\nname=Tilo frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo \
+ && printf '%s\n' ${PACKAGES} | sort -u > /repo/tilo-direct-package-specs.txt \
  && dnf clean all \
  && dnf install -y --downloadonly --setopt=reposdir=/repo ${PACKAGES}
 

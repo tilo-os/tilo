@@ -164,7 +164,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             if matches!(ep.r#type, EntrypointType::Cli | EntrypointType::Both)
                 && m.cli.as_ref().is_none_or(|c| c.commands.is_empty())
             {
-                // A CLI entrypoint with no commands is fine — still runnable via `qos-install run <id>`, no error.
+                // A CLI entrypoint with no commands is fine — still runnable via `tilo-install run <id>`, no error.
             }
         }
         Kind::FormatProvider => {
@@ -247,7 +247,7 @@ fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {
         return Err(ManifestError::BadRuntimeForm(raw.to_string()));
     }
     // Some real-world runtime versions look like 2025.06, not semver (the
-    // spec example uses qos-runtime/2025.06) — accept strict semver or a
+    // spec example uses tilo-runtime/2025.06) — accept strict semver or a
     // YYYY.MM[.MICRO] calendar form.
     if is_calver(ver) || Version::parse(ver).is_ok() {
         Ok(())
@@ -303,7 +303,7 @@ mod tests {
     fn minimal_runtime_manifest() -> Manifest {
         let src = r#"
 [package]
-id = "dev.qos.runtime"
+id = "dev.tilo.runtime"
 version = "2025.6.0"
 kind = "runtime"
 
@@ -313,7 +313,7 @@ signature = ""
 
 [sandbox]
 namespaces = []
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.fs]
@@ -329,7 +329,7 @@ mode = "off"
     #[test]
     fn runtime_kind_with_runtime_field_rejected() {
         let mut m = minimal_runtime_manifest();
-        m.package.runtime = Some("qos-runtime/2025.06".into());
+        m.package.runtime = Some("tilo-runtime/2025.06".into());
         assert_eq!(
             validate_manifest(&m),
             Err(ManifestError::RuntimeKindHasRuntime)
@@ -340,7 +340,7 @@ mode = "off"
     fn calendar_runtime_version_accepted() {
         let mut m = minimal_runtime_manifest();
         m.package.kind = Kind::App;
-        m.package.runtime = Some("qos-runtime/2025.06".into());
+        m.package.runtime = Some("tilo-runtime/2025.06".into());
         // Will still fail because no entrypoint is set, but the
         // runtime-version parse should pass before that — make sure the
         // error is App-specific, not runtime-version.

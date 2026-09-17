@@ -1,4 +1,4 @@
-//! Code — qOS native code editor / lightweight IDE.
+//! Code — Tilo native code editor / lightweight IDE.
 //!
 //! A file-tree sidebar, editor tabs, a syntax-highlighted code pane with line
 //! numbers and a gutter, a command palette, a status bar, and a bottom panel
@@ -92,8 +92,8 @@ pub fn sample_root() -> Box<dyn Widget> {
 /// `--path PATH` / `--path=PATH`.
 ///
 /// A positional argument is what makes `code_editor .` and `code_editor
-/// src/main.rs` work, which is the whole point of being able to develop qOS
-/// from inside qOS.
+/// src/main.rs` work, which is the whole point of being able to develop Tilo
+/// from inside Tilo.
 pub fn parse_path_arg(args: &[String]) -> Option<PathBuf> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -135,8 +135,8 @@ mod tests {
     fn a_bare_path_is_the_project_to_open() {
         assert_eq!(parse_path_arg(&args(&["."])), Some(PathBuf::from(".")));
         assert_eq!(
-            parse_path_arg(&args(&["/home/me/qos"])),
-            Some(PathBuf::from("/home/me/qos"))
+            parse_path_arg(&args(&["/home/me/tilo"])),
+            Some(PathBuf::from("/home/me/tilo"))
         );
         assert_eq!(
             parse_path_arg(&args(&["shell/src/main.rs"])),

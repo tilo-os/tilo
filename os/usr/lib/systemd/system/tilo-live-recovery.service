@@ -1,0 +1,21 @@
+[Unit]
+Description=Tilo installer recovery tools on tty2
+Documentation=file:///usr/share/doc/tilo/recovery.md
+ConditionKernelCommandLine=tilo.install
+After=systemd-user-sessions.service
+Conflicts=getty@tty2.service
+
+[Service]
+Type=idle
+ExecStart=/usr/libexec/tilo-live-recovery
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=journal+console
+TTYPath=/dev/tty2
+TTYReset=yes
+TTYVHangup=yes
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

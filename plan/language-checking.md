@@ -105,6 +105,6 @@ Grammar is the next layer, not part of synchronous editing:
 
 That engine boundary is the credible OSS unit: corpus + evaluator, typed protocol,
 Harper adapter, cancellation/staleness handling, and editor-agnostic diagnostics.
-It should not bundle qOS UI or CRDT types. Quality gates must be published per
+It should not bundle Tilo UI or CRDT types. Quality gates must be published per
 language; unsupported language is a normal capability result, never a silent
 English fallback.

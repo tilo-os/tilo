@@ -1,4 +1,4 @@
-//! Camera — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Camera — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A real camera app: a live viewfinder (sample frames when headless), a
 //! photo/video shutter, a camera selector, and an on-disk capture history (empty until

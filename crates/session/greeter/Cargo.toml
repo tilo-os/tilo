@@ -10,7 +10,7 @@ name = "greeter"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-greeter"
+name = "tilo-greeter"
 path = "src/main.rs"
 
 [dependencies]

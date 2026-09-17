@@ -17,7 +17,7 @@ UKI there, in either the image build's layout or the one `bootc install` leaves.
 `blank` exists to make a negative result available. A check that reports the
 generation as measured is only evidence if it can be shown to fail when the
 generation is absent — otherwise "passed" might mean "asserted nothing". So this
-overwrites `qos.generation=<N>` in the `.cmdline` section **with spaces of exactly
+overwrites `tilo.generation=<N>` in the `.cmdline` section **with spaces of exactly
 the same length**: the section keeps its size, every following section keeps its
 file offset, and the PE stays loadable. Rewriting the section shorter would move
 the rest of the image and change what fails, which would prove nothing about the
@@ -341,7 +341,7 @@ def main(argv):
         key = old.split(b"=", 1)[0]
         path = argv[4] if len(argv) == 5 else default_uki()
     elif len(argv) < 3:
-        raise SystemExit(f"{action} needs an argument, e.g. `{action} qos.generation"
+        raise SystemExit(f"{action} needs an argument, e.g. `{action} tilo.generation"
                          + ("=7`" if action == "set" else "`"))
     elif action == "set":
         if "=" not in argv[2]:

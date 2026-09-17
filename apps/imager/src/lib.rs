@@ -1,16 +1,16 @@
-//! Disk Imager — qOS native app for writing an OS image to a drive, and for
-//! installing qOS (CRDT-native, built on the `ui` toolkit).
+//! Disk Imager — Tilo native app for writing an OS image to a drive, and for
+//! installing Tilo (CRDT-native, built on the `ui` toolkit).
 //!
 //! A single guided **wizard** with a six-station step indicator, covering both
-//! "write this image to a USB stick" and "install qOS onto a disk":
+//! "write this image to a USB stick" and "install Tilo onto a disk":
 //!
 //!   1. **Source** — pick a local `.iso` / `.img` via the platform's native
-//!      file picker, or a known qOS release.
+//!      file picker, or a known Tilo release.
 //!   2. **Drive** — choose a target from real platform block-device discovery;
 //!      internal disks are hidden behind an explicit opt-in, the **system disk**
 //!      needs a second acknowledgement before it can even be selected, and an
 //!      honest empty state asks the user to insert a drive.
-//!   3. **Customize** (qOS only) — the guided-customization step (hostname,
+//!   3. **Customize** (Tilo only) — the guided-customization step (hostname,
 //!      first user and region), shared by the write and install flows. Plain
 //!      ISOs skip it. Only the secret-free settings the live installer applies
 //!      are offered; encryption and login secrets stay on the target device.
@@ -145,7 +145,7 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
         return;
     }
 
-    // Every other scenario builds on the demo document (sample drives + a qOS
+    // Every other scenario builds on the demo document (sample drives + a Tilo
     // image + recent history), then poses the wizard station on top.
     ImagerDoc::seed_demo(doc);
     seed_scenario_common(doc, scenario);

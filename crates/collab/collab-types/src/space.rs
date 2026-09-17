@@ -1,6 +1,6 @@
 //! Spaces — the social-formation container that groups channels.
 //!
-//! A space is the outermost layer of the qOS collaboration model.
+//! A space is the outermost layer of the Tilo collaboration model.
 //! Membership is rare-ish (you join an org once); inside it you create +
 //! leave + rejoin channels constantly.
 //!

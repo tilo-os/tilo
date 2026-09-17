@@ -1,6 +1,6 @@
-//! # qos-tts — the qOS text-to-speech engine
+//! # tilo-tts — the Tilo text-to-speech engine
 //!
-//! A small, dependency-light, **offline** speech engine for the qOS built-in screen reader.
+//! A small, dependency-light, **offline** speech engine for the Tilo built-in screen reader.
 //! It abstracts over several speech backends behind one [`Speaker`] trait and adds an
 //! interrupt-aware [`SpeechQueue`] so chatty focus narration coalesces and preempts sanely.
 //!
@@ -57,7 +57,7 @@
 //! * **Piper** (OHF-Voice fork, GPL-3.0): reached as a **speech-dispatcher output module** —
 //!   another separate process behind the SSIP socket.
 //!
-//! Ship those engines in the OS image and document their licenses; the qOS code itself stays
+//! Ship those engines in the OS image and document their licenses; the Tilo code itself stays
 //! permissive. (`piper-plus`, MIT, exists as a GPL-free in-process escape hatch if a
 //! daemon-less embedded path is ever needed — out of scope here.)
 //!

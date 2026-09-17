@@ -1,4 +1,4 @@
-//! Trusted qOS release catalog and verified medium download/cache.
+//! Trusted Tilo release catalog and verified medium download/cache.
 //!
 //! The catalog is embedded into each platform-signed Imager package at build
 //! time.  A release therefore cannot substitute its URL or digest without also
@@ -15,7 +15,7 @@ use std::sync::mpsc::{self, Receiver};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::model::{QosRelease, Source};
+use crate::model::{Source, TiloRelease};
 
 const BUNDLED_CATALOG: &str = include_str!("../release-catalog.json");
 
@@ -75,7 +75,7 @@ pub struct DownloadJob {
 ///
 /// Returns an error when the embedded catalog is malformed or contains an
 /// unsupported schema, untrusted URL, invalid digest, or invalid size.
-pub fn bundled_releases() -> Result<Vec<QosRelease>, String> {
+pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
     let catalog: Catalog = serde_json::from_str(BUNDLED_CATALOG)
         .map_err(|error| format!("The bundled release catalog is invalid: {error}"))?;
     if catalog.schema != 1 {
@@ -107,7 +107,7 @@ pub fn bundled_releases() -> Result<Vec<QosRelease>, String> {
             if url.scheme() != "https" || url.host_str() != Some("code.podesta.ai") {
                 return Err("The release catalog contains an untrusted download origin.".into());
             }
-            Ok(QosRelease {
+            Ok(TiloRelease {
                 name: release.name,
                 version: release.version,
                 size: release.image_size,
@@ -136,7 +136,7 @@ fn cache_root() -> PathBuf {
         .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
         .unwrap_or_else(std::env::temp_dir)
-        .join("qos-imager")
+        .join("tilo-imager")
 }
 
 fn sha256_controlled(path: &Path, control: &DownloadControl) -> Result<String, String> {
@@ -146,7 +146,7 @@ fn sha256_controlled(path: &Path, control: &DownloadControl) -> Result<String, S
     let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
     loop {
         if control.is_cancelled() {
-            return Err("qOS installer download cancelled.".into());
+            return Err("Tilo installer download cancelled.".into());
         }
         let read = file
             .read(&mut buffer)
@@ -188,20 +188,20 @@ fn copy_download_observed(
     let mut downloaded = 0_u64;
     let result = loop {
         if control.is_cancelled() {
-            break Err("qOS installer download cancelled.".to_string());
+            break Err("Tilo installer download cancelled.".to_string());
         }
         let read = input
             .read(&mut buffer)
-            .map_err(|error| format!("The qOS installer download was interrupted: {error}"))?;
+            .map_err(|error| format!("The Tilo installer download was interrupted: {error}"))?;
         if read == 0 {
             break Ok(downloaded);
         }
         let chunk = buffer
             .get(..read)
-            .ok_or_else(|| "Could not bound the qOS installer response.".to_string())?;
+            .ok_or_else(|| "Could not bound the Tilo installer response.".to_string())?;
         archive
             .write_all(chunk)
-            .map_err(|error| format!("Could not save the qOS installer: {error}"))?;
+            .map_err(|error| format!("Could not save the Tilo installer: {error}"))?;
         downloaded = downloaded.saturating_add(read as u64);
         notify(DownloadEvent::Downloading {
             received: already_received.saturating_add(downloaded),
@@ -212,7 +212,7 @@ fn copy_download_observed(
     // early, so the next attempt can ask only for the missing suffix.
     archive
         .flush()
-        .map_err(|error| format!("Could not save the qOS installer: {error}"))?;
+        .map_err(|error| format!("Could not save the Tilo installer: {error}"))?;
     result
 }
 
@@ -264,9 +264,9 @@ fn append_range_observed(
     }
     if downloaded > response_size || total > expected_size {
         let _ = fs::remove_file(archive_part);
-        return Err("The qOS installer range response exceeded its declared boundary.".into());
+        return Err("The Tilo installer range response exceeded its declared boundary.".into());
     }
-    Err("The qOS installer download was interrupted before it completed.".into())
+    Err("The Tilo installer download was interrupted before it completed.".into())
 }
 
 #[cfg(test)]
@@ -317,7 +317,7 @@ fn download_archive_observed(
         }
         let response = request
             .send()
-            .map_err(|error| format!("Could not download the qOS installer: {error}"))?;
+            .map_err(|error| format!("Could not download the Tilo installer: {error}"))?;
         if !same_origin(response.url(), trusted_origin) {
             return Err("The release download redirected to an untrusted origin.".into());
         }
@@ -352,14 +352,14 @@ fn download_archive_observed(
             return response
                 .error_for_status()
                 .map(|_| ())
-                .map_err(|error| format!("Could not download the qOS installer: {error}"));
+                .map_err(|error| format!("Could not download the Tilo installer: {error}"));
         }
 
         let response = response
             .error_for_status()
-            .map_err(|error| format!("Could not download the qOS installer: {error}"))?;
+            .map_err(|error| format!("Could not download the Tilo installer: {error}"))?;
         if response.status() != reqwest::StatusCode::OK {
-            return Err("The qOS installer server returned an invalid full response.".into());
+            return Err("The Tilo installer server returned an invalid full response.".into());
         }
         if response
             .content_length()
@@ -368,7 +368,7 @@ fn download_archive_observed(
             if resume {
                 let _ = fs::remove_file(archive_part);
             }
-            return Err("The qOS installer download has an unexpected size.".into());
+            return Err("The Tilo installer download has an unexpected size.".into());
         }
         // A 200 response to a ranged request means Range was ignored. Truncate
         // first, then safely consume that response as the new complete file.
@@ -385,10 +385,10 @@ fn download_archive_observed(
         if total > expected_size {
             let _ = fs::remove_file(archive_part);
         }
-        return Err("The qOS installer download was interrupted before it completed.".into());
+        return Err("The Tilo installer download was interrupted before it completed.".into());
     }
 
-    Err("The qOS installer server did not honor a safe download restart.".into())
+    Err("The Tilo installer server did not honor a safe download restart.".into())
 }
 
 #[allow(
@@ -396,19 +396,19 @@ fn download_archive_observed(
     reason = "the authenticated download, expansion, and atomic cache publication form one fail-closed transaction"
 )]
 fn verified_image_observed(
-    release: &QosRelease,
+    release: &TiloRelease,
     control: &DownloadControl,
     notify: &mut impl FnMut(DownloadEvent),
 ) -> Result<Source, String> {
     validate_digest(&release.archive_sha256)?;
     validate_digest(&release.image_sha256)?;
     if release.archive_size == 0 || release.size == 0 {
-        return Err("The qOS installer has invalid download metadata.".into());
+        return Err("The Tilo installer has invalid download metadata.".into());
     }
     let root = cache_root().join(&release.image_sha256);
     fs::create_dir_all(&root)
         .map_err(|error| format!("Could not create the download cache: {error}"))?;
-    let image = root.join("qos-installer.img");
+    let image = root.join("tilo-installer.img");
     if image.is_file() {
         notify(DownloadEvent::Verifying);
         if sha256_controlled(&image, control)? == release.image_sha256 {
@@ -418,10 +418,10 @@ fn verified_image_observed(
             .map_err(|error| format!("Could not replace an invalid cached installer: {error}"))?;
     }
 
-    let archive_part = root.join("qos-installer.img.zst.part");
-    let image_part = root.join("qos-installer.img.part");
+    let archive_part = root.join("tilo-installer.img.zst.part");
+    let image_part = root.join("tilo-installer.img.part");
     let client = reqwest::blocking::Client::builder()
-        .user_agent("qOS-Imager/1")
+        .user_agent("Tilo-Imager/1")
         .timeout(std::time::Duration::from_secs(60 * 60))
         .build()
         .map_err(|error| format!("Could not initialize the downloader: {error}"))?;
@@ -443,13 +443,13 @@ fn verified_image_observed(
     notify(DownloadEvent::Verifying);
     if sha256_controlled(&archive_part, control)? != release.archive_sha256 {
         let _ = fs::remove_file(&archive_part);
-        return Err("The downloaded qOS installer did not match its signed catalog.".into());
+        return Err("The downloaded Tilo installer did not match its signed catalog.".into());
     }
 
     let compressed = File::open(&archive_part)
         .map_err(|error| format!("Could not open the verified installer: {error}"))?;
     let mut decoder = zstd::stream::read::Decoder::new(compressed)
-        .map_err(|error| format!("Could not unpack the qOS installer: {error}"))?;
+        .map_err(|error| format!("Could not unpack the Tilo installer: {error}"))?;
     let mut expanded = File::create(&image_part)
         .map_err(|error| format!("Could not create the expanded installer: {error}"))?;
     let mut expanded_size = 0_u64;
@@ -457,7 +457,7 @@ fn verified_image_observed(
     while expanded_size <= release.size {
         if control.is_cancelled() {
             let _ = fs::remove_file(&image_part);
-            return Err("qOS installer download cancelled.".into());
+            return Err("Tilo installer download cancelled.".into());
         }
         let allowed = release
             .size
@@ -469,19 +469,19 @@ fn verified_image_observed(
         }
         let writable = buffer
             .get_mut(..allowed)
-            .ok_or_else(|| "Could not bound the expanded qOS installer.".to_string())?;
+            .ok_or_else(|| "Could not bound the expanded Tilo installer.".to_string())?;
         let read = decoder
             .read(writable)
-            .map_err(|error| format!("Could not unpack the qOS installer: {error}"))?;
+            .map_err(|error| format!("Could not unpack the Tilo installer: {error}"))?;
         if read == 0 {
             break;
         }
         let chunk = buffer
             .get(..read)
-            .ok_or_else(|| "Could not bound the expanded qOS installer.".to_string())?;
+            .ok_or_else(|| "Could not bound the expanded Tilo installer.".to_string())?;
         expanded
             .write_all(chunk)
-            .map_err(|error| format!("Could not unpack the qOS installer: {error}"))?;
+            .map_err(|error| format!("Could not unpack the Tilo installer: {error}"))?;
         expanded_size = expanded_size.saturating_add(read as u64);
         notify(DownloadEvent::Expanding {
             written: expanded_size,
@@ -497,7 +497,7 @@ fn verified_image_observed(
         || sha256_controlled(&image_part, control)? != release.image_sha256
     {
         let _ = fs::remove_file(&image_part);
-        return Err("The expanded qOS installer did not match its signed catalog.".into());
+        return Err("The expanded Tilo installer did not match its signed catalog.".into());
     }
     fs::rename(&image_part, &image)
         .map_err(|error| format!("Could not publish the verified installer cache: {error}"))?;
@@ -505,7 +505,7 @@ fn verified_image_observed(
     Ok(source_for(release, &image))
 }
 
-fn source_for(release: &QosRelease, image: &Path) -> Source {
+fn source_for(release: &TiloRelease, image: &Path) -> Source {
     let mut source = release.to_source();
     source.path = image.to_string_lossy().into_owned();
     source.identity = image
@@ -516,12 +516,12 @@ fn source_for(release: &QosRelease, image: &Path) -> Source {
 }
 
 /// Download and verify without blocking the UI thread.
-pub fn spawn_download(release: QosRelease) -> DownloadJob {
+pub fn spawn_download(release: TiloRelease) -> DownloadJob {
     let (tx, rx) = mpsc::channel();
     let control = DownloadControl::default();
     let worker_control = control.clone();
     std::thread::Builder::new()
-        .name("qos-release-download".into())
+        .name("tilo-release-download".into())
         .spawn(move || {
             let result = verified_image_observed(&release, &worker_control, &mut |event| {
                 let _ = tx.send(event);
@@ -623,14 +623,15 @@ mod tests {
     #[test]
     fn verified_release_source_keeps_catalog_digest_and_file_identity() {
         let image = tempfile::NamedTempFile::new().unwrap();
-        let release = QosRelease {
-            name: "qOS".into(),
+        let release = TiloRelease {
+            name: "Tilo".into(),
             version: "1.0".into(),
             size: 1,
             channel: "stable".into(),
             local_path: String::new(),
-            url: "https://code.podesta.ai/qos/releases/releases/download/imager-v1.0.0/qos.img.zst"
-                .into(),
+            url:
+                "https://code.podesta.ai/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
+                    .into(),
             archive_sha256: "a".repeat(64),
             archive_size: 1,
             image_sha256: "b".repeat(64),

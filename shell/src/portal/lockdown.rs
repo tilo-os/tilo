@@ -2,7 +2,7 @@
 //!
 //! Zbus 4 property setters cannot receive a message header. Accepting a
 //! writable D-Bus property without authenticating its sender would let any
-//! session client weaken policy, so D-Bus setters reject all writes. qOS
+//! session client weaken policy, so D-Bus setters reject all writes. Tilo
 //! Settings uses [`LockdownBackend::set_policy`] in-process.
 
 use std::fs;
@@ -162,14 +162,14 @@ impl LockdownBackend {
 fn default_path() -> PathBuf {
     super::private_state_root()
         .unwrap_or_else(|| PathBuf::from("/dev/null"))
-        .join("qos/portal/lockdown.json")
+        .join("tilo/portal/lockdown.json")
 }
 fn failed(message: &str) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(message.into())
 }
 fn denied() -> zbus::Error {
     zbus::Error::from(zbus::fdo::Error::AccessDenied(
-        "Lockdown policy is controlled by qOS Settings".into(),
+        "Lockdown policy is controlled by Tilo Settings".into(),
     ))
 }
 

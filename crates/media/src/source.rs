@@ -10,8 +10,8 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// Root of the qOS P2P FUSE filesystem. A [`Source::Workspace`] path is
-/// resolved against this (or `$QOS_WORKSPACE_ROOT` when set, for tests / dev).
+/// Root of the Tilo P2P FUSE filesystem. A [`Source::Workspace`] path is
+/// resolved against this (or `$TILO_WORKSPACE_ROOT` when set, for tests / dev).
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 
 /// A reference to playable media. Unified across the local disk, the P2P FUSE
@@ -33,10 +33,10 @@ pub enum Source {
 }
 
 impl Source {
-    /// The FUSE mount root, honouring the `$QOS_WORKSPACE_ROOT` override so a
+    /// The FUSE mount root, honouring the `$TILO_WORKSPACE_ROOT` override so a
     /// test / dev host without a real mount can point at a scratch directory.
     pub fn workspace_root() -> PathBuf {
-        std::env::var_os("QOS_WORKSPACE_ROOT")
+        std::env::var_os("TILO_WORKSPACE_ROOT")
             .map_or_else(|| PathBuf::from(WORKSPACE_ROOT), PathBuf::from)
     }
 
@@ -190,10 +190,10 @@ mod tests {
     #[test]
     fn workspace_relative_resolves_under_the_mount_root() {
         // Point the mount at a scratch dir so the test needs no real FUSE.
-        let dir = std::env::temp_dir().join(format!("qos-media-src-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-media-src-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("QOS_WORKSPACE_ROOT", &dir) };
+        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &dir) };
 
         let rel = Source::Workspace(PathBuf::from("clips/a.mp4"));
         assert_eq!(rel.abs_path().unwrap(), dir.join("clips/a.mp4"));
@@ -208,7 +208,7 @@ mod tests {
         rel.open_reader().unwrap().read_to_end(&mut buf).unwrap();
         assert_eq!(buf, b"hello bytes");
 
-        unsafe { std::env::remove_var("QOS_WORKSPACE_ROOT") };
+        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
         std::fs::remove_dir_all(&dir).ok();
     }
 

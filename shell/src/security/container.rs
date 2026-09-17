@@ -83,7 +83,7 @@ impl Container {
         cmd.env("MOZ_ENABLE_WAYLAND", "1");
         cmd.env("WINIT_UNIX_BACKEND", "wayland");
         cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
-        cmd.env("XDG_CURRENT_DESKTOP", "QuickDesktop");
+        cmd.env("XDG_CURRENT_DESKTOP", "tilo");
 
         if !self.allow_network {
             cmd.arg("--unshare-net");
@@ -119,12 +119,12 @@ impl Container {
     ) -> std::io::Result<std::process::Child> {
         let mut cmd = self.build_command(app_command, wayland_socket);
 
-        let log_path = format!("/tmp/quick-desktop-app-{tab_id}.log");
+        let log_path = format!("/tmp/tilo-desktop-app-{tab_id}.log");
         let log_file = File::create(log_path)?;
         cmd.stdout(Stdio::from(log_file.try_clone()?));
         cmd.stderr(Stdio::from(log_file));
 
-        println!("DEBUG: Spawning Tab {tab_id} Log: /tmp/quick-desktop-app-{tab_id}.log");
+        println!("DEBUG: Spawning Tab {tab_id} Log: /tmp/tilo-desktop-app-{tab_id}.log");
         cmd.spawn()
     }
 }

@@ -99,7 +99,7 @@ fn print_usage() {
          \t[--latency-ms <n>] [--throughput-kbps <n>] \n\
          \t[--out <path.mp4>] [--profile <path.txt>]\n\
          \n\
-         All flags optional. Defaults match the qOS collab-viewer demo:\n\
+         All flags optional. Defaults match the Tilo collab-viewer demo:\n\
          --duration 10 --width 1280 --height 720 --fps 30\n\
          --latency-ms 80 --throughput-kbps 2000\n\
          --out target/comparison.mp4 --profile target/latency-profile.txt"

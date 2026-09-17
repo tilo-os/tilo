@@ -213,7 +213,7 @@ impl Partition {
         if mp == "/" || mp == "/sysroot" {
             return PartRole::Root;
         }
-        // On atomic Fedora / qOS (bootc) the home volume lives at /var/home.
+        // On atomic Fedora / Tilo (bootc) the home volume lives at /var/home.
         if mp == "/home" || mp == "/var/home" {
             return PartRole::Home;
         }

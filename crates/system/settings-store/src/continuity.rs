@@ -1,6 +1,6 @@
 //! Canonical continuity policy for leaves in the shared settings document.
 //!
-//! This registry is deliberately exhaustive for settings owned by qOS. A new
+//! This registry is deliberately exhaustive for settings owned by Tilo. A new
 //! user-facing preference must be classified here as personal, device-local,
 //! secret, or derived. Consumers must never infer portability from a section
 //! name: display connectors, audio nodes, credentials, and generated state can
@@ -39,106 +39,106 @@ macro_rules! policies {
 
 policies! {
     Personal => [
-        "qos.accessibility.large_cursor",
-        "qos.accessibility.cursor_size",
-        "qos.accessibility.screen_reader",
-        "qos.accessibility.on_screen_keyboard",
-        "qos.accessibility.sticky_keys",
-        "qos.accessibility.slow_keys",
-        "qos.accessibility.visual_alerts",
-        "qos.accessibility.color_filter",
-        "qos.accessibility.magnifier_zoom",
-        "qos.accessibility.cursor_crosshair",
-        "qos.accessibility.thick_text_caret",
-        "qos.accessibility.switch_control",
-        "qos.accessibility.switch_key_pair",
-        "qos.accessibility.switch_scan_ms",
-        "qos.accessibility.screen_reader_rate",
-        "qos.accessibility.screen_reader_voice",
-        "qos.appearance.theme",
-        "qos.appearance.high_contrast",
-        "qos.appearance.reduce_motion",
-        "qos.appearance.text_scale",
-        "qos.appearance.ui_scale",
-        "qos.appearance.studio",
-        "qos.locale.currency",
-        "qos.locale.date_format",
-        "qos.locale.time_format",
-        "qos.locale.measurement",
-        "qos.locale.number_style",
-        "qos.locale.first_day_of_week",
-        "qos.notifications.do_not_disturb",
-        "qos.notifications.show_banners",
-        "qos.notifications.show_previews",
-        "qos.notifications.play_sounds",
-        "qos.notifications.show_on_lock_screen",
-        "qos.notifications.show_badges",
-        "qos.notifications.focus",
-        "qos.notifications.per_app",
-        "qos.input.natural_scroll",
-        "qos.input.touchpad_natural_scroll",
-        "qos.input.mouse_natural_scroll",
-        "qos.input.tap_to_click",
-        "qos.input.pointer_speed",
-        "qos.input.touchpad_pointer_speed",
-        "qos.input.mouse_pointer_speed",
-        "qos.input.key_repeat",
-        "qos.input.key_repeat_delay_ms",
-        "qos.input.key_repeat_rate_hz",
-        "qos.input.keyboard_layout",
-        "qos.input.tap_drag",
-        "qos.input.disable_while_typing",
-        "qos.input.middle_emulation",
-        "qos.input.left_handed",
-        "qos.input.accel_profile",
-        "qos.input.touchpad_gestures",
-        "qos.input.compose_key",
-        "qos.input.keyboard_layouts",
-        "qos.audio.event_sounds",
-        "qos.audio.chat_join",
-        "qos.audio.chat_leave",
-        "qos.audio.balance",
-        "qos.audio.mono_output",
-        "qos.display.night_light",
-        "qos.display.night_light_temperature",
-        "qos.shortcuts.bindings",
-        "qos.desktop_controls.vim_mode",
-        "qos.quick_settings.controls",
-        "qos.text_assistance.check_spelling",
-        "qos.text_assistance.auto_correct",
+        "tilo.accessibility.large_cursor",
+        "tilo.accessibility.cursor_size",
+        "tilo.accessibility.screen_reader",
+        "tilo.accessibility.on_screen_keyboard",
+        "tilo.accessibility.sticky_keys",
+        "tilo.accessibility.slow_keys",
+        "tilo.accessibility.visual_alerts",
+        "tilo.accessibility.color_filter",
+        "tilo.accessibility.magnifier_zoom",
+        "tilo.accessibility.cursor_crosshair",
+        "tilo.accessibility.thick_text_caret",
+        "tilo.accessibility.switch_control",
+        "tilo.accessibility.switch_key_pair",
+        "tilo.accessibility.switch_scan_ms",
+        "tilo.accessibility.screen_reader_rate",
+        "tilo.accessibility.screen_reader_voice",
+        "tilo.appearance.theme",
+        "tilo.appearance.high_contrast",
+        "tilo.appearance.reduce_motion",
+        "tilo.appearance.text_scale",
+        "tilo.appearance.ui_scale",
+        "tilo.appearance.studio",
+        "tilo.locale.currency",
+        "tilo.locale.date_format",
+        "tilo.locale.time_format",
+        "tilo.locale.measurement",
+        "tilo.locale.number_style",
+        "tilo.locale.first_day_of_week",
+        "tilo.notifications.do_not_disturb",
+        "tilo.notifications.show_banners",
+        "tilo.notifications.show_previews",
+        "tilo.notifications.play_sounds",
+        "tilo.notifications.show_on_lock_screen",
+        "tilo.notifications.show_badges",
+        "tilo.notifications.focus",
+        "tilo.notifications.per_app",
+        "tilo.input.natural_scroll",
+        "tilo.input.touchpad_natural_scroll",
+        "tilo.input.mouse_natural_scroll",
+        "tilo.input.tap_to_click",
+        "tilo.input.pointer_speed",
+        "tilo.input.touchpad_pointer_speed",
+        "tilo.input.mouse_pointer_speed",
+        "tilo.input.key_repeat",
+        "tilo.input.key_repeat_delay_ms",
+        "tilo.input.key_repeat_rate_hz",
+        "tilo.input.keyboard_layout",
+        "tilo.input.tap_drag",
+        "tilo.input.disable_while_typing",
+        "tilo.input.middle_emulation",
+        "tilo.input.left_handed",
+        "tilo.input.accel_profile",
+        "tilo.input.touchpad_gestures",
+        "tilo.input.compose_key",
+        "tilo.input.keyboard_layouts",
+        "tilo.audio.event_sounds",
+        "tilo.audio.chat_join",
+        "tilo.audio.chat_leave",
+        "tilo.audio.balance",
+        "tilo.audio.mono_output",
+        "tilo.display.night_light",
+        "tilo.display.night_light_temperature",
+        "tilo.shortcuts.bindings",
+        "tilo.desktop_controls.vim_mode",
+        "tilo.quick_settings.controls",
+        "tilo.text_assistance.check_spelling",
+        "tilo.text_assistance.auto_correct",
     ],
     DeviceLocal => [
-        "qos.audio.output_device",
-        "qos.audio.input_device",
-        "qos.display.auto_brightness",
-        "qos.display.scale",
-        "qos.input.pen_output",
-        "qos.power.auto_suspend",
-        "qos.power.suspend_minutes",
-        "qos.power.saver_suspend_minutes",
-        "qos.power.balanced_suspend_minutes",
-        "qos.power.performance_suspend_minutes",
-        "qos.power.blank_minutes",
-        "qos.power.lid_close_action",
-        "qos.power.power_key_action",
-        "qos.power.low_battery_percent",
-        "qos.power.critical_battery_percent",
-        "qos.power.critical_action",
-        "qos.updates.auto",
-        "qos.updates.channel",
-        "qos.appearance.wallpaper_path",
-        "qos.device.name",
-        "qos.display.hardware.edid",
-        "qos.network.interface.mac",
-        "qos.storage.mount.usb",
+        "tilo.audio.output_device",
+        "tilo.audio.input_device",
+        "tilo.display.auto_brightness",
+        "tilo.display.scale",
+        "tilo.input.pen_output",
+        "tilo.power.auto_suspend",
+        "tilo.power.suspend_minutes",
+        "tilo.power.saver_suspend_minutes",
+        "tilo.power.balanced_suspend_minutes",
+        "tilo.power.performance_suspend_minutes",
+        "tilo.power.blank_minutes",
+        "tilo.power.lid_close_action",
+        "tilo.power.power_key_action",
+        "tilo.power.low_battery_percent",
+        "tilo.power.critical_battery_percent",
+        "tilo.power.critical_action",
+        "tilo.updates.auto",
+        "tilo.updates.channel",
+        "tilo.appearance.wallpaper_path",
+        "tilo.device.name",
+        "tilo.display.hardware.edid",
+        "tilo.network.interface.mac",
+        "tilo.storage.mount.usb",
     ],
     Secret => [
-        "qos.agent_providers.api_key",
-        "qos.security.local_credential.pin",
+        "tilo.agent_providers.api_key",
+        "tilo.security.local_credential.pin",
     ],
     Derived => [
-        "qos.version",
-        "qos.updates.last_checked",
+        "tilo.version",
+        "tilo.updates.last_checked",
     ],
 }
 
@@ -166,18 +166,18 @@ pub fn unclassified_leaves(document: &serde_json::Map<String, serde_json::Value>
     let mut missing = Vec::new();
     for (section, value) in document {
         if section == "version" {
-            let key = "qos.version";
+            let key = "tilo.version";
             if classify(key).is_none() {
                 missing.push(key.to_string());
             }
             continue;
         }
         let serde_json::Value::Object(leaves) = value else {
-            missing.push(format!("qos.{section}"));
+            missing.push(format!("tilo.{section}"));
             continue;
         };
         for leaf in leaves.keys() {
-            let key = format!("qos.{section}.{leaf}");
+            let key = format!("tilo.{section}.{leaf}");
             if classify(&key).is_none() {
                 missing.push(key);
             }
@@ -196,7 +196,7 @@ mod tests {
     fn policy_keys_are_unique_and_canonical() {
         let mut keys = BTreeSet::new();
         for policy in POLICIES {
-            assert!(policy.key.starts_with("qos."), "{}", policy.key);
+            assert!(policy.key.starts_with("tilo."), "{}", policy.key);
             assert!(
                 keys.insert(policy.key),
                 "duplicate policy for {}",
@@ -208,11 +208,11 @@ mod tests {
     #[test]
     fn credentials_and_hardware_are_never_personal() {
         for key in [
-            "qos.agent_providers.api_key",
-            "qos.security.local_credential.pin",
-            "qos.audio.output_device",
-            "qos.display.scale",
-            "qos.input.pen_output",
+            "tilo.agent_providers.api_key",
+            "tilo.security.local_credential.pin",
+            "tilo.audio.output_device",
+            "tilo.display.scale",
+            "tilo.input.pen_output",
         ] {
             assert!(classify(key).is_some(), "{key} must be reviewed");
             assert!(!is_personal(key), "{key} must not roam");
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn unknown_settings_fail_closed() {
-        assert_eq!(classify("qos.input.future_preference"), None);
-        assert!(!is_personal("qos.input.future_preference"));
+        assert_eq!(classify("tilo.input.future_preference"), None);
+        assert!(!is_personal("tilo.input.future_preference"));
     }
 }

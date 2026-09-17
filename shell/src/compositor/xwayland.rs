@@ -1,6 +1,6 @@
 //! Session-wide rootless Xwayland compatibility via `xwayland-satellite`.
 //!
-//! qOS remains a Wayland compositor and does not grow an in-process XWM. The
+//! Tilo remains a Wayland compositor and does not grow an in-process XWM. The
 //! satellite is itself a Wayland client and maps each legacy X11 window to an
 //! ordinary `xdg_toplevel`, so existing host applications participate in the
 //! same layout. Failure is non-fatal: native Wayland software remains usable.
@@ -27,7 +27,7 @@ const MAX_RECOVERY_ATTEMPTS: u8 = 3;
 const STABLE_UPTIME: Duration = Duration::from_secs(30);
 const KEYMAP_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Keep the compatibility server out of the security-hardened qOS image.
+/// Keep the compatibility server out of the security-hardened Tilo image.
 pub(crate) const fn enabled_for(mode: super::InstallMode) -> bool {
     matches!(mode, super::InstallMode::HostDesktop)
 }
@@ -88,7 +88,7 @@ impl XwaylandSupervisor {
         supervisor
     }
 
-    /// Apply an updated qOS keymap to the already-running private X server.
+    /// Apply an updated Tilo keymap to the already-running private X server.
     /// Xwayland cannot consume the Wayland seat's keymap, so without this an
     /// Electron/X11 application keeps the layout from session startup until
     /// logout. `setxkbmap` updates the server in place: existing windows stay
@@ -269,7 +269,7 @@ impl XwaylandSupervisor {
         let (sender, receiver) = mpsc::channel();
         let worker_sender = sender.clone();
         match std::thread::Builder::new()
-            .name("qos-xwayland-start".into())
+            .name("tilo-xwayland-start".into())
             .spawn(move || {
                 let result = SessionXwayland::start_unpublished(&wayland_socket);
                 // If the supervisor was dropped during startup, `send` gives
@@ -312,7 +312,7 @@ impl XwaylandSupervisor {
         self.unavailable_announced = true;
         let mut notification = crate::shell::notification::Notification::new(
             "X11 compatibility unavailable",
-            "Legacy X11 apps can’t open right now. qOS could not restart the compatibility service; use a Wayland app or restart the desktop session.",
+            "Legacy X11 apps can’t open right now. Tilo could not restart the compatibility service; use a Wayland app or restart the desktop session.",
         )
             .with_severity(crate::shell::notification::NotificationSeverity::Error)
             .with_app_name("System")
@@ -335,7 +335,7 @@ fn setxkbmap_args(keyboard: &super::backend::drm::input_config::KeyboardSettings
     if !variant.is_empty() {
         args.extend([OsString::from("-variant"), OsString::from(variant)]);
     }
-    // Clear inherited/server options before applying the exact qOS set.
+    // Clear inherited/server options before applying the exact Tilo set.
     args.extend([OsString::from("-option"), OsString::new()]);
     if let Some(options) = keyboard
         .options
@@ -390,7 +390,7 @@ impl SessionXwayland {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())?;
-        let runtime = runtime_root.join("qos-session/xwayland");
+        let runtime = runtime_root.join("tilo-session/xwayland");
         fs::create_dir_all(&runtime)
             .map_err(|error| format!("creating {}: {error}", runtime.display()))?;
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))
@@ -416,7 +416,7 @@ impl SessionXwayland {
             // Xwayland compiles its own XKB map before it receives any input.
             // In a display-manager session there need not be PAM-provided
             // XKB_DEFAULT_* variables, so inheriting the process environment
-            // silently gives every legacy host app US regardless of the qOS
+            // silently gives every legacy host app US regardless of the Tilo
             // seat keymap. Keep both sides on the same validated settings.
             .env("XKB_DEFAULT_LAYOUT", &keyboard.layouts)
             .env("XKB_DEFAULT_VARIANT", &keyboard.variants)
@@ -559,7 +559,7 @@ fn satellite_binary() -> Option<PathBuf> {
     // candidate upstream satellite against the same private compositor they
     // start, without replacing the installed host binary.
     #[cfg(feature = "hosted-test-control")]
-    if let Some(candidate) = std::env::var_os("QOS_TEST_XWAYLAND_SATELLITE") {
+    if let Some(candidate) = std::env::var_os("TILO_TEST_XWAYLAND_SATELLITE") {
         let candidate = PathBuf::from(candidate);
         if candidate.is_absolute() && candidate.is_file() {
             return Some(candidate);

@@ -11,7 +11,7 @@ ref="${2:-${RPMS_REF:-}}"
 
 scratch_root="${TMPDIR:-$repo/os/output/.tmp}"
 mkdir -p "$scratch_root"
-work="$(mktemp -d -p "$scratch_root" qos-rpm-snapshot-verify.XXXXXX)"
+work="$(mktemp -d -p "$scratch_root" tilo-rpm-snapshot-verify.XXXXXX)"
 container=''
 cleanup() {
   [ -z "$container" ] || "$runtime" rm "$container" >/dev/null 2>&1 || true
@@ -21,7 +21,7 @@ trap cleanup EXIT
 
 "$repo/os/dev/derive-rpm-package-set.py" > "$work/expected"
 container="$("$runtime" create "$ref" /bin/true)"
-if ! "$runtime" cp "$container:/repo/qos-direct-package-specs.txt" "$work/actual"; then
+if ! "$runtime" cp "$container:/repo/tilo-direct-package-specs.txt" "$work/actual"; then
   echo "frozen RPM snapshot has no package manifest: $ref" >&2
   echo 'Run the snapshot-rpms workflow before building the OS image.' >&2
   exit 1

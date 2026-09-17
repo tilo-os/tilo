@@ -454,7 +454,7 @@ impl NotesDoc {
     /// Replace Notes' own formatting/link marks on one durable block.  The
     /// marks live on Automerge's Text object rather than in a sidecar JSON
     /// blob, so a concurrent text splice carries the marked range with it.
-    /// Other applications' marks (notably `qos.author`) are deliberately left
+    /// Other applications' marks (notably `tilo.author`) are deliberately left
     /// untouched.
     ///
     /// # Errors

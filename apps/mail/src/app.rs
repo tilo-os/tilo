@@ -134,10 +134,10 @@ struct PendingAttachmentSave {
 /// Where account add / edit / remove is persisted.
 ///
 /// Only the **live** app may write the user's real account store
-/// (`$XDG_CONFIG_HOME/qos/accounts/`). The sample / `--shots` / test
+/// (`$XDG_CONFIG_HOME/tilo/accounts/`). The sample / `--shots` / test
 /// constructors target a throwaway sandbox directory instead, so exercising the
 /// save flow (or a test that adds an account) can never leak fabricated demo
-/// accounts into the real store. The historic leak — `you@qos.example`,
+/// accounts into the real store. The historic leak — `you@tilo.example`,
 /// `you@hooli.example`, `new@host.example` appearing pre-configured in the live
 /// app — was exactly this: a test that drove the save path wrote the bundled
 /// sample store to the real config root.
@@ -160,7 +160,7 @@ impl AccountsPersist {
     /// store.
     fn sandbox() -> Self {
         match tempfile::Builder::new()
-            .prefix("qos-mail-sample-")
+            .prefix("tilo-mail-sample-")
             .tempdir()
         {
             Ok(dir) => AccountsPersist::Sandbox(Arc::new(dir)),
@@ -284,8 +284,8 @@ pub struct MailApp {
     /// The one refresh invocation currently owned by the resource-operation
     /// host.  It remains occupied until the host has polled its terminal
     /// update, so a subsequent refresh cannot overwrite an unobserved result.
-    resource_refresh_invocation: Option<(EngineRequestId, qos_actions::InvocationId)>,
-    resource_refresh_result: Option<qos_actions::InvocationUpdate>,
+    resource_refresh_invocation: Option<(EngineRequestId, tilo_actions::InvocationId)>,
+    resource_refresh_result: Option<tilo_actions::InvocationUpdate>,
     /// One host-native attachment Save chooser at a time. The receiver is
     /// polled from `sync`, never awaited on the UI thread.
     attachment_save_rx: Option<PortalChannel>,
@@ -295,8 +295,8 @@ pub struct MailApp {
     pending_attachment_save: Option<PendingAttachmentSave>,
     /// A typed resource operation must not claim success before the chooser
     /// returns and the bytes reach the chosen destination.
-    resource_attachment_save_invocation: Option<qos_actions::InvocationId>,
-    resource_attachment_save_result: Option<qos_actions::InvocationUpdate>,
+    resource_attachment_save_invocation: Option<tilo_actions::InvocationId>,
+    resource_attachment_save_result: Option<tilo_actions::InvocationUpdate>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
@@ -513,7 +513,7 @@ impl MailApp {
             st.mailbox
                 .messages
                 .values()
-                .find(|m| m.from.email == "news@weekly.qos.example")
+                .find(|m| m.from.email == "news@weekly.tilo.example")
                 .map(|m| m.id)
         };
         if let Some(id) = id {
@@ -860,23 +860,23 @@ impl MailApp {
         }
         if let Some(invocation) = self.resource_attachment_save_invocation.take() {
             self.resource_attachment_save_result = Some(match outcome {
-                Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         value: None,
                         resources: saved_resource.into_iter().collect(),
                     },
                 },
-                Err(Some(message)) => qos_actions::InvocationUpdate::Failed {
+                Err(Some(message)) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "mail.attachment_save_failed".into(),
                         message,
                         details: None,
                         retryable: false,
                     },
                 },
-                Err(None) => qos_actions::InvocationUpdate::Cancelled {
+                Err(None) => tilo_actions::InvocationUpdate::Cancelled {
                     invocation,
                     message: Some("attachment save cancelled".into()),
                 },
@@ -1885,9 +1885,9 @@ impl MailApp {
                             && let Some((_, invocation)) = self.resource_refresh_invocation
                         {
                             self.resource_refresh_result =
-                                Some(qos_actions::InvocationUpdate::Succeeded {
+                                Some(tilo_actions::InvocationUpdate::Succeeded {
                                     invocation,
-                                    output: qos_actions::ActionOutput::default(),
+                                    output: tilo_actions::ActionOutput::default(),
                                 });
                         }
                     }
@@ -1976,9 +1976,9 @@ impl MailApp {
                             && let Some((_, invocation)) = self.resource_refresh_invocation
                         {
                             self.resource_refresh_result =
-                                Some(qos_actions::InvocationUpdate::Failed {
+                                Some(tilo_actions::InvocationUpdate::Failed {
                                     invocation,
-                                    error: qos_actions::ActionFailure {
+                                    error: tilo_actions::ActionFailure {
                                         code: "mail.refresh_failed".into(),
                                         message: format!("{context}: {message}"),
                                         details: None,
@@ -2939,7 +2939,7 @@ fn draft_from_message(m: &Message) -> Draft {
 }
 
 /// Load the account list from the shared canonical store
-/// (`$XDG_CONFIG_HOME/qos/accounts/`), hydrating each password from the
+/// (`$XDG_CONFIG_HOME/tilo/accounts/`), hydrating each password from the
 /// encrypted vault. An empty store when nothing is configured yet.
 fn load_account_store() -> AccountStore {
     AccountStore::load()
@@ -3000,7 +3000,7 @@ fn avatar_fetcher() -> ui::Fetcher {
         let client = CLIENT.get_or_init(|| {
             reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(8))
-                .user_agent("qOS Mail")
+                .user_agent("Tilo Mail")
                 .build()
                 .unwrap_or_default()
         });
@@ -3185,10 +3185,10 @@ impl Widget for MailApp {
 
     /// Publish the open mailbox + its folders/messages so the host's Ctrl+K
     /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -3207,8 +3207,8 @@ impl Widget for MailApp {
         })
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     #[allow(
@@ -3217,7 +3217,7 @@ impl Widget for MailApp {
     )]
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -3228,7 +3228,7 @@ impl Widget for MailApp {
         };
         match (kind, operation) {
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MailOperation::RefreshCurrentFolder,
             ) => {
                 if self.engine.is_none() {
@@ -3237,7 +3237,7 @@ impl Widget for MailApp {
                 let _ = self.refresh_active_folder();
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MailOperation::RevealFolder { folder },
             ) => {
                 let Some(folder) = Folder::from_key(&folder) else {
@@ -3247,7 +3247,7 @@ impl Widget for MailApp {
                 self.process_intents();
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MailOperation::RevealAccount { id },
             ) => {
                 let Some(index) = self
@@ -3267,13 +3267,13 @@ impl Widget for MailApp {
                 self.process_intents();
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MailOperation::RevealMessage { id: _ },
             ) => {
                 return Err("Open message must use the admitted mutable operation path".into());
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MailOperation::InspectMessage { id },
             ) => {
                 let id = id
@@ -3286,14 +3286,14 @@ impl Widget for MailApp {
                     Some("Previewing without changing this message’s read state".into());
                 self.process_intents();
             }
-            (qos_actions::OperationKind::View, crate::actions::MailOperation::RevealDraft) => {
+            (tilo_actions::OperationKind::View, crate::actions::MailOperation::RevealDraft) => {
                 let draft = MailDoc::load_draft(doc);
                 self.compose.open_with_draft(&draft);
                 self.editing_draft = None;
                 self.dirty = true;
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MailOperation::SaveAttachment { .. },
             ) => {
                 return Err("Save attachment must use the admitted portal operation path".into());
@@ -3305,14 +3305,14 @@ impl Widget for MailApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect
+        if kind != tilo_actions::OperationKind::Effect
             || type_id != crate::actions::MAIL_OPERATION_TYPE
         {
             return Ok(None);
@@ -3356,15 +3356,15 @@ impl Widget for MailApp {
     /// stays on the read-only operation route above.
     fn start_resource_operation_with_document(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         let operation = crate::actions::decode_operation(type_id, payload)?;
-        if kind == qos_actions::OperationKind::Effect
+        if kind == tilo_actions::OperationKind::Effect
             && let Some(crate::actions::MailOperation::PrepareCalendarInvitation {
                 to,
                 subject,
@@ -3380,13 +3380,13 @@ impl Widget for MailApp {
                 Some("Invitation prepared — review it before sending".into());
             self.dirty = true;
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput {
+                tilo_actions::ActionOutput {
                     value: None,
                     resources: vec!["mail.draft".into()],
                 },
             )));
         }
-        if kind == qos_actions::OperationKind::View
+        if kind == tilo_actions::OperationKind::View
             && let Some(crate::actions::MailOperation::RevealMessage { id }) = operation
         {
             let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
@@ -3395,7 +3395,7 @@ impl Widget for MailApp {
             }
             self.process_intents();
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )));
         }
         self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
@@ -3403,11 +3403,11 @@ impl Widget for MailApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .resource_refresh_result
             .as_ref()
@@ -3427,7 +3427,7 @@ impl Widget for MailApp {
             self.attachment_save_rx = None;
             self.pending_attachment_save = None;
             self.resource_attachment_save_invocation = None;
-            Some(qos_actions::InvocationUpdate::Cancelled {
+            Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("attachment save cancelled".into()),
             })
@@ -5154,8 +5154,8 @@ mod tests {
         .unwrap();
         assert!(matches!(
             app.start_resource_operation_with_document(
-                qos_actions::InvocationId::default(),
-                qos_actions::OperationKind::View,
+                tilo_actions::InvocationId::default(),
+                tilo_actions::OperationKind::View,
                 crate::actions::MAIL_OPERATION_TYPE,
                 &payload,
                 &mut doc,
@@ -5216,8 +5216,8 @@ mod tests {
             .unwrap();
             assert!(matches!(
                 app.start_resource_operation_with_document(
-                    qos_actions::InvocationId::default(),
-                    qos_actions::OperationKind::View,
+                    tilo_actions::InvocationId::default(),
+                    tilo_actions::OperationKind::View,
                     crate::actions::MAIL_OPERATION_TYPE,
                     &payload,
                     &mut doc,
@@ -5272,7 +5272,7 @@ mod tests {
 
         let error = app
             .invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MAIL_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -5316,7 +5316,7 @@ mod tests {
         let heads_before_preview = doc.get_heads();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MAIL_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -5401,7 +5401,7 @@ mod tests {
         let refresh_id = uuid::Uuid::new_v4();
         let send_id = uuid::Uuid::new_v4();
         let unrelated_id = uuid::Uuid::new_v4();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_refresh_invocation = Some((refresh_id, invocation));
         let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
         app.pending_send = Some(PendingSend {
@@ -5456,7 +5456,7 @@ mod tests {
         incoming_tx
             .send(EngineEvent::Fetched {
                 request_id: send_id,
-                account_id: "me@qos.example".into(),
+                account_id: "me@tilo.example".into(),
                 folder: Folder::Inbox,
                 messages: Vec::new(),
             })
@@ -5468,7 +5468,7 @@ mod tests {
         incoming_tx
             .send(EngineEvent::Fetched {
                 request_id: refresh_id,
-                account_id: "me@qos.example".into(),
+                account_id: "me@tilo.example".into(),
                 folder: Folder::Inbox,
                 messages: Vec::new(),
             })
@@ -5483,11 +5483,11 @@ mod tests {
         assert!(app.resource_refresh_invocation.is_some());
         assert!(matches!(
             app.resource_refresh_result.as_ref(),
-            Some(qos_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == invocation
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == invocation
         ));
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == invocation
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == invocation
         ));
         assert!(app.resource_refresh_invocation.is_none());
         assert!(app.pending_send.is_some());
@@ -5519,19 +5519,19 @@ mod tests {
             rx: incoming,
         });
         let request_id = uuid::Uuid::new_v4();
-        let owner = qos_actions::InvocationId::new();
+        let owner = tilo_actions::InvocationId::new();
         app.resource_refresh_invocation = Some((request_id, owner));
-        app.resource_refresh_result = Some(qos_actions::InvocationUpdate::Succeeded {
+        app.resource_refresh_result = Some(tilo_actions::InvocationUpdate::Succeeded {
             invocation: owner,
-            output: qos_actions::ActionOutput::default(),
+            output: tilo_actions::ActionOutput::default(),
         });
 
         let payload =
             serde_json::to_vec(&crate::actions::MailOperation::RefreshCurrentFolder).unwrap();
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::Effect,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MAIL_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -5541,7 +5541,7 @@ mod tests {
         );
         assert!(
             app.poll_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 false,
                 &doc,
                 &automerge::ROOT
@@ -5550,7 +5550,7 @@ mod tests {
         );
         assert!(matches!(
             app.poll_resource_operation(owner, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == owner
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == owner
         ));
         assert!(app.resource_refresh_invocation.is_none());
     }
@@ -5594,8 +5594,8 @@ mod tests {
     #[test]
     fn sample_mode_persists_to_a_sandbox_not_the_real_store() {
         // Regression guard for the leak where the bundled demo accounts
-        // (you@qos.example, you@hooli.example, new@host.example) ended up in the
-        // user's real ~/.config/qos/accounts/store.json: the sample / shots /
+        // (you@tilo.example, you@hooli.example, new@host.example) ended up in the
+        // user's real ~/.config/tilo/accounts/store.json: the sample / shots /
         // test app must resolve a throwaway sandbox as its persist target, never
         // the real per-user config root.
         let root = MailApp::new_sample()
@@ -5723,7 +5723,7 @@ mod tests {
         assert!(d.to.contains(&sender), "sender goes in To: {}", d.to);
         assert!(!d.cc.is_empty(), "other recipients populate Cc: {}", d.cc);
         assert!(
-            !d.cc.contains("you@qos.example"),
+            !d.cc.contains("you@tilo.example"),
             "our own address is excluded from Cc: {}",
             d.cc
         );
@@ -6345,7 +6345,7 @@ mod tests {
                 attachment.1.content.clone(),
             )
         };
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::MailOperation::SaveAttachment {
             message_id: message_id.to_string(),
             index,
@@ -6354,7 +6354,7 @@ mod tests {
         assert!(matches!(
             app.start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MAIL_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6378,7 +6378,7 @@ mod tests {
         assert_eq!(std::fs::read(&destination).unwrap(), bytes);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { output, .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. })
                 if output.resources == vec![format!("mail.attachment:{message_id}:{index}")]
         ));
     }
@@ -6409,7 +6409,7 @@ mod tests {
         .unwrap();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MAIL_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6419,14 +6419,14 @@ mod tests {
             .contains("admitted portal")
         );
 
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.begin_attachment_save(message_id, index).unwrap();
         app.resource_attachment_save_invocation = Some(invocation);
         app.attachment_save_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
         app.drain_attachment_save();
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
     }
 
@@ -6449,7 +6449,7 @@ mod tests {
                 })
                 .expect("sample has a hydrated attachment")
         };
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.begin_attachment_save(message_id, index).unwrap();
         app.resource_attachment_save_invocation = Some(invocation);
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -6458,7 +6458,7 @@ mod tests {
         app.drain_attachment_save();
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
         assert!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
@@ -6466,12 +6466,12 @@ mod tests {
             "a disconnected picker cannot produce a second terminal update"
         );
 
-        let cancellation = qos_actions::InvocationId::new();
+        let cancellation = tilo_actions::InvocationId::new();
         app.begin_attachment_save(message_id, index).unwrap();
         app.resource_attachment_save_invocation = Some(cancellation);
         assert!(matches!(
             app.poll_resource_operation(cancellation, true, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert!(app.attachment_save_rx.is_none());
         assert!(app.pending_attachment_save.is_none());

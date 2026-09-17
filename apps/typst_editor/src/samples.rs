@@ -116,7 +116,7 @@ const REPORT: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
 #align(center)[
   #text(18pt, weight: "bold")[Quarterly Engineering Report]
 
-  #text(10pt)[Prepared for the qOS steering group]
+  #text(10pt)[Prepared for the Tilo steering group]
 ]
 
 = Summary
@@ -157,7 +157,7 @@ const LETTER: &str = r#"#set page(width: 16cm, height: auto, margin: 2cm)
 #set text(font: "Libertinus Serif", size: 11pt)
 
 #align(right)[
-  qOS Project \
+  Tilo Project \
   Spatial Computing Lab \
   #datetime.today().display()
 ]
@@ -166,7 +166,7 @@ const LETTER: &str = r#"#set page(width: 16cm, height: auto, margin: 2cm)
 
 Dear Reader,
 
-Thank you for trying the Typst editor inside qOS. This letter is a minimal
+Thank you for trying the Typst editor inside Tilo. This letter is a minimal
 document: a couple of paragraphs of justified prose and a closing.
 
 The point is to show how little markup it takes to produce a clean,
@@ -176,7 +176,7 @@ just text, with the occasional bit of _emphasis_ where it helps.
 #v(0.5cm)
 
 Yours, \
-The qOS team
+The Tilo team
 "#;
 
 const CHEATSHEET: &str = r#"#set page(width: 16cm, height: auto, margin: 1.4cm)

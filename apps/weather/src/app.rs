@@ -40,13 +40,13 @@ use winit::event::WindowEvent;
 
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, Availability, DiscoveryScope,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
     Resource, ResultSpec, RetryPolicy,
 };
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::{Affordance, NavShell, ShellMode, Widget};
 
 use crate::actions::WeatherAction;
@@ -86,7 +86,7 @@ pub struct WeatherApp {
     initial_fetch_done: bool,
     seeded_doc: bool,
     last_activity: Instant,
-    resource_refresh_invocation: Option<qos_actions::InvocationId>,
+    resource_refresh_invocation: Option<tilo_actions::InvocationId>,
     resource_refresh_failure: Option<String>,
     actions: ui::ActionHost,
     /// Last document state folded into the render model. `ActionHost` updates
@@ -101,7 +101,7 @@ impl WeatherApp {
             doc,
             crate::actions::WEATHER_ACTION_TYPE,
             &dispatched,
-            qos_actions::ActionContext::for_action("org.qos.Weather", "Weather", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Weather", "Weather", action),
         );
     }
 
@@ -477,7 +477,7 @@ impl Widget for WeatherApp {
                             })
                         }
                         _ => EncodedAction {
-                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                             payload: b"name, country, and valid latitude/longitude are required"
                                 .to_vec(),
                         },
@@ -649,7 +649,7 @@ impl Widget for WeatherApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -680,11 +680,11 @@ impl Widget for WeatherApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self.resource_refresh_invocation != Some(invocation) {
             return None;
         }
@@ -695,9 +695,9 @@ impl Widget for WeatherApp {
         self.resource_refresh_invocation = None;
         Some(
             if let Some(message) = self.resource_refresh_failure.take() {
-                qos_actions::InvocationUpdate::Failed {
+                tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "weather.refresh_failed".into(),
                         message,
                         details: None,
@@ -705,9 +705,9 @@ impl Widget for WeatherApp {
                     },
                 }
             } else {
-                qos_actions::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             },
         )

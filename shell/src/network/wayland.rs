@@ -133,16 +133,16 @@ impl WaylandServer {
             ShmState::new::<Self>(dh, vec![wl_shm::Format::Argb8888, wl_shm::Format::Xrgb8888]);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(dh);
-        let mut seat = seat_state.new_wl_seat(dh, "quick-desktop");
+        let mut seat = seat_state.new_wl_seat(dh, "tilo-desktop");
         seat.add_pointer();
         seat.add_keyboard(XkbConfig::default(), 200, 25)
             .map_err(|e| format!("failed to add keyboard: {e}"))?;
         let output = Output::new(
-            "quick-desktop-0".into(),
+            "tilo-desktop-0".into(),
             PhysicalProperties {
                 size: SmithaySize::from((0, 0)),
                 subpixel: Subpixel::Unknown,
-                make: "QuickDesktop".into(),
+                make: "Tilo Desktop".into(),
                 model: "Virtual".into(),
             },
         );

@@ -756,7 +756,7 @@ impl State {
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
         author: Option<UserId>,
-        context: Option<qos_actions::ActionContext>,
+        context: Option<tilo_actions::ActionContext>,
     ) -> bool {
         self.undo.commit_action_authored_with_message(
             &mut self.doc,
@@ -811,7 +811,7 @@ impl State {
     }
 
     /// Record an action that has *already* been committed into `doc`
-    /// out-of-band (e.g. a `qos_actions` action the Ctrl+K palette dispatched,
+    /// out-of-band (e.g. a `tilo_actions` action the Ctrl+K palette dispatched,
     /// which owns its own actor + timestamp commit boundary). Brackets the
     /// undo entry with the caller-supplied `before` heads, clears the redo
     /// stack, and realigns the undo baseline.
@@ -1541,13 +1541,13 @@ mod tests {
     fn native_commit_context_is_stamped_without_changing_undo() {
         let mut state = State::new();
         state.doc.put(&ROOT, "body", "hello").unwrap();
-        let context = qos_actions::ActionContext::for_resource(
+        let context = tilo_actions::ActionContext::for_resource(
             "Edit document",
             "document:1",
             "document",
             "Draft",
         )
-        .with_app("org.qos.Writer", "Writer");
+        .with_app("org.tilo.Writer", "Writer");
         assert!(state.commit_action_authored_with_context(
             None,
             None,
@@ -1558,7 +1558,7 @@ mod tests {
         let change = changes.last().expect("native change");
         let decoded = change
             .message()
-            .and_then(|message| qos_actions::ActionContext::from_change_message(message));
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message));
         assert_eq!(decoded.as_ref(), Some(&context));
         assert!(state.peek_last_undo().is_some());
     }

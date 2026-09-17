@@ -2,7 +2,7 @@
 
 ## Project Scope
 
-qOS is a collaborative Linux OS and desktop environment on **Fedora Bootc**: Niri-like
+Tilo is a collaborative Linux OS and desktop environment on **Fedora Bootc**: Niri-like
 strips of non-overlapping windows, inside workspaces that carry their own collaborators,
 permissions and host. It is a stack, not a single app:
 
@@ -51,10 +51,10 @@ Most user-facing design questions reduce to that one decision:
 Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
 
 - `shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
-  sandboxing, collaboration. Also the `qos-control` CLI and the `shots` renderer.
+  sandboxing, collaboration. Also the `tilo-control` CLI and the `shots` renderer.
 - `ui/` — the toolkit: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
   `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/qos-fs`.
+- `fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/tilo-fs`.
 - `apps/` — ~40 app crates built on `ui`.
 - `crates/<domain>/` — collab, doc, runtime, packaging, session, system, text, format.
 - `os/` — Containerfile, systemd units, image build scripts.
@@ -84,7 +84,7 @@ Run `cargo check -p shell --tests` before finishing. A `--lib` run never compile
 targets, which is how test files have silently stopped building for days at a time.
 
 Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `quickuser` /
-`quickdesktop`.
+`tilo`.
 
 ## Architecture Essentials
 
@@ -133,7 +133,7 @@ gossip; content hydrates on first read — so `open()` does not mean the bytes a
 
 ### Actions and resources
 
-`crates/collab/actions` (`qos-actions`) is the app-facing registry: `resource.rs`,
+`crates/collab/actions` (`tilo-actions`) is the app-facing registry: `resource.rs`,
 `action.rs`, `registry.rs`, `executor.rs`, `envelope.rs`. An app registers its resources and
 the actions on them; the shell serves them into search, the palette and the control socket.
 
@@ -145,25 +145,25 @@ click handler is invisible to every one of them.
 
 **There is one story. Do not build a second one.**
 
-`qos-control` is the CLI over the compositor's control socket — path from `$QOS_TEST_CONTROL`,
-default `/tmp/nirios.sock`. It is a `shell` binary and is **not on PATH**; run it with
-`cargo run -q --bin qos-control --` , or `cargo install --path shell --bin qos-control` once
+`tilo-control` is the CLI over the compositor's control socket — path from `$TILO_TEST_CONTROL`,
+default `/tmp/tilo.sock`. It is a `shell` binary and is **not on PATH**; run it with
+`cargo run -q --bin tilo-control --` , or `cargo install --path shell --bin tilo-control` once
 if you use it often. It has two halves; reach for the first.
 
 Semantic — how a collaborator, an agent or a script drives an app:
 
 ```bash
-cargo run -q --bin qos-control -- actions list                 # what this desktop can do
-cargo run -q --bin qos-control -- actions invoke PROVIDER ID   # do it: no coordinates
-cargo run -q --bin qos-control -- state-dump --pretty          # what it believes is on screen
+cargo run -q --bin tilo-control -- actions list                 # what this desktop can do
+cargo run -q --bin tilo-control -- actions invoke PROVIDER ID   # do it: no coordinates
+cargo run -q --bin tilo-control -- state-dump --pretty          # what it believes is on screen
 ```
 
 Input — for when the thing under test *is* the pointer, hit-testing or painting:
 
 ```bash
-cargo run -q --bin qos-control -- list-targets      # named rects, via Widget::test_id
-cargo run -q --bin qos-control -- click NAME        # also click-at X Y | drag | key | type
-cargo run -q --bin qos-control -- snapshot PATH     # PNG of the live scene
+cargo run -q --bin tilo-control -- list-targets      # named rects, via Widget::test_id
+cargo run -q --bin tilo-control -- click NAME        # also click-at X Y | drag | key | type
+cargo run -q --bin tilo-control -- snapshot PATH     # PNG of the live scene
 ```
 
 Prefer the semantic half: it is the surface real users and agents depend on, so exercising it
@@ -180,7 +180,7 @@ cargo run --bin shots -- --mode recording --scenario <name> --out target/<file>.
 ```
 
 Output is identical to the live binary except for live-surface-only bugs.
-`QOS_SHOTS_THEME=light|dark|high-contrast` — check more than one; single-theme blind spots
+`TILO_SHOTS_THEME=light|dark|high-contrast` — check more than one; single-theme blind spots
 have shipped repeatedly.
 
 `scripts/headless-examples/` is the worked-example index: `spawn-headless.sh` starts a
@@ -194,7 +194,7 @@ Debug overlays need `QUICK_UI_DEBUG` **and** `debug_assertions`.
 
 A fresh resolve does not produce a working tree: `iroh` pulls a pre-release
 `ed25519-dalek 3.0.0-pre.1` stack that fails to compile against newer transitive versions, and
-the failure surfaces inside a dependency rather than where you touched. qOS's own identities
+the failure surfaces inside a dependency rather than where you touched. Tilo's own identities
 resolve to the stable `ed25519-dalek 2.2.0`, which is why `rand` is pinned to 0.8. Treat a
 lock change as a real change: read the diff and rebuild before pushing. `--locked` in CI.
 

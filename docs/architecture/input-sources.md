@@ -1,13 +1,13 @@
 # Keyboard input sources
 
 Keyboard layouts are per-user session state. Personal Settings owns the durable
-preference and the compositor is the only actuator; qOS does not call
+preference and the compositor is the only actuator; Tilo does not call
 `localectl`, write `/etc/vconsole.conf`, or require an administrator merely to
 change the language used by one logged-in user.
 
 ## Durable contract
 
-The `input` object in `~/.config/qos/settings.json` carries:
+The `input` object in `~/.config/tilo/settings.json` carries:
 
 ```json
 {
@@ -42,11 +42,11 @@ session without keyboard input.
 
 Alt+Shift uses the standard `grp:alt_shift_toggle` option when more than one
 source is configured. Super+Space is deliberately not claimed because it is the
-qOS global-search shortcut. Compose-key selections map to standard XKB options.
+Tilo global-search shortcut. Compose-key selections map to standard XKB options.
 The saved active source is the session-start preference; shortcut cycling is
 temporary and does not rewrite settings on every chord.
 
 Hosted development mode receives already-translated physical key events from
-the host compositor, so qOS cannot override that host keyboard. Its embedded
-Wayland seat still publishes the configured qOS map. Production DRM sessions
+the host compositor, so Tilo cannot override that host keyboard. Its embedded
+Wayland seat still publishes the configured Tilo map. Production DRM sessions
 own raw input and apply the preference end to end.

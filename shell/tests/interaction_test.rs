@@ -222,7 +222,7 @@ fn test_click_interaction_in_sandbox() {
     thread::sleep(Duration::from_secs(2));
 
     // 6. Verify Log
-    let log_path = format!("/tmp/quick-desktop-app-{tab_id}.log");
+    let log_path = format!("/tmp/tilo-desktop-app-{tab_id}.log");
     let log_content = fs::read_to_string(&log_path).unwrap_or_default();
     let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
     println!("DEBUG: Final Client Log:\n{log_content}");

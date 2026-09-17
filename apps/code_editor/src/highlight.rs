@@ -3,7 +3,7 @@
 //! We use [`syntect`] strictly as a *tokenizer*: its Sublime-syntax grammars
 //! classify every span of a line into a scope stack (e.g.
 //! `source.rust → meta.function → entity.name.function`). We do **not** use
-//! syntect's own colour themes — colours in qOS are OS-controlled, so we map
+//! syntect's own colour themes — colours in Tilo are OS-controlled, so we map
 //! each scope to one of a small set of semantic [`TokenRole`]s, and the role
 //! is resolved to a concrete colour against the active [`ui::theme::Theme`] at
 //! draw time. That keeps highlighting robust (real grammars) while letting the

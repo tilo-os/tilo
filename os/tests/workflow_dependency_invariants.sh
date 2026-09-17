@@ -22,7 +22,7 @@ github_cache_workflows=(
 cosign_workflows=(
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
-  "$workflows/qos-relay.yaml"
+  "$workflows/tilo-relay.yaml"
   "$workflows/release-imager.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
 )
@@ -43,11 +43,11 @@ else
 fi
 
 nightly_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/tilo\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$nightly_workflow"
 } | head -n 1)"
 refresh_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/tilo\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$visual_refresh_workflow"
 } | head -n 1)"
 if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \
@@ -173,7 +173,7 @@ for workflow in "${github_cache_workflows[@]}"; do
     fail=1
   fi
 done
-if ! grep -Fq "printf '[qos] pruning stale cached asset %s" \
+if ! grep -Fq "printf '[tilo] pruning stale cached asset %s" \
   "$repo/os/dev/cache-github-assets.sh"; then
   printf 'GitHub cache cannot reconcile a prior manifest generation\n' >&2
   fail=1

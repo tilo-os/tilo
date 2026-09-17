@@ -1,4 +1,4 @@
-//! Mail as a qOS global-search source.
+//! Mail as a Tilo global-search source.
 //!
 //! Mirrors the reference wiring in [`apps/contacts`]: Mail declares its
 //! searchable type by implementing [`SearchProvider`] over a retained catalogue
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
@@ -299,7 +299,7 @@ impl SearchProvider for MailSearchProvider {
             .query_page(query.trim(), cursor, work_budget, result_limit)
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
         if address.action != "open" {
             return None;
         }
@@ -819,17 +819,17 @@ mod tests {
             (address, id)
         };
 
-        let resource = <crate::app::MailApp as qos_actions::ResourceProvider>::resource(
+        let resource = <crate::app::MailApp as tilo_actions::ResourceProvider>::resource(
             &app,
             &doc,
             &address.resource,
         )
         .expect("search address resolves lazily");
-        let encoded = qos_actions::door::encode(&[resource], &address, None).unwrap();
+        let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
         assert!(matches!(
             app.start_resource_operation_with_document(
-                qos_actions::InvocationId::default(),
-                qos_actions::OperationKind::View,
+                tilo_actions::InvocationId::default(),
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 &mut doc,
@@ -858,12 +858,12 @@ mod tests {
             .action_address()
             .expect("canonical folder address");
         let resources = app.resources(&doc);
-        let encoded = qos_actions::door::encode(&resources, &folder_address, None)
+        let encoded = tilo_actions::door::encode(&resources, &folder_address, None)
             .expect("folder address resolves against Mail's exported tree");
         let heads_before_folder_navigation = doc.get_heads();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 &doc,

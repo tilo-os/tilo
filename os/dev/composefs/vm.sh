@@ -20,20 +20,20 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/common.sh"
 
-QOS_TPM=1
+TILO_TPM=1
 # Pristine (setup mode) but kept across boots: the store is per-generation-series,
 # not per-boot, so anything enrolled during a series is still there afterwards.
-# Assigned from QOS_CFS_SECBOOT_KEYS, not from itself: _common.sh has already set
-# QOS_SECBOOT_KEYS, and `:-` only fires on unset or empty, so a default written
+# Assigned from TILO_CFS_SECBOOT_KEYS, not from itself: _common.sh has already set
+# TILO_SECBOOT_KEYS, and `:-` only fires on unset or empty, so a default written
 # that way would never apply.
-QOS_SECBOOT_KEYS="${QOS_CFS_SECBOOT_KEYS:-persist}"
-QOS_TPM_DIR="$QOS_CFS_RUN/tpm"
-QOS_TPM_SOCK="$QOS_TPM_DIR/swtpm-ctrl.sock"
-CFS_MON="$QOS_CFS_RUN/mon.sock"
-CFS_SERIAL="$QOS_CFS_RUN/serial.log"
-CFS_CONSOLE="$QOS_CFS_RUN/console.sock"
-CFS_PID="$QOS_CFS_RUN/qemu.pid"
-CFS_QEMU_LOG="$QOS_CFS_RUN/qemu.log"
+TILO_SECBOOT_KEYS="${TILO_CFS_SECBOOT_KEYS:-persist}"
+TILO_TPM_DIR="$TILO_CFS_RUN/tpm"
+TILO_TPM_SOCK="$TILO_TPM_DIR/swtpm-ctrl.sock"
+CFS_MON="$TILO_CFS_RUN/mon.sock"
+CFS_SERIAL="$TILO_CFS_RUN/serial.log"
+CFS_CONSOLE="$TILO_CFS_RUN/console.sock"
+CFS_PID="$TILO_CFS_RUN/qemu.pid"
+CFS_QEMU_LOG="$TILO_CFS_RUN/qemu.log"
 CFS_SSH_PORT="${CFS_SSH_PORT:-2322}"
 
 running() { [ -f "$CFS_PID" ] && inenv "kill -0 \$(cat '$CFS_PID') 2>/dev/null"; }
@@ -41,7 +41,7 @@ running() { [ -f "$CFS_PID" ] && inenv "kill -0 \$(cat '$CFS_PID') 2>/dev/null";
 chmp() { inenv "printf '%s\n' \"$1\" | socat - 'unix:$CFS_MON'"; }
 
 gsh() {
-  sshpass -p quickdesktop ssh -p "$CFS_SSH_PORT" \
+  sshpass -p tilo ssh -p "$CFS_SSH_PORT" \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=5 -o LogLevel=ERROR root@127.0.0.1 "$@"
 }
@@ -65,23 +65,23 @@ cmd_boot() {
       # is selected unconditionally (os/dev/_common.sh), and this only asks for a
       # variable store that survives a restart so keys enrolled in the guest
       # stay enrolled across an update series.
-      --secboot) QOS_SECBOOT=1 ;;
-      --no-secboot) QOS_SECBOOT=0 ;;
+      --secboot) TILO_SECBOOT=1 ;;
+      --no-secboot) TILO_SECBOOT=0 ;;
       [0-9]*) gen="$1" ;;
       *) die "boot: unknown arg $1" ;;
     esac
     shift
   done
   gen="${gen:-1}"
-  disk="$QOS_CFS_RUN/gen$gen.raw"
+  disk="$TILO_CFS_RUN/gen$gen.raw"
   [ -f "$disk" ] || die "no disk for generation $gen ($disk) — run install.sh $gen"
   running && die "a spike VM is already running (pid $(cat "$CFS_PID")); stop it first"
-  mkdir -p "$QOS_CFS_RUN"
-  # QOS_CFS_VARS overrides the store outright, for testing a prepared one.
-  [ -n "${QOS_CFS_VARS:-}" ] && QOS_SECBOOT_KEYS="$QOS_CFS_VARS"
+  mkdir -p "$TILO_CFS_RUN"
+  # TILO_CFS_VARS overrides the store outright, for testing a prepared one.
+  [ -n "${TILO_CFS_VARS:-}" ] && TILO_SECBOOT_KEYS="$TILO_CFS_VARS"
   firmware_setup
   rm -f "$CFS_SERIAL" "$CFS_MON" "$CFS_PID"
-  local varstore; varstore="$(firmware_varstore "$QOS_CFS_RUN")"
+  local varstore; varstore="$(firmware_varstore "$TILO_CFS_RUN")"
   swtpm_start
   local serial_arg
   if [ "$serial_mode" = socket ]; then
@@ -90,14 +90,14 @@ cmd_boot() {
   else
     serial_arg="-serial file:$CFS_SERIAL"
   fi
-  local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+  local args="$(machine_args) -enable-kvm -m $TILO_MEM -cpu host -smp $TILO_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=raw,if=virtio \
     -device virtio-vga -display none \
     -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$CFS_SSH_PORT-:22 \
     -monitor unix:$CFS_MON,server,nowait $serial_arg \
-    -pidfile $CFS_PID -name qos-composefs"
-  msg "boot generation $gen ($disk), TPM on, varstore keys=$QOS_SECBOOT_KEYS, ssh on 127.0.0.1:$CFS_SSH_PORT, serial=$serial_mode"
+    -pidfile $CFS_PID -name tilo-composefs"
+  msg "boot generation $gen ($disk), TPM on, varstore keys=$TILO_SECBOOT_KEYS, ssh on 127.0.0.1:$CFS_SSH_PORT, serial=$serial_mode"
   inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$CFS_QEMU_LOG' 2>&1 & disown"
   sleep 1
   inenv "test -S '$CFS_MON'" || { cat "$CFS_QEMU_LOG" >&2; die "boot failed"; }

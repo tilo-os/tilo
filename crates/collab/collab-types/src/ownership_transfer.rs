@@ -57,7 +57,7 @@ impl OwnershipTransferProposalV1 {
     /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
-            b"qos.ownership-transfer.proposal.v1".as_slice(),
+            b"tilo.ownership-transfer.proposal.v1".as_slice(),
             self.version,
             &self.workspace,
             self.proposal_id,
@@ -136,7 +136,7 @@ impl OwnershipTransferAcceptanceV1 {
     /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
-            b"qos.ownership-transfer.acceptance.v1".as_slice(),
+            b"tilo.ownership-transfer.acceptance.v1".as_slice(),
             self.version,
             self.proposal_digest,
             self.recipient,
@@ -208,7 +208,7 @@ impl OwnershipTransferCancellationV1 {
     /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
-            b"qos.ownership-transfer.cancellation.v1".as_slice(),
+            b"tilo.ownership-transfer.cancellation.v1".as_slice(),
             self.version,
             self.proposal_digest,
             self.current_owner,
@@ -276,7 +276,7 @@ impl OwnershipTransferAuditV1 {
     /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
-            b"qos.ownership-transfer.commit.v1".as_slice(),
+            b"tilo.ownership-transfer.commit.v1".as_slice(),
             self.version,
             &self.proposal,
             &self.acceptance,

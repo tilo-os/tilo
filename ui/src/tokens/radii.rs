@@ -7,7 +7,7 @@ pub struct Radii {
     pub full: f32,
 }
 
-// Mapped onto Tailwind's radius scale per the nirios concept:
+// Mapped onto Tailwind's radius scale per the tilo concept:
 // `rounded`(4)/`rounded-lg`(8)/`rounded-xl`(12)/`rounded-3xl`(24)/`rounded-full`(≈9999).
 // The 2xl step (16px) is intentionally absent — five slots, and the window
 // card's `rounded-3xl` is the visual anchor for `radii.xl`.

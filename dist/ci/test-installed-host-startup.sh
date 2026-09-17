@@ -7,19 +7,19 @@ set -euo pipefail
 
 [[ $# == 0 ]] || { echo "usage: $0" >&2; exit 2; }
 [[ $(id -u) == 0 ]] || { echo "installed host startup test must run as root" >&2; exit 2; }
-test -x /usr/bin/qos-shell
+test -x /usr/bin/tilo-shell
 command -v useradd >/dev/null
 command -v runuser >/dev/null
 
 work=$(mktemp -d)
-smoke_user=qosci$$
+smoke_user=tiloci$$
 cleanup() {
     userdel "$smoke_user" >/dev/null 2>&1 || true
     rm -rf -- "$work"
 }
 trap cleanup EXIT
 fail() {
-    echo "installed qOS host startup check failed: $1" >&2
+    echo "installed Tilo host startup check failed: $1" >&2
     echo '--- compositor log ---' >&2
     cat "$work/startup.log" >&2 || true
     echo '--- frame summary ---' >&2
@@ -29,7 +29,7 @@ fail() {
 
 # A real passwd entry catches HOME/uid assumptions which running the package as
 # root would hide. Keep every user-owned path under the throwaway tree so this
-# cannot consume or create a developer's actual qOS identity.
+# cannot consume or create a developer's actual Tilo identity.
 useradd --home-dir "$work/home" --create-home --shell /bin/bash "$smoke_user"
 smoke_uid=$(id -u "$smoke_user")
 smoke_gid=$(id -g "$smoke_user")
@@ -49,27 +49,27 @@ runuser -u "$smoke_user" -- env -i \
     XDG_STATE_HOME="$work/state" \
     XDG_CACHE_HOME="$work/cache" \
     WGPU_BACKEND=vulkan \
-    QOS_RUN_SECONDS=3 \
-    QOS_FRAME_WARMUP_MS=0 \
-    QOS_FRAME_SUMMARY="$work/state/frame-summary.json" \
-    /usr/bin/qos-shell --host-desktop-session --firstboot --backend headless \
+    TILO_RUN_SECONDS=3 \
+    TILO_FRAME_WARMUP_MS=0 \
+    TILO_FRAME_SUMMARY="$work/state/frame-summary.json" \
+    /usr/bin/tilo-shell --host-desktop-session --firstboot --backend headless \
     >"$work/startup.log" 2>&1
 status=$?
 set -e
 
 if (( status != 0 )); then
-    echo "installed qOS host session exited with status $status" >&2
+    echo "installed Tilo host session exited with status $status" >&2
     cat "$work/startup.log" >&2
     exit "$status"
 fi
 grep -Fq \
-    'nirios compositor: showing host-desktop identity setup from the first frame' \
+    'tilo compositor: showing host-desktop identity setup from the first frame' \
     "$work/startup.log" || fail 'first-login selection was not logged'
 test -s "$work/state/frame-summary.json" || fail 'frame summary was not written'
 grep -Eq '"painted"[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
     "$work/state/frame-summary.json" || fail 'the compositor did not paint a frame'
-test -d "$work/data/qos" || fail 'the host identity root was not prepared'
-test ! -e "$work/data/qos/user-identity/primary.json" \
+test -d "$work/data/tilo" || fail 'the host identity root was not prepared'
+test ! -e "$work/data/tilo/user-identity/primary.json" \
     || fail 'startup minted an identity without user consent'
 
 echo 'installed host first-login startup: PASS'

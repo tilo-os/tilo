@@ -1,5 +1,5 @@
 //! Concept-parity spec tests: each test pins one gap from
-//! `docs/nirios/concept-coverage.md` as a failing assertion (see per-test
+//! `docs/tilo/concept-coverage.md` as a failing assertion (see per-test
 //! headers for the audit row + concept TSX line). Tests render into a
 //! `vello::Scene` and inspect the encoded `draw_data` for colour brushes /
 //! draw counts (no GPU required); `OffscreenRenderer` pixel sampling is used
@@ -35,7 +35,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
 use shell::shell::quick_settings::{QsLevel, QuickSettings};
 use shell::shell::state::WorkspaceTree;
@@ -55,7 +55,7 @@ const H: f32 = 900.0;
 /// the `e2e_shell_flows.rs` harness minus the PNG snapshot.
 #[must_use]
 fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -184,7 +184,7 @@ fn workspace_settings_renders_general_tab_with_invite_link() {
     let (baseline_scene, _baseline_chrome) = render_overlay_host(&tree);
     let baseline_fills = collect_solid_colors(&baseline_scene);
 
-    let (mut host2, chrome2) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host2, chrome2) = build_tilo_overlay_host_with_chrome(&tree);
     chrome2.borrow_mut().overlays.ws_settings = true;
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -334,7 +334,7 @@ fn workspace_settings_renders_per_file_capabilities_as_permission_rows() {
 fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
     let tree = WorkspaceTree::bootstrap_demo();
 
-    let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host_a, chrome_a) = build_tilo_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_a.borrow_mut();
         st.overlays.ws_settings = true;
@@ -346,7 +346,7 @@ fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
 
     // Post-migration, Members must ignore `editing_workspace_name` entirely,
     // so this render's fill count must match `fills_a` exactly.
-    let (mut host_b, chrome_b) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host_b, chrome_b) = build_tilo_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_b.borrow_mut();
         st.overlays.ws_settings = true;
@@ -375,7 +375,7 @@ fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
 fn permissions_tab_body_is_invariant_to_the_name_edit_buffer() {
     let tree = WorkspaceTree::bootstrap_demo();
 
-    let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host_a, chrome_a) = build_tilo_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_a.borrow_mut();
         st.overlays.ws_settings = true;
@@ -387,7 +387,7 @@ fn permissions_tab_body_is_invariant_to_the_name_edit_buffer() {
 
     // A leaking General body would re-emit the Name-input rect fill, the
     // editing-mode caret fill, and a thicker stroke.
-    let (mut host_b, chrome_b) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host_b, chrome_b) = build_tilo_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_b.borrow_mut();
         st.overlays.ws_settings = true;
@@ -488,7 +488,7 @@ fn tree_with_seeded_roster() -> WorkspaceTree {
 /// typed dispatch field, replacing an `editing_workspace_name` side-channel.
 #[must_use]
 fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chrome) {
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     {
         let mut st = chrome.borrow_mut();
         st.overlays.ws_settings = true;
@@ -723,13 +723,13 @@ fn global_search_selected_row_is_indigo_500_not_grey() {
 }
 
 /// Audit `concept-coverage.md:22,128-131` (`QuickSettings.tsx:181-201`):
-/// The top row keeps common shell actions one gesture away. qOS adds a
+/// The top row keeps common shell actions one gesture away. Tilo adds a
 /// notification-history tile beside Settings, Privacy and Power because the
 /// compositor, not Settings, owns delivered notification history.
 #[test]
 fn quick_settings_renders_settings_privacy_history_and_power_actions() {
     let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     open_quick_settings(&chrome);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -809,7 +809,7 @@ fn quick_settings_slider_fill_is_white_not_indigo() {
         })
         .count();
 
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     open_quick_settings(&chrome);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -918,7 +918,7 @@ fn render_quick_settings_open(
     tree: &WorkspaceTree,
     mutate_chrome: impl FnOnce(&Chrome),
 ) -> (usize, Chrome) {
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     chrome.borrow_mut().overlays.quick_settings = true;
     mutate_chrome(&chrome);
     let theme = Theme::dark();
@@ -1361,7 +1361,7 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
         has_alice && has_bob,
         "TopBar right cluster must paint both peers in their own colour \
          (Alice #ec4899 present: {has_alice}; Bob #f97316 present: \
-         {has_bob}; concept `nirios-concept/src/data.ts`). Observed solid \
+         {has_bob}; concept `tilo-concept/src/data.ts`). Observed solid \
          fills: {fills:?}. If this fails, check that \
          `TopBarChrome::sync_from_tree` reads from the active workspace's \
          own collaborator list (with a tree-level fallback) and that \
@@ -1794,7 +1794,7 @@ mod overview_add_workspace {
     #[must_use]
     fn build_settled_overview() -> OverviewHarness {
         let tree = WorkspaceTree::bootstrap_demo();
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         chrome.borrow_mut().overlays.overview = true;
         host.force_overview_settled(true);
 
@@ -1857,7 +1857,7 @@ mod overview_add_workspace {
             "overview must render a visible 'Add workspace' affordance — \
              cached hit rect is still ZERO after a full layout + draw with \
              the overview settled open. Concept ref: \
-             nirios-concept/src/components/OverviewView.tsx (create-affordance)."
+             tilo-concept/src/components/OverviewView.tsx (create-affordance)."
         );
 
         // No public row-geometry probe, so this uses the draw path's y-coord

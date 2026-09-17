@@ -116,7 +116,7 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &Sender<Response>) {
         }
     };
     let client = reqwest::Client::builder()
-        .user_agent("qos-weather/0.1 (+https://open-meteo.com)")
+        .user_agent("tilo-weather/0.1 (+https://open-meteo.com)")
         .build()
         .ok();
 

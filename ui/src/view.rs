@@ -1,6 +1,6 @@
 //! The **View**: an app's presentation layer, distinct from its state.
 //!
-//! A qOS app owns two pieces of live state: the **State document** (an
+//! A Tilo app owns two pieces of live state: the **State document** (an
 //! Automerge CRDT in [`crate::state::State`]) is the collaborative truth,
 //! merged and serialized with `doc.save()`; the **View** is everything about
 //! *where the user is looking* that is deliberately **not** merged — scroll,
@@ -172,7 +172,7 @@ impl std::fmt::Display for ThawError {
 
 impl std::error::Error for ThawError {}
 
-/// Freeze/thaw for a qOS app, extendable at exactly one seam.
+/// Freeze/thaw for a Tilo app, extendable at exactly one seam.
 ///
 /// The two **required** methods are the override hook: `serialize_state` /
 /// `restore_state` say how an app's *state* becomes bytes and back,
@@ -504,7 +504,7 @@ mod tests {
         }
 
         let src = BrowserStub {
-            session: "tabs=[example.com, qos.dev]; active=1".into(),
+            session: "tabs=[example.com, tilo.dev]; active=1".into(),
         };
         let frozen = src.freeze();
 
@@ -513,7 +513,7 @@ mod tests {
         };
         dst.thaw(&frozen).expect("thaw the browser stub");
         assert_eq!(
-            dst.session, "tabs=[example.com, qos.dev]; active=1",
+            dst.session, "tabs=[example.com, tilo.dev]; active=1",
             "the non-CRDT state round-tripped through the serialize_state hook"
         );
 

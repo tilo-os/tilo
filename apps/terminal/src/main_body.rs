@@ -21,7 +21,7 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
+use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -160,7 +160,7 @@ pub(crate) fn is_public_web_link(url: &str) -> bool {
         return false;
     }
     // An authority is required. A slash is optional (for example
-    // `https://qos.example`), but a path cannot be mistaken for one.
+    // `https://tilo.example`), but a path cannot be mistaken for one.
     authority_and_path
         .split_once('/')
         .map_or(!authority_and_path.is_empty(), |(authority, _)| {
@@ -3646,7 +3646,7 @@ impl TerminalWidget {
             2.0,
         );
 
-        let label = "qOS Terminal";
+        let label = "Tilo Terminal";
         let size = theme.tokens.typography.scale.lg;
         let (lw, _) = tr.measure(label, size, None);
         tr.draw_text_weighted(
@@ -3743,7 +3743,7 @@ impl TerminalWidget {
 
     /// The buffer-absolute word span containing `pos`, using the toolkit's
     /// shared `word_boundaries` walker over the row's reconstructed text so
-    /// terminal word selection matches every other qOS text surface. Returns
+    /// terminal word selection matches every other Tilo text surface. Returns
     /// `(start, end)` as `GridPos`es on the same row, `end` exclusive.
     fn word_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
         let line = self.grid.get(pos.row).map_or("", String::as_str);
@@ -4128,7 +4128,7 @@ impl TerminalWidget {
         let mod_param = Self::key_mod_param(shift, alt, ctrl);
 
         // GUI-terminal quality-of-life bindings that map to established shell
-        // editing bytes rather than inventing a qOS-only protocol.
+        // editing bytes rather than inventing a Tilo-only protocol.
         if matches!(key, Key::Named(NamedKey::Backspace)) {
             if ctrl && !alt {
                 return Some(vec![0x17]); // ^W: erase previous word
@@ -4342,8 +4342,8 @@ pub struct PrintBuf {
 }
 
 /// Name this emulator reports for itself in the XTVERSION reply
-/// (`CSI > 0 q` → `DCS > | qos-terminal(<version>) ST`).
-pub const TERMINAL_NAME: &str = "qos-terminal";
+/// (`CSI > 0 q` → `DCS > | tilo-terminal(<version>) ST`).
+pub const TERMINAL_NAME: &str = "tilo-terminal";
 
 /// Numeric build version reported in the Secondary Device Attributes (DA2)
 /// reply `CSI > 1 ; Pv ; 0 c`. Encoded `major*10000 + minor*100 + patch` so a
@@ -5446,7 +5446,7 @@ impl TerminalPerformer<'_> {
         }
     }
 
-    /// XTVERSION reply — DCS `> | qos-terminal(<version>) ST`.
+    /// XTVERSION reply — DCS `> | tilo-terminal(<version>) ST`.
     fn reply_xtversion(&mut self) {
         self.respond(
             format!(
@@ -5729,7 +5729,7 @@ pub struct TerminalBackend {
 impl TerminalBackend {
     /// Open a PTY running a shell.
     ///
-    /// **Not `$SHELL` directly.** Inside a qOS app sandbox there is no `/bin`
+    /// **Not `$SHELL` directly.** Inside a Tilo app sandbox there is no `/bin`
     /// at all: `launcher::profile` binds the loader, fonts, `/sys` and the CA
     /// bundle, and deliberately binds no executable directory — so `exec`ing
     /// `$SHELL` fails with `ENOENT`, and would still leave `vim` and `less`
@@ -5744,32 +5744,32 @@ impl TerminalBackend {
     /// Three routes, and the order is the trust boundary. The route is chosen by
     /// [`confinement_route`] from a capability probe, not by trying each in turn
     /// and hoping — so a machine that cannot host a guest is never handed one to
-    /// fail in, and confinement is never silently downgraded on qOS.
+    /// fail in, and confinement is never silently downgraded on Tilo.
     ///
     /// 1. **The service socket.** A sandboxed app cannot build a namespace —
     ///    its seccomp filter denies `unshare` and `mount`. So it asks the
     ///    session's supervisor and receives a pty master over `SCM_RIGHTS`.
-    ///    This is the production path inside qOS, and it is **mandatory when
+    ///    This is the production path inside Tilo, and it is **mandatory when
     ///    available**: if the launcher opened the service descriptor, we use it
     ///    and *fail closed* on any handshake error rather than falling through
-    ///    to an unconfined shell. That is what makes the qOS path non-optional —
+    ///    to an unconfined shell. That is what makes the Tilo path non-optional —
     ///    nothing an app controls (its own environment) can select best-effort
     ///    while the supervisor is reachable.
     /// 2. **Spawning the runtime.** An unconfined host that can genuinely build
     ///    the namespace a guest needs (unprivileged user namespaces enabled, not
     ///    already behind a seccomp filter) *and* has the runtime installed — a
     ///    development tree, mostly. The terminal starts a guest itself so that
-    ///    session is confined the same way qOS confines it.
-    /// 3. **`$SHELL` (best-effort).** No qOS confinement is available on this
+    ///    session is confined the same way Tilo confines it.
+    /// 3. **`$SHELL` (best-effort).** No Tilo confinement is available on this
     ///    machine: a plain distribution, or a build of the terminal running
-    ///    outside qOS. Start the user's login shell directly so normal work
+    ///    outside Tilo. Start the user's login shell directly so normal work
     ///    still functions. The child inherits whatever ambient sandbox the
     ///    process already has, so it runs truly unconfined only on a truly
     ///    unconfined host — and this route is unreachable whenever route 1 is.
     ///
     /// The two kernel-feature probes ([`seccomp_filtered`],
     /// [`unprivileged_userns_enabled`]) are the robust discriminator between "I
-    /// am a confined qOS app" and "I am on a normal host": a seccomp filter
+    /// am a confined Tilo app" and "I am on a normal host": a seccomp filter
     /// cannot be removed once installed, so an attacker inside the sandbox
     /// cannot flip route 2 on to escape, and cannot reach an *escalated*
     /// best-effort shell — route 3's child is still bounded by the launcher's
@@ -5792,9 +5792,9 @@ impl TerminalBackend {
             }
             ConfineRoute::BestEffort => {
                 // A single quiet line, not a wall of errors: this is the normal,
-                // expected state off qOS.
+                // expected state off Tilo.
                 tracing::info!(
-                    "terminal: qOS app confinement is not available here; \
+                    "terminal: Tilo app confinement is not available here; \
                      starting your login shell directly"
                 );
                 let shell = resolve_login_shell();
@@ -5839,7 +5839,7 @@ impl TerminalBackend {
 
 /// The environment variable the launcher sets when it has opened the `ush`
 /// service socket on this app's behalf, per `[sandbox.services]`.
-pub const USH_SERVICE_FD_ENV: &str = "QOS_SVC_USH_FD";
+pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
 /// Which way the terminal will obtain its shell, decided by capability probe.
 ///
@@ -5848,35 +5848,35 @@ pub const USH_SERVICE_FD_ENV: &str = "QOS_SVC_USH_FD";
 /// [`confinement_route`] and [`TerminalBackend::new`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConfineRoute {
-    /// The supervisor service is reachable — the qOS production path. Mandatory
+    /// The supervisor service is reachable — the Tilo production path. Mandatory
     /// when chosen: the caller must not fall back to an unconfined shell if the
     /// handshake fails.
     Service,
     /// This unconfined host can build a guest itself and has the runtime at the
     /// given path.
     SelfHosted(std::path::PathBuf),
-    /// No qOS confinement is available; start `$SHELL` directly.
+    /// No Tilo confinement is available; start `$SHELL` directly.
     BestEffort,
 }
 
 /// Choose how to obtain the shell from a capability probe, security-first.
 ///
-/// The ordering encodes the invariant "on qOS, always confine; off qOS, best
-/// effort — and best-effort can never be forced on qOS":
+/// The ordering encodes the invariant "on Tilo, always confine; off Tilo, best
+/// effort — and best-effort can never be forced on Tilo":
 ///
 /// 1. If the launcher handed us a live supervisor descriptor, take it. This is
-///    the only signal that positively identifies "confined qOS app with a
+///    the only signal that positively identifies "confined Tilo app with a
 ///    supervisor", and it wins unconditionally.
 /// 2. Otherwise self-host *only* when we could actually succeed: the kernel
 ///    lets this process build a user namespace (so we are not behind a seccomp
 ///    filter that would deny `unshare`, and unprivileged userns are enabled)
 ///    and the runtime binary exists. Gating on the probe — rather than
-///    launching `qos-ush` and letting it fail — is what removes the wall of
+///    launching `tilo-ush` and letting it fail — is what removes the wall of
 ///    `bwrap`/mount errors on a machine that could never host a guest.
 /// 3. Otherwise there is no confinement to be had here; best-effort.
 ///
 /// The security argument for (1)+(2): a seccomp filter cannot be lifted once
-/// installed, so on qOS an app cannot clear it to unlock route 2, and clearing
+/// installed, so on Tilo an app cannot clear it to unlock route 2, and clearing
 /// the service env var only drops it to route 3 — whose shell is still bounded
 /// by the launcher's seccomp + namespace + bind mounts. Best-effort therefore
 /// never grants more than the ambient sandbox already allows.
@@ -5918,7 +5918,7 @@ pub fn decide_route(
 ///
 /// An env var alone is not enough: the descriptor slot must actually be open,
 /// so a stale or spoofed number pointing at nothing does not select the service
-/// path (it falls through to the probe below and, off qOS, to best-effort).
+/// path (it falls through to the probe below and, off Tilo, to best-effort).
 pub(crate) fn ush_service_fd() -> Option<i32> {
     let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
     if raw < 0 {
@@ -5942,7 +5942,7 @@ fn can_build_namespace() -> bool {
     !seccomp_filtered() && unprivileged_userns_enabled() && bwrap_present()
 }
 
-/// True if a seccomp filter is installed on this process — i.e. the qOS launcher
+/// True if a seccomp filter is installed on this process — i.e. the Tilo launcher
 /// (or any foreign sandbox) is confining our syscalls.
 ///
 /// Read from `/proc/self/status` (`Seccomp:` ≥ 2 is "filter mode"). A filter
@@ -5990,23 +5990,23 @@ fn bwrap_present() -> bool {
 
 /// Where the runtime binary is when the terminal has to start one itself.
 ///
-/// `$QOS_USH_BIN` first so a development tree can point at `target/debug`,
+/// `$TILO_USH_BIN` first so a development tree can point at `target/debug`,
 /// then the installed location, then `PATH`. Absent from all three means this
 /// machine has no runtime and the caller falls back to `$SHELL`.
 pub fn ush_binary() -> Option<std::path::PathBuf> {
-    if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
+    if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
         let path = std::path::PathBuf::from(explicit);
         if path.exists() {
             return Some(path);
         }
     }
-    let installed = std::path::PathBuf::from("/usr/libexec/qos-ush");
+    let installed = std::path::PathBuf::from("/usr/libexec/tilo-ush");
     if installed.exists() {
         return Some(installed);
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join("qos-ush"))
+        .map(|dir| dir.join("tilo-ush"))
         .find(|candidate| candidate.exists())
 }
 
@@ -6022,7 +6022,7 @@ fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> 
 
     let raw: RawFd = std::env::var(USH_SERVICE_FD_ENV)?.parse()?;
     // SAFETY: the launcher passed this descriptor as a connected socket and
-    // documents it in `QOS_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
+    // documents it in `TILO_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
     // is correct — nothing else in this process refers to it.
     let stream = unsafe { UnixStream::from_raw_fd(raw) };
     let mut request = serde_json::to_vec(&serde_json::json!({
@@ -6147,7 +6147,7 @@ impl TerminalWidget {
 
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
         let reader_result = std::thread::Builder::new()
-            .name("qos-terminal-pty-reader".to_string())
+            .name("tilo-terminal-pty-reader".to_string())
             .spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
