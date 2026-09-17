@@ -4374,8 +4374,14 @@ impl CalendarApp {
         let cell_w = area.width() / cols as f64;
         let grid_top = area.y0 + header_h;
         let cell_h = (area.height() - header_h) / f64::from(rows);
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
 
-        Self::draw_month_header(scene, t, tr, theme, area, cell_w);
+        Self::draw_month_header(&mut paint, area, cell_w);
 
         let grid = date::month_grid(self.anchor);
         for (idx, day) in grid.iter().enumerate() {
@@ -4387,20 +4393,17 @@ impl CalendarApp {
                 area.x0 + cell_w * (col as f64 + 1.0),
                 grid_top + cell_h * (row as f64 + 1.0),
             );
-            self.draw_month_cell(scene, t, tr, theme, cell, cell_h, *day, &mut hits);
+            self.draw_month_cell(&mut paint, cell, cell_h, *day, &mut hits);
         }
         hits
     }
 
     /// The weekday header row (part of [`Self::draw_month`]).
-    fn draw_month_header(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        cell_w: f64,
-    ) {
+    fn draw_month_header(paint: &mut PaintContext<'_>, area: Rect, cell_w: f64) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         for (i, lbl) in date::WEEKDAY_SHORT.iter().enumerate() {
             let weekend = i >= 5;
@@ -4419,21 +4422,18 @@ impl CalendarApp {
 
     /// One day cell: grid line, hit targets, background tint, and the date
     /// number (with a today pill) (part of [`Self::draw_month`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_month_cell(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         cell: Rect,
         cell_h: f64,
         day: NaiveDate,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         // grid lines
         stroke_round(scene, t, c.border_standard.with_alpha(0.5), cell, 0.0, 0.5);
@@ -4492,26 +4492,34 @@ impl CalendarApp {
             );
         }
 
-        self.draw_month_cell_chips(scene, t, tr, theme, cell, cell_h, day, hits);
+        self.draw_month_cell_chips(
+            &mut PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            cell,
+            cell_h,
+            day,
+            hits,
+        );
     }
 
     /// The event chips inside one day cell, clipped to it (part of
     /// [`Self::draw_month_cell`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_month_cell_chips(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         cell: Rect,
         cell_h: f64,
         day: NaiveDate,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         scene.push_layer(
             Fill::NonZero,
