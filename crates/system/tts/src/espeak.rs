@@ -12,6 +12,7 @@
 
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 use crate::error::TtsError;
 use crate::speaker::{Speaker, Utterance};
@@ -141,12 +142,7 @@ impl EspeakSpeaker {
 
 /// Probe whether `bin --version` runs (i.e. the binary exists & is executable).
 fn probe(bin: &str) -> bool {
-    Command::new(bin)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    bounded_command::run(bin, &["--version"], None, 64 * 1024, Duration::from_secs(2))
         // Spawning at all proves the binary exists & is executable; the exit
         // code of `--version` varies across espeak-ng builds, so we ignore it.
         .is_ok()
