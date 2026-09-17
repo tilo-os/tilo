@@ -23,6 +23,8 @@ c880fa8d607b2aa6eadde7d6d6302b1396ebc38368fe2332fa20e193c7ee1420	libwpe-1.16.3.t
 b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e	wpewebkit-2.52.6.tar.xz	https://wpewebkit.org/releases/wpewebkit-2.52.6.tar.xz
 e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118	doubletake-ae06722-LICENSE	https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	fluxcast-a74f39f-LICENSE	https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE
+# Official v4l2loopback tag archive; built and signed with the exact Tilo kernel.
+1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034	v4l2loopback-0.15.3-a7e4a4d.tar.gz	https://github.com/v4l2loopback/v4l2loopback/archive/a7e4a4dea36187ad3550c797d647bcc50faced42.tar.gz
 # Libvirt source archive: upstream signature provenance is recorded in platform-support.md.
 7ec1a04e7e4f4069353d4daac117bbe869287f5b202695de61fe1b079efb6cb6	libvirt-12.7.0.tar.xz	https://download.libvirt.org/libvirt-12.7.0.tar.xz
 # DXVK Windows DLLs: both PE architectures from one upstream release; GitHub asset SHA-256.
