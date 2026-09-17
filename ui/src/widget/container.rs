@@ -8,7 +8,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 /// Each bool below is an independent builder toggle (background, height
@@ -301,16 +301,12 @@ impl Widget for Container {
         presence: &crate::presence::PresenceCtx,
     ) {
         if self.has_background {
+            // Rest edge derived from the fill itself (HIG §9.5): a declared
+            // `border_standard` is three shades off `raised` on the dark
+            // preset and vanishes. Crisp 1 px inset so the stroke sits on
+            // the surface, not half on the ground beside it.
             let fill = self.fill_color.unwrap_or(theme.bg_primary);
-            let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &shape,
-            );
+            crate::surface::card(scene, transform, self.rect, theme.radius_standard, fill);
         }
 
         if let Some(child) = &mut self.child {
@@ -440,16 +436,12 @@ impl Widget for Container {
             return;
         }
         if self.has_background {
+            // Rest edge derived from the fill itself (HIG §9.5): a declared
+            // `border_standard` is three shades off `raised` on the dark
+            // preset and vanishes. Crisp 1 px inset so the stroke sits on
+            // the surface, not half on the ground beside it.
             let fill = self.fill_color.unwrap_or(theme.bg_primary);
-            let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &shape,
-            );
+            crate::surface::card(scene, transform, self.rect, theme.radius_standard, fill);
         }
 
         if let Some(child) = &mut self.child {

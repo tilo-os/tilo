@@ -566,21 +566,24 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // desktop identically instead of one flat literal-black veil.
         crate::chrome::fill_scrim(scene, transform, self.viewport, MODAL_SCRIM_ALPHA, theme);
 
+        // Panel role (HIG §9.1): panel ground with the derived panel edge
+        // as a crisp 1 px inset stroke, not a declared `border_standard`
+        // that vanished against `raised` on the dark preset.
         let radius = f64::from(theme.tokens.radii.md);
         let box_shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &box_shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &box_shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
