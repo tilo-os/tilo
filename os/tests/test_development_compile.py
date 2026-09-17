@@ -25,6 +25,31 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_native_asset_fetch_includes_only_matching_compiler_cache_and_wpe(self):
+        script = (ROOT / 'os/dev/build-image.sh').read_text()
+        block = script.split('if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then\n', 1)[1].split('\nelse\n', 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / 'dev').mkdir()
+            (directory / 'Containerfile').write_text((ROOT / 'os/Containerfile').read_text())
+            (directory / 'dev/build-wpe.sh').write_text((ROOT / 'os/dev/build-wpe.sh').read_text())
+            fetch = directory / 'dev/cache-github-assets.sh'
+            fetch.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
+            fetch.chmod(0o755)
+            for architecture in ('aarch64', 'x86_64'):
+                result = subprocess.run(['bash', '-c', 'set -euo pipefail\ndie() { exit 1; }\n' + block],
+                    env=os.environ | {'TILO_OS_DIR': str(directory), 'TILO_WINDOWS_ARCH': architecture},
+                    capture_output=True, text=True, check=True)
+                self.assertEqual(set(result.stdout.splitlines()), {
+                    'libwpe-1.16.3.tar.xz', 'wpebackend-fdo-1.16.1.tar.xz',
+                    'wpewebkit-2.52.6.tar.xz', f'sccache-v0.17.0-{architecture}-unknown-linux-musl.tar.gz'})
+            (directory / 'Containerfile').write_text('ARG SCCACHE_VERSION=invalid\n')
+            result = subprocess.run(['bash', '-c', 'set -euo pipefail\ndie() { exit 1; }\n' + block],
+                env=os.environ | {'TILO_OS_DIR': str(directory), 'TILO_WINDOWS_ARCH': 'aarch64'},
+                capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+
     def test_native_payload_does_not_require_windows_or_kernel_artifacts(self):
         driver.validate_inputs(WPE, '1', REVISION, 'refs/heads/codex/test',
                                mode='native-payload', architecture='aarch64')
