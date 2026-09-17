@@ -426,3 +426,44 @@ async fn request_metadata_must_be_an_object_with_a_valid_progress_token() {
         );
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::test_default(WorkspaceId(71), "First connection");
+        let room = workspace.room.to_string();
+        let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+        workspace.owner = Some(actor.clone());
+        tree.workspaces.push(workspace);
+        tree.set_active(WorkspaceId(71));
+        let mut fixture = crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_first_allocated_peer(tree.shared());
+        let mut server = McpServer::new(fixture.broker.clone(), room, actor.clone());
+        let listed = server.handle(call("qos_list_apps", json!({}))).await.unwrap();
+        let app = &listed["result"]["structuredContent"]["apps"][0];
+        let peer_id = app["peer_id"].as_u64().unwrap();
+        assert_eq!(app["record_id"], "atlas");
+        let query = server.handle(call("qos_query", json!({"peer_id":peer_id})));
+        let (reply, ()) = tokio::join!(query, async {tokio::task::yield_now().await; drain_directory_bridge(&fixture).await;});
+        let reply = reply.unwrap();
+        assert_eq!(reply["result"]["isError"], false, "first published peer {peer_id} must be queryable: {reply}");
+        let page = &reply["result"]["structuredContent"];
+        let resource = &page["rows"][0]["resource"];
+        assert_eq!(resource, "workspace:atlas");
+        let target = json!({"peer_id":peer_id,"revision":page["revision"],"resource":resource,"action":page["rows"][0]["action"]});
+        let resolve = server.handle(call("qos_resolve", target.clone()));
+        let (reply, ()) = tokio::join!(resolve, async {tokio::task::yield_now().await; drain_directory_bridge(&fixture).await;});
+        let reply = reply.unwrap();
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        assert_eq!(reply["result"]["structuredContent"]["row"]["resource"], "workspace:atlas");
+        let mut target = target;
+        target["arguments"] = json!({});
+        let invoke = server.handle(call("qos_invoke", target));
+        let (reply, ()) = tokio::join!(invoke, async {tokio::task::yield_now().await; drain_directory_bridge(&fixture).await;});
+        let reply = reply.unwrap();
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        assert_eq!(reply["result"]["structuredContent"]["update"]["state"], "accepted");
+        assert_eq!(fixture.take_invocation_actor(), Some(actor));
+        assert_eq!(fixture.resolve_count(), 2, "invoke must re-resolve, not execute the previous descriptor");
+    }).await;
+}
