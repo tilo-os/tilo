@@ -453,20 +453,20 @@ pub fn face_colors(
     use vello::peniko::Color;
 
     // Disabled actions must not retain the semantic fill of an enabled
-    // primary or destructive action. A translucent blue "Save" still reads
-    // as actionable (and its label loses contrast once the whole face is
-    // dimmed), especially in the high-contrast track. Resolve one opaque,
-    // neutral disabled face instead. `on_surface_at` keeps its quieter ink
-    // readable on every shipped theme while the border makes the control's
+    // primary or destructive action — a translucent blue "Save" still reads
+    // as actionable. Every style resolves to the *neutral rest face*
+    // (raised fill, derived edge, primary ink) and the painters lay that
+    // face down under `widget::DISABLED_ALPHA`, so rest and disabled never
+    // look alike (HIG §9.5 "Rest edges") while the edge keeps the control's
     // bounds discoverable without implying that it can be activated.
     if interact.disabled {
         let bg = theme.tokens.colors.surfaces.raised;
-        let fg = theme
-            .tokens
-            .colors
-            .on_surface_at(bg, ON_FILL_MIN_CONTRAST)
-            .ink_dim;
-        return (bg, Some(theme.tokens.colors.border_standard), fg);
+        let fg = theme.tokens.colors.ink_on_any(
+            &[bg],
+            theme.tokens.colors.text_primary,
+            ON_FILL_MIN_CONTRAST,
+        );
+        return (bg, Some(crate::surface::edge_on(bg)), fg);
     }
 
     match style {
@@ -484,7 +484,10 @@ pub fn face_colors(
                 theme.tokens.colors.text_primary,
                 ON_FILL_MIN_CONTRAST,
             );
-            (bg, Some(theme.tokens.colors.border_standard), fg)
+            // The edge is derived from the rest surface and held across
+            // hover and press: a declared `border_standard` is three shades
+            // from the dark raised tier and simply vanished there.
+            (bg, Some(crate::surface::edge_on(rest)), fg)
         }
         ButtonStyle::Primary => {
             let rest = theme.accent_primary;
@@ -921,14 +924,29 @@ impl Button {
             .unwrap_or_else(|| f64::from(theme.tokens.radii.md));
         let shape = RoundedRect::from_rect(face.rect, radius);
 
+        // Disabled is the rest face under one group alpha (HIG §9.5), the
+        // same signal every other control gives, so rest and disabled are
+        // never the same picture.
+        if face.interact.disabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &shape,
+            );
+        }
         scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
+        // Rest edge and focus ring share one half-pixel-inset outline, so
+        // the hairline never bleeds onto the ground.
+        let outline = crate::surface::edge_outline(face.rect, radius);
         if face.interact.focused && !face.interact.disabled {
             scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
                 transform,
                 theme.border_focus,
                 None,
-                &shape,
+                &outline,
             );
         } else if let Some(bc) = border {
             scene.stroke(
@@ -936,7 +954,7 @@ impl Button {
                 transform,
                 bc,
                 None,
-                &shape,
+                &outline,
             );
         }
 
@@ -954,11 +972,14 @@ impl Button {
             face.weight,
             fg,
         );
+        if face.interact.disabled {
+            scene.pop_layer();
+        }
     }
 
-    /// Appends the cached face scene. Disabled state is already represented
-    /// by the canonical opaque palette in [`face_colors`], so the cache must
-    /// not apply a second whole-face alpha layer.
+    /// Appends the cached face scene. The disabled group alpha is encoded
+    /// *inside* the cache by `draw`, so the append itself applies none — a
+    /// second layer here would dim a disabled face twice.
     fn append_cached(&self, out_scene: &mut Scene, inner: Affine) {
         out_scene.append(&self.cached, Some(inner));
     }
@@ -1268,6 +1289,17 @@ impl Widget for Button {
         );
 
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        // Disabled is the rest face under one group alpha (HIG §9.5); the
+        // layer lives inside the cache so a cached frame carries it too.
+        if !enabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &shape,
+            );
+        }
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1278,13 +1310,15 @@ impl Widget for Button {
 
         // Focus ring wins over the style border; an accent-filled style
         // has no rest border, so it only strokes when focused.
+        let outline =
+            crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md));
         if self.is_focused && enabled {
             scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
                 transform,
                 theme.border_focus,
                 None,
-                &shape,
+                &outline,
             );
         } else if let Some(border_color) = border_opt {
             scene.stroke(
@@ -1292,7 +1326,7 @@ impl Widget for Button {
                 transform,
                 border_color,
                 None,
-                &shape,
+                &outline,
             );
         }
 
@@ -1317,6 +1351,9 @@ impl Widget for Button {
             crate::text_render::TextWeight::Regular,
             fg_color,
         );
+        if !enabled {
+            scene.pop_layer();
+        }
         self.cache_rect = self.rect;
         self.append_cached(out_scene, out_transform);
     }
@@ -2301,8 +2338,8 @@ mod tests {
         );
         assert_eq!(
             border,
-            Some(theme.tokens.colors.border_standard),
-            "neutral shows a border"
+            Some(crate::surface::edge_on(theme.tokens.colors.surfaces.raised)),
+            "neutral shows an edge derived from its rest surface"
         );
         assert_eq!(fg, theme.tokens.colors.text_primary);
         assert_eq!(
@@ -2409,8 +2446,8 @@ mod tests {
                 );
                 assert_eq!(
                     border,
-                    Some(theme.tokens.colors.border_standard),
-                    "{name} {style:?}: disabled face remains findable without a semantic fill"
+                    Some(crate::surface::edge_on(theme.tokens.colors.surfaces.raised)),
+                    "{name} {style:?}: disabled face keeps the derived rest edge, no semantic fill"
                 );
                 let ratio = contrast_ratio(fg, bg);
                 assert!(

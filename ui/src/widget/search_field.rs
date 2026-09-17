@@ -222,17 +222,20 @@ impl SearchField {
             cy + KBD_HEIGHT / 2.0,
         );
         let rounded = RoundedRect::from_rect(chip, KBD_RADIUS);
+        // Keycap body and edge derived against the pill it sits in (HIG
+        // §9.5): a literal white wash was invisible on the light preset.
+        let pill_fill = theme.tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            vello::peniko::Color::from_rgba8(255, 255, 255, 16),
+            crate::tokens::colors::Colors::hairline_on(pill_fill, crate::chrome::HAIRLINE_ALPHA),
             None,
             &rounded,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            crate::surface::edge_on(pill_fill),
             None,
             &rounded,
         );
@@ -348,24 +351,21 @@ impl Widget for SearchField {
         }
         let focused = self.input.is_focused();
         let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &pill,
-        );
+        let pill_fill = theme.tokens.colors.surfaces.raised;
+        scene.fill(vello::peniko::Fill::NonZero, transform, pill_fill, None, &pill);
+        // Rest edge derived from the pill (HIG §9.5); focus keeps `border_focus`.
         let border = if focused {
             theme.border_focus
         } else {
-            theme.border_standard
+            crate::surface::edge_on(pill_fill)
         };
+        // Rest edge and focus ring share one half-pixel-inset outline.
         scene.stroke(
             &Stroke::new(if focused { 1.5 } else { 1.0 }),
             transform,
             border,
             None,
-            &pill,
+            &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.full)),
         );
 
         let icon_rect = Rect::from_center_size(

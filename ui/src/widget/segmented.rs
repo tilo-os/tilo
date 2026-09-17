@@ -197,20 +197,14 @@ impl Widget for TriStateControl {
             return;
         }
         let radius = f64::from(theme.tokens.radii.sm);
-        let track = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            Fill::NonZero,
+        // Track with its derived rest edge (HIG §9.5), stroked half a pixel
+        // inside so the hairline never bleeds onto the ground.
+        crate::surface::card(
+            scene,
             transform,
+            self.rect,
+            radius,
             theme.tokens.colors.surfaces.raised,
-            None,
-            &track,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &track,
         );
 
         let Some(&active) = self.seg_rects.get(self.selected) else {
@@ -565,20 +559,13 @@ impl Widget for ColorSwatchPicker {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let panel = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
+        // Panel with its derived rest edge (HIG §9.5), crisp 1 px inset.
+        crate::surface::card(
+            scene,
             transform,
+            self.rect,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &panel,
         );
 
         for (i, (&rgb, sr)) in self
@@ -588,7 +575,8 @@ impl Widget for ColorSwatchPicker {
             .enumerate()
         {
             let shape = RoundedRect::from_rect(*sr, 6.0);
-            scene.fill(Fill::NonZero, transform, packed_color(rgb), None, &shape);
+            let swatch = packed_color(rgb);
+            scene.fill(Fill::NonZero, transform, swatch, None, &shape);
             if self.selected == Some(i) || (self.focused && self.focus_index == i) {
                 scene.stroke(
                     &Stroke::new(2.5),
@@ -598,7 +586,15 @@ impl Widget for ColorSwatchPicker {
                     &shape,
                 );
             } else if self.hovered == Some(i) {
-                scene.stroke(&Stroke::new(2.0), transform, Color::WHITE, None, &shape);
+                // Hover ring derived against the swatch it rings (HIG §9.5):
+                // a literal white ring disappeared on the pale swatches.
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    crate::tokens::colors::Colors::hairline_on(swatch, crate::chrome::GLOW_ALPHA),
+                    None,
+                    &shape,
+                );
             }
         }
     }
