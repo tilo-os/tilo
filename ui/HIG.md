@@ -301,6 +301,49 @@ Explicit dimensions remain authored choices. Use guided overrides or fully
 intended layout. Evaluate the resulting reading order, useful content area,
 containment and action reachability rather than counting custom pixel values.
 
+### 7b. Spacing tokens, insets and density
+
+Every gap and inset is a step on `theme.tokens.spacing` (`s1`–`s16` =
+4 / 8 / 12 / 16 / 24 / 32 / 48 / 64); every control height, hit target, panel
+width and icon size is a field of `theme.tokens.metrics` (§9.6). Both scale
+with `ui_scale`; a custom theme's `spacing_px` rescales the whole spacing scale
+proportionally and leaves metrics alone. That is also why a hit target must
+read `metrics.min_pointer_target`, never a spacing step: a control that sizes
+its minimum from `spacing.s8` shrinks with a dense gutter preference.
+`Spacing::BASE` and `Metrics::BASE` are the unscaled reference values for the
+few chrome constants that must be compile-time.
+
+Rhythm inside a group versus between groups:
+
+| Relationship | Step | Typical use |
+|---|---|---|
+| Label ↔ its control, icon ↔ its label | `s1` / `metrics.icon_label_gap` | stacked field label, button icon |
+| Related rows that read as one group | `s2` | title + explanation, help copy under a field |
+| Siblings of equal weight | `s3` (`gap_standard`, the `Row`/`Column` default) | toolbar buttons, list rows |
+| Section padding, gap between Panel sections | `s4` | panel body, card gutter |
+| Before the next group; page gutter | `s6` (the `Column` default inset) | form sections, page edge |
+| Between major regions | `s8`+ | header block ↔ content |
+
+The framework supplies the values so callers state the relationship, not the
+number:
+
+- `Row::with_gap(px)` / `Column::with_gap(px)` change the gap between children;
+  `Row::with_justify(..)` and `Row::with_align_items(..)` place them along and
+  across the row. Defaults (gap `s3`, children centred, start-packed) are
+  unchanged.
+- `Spacer::token(SpacingStep::S4)` is a fixed gap that resolves from the Theme
+  at layout time and therefore follows `ui_scale`; `Spacer::fixed(px)` is the
+  authored-pixel form. Neither grows. `Spacer::new()` still grows to push
+  siblings apart.
+- `insets_all(px)`, `insets_xy(horizontal, vertical)` and
+  `insets(top, right, bottom, left)` build a taffy padding `Rect` from token
+  values in one expression instead of four `length(..)` fields.
+
+`tests/f1_spacing_token_audit.rs` ratchets module-level pixel constants and
+literal `length(N)` values in widget, chrome, shell and app production code:
+a file may never carry more than its baseline records, and one that sheds a
+literal lowers its line in the same commit.
+
 ---
 
 ## 8. Never hand-roll an interactive primitive
@@ -594,14 +637,31 @@ it does not host prose.
 | Bar label | `scale.sm` (12) | `medium` | `text_primary` |
 | Numeric readout | `scale.sm` (12) | `semibold`, tabular | `text_primary` |
 
-Density, so two panels built by two people come out the same size:
+Density, so two panels built by two people come out the same size. Each value
+is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
+`ui_scale` like spacing; read it from there rather than restating the number:
 
-- Bar height 40; Bar control height 28.
+- Bar height 40 (`bar_height`; also the shared `Button`/`Dropdown` default);
+  Bar control height 28 (`bar_control_height`).
 - Panel padding `spacing.s4` (16); gap between Panel sections `spacing.s4`.
-- Panel row / Control height 44; Selector height 28.
-- Minimum pointer target 32×32 — a 20 px glyph gets a 32 px hit rect.
-- Panel width: 320 for a utility Panel (quick settings), 360 for a roster or
-  list Panel, 560 for a sheet with a form in it.
+- Panel row / Control height 44 (`panel_row_height`); Selector height 28
+  (`selector_height`).
+- Minimum pointer target 32×32 (`min_pointer_target`) — a 20 px glyph
+  (`icon_md`) gets a 32 px hit rect. Glyphs: `icon_sm` 14, `icon_md` 20,
+  `icon_lg` 24; icon-to-label gap `icon_label_gap` 6.
+- Panel width: 320 for a utility Panel (quick settings,
+  `panel_width_utility`; an overlay drawer is the same width,
+  `drawer_width`), 360 for a roster or list Panel (`panel_width_list`), 560
+  for a sheet with a form in it (`panel_width_sheet`).
+- Responsive shells: a genuine sidebar docks at `sidebar_width` 280, an
+  overview column at `overview_width` 340, and a sidebar docks beside its
+  content at or above `compact_breakpoint` 720. Today the shells' default
+  constants (`AppShell` breakpoint, `NavShell` sidebar/overview widths,
+  `SidebarDrawer` width) are the **unscaled** `Metrics::BASE` values, so at
+  `ui_scale ≠ 1` they lag the scaled `theme.tokens.metrics`; resolving the
+  scaled token in `build_layout` is the shells' next step. `NavSplit`
+  (300 / 900) and `AppShell`'s 264 sidebar predate the tokens and are
+  recorded, not yet moved.
 
 ### 9.7 Motion
 
