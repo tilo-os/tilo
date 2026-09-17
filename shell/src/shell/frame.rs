@@ -629,49 +629,47 @@ impl FrameBuilder {
     /// never land on an unavailable OOBE action.
     fn focusable_order(&self) -> Vec<NodeId> {
         fn collect(
-            node: NodeId,
             widget: &dyn Widget,
-            taffy: &TaffyTree<()>,
+            node_map: &HashMap<NodeId, *mut dyn Widget>,
             order: &mut Vec<NodeId>,
         ) {
-            if widget.is_focusable() && widget.is_enabled() {
+            let pointer = std::ptr::from_ref(widget);
+            if widget.is_focusable()
+                && widget.is_enabled()
+                && let Some((&node, _)) = node_map
+                    .iter()
+                    .find(|(_, mapped)| std::ptr::addr_eq(**mapped as *const dyn Widget, pointer))
+            {
                 order.push(node);
             }
-            let children = widget.children();
-            if let Ok(child_nodes) = taffy.children(node) {
-                for (child, &child_node) in children.iter().zip(child_nodes.iter()) {
-                    collect(child_node, *child, taffy, order);
-                }
+            for child in widget.children() {
+                collect(child, node_map, order);
             }
         }
 
         fn deepest_trap(
-            node: NodeId,
             widget: &dyn Widget,
-            taffy: &TaffyTree<()>,
+            node_map: &HashMap<NodeId, *mut dyn Widget>,
         ) -> Option<Vec<NodeId>> {
-            let children = widget.children();
-            if let Ok(child_nodes) = taffy.children(node) {
-                for (child, &child_node) in children.iter().zip(child_nodes.iter()) {
-                    if let Some(order) = deepest_trap(child_node, *child, taffy) {
-                        return Some(order);
-                    }
-                }
-            }
             if widget.traps_focus() {
                 let mut order = Vec::new();
-                collect(node, widget, taffy, &mut order);
+                collect(widget, node_map, &mut order);
                 return Some(order);
+            }
+            for child in widget.children() {
+                if let Some(order) = deepest_trap(child, node_map) {
+                    return Some(order);
+                }
             }
             None
         }
 
         let mut order = Vec::new();
-        if let Some(root) = self.host_node {
-            if let Some(trapped) = deepest_trap(root, self.host.as_ref(), &self.taffy) {
+        if self.host_node.is_some() {
+            if let Some(trapped) = deepest_trap(self.host.as_ref(), &self.node_map) {
                 return trapped;
             }
-            collect(root, self.host.as_ref(), &self.taffy, &mut order);
+            collect(self.host.as_ref(), &self.node_map, &mut order);
         }
         order
     }
@@ -689,6 +687,8 @@ impl FrameBuilder {
             && let Some(&widget) = self.node_map.get(&new)
         {
             unsafe { (*widget).set_focus(true) };
+            self.host
+                .reveal_descendant(std::ptr::from_ref(unsafe { &*widget }));
         }
         *focus = target;
         self.native_focus_ordinal = target.and_then(|id| {
@@ -1741,6 +1741,12 @@ impl FrameBuilder {
         self.rebuild_layout_tree();
     }
 
+    #[cfg(test)]
+    fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
+        self.host.enable_test_onboarding(view);
+        self.rebuild_layout_tree();
+    }
+
     /// Replace desktop chrome with the trusted identity-recovery ceremony.
     pub fn enable_recovery_onboarding(&mut self, identity_dir: std::path::PathBuf) {
         self.host.enable_recovery_onboarding(identity_dir);
@@ -2565,7 +2571,15 @@ mod tests {
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));
-        fb.enable_onboarding(identity_dir.path().to_path_buf());
+        let identity_path = identity_dir.path().join("primary.json");
+        fb.enable_test_onboarding(crate::onboarding_view::OnboardingView::with_minter(
+            Box::new(move || {
+                Ok(crate::onboarding::MintedIdentity {
+                    fingerprint: "ab".repeat(32),
+                    path: identity_path.clone(),
+                })
+            }),
+        ));
         fb.relayout();
         (fb, identity_dir)
     }
@@ -2770,6 +2784,64 @@ mod tests {
         assert!(
             focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
             "Enter must advance into the identity-protection step"
+        );
+    }
+
+    #[test]
+    fn native_oobe_backup_tab_order_reaches_fields_acknowledgement_and_continue() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        for key in [
+            crate::onboarding_view::KEY_BEGIN,
+            crate::onboarding_view::KEY_UNDERSTOOD,
+        ] {
+            doc.put(&automerge::ROOT, key, true).expect("advance OOBE");
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            // The replacement subtree must sync once before a gated control
+            // can be activated, matching the production frame loop.
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+        }
+        // A structural rebuild exposes the acknowledgement control before
+        // its document value has been synchronized into the new view.
+        doc.put(
+            &automerge::ROOT,
+            crate::onboarding_view::KEY_UNDERSTOOD,
+            true,
+        )
+        .expect("acknowledge identity protection");
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CREATE, true)
+            .expect("create identity");
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+
+        let names: Vec<_> = fb
+            .focusable_order()
+            .into_iter()
+            .filter_map(|id| focused_name(&fb, Some(id)))
+            .collect();
+        assert!(
+            names.iter().any(|name| name == "New backup passphrase"),
+            "backup passphrase must be keyboard reachable: {names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "Confirm new backup passphrase"),
+            "backup confirmation must be keyboard reachable: {names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name.contains("without an encrypted backup")),
+            "skip acknowledgement must be keyboard reachable: {names:?}"
         );
     }
 
