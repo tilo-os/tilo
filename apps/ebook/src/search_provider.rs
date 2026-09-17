@@ -1,25 +1,44 @@
-//! Library-wide Books search backed by canonical resource view actions.
+//! Bounded, canonical global search for Books.
 //!
-//! Every hit names an action exported by [`crate::actions`]. The shared search
-//! host resolves that stable address against the fresh resource tree before it
-//! navigates, so stale rows never fall through to private activation code.
+//! The reader is the sole owner of EPUB prose. This provider retains stable
+//! locators, labels, and a small metadata-token directory only; it verifies
+//! full text directly against the shared book snapshot a bounded page at a
+//! time. Large EPUBs therefore never become a second corpus of n-grams.
 
-use std::collections::{BTreeMap, HashSet};
+#![allow(
+    clippy::indexing_slicing,
+    clippy::map_unwrap_or,
+    clippy::obfuscated_if_else,
+    clippy::redundant_else,
+    clippy::string_slice,
+    reason = "all cursor and KMP indices are advanced from checked lengths and UTF-8 character boundaries; using Option plumbing here would obscure those invariants"
+)]
+
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS,
+    SearchCursor, SearchPage, SearchProvider, SearchResult,
 };
 
-use crate::actions::{EBOOK_OPERATION_TYPE, EbookOperation};
+use crate::actions::{
+    EBOOK_OPERATION_TYPE, EbookOperation, delete_annotation_action, delete_highlight_action,
+    edit_note_action, encode, remove_library_book_action,
+};
 use crate::model::{AnnoKind, Annotation, Book, LibraryEntry};
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
 pub const ANNOTATION_KIND: &str = "Annotations";
+
+const MAX_METADATA_TOKENS_PER_ROW: usize = 32;
+const BODY_PHASE: u64 = 1_u64 << 63;
+/// One verification unit.  This is deliberately smaller than the maximum
+/// interactive query so an EPUB with one enormous paragraph still yields.
+const BODY_CHUNK_SCALARS: usize = 1_024;
 
 fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
     if chapter.title.trim().is_empty() {
@@ -29,258 +48,303 @@ fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
     }
 }
 
+/// Diagnostics distinguish the compact directory from reader-owned prose.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BookSearchStats {
+    pub rows: usize,
+    pub metadata_tokens: usize,
+    pub metadata_postings: usize,
+    pub retained_chapter_scalars: usize,
+    pub generation: u64,
+}
+
+#[derive(Clone)]
+enum SearchTarget {
+    Book(usize),
+    Chapter {
+        book: usize,
+        chapter: usize,
+    },
+    Annotation {
+        index: usize,
+        hydrated: bool,
+        comment: bool,
+    },
+    RemoteBook(usize),
+}
+
+#[derive(Clone)]
+struct SearchEntry {
+    result: SearchResult,
+    target: SearchTarget,
+}
+
+/// Outcome of one bounded body-verification unit.
+enum BodyChunk {
+    Scanned {
+        matched: bool,
+        next_byte: usize,
+        done: bool,
+    },
+    Done,
+}
+
 #[derive(Clone)]
 pub struct BookSearchProvider {
-    /// Tilo' shared, paged catalogue. It retains every resource row but never
-    /// forces Ctrl+K to inspect/materialise the entire library in one turn.
-    catalogue: SearchCatalog,
-    /// Search hits only retain a small, canonical view-action projection. The
-    /// full EPUB remains in the reader's content cache; Ctrl+K can materialise
-    /// one exact resource without rebuilding the library tree or duplicating
-    /// a chapter body.
-    resources: Arc<BTreeMap<String, Resource>>,
+    // The live app and each palette session share these Arcs. No EPUB body is
+    // cloned solely for searching.
+    books: Arc<Vec<Arc<Book>>>,
+    annotations: Arc<Vec<Annotation>>,
+    registry: Arc<Vec<LibraryEntry>>,
+    book_metadata: Arc<HashMap<String, (String, String)>>,
+    entries: Arc<Vec<SearchEntry>>,
+    metadata_tokens: Arc<HashMap<String, Vec<usize>>>,
+    resource_rows: Arc<BTreeMap<String, usize>>,
+    generation: u64,
     available: bool,
 }
 
-struct SearchEntry {
-    haystack: String,
-    result: SearchResult,
-    resource: Option<Resource>,
-}
-
 impl BookSearchProvider {
+    /// Compatibility constructor for small callers and tests. The live app
+    /// uses [`Self::new_shared`] so its content cache is not copied.
     pub fn new(books: &[Book], annotations: &[Annotation]) -> Self {
-        Self::new_with_registry(books, annotations, &[])
+        Self::new_shared(
+            Arc::new(books.iter().cloned().map(Arc::new).collect()),
+            Arc::new(annotations.to_vec()),
+            Arc::new(Vec::new()),
+            1,
+        )
     }
 
-    /// Build from both locally hydrated books and the collaborative metadata
-    /// registry. A peer can therefore find a title/author and its annotations
-    /// before the content-addressed EPUB bytes finish hydrating on that device.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one staged builder keeps the complete atomic search projection auditable"
-    )]
     pub fn new_with_registry(
         books: &[Book],
         annotations: &[Annotation],
         registry: &[LibraryEntry],
     ) -> Self {
-        // Search is a library feature, not a viewport feature: every loaded
-        // book, chapter, full chapter body, and live annotation participates.
-        // In particular, never use the UI result/index limits while building
-        // this durable snapshot; doing so made old books undiscoverable.
-        let mut book_ids: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
-        book_ids.extend(registry.iter().map(|entry| entry.id.as_str()));
-        let live_annotations = annotations
+        Self::new_shared(
+            Arc::new(books.iter().cloned().map(Arc::new).collect()),
+            Arc::new(annotations.to_vec()),
+            Arc::new(registry.to_vec()),
+            1,
+        )
+    }
+
+    /// Stage a complete immutable projection before the app swaps it in. A
+    /// malformed or ambiguous projection withdraws atomically rather than
+    /// publishing a partial action directory.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the staged canonical row builder is deliberately together"
+    )]
+    pub(crate) fn new_shared(
+        books: Arc<Vec<Arc<Book>>>,
+        annotations: Arc<Vec<Annotation>>,
+        registry: Arc<Vec<LibraryEntry>>,
+        generation: u64,
+    ) -> Self {
+        let mut entries = Vec::new();
+        let mut resource_rows = BTreeMap::new();
+        let mut tokens = HashMap::<String, Vec<usize>>::new();
+        let hydrated: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
+        let mut book_metadata = HashMap::<String, (String, String)>::new();
+        for book in books.iter() {
+            book_metadata.insert(
+                book.id.clone(),
+                (Self::book_title(book).to_string(), book.author.clone()),
+            );
+        }
+        for entry in registry.iter() {
+            book_metadata.entry(entry.id.clone()).or_insert_with(|| {
+                (
+                    (!entry.title.trim().is_empty())
+                        .then(|| entry.title.clone())
+                        .unwrap_or_else(|| "Untitled".into()),
+                    entry.author.clone(),
+                )
+            });
+        }
+        let known: HashSet<&str> = hydrated
             .iter()
-            .filter(|annotation| book_ids.contains(annotation.doc_id.as_str()))
-            .collect::<Vec<_>>();
-        let highlight_groups: HashSet<_> = live_annotations
+            .copied()
+            .chain(registry.iter().map(|entry| entry.id.as_str()))
+            .collect();
+        let groups: HashSet<(String, uuid::Uuid)> = annotations
             .iter()
             .filter(|annotation| annotation.kind == AnnoKind::Highlight)
+            .filter(|annotation| known.contains(annotation.doc_id.as_str()))
             .map(|annotation| (annotation.doc_id.clone(), annotation.group))
             .collect();
-        let mut entries = Vec::new();
-        for book in books {
-            let title = Self::book_title(book);
-            let address = Self::book_address(&book.id);
-            let mut result = SearchResult::for_action(BOOK_KIND, title, address.clone())
-                .with_icon(Icon::FileText);
+
+        let mut add = |entry: SearchEntry, metadata: String| -> bool {
+            let Some(address) = entry.result.action_address() else {
+                return false;
+            };
+            let row = entries.len();
+            if resource_rows.insert(address.resource, row).is_some() {
+                return false;
+            }
+            for token in index_metadata_tokens(&metadata) {
+                tokens.entry(token).or_default().push(row);
+            }
+            entries.push(entry);
+            true
+        };
+
+        for (book_index, book) in books.iter().enumerate() {
+            let title = Self::book_title(book).to_string();
+            let mut result =
+                SearchResult::for_action(BOOK_KIND, title.clone(), Self::book_address(&book.id))
+                    .with_icon(Icon::FileText);
             if !book.author.trim().is_empty() {
                 result = result.with_subtitle(book.author.clone());
             }
-            entries.push(SearchEntry {
-                haystack: format!("{} {}", title, book.author).to_lowercase(),
-                result,
-                resource: Self::reveal_resource(
-                    &address.resource,
-                    "ebook.book",
-                    title,
-                    &book.id,
-                    0,
-                    None,
-                ),
-            });
-            for (chapter, item) in book.chapters.iter().enumerate() {
-                let chapter_title = chapter_label(item, chapter);
-                // Keep one transient searchable row. The parsed book remains
-                // the sole owner of chapter text; the retained catalogue owns
-                // only its normalized compact index after `replace_all`.
-                let mut haystack = format!("{title} {} {chapter_title}", book.author);
-                for block in &item.blocks {
-                    haystack.push(' ');
-                    haystack.push_str(&crate::model::Block::plain_text(block));
+            if !add(
+                SearchEntry {
+                    result,
+                    target: SearchTarget::Book(book_index),
+                },
+                format!("{title} {}", book.author),
+            ) {
+                return Self::unavailable(books, annotations, registry, generation);
+            }
+            for (chapter_index, chapter) in book.chapters.iter().enumerate() {
+                let chapter_title = chapter_label(chapter, chapter_index);
+                let result = SearchResult::for_action(
+                    CHAPTER_KIND,
+                    chapter_title.clone(),
+                    Self::chapter_address(&book.id, chapter_index),
+                )
+                .with_subtitle(format!("{} · Chapter {}", title, chapter_index + 1))
+                .with_icon(Icon::List);
+                if !add(
+                    SearchEntry {
+                        result,
+                        target: SearchTarget::Chapter {
+                            book: book_index,
+                            chapter: chapter_index,
+                        },
+                    },
+                    format!("{title} {} {chapter_title}", book.author),
+                ) {
+                    return Self::unavailable(books, annotations, registry, generation);
                 }
-                let address = Self::chapter_address(&book.id, chapter);
-                entries.push(SearchEntry {
-                    // A chapter is part of its book, not an isolated file.
-                    // Include book metadata here too so an author/title search
-                    // brings matching passages along with the book row.
-                    haystack: haystack.to_lowercase(),
-                    result: SearchResult::for_action(CHAPTER_KIND, chapter_title, address.clone())
-                        .with_subtitle(format!("{} · Chapter {}", title, chapter + 1))
-                        .with_icon(Icon::List),
-                    resource: Self::reveal_resource(
-                        &address.resource,
-                        "ebook.chapter",
-                        &chapter_label(item, chapter),
-                        &book.id,
-                        chapter,
-                        None,
-                    ),
-                });
             }
         }
-        for entry in registry
-            .iter()
-            .filter(|entry| !books.iter().any(|book| book.id == entry.id))
-        {
+        for (registry_index, entry) in registry.iter().enumerate() {
+            if hydrated.contains(entry.id.as_str()) {
+                continue;
+            }
             let title = if entry.title.trim().is_empty() {
-                "Untitled"
+                "Untitled".to_string()
             } else {
-                &entry.title
+                entry.title.clone()
             };
             let mut result =
-                SearchResult::for_action(BOOK_KIND, title, Self::book_address(&entry.id))
+                SearchResult::for_action(BOOK_KIND, title.clone(), Self::book_address(&entry.id))
                     .with_icon(Icon::FileText);
             if !entry.author.trim().is_empty() {
                 result = result.with_subtitle(entry.author.clone());
             }
-            entries.push(SearchEntry {
-                haystack: format!("{} {}", title, entry.author).to_lowercase(),
-                result,
-                // Metadata can safely be searched before bytes hydrate, but
-                // it must not advertise a local reveal action until this
-                // device actually has the book content.
-                resource: None,
-            });
-        }
-        Self::append_annotation_entries(
-            &mut entries,
-            &live_annotations,
-            books,
-            registry,
-            &highlight_groups,
-        );
-
-        let catalogue = SearchCatalog::new("Books");
-        let mut resources = BTreeMap::new();
-        let mut rows = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let Some(address) = entry.result.action_address() else {
-                tracing::error!("withdrawing Books search after a non-canonical staged row");
-                return Self::unavailable(catalogue);
-            };
-            if let Some(resource) = entry.resource {
-                resources.insert(address.resource.clone(), resource);
+            if !add(
+                SearchEntry {
+                    result,
+                    target: SearchTarget::RemoteBook(registry_index),
+                },
+                format!("{title} {} {}", entry.author, entry.subject),
+            ) {
+                return Self::unavailable(books, annotations, registry, generation);
             }
-            rows.push((address.resource, entry.haystack, entry.result));
         }
-        // Validate and publish the complete snapshot in one SearchCatalog
-        // generation. A malformed/duplicate row leaves this provider empty;
-        // it must never advertise a partial directory to agents or history.
-        if let Err(error) = catalogue.replace_all(rows) {
-            tracing::error!(%error, "withdrawing Books search after failed catalogue rebuild");
-            return Self::unavailable(catalogue);
+        let mut emitted_highlights = HashSet::new();
+        for (annotation_index, annotation) in annotations.iter().enumerate() {
+            if !known.contains(annotation.doc_id.as_str()) {
+                continue;
+            }
+            if annotation.kind == AnnoKind::Highlight
+                && !emitted_highlights.insert((annotation.doc_id.as_str(), annotation.group))
+            {
+                continue;
+            }
+            let (title, author) = book_metadata
+                .get(&annotation.doc_id)
+                .cloned()
+                .unwrap_or_else(|| ("Unknown book".into(), String::new()));
+            let comment = annotation.kind == AnnoKind::Note
+                && groups.contains(&(annotation.doc_id.clone(), annotation.group));
+            let result = SearchResult::for_action(
+                ANNOTATION_KIND,
+                Self::preview(annotation),
+                Self::annotation_address(annotation, comment),
+            )
+            .with_subtitle(format!(
+                "{title} · {} · Chapter {}",
+                annotation.kind.label(),
+                annotation.chapter + 1
+            ))
+            .with_icon(match annotation.kind {
+                AnnoKind::Bookmark => Icon::Star,
+                _ => Icon::List,
+            });
+            if !add(
+                SearchEntry {
+                    result,
+                    target: SearchTarget::Annotation {
+                        index: annotation_index,
+                        hydrated: hydrated.contains(annotation.doc_id.as_str()),
+                        comment,
+                    },
+                },
+                format!(
+                    "{title} {author} {} {} {} {}",
+                    annotation.kind.label(),
+                    comment.then_some("comment").unwrap_or(""),
+                    annotation.excerpt,
+                    annotation.note
+                ),
+            ) {
+                return Self::unavailable(books, annotations, registry, generation);
+            }
         }
         Self {
-            catalogue,
-            resources: Arc::new(resources),
-            available: true,
+            books,
+            annotations,
+            registry,
+            book_metadata: Arc::new(book_metadata),
+            entries: Arc::new(entries),
+            metadata_tokens: Arc::new(tokens),
+            resource_rows: Arc::new(resource_rows),
+            generation,
+            available: generation != 0,
         }
     }
 
-    fn unavailable(catalogue: SearchCatalog) -> Self {
+    fn unavailable(
+        books: Arc<Vec<Arc<Book>>>,
+        annotations: Arc<Vec<Annotation>>,
+        registry: Arc<Vec<LibraryEntry>>,
+        generation: u64,
+    ) -> Self {
         Self {
-            catalogue,
-            resources: Arc::new(BTreeMap::new()),
+            books,
+            annotations,
+            registry,
+            book_metadata: Arc::new(HashMap::new()),
+            entries: Arc::new(Vec::new()),
+            metadata_tokens: Arc::new(HashMap::new()),
+            resource_rows: Arc::new(BTreeMap::new()),
+            generation,
             available: false,
         }
     }
 
-    fn append_annotation_entries(
-        entries: &mut Vec<SearchEntry>,
-        annotations: &[&Annotation],
-        books: &[Book],
-        registry: &[LibraryEntry],
-        highlight_groups: &HashSet<(String, uuid::Uuid)>,
-    ) {
-        let mut emitted_highlights = HashSet::new();
-        for annotation in annotations {
-            if annotation.kind == AnnoKind::Highlight
-                && !emitted_highlights.insert((annotation.doc_id.clone(), annotation.group))
-            {
-                continue;
-            }
-            let book_title = books
-                .iter()
-                .find(|book| book.id == annotation.doc_id)
-                .map(Self::book_title)
-                .or_else(|| {
-                    registry
-                        .iter()
-                        .find(|entry| entry.id == annotation.doc_id)
-                        .map(|entry| entry.title.as_str())
-                })
-                .unwrap_or("Unknown book");
-            let book_author = books
-                .iter()
-                .find(|book| book.id == annotation.doc_id)
-                .map(|book| book.author.as_str())
-                .or_else(|| {
-                    registry
-                        .iter()
-                        .find(|entry| entry.id == annotation.doc_id)
-                        .map(|entry| entry.author.as_str())
-                })
-                .unwrap_or("");
-            let kind = annotation.kind.label();
-            // A note that belongs to a highlight is the reader's comment
-            // model. Index both names so people can search with either term.
-            let comment_alias = if annotation.kind == AnnoKind::Note
-                && highlight_groups.contains(&(annotation.doc_id.clone(), annotation.group))
-            {
-                "comment"
-            } else {
-                ""
-            };
-            let address = Self::annotation_address(annotation, highlight_groups);
-            let resource_kind = match annotation.kind {
-                AnnoKind::Highlight => "ebook.highlight",
-                AnnoKind::Bookmark => "ebook.bookmark",
-                AnnoKind::Note if !comment_alias.is_empty() => "ebook.comment",
-                AnnoKind::Note => "ebook.note",
-            };
-            entries.push(SearchEntry {
-                haystack: format!(
-                    "{book_title} {book_author} {kind} {comment_alias} {} {}",
-                    annotation.excerpt, annotation.note
-                )
-                .to_lowercase(),
-                result: SearchResult::for_action(
-                    ANNOTATION_KIND,
-                    Self::preview(annotation),
-                    address.clone(),
-                )
-                .with_subtitle(format!(
-                    "{} · {} · Chapter {}",
-                    book_title,
-                    annotation.kind.label(),
-                    annotation.chapter + 1
-                ))
-                .with_icon(match annotation.kind {
-                    AnnoKind::Bookmark => Icon::Star,
-                    _ => Icon::List,
-                }),
-                resource: Self::reveal_resource(
-                    &address.resource,
-                    resource_kind,
-                    &Self::preview(annotation),
-                    &annotation.doc_id,
-                    annotation.chapter,
-                    Some(annotation.block),
-                ),
-            });
+    #[must_use]
+    pub fn stats(&self) -> BookSearchStats {
+        BookSearchStats {
+            rows: self.entries.len(),
+            metadata_tokens: self.metadata_tokens.len(),
+            metadata_postings: self.metadata_tokens.values().map(Vec::len).sum(),
+            retained_chapter_scalars: 0,
+            generation: self.generation,
         }
     }
 
@@ -300,18 +364,11 @@ impl BookSearchProvider {
         ActionAddress::new(format!("ebook.chapter:{book_id}:{chapter}"), "open")
     }
 
-    fn annotation_address(
-        annotation: &Annotation,
-        highlight_groups: &HashSet<(String, uuid::Uuid)>,
-    ) -> ActionAddress {
+    fn annotation_address(annotation: &Annotation, comment: bool) -> ActionAddress {
         let resource = match annotation.kind {
             AnnoKind::Highlight => format!("ebook.highlight:{}", annotation.group),
             AnnoKind::Bookmark => format!("ebook.bookmark:{}", annotation.id),
-            AnnoKind::Note
-                if highlight_groups.contains(&(annotation.doc_id.clone(), annotation.group)) =>
-            {
-                format!("ebook.comment:{}", annotation.id)
-            }
+            AnnoKind::Note if comment => format!("ebook.comment:{}", annotation.id),
             AnnoKind::Note => format!("ebook.note:{}", annotation.id),
         };
         ActionAddress::new(resource, "open")
@@ -333,14 +390,129 @@ impl BookSearchProvider {
         }
     }
 
-    fn reveal_resource(
-        id: &str,
-        kind: &str,
-        label: &str,
-        book_id: &str,
-        chapter: usize,
-        block: Option<usize>,
-    ) -> Option<Resource> {
+    fn metadata_matches(&self, entry: &SearchEntry, query: &str) -> bool {
+        let text = match entry.target {
+            SearchTarget::Book(index) => self
+                .books
+                .get(index)
+                .map(|book| format!("{} {}", Self::book_title(book), book.author)),
+            SearchTarget::Chapter { book, chapter } => self.books.get(book).and_then(|book| {
+                book.chapters.get(chapter).map(|item| {
+                    format!(
+                        "{} {} {}",
+                        Self::book_title(book),
+                        book.author,
+                        chapter_label(item, chapter)
+                    )
+                })
+            }),
+            SearchTarget::Annotation { index, .. } => {
+                self.annotations.get(index).map(|annotation| {
+                    let (title, author) = self
+                        .book_metadata
+                        .get(&annotation.doc_id)
+                        .cloned()
+                        .unwrap_or_else(|| ("Unknown book".into(), String::new()));
+                    format!(
+                        "{title} {author} {} {} {}",
+                        annotation.kind.label(),
+                        annotation.excerpt,
+                        annotation.note
+                    )
+                })
+            }
+            SearchTarget::RemoteBook(index) => self
+                .registry
+                .get(index)
+                .map(|entry| format!("{} {} {}", entry.title, entry.author, entry.subject)),
+        };
+        text.is_some_and(|text| normalized_contains(&text, query))
+    }
+
+    fn body_chunk_matches(
+        &self,
+        entry: &SearchEntry,
+        query: &str,
+        block_index: usize,
+        byte_offset: usize,
+    ) -> BodyChunk {
+        let SearchTarget::Chapter { book, chapter } = entry.target else {
+            return BodyChunk::Done;
+        };
+        let Some(block) = self
+            .books
+            .get(book)
+            .and_then(|book| book.chapters.get(chapter))
+            .and_then(|chapter| chapter.blocks.get(block_index))
+        else {
+            return BodyChunk::Done;
+        };
+        match block {
+            crate::model::Block::Math { source, .. } => {
+                Self::source_body_chunk(source, query, byte_offset)
+            }
+            _ if block.spans().len() == 1 => {
+                Self::source_body_chunk(&block.spans()[0].text, query, byte_offset)
+            }
+            _ => BodyChunk::Scanned {
+                matched: block_contains(block, query),
+                next_byte: 0,
+                done: true,
+            },
+        }
+    }
+
+    fn source_body_chunk(source: &str, query: &str, byte_offset: usize) -> BodyChunk {
+        let (start, end, done) = source_chunk(source, byte_offset);
+        // Recheck a bounded overlap so a match crossing a yield point is
+        // never lost. Query input itself is capped at 1,024 scalars.
+        let overlap = rewind_scalars(source, start, query.chars().count());
+        BodyChunk::Scanned {
+            matched: normalized_contains(&source[overlap..end], query),
+            next_byte: end,
+            done,
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all exact action variants are kept together so their canonical payloads can be audited"
+    )]
+    fn resource_for(&self, entry: &SearchEntry, address: &ActionAddress) -> Option<Resource> {
+        let (kind, book_id, chapter, block) = match entry.target {
+            SearchTarget::Book(index) => {
+                let book = self.books.get(index)?;
+                ("ebook.book", book.id.as_str(), 0, None)
+            }
+            SearchTarget::Chapter { book, chapter } => {
+                let book = self.books.get(book)?;
+                book.chapters.get(chapter)?;
+                ("ebook.chapter", book.id.as_str(), chapter, None)
+            }
+            SearchTarget::Annotation {
+                index,
+                hydrated,
+                comment,
+            } => {
+                let annotation = self.annotations.get(index)?;
+                if !hydrated {
+                    return None;
+                }
+                let kind = match annotation.kind {
+                    AnnoKind::Highlight => "ebook.highlight",
+                    AnnoKind::Bookmark => "ebook.bookmark",
+                    AnnoKind::Note if comment => "ebook.comment",
+                    AnnoKind::Note => "ebook.note",
+                };
+                (
+                    kind,
+                    annotation.doc_id.as_str(),
+                    annotation.chapter,
+                    Some(annotation.block),
+                )
+            }
+            SearchTarget::RemoteBook(_) => return None,
+        };
         let action = ActionSpec::operation(
             "open",
             "Open",
@@ -354,7 +526,144 @@ impl BookSearchProvider {
             },
         )
         .ok()?;
-        Some(Resource::new(id, kind, label).with_action(action))
+        let mut resource =
+            Resource::new(&address.resource, kind, &entry.result.title).with_action(action);
+        if matches!(entry.target, SearchTarget::Book(_)) {
+            let share = ActionSpec::operation(
+                "share",
+                "Share with workspace",
+                OperationKind::Effect,
+                EBOOK_OPERATION_TYPE,
+                &EbookOperation::ShareBook {
+                    book_id: book_id.to_string(),
+                },
+            )
+            .ok()?;
+            let remove = ActionSpec::immediate(
+                "remove-from-library",
+                "Remove from library",
+                crate::actions::EBOOK_ACTION_TYPE,
+                &remove_library_book_action(book_id),
+            )
+            .ok()?;
+            resource = resource.with_action(share).with_action(remove);
+        }
+        if let SearchTarget::Annotation { index, comment, .. } = entry.target {
+            let annotation = self.annotations.get(index)?;
+            match annotation.kind {
+                AnnoKind::Highlight => {
+                    let delete = ActionSpec::immediate(
+                        "delete-highlight",
+                        "Delete highlight",
+                        crate::actions::EBOOK_ACTION_TYPE,
+                        &delete_highlight_action(annotation.group),
+                    )
+                    .ok()?;
+                    resource = resource.with_action(delete);
+                }
+                AnnoKind::Bookmark => {
+                    let delete = ActionSpec::immediate(
+                        "delete",
+                        "Delete bookmark",
+                        crate::actions::EBOOK_ACTION_TYPE,
+                        &delete_annotation_action(annotation.id),
+                    )
+                    .ok()?;
+                    resource = resource.with_action(delete);
+                }
+                AnnoKind::Note => {
+                    let id = annotation.id;
+                    let edit_id = if comment { "edit-comment" } else { "edit" };
+                    let edit_label = if comment { "Edit comment" } else { "Edit note" };
+                    let delete_id = if comment { "delete-comment" } else { "delete" };
+                    let delete_label = if comment {
+                        "Delete comment"
+                    } else {
+                        "Delete note"
+                    };
+                    resource = resource.with_action(ActionSpec::prompted(
+                        edit_id,
+                        edit_label,
+                        if comment { "Comment" } else { "Note" },
+                        if comment {
+                            "edit the comment…"
+                        } else {
+                            "edit the note…"
+                        },
+                        tilo_actions::ExecutionLocus::ClientLocal,
+                        move |text| encode(&edit_note_action(id, text)),
+                    ));
+                    let delete = ActionSpec::immediate(
+                        delete_id,
+                        delete_label,
+                        crate::actions::EBOOK_ACTION_TYPE,
+                        &delete_annotation_action(id),
+                    )
+                    .ok()?;
+                    resource = resource.with_action(delete);
+                }
+            }
+        }
+        Some(resource)
+    }
+
+    fn page_start(&self, query: &str, cursor: Option<&SearchCursor>) -> (bool, usize) {
+        cursor
+            .and_then(|cursor| {
+                let (generation, cursor_query, _, ordinal) = cursor.opaque_parts();
+                (generation == self.generation && cursor_query == query)
+                    .then(|| ordinal.unwrap_or_default())
+            })
+            .map(|ordinal| {
+                (
+                    (ordinal & BODY_PHASE) != 0,
+                    (ordinal & !BODY_PHASE) as usize,
+                )
+            })
+            .unwrap_or((false, 0))
+    }
+
+    fn next_cursor(&self, query: &str, body: bool, offset: usize) -> SearchCursor {
+        let phase = body.then_some(BODY_PHASE).unwrap_or_default();
+        SearchCursor::opaque(self.generation, query, None, Some(phase | offset as u64))
+    }
+
+    fn body_start(cursor: &SearchCursor) -> Option<(usize, usize, usize)> {
+        let state = cursor.opaque_parts().2?;
+        let mut parts = state.strip_prefix("body:")?.split(':');
+        let (Some(entry), Some(block), Some(byte)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return None;
+        };
+        if parts.next().is_some() {
+            return None;
+        }
+        match (entry.parse(), block.parse(), byte.parse()) {
+            (Ok(entry), Ok(block), Ok(byte)) => Some((entry, block, byte)),
+            _ => None,
+        }
+    }
+
+    fn next_body_cursor(
+        &self,
+        query: &str,
+        entry: usize,
+        block: usize,
+        byte: usize,
+    ) -> SearchCursor {
+        SearchCursor::opaque(
+            self.generation,
+            query,
+            Some(format!("body:{entry}:{block}:{byte}")),
+            Some(BODY_PHASE),
+        )
+    }
+
+    fn metadata_candidates(&self, query: &str) -> Option<&Vec<usize>> {
+        query
+            .split_whitespace()
+            .filter_map(|token| self.metadata_tokens.get(token))
+            .min_by_key(|ids| ids.len())
     }
 }
 
@@ -364,11 +673,11 @@ impl SearchProvider for BookSearchProvider {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        self.available.then(|| self.catalogue.stats().generation)
+        self.available.then_some(self.generation)
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.available && self.catalogue.cursor_is_current(cursor)
+        self.available && cursor.opaque_parts().0 == self.generation
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -376,12 +685,14 @@ impl SearchProvider for BookSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        if self.available {
-            self.catalogue.search_limited(query, limit)
-        } else {
-            Vec::new()
-        }
+        self.search_page(query, None, DEFAULT_SEARCH_CANDIDATE_LIMIT, limit)
+            .results
     }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the two continuation phases share one bounded accounting loop"
+    )]
     fn search_page(
         &self,
         query: &str,
@@ -389,56 +700,355 @@ impl SearchProvider for BookSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        if !self.available {
+        let work_budget = work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        let result_limit = result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
+        let Some(query) = normalize_query(query) else {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        };
+        if !self.available || work_budget == 0 || result_limit == 0 {
             return SearchPage {
                 results: Vec::new(),
                 next: None,
                 inspected: 0,
             };
         }
-        self.catalogue
-            .query_page(query, cursor, work_budget, result_limit)
+        if cursor.is_some_and(|cursor| {
+            !self.action_directory_cursor_is_current(cursor) || cursor.opaque_parts().1 != query
+        }) {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        let (body_phase, mut offset) = self.page_start(&query, cursor);
+        let mut results = Vec::new();
+        let mut inspected = 0usize;
+        let metadata = self.metadata_candidates(&query);
+        if !body_phase {
+            if cursor.is_some_and(|cursor| cursor.opaque_parts().2.is_some()) {
+                return SearchPage {
+                    results: Vec::new(),
+                    next: None,
+                    inspected: 0,
+                };
+            }
+            if let Some(candidates) = metadata {
+                if offset > candidates.len() {
+                    return SearchPage {
+                        results: Vec::new(),
+                        next: None,
+                        inspected: 0,
+                    };
+                }
+                while offset < candidates.len()
+                    && inspected < work_budget
+                    && results.len() < result_limit
+                {
+                    let index = candidates[offset];
+                    offset += 1;
+                    inspected += 1;
+                    let Some(entry) = self.entries.get(index) else {
+                        continue;
+                    };
+                    if self.metadata_matches(entry, &query) {
+                        results.push(entry.result.clone());
+                    }
+                }
+                if offset < candidates.len()
+                    && (inspected == work_budget || results.len() == result_limit)
+                {
+                    return SearchPage {
+                        results,
+                        next: Some(self.next_cursor(&query, false, offset)),
+                        inspected,
+                    };
+                }
+                // Keep metadata and prose phases disjoint. The continuation
+                // lets an exact late metadata hit return in O(1) inspection
+                // instead of spending the caller's remaining budget walking
+                // unrelated body rows.
+                return SearchPage {
+                    results,
+                    next: Some(self.next_body_cursor(&query, 0, 0, 0)),
+                    inspected,
+                };
+            } else {
+                if offset > self.entries.len() {
+                    return SearchPage {
+                        results: Vec::new(),
+                        next: None,
+                        inspected: 0,
+                    };
+                }
+                while offset < self.entries.len()
+                    && inspected < work_budget
+                    && results.len() < result_limit
+                {
+                    let index = offset;
+                    offset += 1;
+                    inspected += 1;
+                    let entry = &self.entries[index];
+                    if self.metadata_matches(entry, &query) {
+                        results.push(entry.result.clone());
+                    }
+                }
+                let next = (offset < self.entries.len())
+                    .then(|| self.next_cursor(&query, false, offset))
+                    .or_else(|| Some(self.next_body_cursor(&query, 0, 0, 0)));
+                return SearchPage {
+                    results,
+                    next,
+                    inspected,
+                };
+            }
+        }
+        let Some(cursor) = cursor else {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        };
+        let Some((mut entry_index, mut block_index, mut byte_offset)) = Self::body_start(cursor)
+        else {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        };
+        if entry_index > self.entries.len() {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        while entry_index < self.entries.len()
+            && inspected < work_budget
+            && results.len() < result_limit
+        {
+            let entry = &self.entries[entry_index];
+            if !matches!(entry.target, SearchTarget::Chapter { .. })
+                || self.metadata_matches(entry, &query)
+            {
+                // Skipped rows are still work: otherwise a catalogue of book
+                // rows could hide an unbounded walk behind `inspected == 0`.
+                inspected += 1;
+                entry_index += 1;
+                block_index = 0;
+                byte_offset = 0;
+                continue;
+            }
+            inspected += 1;
+            match self.body_chunk_matches(entry, &query, block_index, byte_offset) {
+                BodyChunk::Done => {
+                    entry_index += 1;
+                    block_index = 0;
+                    byte_offset = 0;
+                }
+                BodyChunk::Scanned { matched: true, .. } => {
+                    results.push(entry.result.clone());
+                    entry_index += 1;
+                    block_index = 0;
+                    byte_offset = 0;
+                }
+                BodyChunk::Scanned {
+                    next_byte,
+                    done: false,
+                    ..
+                } => byte_offset = next_byte,
+                BodyChunk::Scanned { done: true, .. } => {
+                    block_index += 1;
+                    byte_offset = 0;
+                }
+            }
+        }
+        let next = (entry_index < self.entries.len())
+            .then(|| self.next_body_cursor(&query, entry_index, block_index, byte_offset));
+        SearchPage {
+            results,
+            next,
+            inspected,
+        }
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        self.resources
-            .get(&address.resource)
-            .filter(|resource| {
-                resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == address.action)
-            })
-            .cloned()
+        let row = *self.resource_rows.get(&address.resource)?;
+        let entry = self.entries.get(row)?;
+        (entry.result.action_address().as_ref() == Some(address))
+            .then(|| self.resource_for(entry, address))
+            .flatten()
     }
+}
+
+fn index_metadata_tokens(text: &str) -> Vec<String> {
+    let lowered = text.to_lowercase();
+    let mut seen = HashSet::new();
+    lowered
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .filter(|token| seen.insert((*token).to_string()))
+        .take(MAX_METADATA_TOKENS_PER_ROW)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn normalize_query(query: &str) -> Option<String> {
+    let mut normalized = String::new();
+    for (index, character) in query.chars().enumerate() {
+        if index >= MAX_SEARCH_QUERY_SCALARS {
+            return None;
+        }
+        normalized.extend(character.to_lowercase());
+    }
+    Some(normalized)
+}
+
+fn normalized_contains(text: &str, query: &str) -> bool {
+    folded_contains(text.chars(), query)
+}
+
+/// Case-folded substring verification without materialising a lowercased copy
+/// of the searched EPUB text.  The query is small and already bounded by the
+/// host; KMP keeps verification linear in every consumed chunk.
+fn folded_contains(chars: impl IntoIterator<Item = char>, query: &str) -> bool {
+    let mut matcher = FoldMatcher::new(query);
+    if matcher.needle.is_empty() {
+        return true;
+    }
+    for character in chars {
+        if matcher.push(character) {
+            return true;
+        }
+    }
+    false
+}
+
+struct FoldMatcher {
+    needle: Vec<char>,
+    failure: Vec<usize>,
+    matched: usize,
+}
+
+impl FoldMatcher {
+    fn new(query: &str) -> Self {
+        let needle: Vec<char> = query.chars().collect();
+        let mut failure = vec![0usize; needle.len()];
+        for i in 1..needle.len() {
+            let mut j = failure[i - 1];
+            while j > 0 && needle[i] != needle[j] {
+                j = failure[j - 1];
+            }
+            if needle[i] == needle[j] {
+                j += 1;
+            }
+            failure[i] = j;
+        }
+        Self {
+            needle,
+            failure,
+            matched: 0,
+        }
+    }
+
+    fn push(&mut self, character: char) -> bool {
+        for folded in character.to_lowercase() {
+            while self.matched > 0 && folded != self.needle[self.matched] {
+                self.matched = self.failure[self.matched - 1];
+            }
+            if folded == self.needle[self.matched] {
+                self.matched += 1;
+                if self.matched == self.needle.len() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+fn block_contains(block: &crate::model::Block, query: &str) -> bool {
+    match block {
+        crate::model::Block::Math { source, .. } => normalized_contains(source, query),
+        crate::model::Block::Separator => false,
+        _ => {
+            let mut matcher = FoldMatcher::new(query);
+            if matcher.needle.is_empty() {
+                return true;
+            }
+            for (index, span) in block.spans().iter().enumerate() {
+                if index > 0 && span.space_before && matcher.push(' ') {
+                    return true;
+                }
+                for character in span.text.chars() {
+                    if matcher.push(character) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+    }
+}
+
+fn source_chunk(source: &str, byte_offset: usize) -> (usize, usize, bool) {
+    let start = byte_offset.min(source.len());
+    let mut end = start;
+    for character in source[start..].chars().take(BODY_CHUNK_SCALARS) {
+        end += character.len_utf8();
+    }
+    (start, end, end == source.len())
+}
+
+fn rewind_scalars(source: &str, mut byte: usize, scalars: usize) -> usize {
+    for _ in 0..scalars {
+        if byte == 0 {
+            break;
+        }
+        byte = source[..byte]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(index, _)| index);
+    }
+    byte
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::{AutoCommit, ROOT};
-    use ui::widget::Widget;
 
     fn sample_books() -> Vec<Book> {
         crate::content::load_sample_library()
     }
 
     #[test]
-    fn every_result_uses_a_canonical_resource_action() {
+    fn canonical_results_and_exact_lazy_resources() {
         let books = sample_books();
-        let annotation = Annotation::new(&books[0].id, AnnoKind::Bookmark, 2, 4)
-            .with_excerpt("the wine-dark sea");
-        let provider = BookSearchProvider::new(&books, &[annotation]);
-        let hits = provider.search("");
-        assert!(!hits.is_empty());
-        assert!(hits.iter().all(|hit| hit.action_address().is_some()));
-        assert!(hits.iter().any(|hit| hit.kind == CHAPTER_KIND));
-        assert!(hits.iter().any(|hit| hit.kind == ANNOTATION_KIND));
+        let provider = BookSearchProvider::new(&books, &[]);
+        let hit = provider
+            .search("")
+            .into_iter()
+            .find(|hit| hit.kind == CHAPTER_KIND)
+            .expect("chapter");
+        let address = hit.action_address().expect("canonical");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("exact local resource");
+        assert_eq!(resource.id.as_str(), address.resource);
+        assert!(resource.children.is_empty());
+        assert_eq!(resource.actions.len(), 1);
     }
 
     #[test]
-    fn chapter_body_text_is_searchable() {
-        let books = sample_books();
+    fn body_substrings_share_the_sole_book_snapshot() {
+        let books: Arc<Vec<Arc<Book>>> =
+            Arc::new(sample_books().into_iter().map(Arc::new).collect());
         let needle = books[0].chapters[0]
             .blocks
             .iter()
@@ -448,332 +1058,262 @@ mod tests {
                     .find(|word| word.len() > 7)
                     .map(str::to_owned)
             })
-            .expect("sample chapter has searchable prose");
-        let hits = BookSearchProvider::new(&books, &[]).search(&needle);
-        assert!(hits.iter().any(|hit| hit.kind == CHAPTER_KIND));
-    }
-
-    #[test]
-    fn remote_metadata_and_annotations_are_searchable_before_bytes_hydrate() {
-        let entry = LibraryEntry {
-            id: "book:remote-content".into(),
-            title: "The Remote Atlas".into(),
-            author: "Mira Peer".into(),
-            subject: "Maps".into(),
-            shared: true,
-            added: 1,
-        };
-        let annotation = Annotation::new(&entry.id, AnnoKind::Note, 2, 4)
-            .with_note("Remember the hidden estuary");
-        let provider = BookSearchProvider::new_with_registry(&[], &[annotation], &[entry]);
-
-        assert!(
-            provider
-                .search("Mira Peer")
-                .iter()
-                .any(|hit| hit.kind == BOOK_KIND)
+            .expect("prose");
+        let provider = BookSearchProvider::new_shared(
+            Arc::clone(&books),
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            7,
         );
         assert!(
             provider
-                .search("hidden estuary")
+                .search(&needle)
                 .iter()
-                .any(|hit| hit.kind == ANNOTATION_KIND)
+                .any(|hit| hit.kind == CHAPTER_KIND)
         );
+        assert_eq!(provider.stats().retained_chapter_scalars, 0);
+        assert!(Arc::ptr_eq(&books, &provider.books));
     }
 
     #[test]
-    fn search_address_resolves_and_navigates_exactly() {
-        let books = sample_books();
-        let book_id = books[0].id.clone();
-        let annotation =
-            Annotation::new(&book_id, AnnoKind::Bookmark, 1, 3).with_excerpt("wine-dark sea");
-        let mut doc = AutoCommit::new();
-        crate::doc::BooksDoc::upsert_annotation(&mut doc, &annotation);
-        let mut app = crate::app::BooksApp::with_library(books);
-        app.sync(&mut doc, &ROOT);
-
-        let hit = app.search_providers()[0]
-            .search("wine-dark")
-            .into_iter()
-            .find(|hit| hit.kind == ANNOTATION_KIND)
-            .expect("annotation is searchable");
-        let address = hit.action_address().expect("canonical address");
-        let resources = app.resources(&doc);
-        let encoded = tilo_actions::door::encode(&resources, &address, None)
-            .expect("search address resolves against the exported tree");
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &ROOT,
-            )
-            .unwrap()
-        );
-        assert_eq!(app.open_book().map(|book| &book.id), Some(&book_id));
-        assert_eq!(app.search_navigation_target(), (1, Some(3)));
-    }
-
-    #[test]
-    fn labels_are_concise_and_disambiguate_the_book() {
-        let books = sample_books();
-        let annotation = Annotation::new(&books[0].id, AnnoKind::Note, 0, 0)
-            .with_excerpt("context")
-            .with_note("A very useful thought");
-        let hits = BookSearchProvider::new(&books, &[annotation]).search("useful");
-        let hit = hits.iter().find(|hit| hit.kind == ANNOTATION_KIND).unwrap();
-        assert_eq!(hit.title, "A very useful thought");
-        assert!(
-            hit.subtitle
-                .as_deref()
-                .unwrap()
-                .contains(BookSearchProvider::book_title(&books[0]))
-        );
-    }
-
-    #[test]
-    fn annotation_search_includes_book_context_and_comment_kind() {
-        let books = sample_books();
-        let book = &books[0];
-        let group = uuid::Uuid::new_v4();
-        let highlight = Annotation {
-            id: group,
-            doc_id: book.id.clone(),
-            kind: AnnoKind::Highlight,
-            chapter: 0,
-            block: 0,
-            start: 0,
-            end: 1,
-            excerpt: "marked passage".into(),
-            note: String::new(),
-            color: crate::model::HiColor::Yellow,
-            created: 1,
-            group,
-        };
-        let comment = Annotation {
-            id: uuid::Uuid::new_v4(),
-            doc_id: book.id.clone(),
-            kind: AnnoKind::Note,
-            chapter: 0,
-            block: 0,
-            start: 0,
-            end: 1,
-            excerpt: "marked passage".into(),
-            note: "A shared observation".into(),
-            color: crate::model::HiColor::Yellow,
-            created: 2,
-            group,
-        };
-        let provider = BookSearchProvider::new(&books, &[highlight, comment]);
-
-        for query in [&book.author, "comment", "highlight", "shared observation"] {
-            assert!(
-                provider
-                    .search(query)
-                    .iter()
-                    .any(|hit| hit.kind == ANNOTATION_KIND),
-                "{query:?} should find the annotation context"
-            );
-        }
-    }
-
-    #[test]
-    fn limited_search_uses_a_hard_materialisation_budget() {
-        let books = sample_books();
-        let provider = BookSearchProvider::new(&books, &[]);
-        let hits = provider.search_limited("", 3);
-        assert_eq!(hits.len(), 3);
-        assert!(hits.iter().all(|hit| hit.action_address().is_some()));
-        assert!(provider.search_limited("", 0).is_empty());
-    }
-
-    #[test]
-    fn trigram_index_preserves_substring_matches() {
-        let books = sample_books();
-        let needle = books[0].chapters[0]
-            .blocks
-            .iter()
-            .map(crate::model::Block::plain_text)
-            .find_map(|text| {
-                let chars = text.chars().collect::<Vec<_>>();
-                (chars.len() > 8).then(|| chars[2..8].iter().collect::<String>())
-            })
-            .expect("sample chapter has a substring");
-        let hits = BookSearchProvider::new(&books, &[]).search_limited(&needle, 2);
-        assert!(hits.iter().any(|hit| hit.kind == CHAPTER_KIND));
-    }
-
-    #[test]
-    fn complete_index_includes_books_after_the_old_ui_cap() {
-        let mut books = (0..4_097)
-            .map(|i| Book {
-                id: format!("book:{i}"),
-                title: format!("Library volume {i}"),
-                ..Book::default()
-            })
-            .collect::<Vec<_>>();
-        books.last_mut().expect("nonempty test library").title = "Late catalogue needle".into();
-
-        let hits = BookSearchProvider::new(&books, &[]).search("catalogue needle");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].kind, BOOK_KIND);
-        assert_eq!(hits[0].title, "Late catalogue needle");
-    }
-
-    #[test]
-    fn complete_index_keeps_text_after_the_old_chapter_cap() {
-        let book = Book {
-            id: "long-book".into(),
-            title: "Long book".into(),
+    fn million_scalar_book_has_no_retained_prose_or_grams() {
+        let books = Arc::new(vec![Arc::new(Book {
+            id: "large".into(),
+            title: "Large book".into(),
             chapters: vec![crate::model::Chapter {
-                title: "A long chapter".into(),
+                title: "Long chapter".into(),
                 blocks: vec![crate::model::Block::Math {
                     expr: ui::math::MathExpr::new(),
-                    source: format!("{} tail-needle", "x".repeat(65_537)),
+                    source: format!("{} tail-needle", "x".repeat(1_000_000)),
                     display: false,
                 }],
                 ..crate::model::Chapter::default()
             }],
             ..Book::default()
-        };
-
-        let hits = BookSearchProvider::new(&[book], &[]).search("tail-needle");
-        assert!(hits.iter().any(|hit| hit.kind == CHAPTER_KIND));
-    }
-
-    #[test]
-    fn title_exact_match_does_not_hide_partial_body_match() {
-        let books = vec![
-            Book {
-                id: "title".into(),
-                title: "Needle".into(),
-                ..Book::default()
-            },
-            Book {
-                id: "body".into(),
-                title: "Other".into(),
-                chapters: vec![crate::model::Chapter {
-                    title: "Chapter".into(),
-                    blocks: vec![crate::model::Block::Math {
-                        expr: ui::math::MathExpr::new(),
-                        source: "a partial needle match in the book body".into(),
-                        display: false,
-                    }],
-                    ..crate::model::Chapter::default()
-                }],
-                ..Book::default()
-            },
-        ];
-        let provider = BookSearchProvider::new(&books, &[]);
-
-        let hits = provider.search_limited("needle", 10);
-        assert!(hits.iter().any(|hit| hit.kind == BOOK_KIND));
-        assert!(hits.iter().any(|hit| hit.kind == CHAPTER_KIND));
-    }
-
-    #[test]
-    fn paged_search_is_bounded_and_reaches_every_broad_match() {
-        let books = (0..257)
-            .map(|i| Book {
-                id: format!("book:{i}"),
-                title: "A common title".into(),
-                ..Book::default()
-            })
-            .collect::<Vec<_>>();
-        let provider = BookSearchProvider::new(&books, &[]);
-        let mut cursor = None;
-        let mut seen = 0usize;
-        loop {
-            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
-            assert!(page.inspected <= 17, "work must stay bounded per page");
-            assert!(page.results.len() <= 5, "materialisation is page sized");
-            seen += page.results.len();
-            let Some(next) = page.next else {
-                break;
-            };
-            cursor = Some(next);
+        })]);
+        let provider = BookSearchProvider::new_shared(
+            Arc::clone(&books),
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            3,
+        );
+        let mut cursor = Some(SearchCursor::opaque(
+            3,
+            "tail-needle",
+            Some("body:0:0:0".into()),
+            Some(BODY_PHASE),
+        ));
+        let mut found = false;
+        while let Some(next_cursor) = cursor {
+            let page = provider.search_page("tail-needle", Some(&next_cursor), 32, 8);
+            found |= page.results.iter().any(|hit| hit.kind == CHAPTER_KIND);
+            cursor = page.next;
         }
-        assert_eq!(seen, books.len(), "continuations cannot lose broad hits");
+        assert!(found);
+        let stats = provider.stats();
+        assert_eq!(stats.retained_chapter_scalars, 0);
+        assert!(stats.metadata_postings < 20);
+        assert_eq!(Arc::strong_count(&books), 2);
     }
 
     #[test]
-    fn paged_index_preserves_unicode_substrings() {
-        let books = (0..1_000)
-            .map(|i| Book {
-                id: format!("book:{i}"),
-                title: format!("Über den Fluss {i}"),
-                ..Book::default()
-            })
-            .collect::<Vec<_>>();
-        let provider = BookSearchProvider::new(&books, &[]);
-        let page = provider.search_page("DEN FL", None, 8, 8);
-        assert!(!page.results.is_empty());
-        assert!(page.inspected <= 8);
-    }
-
-    #[test]
-    fn a_unique_late_hit_remains_findable_beyond_one_hundred_thousand_books() {
-        let mut books = (0..100_001)
+    fn late_metadata_posting_avoids_a_hundred_thousand_row_scan() {
+        let books = (0..100_001)
             .map(|i| Book {
                 id: format!("book:{i:06}"),
                 title: format!("Library volume {i}"),
                 ..Book::default()
             })
             .collect::<Vec<_>>();
-        books.last_mut().expect("nonempty library").title = "Late catalogue needle".into();
-
         let provider = BookSearchProvider::new(&books, &[]);
-        let page = provider.search_page("catalogue needle", None, 4, 4);
-        assert_eq!(
-            page.inspected, 1,
-            "the rare index posting avoids a full scan"
-        );
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Late catalogue needle");
+        let page = provider.search_page("volume 100000", None, 4, 4);
+        assert_eq!(page.inspected, 1);
+        assert_eq!(page.results[0].title, "Library volume 100000");
     }
 
     #[test]
-    fn lazy_result_resolution_materialises_only_the_exact_canonical_target() {
-        let books = sample_books();
-        let provider = BookSearchProvider::new(&books, &[]);
-        let needle = books[0].chapters[0]
-            .blocks
-            .iter()
-            .map(crate::model::Block::plain_text)
-            .find_map(|text| {
-                text.split_whitespace()
-                    .find(|word| word.len() > 7)
-                    .map(str::to_owned)
+    fn body_pages_are_clamped_and_complete() {
+        let books = (0..257)
+            .map(|i| Book {
+                id: format!("book:{i}"),
+                title: "Other".into(),
+                chapters: vec![crate::model::Chapter {
+                    title: "Chapter".into(),
+                    blocks: vec![crate::model::Block::Math {
+                        expr: ui::math::MathExpr::new(),
+                        source: "common body term".into(),
+                        display: false,
+                    }],
+                    ..crate::model::Chapter::default()
+                }],
+                ..Book::default()
             })
-            .expect("sample chapter has searchable prose");
-        let hit = provider
-            .search(&needle)
-            .into_iter()
-            .find(|hit| hit.kind == CHAPTER_KIND)
-            .expect("sample chapter is discoverable");
-        let address = hit.action_address().expect("canonical address");
-        let resource = provider
-            .resolve_action_resource(&address)
-            .expect("a local chapter search hit resolves lazily");
-
-        assert_eq!(resource.id.as_str(), address.resource);
-        assert_eq!(resource.kind, "ebook.chapter");
-        assert!(resource.children.is_empty());
-        assert_eq!(resource.actions.len(), 1);
-        assert_eq!(resource.actions[0].id, address.action);
-        assert_eq!(resource.actions[0].kind, OperationKind::View);
+            .collect::<Vec<_>>();
+        let provider = BookSearchProvider::new(&books, &[]);
+        let mut cursor = None;
+        let mut seen = 0;
+        loop {
+            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+            assert!(page.inspected <= 17);
+            assert!(page.results.len() <= 5);
+            seen += page.results.len();
+            let Some(next) = page.next else { break };
+            cursor = Some(next);
+        }
+        assert_eq!(seen, 257);
     }
 
     #[test]
-    fn malformed_duplicate_catalogue_withdraws_instead_of_partially_publishing() {
-        let duplicate = Book {
-            id: "book:duplicate".into(),
-            title: "Duplicate title".into(),
+    fn oversized_single_block_resumes_without_a_prose_copy() {
+        let books = vec![Book {
+            id: "huge".into(),
+            title: "Huge".into(),
+            chapters: vec![crate::model::Chapter {
+                title: "One block".into(),
+                blocks: vec![crate::model::Block::Paragraph {
+                    spans: vec![crate::model::Span::plain(format!(
+                        "{}needle-at-the-end",
+                        "x".repeat(BODY_CHUNK_SCALARS * 4)
+                    ))],
+                }],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        }];
+        let provider = BookSearchProvider::new(&books, &[]);
+        let mut cursor = Some(SearchCursor::opaque(
+            1,
+            "needle-at-the-end",
+            Some("body:0:0:0".into()),
+            Some(BODY_PHASE),
+        ));
+        let mut pages = 0;
+        loop {
+            let page = provider.search_page("needle-at-the-end", cursor.as_ref(), 1, 1);
+            assert_eq!(page.inspected, 1);
+            pages += 1;
+            if !page.results.is_empty() {
+                break;
+            }
+            cursor = page.next;
+            assert!(cursor.is_some(), "continuation before tail match");
+        }
+        assert!(pages >= 5, "the block was verified in bounded chunks");
+        assert_eq!(provider.stats().retained_chapter_scalars, 0);
+    }
+
+    #[test]
+    fn skipped_body_rows_consume_the_page_budget() {
+        let books = (0..10)
+            .map(|index| Book {
+                id: format!("book-{index}"),
+                title: "No chapters".into(),
+                ..Book::default()
+            })
+            .collect::<Vec<_>>();
+        let provider = BookSearchProvider::new(&books, &[]);
+        let cursor = SearchCursor::opaque(1, "absent", Some("body:0:0:0".into()), Some(BODY_PHASE));
+        let page = provider.search_page("absent", Some(&cursor), 3, 3);
+        assert!(page.results.is_empty());
+        assert_eq!(page.inspected, 3);
+        assert!(page.next.is_some());
+    }
+
+    #[test]
+    fn membership_snapshots_keep_existing_book_allocations() {
+        let books: Arc<Vec<Arc<Book>>> = Arc::new(vec![Arc::new(Book {
+            id: "kept".into(),
+            chapters: vec![crate::model::Chapter {
+                blocks: vec![crate::model::Block::Math {
+                    expr: ui::math::MathExpr::new(),
+                    source: "reader-owned body".into(),
+                    display: false,
+                }],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        })]);
+        let mut next = Arc::clone(&books);
+        Arc::make_mut(&mut next).push(Arc::new(Book::default()));
+        assert!(Arc::ptr_eq(&books[0], &next[0]));
+        Arc::make_mut(&mut next).remove(1);
+        assert!(Arc::ptr_eq(&books[0], &next[0]));
+    }
+
+    #[test]
+    fn malformed_or_stale_continuations_fail_closed() {
+        let provider = BookSearchProvider::new(&sample_books(), &[]);
+        for cursor in [
+            SearchCursor::opaque(0, "reader", Some("body:0:0:0".into()), Some(BODY_PHASE)),
+            SearchCursor::opaque(1, "different", Some("body:0:0:0".into()), Some(BODY_PHASE)),
+            SearchCursor::opaque(
+                1,
+                "reader",
+                Some("body:not-a-number".into()),
+                Some(BODY_PHASE),
+            ),
+        ] {
+            let page = provider.search_page("reader", Some(&cursor), 8, 8);
+            assert!(page.results.is_empty());
+            assert!(page.next.is_none());
+            assert_eq!(page.inspected, 0);
+        }
+    }
+
+    #[test]
+    fn exact_annotation_resource_exports_the_same_delete_action_as_the_reader() {
+        let mut note = Annotation::new("book", AnnoKind::Note, 0, 0).with_note("keep me");
+        note.id = uuid::Uuid::from_u128(42);
+        let books = vec![Book {
+            id: "book".into(),
+            ..Book::default()
+        }];
+        let provider = BookSearchProvider::new(&books, &[note.clone()]);
+        let hit = provider.search("keep").pop().expect("annotation row");
+        let resource = provider
+            .resolve_action_resource(&hit.action_address().expect("address"))
+            .expect("exact annotation resource");
+        let delete = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "delete")
+            .expect("canonical delete action");
+        let tilo_actions::ActionInput::Immediate(encoded) = &delete.input else {
+            panic!("delete is immediate");
+        };
+        assert_eq!(
+            encoded.payload,
+            encode(&delete_annotation_action(note.id)).payload,
+            "the exact search resource and reader action have one canonical payload"
+        );
+    }
+
+    #[test]
+    fn remote_metadata_is_not_a_false_local_reveal() {
+        let entry = LibraryEntry {
+            id: "book:remote".into(),
+            title: "Remote Atlas".into(),
+            author: "Mira Peer".into(),
+            subject: "Maps".into(),
+            shared: true,
+            added: 1,
+        };
+        let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
+        let hit = provider.search("mira").pop().expect("metadata");
+        assert!(
+            provider
+                .resolve_action_resource(&hit.action_address().expect("address"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn duplicate_rows_fail_closed() {
+        let book = Book {
+            id: "duplicate".into(),
             ..Book::default()
         };
-        let provider = BookSearchProvider::new(&[duplicate.clone(), duplicate], &[]);
-
+        let provider = BookSearchProvider::new(&[book.clone(), book], &[]);
         assert_eq!(provider.action_directory_generation(), None);
         assert!(provider.search("duplicate").is_empty());
     }
