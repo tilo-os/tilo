@@ -247,6 +247,20 @@ fn the_download_status_shares_the_toolbar_rows_height_and_centre_line() {
         "the address field is starved once a download is showing: {}",
         url.width()
     );
+    // The optional commands yield to the status first; Find and the zoom
+    // readout keep their tier, whatever is downloading.
+    for id in ["browser.bookmark", "browser.history-pause", "browser.pip"] {
+        assert!(
+            !targets.contains_key(id),
+            "{id} should yield its width to the download status at 1200px"
+        );
+    }
+    for id in ["browser.devtools", "browser.find", "browser.zoom.reset"] {
+        assert!(
+            targets.contains_key(id),
+            "{id} must not depend on whether a download is running"
+        );
+    }
 }
 
 /// At a 2× text scale a labelled control's face grows with its label, and

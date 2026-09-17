@@ -1683,13 +1683,22 @@ pub struct VideoEditorApp {
     /// A project waiting for the user to say what to do about unsaved work.
     /// Opening a file must never silently discard an unsaved project.
     pending_open: Option<PendingOpen>,
-    /// Where the last paint put each dialog. The dialogs sit on the shared
-    /// [`ModalFrame`], which measures its title and action labels, so their
-    /// geometry exists only where a `TextRenderer` does — the draw pass. The
-    /// hit-test reads what was painted, which is also the only rect a pointer
-    /// can be over; a press that arrives before the first frame lands on
-    /// nothing and the scrim keeps it, exactly as it would on screen.
-    dialogs: DialogGeometry,
+    /// The theme of the last frame. The dialogs sit on the shared
+    /// [`ModalFrame`], which measures its title and action labels, so laying
+    /// one out needs a theme and a renderer; the event path has neither from
+    /// the host, so it keeps the theme here and a renderer of its own in
+    /// `hit_text`, and resolves a dialog's geometry from the *current* state
+    /// on every press — never from what an earlier frame painted, which a
+    /// shortcut or a resize can have made stale. See `dialog_context`.
+    chrome_theme: Option<Theme>,
+    /// The event path's renderer, created on the first press that needs one
+    /// and kept; measured at `chrome_theme`'s text scale, so it lays a dialog
+    /// out exactly as the host's renderer paints it. A cell because the
+    /// cursor-shape query, a `&self` path, needs it too.
+    hit_text: std::cell::RefCell<Option<TextRenderer>>,
+    /// How far the shortcut sheet's body is scrolled when the window cannot
+    /// hold the whole table. Reset when the sheet opens.
+    help_scroll: f64,
     /// What a `Save` should do once the destination comes back: just save, or
     /// save and then continue into the open that was interrupted.
     save_then_open: Option<PathBuf>,
@@ -1897,7 +1906,9 @@ impl VideoEditorApp {
             project_menu_items: Vec::new(),
             recents: crate::project_file::recents::load(),
             pending_open: None,
-            dialogs: DialogGeometry::default(),
+            chrome_theme: None,
+            hit_text: std::cell::RefCell::new(None),
+            help_scroll: 0.0,
             save_then_open: None,
             pending_save: false,
             // Filled on the first `sync`, from whatever project the document
@@ -5876,6 +5887,13 @@ impl VideoEditorApp {
     /// Zoom so the whole project fits the lane area, and park the view at the
     /// start. The answer to "I zoomed in and now I am lost", which the editor
     /// previously had no button for at all.
+    /// The playhead's head on the ruler: the down-pointing triangle at the
+    /// playhead line's top, as `draw_timeline` paints it.
+    fn playhead_head_rect(&self, r: &Regions) -> Rect {
+        let px = self.time_to_x(self.playhead, &r.lanes);
+        Rect::new(px - 6.0, r.ruler.y0, px + 6.0, r.ruler.y0 + 16.0)
+    }
+
     fn zoom_to_fit(&mut self, r: &Regions) {
         let dur = self.project.duration().max(0.01);
         let w = r.lanes.width().max(1.0);
@@ -6842,26 +6860,25 @@ impl VideoEditorApp {
         let line_xs = line_height(tr, type_sizes.xs);
         // Every option is a pointer target: the theme's minimum, or taller
         // when its label needs the room.
-        let seg_h = f64::from(theme.tokens.metrics.min_pointer_target).max(line_sm + s3);
+        let seg_target = f64::from(theme.tokens.metrics.min_pointer_target).max(line_sm + s3);
         let has_mix = self.mix_words().is_some();
-        let has_notice = self.export_notice.is_some();
         // The status slot holds a progress bar over its line, or two lines
         // of failure, whichever is taller — so it does not move as the
         // render changes state.
         let status_h = (s2 + s1 + line_xs).max(2.0 * line_xs);
+        let mix_h = if has_mix { s1 + line_xs } else { 0.0 };
+        // The notice line is reserved whether or not there is a notice: it
+        // appears on the Export click and clears when the destination comes
+        // back, and a card that grew and re-centred on each would move every
+        // control under the pointer that had just pressed one.
+        let notice_h = s1 + line_xs;
 
-        // The body's height, top to bottom, in the renderer's pixels; the
+        // The natural stack, top to bottom, in the renderer's pixels; the
         // frame takes it unscaled and applies the text scale itself.
-        let mut body_h = line_sm;
-        if has_mix {
-            body_h += s1 + line_xs;
-        }
-        body_h += s4;
-        body_h += 3.0 * (line_xs + s1 + seg_h + s3);
-        body_h += s1 + line_sm + s2 + status_h;
-        if has_notice {
-            body_h += s1 + line_xs;
-        }
+        let header_h = line_sm + mix_h + s4;
+        let groups_h = 3.0 * (line_xs + s1 + seg_target + s3);
+        let footer_h = s1 + line_sm + s2 + status_h + notice_h;
+        let body_h = header_h + groups_h + footer_h;
         let actions = self.export_actions();
         let spec = ModalSpec::new("Export Project")
             .actions(&actions)
@@ -6873,19 +6890,57 @@ impl VideoEditorApp {
             tr,
             theme,
         );
-
         let body = modal.body;
         let (x0, x1) = (body.x0, body.x1);
+
+        // What a window too short for the natural stack cannot hold, the
+        // stack gives up in this order: the gaps between the groups, the
+        // header's gap, the option rows' height down to their labels, the
+        // levels' verdict, the gap over the status slot. The footer — size
+        // line, status, notice — is anchored to the body's foot throughout,
+        // so a failure reason or a running render is never the part that
+        // falls off the card.
+        let mut short = (body_h - body.height()).max(0.0);
+        let mut group_gap = s3;
+        let mut header_gap = s4;
+        let mut seg_h = seg_target;
+        let mut mix_h = mix_h;
+        let mut footer_gap = s2;
+        if short > 0.0 {
+            let give = (3.0 * group_gap).min(short);
+            group_gap -= give / 3.0;
+            short -= give;
+        }
+        if short > 0.0 {
+            let give = (header_gap - s2).max(0.0).min(short);
+            header_gap -= give;
+            short -= give;
+        }
+        if short > 0.0 {
+            let floor = line_sm + s1;
+            let give = (3.0 * (seg_h - floor)).max(0.0).min(short);
+            seg_h -= give / 3.0;
+            short -= give;
+        }
+        if short > 0.0 && mix_h > 0.0 {
+            short -= mix_h;
+            mix_h = 0.0;
+        }
+        if short > 0.0 {
+            let give = (footer_gap - s1).max(0.0).min(short);
+            footer_gap -= give;
+        }
+
         let mut y = body.y0;
         let filename_top = y;
         y += line_sm;
-        let mix_top = has_mix.then(|| {
+        let mix_top = (mix_h > 0.0).then(|| {
             y += s1;
             let top = y;
             y += line_xs;
             top
         });
-        y += s4;
+        y += header_gap;
         // `n` equal segments across the body, one spacing step apart — the
         // same gapped convention the inspector's segmented rows use.
         let seg = |n: usize, y: f64| -> Vec<Rect> {
@@ -6899,7 +6954,7 @@ impl VideoEditorApp {
             *caption = y;
             y += line_xs + s1;
             let rects = seg(n, y);
-            y += seg_h + s3;
+            y += seg_h + group_gap;
             rects
         };
         let resolution = Resolution::ALL
@@ -6917,15 +6972,15 @@ impl VideoEditorApp {
             .copied()
             .zip(group(&mut captions[2], FrameRate::ALL.len()))
             .collect();
-        y += s1;
+
+        // The footer, from the body's foot up.
+        let footer_h = s1 + line_sm + footer_gap + status_h + notice_h;
+        let mut y = body.y1 - footer_h + s1;
         let info_top = y;
-        y += line_sm + s2;
+        y += line_sm + footer_gap;
         let status = Rect::new(x0, y, x1, y + status_h);
-        y += status_h;
-        let notice_top = has_notice.then(|| {
-            y += s1;
-            y
-        });
+        y += status_h + s1;
+        let notice_top = y;
         let cancel = modal.actions.first().copied().unwrap_or_default();
         let confirm = modal.actions.get(1).copied().unwrap_or_default();
         ExportLayout {
@@ -8075,15 +8130,6 @@ fn rate_words(fps: f64) -> String {
     format!("{fps:.2}")
 }
 
-/// The dialogs' painted geometry — see `VideoEditorApp::dialogs`.
-#[derive(Clone, Debug, Default)]
-struct DialogGeometry {
-    export: Option<ExportLayout>,
-    discard: Option<DiscardLayout>,
-    help: Option<HelpLayout>,
-    goto: Option<GotoLayout>,
-}
-
 /// The type sizes a dialog draws with, as the renderer base sizes the legacy
 /// `text` helpers take: the theme's type-scale steps put through
 /// [`TextRenderer::renderer_input_style`] once, so the renderer's own
@@ -8125,8 +8171,9 @@ struct ExportLayout {
     /// or a one-line outcome. Sized for the tallest of those so the slot
     /// does not move as the render changes state.
     status: Rect,
-    /// Top of the flow's own notice line — under the status, never in it.
-    notice_top: Option<f64>,
+    /// Top of the flow's own notice line — under the status, never in it,
+    /// and reserved whether or not a notice is showing.
+    notice_top: f64,
     /// Close, or Cancel while a render is running: the first action.
     cancel: Rect,
     /// Export, or "Rendering…" while a render is running: the second action.
@@ -8158,6 +8205,12 @@ struct HelpLayout {
     /// edge: the widest key combination in the table plus one spacing step,
     /// so no description ever starts inside a combination.
     what_dx: f64,
+    /// How far the body can scroll: the table's height past the body, or 0
+    /// when the window holds the whole sheet.
+    max_scroll: f64,
+    /// Top of the "scroll for more" line in the band kept at the body's
+    /// foot, when the body scrolls.
+    footer_hint: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -8446,6 +8499,15 @@ impl Widget for VideoEditorApp {
         #[cfg(any(feature = "gst", feature = "decode"))]
         self.pump_monitor();
         self.advance_flap_with_motion(theme.reduce_motion);
+        // The theme the event path lays the dialogs out with — see
+        // `chrome_theme`. Refreshed when anything a layout reads changes.
+        if self.chrome_theme.as_ref().is_none_or(|t| {
+            t.name != theme.name
+                || t.text_scale != theme.text_scale
+                || t.ui_scale != theme.ui_scale
+        }) {
+            self.chrome_theme = Some(theme.clone());
+        }
         // Destination round-trip + render progress, every frame.
         self.poll_export();
         // Track the decoded frame to the (possibly advancing) playhead.
@@ -8990,6 +9052,20 @@ impl Widget for VideoEditorApp {
                     MouseScrollDelta::LineDelta(x, y) => (*x as f64, *y as f64),
                     MouseScrollDelta::PixelDelta(p) => (p.x / 40.0, p.y / 40.0),
                 };
+                // A dialog's scrim owns the wheel as it owns the click: the
+                // timeline behind it must not zoom or pan. The shortcut
+                // sheet's body scrolls when the window cannot hold the table.
+                if self.is_modal() {
+                    if self.show_help
+                        && let Some(max) = self.with_dialog_layout(|app, tr, theme| {
+                            app.help_layout(tr, theme).max_scroll
+                        })
+                    {
+                        self.help_scroll = (self.help_scroll - dy * 40.0).clamp(0.0, max);
+                    }
+                    *handled = true;
+                    return;
+                }
                 let shift = modifiers.state().shift_key();
                 let over_bin = self.bin_is_visible(&r) && r.bin.contains(self.last_mouse);
                 let over_timeline = r.timeline.contains(self.last_mouse);
@@ -9045,15 +9121,24 @@ impl Widget for VideoEditorApp {
         use winit::window::CursorIcon;
         let r = self.regions();
         if self.show_export {
-            // What was painted is what the pointer can be over — see `dialogs`.
-            let over_btn = self.dialogs.export.as_ref().is_some_and(|l| {
-                matches!(
-                    l.modal.hit(point),
-                    Some(ModalHit::Close | ModalHit::Action(_))
-                ) || l.resolution.iter().any(|(_, rc)| rc.contains(point))
-                    || l.container.iter().any(|(_, rc)| rc.contains(point))
-                    || l.fps.iter().any(|(_, rc)| rc.contains(point))
-            });
+            // Laid out from the current state — see `chrome_theme`. A
+            // disabled Export offers no pointer: a hand over a button that
+            // will refuse is a lie about what the click does.
+            let Some(l) = self.with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme))
+            else {
+                return Some(CursorIcon::Default);
+            };
+            let over_btn = match l.modal.hit(point) {
+                Some(ModalHit::Close | ModalHit::Action(0)) => true,
+                Some(ModalHit::Action(_)) => self.export_is_offered(),
+                _ => {
+                    let body = l.modal.body;
+                    let shown = |rc: &Rect| rc.intersect(body).contains(point);
+                    l.resolution.iter().any(|(_, rc)| shown(rc))
+                        || l.container.iter().any(|(_, rc)| shown(rc))
+                        || l.fps.iter().any(|(_, rc)| shown(rc))
+                }
+            };
             return Some(if over_btn {
                 CursorIcon::Pointer
             } else {
@@ -12176,6 +12261,19 @@ impl VideoEditorApp {
             }
             return true;
         }
+        // The shortcut sheet owns the keyboard like the dialogs above it: Esc
+        // and ? close it, and nothing else fires meanwhile — Ctrl+E used to
+        // open the export dialog underneath the sheet's scrim.
+        if self.show_help {
+            match key {
+                Key::Named(NamedKey::Escape) => self.show_help = false,
+                Key::Character(c) if c.as_str() == "?" || (shift && c.as_str() == "/") => {
+                    self.show_help = false;
+                }
+                _ => {}
+            }
+            return true;
+        }
         if self.bin_overlay_is_open() {
             // The narrow bin paints a full-window scrim, so it owns keyboard
             // input as well as pointer input. Keep the one useful pane walk
@@ -12431,6 +12529,7 @@ impl VideoEditorApp {
             // were written down anywhere in the product.
             Key::Character(c) if c.as_str() == "?" || (shift && c.as_str() == "/") => {
                 self.show_help = !self.show_help;
+                self.help_scroll = 0.0;
                 true
             }
             // G opens a timecode field: type a time, press Enter, land there.
@@ -12500,6 +12599,22 @@ impl VideoEditorApp {
         }
     }
 
+    /// Lay a dialog out the way the event path needs it: from the current
+    /// state, with the theme of the last frame and the editor's own renderer
+    /// at that theme's text scale — see `chrome_theme`. `None` before the
+    /// first frame, when nothing has been painted for a press to land on.
+    /// `f` must not reach `hit_text` itself; the layout functions do not.
+    fn with_dialog_layout<T>(
+        &self,
+        f: impl FnOnce(&Self, &mut TextRenderer, &Theme) -> T,
+    ) -> Option<T> {
+        let theme = self.chrome_theme.as_ref()?;
+        let mut slot = self.hit_text.borrow_mut();
+        let tr = slot.get_or_insert_with(TextRenderer::new);
+        tr.set_text_scale(theme.text_scale);
+        Some(f(self, tr, theme))
+    }
+
     /// Whether a full-window scrim is up — the editor behind it is
     /// unavailable, and every click belongs to the surface on top.
     fn is_modal(&self) -> bool {
@@ -12515,13 +12630,12 @@ impl VideoEditorApp {
         // Modals own all clicks. The unsaved-work question is asked over the
         // export dialog too (Ctrl+O works while it is up), so it is first.
         if self.pending_open.is_some() {
-            // Only what was painted can be pressed — see `dialogs`. The
+            // Laid out from the current state — see `chrome_theme`. The
             // question has no scrim dismissal and no close control: its way
             // out is the Cancel it shows.
             let hit = self
-                .dialogs
-                .discard
-                .as_ref()
+                .with_dialog_layout(|app, tr, theme| app.discard_layout(tr, theme))
+                .flatten()
                 .and_then(|l| l.modal.hit(p));
             let choice = match hit {
                 Some(ModalHit::Action(0)) => DiscardChoice::Cancel,
@@ -12544,23 +12658,21 @@ impl VideoEditorApp {
         // Clicking away dismisses, which is what a scrim invites; the card
         // itself keeps the click, as every modal card in the fleet does.
         if self.show_help {
-            if self
-                .dialogs
-                .help
-                .as_ref()
-                .is_none_or(|l| l.modal.dismisses(p))
-            {
+            let dismisses = self
+                .with_dialog_layout(|app, tr, theme| app.help_layout(tr, theme).modal.dismisses(p))
+                .unwrap_or(false);
+            if dismisses {
                 self.show_help = false;
             }
             return;
         }
         if self.goto_entry.is_some() {
-            if self
-                .dialogs
-                .goto
-                .as_ref()
-                .is_none_or(|l| !l.card.contains(p))
-            {
+            let outside = self
+                .with_dialog_layout(|app, tr, theme| {
+                    !app.goto_layout(r, tr, theme).card.contains(p)
+                })
+                .unwrap_or(false);
+            if outside {
                 self.goto_entry = None;
             }
             return;
@@ -12725,7 +12837,9 @@ impl VideoEditorApp {
         // it now sits at the ruler's right end: a chip inside a region that
         // scrubs has to be claimed before the region is, or pressing it just
         // moves the playhead to the far right.
-        if self.zoom_chip_rect(r).contains(p) {
+        // The playhead's head keeps the ruler's right end even where the
+        // chip sits: a press on the head scrubs, as it does anywhere else.
+        if self.zoom_chip_rect(r).contains(p) && !self.playhead_head_rect(r).contains(p) {
             self.zoom_to_fit(r);
             return;
         }
@@ -13315,8 +13429,9 @@ impl VideoEditorApp {
     }
 
     fn press_export(&mut self, state: &mut AutoCommit, p: Point) {
-        // Only what was painted can be pressed — see `dialogs`.
-        let Some(l) = self.dialogs.export.clone() else {
+        // Laid out from the current state, as the next frame will paint it —
+        // see `chrome_theme`.
+        let Some(l) = self.with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme)) else {
             return;
         };
         match l.modal.hit(p) {
@@ -13348,12 +13463,16 @@ impl VideoEditorApp {
                 let _ = state;
             }
             Some(ModalHit::Card) => {
-                if let Some((res, _)) = l.resolution.iter().find(|(_, rect)| rect.contains(p)) {
+                // Only an option the body shows can be chosen: on a window too
+                // short for even the compacted stack the groups run past the
+                // body's clip, and a row nobody can see must not answer.
+                let body = l.modal.body;
+                let shown = |rect: &Rect| rect.intersect(body).contains(p);
+                if let Some((res, _)) = l.resolution.iter().find(|(_, rect)| shown(rect)) {
                     self.export.resolution = *res;
-                } else if let Some((c, _)) = l.container.iter().find(|(_, rect)| rect.contains(p))
-                {
+                } else if let Some((c, _)) = l.container.iter().find(|(_, rect)| shown(rect)) {
                     self.export.container = *c;
-                } else if let Some((f, _)) = l.fps.iter().find(|(_, rect)| rect.contains(p)) {
+                } else if let Some((f, _)) = l.fps.iter().find(|(_, rect)| shown(rect)) {
                     self.export.frame_rate = *f;
                 }
             }
@@ -14737,6 +14856,16 @@ impl VideoEditorApp {
         ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
         let (_, dim) = ModalFrame::ink(theme);
         let width = l.modal.body.width() as f32;
+        // Clipped to the body, as the other dialogs are: when the verbs stack
+        // on a small window the body is what is left above them, and the
+        // question must not paint under its own answers.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &l.modal.body,
+        );
         for (line, top) in lines.iter().zip(l.lines) {
             let shown = elide_at(line, width, l.type_sizes.sm, tr);
             text(
@@ -14750,8 +14879,8 @@ impl VideoEditorApp {
                 top,
             );
         }
+        scene.pop_layer();
         ModalFrame::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
-        self.dialogs.discard = Some(l);
     }
 
     /// Three-bar hamburger that summons the collapsed media bin. Highlights
@@ -17676,8 +17805,11 @@ impl VideoEditorApp {
         // playhead timecode tag in ruler
         let tag = timecode(self.playhead, self.project.fps);
         let (tw, _) = tr.measure_weighted(&tag, 10.0, None, TextWeight::Bold);
+        // The tag stops short of the zoom chip rather than running under it,
+        // so the chip's hit rect is never covered by a reading it does not
+        // answer for; the playhead's own head still reaches the ruler's end.
         let tagx = (px + 6.0)
-            .min(r.ruler.x1 - f64::from(tw) - 8.0)
+            .min(self.zoom_chip_rect(r).x0 - f64::from(tw) - 8.0)
             .max(r.ruler.x0);
         let tagrect = Rect::new(
             tagx - 3.0,
@@ -18135,30 +18267,43 @@ impl VideoEditorApp {
     /// why it is an accessibility affordance rather than a convenience.
     /// Lay the shortcut sheet out on the shared modal frame.
     ///
-    /// The hint line, then the groups in two columns on a window wide enough
-    /// and one column otherwise. Which group starts the second column and
+    /// The hint line, then the groups in two columns when the text-scaled
+    /// content width has room for them and one column otherwise — a 1200px
+    /// window at 2× is a 600px window to the eye, and two 300px columns
+    /// elide every description. Which group starts the second column and
     /// how tall the card has to be are both computed from the table with the
     /// measured row metrics, because a fixed height and a fixed split
     /// silently *cut rows off* the moment a group is added — which is exactly
     /// what happened when the project shortcuts arrived and the last two View
-    /// rows stopped being drawn at all.
+    /// rows stopped being drawn at all. When the window cannot hold the
+    /// table, the frame clamps the card and the body scrolls (`help_scroll`),
+    /// so every row stays reachable.
     fn help_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> HelpLayout {
         let type_sizes = dialog_type(tr, theme);
         let sp = &theme.tokens.spacing;
-        let (s3, s4) = (f64::from(sp.s3), f64::from(sp.s4));
+        let (s2, s3, s4) = (f64::from(sp.s2), f64::from(sp.s3), f64::from(sp.s4));
         let m = HelpMetrics::measure(tr, theme, type_sizes);
         let line_sm = line_height(tr, type_sizes.sm);
-        let two_col = self.rect.width() >= HELP_TWO_COLUMN_MIN_W;
+        let line_xs = line_height(tr, type_sizes.xs);
+        let scale = f64::from(theme.text_scale.max(1.0));
+        let two_col = self.rect.width() / scale >= HELP_TWO_COLUMN_MIN_W;
         let (split, tallest) = help_columns(two_col, m);
-        let body_h = line_sm + s3 + tallest;
-        let mut spec = ModalSpec::new("Keyboard shortcuts")
-            .body_height(body_h / f64::from(theme.text_scale));
+        let content_h = line_sm + s3 + tallest;
+        let mut spec =
+            ModalSpec::new("Keyboard shortcuts").body_height(content_h / f64::from(theme.text_scale));
         if two_col {
             spec = spec.max_width(HELP_CARD_W);
         }
         let modal = ModalFrame::layout(self.rect, &spec, tr, theme);
         let body = modal.body;
-        let hint_top = body.y0;
+        // A body shorter than the table scrolls, and keeps a band at its foot
+        // for the line that says so.
+        let overflow = (content_h - body.height()).max(0.0);
+        let footer_band = if overflow > 0.0 { line_xs + s2 } else { 0.0 };
+        let max_scroll = (content_h - (body.height() - footer_band)).max(0.0);
+        let scroll = self.help_scroll.clamp(0.0, max_scroll);
+        let footer_hint = (overflow > 0.0).then(|| body.y1 - footer_band + s2);
+        let hint_top = body.y0 - scroll;
         let groups_top = hint_top + line_sm + s3;
         let col_w = if two_col {
             (body.width() - s4) / 2.0
@@ -18203,6 +18348,8 @@ impl VideoEditorApp {
             hint_top,
             groups,
             what_dx,
+            max_scroll,
+            footer_hint,
         }
     }
 
@@ -18222,15 +18369,21 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let ty = l.type_sizes;
         let body = l.modal.body;
-        // Clipped to the body: on a window too short for the table the frame
-        // clamps the card and reports the overflow, and the rows must not
-        // paint through the card's foot.
+        // The rows are clipped to the body above the scroll hint's band: a
+        // body the window cannot hold scrolls, and the rows must not paint
+        // through the card's foot or the hint.
+        let rows_clip = Rect::new(
+            body.x0,
+            body.y0,
+            body.x1,
+            l.footer_hint.map_or(body.y1, |hint| hint - f64::from(theme.tokens.spacing.s2)),
+        );
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             tf,
-            &body,
+            &rows_clip,
         );
         text(
             scene,
@@ -18280,7 +18433,14 @@ impl VideoEditorApp {
             }
         }
         scene.pop_layer();
-        self.dialogs.help = Some(l);
+        if let Some(hint_top) = l.footer_hint {
+            let label = if self.help_scroll + 0.5 < l.max_scroll {
+                "Scroll for more shortcuts ↓"
+            } else {
+                "Scroll up for earlier shortcuts ↑"
+            };
+            text(scene, tr, tf, label, ty.xs, dim, body.x0, hint_top);
+        }
     }
 
     /// The go-to-timecode field: type a time, press Enter, land there.
@@ -18379,7 +18539,6 @@ impl VideoEditorApp {
             c.text_dim
         };
         text(scene, tr, tf, hint, ty.xs, hc, x, l.hint_top);
-        self.dialogs.goto = Some(l);
     }
 
     #[allow(
@@ -18581,13 +18740,12 @@ impl VideoEditorApp {
         }
         // The flow's own status (choosing a destination, a portal refusal)
         // sits under the render status, so an action is never silent.
-        if let (Some(notice), Some(top)) = (&self.export_notice, l.notice_top) {
+        if let Some(notice) = &self.export_notice {
             let shown = elide_at(notice, width, ty.xs, tr);
-            text(scene, tr, tf, &shown, ty.xs, dim, x0, top);
+            text(scene, tr, tf, &shown, ty.xs, dim, x0, l.notice_top);
         }
         scene.pop_layer();
         ModalFrame::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
-        self.dialogs.export = Some(l);
     }
 }
 
@@ -18675,6 +18833,10 @@ fn modal_layout_with_stacking_actions(
         theme,
     );
     let bottom = layout.actions.first().map_or(layout.card.y1, |r| r.y1);
+    // A grown card the viewport had to clamp shares what is left between
+    // the stacked actions rather than letting them consume the whole body.
+    let available = (bottom - layout.body.y0 - gap * (n - 1.0)).max(0.0);
+    let height = height.min(available / n);
     let top = bottom - height * n - gap * (n - 1.0);
     layout.body.y1 = (top - gap).max(layout.body.y0);
     for (i, rect) in layout.actions.iter_mut().enumerate() {
@@ -21888,16 +22050,11 @@ mod tests {
         app.export_status = ExportStatus::Failed {
             reason: reason.into(),
         };
-        // The geometry the draw pass painted, read back rather than
-        // re-derived: the failure lines fill the status slot, which sits
-        // clear of the size line above it and the action row below it.
-        render(&mut app);
-        let layout = app
-            .dialogs
-            .export
-            .clone()
-            .expect("the draw pass laid the export dialog out");
+        // The one layout the event path and the draw pass both resolve from
+        // the current state: the failure lines fill the status slot, which
+        // sits clear of the size line above it and the action row below it.
         let mut tr = TextRenderer::new();
+        let layout = app.export_layout(&mut tr, &Theme::dark());
         let ty = layout.type_sizes;
         let lines = tr.clamp_to_lines(reason, ty.xs, layout.modal.body.width() as f32, 2);
         assert_eq!(lines.len(), 2, "the long reason occupies the two-line slot");
@@ -21920,6 +22077,55 @@ mod tests {
             layout.status.y1,
             layout.cancel.y0
         );
+        // Exercise the real Vello draw pass as well as its layout math.
+        render(&mut app);
+    }
+
+    /// A shortcut opens the dialog and the very next event is a click on
+    /// it, with no frame in between. The hit-test lays the dialog out from
+    /// the current state, so the click lands — it used to read a cache the
+    /// previous frame had painted, which for a dialog that had just opened
+    /// was empty or stale.
+    #[test]
+    fn the_export_dialog_answers_a_click_the_frame_after_the_shortcut_opened_it() {
+        let (mut app, mut doc) = app_sized(1280.0, 800.0);
+        // One frame with the dialog closed, so the editor knows its theme.
+        render(&mut app);
+        assert!(!app.show_export);
+        assert!(key_press(&mut app, &mut doc, "e", true), "Ctrl+E opens the dialog");
+        assert!(app.show_export);
+        let mut tr = TextRenderer::new();
+        let l = app.export_layout(&mut tr, &Theme::dark());
+        let (wanted, rect) = l.resolution[2];
+        assert_ne!(app.export.resolution, wanted, "the fixture starts elsewhere");
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert_eq!(
+            app.export.resolution, wanted,
+            "the click on an option the frame has not painted yet still lands"
+        );
+        // And a resize between the shortcut and the click moves the target
+        // with it: the layout follows the rect, not a painted frame.
+        app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+        let l = app.export_layout(&mut tr, &Theme::dark());
+        let (wanted, rect) = l.container[1];
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert_eq!(app.export.container, wanted);
+    }
+
+    /// The shortcut sheet owns the keyboard as the dialogs do: Ctrl+E used
+    /// to open the export dialog underneath its scrim.
+    #[test]
+    fn ctrl_e_does_not_open_the_export_dialog_under_the_shortcut_sheet() {
+        let (mut app, mut doc) = app_sized(1280.0, 800.0);
+        app.show_help = true;
+        assert!(
+            key_press(&mut app, &mut doc, "e", true),
+            "the sheet swallows the key"
+        );
+        assert!(!app.show_export, "nothing opens under the sheet");
+        assert!(app.show_help, "and the sheet stays");
+        assert!(key_press(&mut app, &mut doc, "?", false));
+        assert!(!app.show_help, "? still closes it");
     }
 
     #[test]
@@ -22161,21 +22367,18 @@ mod tests {
         );
 
         // The card is sized from that, and every row must land inside the
-        // body the frame gave it — read back from the geometry the draw pass
-        // painted, not re-derived from the table.
+        // body the frame gave it — the one layout the event path and the
+        // draw pass both resolve, not re-derived from the table.
         let mut app = app_with_sample();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.show_help = true;
-        render(&mut app);
-        let layout = app
-            .dialogs
-            .help
-            .clone()
-            .expect("the draw pass laid the shortcut sheet out");
+        let layout = app.help_layout(&mut tr, &theme);
         assert!(
             !layout.modal.body_overflows,
             "a 1280x800 window holds the whole sheet"
         );
+        assert_eq!(layout.max_scroll, 0.0, "nothing to scroll");
+        render(&mut app);
         assert_eq!(layout.groups.len(), SHORTCUTS.len());
         let body = layout.modal.body;
         let mut columns = std::collections::BTreeSet::new();
@@ -23675,13 +23878,11 @@ mod tests {
     fn the_export_button_is_only_offered_when_export_can_actually_run() {
         let (mut app, mut doc) = app_sized(1280.0, 800.0);
         app.show_export = true;
-        // The press lands on what was painted, so paint first.
+        // The event path lays the dialog out with the theme of the last
+        // frame, so paint one first.
         render(&mut app);
-        let l = app
-            .dialogs
-            .export
-            .clone()
-            .expect("the draw pass laid the export dialog out");
+        let mut tr = TextRenderer::new();
+        let l = app.export_layout(&mut tr, &Theme::dark());
         assert_eq!(
             app.export_is_offered(),
             crate::export::unavailable_reason().is_none(),
@@ -24114,6 +24315,37 @@ mod tests {
         }
     }
 
+    /// A disabled Export offers no pointer: a hand over a button that will
+    /// refuse is a lie about what the click does.
+    #[test]
+    fn a_disabled_export_button_offers_no_pointer() {
+        use winit::window::CursorIcon;
+        let (mut app, _doc) = app_and_doc();
+        app.show_export = true;
+        app.project = unexportable_project();
+        let dest = scratch("cursor-export").join("never-written.mp4");
+        app.begin_export_to(dest);
+        assert!(!app.export_is_offered(), "a render in flight disables Export");
+        render(&mut app);
+        let mut tr = TextRenderer::new();
+        let l = app.export_layout(&mut tr, &Theme::dark());
+        assert_eq!(
+            app.cursor_shape(l.confirm.center()),
+            Some(CursorIcon::Default),
+            "no pointer over a disabled Export"
+        );
+        assert_eq!(
+            app.cursor_shape(l.cancel.center()),
+            Some(CursorIcon::Pointer),
+            "Cancel is live and says so"
+        );
+        app.export_job = None;
+        app.export_status = ExportStatus::Idle;
+        if app.export_is_offered() {
+            assert_eq!(app.cursor_shape(l.confirm.center()), Some(CursorIcon::Pointer));
+        }
+    }
+
     /// A one-clip timeline whose footage is not on this machine. `render`
     /// refuses an unreadable source before it touches GStreamer, in every
     /// build, so a job started on this finishes at once and encodes nothing.
@@ -24160,13 +24392,8 @@ mod tests {
             let r = app.regions();
             let px = render_pixels(&mut app, 1280, 800, &theme);
             // The timeline lanes stretch well past the card on both sides.
-            let card = app
-                .dialogs
-                .export
-                .as_ref()
-                .expect("the draw pass laid the export dialog out")
-                .modal
-                .card;
+            let mut tr = TextRenderer::new();
+            let card = app.export_layout(&mut tr, &theme).modal.card;
             let left = Rect::new(r.lanes.x0, r.lanes.y0, card.x0 - 8.0, r.lanes.y1);
             let colours = region_colours(&px, 1280, 800, left);
             assert!(

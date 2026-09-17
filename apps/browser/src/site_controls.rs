@@ -72,8 +72,16 @@ enum Pending {
     },
     Refresh,
 }
+/// The labels of the certificate facts, in panel order. One list for the
+/// rows and for sizing their label column from the widest of them.
+const FACT_LABELS: [&str; 4] = ["Certificate", "Issuer", "Connection", "Certificate expires"];
+
 pub(crate) struct SiteControls {
     pub open: bool,
+    /// The theme's text scale at the last layout pass, so the panel's
+    /// labelled buttons keep their explicit 1× widths and grow with the
+    /// text — see `browser_widget::labelled_width`.
+    pub text_scale: f32,
     information: bool,
     committed: Option<String>,
     status: Option<SiteStatus>,
@@ -91,6 +99,7 @@ impl Default for SiteControls {
     fn default() -> Self {
         Self {
             open: false,
+            text_scale: 1.0,
             information: false,
             committed: None,
             status: None,
@@ -290,8 +299,21 @@ impl SiteControls {
     fn button(&self, id: &str, label: &str, pending: Pending) -> Button {
         let state = self.pending.clone();
         Button::new(id, label, None)
-            .with_size(160.0, 32.0)
+            .with_size(
+                crate::browser_widget::labelled_width(160.0, self.text_scale),
+                32.0,
+            )
             .on_effect(move || state.set(Some(pending.clone())))
+    }
+    /// Every label the facts column can carry — the certificate facts and
+    /// the current origin's permission names — so the column can be sized
+    /// from the widest of them at the current text scale.
+    pub(crate) fn fact_labels(&self) -> Vec<String> {
+        let mut labels: Vec<String> = FACT_LABELS.iter().map(|label| (*label).to_string()).collect();
+        if let Some(status) = &self.status {
+            labels.extend(status.permissions.iter().map(|(name, _)| name.clone()));
+        }
+        labels
     }
     pub fn launcher(&self, information: bool) -> Button {
         self.button(
@@ -371,7 +393,10 @@ impl SiteControls {
                     .push(Box::new(Text::new(title).with_role(TextRole::Title)))
                     .push(Box::new(
                         self.button("browser.site.close", "Done", Pending::Close)
-                            .with_size(64.0, 32.0),
+                            .with_size(
+                                crate::browser_widget::labelled_width(64.0, self.text_scale),
+                                32.0,
+                            ),
                     )),
             ))
             .push(line(
@@ -407,21 +432,19 @@ impl SiteControls {
                 };
                 column = column.push(line(connection));
                 if !status.subject.is_empty() {
+                    let [certificate, issuer, connection, expires] = FACT_LABELS;
                     column = column
-                        .push(fact("Certificate", &status.subject))
-                        .push(fact("Issuer", &status.issuer))
+                        .push(fact(certificate, &status.subject))
+                        .push(fact(issuer, &status.issuer))
                         .push(fact(
-                            "Connection",
+                            connection,
                             &format!(
                                 "{} · certificate status {}",
                                 tls_version(status.tls_version),
                                 status.certificate_status
                             ),
                         ))
-                        .push(fact(
-                            "Certificate expires",
-                            &certificate_date(status.expires),
-                        ));
+                        .push(fact(expires, &certificate_date(status.expires)));
                 }
                 for (name, value) in &status.permissions {
                     column = column.push(fact(name, value));
@@ -434,7 +457,7 @@ impl SiteControls {
                 column=column.push(line(if !status.global_enabled{"Global protection is off in Settings"}else if status.excepted{"Protection is off for this origin"}else{"Protection is on for this origin"}))
                     .push(line(&format!("{} requests blocked or replaced in this document",status.blocked)))
                     .push(line("This exact origin includes its embedded frames. Requests without a known top-level page stay protected and are not counted here."))
-                    .push(Box::new(self.button("browser.site.toggle",if status.excepted{"Enable for this origin"}else{"Disable for this origin"},action(if status.excepted{"enable"}else{"disable"})).with_size(210.0,32.0).with_enabled(self.action.is_none())))
+                    .push(Box::new(self.button("browser.site.toggle",if status.excepted{"Enable for this origin"}else{"Disable for this origin"},action(if status.excepted{"enable"}else{"disable"})).with_size(crate::browser_widget::labelled_width(210.0,self.text_scale),32.0).with_enabled(self.action.is_none())))
                     .push(line("Reload after changing protection to apply all network, cosmetic and scriptlet rules."))
                     .push(line(&self.filters.message));
                 if let Some(updated) = self.filters.updated {
