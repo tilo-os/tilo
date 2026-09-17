@@ -58,6 +58,16 @@ fn round_to_u32_px(v: f64) -> u32 {
     v.round().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
+/// CEF exposes an integer logical view rect, then allocates the paint buffer
+/// at device scale. Match the native host's two outward-rounding steps.
+fn cef_paint_extent(requested: u32, scale_factor: f32) -> u32 {
+    let scale = f64::from(scale_factor);
+    if requested == 0 || !scale.is_finite() || scale <= 0.0 {
+        return requested;
+    }
+    round_to_u32_px(((f64::from(requested) / scale).ceil() * scale).ceil())
+}
+
 /// See module docs.
 pub struct WebView {
     rect: Rect,
@@ -170,11 +180,11 @@ impl WebView {
             self.stale_resize_retry = None;
             return true;
         }
-        let cef_rounding = round_to_u32_px(f64::from(self.scale_factor.ceil())).saturating_sub(1);
-        let matches = observed.0 >= expected.0
-            && observed.0.saturating_sub(expected.0) <= cef_rounding
-            && observed.1 >= expected.1
-            && observed.1.saturating_sub(expected.1) <= cef_rounding;
+        let native_expected = (
+            cef_paint_extent(expected.0, self.scale_factor),
+            cef_paint_extent(expected.1, self.scale_factor),
+        );
+        let matches = observed == native_expected;
         if matches {
             self.stale_resize_retry = None;
             return true;
@@ -808,6 +818,25 @@ mod tests {
         let initial = engine.commands().len();
         assert!(view.retry_resize_for_stale_frame((802, 452)));
         assert_eq!(engine.commands().len(), initial);
+    }
+
+    #[test]
+    fn fractional_dpr_uses_the_same_double_rounding_as_cef() {
+        let engine = TestEngine::new();
+        let (mut view, _, _) = laid_out(engine.clone());
+        view.rect = Rect::new(0.0, 0.0, 802.0 / 1.75, 451.0 / 1.75);
+        view.scale_factor = 1.75;
+        let initial = engine.commands().len();
+        assert!(
+            view.retry_resize_for_stale_frame((804, 452)),
+            "CEF rounds requested physical pixels to integer DIP and back out"
+        );
+        assert_eq!(engine.commands().len(), initial);
+        assert!(
+            !view.retry_resize_for_stale_frame((802, 451)),
+            "the pre-rounding size is not the native paint for this request"
+        );
+        assert_eq!(engine.commands().len(), initial + 1);
     }
 
     #[test]
