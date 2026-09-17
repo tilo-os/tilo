@@ -299,15 +299,23 @@ signature using private snapshots of the input files. Its hash receipt describes
 those snapshots; consumers must preserve or recheck the exact bytes they install.
 
 The native development fixture invokes the packaged `bootctl` with an isolated
-directory as its ESP, image-only loader selection, and firmware-variable writes
+tmpfs as its ESP, image-only loader selection, and firmware-variable writes
 disabled. It checks that the signed companion supplies both EFI loader paths,
 records package versions and hashes, and rejects missing, unsigned, wrong-key,
 wrong-architecture and tampered inputs. This tests loader selection and copying;
 it does not prove a bootable disk or firmware acceptance.
 
-The verified loader must enter `/usr/lib/systemd/boot/efi` before composefs sealing.
-The full OS build still needs that integration and signed disk/VM acceptance;
-the development container-only stop remains enabled.
+Development builds require an already-root Linux caller and
+`TILO_PCR_PREDICTION_SIGNER` pointing to the independently provisioned signer.
+They build the unsealed `rootfs` stage first, then use
+`os/dev/sign-development-rootfs.py` to validate its immutable local ID, embedded
+trust and revision, sign the original loader externally, and add its verified
+signed companion through `os/Containerfile.development-loader`. Private keys
+never enter those build contexts. The existing sealing stages consume the
+resulting immutable image through a named `rootfs` context with pulling disabled.
+
+This integration still requires native end-to-end acceptance, followed by signed
+disk and VM validation. The development container-only stop remains enabled.
 
 ## Production provisioning later
 

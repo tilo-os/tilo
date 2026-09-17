@@ -52,6 +52,7 @@ done
 # Development trust currently stages a container only: registry provisioning and
 # signed disk/VM integration are separate required work.
 _tilo_profile_args=()
+_tilo_podman_args=()
 _tilo_trust_args=(--build-arg TILO_PUBLIC_TRUST_MODE=production --build-arg TILO_PUBLIC_TRUST_MANIFEST_SHA256=)
 case "${TILO_PUBLIC_TRUST_MODE:-production}" in
   production)
@@ -60,6 +61,10 @@ case "${TILO_PUBLIC_TRUST_MODE:-production}" in
     ;;
   development)
     [ "${TILO_SKIP_BUILD:-0}" != 1 ] || die "development trust requires a fresh build"
+    [ "$(id -u)" -eq 0 ] || die "development signing requires a rootful Linux build and Podman store"
+    [ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ] || die "development builds require the independent EFI/PCR signer"
+    [ -z "${CONTAINER_HOST:-}${CONTAINER_CONNECTION:-}" ] || die "development signing requires local Podman storage"
+    _tilo_podman_args=(--remote=false)
     _tilo_development_revision=$(git -C "$TILO_REPO" rev-parse --verify HEAD) \
       || die "development builds require a committed source revision"
     [ -z "$(git -C "$TILO_REPO" status --porcelain --untracked-files=all)" ] \
@@ -263,7 +268,9 @@ fi
 # repository here duplicates the rootfs and can exhaust an ephemeral builder.
 TILO_PROVISIONAL_CFS_DIGEST="$(printf '0%.0s' {1..128})"
 build_image() {
-  podman build -f "$TILO_OS_DIR/Containerfile" -t "$TILO_IMAGE" \
+  local seal_digest="${1:-$TILO_PROVISIONAL_CFS_DIGEST}"
+  shift || true
+  podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile" -t "$TILO_IMAGE" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     "${_tilo_build_args[@]}" \
     "${_tilo_trust_args[@]}" \
@@ -282,8 +289,9 @@ build_image() {
     --build-arg "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
     --build-arg "TILO_GENERATION=$TILO_GENERATION" \
     --build-arg "TILO_SEAL_GENERATION=$TILO_SEAL_GENERATION" \
-    --build-arg "TILO_CFS_DIGEST=${1:-$TILO_PROVISIONAL_CFS_DIGEST}" \
+    --build-arg "TILO_CFS_DIGEST=$seal_digest" \
     --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
+    "$@" \
     "$TILO_REPO"
 }
 
@@ -301,7 +309,27 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
   msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; generation=$TILO_GENERATION)"
-  build_image "$TILO_PROVISIONAL_CFS_DIGEST"
+  if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ]; then
+    # The signed loader changes /usr, so install it into an immutable rootfs
+    # intermediate BEFORE the existing split/UKI sealing stages run.
+    _tilo_signing_work=$(mktemp -d "${TILO_INSTALLER_SCRATCH:-/var/tmp}/tilo-build-signing.XXXXXX")
+    trap 'rm -rf -- "$_tilo_signing_work"' EXIT
+    build_image "$TILO_PROVISIONAL_CFS_DIGEST" --target rootfs --iidfile "$_tilo_signing_work/raw.iid"
+    _tilo_raw_rootfs=$(cat "$_tilo_signing_work/raw.iid")
+    [[ "$_tilo_raw_rootfs" =~ ^sha256:[0-9a-f]{64}$ ]] || die "rootfs build did not return an immutable image ID"
+    python3 "$TILO_OS_DIR/dev/sign-development-rootfs.py" \
+      --rootfs-id "$_tilo_raw_rootfs" --architecture "$TILO_WINDOWS_ARCH" \
+      --revision "$_tilo_development_revision" --public-bundle "$TILO_PUBLIC_TRUST_BUNDLE" \
+      --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
+      --signer "$TILO_PCR_PREDICTION_SIGNER" --target "$TILO_TARGET_IMGREF" \
+      > "$_tilo_signing_work/receipt.json"
+    _tilo_signed_rootfs=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["signed_rootfs_id"])' "$_tilo_signing_work/receipt.json")
+    [[ "$_tilo_signed_rootfs" =~ ^sha256:[0-9a-f]{64}$ ]] || die "signer did not return an immutable rootfs image ID"
+    build_image "$TILO_PROVISIONAL_CFS_DIGEST" --target final --pull=never \
+      --build-context "rootfs=container-image://$_tilo_signed_rootfs"
+  else
+    build_image "$TILO_PROVISIONAL_CFS_DIGEST"
+  fi
 fi
 
 if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ]; then
