@@ -82,7 +82,7 @@ fn frame(
     t: &ObjId,
 ) -> Option<(TaffyTree<()>, NodeId, (f64, f64))> {
     table.sync(doc, t);
-    let theme = Theme::dark();
+    let theme = shot_theme();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
@@ -148,7 +148,7 @@ fn press() -> WindowEvent {
 }
 
 fn shoot(table: &mut Table, size: (f64, f64), out: &Path) {
-    let theme = Theme::dark();
+    let theme = shot_theme();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let cw = px_dim(size.0 + MARGIN * 2.0);
@@ -231,4 +231,21 @@ pub fn run(_args: &[String]) {
     );
     assert_eq!(table::cell_text(&doc, &t, 1, 2), "Owner");
     println!("OK: middle column inserted between originals; content preserved");
+}
+
+/// `QOS_SHOTS_THEME` picks the palette (`dark` by default) and
+/// `QOS_SHOTS_TEXT_SCALE` the text scale — the switches every app's `--shots`
+/// honours through `ui::launch::shot_theme`, whose `LaunchArgs` an example
+/// cannot construct. An unknown theme name is an error, never a silent dark
+/// shot: a capture that cannot observe its subject must fail.
+fn shot_theme() -> Theme {
+    let theme = match std::env::var("QOS_SHOTS_THEME") {
+        Ok(name) => Theme::named(&name).unwrap_or_else(|| {
+            eprintln!("ui-shots: unknown QOS_SHOTS_THEME `{name}`");
+            std::process::exit(2)
+        }),
+        Err(_) => Theme::dark(),
+    };
+    let scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+    theme.with_text_scale(ui::launch::shot_text_scale(None, scale.as_deref()))
 }

@@ -19,19 +19,21 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::text_metrics::renderer_type_size;
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Alpha of a gauge's background track against the border colour.
-const TRACK_ALPHA: u8 = 150;
+/// Alpha of a gauge's unfilled track, derived against the raised surface
+/// a gauge sits on (HIG §9.5): a declared border at any alpha is three
+/// shades off that surface on the dark palette and the track vanishes.
+const TRACK_ALPHA: u8 = 40;
 const BAR_TRACK_H: f64 = 8.0;
 
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
+/// The unfilled track colour on the theme's raised surface.
+fn track_color(theme: &Theme) -> Color {
+    crate::widget::data_table::tier_on(theme.tokens.colors.surfaces.raised, TRACK_ALPHA)
 }
 
 /// Rounds a `0..=1` fraction to a whole percentage for the accessibility
@@ -178,7 +180,7 @@ impl RingGauge {
         scene.stroke(
             &Stroke::new(thickness),
             transform,
-            with_alpha(theme.tokens.colors.border_standard, TRACK_ALPHA),
+            track_color(theme),
             None,
             &track,
         );
@@ -446,7 +448,7 @@ impl BarGauge {
         scene.fill(
             Fill::NonZero,
             transform,
-            with_alpha(tokens.colors.border_standard, TRACK_ALPHA),
+            track_color(theme),
             None,
             &RoundedRect::from_rect(track, radius),
         );
