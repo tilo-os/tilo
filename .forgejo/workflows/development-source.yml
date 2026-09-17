@@ -20,6 +20,9 @@ on:
       - os/tests/test_retain_development_rootfs.py
       - os/tests/development_retention_native.py
       - os/tests/tls_registry_fixture.py
+      - os/dev/audit-rootfs-layers.py
+      - os/tests/test_audit_rootfs_layers.py
+      - os/tests/development_layer_audit_native.py
       - os/tests/test_development_boot.py
       - os/tests/test_development_source.py
       - os/dev/development-trust.py
@@ -84,7 +87,9 @@ jobs:
           cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py,test_development_boot.py,test_development_prediction.py,development_prediction_native.py,test_development_source.py,development_stage_reuse.py,development_rootfs.py,test_sign_development_rootfs.py,test_private_disk_image.py,test_prepare_wpe_stage.py,wpe_stage_cache.py} "$context/"
           cp os/Containerfile.development-loader "$context/"
           cp os/dev/retain-development-rootfs.py "$context/dev/"
+          cp os/dev/audit-rootfs-layers.py "$context/dev/"
           cp os/tests/{test_retain_development_rootfs.py,development_retention_native.py,tls_registry_fixture.py} "$context/"
+          cp os/tests/{test_audit_rootfs_layers.py,development_layer_audit_native.py} "$context/"
           cp "$(command -v cosign)" "$context/cosign"
           cp os/tests/Containerfile.development-source "$context/Containerfile"
           docker build --file "$context/Containerfile" --tag "$image" "$context"
@@ -97,9 +102,9 @@ jobs:
                 "$image" /fixture/os/tests/development_prediction_native.py ;;
             retention)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
-                "$image" -euc 'python3 /fixture/os/tests/test_retain_development_rootfs.py; python3 /fixture/os/tests/development_retention_native.py' ;;
+                "$image" -uc 'status=0; for fixture in test_retain_development_rootfs.py development_retention_native.py test_audit_rootfs_layers.py development_layer_audit_native.py; do python3 "/fixture/os/tests/$fixture" || status=1; done; exit "$status"' ;;
             prediction-retention)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
-                "$image" -euc 'python3 /fixture/os/tests/development_prediction_native.py; python3 /fixture/os/tests/test_retain_development_rootfs.py; python3 /fixture/os/tests/development_retention_native.py' ;;
+                "$image" -uc 'status=0; for fixture in development_prediction_native.py test_retain_development_rootfs.py development_retention_native.py test_audit_rootfs_layers.py development_layer_audit_native.py; do python3 "/fixture/os/tests/$fixture" || status=1; done; exit "$status"' ;;
             *) echo 'Unknown native proof selection' >&2; exit 2 ;;
           esac
