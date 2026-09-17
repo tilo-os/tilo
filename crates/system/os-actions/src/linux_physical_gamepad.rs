@@ -1,0 +1,498 @@
+//! Strict Linux evdev source for locally attached game controllers.
+//!
+//! Raw evdev details stop at this module boundary. Callers can discover an
+//! opaque local device id and receive only the fixed [`ForwardedGamepadEvent`]
+//! vocabulary used by Tilo's peripheral-forwarding broker.
+
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read as _};
+use std::mem::size_of;
+use std::os::fd::AsRawFd as _;
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _};
+use std::path::{Path, PathBuf};
+use std::slice;
+
+use crate::{ForwardedGamepadEvent, GamepadAxis, GamepadButton};
+
+const EV_SYN: u16 = 0x00;
+const EV_KEY: u16 = 0x01;
+const EV_ABS: u16 = 0x03;
+const SYN_REPORT: u16 = 0;
+const SYN_DROPPED: u16 = 3;
+
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
+const ABS_Z: u16 = 0x02;
+const ABS_RX: u16 = 0x03;
+const ABS_RY: u16 = 0x04;
+const ABS_RZ: u16 = 0x05;
+const ABS_HAT0X: u16 = 0x10;
+const ABS_HAT0Y: u16 = 0x11;
+
+const BTN_SOUTH: u16 = 0x130;
+const BTN_EAST: u16 = 0x131;
+const BTN_NORTH: u16 = 0x133;
+const BTN_WEST: u16 = 0x134;
+const BTN_TL: u16 = 0x136;
+const BTN_TR: u16 = 0x137;
+const BTN_SELECT: u16 = 0x13a;
+const BTN_START: u16 = 0x13b;
+const BTN_MODE: u16 = 0x13c;
+const BTN_THUMBL: u16 = 0x13d;
+const BTN_THUMBR: u16 = 0x13e;
+
+const AXES: [(u16, GamepadAxis, AxisKind); 6] = [
+    (ABS_X, GamepadAxis::LeftX, AxisKind::Stick),
+    (ABS_Y, GamepadAxis::LeftY, AxisKind::Stick),
+    (ABS_RX, GamepadAxis::RightX, AxisKind::Stick),
+    (ABS_RY, GamepadAxis::RightY, AxisKind::Stick),
+    (ABS_Z, GamepadAxis::LeftTrigger, AxisKind::Trigger),
+    (ABS_RZ, GamepadAxis::RightTrigger, AxisKind::Trigger),
+];
+
+/// Opaque device-local identifier. It is never serialized or sent to a peer.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalGamepadId(PathBuf);
+
+/// A controller approved by the strict local udev classifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhysicalGamepadInfo {
+    pub id: PhysicalGamepadId,
+    pub name: String,
+}
+
+/// Production discovery roots. Custom roots exist only to make classification
+/// independently testable without real input hardware.
+#[derive(Clone, Debug)]
+pub struct LinuxPhysicalGamepadCatalog {
+    input_root: PathBuf,
+    udev_root: PathBuf,
+    sys_class_input_root: PathBuf,
+}
+
+impl Default for LinuxPhysicalGamepadCatalog {
+    fn default() -> Self {
+        Self {
+            input_root: PathBuf::from("/dev/input"),
+            udev_root: PathBuf::from("/run/udev/data"),
+            sys_class_input_root: PathBuf::from("/sys/class/input"),
+        }
+    }
+}
+
+impl LinuxPhysicalGamepadCatalog {
+    /// Enumerate only evdev character devices classified exclusively as a
+    /// joystick/game controller by udev.
+    pub fn discover(&self) -> io::Result<Vec<PhysicalGamepadInfo>> {
+        let mut controllers = Vec::new();
+        let entries = match fs::read_dir(&self.input_root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(controllers),
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with("event") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if !metadata.file_type().is_char_device() || !self.is_controller_rdev(metadata.rdev()) {
+                continue;
+            }
+            let name_path = self
+                .sys_class_input_root
+                .join(file_name)
+                .join("device/name");
+            let name = fs::read_to_string(name_path)
+                .ok()
+                .and_then(|name| sanitize_local_name(&name))
+                .unwrap_or_else(|| "Game controller".into());
+            controllers.push(PhysicalGamepadInfo {
+                id: PhysicalGamepadId(path),
+                name,
+            });
+        }
+        controllers.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(controllers)
+    }
+
+    /// Open a previously discovered controller, rechecking its identity and
+    /// udev classification to close replacement races.
+    pub fn open(&self, id: &PhysicalGamepadId) -> io::Result<LinuxPhysicalGamepadSource> {
+        if id.0.parent() != Some(self.input_root.as_path())
+            || !id
+                .0
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("event"))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "gamepad id is outside the local evdev catalog",
+            ));
+        }
+        let metadata = fs::metadata(&id.0)?;
+        if !metadata.file_type().is_char_device() || !self.is_controller_rdev(metadata.rdev()) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "input device is not an exclusive game controller",
+            ));
+        }
+        LinuxPhysicalGamepadSource::open(&id.0)
+    }
+
+    fn is_controller_rdev(&self, rdev: u64) -> bool {
+        let major = libc::major(rdev as libc::dev_t);
+        let minor = libc::minor(rdev as libc::dev_t);
+        let path = self.udev_root.join(format!("c{major}:{minor}"));
+        fs::read_to_string(path)
+            .ok()
+            .is_some_and(|properties| is_exclusive_controller(&properties))
+    }
+}
+
+/// Nonblocking typed reader for one classified physical controller.
+pub struct LinuxPhysicalGamepadSource {
+    file: File,
+    calibrations: BTreeMap<u16, AxisCalibration>,
+    hat_x: i8,
+    hat_y: i8,
+}
+
+/// One bounded nonblocking read. `saturated` means the raw kernel-event
+/// budget was fully consumed and more input may remain queued.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhysicalGamepadDrain {
+    pub events: Vec<ForwardedGamepadEvent>,
+    pub saturated: bool,
+}
+
+impl LinuxPhysicalGamepadSource {
+    fn open(path: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(path)?;
+        let mut calibrations = BTreeMap::new();
+        for (code, _, kind) in AXES {
+            match query_abs_info(file.as_raw_fd(), code) {
+                Ok(info) => {
+                    calibrations.insert(code, AxisCalibration::from_abs_info(info, kind)?);
+                }
+                Err(error)
+                    if matches!(
+                        error.raw_os_error(),
+                        Some(libc::EINVAL) | Some(libc::ENOTTY)
+                    ) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(Self {
+            file,
+            calibrations,
+            hat_x: 0,
+            hat_y: 0,
+        })
+    }
+
+    /// Consume at most `limit` raw kernel events. Unknown event types and
+    /// codes are discarded inside this module and cannot cross the API.
+    /// `SYN_DROPPED`, short reads, EOF and I/O errors fail closed so the
+    /// caller can revoke the forwarding lease and neutralize the target.
+    pub fn drain(&mut self, limit: usize) -> io::Result<PhysicalGamepadDrain> {
+        let mut events = Vec::with_capacity(limit.min(32));
+        let mut consumed = 0;
+        while consumed < limit {
+            let Some(raw) = read_event(&mut self.file)? else {
+                break;
+            };
+            consumed += 1;
+            match (raw.type_, raw.code) {
+                (EV_SYN, SYN_REPORT) => {}
+                (EV_SYN, SYN_DROPPED) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "kernel dropped physical gamepad events",
+                    ));
+                }
+                (EV_KEY, code) => {
+                    if let Some(button) = gamepad_button(code)
+                        && matches!(raw.value, 0 | 1)
+                    {
+                        events.push(ForwardedGamepadEvent::Button {
+                            button,
+                            pressed: raw.value == 1,
+                        });
+                    }
+                }
+                (EV_ABS, ABS_HAT0X) => {
+                    self.hat_x = raw.value.signum() as i8;
+                    events.push(ForwardedGamepadEvent::Hat {
+                        x: self.hat_x,
+                        y: self.hat_y,
+                    });
+                }
+                (EV_ABS, ABS_HAT0Y) => {
+                    self.hat_y = raw.value.signum() as i8;
+                    events.push(ForwardedGamepadEvent::Hat {
+                        x: self.hat_x,
+                        y: self.hat_y,
+                    });
+                }
+                (EV_ABS, code) => {
+                    let Some((_, axis, _)) =
+                        AXES.iter().find(|(candidate, _, _)| *candidate == code)
+                    else {
+                        continue;
+                    };
+                    let Some(calibration) = self.calibrations.get(&code) else {
+                        continue;
+                    };
+                    events.push(ForwardedGamepadEvent::Axis {
+                        axis: *axis,
+                        value: calibration.normalize(raw.value),
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(PhysicalGamepadDrain {
+            events,
+            saturated: consumed == limit && limit != 0,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AxisKind {
+    Stick,
+    Trigger,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AxisCalibration {
+    minimum: i32,
+    maximum: i32,
+    center: i32,
+    flat: i32,
+    kind: AxisKind,
+}
+
+impl AxisCalibration {
+    fn from_abs_info(info: libc::input_absinfo, kind: AxisKind) -> io::Result<Self> {
+        if info.maximum <= info.minimum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "physical gamepad axis has invalid calibration",
+            ));
+        }
+        Ok(Self {
+            minimum: info.minimum,
+            maximum: info.maximum,
+            center: midpoint(info.minimum, info.maximum),
+            flat: info.flat.max(0),
+            kind,
+        })
+    }
+
+    fn normalize(self, value: i32) -> i16 {
+        let value = value.clamp(self.minimum, self.maximum);
+        match self.kind {
+            AxisKind::Trigger => scale(value, self.minimum, self.maximum, 0, i32::from(i16::MAX)),
+            AxisKind::Stick if value.abs_diff(self.center) <= self.flat as u32 => 0,
+            AxisKind::Stick if value < self.center => {
+                scale(value, self.minimum, self.center, i32::from(i16::MIN), 0)
+            }
+            AxisKind::Stick => scale(value, self.center, self.maximum, 0, i32::from(i16::MAX)),
+        }
+    }
+}
+
+fn midpoint(minimum: i32, maximum: i32) -> i32 {
+    i32::try_from((i64::from(minimum) + i64::from(maximum)) / 2).unwrap_or_default()
+}
+
+fn scale(value: i32, from_min: i32, from_max: i32, to_min: i32, to_max: i32) -> i16 {
+    let numerator =
+        (i64::from(value) - i64::from(from_min)) * (i64::from(to_max) - i64::from(to_min));
+    let denominator = i64::from(from_max) - i64::from(from_min);
+    let mapped = i64::from(to_min) + numerator / denominator;
+    i16::try_from(mapped.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).unwrap_or_default()
+}
+
+fn gamepad_button(code: u16) -> Option<GamepadButton> {
+    Some(match code {
+        BTN_SOUTH => GamepadButton::South,
+        BTN_EAST => GamepadButton::East,
+        BTN_WEST => GamepadButton::West,
+        BTN_NORTH => GamepadButton::North,
+        BTN_TL => GamepadButton::LeftBumper,
+        BTN_TR => GamepadButton::RightBumper,
+        BTN_THUMBL => GamepadButton::LeftStick,
+        BTN_THUMBR => GamepadButton::RightStick,
+        BTN_START => GamepadButton::Start,
+        BTN_SELECT => GamepadButton::Select,
+        BTN_MODE => GamepadButton::Guide,
+        _ => return None,
+    })
+}
+
+fn is_exclusive_controller(properties: &str) -> bool {
+    let mut joystick = false;
+    let mut forbidden = false;
+    for line in properties.lines() {
+        let property = line.strip_prefix("E:").unwrap_or(line);
+        match property {
+            "ID_INPUT_JOYSTICK=1" => joystick = true,
+            "ID_INPUT_KEYBOARD=1"
+            | "ID_INPUT_MOUSE=1"
+            | "ID_INPUT_TOUCHPAD=1"
+            | "ID_INPUT_TOUCHSCREEN=1"
+            | "ID_INPUT_TABLET=1" => forbidden = true,
+            _ => {}
+        }
+    }
+    joystick && !forbidden
+}
+
+fn sanitize_local_name(name: &str) -> Option<String> {
+    let name: String = name
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(80)
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+fn query_abs_info(fd: libc::c_int, code: u16) -> io::Result<libc::input_absinfo> {
+    // SAFETY: `input_absinfo` is a C POD with a valid all-zero state. The
+    // request is the kernel EVIOCGABS read ioctl for one fixed axis code, and
+    // the pointer remains valid and uniquely borrowed for the call.
+    let mut info: libc::input_absinfo = unsafe { std::mem::zeroed() };
+    let request = nix::request_code_read!(b'E', 0x40 + code, size_of::<libc::input_absinfo>());
+    let result = unsafe { libc::ioctl(fd, request as libc::c_ulong, &mut info) };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(info)
+    }
+}
+
+fn read_event(file: &mut File) -> io::Result<Option<libc::input_event>> {
+    // SAFETY: `input_event` is a C POD. The mutable byte view covers exactly
+    // this initialized value and exists only for the duration of `read`.
+    let mut event: libc::input_event = unsafe { std::mem::zeroed() };
+    let bytes = unsafe {
+        slice::from_raw_parts_mut(
+            std::ptr::from_mut(&mut event).cast::<u8>(),
+            size_of::<libc::input_event>(),
+        )
+    };
+    match file.read(bytes) {
+        Ok(0) => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "physical gamepad disconnected",
+        )),
+        Ok(read) if read != bytes.len() => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "short physical gamepad event",
+        )),
+        Ok(_) => Ok(Some(event)),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn abs_info(minimum: i32, maximum: i32, flat: i32) -> libc::input_absinfo {
+        libc::input_absinfo {
+            value: 0,
+            minimum,
+            maximum,
+            fuzz: 0,
+            flat,
+            resolution: 0,
+        }
+    }
+
+    #[test]
+    fn udev_classification_requires_joystick_and_rejects_hybrid_input() {
+        assert!(is_exclusive_controller(
+            "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n"
+        ));
+        assert!(!is_exclusive_controller("E:ID_INPUT=1\n"));
+        for hybrid in [
+            "ID_INPUT_KEYBOARD=1",
+            "ID_INPUT_MOUSE=1",
+            "ID_INPUT_TOUCHPAD=1",
+            "ID_INPUT_TOUCHSCREEN=1",
+            "ID_INPUT_TABLET=1",
+        ] {
+            assert!(!is_exclusive_controller(&format!(
+                "E:ID_INPUT_JOYSTICK=1\nE:{hybrid}\n"
+            )));
+        }
+    }
+
+    #[test]
+    fn stick_calibration_scales_asymmetrically_and_applies_deadzone() {
+        let axis = AxisCalibration::from_abs_info(abs_info(-100, 300, 12), AxisKind::Stick)
+            .expect("valid calibration");
+        assert_eq!(axis.center, 100);
+        assert_eq!(axis.normalize(-100), i16::MIN);
+        assert_eq!(axis.normalize(300), i16::MAX);
+        assert_eq!(axis.normalize(89), 0);
+        assert_eq!(axis.normalize(112), 0);
+        assert!(axis.normalize(50) < 0);
+        assert!(axis.normalize(200) > 0);
+    }
+
+    #[test]
+    fn trigger_calibration_uses_zero_as_neutral() {
+        let trigger = AxisCalibration::from_abs_info(abs_info(0, 255, 0), AxisKind::Trigger)
+            .expect("valid calibration");
+        assert_eq!(trigger.normalize(0), 0);
+        assert_eq!(trigger.normalize(255), i16::MAX);
+        assert!((16_300..=16_500).contains(&trigger.normalize(128)));
+    }
+
+    #[test]
+    fn invalid_axis_calibration_fails_closed() {
+        assert!(AxisCalibration::from_abs_info(abs_info(4, 4, 0), AxisKind::Stick).is_err());
+        assert!(AxisCalibration::from_abs_info(abs_info(5, 4, 0), AxisKind::Trigger).is_err());
+    }
+
+    #[test]
+    fn hats_are_clamped_to_fixed_typed_range() {
+        for raw in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
+            let normalized = raw.signum() as i8;
+            assert!((-1..=1).contains(&normalized));
+            assert!(
+                ForwardedGamepadEvent::Hat {
+                    x: normalized,
+                    y: -normalized,
+                }
+                .is_valid()
+            );
+        }
+    }
+
+    #[test]
+    fn kernel_codes_map_only_to_fixed_schema() {
+        assert_eq!(gamepad_button(BTN_SOUTH), Some(GamepadButton::South));
+        assert_eq!(gamepad_button(BTN_MODE), Some(GamepadButton::Guide));
+        assert_eq!(gamepad_button(30), None, "keyboard A must never escape");
+        assert_eq!(gamepad_button(0xffff), None);
+    }
+}
