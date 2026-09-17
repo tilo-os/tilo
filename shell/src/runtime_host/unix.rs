@@ -78,6 +78,11 @@ impl Connections {
         identity.set_write_timeout(None)?;
         let fds = [collab.as_raw_fd(), identity.as_raw_fd()];
         command
+            // This prepares a fresh transfer, including managed spawn where
+            // the future child PID is not yet known. Never carry an ancestor's
+            // automatic-exec ownership or command-resume marker into it.
+            .env_remove("QOS_RUNTIME_CONNECTION_OWNER_PID")
+            .env_remove("QOS_RUNTIME_RESUME_LIVE")
             .env("QOS_PACKAGE_ID", app_id)
             .env("QOS_WORKSPACE_ID", room)
             .env("QOS_SVC_COLLAB_FD", collab.as_raw_fd().to_string())

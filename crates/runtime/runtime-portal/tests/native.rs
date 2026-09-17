@@ -12,12 +12,19 @@ fn child() -> Command {
         .env("QOS_BOOTSTRAP_TEST_CHILD", "1")
         .env_remove("QOS_SVC_COLLAB_FD")
         .env_remove("QOS_SVC_IDENTITY_FD")
-        .env_remove("QOS_RUNTIME_STANDALONE");
+        .env_remove("QOS_RUNTIME_STANDALONE")
+        .env_remove("QOS_RUNTIME_CONNECTION_OWNER_PID");
     command
 }
 #[test]
 fn bootstrap_child() {
     if std::env::var_os("QOS_BOOTSTRAP_TEST_CHILD").is_none() {
+        return;
+    }
+    if std::env::var_os("QOS_BOOTSTRAP_LOOKUP_ONLY").is_some() {
+        assert!(runtime_portal::service_fd("collab").is_none());
+        assert!(runtime_portal::service_fd("identity").is_none());
+        assert!(!runtime_portal::is_qos_native());
         return;
     }
     match runtime_portal::native::ensure_attached("dev.qos.bootstrap-test") {
@@ -124,33 +131,46 @@ fn missing_developer_host_is_built_once_for_concurrent_launches() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("bin")).unwrap();
     let cargo = root.join("bin/cargo");
-    std::fs::write(&cargo, "#!/bin/sh\n[ \"$2\" = \"--offline\" ] || exit 17\nprintf 'build\\n' >> \"$CARGO_TARGET_DIR/build-calls\"\n/bin/mkdir -p \"$CARGO_TARGET_DIR/debug\"\nprintf '#!/bin/sh\\nprintf BUILT\\\\n\\n' > \"$CARGO_TARGET_DIR/debug/qos-runtime-mcp\"\n/bin/chmod 700 \"$CARGO_TARGET_DIR/debug/qos-runtime-mcp\"\n").unwrap();
+    std::fs::write(&cargo, "#!/bin/sh\n[ \"$2\" = \"-p\" ] || exit 17\n[ \"$CARGO_NET_OFFLINE\" = \"$QOS_EXPECT_CARGO_OFFLINE\" ] || exit 18\nprintf 'build\\n' >> \"$CARGO_TARGET_DIR/build-calls\"\n/bin/mkdir -p \"$CARGO_TARGET_DIR/debug\"\nprintf '#!/bin/sh\\nprintf BUILT\\\\n\\n' > \"$CARGO_TARGET_DIR/debug/qos-runtime-mcp\"\n/bin/chmod 700 \"$CARGO_TARGET_DIR/debug/qos-runtime-mcp\"\n").unwrap();
     std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut children: Vec<_> = (0..3)
-        .map(|_| {
-            child()
-                .env_remove("QOS_RUNTIME_BINARY")
-                .env("PATH", root.join("bin"))
-                .env("CARGO_TARGET_DIR", root.join("target"))
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap()
-        })
-        .collect();
-    for child in children.drain(..) {
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+    for offline in [None, Some("true")] {
+        let target = root.join(if offline.is_some() {
+            "offline-target"
+        } else {
+            "target"
+        });
+        let mut children: Vec<_> = (0..3)
+            .map(|_| {
+                let mut command = child();
+                command.env_remove("CARGO_NET_OFFLINE");
+                if let Some(offline) = offline {
+                    command.env("CARGO_NET_OFFLINE", offline);
+                }
+                command
+                    .env("QOS_EXPECT_CARGO_OFFLINE", offline.unwrap_or_default())
+                    .env_remove("QOS_RUNTIME_BINARY")
+                    .env("PATH", root.join("bin"))
+                    .env("CARGO_TARGET_DIR", &target)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for child in children.drain(..) {
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("BUILT"));
+        }
+        assert_eq!(
+            std::fs::read_to_string(target.join("build-calls")).unwrap(),
+            "build\n"
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("BUILT"));
     }
-    assert_eq!(
-        std::fs::read_to_string(root.join("target/build-calls")).unwrap(),
-        "build\n"
-    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -211,4 +231,75 @@ async fn adopting_service_descriptor_restores_close_on_exec() {
         "SDK-owned service leaked into subsequent execs"
     );
     drop(client);
+}
+
+#[test]
+fn ancestor_owned_descriptors_are_hidden_even_when_bootstrap_is_skipped() {
+    let (a, _a_peer) = UnixStream::pair().unwrap();
+    let (b, _b_peer) = UnixStream::pair().unwrap();
+    let fds = [a.as_raw_fd(), b.as_raw_fd()];
+    let mut command = child();
+    command
+        .env("QOS_BOOTSTRAP_LOOKUP_ONLY", "1")
+        .env("QOS_WORKSPACE_ID", "ancestor-workspace")
+        .env(
+            "QOS_RUNTIME_CONNECTION_OWNER_PID",
+            std::process::id().to_string(),
+        )
+        .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
+        .env("QOS_SVC_IDENTITY_FD", fds[1].to_string());
+    unsafe {
+        command.pre_exec(move || {
+            for fd in fds {
+                libc::fcntl(fd, libc::F_SETFD, 0);
+            }
+            Ok(())
+        });
+    }
+    assert!(command.status().unwrap().success());
+}
+
+#[test]
+fn standalone_child_ignores_ancestor_metadata_without_mutating_it() {
+    let output = child()
+        .env(
+            "QOS_RUNTIME_CONNECTION_OWNER_PID",
+            std::process::id().to_string(),
+        )
+        .env("QOS_SVC_COLLAB_FD", "closed-ancestor-fd")
+        .env("QOS_RUNTIME_STANDALONE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn current_and_unknown_transfer_provenance_fail_closed() {
+    let mut current = Command::new("/bin/sh");
+    current
+        .args([
+            "-c",
+            "export QOS_RUNTIME_CONNECTION_OWNER_PID=$$; exec \"$@\"",
+            "provenance-test",
+        ])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "bootstrap_child", "--nocapture"])
+        .env("QOS_BOOTSTRAP_TEST_CHILD", "1")
+        .env("QOS_SVC_COLLAB_FD", "bad")
+        .env_remove("QOS_SVC_IDENTITY_FD")
+        .env("QOS_RUNTIME_STANDALONE", "1");
+    assert_eq!(current.output().unwrap().status.code(), Some(21));
+    for owner in ["unknown", "0"] {
+        let output = child()
+            .env("QOS_RUNTIME_CONNECTION_OWNER_PID", owner)
+            .env("QOS_RUNTIME_STANDALONE", "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(21));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("inherited"));
+    }
 }

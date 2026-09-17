@@ -1746,7 +1746,9 @@ mod tests {
         fn live(_: &LaunchArgs) -> Result<(), LaunchError> { Ok(()) }
         if let Ok(mode) = std::env::var("QOS_LAUNCH_REEXEC_TEST") {
             let spec = LaunchSpec::new("dev.qos.reexec-test", dummy_root).command_handler(command).live_handler(live);
-            if mode == "local" {
+            if mode == "descendant" {
+                run_with_args_with_attachment(&spec, &strings(&["app"]), |_| Ok(())).unwrap();
+            } else if mode == "local" {
                 let spec = spec.runtime_attachment(|_| false);
                 run_with_args_with_attachment(&spec, &strings(&["app"]), |_| panic!("local policy attached inherited runtime")).unwrap();
             } else {
@@ -1755,7 +1757,7 @@ mod tests {
             assert_eq!(COMMANDS.load(Ordering::SeqCst), usize::from(mode != "resumed"));
             return;
         }
-        for mode in ["initial", "resumed", "local"] {
+        for mode in ["initial", "resumed", "local", "descendant"] {
             let (collab, _collab_peer) = UnixStream::pair().unwrap();
             let (identity, _identity_peer) = UnixStream::pair().unwrap();
             let fds = [collab.as_raw_fd(), identity.as_raw_fd()];
@@ -1765,7 +1767,8 @@ mod tests {
                 .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
                 .env("QOS_SVC_IDENTITY_FD", fds[1].to_string())
                 .env_remove("QOS_RUNTIME_RESUME_LIVE");
-            if mode == "resumed" { child.env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.reexec-test"); }
+            if mode == "resumed" || mode == "descendant" { child.env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.reexec-test"); }
+            if mode == "descendant" { child.env("QOS_RUNTIME_CONNECTION_OWNER_PID", std::process::id().to_string()); }
             // SAFETY: only fcntl runs after fork; both sockets stay owned by
             // this parent until the isolated assertion process exits.
             unsafe { child.pre_exec(move || { for fd in fds { if libc::fcntl(fd, libc::F_SETFD, 0) < 0 { return Err(std::io::Error::last_os_error()); } } Ok(()) }); }
