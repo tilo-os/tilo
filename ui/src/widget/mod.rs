@@ -1980,9 +1980,10 @@ pub use chart_navigation::{
 };
 pub mod cartesian_plot;
 pub use cartesian_plot::{
-    AxisLabelFormat, AxisRange, AxisScale, AxisTick, CartesianAnnotation, CartesianAnnotationKind,
-    CartesianBrush, CartesianBrushSelection, CartesianPan, CartesianPlot, CartesianStyle,
-    CartesianTooltipAnchor, CartesianZoom, LegendPosition, MarkerShape, PlotAxis, PlotDatum,
+    AxisLabelFormat, AxisRange, AxisScale, AxisTick, CartesianAnimationStyle, CartesianAnnotation,
+    CartesianAnnotationKind, CartesianBrush, CartesianBrushSelection, CartesianGesturePolicy,
+    CartesianPan, CartesianPlot, CartesianRenderingStyle, CartesianStyle, CartesianTooltipAnchor,
+    CartesianTooltipStyle, CartesianZoom, LegendPosition, MarkerShape, PlotAxis, PlotDatum,
     PlotSeries, SeriesKind,
 };
 pub mod pie_chart;
@@ -2000,7 +2001,7 @@ pub use chord_chart::{ChordChart, ChordLink, ChordNode, ChordSelection, ChordSty
 pub mod treemap;
 pub use treemap::{Treemap, TreemapItem, TreemapStyle};
 pub mod radar_chart;
-pub use radar_chart::{RadarAxis, RadarChart, RadarSeries, RadarStyle};
+pub use radar_chart::{RadarAxis, RadarChart, RadarLegendStyle, RadarSeries, RadarStyle};
 pub mod range_chart;
 pub use range_chart::{RangeBar, RangeChart, RangeStyle};
 pub mod category_chart;

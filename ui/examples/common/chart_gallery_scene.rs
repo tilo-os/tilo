@@ -4,13 +4,13 @@ use ui::chart_palette::ChartPalette;
 use ui::theme::Theme;
 use ui::widget::{
     AxisLabelFormat, Candle, CandlestickChart, Card, CardGrid, CartesianAnnotation, CartesianPan,
-    CartesianPlot, CartesianStyle, Category, CategoryChart, CategoryLayout, CategorySeries,
-    ChordChart, ChordLink, ChordNode, ChordSelection, Column, DistributionChart,
-    DistributionSeries, FunnelChart, FunnelStage, Heatmap, HeatmapCell, Histogram, MarkerShape,
-    PieChart, PieSlice, PlotAxis, PlotDatum, PlotSeries, PolarAreaChart, PolarAreaDatum,
-    PolarAreaStyle, RadarAxis, RadarChart, RadarSeries, RangeBar, RangeChart, SankeyChart,
-    SankeyLink, SankeyNode, SankeySelection, Scrollable, SeriesKind, SunburstChart, SunburstNode,
-    Text, Treemap, TreemapItem, Widget,
+    CartesianPlot, CartesianRenderingStyle, CartesianStyle, Category, CategoryChart,
+    CategoryLayout, CategorySeries, ChordChart, ChordLink, ChordNode, ChordSelection, Column,
+    DistributionChart, DistributionSeries, FunnelChart, FunnelStage, Heatmap, HeatmapCell,
+    Histogram, MarkerShape, PieChart, PieSlice, PlotAxis, PlotDatum, PlotSeries, PolarAreaChart,
+    PolarAreaDatum, PolarAreaStyle, RadarAxis, RadarChart, RadarSeries, RangeBar, RangeChart,
+    SankeyChart, SankeyLink, SankeyNode, SankeySelection, Scrollable, SeriesKind, SunburstChart,
+    SunburstNode, Text, Treemap, TreemapItem, Widget,
 };
 
 const CHART_HEIGHT: f32 = 270.0;
@@ -99,7 +99,10 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
             .with_detail("Forecast performance objective"),
     ])
     .styled(CartesianStyle {
-        show_markers_on_lines: true,
+        rendering: CartesianRenderingStyle {
+            show_markers_on_lines: true,
+            ..Default::default()
+        },
         ..Default::default()
     })
     .with_height(CHART_HEIGHT);
@@ -136,7 +139,10 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
             .logarithmic()
             .formatted(AxisLabelFormat::Duration(0))
             .titled("Tail latency"),
-        show_markers_on_lines: true,
+        rendering: CartesianRenderingStyle {
+            show_markers_on_lines: true,
+            ..Default::default()
+        },
         pan: CartesianPan::XY,
         ..Default::default()
     })
