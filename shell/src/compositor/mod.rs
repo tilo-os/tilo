@@ -226,9 +226,19 @@ pub fn parse_portal_server_only(args: &[&str]) -> bool {
     args.contains(&"--portal-server-only")
 }
 
+/// Process-global wrapper around [`parse_portal_server_only`].
+pub fn parse_portal_server_only_from_args() -> bool {
+    process_args_match(parse_portal_server_only)
+}
+
 /// Pure, testable `--firstboot` flag parser (mirrors [`parse_peer_sync`]) — a "make sure dirs exist before we proceed" hook, not a separate entry point.
 pub fn parse_firstboot(args: &[&str]) -> bool {
     args.contains(&"--firstboot")
+}
+
+/// Process-global wrapper around [`parse_firstboot`].
+pub fn parse_firstboot_from_args() -> bool {
+    process_args_match(parse_firstboot)
 }
 
 /// Pure, testable parser for the system-unit-only first-boot entry point.
@@ -236,6 +246,11 @@ pub fn parse_firstboot(args: &[&str]) -> bool {
 /// startup.
 pub fn parse_firstboot_only(args: &[&str]) -> bool {
     args.contains(&"--firstboot-only")
+}
+
+/// Process-global wrapper around [`parse_firstboot_only`].
+pub fn parse_firstboot_only_from_args() -> bool {
+    process_args_match(parse_firstboot_only)
 }
 
 /// Pure, testable `--provision-identity` flag parser.
@@ -246,6 +261,11 @@ pub fn parse_provision_identity(args: &[&str]) -> bool {
     args.contains(&"--provision-identity")
 }
 
+/// Process-global wrapper around [`parse_provision_identity`].
+pub fn parse_provision_identity_from_args() -> bool {
+    process_args_match(parse_provision_identity)
+}
+
 /// Read-only identity gate used by the shipped graphical-session wrapper.
 ///
 /// This is deliberately distinct from `--provision-identity`: verification
@@ -253,6 +273,17 @@ pub fn parse_provision_identity(args: &[&str]) -> bool {
 /// whether the ceremony completed.
 pub fn parse_verify_collaboration_identity(args: &[&str]) -> bool {
     args.contains(&"--verify-collaboration-identity")
+}
+
+/// Process-global wrapper around [`parse_verify_collaboration_identity`].
+pub fn parse_verify_collaboration_identity_from_args() -> bool {
+    process_args_match(parse_verify_collaboration_identity)
+}
+
+fn process_args_match(parser: fn(&[&str]) -> bool) -> bool {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+    parser(&borrowed)
 }
 
 /// Process-global wrapper around [`parse_portals`]: opt in via `--enable-portals` for the `xdg-desktop-portal` D-Bus backend. v1 default OFF, same shape as `parse_peer_sync`.
