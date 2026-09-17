@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use qos_agent::{Config, Session};
-use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 
 mod typed_peer;
 use typed_peer::{TypedPeer, document_mutation};
