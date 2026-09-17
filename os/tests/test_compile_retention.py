@@ -26,8 +26,13 @@ class RetentionBoundary(unittest.TestCase):
                    'public_manifest_sha256': manifest, 'installable': False, 'sealed': False,
                    'published': False,
                    'validation': 'captured build inputs only; independently revalidate before reuse'}
-        for status, epoch in [('passed-scoped-scan', 123), ('rejected-private-material', 123),
-                              ('passed-scoped-scan', 124)]:
+        for status, epoch, architecture in [('passed-scoped-scan', 123, 'x86_64'),
+                              ('passed-scoped-scan', 123, 'aarch64'),
+                              ('rejected-private-material', 123, 'aarch64'),
+                              ('passed-scoped-scan', 124, 'aarch64')]:
+            handoff['architecture'] = architecture
+            target = 'code.podesta.ai/qos/tilo-development:testing-' + architecture
+            handoff['target_update_ref'] = target
             with self.subTest(status=status, epoch=epoch), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
                 (directory / 'raw-rootfs.json').write_text(json.dumps(handoff))
@@ -39,12 +44,14 @@ class RetentionBoundary(unittest.TestCase):
                      patch.object(driver.subprocess, 'run', return_value=process) as scanner, \
                      patch.object(driver, 'run', return_value=json.dumps(published)) as publisher:
                     if status == 'passed-scoped-scan' and epoch == 123:
-                        self.assertEqual(driver.retain_compilation(revision, '7', epoch, target, manifest), published)
+                        self.assertEqual(driver.retain_compilation(revision, '7', epoch, target, manifest, architecture), published)
                         publisher.assert_called_once()
+                        command = publisher.call_args.args
+                        self.assertEqual(command[command.index('--architecture') + 1], architecture)
                         self.assertTrue((directory / 'retained-rootfs.json').is_file())
                     else:
                         with self.assertRaises(ValueError):
-                            driver.retain_compilation(revision, '7', epoch, target, manifest)
+                            driver.retain_compilation(revision, '7', epoch, target, manifest, architecture)
                         publisher.assert_not_called()
                         self.assertFalse((directory / 'retained-rootfs.json').exists())
                     if epoch != 123:

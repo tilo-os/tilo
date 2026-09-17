@@ -35,6 +35,8 @@ EVIDENCE = Path('/evidence')
 BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
 PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'RPMS_REF': 'rpms-snapshot.env',
              'KERNEL_RPMS_REF': 'kernel-snapshot.env'}
+ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
+LOADER_NAMES = {'x86_64': 'systemd-bootx64.efi', 'aarch64': 'systemd-bootaa64.efi'}
 GIB = 1024**3
 INITIAL_FREE = 80 * GIB
 ABORT_FREE = 8 * GIB
@@ -43,7 +45,14 @@ CACHE_CREDENTIALS = {'AWS_ACCESS_KEY_ID': 'aws_access_key_id',
                      'AWS_SECRET_ACCESS_KEY': 'aws_secret_access_key'}
 
 
-def validate_inputs(wpe, generation, revision, branch, mode='full-build'):
+def validate_inputs(wpe, generation, revision, branch, mode='full-build',
+                    architecture='x86_64', kernel_candidate=''):
+    if architecture not in ARCHITECTURES:
+        raise ValueError('unsupported native architecture')
+    if mode == 'full-build' and architecture == 'aarch64' and not kernel_candidate:
+        raise ValueError('ARM full-build requires an explicit immutable kernel candidate')
+    if kernel_candidate:
+        immutable_candidate(kernel_candidate)
     if mode not in ('cache-only', 'full-build'):
         raise ValueError('mode must be cache-only or full-build')
     if mode == 'full-build' and not re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
@@ -67,7 +76,7 @@ def write_receipt(name, value):
     (EVIDENCE / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
 
 
-def completed_wpe_receipt(path, buildroot):
+def completed_wpe_receipt(path, buildroot, architecture='x86_64'):
     """Preflight provenance; the build consumer also checks actual source assets."""
     if path is None:
         raise ValueError('full-build requires a completed WPE stage receipt; compile it once in the producer')
@@ -77,7 +86,7 @@ def completed_wpe_receipt(path, buildroot):
     receipt = artifact.strict_json(artifact.read_bounded(path, 65536))
     inputs = receipt.get('inputs', {})
     artifact.validate_receipt(receipt, inputs)
-    if (inputs.get('architecture') != 'x86_64' or inputs.get('epoch') != '0'
+    if (inputs.get('architecture') != architecture or inputs.get('epoch') != '0'
             or inputs.get('wpe_buildroot') != buildroot):
         raise ValueError('completed WPE receipt does not match this native build')
     return receipt
@@ -287,24 +296,24 @@ def compile_with_capacity_watchdog(env):
         write_receipt('memory-final.json', memory_budget())
 
 
-def inspect_compilation(image_name, revision, generation, target, manifest_digest, certificate_digest):
+def inspect_compilation(image_name, revision, generation, target, manifest_digest, certificate_digest, architecture='x86_64'):
     spec = importlib.util.spec_from_file_location('compile_rootfs', REPO / 'os/dev/sign-development-rootfs.py')
     signing = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(signing)
     raw = run('podman', '--remote=false', 'image', 'inspect', image_name)
     image = json.loads(raw)[0]
-    signing.identity(raw, image['Id'], 'x86_64', revision)
+    signing.identity(raw, image['Id'], architecture, revision)
     with signing.mounted(image['Id']) as root:
-        profile = signing.source.mounted_identity(root, target, manifest_digest, 'x86_64')
+        profile = signing.source.mounted_identity(root, target, manifest_digest, architecture)
         embedded_generation = signing.hardware.trusted_path(root, Path('usr/lib/tilo/generation'), regular=True)
         if embedded_generation.read_text().strip() != generation:
             raise ValueError('compiled image generation differs from explicit input')
         original = signing.hardware.trusted_path(root,
-            Path('usr/lib/systemd/boot/efi/systemd-bootx64.efi'), regular=True)
+            Path('usr/lib/systemd/boot/efi') / LOADER_NAMES[architecture], regular=True)
         signed = signing.hardware.trusted_path(root,
-            Path('usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed'), regular=True)
+            Path('usr/lib/systemd/boot/efi') / (LOADER_NAMES[architecture] + '.signed'), regular=True)
         loader = signing.loader.verify(original, signed, PRIVATE / 'public/efi-signing.crt',
-                                        certificate_digest, 'x86_64')
+                                        certificate_digest, architecture)
         # Query the mounted RPM database using the trusted tools image. Do not
         # run the compiled OS entrypoint or any image-supplied inspection code.
         packages = run('rpm', '--root', str(root), '-qa', '--qf',
@@ -324,6 +333,40 @@ def pinned_inputs():
             raise ValueError(f'{filename} must contain one immutable {variable}')
         result[variable] = values[0]
     return result
+
+
+def immutable_candidate(reference):
+    if not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', reference):
+        raise ValueError('candidate must be an immutable qos registry digest')
+    return reference
+
+
+def selected_pins(architecture='x86_64', kernel_candidate='', rpms_candidate=''):
+    if architecture not in ARCHITECTURES:
+        raise ValueError('unsupported native architecture')
+    if architecture == 'aarch64' and not kernel_candidate:
+        raise ValueError('ARM full-build requires an explicit immutable kernel candidate')
+    pins = pinned_inputs()
+    for name, candidate in (('KERNEL_RPMS_REF', kernel_candidate), ('RPMS_REF', rpms_candidate)):
+        if candidate:
+            pins[name] = immutable_candidate(candidate)
+    return pins
+
+
+def verify_native_image(reference, architecture):
+    immutable_candidate(reference)
+    if architecture not in ARCHITECTURES:
+        raise ValueError('unsupported native architecture')
+    # Only manifest/config metadata is fetched. Multiarch indexes must resolve
+    # to an actual native config; a digest alone does not establish architecture.
+    raw = run('skopeo', 'inspect', '--config', '--tls-verify=true',
+              '--override-os', 'linux', '--override-arch', ARCHITECTURES[architecture],
+              'docker://' + reference)
+    config = json.loads(raw)
+    if config.get('architecture') != ARCHITECTURES[architecture] or config.get('os') != 'linux':
+        raise ValueError('candidate image config does not match native Linux architecture')
+    return {'reference': reference, 'architecture': config['architecture'], 'os': config['os'],
+            'scope': 'native manifest/config selection; no layer or kernel payload execution'}
 
 
 def installation_tooling(image):
@@ -355,7 +398,8 @@ def installation_tooling(image):
                                  for flag in flags}}
 
 
-def build_environment(wpe, generation, revision, manifest, signer, cache):
+def build_environment(wpe, generation, revision, manifest, signer, cache,
+                      architecture='x86_64', pins=None):
     # No inherited TILO_BUILD_ARGS, prebuilt payload, skip-build or remote engine
     # settings can change this from a complete, local, source build.
     allowed = ('PATH', 'HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'REGISTRY_AUTH_FILE')
@@ -368,7 +412,7 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
                TILO_PUBLIC_TRUST_BUNDLE=str(PRIVATE / 'public'),
                TILO_PUBLIC_TRUST_MANIFEST_SHA256=manifest,
                TILO_PCR_PREDICTION_SIGNER=signer,
-               TILO_TARGET_IMGREF='code.podesta.ai/qos/tilo-development:provisional-' + revision[:12] + '-x86_64',
+               TILO_TARGET_IMGREF='code.podesta.ai/qos/tilo-development:provisional-' + revision[:12] + '-' + architecture,
                TILO_GENERATION=generation, TILO_SEAL_GENERATION='1',
                TILO_WITH_BROWSER='1', TILO_WPE_BOOTSTRAP='0',
                TILO_WPE_BUILD_JOBS='2', WPE_BUILDROOT_REF=wpe,
@@ -378,6 +422,8 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
                TILO_RAW_ROOTFS_ONLY='1',
                TILO_SKIP_BUILD='0', TILO_HARDWARE_PROFILE='generic',
                TILO_BUILD_ARGS='--build-arg TILO_PREBUILT_APPS=0 --build-arg TILO_PREBUILT_DESKTOP=0 --build-arg TILO_CARGO_BUILD_JOBS=2 --build-arg TILO_REQUIRE_COMPILER_CACHE=1')
+    if pins is not None:
+        env.update({name: pins[name] for name in ('RPMS_REF', 'KERNEL_RPMS_REF')})
     for name, value in cache.items():
         env['TILO_BUILD_ARGS'] += f' --build-arg {name}={value}'
     for filename in CACHE_CREDENTIALS.values():
@@ -385,7 +431,7 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
     return env
 
 
-def retain_compilation(revision, generation, epoch, target, manifest):
+def retain_compilation(revision, generation, epoch, target, manifest, architecture='x86_64'):
     """Audit and retain one immutable raw build before its guest is destroyed.
 
     Native archive, registry and signature proofs passed on both architectures
@@ -399,7 +445,7 @@ def retain_compilation(revision, generation, epoch, target, manifest):
     if len(raw) > 16384:
         raise ValueError('raw handoff exceeds receipt size limit')
     handoff = json.loads(raw, object_pairs_hook=retention.source.trust.unique_object)
-    image_id = retention.validate_receipt(handoff, revision, 'x86_64', manifest,
+    image_id = retention.validate_receipt(handoff, revision, architecture, manifest,
                                            target, int(generation), epoch)
     private_files = [PRIVATE / 'cosign.key', PRIVATE / 'owner.key',
                      PRIVATE / 'signer/pcr-signing.key', PRIVATE / 'signer/efi-signing.key',
@@ -421,7 +467,7 @@ def retain_compilation(revision, generation, epoch, target, manifest):
     retained = json.loads(run('python3', 'os/dev/retain-development-rootfs.py',
         '--receipt', str(EVIDENCE / 'raw-rootfs.json'), '--private-key', str(PRIVATE / 'cosign.key'),
         '--public-bundle', str(PRIVATE / 'public'), '--revision', revision,
-        '--architecture', 'x86_64', '--manifest-sha256', manifest, '--target', target,
+        '--architecture', architecture, '--manifest-sha256', manifest, '--target', target,
         '--generation', str(generation), '--source-date-epoch', str(epoch)))
     if (retained.get('handoff') != handoff or retained.get('published') is not True
             or retained.get('installable') is not False):
@@ -434,17 +480,24 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('cache-only', 'full-build'), default='cache-only')
     parser.add_argument('--wpe-stage-receipt', type=Path)
+    parser.add_argument('--architecture', choices=tuple(ARCHITECTURES), default='x86_64')
+    parser.add_argument('--kernel-candidate', default='')
+    parser.add_argument('--rpms-candidate', default='')
+    parser.add_argument('--builder-candidate', default=BUILDER)
     for name in ('wpe', 'generation'):
         parser.add_argument('--' + name, default='')
     for name in ('revision', 'branch'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(argv)
-    validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode)
-    if os.getuid() != 0 or platform.machine() != 'x86_64':
-        raise ValueError('already-root native x86-64 Linux guest required')
+    validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate)
+    for candidate in (args.rpms_candidate, args.builder_candidate):
+        if candidate:
+            immutable_candidate(candidate)
+    if os.getuid() != 0 or platform.machine() != args.architecture:
+        raise ValueError('already-root matching native Linux guest required')
     if run('git', 'rev-parse', 'HEAD') != args.revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
         raise ValueError('checkout must be clean and match the requested revision')
-    stage = completed_wpe_receipt(args.wpe_stage_receipt, args.wpe) if args.mode == 'full-build' else None
+    stage = completed_wpe_receipt(args.wpe_stage_receipt, args.wpe, args.architecture) if args.mode == 'full-build' else None
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700)
     EVIDENCE.mkdir(mode=0o755)
@@ -452,17 +505,20 @@ def main(argv=None):
     verify_remote_cache(cache)
     if args.mode == 'cache-only':
         write_receipt('result.json', {'status': 'remote-cache-probe-complete',
-            'mode': args.mode, 'revision': args.revision, 'builder': BUILDER,
+            'mode': args.mode, 'revision': args.revision, 'builder': args.builder_candidate,
             'installable': False, 'published': False, 'disk_created': False,
             'os_compiled': False, 'signing_identities_created': False,
             'scope': 'tools-container S3 compiler cache access; nested OS build not exercised'})
         return
     Path('/work/tmp').mkdir()
     write_receipt('wpe-stage.json', stage)
-    pins = pinned_inputs()
+    pins = selected_pins(args.architecture, args.kernel_candidate, args.rpms_candidate)
+    native_inputs = {name: verify_native_image(reference, args.architecture)
+                     for name, reference in (pins | {'BUILDER_REF': args.builder_candidate, 'WPE_BUILDROOT_REF': args.wpe}).items()}
+    write_receipt('native-inputs.json', native_inputs)
     write_receipt('inputs.json', {'purpose': 'retained-full-source-compilation',
-        'installable': False, 'revision': args.revision, 'architecture': 'x86_64',
-        'generation': args.generation, 'wpe_candidate': args.wpe, 'builder': BUILDER,
+        'installable': False, 'revision': args.revision, 'architecture': args.architecture,
+        'generation': args.generation, 'wpe_candidate': args.wpe, 'builder': args.builder_candidate,
         'pins': pins, 'browser': True, 'prebuilt_apps': False, 'prebuilt_desktop': False})
     # Full source builds need real guest backing storage, not a small tmpfs.
     backing = {path: dict(zip(('total', 'used', 'free'), shutil.disk_usage(path)))
@@ -503,12 +559,12 @@ def main(argv=None):
         '--efi-certificate', signer['efi_certificate'], '--registry-owner', str(PRIVATE / 'owner.pub'),
         '--output', str(PRIVATE / 'public')))
     shutil.copytree(PRIVATE / 'public', EVIDENCE / 'public-trust')
-    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache)
+    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache, args.architecture, pins)
     epoch = int(run('git', 'show', '-s', '--format=%ct', args.revision))
     env['SOURCE_DATE_EPOCH'] = str(epoch)
     compile_with_capacity_watchdog(env)
     retained = retain_compilation(args.revision, args.generation, epoch,
-        env['TILO_TARGET_IMGREF'], trust['manifest_sha256'])
+        env['TILO_TARGET_IMGREF'], trust['manifest_sha256'], args.architecture)
     write_receipt('raw-installation-tooling.json', installation_tooling(retained['handoff']['raw_rootfs_id']))
     write_receipt('result.json', {'status': 'raw-compilation-retained',
         'installable': False, 'published': True, 'sealed': False, 'disk_created': False,
