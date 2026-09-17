@@ -314,6 +314,15 @@ struct PartitionColumns {
     used: f64,
 }
 
+/// Mutable rendering resources shared by the app's immediate-mode paint
+/// passes. Geometry and domain data remain explicit at each boundary.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    transform: Affine,
+}
+
 pub struct DisksApp {
     topo: Topology,
     topo_json_cache: String,
@@ -832,14 +841,11 @@ impl DisksApp {
     }
 
     // ---- top bar -------------------------------------------------------
-    fn draw_topbar(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
+    fn draw_topbar(&self, paint: &mut PaintContext<'_>, lay: &Layout) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, TOPBAR_H);
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bar);
@@ -916,24 +922,17 @@ impl DisksApp {
     }
 
     // ---- drive list ----------------------------------------------------
-    fn draw_drive_list(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
+    fn draw_drive_list(&self, paint: &mut PaintContext<'_>, lay: &Layout) {
         // Section header — anchors the column as an explicit, pickable list.
-        self.draw_drive_list_header(scene, tr, theme, lay.list_header);
+        self.draw_drive_list_header(paint, lay.list_header);
 
         // Rows, clipped to the scrolling body so a long list can't spill over
         // the header or the window edge.
-        scene.push_layer(
+        paint.scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
             1.0,
-            t,
+            paint.transform,
             &lay.list_body,
         );
         for (i, drive) in self.topo.drives.iter().enumerate() {
@@ -943,20 +942,17 @@ impl DisksApp {
             }
             let selected = i == self.selected;
             let hover = self.hover_card == Some(i);
-            Self::draw_drive_row(scene, tr, theme, t, r, drive, selected, hover);
+            Self::draw_drive_row(paint, r, drive, selected, hover);
         }
-        scene.pop_layer();
+        paint.scene.pop_layer();
     }
 
     /// The "DRIVES" section header + drive count (part of
     /// [`Self::draw_drive_list`]).
-    fn draw_drive_list_header(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hr: Rect,
-    ) {
+    fn draw_drive_list_header(&self, paint: &mut PaintContext<'_>, hr: Rect) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
         let c = &theme.tokens.colors;
         Self::txt(
             scene,
@@ -983,17 +979,17 @@ impl DisksApp {
 
     /// One drive card: kind badge, model/name/size, usage bar, and health
     /// dot (part of [`Self::draw_drive_list`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_drive_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         drive: &Drive,
         selected: bool,
         hover: bool,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let bg = if selected {
             with_alpha(theme.accent_primary, 46)
@@ -3773,11 +3769,27 @@ impl Widget for DisksApp {
                     ),
                 );
             }
-            self.draw_drive_list(scene, tr, theme, transform, &lay);
+            self.draw_drive_list(
+                &mut PaintContext {
+                    scene,
+                    text: tr,
+                    theme,
+                    transform,
+                },
+                &lay,
+            );
         }
 
         // Top bar last so the hamburger + title stay above the flap panel.
-        self.draw_topbar(scene, tr, theme, transform, &lay);
+        self.draw_topbar(
+            &mut PaintContext {
+                scene,
+                text: tr,
+                theme,
+                transform,
+            },
+            &lay,
+        );
 
         if let (Some(ml), Some(p)) = (lay.modal, self.pending) {
             self.draw_modal(scene, tr, theme, transform, &ml, p);
