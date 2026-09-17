@@ -479,6 +479,8 @@ pub enum SearchCatalogError {
     BrowseOrdinalExhausted,
     /// A bulk snapshot must contain one row per canonical resource.
     DuplicateResourceId,
+    /// An incremental mutation expected a retained resource that is absent.
+    MissingResource,
 }
 
 impl std::fmt::Display for SearchCatalogError {
@@ -500,6 +502,9 @@ impl std::fmt::Display for SearchCatalogError {
             Self::DuplicateResourceId => formatter.write_str(
                 "bulk search catalogue contains the same canonical resource more than once",
             ),
+            Self::MissingResource => {
+                formatter.write_str("incremental search mutation targets a missing resource")
+            }
         }
     }
 }
@@ -676,6 +681,50 @@ impl SearchCatalog {
         inner.generation = generation;
         drop(inner);
         Ok(())
+    }
+
+    /// Preflight a bounded batch of incremental mutations without changing the
+    /// retained catalogue. Providers can use this before changing companion
+    /// lookup metadata, ensuring exhausted generation or browse identities
+    /// fail closed rather than publishing a partial delta.
+    ///
+    /// # Errors
+    ///
+    /// Returns an exhaustion error when the requested mutations cannot obtain
+    /// distinct generation or browse identities.
+    pub fn preflight_mutations(
+        &self,
+        mutations: usize,
+        inserts: usize,
+    ) -> Result<(), SearchCatalogError> {
+        let mutations =
+            u64::try_from(mutations).map_err(|_| SearchCatalogError::GenerationExhausted)?;
+        let inserts =
+            u64::try_from(inserts).map_err(|_| SearchCatalogError::BrowseOrdinalExhausted)?;
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner
+            .generation
+            .checked_add(mutations)
+            .ok_or(SearchCatalogError::GenerationExhausted)?;
+        inner
+            .next_browse_ordinal
+            .checked_add(inserts)
+            .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
+        drop(inner);
+        Ok(())
+    }
+
+    /// Whether a canonical resource is currently retained by this catalogue.
+    #[must_use]
+    pub fn contains(&self, resource_id: &str) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .contains_key(resource_id)
     }
 
     /// Insert or replace one durable resource. `searchable_text` may combine
