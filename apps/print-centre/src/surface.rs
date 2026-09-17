@@ -8,7 +8,10 @@ use std::sync::{Arc, mpsc};
 use taffy::{NodeId, TaffyTree};
 use tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult, fuzzy_score};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor, SearchPage, SearchProvider, SearchResult,
+    fuzzy_score,
+};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Banner, BarGauge, Button, Card, CardGrid, Column, Container, CropSelection, Divider, Dropdown,
@@ -299,6 +302,41 @@ impl PrintCentreSearchProvider {
             resource: dashboard_resource(),
         }
     }
+
+    fn search_bounded(&self, query: &str, work_budget: usize, result_limit: usize) -> SearchPage {
+        let mut results = Vec::new();
+        let mut inspected = 0_usize;
+        for action in self.resource.actions.iter().take(work_budget) {
+            inspected = inspected.saturating_add(1);
+            let Some(score) = fuzzy_score(query.trim(), &action.label) else {
+                continue;
+            };
+            results.push(
+                SearchResult::for_action(
+                    "Print Centre",
+                    &action.label,
+                    ActionAddress::new(&self.resource.id.0, &action.id),
+                )
+                .with_icon(match action.id.as_str() {
+                    "refresh" => Icon::Refresh,
+                    "history" => Icon::History,
+                    "add-printer" => Icon::Plus,
+                    "print-document" => Icon::FileText,
+                    "scan" => Icon::Camera,
+                    _ => Icon::Printer,
+                })
+                .with_score(score),
+            );
+            if results.len() >= result_limit {
+                break;
+            }
+        }
+        SearchPage {
+            results,
+            next: None,
+            inspected,
+        }
+    }
 }
 
 impl SearchProvider for PrintCentreSearchProvider {
@@ -307,30 +345,29 @@ impl SearchProvider for PrintCentreSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        let query = query.trim();
-        self.resource
-            .actions
-            .iter()
-            .filter_map(|action| {
-                let score = fuzzy_score(query, &action.label)?;
-                Some(
-                    SearchResult::for_action(
-                        "Print Centre",
-                        &action.label,
-                        ActionAddress::new(&self.resource.id.0, &action.id),
-                    )
-                    .with_icon(match action.id.as_str() {
-                        "refresh" => Icon::Refresh,
-                        "history" => Icon::History,
-                        "add-printer" => Icon::Plus,
-                        "print-document" => Icon::FileText,
-                        "scan" => Icon::Camera,
-                        _ => Icon::Printer,
-                    })
-                    .with_score(score),
-                )
-            })
-            .collect()
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.search_bounded(query, self.resource.actions.len(), limit)
+            .results
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        if cursor.is_some() || work_budget == 0 || result_limit == 0 {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        self.search_bounded(query, work_budget, result_limit)
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
