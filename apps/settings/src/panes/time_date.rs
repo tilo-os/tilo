@@ -37,7 +37,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::region::{RegionSettings, TimeStyle};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, value_row};
 
@@ -710,16 +709,6 @@ fn read_text_setting(state: &AutoCommit, root: &ObjId, key: &str) -> Option<Stri
     }
 }
 
-fn read_bool_setting(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key).ok().flatten() {
-        Some((Value::Scalar(value), _)) => match value.as_ref() {
-            automerge::ScalarValue::Boolean(value) => Some(*value),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// Time & Date pane. Stateful so it can drive `set-ntp` on toggle and
 /// re-render the live clock when the 24-hour preference flips.
 #[allow(
@@ -752,7 +741,6 @@ pub struct TimeDatePane {
     commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
-    actions: ui::ActionHost,
 }
 
 impl Default for TimeDatePane {
@@ -798,7 +786,6 @@ impl TimeDatePane {
             commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
         }
     }
 
@@ -835,7 +822,6 @@ impl TimeDatePane {
             commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
         }
     }
 
@@ -941,15 +927,6 @@ impl TimeDatePane {
         }
         crate::widgets::cards(cards)
     }
-
-    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
-        self.actions.dispatch_with_context(
-            state,
-            SETTINGS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
-        );
-    }
 }
 
 pub fn build() -> Box<dyn Widget> {
@@ -964,122 +941,6 @@ impl Widget for TimeDatePane {
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
-        /* Legacy document replay path removed: time controls are local effects.
-            if self.needs_seed {
-                if state.get(root, AUTO_TIME_KEY).ok().flatten().is_none() {
-                    let _ = state.put(
-                        root,
-                        AUTO_TIME_KEY,
-                        automerge::ScalarValue::Boolean(self.initial_auto),
-                    );
-                }
-                let _ = state.put(root, draft_key(AUTO_TIME_KEY), self.initial_auto);
-                if state.get(root, H24_KEY).ok().flatten().is_none() {
-                    let _ = state.put(root, H24_KEY, automerge::ScalarValue::Boolean(self.h24));
-                }
-                let _ = state.put(root, draft_key(H24_KEY), self.h24);
-                if state.get(root, TIMEZONE_KEY).ok().flatten().is_none() {
-                    let _ = state.put(root, TIMEZONE_KEY, self.timezone.as_str());
-                }
-                let _ = state.put(root, draft_key(TIMEZONE_KEY), self.timezone.as_str());
-                self.needs_seed = false;
-            }
-
-            // Widgets only edit local `.edit` drafts.  The canonical keys are
-            // changed exclusively through SettingsAction, which gives direct
-            // controls the same replay, permission and undo path as Ctrl+K.
-            let timezone_value = read_text_setting(state, root, TIMEZONE_KEY)
-                .unwrap_or_else(|| self.last_timezone.clone());
-            let timezone_draft = read_text_setting(state, root, &draft_key(TIMEZONE_KEY))
-                .unwrap_or_else(|| timezone_value.clone());
-            if timezone_value == self.last_timezone
-                && timezone_draft != timezone_value
-                && self.timezones.iter().any(|zone| zone == &timezone_draft)
-            {
-                self.dispatch(state, &set_text_action(TIMEZONE_KEY, timezone_draft));
-            }
-            let auto_value =
-                read_bool_setting(state, root, AUTO_TIME_KEY).unwrap_or(self.last_auto);
-            let auto_draft =
-                read_bool_setting(state, root, &draft_key(AUTO_TIME_KEY)).unwrap_or(auto_value);
-            if auto_value == self.last_auto && auto_draft != auto_value {
-                self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, auto_draft));
-            }
-            let h24_value = read_bool_setting(state, root, H24_KEY).unwrap_or(self.last_h24);
-            let h24_draft =
-                read_bool_setting(state, root, &draft_key(H24_KEY)).unwrap_or(h24_value);
-            if h24_value == self.last_h24 && h24_draft != h24_value {
-                self.dispatch(state, &set_bool_action(H24_KEY, h24_draft));
-            }
-
-            if let Some(value) = read_text_setting(state, root, TIMEZONE_KEY)
-                && value != self.last_timezone
-                && self.timezones.iter().any(|zone| zone == &value)
-            {
-                match self.ntp.set_timezone(&value) {
-                    Ok(()) => {
-                        self.timezone.clone_from(&value);
-                        self.last_timezone.clone_from(&value);
-                        self.sync_status.timezone = Some(value.clone());
-                        self.notice = None;
-                        let _ = state.put(root, draft_key(TIMEZONE_KEY), value.as_str());
-                        self.structure_dirty = true;
-                    }
-                    Err(error) => {
-                        warn!(target: "tilo::settings", op = "set_timezone", error = %error, "time-zone change failed");
-                        self.dispatch(
-                            state,
-                            &set_text_action(TIMEZONE_KEY, self.last_timezone.clone()),
-                        );
-                        let _ =
-                            state.put(root, draft_key(TIMEZONE_KEY), self.last_timezone.as_str());
-                        self.notice = Some(format!("The time zone could not be changed: {error}"));
-                        self.structure_dirty = true;
-                    }
-                }
-            }
-
-            // Automatic-time toggle → timedatectl set-ntp.
-            if let Ok(Some((Value::Scalar(s), _))) = state.get(root, AUTO_TIME_KEY)
-                && let automerge::ScalarValue::Boolean(b) = s.as_ref()
-                && *b != self.last_auto
-            {
-                let previous = self.last_auto;
-                match self.ntp.set_ntp(*b) {
-                    Ok(()) => {
-                        self.last_auto = *b;
-                        self.initial_auto = *b;
-                        self.sync_status.ntp_enabled = Some(*b);
-                        self.notice = None;
-                        let _ = state.put(root, draft_key(AUTO_TIME_KEY), *b);
-                    }
-                    Err(e) => {
-                        warn!(target: "tilo::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
-                        self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, previous));
-                        let _ = state.put(root, draft_key(AUTO_TIME_KEY), previous);
-                        self.notice = Some(format!("Automatic time could not be changed: {e}"));
-                    }
-                }
-                self.structure_dirty = true;
-            }
-
-            // 24-hour preference → re-render the live clock AND persist to the
-            // shared locale so Region & Formats and every consumer stay in sync
-            // and the choice survives a restart.
-            if let Some(h24) = read_bool_setting(state, root, H24_KEY)
-                && h24 != self.last_h24
-            {
-                self.last_h24 = h24;
-                self.h24 = h24;
-                let _ = state.put(root, draft_key(H24_KEY), h24);
-                self.structure_dirty = true;
-                (self.persist_format)(h24);
-            }
-
-            if let Some(c) = &mut self.composed {
-                c.sync(state, root);
-            }
-        */
     }
 
     fn build_layout(
@@ -1194,10 +1055,6 @@ impl Widget for TimeDatePane {
             "Time & date",
             "Change time and date preferences",
         )
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn name(&self) -> &'static str {

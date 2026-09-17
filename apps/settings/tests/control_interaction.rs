@@ -20,7 +20,6 @@
 
 use std::collections::HashMap;
 
-use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ReadDoc, Value};
 use settings::SettingsApp;
 use settings::categories::Category;
@@ -234,30 +233,18 @@ fn clicking_back_button_returns_to_list() {
     );
 }
 
-/// Navigate to Network and flip the Wi-Fi toggle via its CRDT key (the same
-/// edge the Toggle widget produces on click); the pane's `sync` observes it
-/// — proving the primary control is wired, not static.
+/// Network hardware state is pane-local. Neither initialisation nor a hostile
+/// remote scalar may turn the collaborative document into a radio command.
 #[test]
 fn network_wifi_toggle_drives_state() {
     let mut app = SettingsApp::new();
     let mut doc = AutoCommit::new();
     let _ = navigate(&mut app, &mut doc, Category::Network);
     let root = automerge::ROOT;
-    // The pane rebuilt during navigate re-seeds on its first sync; run one
-    // sync to consume that seed so the flip below isn't clobbered.
+    let heads = doc.get_heads();
     app.sync(&mut doc, &root);
-    let before =
-        read_bool(&doc, settings::panes::network::WIFI_ENABLED_KEY).expect("wifi key seeded");
-    // Flip it the way the Toggle widget would on click, then sync.
-    let _ = doc.put(&root, settings::panes::network::WIFI_ENABLED_KEY, !before);
-    app.sync(&mut doc, &root);
-    // The pane consumed the flip and the key holds the new value (a static
-    // mock would never read it back / would re-seed over it).
-    assert_eq!(
-        read_bool(&doc, settings::panes::network::WIFI_ENABLED_KEY),
-        Some(!before),
-        "Wi-Fi toggle is live: flipping its key sticks through the pane's sync"
-    );
+    assert_eq!(doc.get_heads(), heads);
+    assert!(read_bool(&doc, settings::panes::network::WIFI_ENABLED_KEY).is_none());
 }
 
 /// Every category is reachable by a real click and renders a non-empty
@@ -273,8 +260,8 @@ fn all_panels_navigate_and_seed_their_controls() {
         // The pane rebuilt by navigate's final layout seeds on its next
         // sync; run one so the seed lands before we assert on it.
         app.sync(&mut doc, &automerge::ROOT);
-        // A handful of panes seed a primary control key on first sync; if
-        // present, it proves the interactive surface initialised.
+        // Hardware panes render from process-local snapshots and must not
+        // seed their primary device state into the collaborative document.
         let seeded_key = match target {
             Category::Network => Some(settings::panes::network::WIFI_ENABLED_KEY),
             Category::Bluetooth => Some(settings::panes::bluetooth::BT_ENABLED_KEY),
@@ -284,8 +271,8 @@ fn all_panels_navigate_and_seed_their_controls() {
         };
         if let Some(key) = seeded_key {
             assert!(
-                doc.get(&automerge::ROOT, key).ok().flatten().is_some(),
-                "{target:?} must seed its primary control key {key}"
+                doc.get(&automerge::ROOT, key).ok().flatten().is_none(),
+                "{target:?} must keep device-local control key {key} out of collaboration"
             );
         }
     }
