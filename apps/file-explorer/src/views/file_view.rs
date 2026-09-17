@@ -313,6 +313,22 @@ impl FileView {
     fn grid_gap(&self) -> f64 {
         GRID_GAP * self.scale
     }
+    /// Vertical geometry every grid cell shares: `(slot_y, slot_px, label_y)`
+    /// — the top and side of the preview slot, sized for the largest preview
+    /// any cell shows (a file badge at 1.3× the glyph) and shrunk only when
+    /// the cell cannot hold it plus a `label_h`-tall label, and the top of
+    /// the label under it. A folder centres its smaller glyph inside the same
+    /// slot, so folder and file labels in one row sit on one baseline rather
+    /// than 14px apart.
+    fn grid_cell_slot(&self, cell: Rect, label_h: f64) -> (f64, f64, f64) {
+        let top_pad = 12.0 * self.scale;
+        let bottom_pad = 14.0 * self.scale;
+        let max_preview_px = (cell.height() - top_pad - label_h - bottom_pad).max(44.0);
+        let slot_px = (GRID_ICON * self.scale * 1.3).min(max_preview_px);
+        let slot_y = cell.y0 + top_pad;
+        let label_y = slot_y + slot_px + 6.0 * self.scale;
+        (slot_y, slot_px, label_y)
+    }
     fn pad_x(&self) -> f64 {
         CONTENT_PAD_X * self.scale
     }
@@ -627,7 +643,11 @@ impl FileView {
                 continue;
             }
             let cr = self.header_col_rect(i);
-            let ty = top + (header_h - f64::from(hsize)) / 2.0;
+            // Same optical centring rule as the row labels beneath (see
+            // `crate::text_layout`), so header and cell text share one
+            // vertical rhythm instead of the header sitting a fifth of an em
+            // lower than its column.
+            let ty = crate::text_layout::centered_text_y(top, header_h, hsize);
             let header = t(col.header_key);
             tr.draw_text(
                 scene,
@@ -806,10 +826,13 @@ impl FileView {
         let text_y = crate::text_layout::centered_text_y(row.y0, row.height(), size);
         if self.renaming == Some(i) {
             // Publish the name field's rect and omit the label; the host
-            // draws the in-place rename editor here.
+            // draws the in-place rename editor here. The shared `TextInput`
+            // insets its text by `padding_standard`, so the field's left edge
+            // backs off by exactly that: the editable name starts where the
+            // static name was painted instead of jumping 8px to the right.
             if let Some(sink) = &self.rename_rect {
                 sink.set(Some(Rect::new(
-                    name_x - 4.0,
+                    name_x - f64::from(theme.padding_standard),
                     row.y0 + 3.0,
                     name_rect.x1 - 4.0,
                     row.y1 - 3.0,
@@ -1086,6 +1109,10 @@ impl FileView {
     ) {
         let tokens = &theme.tokens;
         let size = self.body_text(theme);
+        // One measured line box for every label in the grid (same size and
+        // style the labels are painted with, so it carries the text scale).
+        let (_, label_h) = tr.measure("Mg", size, None);
+        let label_h = f64::from(label_h);
         let range = self.visible_range(vp);
         for (offset, entry) in self
             .entries
@@ -1113,20 +1140,17 @@ impl FileView {
                 );
             }
             // A preview tile centred in the upper portion — larger than the bare
-            // glyph so a real thumbnail reads well; directories keep the glyph.
-            let desired_preview_px = if entry.is_dir {
-                GRID_ICON * self.scale
+            // glyph so a real thumbnail reads well; directories keep the glyph,
+            // centred in the same slot so their labels stay level with their
+            // neighbours' (see `grid_cell_slot`).
+            let (slot_y, slot_px, ly) = self.grid_cell_slot(cell, label_h);
+            let preview_px = if entry.is_dir {
+                (GRID_ICON * self.scale).min(slot_px)
             } else {
-                GRID_ICON * self.scale * 1.3
+                slot_px
             };
-            // Reserve room for a single truncated label before choosing the
-            // preview size. This keeps labels inside compact tiles at large
-            // zoom rather than relying on paint clipping.
-            let max_preview_px =
-                (cell.height() - 12.0 * self.scale - f64::from(size) - 14.0 * self.scale).max(44.0);
-            let preview_px = desired_preview_px.min(max_preview_px);
             let icon_x = cell.x0 + (cell.width() - preview_px) / 2.0;
-            let icon_y = cell.y0 + 12.0 * self.scale;
+            let icon_y = slot_y + (slot_px - preview_px) / 2.0;
             let icon_color = if selected {
                 Color::WHITE
             } else if entry.is_dir {
@@ -1162,8 +1186,7 @@ impl FileView {
             } else if let Some(state) = entry.sync_state {
                 draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
             }
-            // Label centred under the tile, truncated to the cell width.
-            let ly = icon_y + preview_px + 6.0 * self.scale;
+            // Label centred under the slot, truncated to the cell width.
             if self.renaming == Some(i) {
                 // Publish the label field's rect and omit the label; the host
                 // draws the in-place rename editor here.
@@ -1172,7 +1195,7 @@ impl FileView {
                         cell.x0 + 6.0,
                         ly - 4.0,
                         cell.x1 - 6.0,
-                        ly + f64::from(size) + 6.0,
+                        ly + label_h + 6.0,
                     )));
                 }
             } else {
@@ -2779,5 +2802,47 @@ mod tests {
         // The third row.
         let y2 = v.rect.y0 + v.header_h() + 2.0 * v.row_h() + v.row_h() / 2.0;
         assert_eq!(v.item_at(Point::new(50.0, y2)), Some(2));
+    }
+
+    /// Folder and file cells in one grid row share a preview slot and hence
+    /// one label baseline; the folder glyph (smaller than a file badge) is
+    /// centred inside that slot rather than pulling its label up.
+    #[test]
+    fn grid_labels_share_one_baseline_and_stay_inside_the_cell() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        // A single-line label box at 1× and at 2× text (14px × 1.25 leading),
+        // the two heights the renderer hands `draw_grid` at those scales.
+        for (text_scale, label_h) in [(1.0_f64, 17.5_f64), (2.0, 35.0)] {
+            let mut v = FileView::new(&items(6), &sel, &sink).mode(ViewMode::Grid);
+            v.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+            v.columns = v.columns_for_width(v.rect.width());
+            let cell = v.cell_rect(0);
+            let (slot_y, slot_px, label_y) = v.grid_cell_slot(cell, label_h);
+            // The slot is sized for the larger file badge, so at 1× the
+            // folder glyph fits inside it; when a tall label compacts the slot
+            // below the glyph, `draw_grid` shrinks the glyph to the slot, so
+            // the slot (never the individual preview) stays the label's anchor.
+            let folder_glyph = GRID_ICON * v.scale;
+            if text_scale == 1.0 {
+                assert!(
+                    folder_glyph <= slot_px + 1e-9,
+                    "the folder glyph ({folder_glyph}) fits the shared slot ({slot_px})"
+                );
+            }
+            assert!(
+                folder_glyph.min(slot_px) <= slot_px,
+                "the drawn folder glyph never exceeds the slot"
+            );
+            assert!(
+                (label_y - (slot_y + slot_px + 6.0 * v.scale)).abs() < 1e-9,
+                "the label hangs from the slot, not from the individual preview"
+            );
+            assert!(
+                label_y + label_h <= cell.y1 + 1e-9,
+                "at {text_scale}× the label ({label_y}+{label_h}) stays inside the cell ({})",
+                cell.y1
+            );
+        }
     }
 }

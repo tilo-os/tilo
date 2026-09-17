@@ -44,6 +44,10 @@ const HEADER_H: f64 = 26.0;
 const ROW_H: f64 = 34.0;
 const SECTION_GAP: f64 = 10.0;
 const ICON_PX: f64 = 17.0;
+/// Inset from a row's left edge to its icon. The section captions share it,
+/// so "FAVOURITES" / "SYSTEM" sit on the icons' left edge instead of 8px
+/// outside it.
+const ROW_CONTENT_INSET: f64 = 10.0;
 
 /// The laid-out geometry of the favourites band — written by the sidebar in
 /// `apply_layout` so the app (and tests / the shots demo) can synthesise a
@@ -370,7 +374,7 @@ impl PlacesSidebar {
         } else {
             tokens.colors.text_primary
         };
-        let icon_x = rect.x0 + 10.0;
+        let icon_x = rect.x0 + ROW_CONTENT_INSET;
         let icon_y = rect.y0 + (ROW_H - ICON_PX) / 2.0;
         draw_icon(
             scene,
@@ -404,16 +408,18 @@ impl PlacesSidebar {
         label: &str,
     ) {
         let size = theme.tokens.typography.scale.xs;
+        // Same left edge and the same optical centring rule as the rows'
+        // icons and labels (`crate::text_layout`), so the caption reads as
+        // the head of its column rather than floating between two insets.
+        let ty = crate::text_layout::centered_text_y(y, HEADER_H, size);
         tr.draw_text(
             scene,
             &label.to_uppercase(),
             size,
             theme.tokens.colors.text_dim,
-            transform
-                * Affine::translate((self.row_x0() + 2.0, y + (HEADER_H - f64::from(size)) / 2.0)),
+            transform * Affine::translate((self.row_x0() + ROW_CONTENT_INSET, ty)),
             None,
         );
-        let _ = scene;
     }
 }
 
