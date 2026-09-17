@@ -56,17 +56,8 @@ mapfile -t imported_fingerprints < <(
   || { printf 'published Linux key does not contain exactly the expected public identity\n' >&2; exit 1; }
 
 verified=0
-for name in \
-  tilo-imager-linux-x86_64.AppImage \
-  tilo-imager-linux-x86_64.tar.gz \
-  tilo-imager-linux-x86_64.flatpak \
-  tilo-imager-linux-aarch64.AppImage \
-  tilo-imager-linux-aarch64.tar.gz \
-  tilo-imager-linux-aarch64.flatpak \
-  tilo-installer-linux-x86_64.img.zst \
-  tilo-installer-linux-aarch64.img.zst \
-  tilo-installer-catalog-v1.json; do
-    artifact="$(find_one "$name")"
+verify_artifact() {
+    local artifact="$1" signature identity signing_fingerprint primary_fingerprint
     signature="$(find_one "$(basename "$artifact").asc")"
     verify_digest "$artifact"
     identity="$(GNUPGHOME="$keyring" gpg --batch --status-fd 1 \
@@ -80,9 +71,26 @@ for name in \
       exit 1
     fi
     verified=$((verified + 1))
+}
+
+# Authenticate the exact selected catalog before trusting its media inventory.
+selector="$(dirname "${BASH_SOURCE[0]}")/release-catalog.py"
+catalog="$(python3 "$selector" "$root")"
+verify_artifact "$catalog"
+media_list="$(python3 "$selector" "$root" --media-root "$root")"
+while IFS= read -r artifact; do
+  verify_artifact "$artifact"
+done <<<"$media_list"
+
+for name in \
+  tilo-imager-linux-x86_64.AppImage \
+  tilo-imager-linux-x86_64.tar.gz \
+  tilo-imager-linux-x86_64.flatpak \
+  tilo-imager-linux-aarch64.AppImage \
+  tilo-imager-linux-aarch64.tar.gz \
+  tilo-imager-linux-aarch64.flatpak; do
+    verify_artifact "$(find_one "$name")"
 done
 
-[ "$verified" -eq 9 ] \
-  || { printf 'did not verify the complete Linux and installer release matrix\n' >&2; exit 1; }
 printf 'verified %s Linux and installer artifacts with release key %s\n' \
   "$verified" "$expected"
