@@ -1537,7 +1537,7 @@ impl Pane {
                 theme,
             },
             &msgs,
-            LargeTextFlow {
+            &LargeTextFlow {
                 bounds: rr,
                 x,
                 width,
@@ -1549,7 +1549,7 @@ impl Pane {
     fn draw_large_text_messages(
         ctx: &mut DrawContext<'_>,
         messages: &[&Message],
-        flow: LargeTextFlow,
+        flow: &LargeTextFlow,
     ) {
         let scene = &mut *ctx.scene;
         let tr = &mut *ctx.text;
@@ -1561,7 +1561,7 @@ impl Pane {
             x,
             width,
             mut y,
-        } = flow;
+        } = *flow;
         for message in messages {
             if y >= bounds.y1 - 30.0 {
                 break;
@@ -1606,6 +1606,34 @@ impl Pane {
         }
     }
 
+    fn draw_empty_reader(ctx: &mut DrawContext<'_>, bounds: Rect) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let colors = &ctx.theme.tokens.colors;
+        let center = bounds.center();
+        Icon::Mail.draw(
+            scene,
+            ctx.transform,
+            Rect::new(
+                center.x - 26.0,
+                center.y - 66.0,
+                center.x + 26.0,
+                center.y - 14.0,
+            ),
+            colors.neutral[4],
+        );
+        let hint = "Select a conversation to read";
+        let (width, _) = tr.measure(hint, 14.0, None);
+        tr.draw_text(
+            scene,
+            hint,
+            14.0,
+            colors.text_dim,
+            ctx.transform * Affine::translate((center.x - f64::from(width) / 2.0, center.y)),
+            None,
+        );
+    }
+
     /// The message-thread portion of [`Self::draw_reader`]: the empty-state
     /// placeholder, the action bar, the subject/meta header, and each message
     /// card. Returns the head message's id, its HTML body (if any), and the
@@ -1626,23 +1654,14 @@ impl Pane {
         let msgs = st.selected_thread_messages();
         if msgs.is_empty() {
             self.reader_attachment_hits.clear();
-            let cx = f64::midpoint(rr.x0, rr.x1);
-            let cy = rr.y0 + rr.height() / 2.0;
-            Icon::Mail.draw(
-                scene,
-                t,
-                Rect::new(cx - 26.0, cy - 66.0, cx + 26.0, cy - 14.0),
-                c.neutral[4],
-            );
-            let hint = "Select a conversation to read";
-            let (w, _) = tr.measure(hint, 14.0, None);
-            tr.draw_text(
-                scene,
-                hint,
-                14.0,
-                c.text_dim,
-                t * Affine::translate((cx - f64::from(w) / 2.0, cy)),
-                None,
+            Self::draw_empty_reader(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                rr,
             );
             return None;
         }
@@ -1719,7 +1738,7 @@ impl Pane {
                 theme,
             },
             &msgs,
-            ReaderThreadLayout {
+            &ReaderThreadLayout {
                 reader: rr,
                 content_x,
                 content_w,
@@ -1839,7 +1858,7 @@ impl Pane {
         &self,
         ctx: &mut DrawContext<'_>,
         msgs: &[&Message],
-        layout: ReaderThreadLayout,
+        layout: &ReaderThreadLayout,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> Option<Rect> {
         let scene = &mut *ctx.scene;
@@ -1852,7 +1871,7 @@ impl Pane {
             content_w,
             mut y,
             head_has_html,
-        } = layout;
+        } = *layout;
         let mut webview_rect: Option<Rect> = None;
         for (i, m) in msgs.iter().enumerate() {
             if y > reader.y1 - 40.0 {
@@ -1893,10 +1912,12 @@ impl Pane {
                         text: tr,
                         theme,
                     },
-                    m,
-                    content_x,
-                    y,
-                    content_w,
+                    &CardHeaderArgs {
+                        msg: m,
+                        x: content_x,
+                        y,
+                        width: content_w,
+                    },
                     is_head,
                     chip_hits,
                 );
@@ -2262,10 +2283,7 @@ impl Pane {
     fn draw_message_card(
         &self,
         ctx: &mut DrawContext<'_>,
-        msg: &Message,
-        cx: f64,
-        cy: f64,
-        width: f32,
+        args: &CardHeaderArgs<'_>,
         expanded: bool,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
@@ -2274,19 +2292,15 @@ impl Pane {
         let theme = ctx.theme;
         let t = ctx.transform;
         let c = &theme.tokens.colors;
+        let CardHeaderArgs {
+            msg,
+            x,
+            y: _,
+            width,
+        } = *args;
+        let cx = x;
         let card_x1 = cx + f64::from(width);
-        let mut yy = self.draw_card_header(
-            scene,
-            t,
-            tr,
-            theme,
-            &CardHeaderArgs {
-                msg,
-                x: cx,
-                y: cy,
-                width,
-            },
-        );
+        let mut yy = self.draw_card_header(scene, t, tr, theme, args);
         if expanded {
             for para in msg.body.split('\n') {
                 if para.trim().is_empty() {
