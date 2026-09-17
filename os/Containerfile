@@ -224,6 +224,10 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
 # image by digest and therefore have no Fedora mirror path in this stage.
 FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
 ARG WPE_BUILD_JOBS=8
+# Dependency builds can use a stable epoch independently of the OS release.
+# Expose it to compiler/build tools as well as the layer timestamp normalizer.
+ARG SOURCE_DATE_EPOCH=0
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 RUN test -s /usr/lib/tilo/wpe-buildroot-packages.txt \
     && test "$(cat /usr/lib/tilo/wpe-buildroot-arch)" = "$(uname -m)"
 
