@@ -535,6 +535,14 @@ struct PaintContext<'a> {
     theme: &'a Theme,
 }
 
+/// Normalized keyboard input used by the on-canvas text editor.
+struct EditingKey<'a> {
+    key: &'a Key,
+    text: Option<&'a str>,
+    modifiers: winit::keyboard::ModifiersState,
+    control: bool,
+}
+
 /// Default size of the fill colour-picker popover, in logical px.
 const FILL_PICKER_W: f64 = 260.0;
 const FILL_PICKER_H: f64 = 220.0;
@@ -7507,7 +7515,16 @@ impl SlidesApp {
         // for shortcuts the fields intentionally leave to the toolkit (notably
         // global undo/redo).
         if self.editing_text || self.editing_notes || self.editing_title {
-            self.on_key_editing_text(doc, key, text, mods, ctrl, handled);
+            self.on_key_editing_text(
+                doc,
+                EditingKey {
+                    key,
+                    text,
+                    modifiers: mods,
+                    control: ctrl,
+                },
+                handled,
+            );
             return;
         }
 
@@ -7581,26 +7598,17 @@ impl SlidesApp {
     /// Keys while the on-canvas text box, speaker notes, or the deck-title
     /// rename is focused: caret/selection navigation first, then clipboard
     /// and character insertion.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent piece of key-event state (the raw key, its text, \
-                  modifiers, the derived ctrl flag) plus the shared doc/handled outputs; \
-                  bundling them would only re-create this argument list as a throwaway struct"
-    )]
     fn on_key_editing_text(
         &mut self,
         doc: &mut AutoCommit,
-        key: &Key,
-        text: Option<&str>,
-        mods: winit::keyboard::ModifiersState,
-        ctrl: bool,
+        input: EditingKey<'_>,
         handled: &mut bool,
     ) {
-        let shift = mods.shift_key();
-        if self.on_key_editing_nav(doc, key, ctrl, shift, handled) {
+        let shift = input.modifiers.shift_key();
+        if self.on_key_editing_nav(doc, input.key, input.control, shift, handled) {
             return;
         }
-        self.on_key_editing_insert(doc, key, text, ctrl, handled);
+        self.on_key_editing_insert(doc, input.key, input.text, input.control, handled);
     }
 
     /// Caret/selection navigation while editing text: Escape commits + exits,
