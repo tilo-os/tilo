@@ -383,6 +383,8 @@ pub struct PdfApp {
     raster_render_pending: HashSet<(usize, u32)>,
     raster_text_pending: HashSet<usize>,
     pending_worker_plan: Option<Vec<PagePlanEntry>>,
+    applied_worker_plan: Option<Vec<PagePlanEntry>>,
+    worker_plan_blobs: Vec<qdoc::blobstore::BlobState>,
     pending_save: Option<SaveRequest>,
     pending_import: Option<ImportRequest>,
     /// False until a real file has been loaded — drives the empty state.
@@ -565,6 +567,8 @@ pub struct PdfApp {
     /// true so those pages fill in over the next frame(s) instead of stalling
     /// the current one — the open→first-paint path renders only the top page.
     pending_raster: bool,
+    /// Visible page/thumbnail cache misses in the last production draw.
+    pending_visuals: bool,
 
     // Per-page text-line geometry (page-point space), cached during draw so
     // the smart highlight tool can snap to text without a TextRenderer.
@@ -861,6 +865,8 @@ impl PdfApp {
             raster_render_pending: HashSet::new(),
             raster_text_pending: HashSet::new(),
             pending_worker_plan: None,
+            applied_worker_plan: None,
+            worker_plan_blobs: Vec::new(),
             pending_save: None,
             pending_import: None,
             has_document: false,
@@ -945,6 +951,7 @@ impl PdfApp {
             commit_pending: false,
             dirty: true,
             pending_raster: false,
+            pending_visuals: false,
             text_lines: std::collections::HashMap::new(),
             tooltip: Tooltip::new("").with_delay(Duration::from_millis(350)),
             tooltip_anchor: Rect::ZERO,
@@ -1570,7 +1577,21 @@ impl PdfApp {
             // them mutates PDFium's local source graph.  Submit that work to
             // the owner and retain honest page-shaped placeholders until its
             // matching completion arrives.
-            if self.pending_worker_plan.as_ref() != Some(&plan) {
+            // A collaborator's imported bytes can arrive without changing the
+            // CRDT plan. Re-materialise when that availability changes too.
+            let blobs: Vec<_> = plan
+                .iter()
+                .filter_map(|entry| entry.imported.as_ref())
+                .map(|imported| qdoc::blobstore::state(&imported.hash))
+                .collect();
+            let needs_reconcile = self.pending_worker_plan.as_ref().map_or_else(
+                || {
+                    self.applied_worker_plan.as_ref() != Some(&plan)
+                        || self.worker_plan_blobs != blobs
+                },
+                |pending| pending != &plan,
+            );
+            if needs_reconcile {
                 let request = ReconcileRequest {
                     document_id: document.id,
                     plan: plan.clone(),
@@ -1581,6 +1602,7 @@ impl PdfApp {
                     .is_some_and(|handle| handle.reconcile_page_plan(request).is_ok())
                 {
                     self.pending_worker_plan = Some(plan.clone());
+                    self.worker_plan_blobs = blobs;
                 } else {
                     self.status_note = Some("PDF page-plan worker is unavailable".to_string());
                 }
@@ -3372,6 +3394,8 @@ impl PdfApp {
                     self.raster_render_pending.clear();
                     self.raster_text_pending.clear();
                     self.pending_worker_plan = None;
+                    self.applied_worker_plan = None;
+                    self.worker_plan_blobs.clear();
                     self.has_document = true;
                     self.doc_name = name;
                     self.source_path = Some(request.path.clone());
@@ -3519,6 +3543,7 @@ impl PdfApp {
                     && self.pending_worker_plan.as_ref() == Some(&request.plan) =>
                 {
                     self.pending_worker_plan = None;
+                    self.applied_worker_plan = Some(request.plan);
                     self.raster_images.clear();
                     self.raster_render_pending.clear();
                     self.raster_text.clear();
@@ -4674,6 +4699,10 @@ impl Widget for PdfApp {
 
     fn on_commit(&mut self) {
         self.commit_pending = false;
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.pending_open.is_some() || self.pending_visuals || self.pending_raster
     }
 
     fn needs_redraw(&self) -> bool {
