@@ -652,8 +652,17 @@ impl PageSidebar {
 
         if self.draw_panel {
             scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &self.rect);
-            let divider = Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1));
-            scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &divider);
+            // The rail's edge derives from its own surface (HIG §9.5) and
+            // sits on its last pixel column so it never bleeds onto the page.
+            let x = self.rect.x1 - 0.5;
+            let divider = Line::new((x, self.rect.y0), (x, self.rect.y1));
+            scene.stroke(
+                &Stroke::new(1.0),
+                base,
+                crate::surface::edge_on(c.surfaces.raised),
+                None,
+                &divider,
+            );
             // The header is a section label: `scale.sm`, semibold, on the
             // rail's padding and centred on its own measured line in the
             // header band rather than nine pixels down.
@@ -744,7 +753,6 @@ impl PageSidebar {
         if self.max_scroll <= 0.0 {
             return;
         }
-        let c = &theme.tokens.colors;
         let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(1.0);
         let content_h = view_h + self.max_scroll;
         let track = Rect::new(
@@ -760,17 +768,18 @@ impl PageSidebar {
         let ty = track.y0 + travel * t;
         // Capsules: the radius is half the bar's width, not a literal.
         let radius = SCROLLBAR_W / 2.0;
+        // The shared scrollbar tiers, so every rail's bar matches Scrollable's.
         scene.fill(
             Fill::NonZero,
             base,
-            c.text_primary.with_alpha_factor(0.07),
+            crate::widget::scrollbar::track_color(theme),
             None,
             &RoundedRect::from_rect(track, radius),
         );
         scene.fill(
             Fill::NonZero,
             base,
-            c.text_primary.with_alpha_factor(0.35),
+            crate::widget::scrollbar::thumb_color(theme, false),
             None,
             &RoundedRect::from_rect(Rect::new(track.x0, ty, track.x1, ty + thumb_h), radius),
         );
@@ -847,14 +856,14 @@ impl PageSidebar {
         let c = &theme.tokens.colors;
         let r = self.add_rect;
         let hovered = r.contains(self.last_pointer);
+        // A Neutral control on the rail: its own surface with a derived
+        // edge (HIG §9.5); hover is the shared hover face, not an accent wash.
         let bg = if hovered {
-            theme.accent_primary.with_alpha_factor(0.16)
+            theme.bg_hover
         } else {
             c.surfaces.base
         };
-        let rr = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, base, bg, None, &rr);
-        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
+        crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.md), bg);
         let label = format!("+  {}", self.add_label);
         let size = label_size(theme, tr);
         let (tw, th) = tr.measure_weighted(&label, size, None, TextWeight::Semibold);
@@ -864,11 +873,7 @@ impl PageSidebar {
             scene,
             &label,
             size,
-            if hovered {
-                theme.accent_primary
-            } else {
-                c.text_primary
-            },
+            c.text_primary,
             translated(base, tx.max(r.x0 + f64::from(theme.tokens.spacing.s2)), ty),
             None,
             TextWeight::Semibold,
@@ -886,15 +891,33 @@ impl PageSidebar {
         let radius = f64::from(theme.tokens.radii.lg);
         let rr = RoundedRect::from_rect(menu.rect, radius);
         crate::surface::shadow(scene, base, menu.rect, radius, &theme.tokens.elevation.e4);
-        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &rr);
-        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
+        // Panel role (HIG §9.1/§9.5): the panel ground with its derived
+        // border; the hovered row is the hover lift, never an accent wash.
+        scene.fill(
+            Fill::NonZero,
+            base,
+            crate::chrome::panel_ground(theme),
+            None,
+            &rr,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            base,
+            crate::chrome::panel_border(theme),
+            None,
+            &crate::surface::edge_outline(menu.rect, radius),
+        );
         let size = label_size(theme, tr);
         for (idx, (act, row)) in menu.items.iter().enumerate() {
             if menu.hover == Some(idx) {
+                let tier = crate::chrome::selection_tier(
+                    theme,
+                    crate::chrome::SelectionState::new(false, true, false),
+                );
                 scene.fill(
                     Fill::NonZero,
                     base,
-                    theme.accent_primary.with_alpha_factor(0.16),
+                    tier.fill,
                     None,
                     &RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.sm)),
                 );
