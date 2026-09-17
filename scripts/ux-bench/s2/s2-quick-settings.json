@@ -18,6 +18,9 @@
       {"kind": "no_overlap", "first": "semantic:Edit controls", "second": "semantic:Settings"},
       {"kind": "no_overlap", "first": "semantic:Edit controls", "second": "semantic:Power"},
       {"kind": "aligned", "first": "semantic:Brightness", "second": "semantic:Volume", "axis": "x", "tolerance": 1},
+      {"kind": "target_size", "target": "semantic:Brightness", "min": [32, 32]},
+      {"kind": "target_size", "target": "semantic:Volume", "min": [32, 32]},
+      {"kind": "no_overlap", "first": "semantic:Brightness", "second": "semantic:Volume"},
       {"kind": "no_overlap", "first": "semantic:Volume", "second": "semantic:Night Light"},
       {"kind": "gap", "first": "semantic:Night Light", "second": "semantic:Change power profile", "axis": "y", "min": 4, "max": 12},
       {"kind": "no_overlap", "first": "semantic:Night Light", "second": "semantic:Change power profile"}
