@@ -84,6 +84,14 @@
 - [ ] Restore only app content through checked canonical owned action frame; preserve runtime metadata, report unsupported patch cases truthfully, refresh stale review and recheck authority at execution.
 - [ ] Verify lifecycle, pending work, nested components and local view persistence; run relevant existing bound dispatch and application tests plus new regressions. Save report/diff for independent review.
 
+#### Task3b1 review checkpoint: shared presentation and managed headless host
+
+Complete the reusable History surface/preview/registration contract and real managed FrameHarness integration, corrected wide/narrow layout, pointer/keyboard/accessibility selection, pinned comparison, return-to-live, dirty-editor focus/pending preservation, restricted preview navigation/local dispatch isolation, and strict existing-record admission regressions. Review and commit this coherent checkpoint independently. It is not completion of Task3b or any app migration; restoration must not expose an operative control without authorized admission.
+
+#### Task3b2: production hosts, authorized restoration and provider lifecycle
+
+After Task3b1 review, integrate the same presentation into native App and TileHost with exact owners, current authority/expiry and Task3a restore custody; implement source/asset response generation checks and managed launcher/component bundles. Finish restore review/cancel/stale refresh, current permission/lifecycle tests, native/tiled focus/input isolation, publication/persistence scheduling and cross-host regressions. All original Task3b requirements above remain binding; the split changes only implementation/review boundaries.
+
 ### Task 4a: Checked filesystem restore backend
 
 **Discovery:** Files restore currently appends repository/history state before its namespace comparison, and its request carries only a selected version. Connecting that path to a reviewed dialog would not satisfy stale-review rejection or undo/durability.
