@@ -38,6 +38,8 @@ for required in \
   CONFIG_MODULE_SIG_FORCE=y \
   CONFIG_STRICT_KERNEL_RWX=y \
   CONFIG_STRICT_MODULE_RWX=y \
+  CONFIG_RANDOMIZE_BASE=y \
+  CONFIG_RANDOMIZE_MEMORY=y \
   CONFIG_STACKPROTECTOR_STRONG=y \
   CONFIG_FORTIFY_SOURCE=y \
   CONFIG_HARDENED_USERCOPY=y \
@@ -128,6 +130,12 @@ for required in \
     || bad "required kernel setting missing: $required"
 done
 [ "$fail" -ne 0 ] || ok 'required kernel self-protection options are pinned'
+
+grep -Fq 'RANDOMIZE_MEMORY|SCHED_MC_PRIO' "$repo/os/kernel/Containerfile" \
+  || bad 'ARM64 kernel preparation does not remove the x86-only memory randomizer'
+grep -Fq 'CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y' \
+  "$repo/os/kernel/Containerfile" \
+  || bad 'x86 kernel build does not verify both address-randomization layers'
 
 for live_absence in DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do

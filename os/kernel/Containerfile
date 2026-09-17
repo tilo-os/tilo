@@ -199,7 +199,7 @@ RUN set -eux; \
     cp .config /work/fedora.config; \
     cp /work/tilo.config /work/tilo-effective.config; \
     if [ "$ARCH" = aarch64 ]; then \
-      sed -i -E '/^CONFIG_(X86_INTEL_PSTATE|X86_AMD_PSTATE|X86_AMD_PSTATE_DEFAULT_MODE|X86_AMD_PSTATE_UT|X86_USER_SHADOW_STACK|X86_KERNEL_IBT|LEGACY_VSYSCALL_NONE|SCHED_MC_PRIO|SND_SOC_INTEL_AVS_MACH_I2S_TEST)=/d' \
+      sed -i -E '/^CONFIG_(X86_INTEL_PSTATE|X86_AMD_PSTATE|X86_AMD_PSTATE_DEFAULT_MODE|X86_AMD_PSTATE_UT|X86_USER_SHADOW_STACK|X86_KERNEL_IBT|LEGACY_VSYSCALL_NONE|RANDOMIZE_MEMORY|SCHED_MC_PRIO|SND_SOC_INTEL_AVS_MACH_I2S_TEST)=/d' \
         /work/tilo-effective.config; \
       cat /work/tilo-arm64.config >> /work/tilo-effective.config; \
     fi; \
@@ -304,6 +304,7 @@ RUN set -eux; \
       for opt in CONFIG_X86_USER_SHADOW_STACK=y CONFIG_X86_INTEL_PSTATE=y \
           CONFIG_X86_AMD_PSTATE=y CONFIG_X86_AMD_PSTATE_DEFAULT_MODE=3 \
           CONFIG_X86_KERNEL_IBT=y CONFIG_LEGACY_VSYSCALL_NONE=y \
+          CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y \
           CONFIG_SCHED_MC_PRIO=y; do \
         if grep -qx "$opt" .config; then echo "  ok      $opt"; \
         else echo "  MISSING $opt"; missing="$missing $opt"; fi; \
