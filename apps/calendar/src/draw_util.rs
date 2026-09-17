@@ -5,6 +5,17 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+
+/// Mutable paint resources shared by Calendar's immediate-mode view
+/// components. Geometry and domain state stay explicit at each call site;
+/// renderer plumbing travels as one coherent capability.
+pub(crate) struct PaintContext<'a> {
+    pub(crate) scene: &'a mut Scene,
+    pub(crate) transform: Affine,
+    pub(crate) text: &'a mut TextRenderer,
+    pub(crate) theme: &'a Theme,
+}
 
 pub(crate) fn fill_rect(scene: &mut Scene, transform: Affine, color: Color, rect: Rect) {
     scene.fill(Fill::NonZero, transform, color, None, &rect);
