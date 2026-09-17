@@ -86,7 +86,7 @@ fn display_night_light_toggle_persists_to_disk() {
 }
 
 #[test]
-fn input_device_speeds_persist_independently_to_disk() {
+fn replicated_input_device_speeds_do_not_persist_to_disk() {
     let _g = ENV_LOCK.lock().unwrap();
     let _home = temp_home("input");
 
@@ -107,21 +107,15 @@ fn input_device_speeds_persist_independently_to_disk() {
     pane.sync(&mut doc, &root);
 
     let reloaded = SystemPrefs::load();
-    assert!(
-        (reloaded.input.touchpad_pointer_speed.unwrap_or_default() - 0.9).abs() < 1e-6,
-        "touchpad speed persisted"
-    );
-    assert!(
-        (reloaded.input.mouse_pointer_speed.unwrap_or_default() - 0.2).abs() < 1e-6,
-        "mouse speed persisted"
-    );
+    assert_eq!(reloaded.input.touchpad_pointer_speed, None);
+    assert_eq!(reloaded.input.mouse_pointer_speed, None);
 }
 
 /// The Time & Date "24-hour clock" toggle folds into the shared locale that
 /// Region & Formats owns, so the two panes agree and the choice survives a
 /// restart. Driving the pane's real `sync` must write `locale.time_format`.
 #[test]
-fn time_date_clock_format_persists_to_shared_locale() {
+fn replicated_time_date_clock_format_does_not_reach_local_locale() {
     let _g = ENV_LOCK.lock().unwrap();
     let _home = temp_home("timedate");
 
@@ -142,8 +136,8 @@ fn time_date_clock_format_persists_to_shared_locale() {
 
     assert_eq!(
         RegionSettings::load().locale.time_format,
-        TimeStyle::H12,
-        "the clock-format toggle wrote through to the shared locale"
+        TimeStyle::H24,
+        "remote document state must not rewrite this device's clock format"
     );
 }
 
