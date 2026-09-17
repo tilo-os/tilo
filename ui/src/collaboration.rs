@@ -1831,6 +1831,12 @@ impl CollaborationManager {
         }
     }
 
+    /// Real socket-backed SDK transport for App lifecycle integration tests.
+    #[cfg(test)]
+    pub(crate) fn connected_for_lifecycle_test() -> Self {
+        tests::connected_manager()
+    }
+
     /// Test-only: build a manager talking to an SDK broker on the given
     /// already-connected client fd, bypassing env-var lookup so two
     /// tests in one process don't race on `QOS_SVC_COLLAB_FD`.
@@ -4458,6 +4464,18 @@ mod tests {
             .unwrap();
 
         (client_fd, captures, handle)
+    }
+
+    pub(super) fn connected_manager() -> CollaborationManager {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        CollaborationManager::from_sdk_fd_for_test(fd, "lifecycle-test", Uuid::new_v4())
     }
 
     fn drain_events(mgr: &mut CollaborationManager, deadline: Duration) -> Vec<CollabEvent> {
