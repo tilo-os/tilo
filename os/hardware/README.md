@@ -60,13 +60,35 @@ Select the profile when building on native aarch64 Linux, after configuring
 the normal pinned build inputs, registry access, generation and owner key:
 
 Set `TILO_TARGET_IMGREF` explicitly to the reviewed update tag or SHA-256 digest
-in the signature-required `code.podesta.ai/qos/qos` repository. It must identify
+in the signature-required `code.podesta.ai/qos/tilo` repository. It must identify
 a published channel or artifact that retains this board's firmware and device
 tree; this guide does not designate a release that has not been published.
 Non-generic builds reject a missing reference before building and bind it into
 the immutable hardware metadata. The installer uses that reference, permits an
 identical override, and rejects a conflicting override before any disk work.
 Generic images retain the official `latest` default and trusted overrides.
+
+### Development CI firmware input
+
+The manual `development-compile.yml` workflow accepts `hardware_profile`,
+`firmware_candidate` and `firmware_manifest_sha256`. Non-generic full builds
+require an immutable `code.podesta.ai/qos/NAME@sha256:DIGEST` firmware artifact
+and an independently reviewed SHA-256 of its exact `manifest.json` bytes.
+The artifact is a native Linux OCI image containing only `/firmware/`, with the
+manifest and exactly the files named by the selected hardware definition.
+Package those data files with a `FROM scratch` / `COPY` image; no executable
+image content is needed.
+
+The importer never executes the artifact. It checks the native image identity,
+manifest pin, profile and every file hash before staging data into the ignored
+firmware directory. Different existing firmware is rejected rather than
+overwritten. Import failures stop before cache probes, signing or compilation.
+The workflow retains a public `firmware-import.json` receipt.
+
+Local driver invocations may instead use `--hardware-profile` with already
+staged, verified firmware. Firmware transfer and hash checks establish build
+input identity, not hardware functionality or an installable image. A board
+image's embedded device tree is not a substitute for a generic VM image.
 
 ```sh
 TILO_HARDWARE_PROFILE=lenovo-83ed ./os/build.sh
