@@ -39,10 +39,94 @@ use crate::preferences::{PlaybackPreferences, RecentMedia};
 /// Inset (logical px) of the floating top overlay (media title + Open) from the
 /// video edges.
 const OVERLAY_MARGIN: f64 = 14.0;
-/// Height (logical px) of the floating Open pill.
+/// Height (logical px) of the floating Open pill at 1× text.
 const OPEN_BTN_H: f64 = 32.0;
-/// Width (logical px) of the floating Open pill.
+/// Width (logical px) of the floating Open pill at 1× text.
 const OPEN_BTN_W: f64 = 84.0;
+/// Width (logical px) of the floating Library button at 1× text.
+const LIBRARY_BTN_W: f64 = 88.0;
+/// Vertical room either side of a floating button's label once the label
+/// outgrows [`OPEN_BTN_H`] (accessibility text scale).
+const BUTTON_PAD_Y: f64 = 4.0;
+/// Label size the floating buttons ask the shared `Button` face for, and the
+/// media title's size. Both are renderer-relative: the renderer applies the
+/// text scale and its default 1.25 line height (`TextStyle::new`).
+const BUTTON_LABEL_SIZE: f32 = 14.0;
+const TITLE_SIZE: f32 = 15.0;
+const RENDERER_LINE_HEIGHT: f64 = 1.25;
+/// One gutter for everything in the library panel — title, subtitle, tabs, row
+/// text on the left; Close/Clear and each row's Play on the right.
+const PANEL_GUTTER: f64 = 16.0;
+/// Rows extend `PANEL_ROW_INSET` short of the panel edge and inset their
+/// content by the same amount, so row text and row controls land on
+/// [`PANEL_GUTTER`] while the hover surface still reads as a row.
+const PANEL_ROW_INSET: f64 = 8.0;
+
+/// The floating top strip: one description consumed by `apply_layout` (the
+/// Library/Open rects, which hit-testing and the accessibility export read)
+/// and `paint_overlay` (scrim + title).
+///
+/// Every control shares `center_y`; the scrim always contains the buttons.
+/// Heights are the authored 1× values until the measured label line no longer
+/// fits, then grow just enough to contain it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TopStrip {
+    center_y: f64,
+    button_h: f64,
+    scrim_h: f64,
+}
+
+impl TopStrip {
+    fn at(y0: f64, text_scale: f64) -> Self {
+        let label_line = f64::from(BUTTON_LABEL_SIZE) * text_scale * RENDERER_LINE_HEIGHT;
+        let button_h = OPEN_BTN_H.max(label_line + BUTTON_PAD_Y * 2.0);
+        Self {
+            center_y: y0 + OVERLAY_MARGIN + button_h / 2.0,
+            button_h,
+            scrim_h: button_h + OVERLAY_MARGIN * 2.0,
+        }
+    }
+}
+
+/// The library panel's fixed chrome, derived once from the panel rect so the
+/// hit rects set in `apply_layout` and the faces painted in
+/// `paint_library_panel` cannot drift apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LibraryPanelGeometry {
+    title: Rect,
+    subtitle: Rect,
+    close: Rect,
+    clear: Rect,
+    queue_tab: Rect,
+    recent_tab: Rect,
+    rows_top: f64,
+}
+
+impl LibraryPanelGeometry {
+    fn for_panel(panel: Rect) -> Self {
+        let left = panel.x0 + PANEL_GUTTER;
+        let right = panel.x1 - PANEL_GUTTER;
+        let header_y = panel.y0 + 10.0;
+        let close = Rect::new(right - 56.0, header_y, right, header_y + 28.0);
+        let clear = Rect::new(
+            close.x0 - 6.0 - 50.0,
+            header_y,
+            close.x0 - 6.0,
+            header_y + 28.0,
+        );
+        Self {
+            // The title ends before the header's leftmost button slot (Clear,
+            // shown on the Recent tab) so it can never run under either button.
+            title: Rect::new(left, header_y, clear.x0 - 8.0, header_y + 28.0),
+            subtitle: Rect::new(left, panel.y0 + 38.0, right, panel.y0 + 54.0),
+            close,
+            clear,
+            queue_tab: Rect::new(left, panel.y0 + 66.0, left + 86.0, panel.y0 + 96.0),
+            recent_tab: Rect::new(left + 92.0, panel.y0 + 66.0, left + 184.0, panel.y0 + 96.0),
+            rows_top: panel.y0 + 108.0,
+        }
+    }
+}
 /// A decoder open is asynchronous. Do not turn portal/direct admission into a
 /// false successful history entry until a first picture has actually arrived.
 const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
@@ -155,6 +239,15 @@ fn fill_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, transform, color, None, &rect);
 }
 
+/// Paint one line of panel text vertically centred in `rect`, at the weight
+/// the caller asked for.
+///
+/// The centre comes from the line height the renderer reports for this exact
+/// string, size and weight — the same call that will shape the glyphs — so the
+/// text sits where the rect says at every accessibility scale. (The previous
+/// helper offset the top by `size` as a hand-rolled baseline and discarded the
+/// weight, which is why the panel title floated 17 px below its rect and
+/// painted Regular.)
 #[allow(
     clippy::too_many_arguments,
     reason = "immediate-mode panel text needs its render context and explicit style"
@@ -169,14 +262,16 @@ fn panel_text(
     color: Color,
     weight: TextWeight,
 ) {
-    let _ = weight;
-    text_renderer.draw_text(
+    let (_, line_h) = text_renderer.measure_weighted(text, size, None, weight);
+    let y = rect.y0 + (rect.height() - f64::from(line_h)) / 2.0;
+    text_renderer.draw_text_weighted(
         scene,
         text,
         size,
         color,
-        transform * Affine::translate((rect.x0, rect.y0 + f64::from(size))),
+        transform * Affine::translate((rect.x0, y)),
         None,
+        weight,
     );
 }
 
@@ -256,6 +351,10 @@ pub struct PlayerApp {
     library_close_rect: Rect,
     library_row_hits: Vec<LibraryRowHit>,
     library_clear_rect: Rect,
+    /// The theme's accessibility text scale, captured in `build_layout` (the
+    /// only layout pass that sees the theme) so `apply_layout` can size the
+    /// floating top strip to contain its labels.
+    text_scale: f64,
     library_visible: bool,
     library_tab: LibraryTab,
     queue: Vec<LocalMediaEntry>,
@@ -537,6 +636,7 @@ impl PlayerApp {
             library_close_rect: Rect::ZERO,
             library_row_hits: Vec::new(),
             library_clear_rect: Rect::ZERO,
+            text_scale: 1.0,
             library_visible: false,
             library_tab: LibraryTab::Queue,
             queue: Vec::new(),
@@ -1570,6 +1670,12 @@ impl PlayerApp {
         self.player.controls_visible() || self.player.latest_frame().is_none()
     }
 
+    /// The floating top strip for the current rect and text scale — the single
+    /// geometry `apply_layout`, `paint_overlay` and the a11y exports agree on.
+    fn top_strip(&self) -> TopStrip {
+        TopStrip::at(self.rect.y0, self.text_scale)
+    }
+
     /// Paint the floating top overlay: the media title (left) over a soft scrim
     /// and the Open pill (right). Drawn on top of the video, only when
     /// [`Self::overlay_visible`]. There is no persistent chrome bar — the video
@@ -1597,13 +1703,15 @@ impl PlayerApp {
             &self.rect,
         );
         // A soft translucent scrim behind the title so it stays legible over
-        // bright frames, without a hard opaque bar.
-        let scrim_h = 44.0;
+        // bright frames, without a hard opaque bar. Its height comes from the
+        // same strip description that placed the buttons, so it always
+        // contains them (they used to overhang a fixed 44 px scrim by 2 px).
+        let strip = self.top_strip();
         let scrim = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + scrim_h,
+            self.rect.y0 + strip.scrim_h,
         );
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -1612,12 +1720,12 @@ impl PlayerApp {
             None,
             &scrim,
         );
-        // Title (left), vertically centred in the scrim. The scrim is always
-        // dark (over-media chrome), so the label is a fixed near-white in every
-        // theme — `text_primary` would flip to near-black on light and vanish
-        // against the dark scrim.
-        let title_size = 15.0f32;
-        let ty = self.rect.y0 + (scrim_h - f64::from(title_size)) * 0.5;
+        // Title (left), centred on the strip's one centre line — the line the
+        // Library and Open buttons are centred on — using the line height the
+        // renderer reports for this size rather than the font size. The scrim
+        // is always dark (over-media chrome), so the label is a fixed
+        // near-white in every theme — `text_primary` would flip to near-black
+        // on light and vanish against the dark scrim.
         let display_title = if self.player.has_media() {
             self.title.as_str()
         } else {
@@ -1627,11 +1735,13 @@ impl PlayerApp {
         let title_budget = (self.open_button_rect.x0 - title_x - OVERLAY_MARGIN)
             .max(0.0)
             .min(f64::from(f32::MAX)) as f32;
-        let display_title = text_renderer.elide_to_width(display_title, title_size, title_budget);
+        let display_title = text_renderer.elide_to_width(display_title, TITLE_SIZE, title_budget);
+        let (_, title_h) = text_renderer.measure(&display_title, TITLE_SIZE, None);
+        let ty = strip.center_y - f64::from(title_h) / 2.0;
         text_renderer.draw_text(
             scene,
             &display_title,
-            title_size,
+            TITLE_SIZE,
             vello::peniko::Color::from_rgb8(245, 246, 250),
             transform * Affine::translate((title_x, ty)),
             None,
@@ -1644,7 +1754,7 @@ impl PlayerApp {
                 theme,
                 &ButtonFace::new(self.library_button_rect, "Library")
                     .ghost()
-                    .text_size(14.0)
+                    .text_size(BUTTON_LABEL_SIZE)
                     .focused(self.library_focused)
                     .hovered(self.library_button_rect.contains(self.last_cursor)),
             );
@@ -1658,8 +1768,8 @@ impl PlayerApp {
                 text_renderer,
                 theme,
                 &ButtonFace::new(self.open_button_rect, "Open")
-                    .radius(OPEN_BTN_H / 2.0)
-                    .text_size(14.0)
+                    .radius(self.open_button_rect.height() / 2.0)
+                    .text_size(BUTTON_LABEL_SIZE)
                     .weight(TextWeight::Regular)
                     .primary()
                     .focused(self.open_focused)
@@ -1727,6 +1837,8 @@ impl PlayerApp {
         }
         let colors = &theme.tokens.colors;
         let panel = self.library_panel_rect;
+        // Same description `apply_layout` used for the hit rects.
+        let geometry = LibraryPanelGeometry::for_panel(panel);
         fill_rect(scene, transform, panel, colors.surfaces.raised);
         fill_rect(
             scene,
@@ -1738,12 +1850,7 @@ impl PlayerApp {
             scene,
             text_renderer,
             transform,
-            Rect::new(
-                panel.x0 + 16.0,
-                panel.y0 + 10.0,
-                panel.x1 - 48.0,
-                panel.y0 + 34.0,
-            ),
+            geometry.title,
             "Library",
             18.0,
             colors.text_primary,
@@ -1753,12 +1860,7 @@ impl PlayerApp {
             scene,
             text_renderer,
             transform,
-            Rect::new(
-                panel.x0 + 16.0,
-                panel.y0 + 34.0,
-                panel.x1 - 12.0,
-                panel.y0 + 54.0,
-            ),
+            geometry.subtitle,
             "Local to this device · paths never shared",
             12.0,
             colors.text_dim,
@@ -1773,12 +1875,6 @@ impl PlayerApp {
                 .ghost()
                 .text_size(12.0)
                 .hovered(self.library_close_rect.contains(self.last_cursor)),
-        );
-        self.library_clear_rect = Rect::new(
-            panel.x1 - 124.0,
-            panel.y0 + 10.0,
-            panel.x1 - 74.0,
-            panel.y0 + 38.0,
         );
         if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
             Button::paint(
@@ -1815,14 +1911,19 @@ impl PlayerApp {
             LibraryTab::Queue => self.queue.clone(),
             LibraryTab::Recent => self.recent.iter().cloned().collect(),
         };
-        let mut y = panel.y0 + 108.0;
+        let mut y = geometry.rows_top;
         let row_h = 62.0;
         if entries.is_empty() {
             panel_text(
                 scene,
                 text_renderer,
                 transform,
-                Rect::new(panel.x0 + 20.0, y, panel.x1 - 20.0, y + 44.0),
+                Rect::new(
+                    panel.x0 + PANEL_GUTTER,
+                    y,
+                    panel.x1 - PANEL_GUTTER,
+                    y + 44.0,
+                ),
                 if self.library_tab == LibraryTab::Queue {
                     "Your queue is empty. Open a video to add it here."
                 } else {
@@ -1841,30 +1942,43 @@ impl PlayerApp {
             if y + row_h > panel.y1 - 14.0 {
                 break;
             }
-            let rect = Rect::new(panel.x0 + 12.0, y, panel.x1 - 12.0, y + row_h - 4.0);
-            let remove = (self.library_tab == LibraryTab::Queue).then_some(Rect::new(
-                rect.x1 - 106.0,
+            // Row surface inset `PANEL_ROW_INSET`; its text and controls inset
+            // the same again, landing on `PANEL_GUTTER` like the header and tabs.
+            let rect = Rect::new(
+                panel.x0 + PANEL_ROW_INSET,
+                y,
+                panel.x1 - PANEL_ROW_INSET,
+                y + row_h - 4.0,
+            );
+            let content_x0 = rect.x0 + PANEL_ROW_INSET;
+            let controls_x1 = rect.x1 - PANEL_ROW_INSET;
+            let play = Rect::new(
+                controls_x1 - 48.0,
                 rect.y0 + 7.0,
-                rect.x1 - 56.0,
+                controls_x1,
+                rect.y0 + 51.0,
+            );
+            let remove = (self.library_tab == LibraryTab::Queue).then_some(Rect::new(
+                play.x0 - 6.0 - 50.0,
+                rect.y0 + 7.0,
+                play.x0 - 6.0,
                 rect.y0 + 51.0,
             ));
-            let play = Rect::new(rect.x1 - 50.0, rect.y0 + 7.0, rect.x1 - 2.0, rect.y0 + 51.0);
             if rect.contains(self.last_cursor) {
                 fill_rect(scene, transform, rect, colors.neutral[2]);
             }
             let active = self.current_queue_id.as_deref() == Some(entry.id.as_str());
-            let label =
-                text_renderer.elide_to_width(&entry.title, 14.0, (rect.width() - 120.0) as f32);
+            let text_x1 = remove.map_or(play.x0, |remove| remove.x0) - 8.0;
+            let label = text_renderer.elide_to_width(
+                &entry.title,
+                14.0,
+                (text_x1 - content_x0).max(0.0) as f32,
+            );
             panel_text(
                 scene,
                 text_renderer,
                 transform,
-                Rect::new(
-                    rect.x0 + 12.0,
-                    rect.y0 + 8.0,
-                    remove.map_or(play.x0, |remove| remove.x0) - 8.0,
-                    rect.y0 + 29.0,
-                ),
+                Rect::new(content_x0, rect.y0 + 8.0, text_x1, rect.y0 + 29.0),
                 &label,
                 14.0,
                 if active {
@@ -1878,12 +1992,7 @@ impl PlayerApp {
                 scene,
                 text_renderer,
                 transform,
-                Rect::new(
-                    rect.x0 + 12.0,
-                    rect.y0 + 29.0,
-                    remove.map_or(play.x0, |remove| remove.x0) - 8.0,
-                    rect.y1 - 4.0,
-                ),
+                Rect::new(content_x0, rect.y0 + 29.0, text_x1, rect.y1 - 4.0),
                 if active {
                     "Playing on this device"
                 } else {
@@ -2144,6 +2253,7 @@ impl Widget for PlayerApp {
         // Edge-to-edge: the player fills the whole surface. The app keeps itself
         // in the node map (so it can intercept the floating Open pill) by owning
         // a single-child root that stretches the player to 100%×100%.
+        self.text_scale = f64::from(theme.text_scale);
         let player_node = self.player.build_layout(taffy, theme, node_map);
         let root = parent_node(
             taffy,
@@ -2181,16 +2291,21 @@ impl Widget for PlayerApp {
             return;
         };
         self.player.apply_layout(taffy, player_node, new_origin);
-        // Floating Open pill: top-right corner, over the video.
-        let by0 = self.rect.y0 + OVERLAY_MARGIN;
+        // Floating top strip — Library (left), title, Open pill (right) — all
+        // centred on one line and contained by one scrim (see `TopStrip`).
+        // Widths grow with the text scale so a 2× label still fits its face.
+        let strip = self.top_strip();
+        let by0 = strip.center_y - strip.button_h / 2.0;
+        let by1 = strip.center_y + strip.button_h / 2.0;
         let bx1 = self.rect.x1 - OVERLAY_MARGIN;
-        let bx0 = (bx1 - OPEN_BTN_W).max(self.rect.x0);
-        self.open_button_rect = Rect::new(bx0, by0, bx1, by0 + OPEN_BTN_H);
+        let bx0 = (bx1 - OPEN_BTN_W * self.text_scale).max(self.rect.x0);
+        self.open_button_rect = Rect::new(bx0, by0, bx1, by1);
         self.library_button_rect = Rect::new(
             self.rect.x0 + OVERLAY_MARGIN,
             by0,
-            (self.rect.x0 + OVERLAY_MARGIN + 88.0).min(bx0 - OVERLAY_MARGIN),
-            by0 + OPEN_BTN_H,
+            (self.rect.x0 + OVERLAY_MARGIN + LIBRARY_BTN_W * self.text_scale)
+                .min(bx0 - OVERLAY_MARGIN),
+            by1,
         );
         let panel_width = if self.rect.width() < 640.0 {
             self.rect.width()
@@ -2203,24 +2318,11 @@ impl Widget for PlayerApp {
             self.rect.x1,
             self.rect.y1,
         );
-        self.library_close_rect = Rect::new(
-            self.library_panel_rect.x1 - 68.0,
-            self.library_panel_rect.y0 + 10.0,
-            self.library_panel_rect.x1 - 12.0,
-            self.library_panel_rect.y0 + 38.0,
-        );
-        self.library_queue_tab_rect = Rect::new(
-            self.library_panel_rect.x0 + 12.0,
-            self.library_panel_rect.y0 + 66.0,
-            self.library_panel_rect.x0 + 98.0,
-            self.library_panel_rect.y0 + 96.0,
-        );
-        self.library_recent_tab_rect = Rect::new(
-            self.library_panel_rect.x0 + 104.0,
-            self.library_panel_rect.y0 + 66.0,
-            self.library_panel_rect.x0 + 196.0,
-            self.library_panel_rect.y0 + 96.0,
-        );
+        let panel = LibraryPanelGeometry::for_panel(self.library_panel_rect);
+        self.library_close_rect = panel.close;
+        self.library_clear_rect = panel.clear;
+        self.library_queue_tab_rect = panel.queue_tab;
+        self.library_recent_tab_rect = panel.recent_tab;
     }
 
     fn draw(
@@ -3007,6 +3109,122 @@ mod tests {
 
     fn root() -> ObjId {
         automerge::ROOT
+    }
+
+    /// Run the production layout passes (sync → build → compute → apply) for
+    /// `app` at `viewport`, with the accessibility text scale applied the way
+    /// the live host applies it.
+    fn lay_out(app: &mut PlayerApp, viewport: (f32, f32), text_scale: f32) {
+        let theme = Theme::dark().with_text_scale(text_scale);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &root());
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root_node = parent_node(
+            &mut taffy,
+            Style {
+                size: Size {
+                    width: taffy::style_helpers::length(viewport.0),
+                    height: taffy::style_helpers::length(viewport.1),
+                },
+                ..Default::default()
+            },
+            &[child],
+        );
+        let measure_map = node_map.clone();
+        let trr = &mut tr;
+        taffy
+            .compute_layout_with_measure(
+                root_node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(viewport.0),
+                    height: taffy::AvailableSpace::Definite(viewport.1),
+                },
+                |known, available, id, _, _| {
+                    measure_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(known, available, trr)
+                    })
+                },
+            )
+            .expect("layout");
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+    }
+
+    /// 2026-09-16 alignment review: the title was centred on its font size in
+    /// a 44 px scrim while the buttons were `OVERLAY_MARGIN + OPEN_BTN_H`
+    /// deep — two centre lines, and the buttons overhung the scrim by 2 px. At
+    /// 200% text the 32 px capsules no longer held their 28 px labels.
+    #[test]
+    fn top_strip_is_one_centre_line_that_contains_its_buttons() {
+        let one = TopStrip::at(0.0, 1.0);
+        assert_eq!(
+            one.button_h, OPEN_BTN_H,
+            "1× keeps the authored pill height"
+        );
+        assert_eq!(one.center_y, OVERLAY_MARGIN + OPEN_BTN_H / 2.0);
+        assert_eq!(one.scrim_h, OPEN_BTN_H + 2.0 * OVERLAY_MARGIN);
+
+        let two = TopStrip::at(0.0, 2.0);
+        let label_line = f64::from(BUTTON_LABEL_SIZE) * 2.0 * RENDERER_LINE_HEIGHT;
+        assert!(
+            two.button_h >= label_line + 2.0 * BUTTON_PAD_Y,
+            "2× capsule {} contains a {label_line} px label",
+            two.button_h
+        );
+        assert!(two.scrim_h >= two.button_h + 2.0 * OVERLAY_MARGIN);
+
+        for scale in [1.0_f32, 2.0] {
+            let mut app = PlayerApp::for_shot(None, Some("playing"));
+            lay_out(&mut app, (1200.0, 800.0), scale);
+            let strip = app.top_strip();
+            let open = app.open_button_rect;
+            let library = app.library_button_rect;
+            assert!(
+                (open.center().y - strip.center_y).abs() < 0.01
+                    && (library.center().y - strip.center_y).abs() < 0.01,
+                "{scale}×: Open {open:?} and Library {library:?} share the strip centre {}",
+                strip.center_y
+            );
+            assert!(
+                open.y1 <= app.rect.y0 + strip.scrim_h && library.y1 <= app.rect.y0 + strip.scrim_h,
+                "{scale}×: the scrim ({}) contains both buttons",
+                strip.scrim_h
+            );
+            assert!(
+                (app.rect.x1 - open.x1 - OVERLAY_MARGIN).abs() < 0.01
+                    && (library.x0 - app.rect.x0 - OVERLAY_MARGIN).abs() < 0.01,
+                "{scale}×: both buttons keep the overlay margin"
+            );
+        }
+    }
+
+    /// The library panel used three left insets (title 16, tabs 12, row text
+    /// 24) and two right ones (Play 14, Close 12). One description, one gutter.
+    #[test]
+    fn library_panel_chrome_shares_one_gutter() {
+        let panel = Rect::new(840.0, 0.0, 1200.0, 800.0);
+        let g = LibraryPanelGeometry::for_panel(panel);
+        let left = panel.x0 + PANEL_GUTTER;
+        let right = panel.x1 - PANEL_GUTTER;
+        assert_eq!(g.title.x0, left);
+        assert_eq!(g.subtitle.x0, left);
+        assert_eq!(g.queue_tab.x0, left);
+        assert_eq!(g.close.x1, right);
+        assert_eq!(g.subtitle.x1, right);
+        assert!(g.clear.x1 < g.close.x0, "Clear sits left of Close");
+        assert!(
+            g.title.x1 <= g.clear.x0,
+            "title never runs under the header buttons"
+        );
+
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        lay_out(&mut app, (1200.0, 800.0), 1.0);
+        assert_eq!(app.library_close_rect, g.close);
+        assert_eq!(app.library_queue_tab_rect, g.queue_tab);
+        assert_eq!(app.library_recent_tab_rect, g.recent_tab);
     }
 
     #[test]
