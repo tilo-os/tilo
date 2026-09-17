@@ -31,7 +31,9 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, Size, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::compositor::frame::FrameBuilder;
-use crate::shell::overlay_host::CaptureMirrorHandoffLayer;
+use crate::shell::overlay_host::{
+    CaptureMirrorHandoffLayer, CaptureSurfaceKind, CaptureSurfaceRequest,
+};
 
 const MAX_CAPTURE_EDGE: f64 = 8_192.0;
 const GRID_GAP: f64 = 16.0;
@@ -1203,15 +1205,17 @@ impl CaptureExecutor {
         let id = format!("pinned-capture:{}", self.sequence);
         self.sequence = self.sequence.saturating_add(1);
         let title = format!("Screenshot · {width} × {height}");
-        frame_builder.host_mut().insert_pinned_capture(
-            &id,
-            &title,
-            std::sync::Arc::from(rgba),
-            width,
-            height,
-            region_bounds(spawn_regions),
-            preview,
-        );
+        frame_builder
+            .host_mut()
+            .upsert_capture_surface(CaptureSurfaceRequest {
+                id: &id,
+                title: &title,
+                rgba: std::sync::Arc::from(rgba),
+                width,
+                height,
+                spawn_from: region_bounds(spawn_regions),
+                kind: CaptureSurfaceKind::Pinned { preview },
+            });
         Ok(CaptureOutcome::Pinned { id })
     }
 
@@ -1317,16 +1321,20 @@ fn refresh_mirror(
         .as_mut()
         .map(|renderer| render_capture_rgba(renderer, &composed))
         .ok_or_else(|| "live mirror renderer disappeared".to_string())?;
-    frame_builder.host_mut().upsert_capture_mirror(
-        &mirror.id,
-        &mirror.title,
-        std::sync::Arc::from(rgba),
-        width,
-        height,
-        mirror.preferred_size,
-        mirror.spawn_from.take(),
-        handoff_layers,
-    );
+    frame_builder
+        .host_mut()
+        .upsert_capture_surface(CaptureSurfaceRequest {
+            id: &mirror.id,
+            title: &mirror.title,
+            rgba: std::sync::Arc::from(rgba),
+            width,
+            height,
+            spawn_from: mirror.spawn_from.take(),
+            kind: CaptureSurfaceKind::Live {
+                preferred_size: mirror.preferred_size,
+                handoff_layers,
+            },
+        });
     Ok(())
 }
 
