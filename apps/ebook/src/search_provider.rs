@@ -107,6 +107,8 @@ pub struct BookSearchProvider {
     entries: Arc<Vec<SearchEntry>>,
     metadata_tokens: Arc<HashMap<String, Vec<usize>>>,
     resource_rows: Arc<BTreeMap<String, usize>>,
+    action_rows: Arc<Vec<(String, SearchResult)>>,
+    action_tokens: Arc<HashMap<String, Vec<usize>>>,
     generation: u64,
     available: bool,
 }
@@ -312,6 +314,70 @@ impl BookSearchProvider {
                 return Self::unavailable(books, annotations, registry, generation);
             }
         }
+        let mut action_rows = Vec::new();
+        let mut action_tokens = HashMap::<String, Vec<usize>>::new();
+        for entry in &entries {
+            let Some(address) = entry.result.action_address() else {
+                continue;
+            };
+            let actions: &[(&str, &str)] = match entry.target {
+                SearchTarget::Book(_) => &[
+                    ("Open", "open"),
+                    ("Share with workspace", "share"),
+                    ("Remove from library", "remove-from-library"),
+                ],
+                SearchTarget::RemoteBook(_) => &[
+                    ("Download and open", "open"),
+                    ("Remove from library", "remove-from-library"),
+                ],
+                SearchTarget::Chapter { .. } => &[("Open", "open")],
+                SearchTarget::Annotation {
+                    hydrated: true,
+                    comment,
+                    index,
+                } => {
+                    let Some(annotation) = annotations.get(index) else {
+                        continue;
+                    };
+                    match annotation.kind {
+                        AnnoKind::Highlight => &[
+                            ("Open", "open"),
+                            ("Change colour", "change-color"),
+                            ("Delete highlight", "delete-highlight"),
+                            ("Add comment", "add-comment"),
+                        ],
+                        AnnoKind::Bookmark => &[("Open", "open"), ("Delete bookmark", "delete")],
+                        AnnoKind::Note if comment => &[
+                            ("Open", "open"),
+                            ("Edit comment", "edit-comment"),
+                            ("Delete comment", "delete-comment"),
+                        ],
+                        AnnoKind::Note => &[
+                            ("Open", "open"),
+                            ("Edit note", "edit"),
+                            ("Delete note", "delete"),
+                        ],
+                    }
+                }
+                SearchTarget::Annotation {
+                    hydrated: false, ..
+                } => continue,
+            };
+            for (label, action) in actions {
+                let row = action_rows.len();
+                let result = SearchResult::for_action(
+                    "Book actions",
+                    *label,
+                    ActionAddress::new(address.resource.clone(), *action),
+                )
+                .with_subtitle(entry.result.title.clone());
+                let text = format!("{label} {}", entry.result.title);
+                for token in index_metadata_tokens(&text) {
+                    action_tokens.entry(token).or_default().push(row);
+                }
+                action_rows.push((text, result));
+            }
+        }
         Self {
             books,
             annotations,
@@ -320,6 +386,8 @@ impl BookSearchProvider {
             entries: Arc::new(entries),
             metadata_tokens: Arc::new(tokens),
             resource_rows: Arc::new(resource_rows),
+            action_rows: Arc::new(action_rows),
+            action_tokens: Arc::new(action_tokens),
             generation,
             available: generation != 0,
         }
@@ -339,6 +407,8 @@ impl BookSearchProvider {
             entries: Arc::new(Vec::new()),
             metadata_tokens: Arc::new(HashMap::new()),
             resource_rows: Arc::new(BTreeMap::new()),
+            action_rows: Arc::new(Vec::new()),
+            action_tokens: Arc::new(HashMap::new()),
             generation,
             available: false,
         }
@@ -891,6 +961,117 @@ impl BookSearchProvider {
             .filter_map(|token| self.metadata_tokens.get(token))
             .min_by_key(|ids| ids.len())
     }
+
+    pub(crate) fn action_search_provider(&self) -> BookActionSearchProvider {
+        BookActionSearchProvider {
+            books: self.clone(),
+        }
+    }
+}
+
+/// Compact action-label index. It retains labels and canonical addresses only;
+/// exact resources are still rebuilt from the live book snapshot on activation.
+#[derive(Clone)]
+pub(crate) struct BookActionSearchProvider {
+    books: BookSearchProvider,
+}
+
+impl SearchProvider for BookActionSearchProvider {
+    fn name(&self) -> &'static str {
+        "Book actions"
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        self.books.action_directory_generation()
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.books.action_directory_cursor_is_current(cursor)
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.search_page(query, None, DEFAULT_SEARCH_CANDIDATE_LIMIT, limit)
+            .results
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        let Some(query) = normalize_query(query) else {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        };
+        if !self.books.available || work_budget == 0 || result_limit == 0 {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        let offset = match cursor {
+            None => 0,
+            Some(cursor) => {
+                let (generation, cursor_query, state, ordinal) = cursor.opaque_parts();
+                if generation != self.books.generation || cursor_query != query || state.is_some() {
+                    return SearchPage {
+                        results: Vec::new(),
+                        next: None,
+                        inspected: 0,
+                    };
+                }
+                ordinal.unwrap_or_default() as usize
+            }
+        };
+        let candidates = query
+            .split_whitespace()
+            .filter_map(|token| self.books.action_tokens.get(token))
+            .min_by_key(|rows| rows.len());
+        let (length, at) = candidates.map_or((self.books.action_rows.len(), None), |rows| {
+            (rows.len(), Some(rows))
+        });
+        if offset > length {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        let mut inspected = 0;
+        let mut results = Vec::new();
+        let mut index = offset;
+        while index < length && inspected < work_budget && results.len() < result_limit {
+            let row = at.map_or(index, |rows| rows[index]);
+            index += 1;
+            inspected += 1;
+            if let Some((text, result)) = self.books.action_rows.get(row)
+                && normalized_contains(text, &query)
+            {
+                results.push(result.clone());
+            }
+        }
+        let next = (index < length)
+            .then(|| SearchCursor::opaque(self.books.generation, &query, None, Some(index as u64)));
+        SearchPage {
+            results,
+            next,
+            inspected,
+        }
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        self.books.resolve_action_resource(address)
+    }
 }
 
 impl SearchProvider for BookSearchProvider {
@@ -1162,9 +1343,12 @@ impl SearchProvider for BookSearchProvider {
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
         let row = *self.resource_rows.get(&address.resource)?;
         let entry = self.entries.get(row)?;
-        (entry.result.action_address().as_ref() == Some(address))
-            .then(|| self.resource_for(entry, address))
-            .flatten()
+        let resource = self.resource_for(entry, address)?;
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == address.action)
+            .then_some(resource)
     }
 }
 
@@ -1776,6 +1960,42 @@ mod tests {
                 .collect::<Vec<_>>();
             actions.sort_unstable();
             assert_eq!(actions, expected, "{query}");
+        }
+    }
+
+    #[test]
+    fn action_labels_are_compactly_indexed_and_resolve_exact_resources() {
+        let book = Book {
+            id: "book".into(),
+            title: "Action book".into(),
+            ..Book::default()
+        };
+        let group = uuid::Uuid::from_u128(8);
+        let highlight = Annotation::new("book", AnnoKind::Highlight, 0, 0)
+            .with_group(group)
+            .with_excerpt("marked passage");
+        let comment = Annotation::new("book", AnnoKind::Note, 0, 0)
+            .with_group(group)
+            .with_note("comment text");
+        let provider = BookSearchProvider::new(&[book], &[highlight, comment]);
+        let actions = provider.action_search_provider();
+        for query in [
+            "Change colour",
+            "Add comment",
+            "Delete highlight",
+            "Delete comment",
+        ] {
+            let hit = actions.search(query).into_iter().next().expect(query);
+            let address = hit.action_address().expect("canonical action address");
+            let resource = actions
+                .resolve_action_resource(&address)
+                .expect("exact resource");
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            );
         }
     }
 

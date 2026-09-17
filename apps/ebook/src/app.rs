@@ -4665,7 +4665,10 @@ impl Widget for BooksApp {
     /// Make books, chapters and annotations findable through canonical
     /// resource view actions in the unified Ctrl+K palette.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
+        vec![
+            Box::new(self.search_provider.clone()),
+            Box::new(self.search_provider.action_search_provider()),
+        ]
     }
 
     #[allow(
