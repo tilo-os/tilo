@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -139,11 +140,193 @@ def validate_core_layout(architecture, files):
             raise ValueError(f'missing exact alternate-loader link: {name} -> {destination}')
 
 
-def output(architecture, pin, buildroot_ref, directory=Path('/wine-output'), write=True):
+def tree_inventory(root):
+    result = {}
+    for item in sorted(Path(root).rglob('*')):
+        if item.is_symlink() or not (item.is_file() or item.is_dir()):
+            raise ValueError('nonregular provenance input')
+        if item.is_file():
+            result[item.relative_to(root).as_posix()] = {'sha256': sha(item), 'size': item.stat().st_size}
+    return result
+
+
+def mock_destination(name, pin):
+    if Path(name).is_absolute() or '..' in Path(name).parts or '\\' in name:
+        raise ValueError('invalid producer inventory path')
+    if name.endswith('.rpm'):
+        if len(Path(name).parts) != 2 or Path(name).parts[0] != 'rpms-and-logs':
+            raise ValueError('RPM outside Mock result directory')
+        if name.endswith('.src.rpm'):
+            if Path(name).name != build_identity(pin)['source_rpm']:
+                raise ValueError('unexpected rebuilt source RPM')
+            return 'provenance/' + Path(name).name
+        return 'rpms/' + Path(name).name
+    return 'provenance/mock/' + name
+
+
+def retained_resolution_files(files, pin):
+    excluded = {'resolution/buildroot_lock.json', 'source/' + pin['filename'], 'source/fedora-44.asc'}
+    return {name: value for name, value in files.items()
+            if name not in excluded and not name.startswith(('repository/', 'mock-config/'))}
+
+
+def validate_mock(directory, architecture, pin):
+    directory = Path(directory)
+    provenance = directory / 'provenance'
+    record = json.loads((provenance / 'mock-producer.json').read_text())
+    resolution = json.loads((provenance / 'resolution-manifest.json').read_text())
+    lock = json.loads((provenance / 'buildroot_lock.json').read_text())
+    for value in (record, resolution):
+        if (value.get('schema'), value.get('mode'), value.get('target'), value.get('source')) != (
+                1, 'mock-hermetic', architecture, pin):
+            raise ValueError('Mock source/target/mode mismatch')
+    options = record.get('options', [])
+    expected = ['--target', architecture, '--without', 'new_wow64', '--define',
+                'dist ' + build_identity(pin)['dist'], '--define']
+    if (len(options) != 8 or options[:7] != expected
+            or not re.fullmatch(r'_smp_mflags -j[1-9][0-9]*', options[7])
+            or options != resolution.get('options')):
+        raise ValueError('Mock build options differ')
+    if (record.get('build_identity') != build_identity(pin)
+            or record.get('network_interfaces') != ['lo']
+            or record.get('execution_validated') is not False):
+        raise ValueError('Mock producer identity/network evidence mismatch')
+    if record.get('tools') != resolution.get('tools'):
+        raise ValueError('Mock runtime differs from resolution')
+    tools = record['tools']
+    reference(tools['runtime_image'])
+    if (not tools.get('mock_version') or not tools.get('host_rpms')
+            or not re.fullmatch(r'[0-9a-f]{40}', tools.get('mock_api_reference_commit', ''))
+            or set(tools.get('tools', {})) != {'mock', 'mock-hermetic-repo', 'rpm', 'podman'}):
+        raise ValueError('incomplete Mock runtime identity')
+    for item in tools['tools'].values():
+        if not item.get('path') or not re.fullmatch(r'[0-9a-f]{64}', item.get('sha256', '')):
+            raise ValueError('invalid Mock tool identity')
+    if (sha(provenance / 'resolution-manifest.json') != record['resolution_manifest_sha256']
+            or sha(provenance / 'buildroot_lock.json') != record['lockfile_sha256']):
+        raise ValueError('Mock resolution evidence changed')
+    lock_identity = resolution['files'].get('resolution/buildroot_lock.json')
+    if lock_identity != {'sha256': record['lockfile_sha256'], 'size': (provenance / 'buildroot_lock.json').stat().st_size}:
+        raise ValueError('lock not bound to resolution inventory')
+    configs = {name.removeprefix('mock-config/'): identity for name, identity in resolution['files'].items()
+               if name.startswith('mock-config/')}
+    if not configs or tree_inventory(provenance / 'mock-config') != configs:
+        raise ValueError('Mock configuration evidence changed')
+    retained = retained_resolution_files(resolution['files'], pin)
+    if tree_inventory(provenance / 'resolution') != retained:
+        raise ValueError('resolution/source metadata changed')
+    if (lock.get('version') != '1.1.0' or lock.get('config', {}).get('target_arch') != architecture
+            or lock.get('config', {}).get('bootstrap_image_ready') is not True
+            or not lock.get('bootstrap', {}).get('image_digest') or not lock.get('buildroot', {}).get('rpms')):
+        raise ValueError('invalid Mock lock')
+    files = record['files']
+    if not files or 'producer.json' in files:
+        raise ValueError('invalid producer inventory')
+    required = {'compiler-probes.json', 'installed-rpms.log', 'buildrequires.log', 'hermetic-build.log',
+                'gcc-version.log', 'g++-version.log', 'rpmbuild-version.log',
+                'rpms-and-logs/' + build_identity(pin)['source_rpm']}
+    if not required <= files.keys():
+        raise ValueError('incomplete Mock build evidence')
+    for name, identity in files.items():
+        item = directory / mock_destination(name, pin)
+        verify_file(item, identity['sha256'], identity['size'])
+    expected_mock = {name: identity for name, identity in files.items() if not name.endswith('.rpm')}
+    if tree_inventory(provenance / 'mock') != expected_mock:
+        raise ValueError('Mock log inventory changed')
+    probes = json.loads((provenance / 'mock/compiler-probes.json').read_text())
+    expected_elf = (1, 3) if architecture == 'i686' else (2, 62)
+    if set(probes) != {'gcc', 'g++'} or any(
+            (probe.get('elf_class'), probe.get('elf_machine')) != expected_elf
+            or not isinstance(probe.get('rpm_optflags'), list) for probe in probes.values()):
+        raise ValueError('Mock compiler probe target mismatch')
+    expected_rpms = {Path(name).name for name in files if name.endswith('.rpm') and not name.endswith('.src.rpm')}
+    if {p.name for p in (directory / 'rpms').iterdir()} != expected_rpms:
+        raise ValueError('Mock RPM inventory changed')
+    allowed = {mock_destination(name, pin) for name in files}
+    allowed.update('provenance/' + name for name in (
+        'mock-producer.json', 'resolution-manifest.json', 'buildroot_lock.json',
+        'resolution-reference.json', pin['filename'], 'fedora-44.asc'))
+    allowed.update('provenance/mock-config/' + name for name in configs)
+    allowed.update('provenance/resolution/' + name for name in retained)
+    actual_paths = set(tree_inventory(directory))
+    actual_paths.discard('provenance/contract.json')
+    if actual_paths != allowed:
+        raise ValueError('unexpected files in normalized Mock artifact')
+    source(provenance, pin)
+    for name in (pin['filename'], 'fedora-44.asc'):
+        identity = resolution['files'].get('source/' + name)
+        if identity != {'sha256': sha(provenance / name), 'size': (provenance / name).stat().st_size}:
+            raise ValueError('source input not bound to resolution')
+    resolution_ref = json.loads((provenance / 'resolution-reference.json').read_text())
+    if resolution_ref.get('basis') != 'caller-supplied OCI reference; bundle bytes checked against manifest':
+        raise ValueError('unknown resolution reference basis')
+    return {'mode': 'mock-hermetic', 'producer_sha256': sha(provenance / 'mock-producer.json'),
+            'runtime_image': record['tools']['runtime_image'],
+            'resolution_ref': reference(resolution_ref['reference']),
+            'resolution_ref_basis': resolution_ref['basis'],
+            'resolution_manifest_sha256': record['resolution_manifest_sha256'],
+            'lockfile_sha256': record['lockfile_sha256']}
+
+
+def import_mock(architecture, pin, raw, bundle, destination, resolution_ref):
+    raw, bundle, destination = map(Path, (raw, bundle, destination))
+    reference(resolution_ref)
+    resolution = json.loads((bundle / 'manifest.json').read_text())
+    resolved_files = tree_inventory(bundle)
+    resolved_files.pop('manifest.json')
+    if resolved_files != resolution['files']:
+        raise ValueError('resolution bundle changed')
+    record = json.loads((raw / 'producer.json').read_text())
+    actual = tree_inventory(raw)
+    actual.pop('producer.json')
+    if actual != record['files']:
+        raise ValueError('raw Mock output changed')
+    if destination.exists() or destination.is_symlink():
+        raise ValueError('import destination must not exist')
+    # Build an unpublished sibling, then validate the same normalized layout the
+    # merger will independently verify. No host tool or buildroot is fabricated.
+    with tempfile.TemporaryDirectory(prefix='.wine-import-', dir=destination.parent) as temporary:
+        stage = Path(temporary) / 'output'
+        (stage / 'rpms').mkdir(parents=True)
+        for name in actual:
+            target_path = stage / mock_destination(name, pin)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(raw / name, target_path)
+        for src, name in ((raw / 'producer.json', 'mock-producer.json'),
+                          (bundle / 'manifest.json', 'resolution-manifest.json'),
+                          (bundle / 'resolution/buildroot_lock.json', 'buildroot_lock.json'),
+                          (bundle / 'source' / pin['filename'], pin['filename']),
+                          (bundle / 'source/fedora-44.asc', 'fedora-44.asc')):
+            if src.is_symlink() or not src.is_file():
+                raise ValueError('nonregular Mock evidence')
+            shutil.copyfile(src, stage / 'provenance' / name)
+        shutil.copytree(bundle / 'mock-config', stage / 'provenance/mock-config')
+        for name in retained_resolution_files(resolution['files'], pin):
+            # tree_inventory(bundle) has already established these are actual
+            # regular relative paths, rather than trusting a manifest filename.
+            target_path = stage / 'provenance/resolution' / name
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(bundle / name, target_path)
+        (stage / 'provenance/resolution-reference.json').write_text(json.dumps({
+            'reference': resolution_ref,
+            'basis': 'caller-supplied OCI reference; bundle bytes checked against manifest'}, indent=2) + '\n')
+        output(architecture, pin, None, stage, mode='mock-hermetic')
+        if destination.exists() or destination.is_symlink():
+            raise ValueError('import destination appeared during validation')
+        stage.rename(destination)
+
+
+def output(architecture, pin, buildroot_ref, directory=Path('/wine-output'), write=True, mode=None):
+    target(architecture)
+    if mode not in (None, 'mock-hermetic'):
+        raise ValueError('unsupported provenance mode')
+    if mode == 'mock-hermetic' and buildroot_ref is not None:
+        raise ValueError('Mock output must not claim an OCI buildroot')
+    producer = validate_mock(directory, architecture, pin) if mode else None
     inventory, seen = {}, set()
     core_found = False
-    for path in sorted((directory / 'rpms').glob('*.rpm')):
-        if path.is_symlink() or not path.is_file():
+    for path in sorted((directory / 'rpms').iterdir()):
+        if path.is_symlink() or not path.is_file() or path.suffix != '.rpm':
             raise ValueError('nonregular output RPM')
         identity = run(['rpm', '-qp', '--qf', '%{NAME}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{SOURCERPM}\t%{LICENSE}', str(path)]).split('\t')
         if len(identity) != 6:
@@ -170,8 +353,12 @@ def output(architecture, pin, buildroot_ref, directory=Path('/wine-output'), wri
         raise ValueError('missing rebuilt source RPM for qOS release identity')
     contract = {'schema': 1, 'target': architecture, 'source': pin,
                 'build_identity': build_identity(pin), 'rebuilt_source_sha256': sha(rebuilt_source),
-                'buildroot_ref': reference(buildroot_ref), 'without': ['new_wow64'],
+                'without': ['new_wow64'],
                 'rpms': inventory, 'execution_validated': False}
+    if producer:
+        contract['producer'] = producer
+    else:
+        contract['buildroot_ref'] = reference(buildroot_ref)
     if write:
         (directory / 'provenance/contract.json').write_text(json.dumps(contract, indent=2) + '\n')
     return contract
@@ -194,6 +381,8 @@ def main(argv):
             raise ValueError('buildroot compiler/package/source contract changed')
     elif operation == 'output':
         output(target(value), pin, rest[0])
+    elif operation == 'import-mock':
+        import_mock(target(value), pin, *rest)
     else:
         raise ValueError('unknown contract operation')
 
