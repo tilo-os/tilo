@@ -77,3 +77,10 @@ Status: implementation complete and locally verified; parent acceptance is parti
 - Final Browser suite: `cargo test -p browser --no-default-features` exited 0: 182 passed, 3 ignored; Browser main 3 passed; real parser integration 1 passed.
 - Final compile/build: `cargo check -p browser --no-default-features && cargo build -p browser --profile thin-app` exited 0. The exact optimized candidate is `target/thin-app/browser`, 26,710,416 bytes, SHA-256 `e8318245a497f20894b8a07a01e4bf467226d9ff317386098268b296bdfd78d7`.
 - Remaining acceptance: two fresh optimized private launches must both reach the correct physical frame before input. Parent live QA owns this check, exact normal-root snapshot preservation, immediate close cleanup, and the compact-width UI boundary.
+
+## Fix round 3: fractional device-scale paint matching
+
+- RED: `cargo test -p ui 'widget::webview::tests::fractional_dpr_uses_the_same_double_rounding_as_cef' -- --exact --nocapture` exited 101. For a requested `802x451` frame at scale `1.75`, native CEF geometry validly paints `804x452`, while the former `ceil(scale)-1` tolerance rejected it.
+- GREEN: the same command exited 0 after Rust adopted the native per-axis calculation `ceil(ceil(requested / scale) * scale)`. The test accepts native `804x452` and rejects the pre-rounding `802x451`; the existing odd-size 2× and stale-density cases remain covered.
+- WebView coverage: `cargo test -p ui 'widget::webview::tests::' -- --nocapture` exited 0: 17 passed. The existing compact-unwind linker warning was unchanged.
+- Compile check: `cargo check -p browser --no-default-features` exited 0.
