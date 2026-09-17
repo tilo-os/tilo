@@ -266,6 +266,7 @@ mod device_fabric_ui_tests {
                     bluetooth_codec: Some("AAC".into()),
                 }],
                 transfers: Vec::new(),
+                remote_audio: Default::default(),
             },
             remote,
         )
@@ -404,6 +405,52 @@ mod device_fabric_ui_tests {
                     target: remote,
                 })
         );
+    }
+
+    #[test]
+    fn device_pane_routes_opaque_audio_source_and_requires_target_choice() {
+        let (mut view, remote) = fixture();
+        view.local_media.clear();
+        view.local_outputs.clear();
+        view.remote_audio = crate::shell::remote_audio::RemoteAudioView {
+            sources: vec![crate::shell::remote_audio::RemoteAudioSourceView {
+                token: 77,
+                label: "All system audio".into(),
+                application: false,
+            }],
+            routes: Vec::new(),
+            consents: vec![crate::shell::remote_audio::RemoteAudioConsentView {
+                session_id: [8; 16],
+                source: remote.clone(),
+                label: "All system audio".into(),
+            }],
+        };
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        let (_, decline) =
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(decline.center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+
+        let actions = actions.borrow();
+        assert!(
+            actions.contains(&DeviceFabricUiAction::AuthorizeRemoteAudio {
+                session_id: [8; 16],
+                approved: false,
+            })
+        );
+        assert!(actions.contains(&DeviceFabricUiAction::StartRemoteAudio {
+            source_token: 77,
+            target: remote,
+        }));
     }
 
     #[test]
@@ -883,6 +930,7 @@ pub struct DeviceFabricView {
     pub local_media: Vec<FabricMediaView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
     pub transfers: Vec<FabricTransferView>,
+    pub remote_audio: crate::shell::remote_audio::RemoteAudioView,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -914,6 +962,17 @@ pub enum DeviceFabricUiAction {
     },
     StopPhysicalGamepad {
         session: u64,
+    },
+    StartRemoteAudio {
+        source_token: u64,
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    AuthorizeRemoteAudio {
+        session_id: [u8; 16],
+        approved: bool,
+    },
+    StopRemoteAudio {
+        session_id: [u8; 16],
     },
     Place {
         device: crate::shell::personal_continuity::DeviceId,
@@ -951,6 +1010,9 @@ pub type RealtimeContinuityBridge = std::rc::Rc<
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DeviceFabricPaneRow {
+    RemoteAudioConsent(crate::shell::remote_audio::RemoteAudioConsentView),
+    RemoteAudioSource(crate::shell::remote_audio::RemoteAudioSourceView),
+    RemoteAudioRoute(crate::shell::remote_audio::RemoteAudioRouteView),
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
@@ -965,11 +1027,32 @@ fn device_fabric_pane_rows(
     view: &DeviceFabricView,
     realtime: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,
 ) -> Vec<DeviceFabricPaneRow> {
-    realtime
+    view.remote_audio
         .consents
         .iter()
         .cloned()
-        .map(DeviceFabricPaneRow::RealtimeConsent)
+        .map(DeviceFabricPaneRow::RemoteAudioConsent)
+        .chain(
+            view.remote_audio
+                .routes
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::RemoteAudioRoute),
+        )
+        .chain(
+            view.remote_audio
+                .sources
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::RemoteAudioSource),
+        )
+        .chain(
+            realtime
+                .consents
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::RealtimeConsent),
+        )
         .chain(
             realtime
                 .sources
@@ -1316,6 +1399,7 @@ pub struct ShellOverlayHost {
     qs_selected_media: Option<String>,
     qs_selected_realtime: Option<String>,
     qs_selected_gamepad: Option<u64>,
+    qs_selected_remote_audio: Option<u64>,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -2519,6 +2603,7 @@ impl ShellOverlayHost {
             qs_selected_media: None,
             qs_selected_realtime: None,
             qs_selected_gamepad: None,
+            qs_selected_remote_audio: None,
             power_menu: PowerMenu::default(),
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -7933,7 +8018,8 @@ impl ShellOverlayHost {
                 let consent = matches!(
                     rows.get(self.qs_device_fabric_start),
                     Some(
-                        DeviceFabricPaneRow::RealtimeConsent(_)
+                        DeviceFabricPaneRow::RemoteAudioConsent(_)
+                            | DeviceFabricPaneRow::RealtimeConsent(_)
                             | DeviceFabricPaneRow::GamepadAuthorization(_)
                     )
                 );
@@ -11232,6 +11318,44 @@ impl ShellOverlayHost {
             return;
         }
         let action = match item {
+            DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
+                let (allow, decline) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let approved = if allow.contains(point) {
+                    true
+                } else if decline.contains(point) {
+                    false
+                } else {
+                    return;
+                };
+                Some((
+                    DeviceFabricUiAction::AuthorizeRemoteAudio {
+                        session_id: consent.session_id,
+                        approved,
+                    },
+                    if approved {
+                        format!("Allowed {} to play here for this session", consent.label)
+                    } else {
+                        format!("Declined audio from {}", consent.label)
+                    },
+                ))
+            }
+            DeviceFabricPaneRow::RemoteAudioSource(source) => {
+                self.qs_selected_remote_audio = Some(source.token);
+                self.qs_selected_realtime = None;
+                self.qs_selected_media = None;
+                self.qs_selected_gamepad = None;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                return;
+            }
+            DeviceFabricPaneRow::RemoteAudioRoute(route) => Some((
+                DeviceFabricUiAction::StopRemoteAudio {
+                    session_id: route.session_id,
+                },
+                format!("Stopped routing {}", route.label),
+            )),
             DeviceFabricPaneRow::RealtimeConsent(consent) => {
                 let (allow, decline) =
                     Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
@@ -11265,6 +11389,7 @@ impl ShellOverlayHost {
                 self.qs_selected_realtime = Some(source.session);
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
+                self.qs_selected_remote_audio = None;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11316,6 +11441,7 @@ impl ShellOverlayHost {
                     self.qs_selected_gamepad = Some(gamepad.token);
                     self.qs_selected_media = None;
                     self.qs_selected_realtime = None;
+                    self.qs_selected_remote_audio = None;
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().bump();
                     }
@@ -11326,6 +11452,7 @@ impl ShellOverlayHost {
                 self.qs_selected_media = Some(media.session_id);
                 self.qs_selected_realtime = None;
                 self.qs_selected_gamepad = None;
+                self.qs_selected_remote_audio = None;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11337,6 +11464,23 @@ impl ShellOverlayHost {
                 },
                 format!("Audio is now routed to {}", output.label),
             )),
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local
+                    && device.online
+                    && device.audio_output
+                    && self.qs_selected_remote_audio.is_some() =>
+            {
+                Some((
+                    DeviceFabricUiAction::StartRemoteAudio {
+                        source_token: self.qs_selected_remote_audio.unwrap_or_default(),
+                        target: device.id,
+                    },
+                    format!(
+                        "Asked {} to allow this audio once; playback stays local until approved",
+                        device.label
+                    ),
+                ))
+            }
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local && device.online && self.qs_selected_gamepad.is_some() =>
             {
@@ -14049,6 +14193,34 @@ impl Widget for ShellOverlayHost {
                                 .enumerate()
                                 .map(|(index, item)| {
                                     let (name, description, children) = match item {
+                                        DeviceFabricPaneRow::RemoteAudioConsent(consent) => (
+                                            format!("Play {} here", consent.label),
+                                            "A certified device requested a one-session audio sink"
+                                                .into(),
+                                            vec![
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Allow this remote audio once"),
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Decline this remote audio"),
+                                            ],
+                                        ),
+                                        DeviceFabricPaneRow::RemoteAudioSource(source) => (
+                                            source.label,
+                                            if source.application {
+                                                "Choose focused app audio; routing stops when focus changes"
+                                                    .into()
+                                            } else {
+                                                "Choose all system audio, then choose a certified destination"
+                                                    .into()
+                                            },
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::RemoteAudioRoute(route) => (
+                                            route.label,
+                                            "Remote audio route active or awaiting approval; activate to stop"
+                                                .into(),
+                                            Vec::new(),
+                                        ),
                                         DeviceFabricPaneRow::RealtimeConsent(consent) => (
                                             format!("Continue call in {}", consent.room_label),
                                             "Approve this one handoff and its requested local capture sources"
@@ -18720,6 +18892,51 @@ impl ShellOverlayHost {
         {
             let row = self.qs_device_row_rect(index);
             let (title, detail, icon, selected_row, enabled) = match item {
+                DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
+                    let source_label = view
+                        .devices
+                        .iter()
+                        .find(|device| device.id == consent.source)
+                        .map_or("Another certified device", |device| device.label.as_str());
+                    (
+                        format!("Play {} here", consent.label),
+                        format!("{source_label} requested this · allow once or decline"),
+                        ui::icons::Icon::Volume2,
+                        false,
+                        true,
+                    )
+                }
+                DeviceFabricPaneRow::RemoteAudioSource(source) => (
+                    source.label.clone(),
+                    if source.application {
+                        "Focused app audio · stops when focus changes".into()
+                    } else {
+                        "All system audio · select a certified destination below".into()
+                    },
+                    ui::icons::Icon::Volume2,
+                    self.qs_selected_remote_audio == Some(source.token),
+                    true,
+                ),
+                DeviceFabricPaneRow::RemoteAudioRoute(route) => {
+                    let peer = view
+                        .devices
+                        .iter()
+                        .find(|device| device.id == route.peer)
+                        .map_or("certified device", |device| device.label.as_str());
+                    let phase = match route.phase {
+                        crate::shell::remote_audio::RemoteAudioPhase::AwaitingConsent => {
+                            "waiting for approval"
+                        }
+                        crate::shell::remote_audio::RemoteAudioPhase::Streaming => "streaming",
+                    };
+                    (
+                        route.label.clone(),
+                        format!("{phase} with {peer} · select to stop"),
+                        ui::icons::Icon::Volume2,
+                        true,
+                        true,
+                    )
+                }
                 DeviceFabricPaneRow::RealtimeConsent(consent) => {
                     let source_label = view
                         .devices
@@ -18817,6 +19034,7 @@ impl ShellOverlayHost {
                     let enabled = !device.is_local
                         && device.online
                         && (self.qs_selected_gamepad.is_some()
+                            || self.qs_selected_remote_audio.is_some()
                             || self.qs_selected_realtime.is_some()
                             || selected.is_some_and(|media| media.targets.contains(&device.id)));
                     let detail = if self.qs_selected_gamepad.is_some()
@@ -18824,6 +19042,15 @@ impl ShellOverlayHost {
                         && device.online
                     {
                         "Use selected controller here · target approves once".into()
+                    } else if self.qs_selected_remote_audio.is_some()
+                        && !device.is_local
+                        && device.online
+                    {
+                        if device.audio_output {
+                            "Play selected audio here · target approves once".into()
+                        } else {
+                            "This device has no audio output".into()
+                        }
                     } else {
                         Self::fabric_device_detail(
                             device,
@@ -18855,6 +19082,7 @@ impl ShellOverlayHost {
             let trailing = if matches!(
                 item,
                 DeviceFabricPaneRow::Device(_)
+                    | DeviceFabricPaneRow::RemoteAudioConsent(_)
                     | DeviceFabricPaneRow::RealtimeConsent(_)
                     | DeviceFabricPaneRow::GamepadAuthorization(_)
             ) {
@@ -18902,7 +19130,8 @@ impl ShellOverlayHost {
             );
             if matches!(
                 item,
-                DeviceFabricPaneRow::RealtimeConsent(_)
+                DeviceFabricPaneRow::RemoteAudioConsent(_)
+                    | DeviceFabricPaneRow::RealtimeConsent(_)
                     | DeviceFabricPaneRow::GamepadAuthorization(_)
             ) {
                 let (allow, decline) = Self::qs_realtime_consent_actions(row);
@@ -18916,6 +19145,9 @@ impl ShellOverlayHost {
                         .icon(ui::icons::Icon::Check)
                         .hovered(self.last_cursor.is_some_and(|point| allow.contains(point)))
                         .accessible_name(match item {
+                            DeviceFabricPaneRow::RemoteAudioConsent(_) => {
+                                "Allow this remote audio once"
+                            }
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Allow this controller once"
                             }
@@ -18935,6 +19167,9 @@ impl ShellOverlayHost {
                                 .is_some_and(|point| decline.contains(point)),
                         )
                         .accessible_name(match item {
+                            DeviceFabricPaneRow::RemoteAudioConsent(_) => {
+                                "Decline this remote audio"
+                            }
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Decline this controller"
                             }
