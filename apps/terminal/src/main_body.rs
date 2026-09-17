@@ -120,9 +120,8 @@ impl Selection {
     }
 }
 
-/// Open a URL from an OSC 8 hyperlink click. Best-effort: spawns the OS opener
-/// (`xdg-open`) detached and never blocks or panics — a missing opener or a
-/// malformed URL is silently ignored, exactly like the clipboard helpers.
+/// Open an OSC 8 hyperlink through the toolkit's native opener without waiting
+/// for the browser. A launch failure is logged; malformed URLs are ignored.
 /// Only plain public `http(s)` targets are launched. In particular, terminal
 /// output never gets to turn an OSC 8 link into access to a local `file:` URL,
 /// a `mailto:` draft, credentials in an authority, or a query/fragment that
@@ -132,12 +131,7 @@ pub(crate) fn open_url(url: &str) {
     if !is_public_web_link(url) {
         return;
     }
-    let _ = std::process::Command::new("xdg-open")
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    ui::widget::open_external_url(url);
 }
 
 /// An OSC 8 target that is safe to publish to the action directory and hand to
@@ -467,6 +461,8 @@ pub struct TerminalWidget {
     /// fails, or a write fails. A live session cannot be honestly revived by
     /// retrying arbitrary input, so this is local terminal lifecycle state.
     session_disconnected: Arc<AtomicBool>,
+    #[cfg(windows)]
+    child_killer: Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     /// Stable, non-sensitive reason shown in the retained terminal surface and
     /// its accessibility description. Kept local with the transport state.
     session_status_message: Arc<Mutex<&'static str>>,
@@ -695,6 +691,8 @@ impl TerminalWidget {
             output_rx,
             deferred_output: None,
             session_disconnected: Arc::new(AtomicBool::new(false)),
+            #[cfg(windows)]
+            child_killer: None,
             session_status_message: Arc::new(Mutex::new("Session ended — input unavailable")),
             parser: Parser::new(),
             grid,
@@ -5664,9 +5662,10 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
     palette.fg_default.with_alpha_factor(230.0 / 255.0)
 }
 
-/// Resolve the user's login shell for the unconfined `$SHELL` fallback path.
+/// Resolve the user's native shell for the standalone fallback path.
+/// Windows uses `COMSPEC`, falling back to `cmd.exe`.
 ///
-/// Order:
+/// Unix resolution order:
 /// 1. **`$SHELL`** when set and non-empty — the user's explicit preference
 ///    (this is how fish, when it is the login shell, gets launched here).
 /// 2. **The passwd database** (`getpwuid(getuid()).pw_shell`) — the login
@@ -5675,12 +5674,21 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
 ///    the right shell instead of a hardcoded `/bin/sh`.
 /// 3. **`/bin/sh`** — last resort so a session never fails to start.
 pub fn resolve_login_shell() -> String {
+    #[cfg(windows)]
+    {
+        std::env::var("COMSPEC")
+            .ok()
+            .filter(|shell| !shell.trim().is_empty())
+            .unwrap_or_else(|| "cmd.exe".into())
+    }
+    #[cfg(unix)]
     resolve_login_shell_with(std::env::var("SHELL").ok(), login_shell_from_passwd())
 }
 
 /// Pure core of [`resolve_login_shell`], with the two environment lookups
 /// injected so the precedence is testable without mutating process-global
 /// state (which would race parallel tests).
+#[cfg(unix)]
 pub(crate) fn resolve_login_shell_with(
     shell_env: Option<String>,
     passwd_shell: Option<String>,
@@ -5700,6 +5708,7 @@ pub(crate) fn resolve_login_shell_with(
 
 /// The login shell recorded for the current real user in the passwd database
 /// (`pw_shell`). `None` if the entry is missing or has an empty shell field.
+#[cfg(unix)]
 pub(crate) fn login_shell_from_passwd() -> Option<String> {
     use std::ffi::CStr;
     // SAFETY: `getpwuid` returns a pointer into a static buffer owned by libc
@@ -5725,6 +5734,8 @@ pub struct TerminalBackend {
     pub reader: Box<dyn Read + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub shell_name: String,
+    #[cfg(windows)]
+    pub child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 impl TerminalBackend {
     /// Open a PTY running a shell.
@@ -5824,15 +5835,19 @@ impl TerminalBackend {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        let _child = pair.slave.spawn_command(cmd)?;
-        drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
+        let child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+        #[cfg(unix)]
+        drop(child);
         Ok(Self {
             writer,
             reader,
             master: pair.master,
             shell_name,
+            #[cfg(windows)]
+            child,
         })
     }
 }
@@ -5881,6 +5896,17 @@ pub enum ConfineRoute {
 /// by the launcher's seccomp + namespace + bind mounts. Best-effort therefore
 /// never grants more than the ambient sandbox already allows.
 pub fn confinement_route() -> ConfineRoute {
+    #[cfg(windows)]
+    {
+        // A claimed hosted grant must fail closed until native service
+        // transport exists; never silently replace it with a local shell.
+        if std::env::var_os(USH_SERVICE_FD_ENV).is_some() {
+            ConfineRoute::Service
+        } else {
+            ConfineRoute::BestEffort
+        }
+    }
+    #[cfg(unix)]
     decide_route(
         ush_service_fd().is_some(),
         can_build_namespace(),
@@ -5919,6 +5945,7 @@ pub fn decide_route(
 /// An env var alone is not enough: the descriptor slot must actually be open,
 /// so a stale or spoofed number pointing at nothing does not select the service
 /// path (it falls through to the probe below and, off Tilo, to best-effort).
+#[cfg(unix)]
 pub(crate) fn ush_service_fd() -> Option<i32> {
     let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
     if raw < 0 {
@@ -5938,6 +5965,7 @@ pub(crate) fn ush_service_fd() -> Option<i32> {
 /// the runtime shells out to for the actual namespace setup — is not installed.
 /// Any of those means launching the runtime here would only produce errors, so
 /// we don't.
+#[cfg(unix)]
 fn can_build_namespace() -> bool {
     !seccomp_filtered() && unprivileged_userns_enabled() && bwrap_present()
 }
@@ -5948,6 +5976,7 @@ fn can_build_namespace() -> bool {
 /// Read from `/proc/self/status` (`Seccomp:` ≥ 2 is "filter mode"). A filter
 /// cannot be removed once installed and survives `exec`, so an attacker inside
 /// a sandbox cannot clear this to make [`can_build_namespace`] return true.
+#[cfg(unix)]
 fn seccomp_filtered() -> bool {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -5965,6 +5994,7 @@ fn seccomp_filtered() -> bool {
 /// Reads the two sysctls distributions use to gate this. An absent file means
 /// the kernel default (enabled), so this only reports `false` on an explicit
 /// disable — never guessing "no" just because a knob is missing.
+#[cfg(unix)]
 fn unprivileged_userns_enabled() -> bool {
     // Debian/Ubuntu knob: `0` disables unprivileged user namespaces entirely.
     if let Ok(v) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone")
@@ -5983,6 +6013,7 @@ fn unprivileged_userns_enabled() -> bool {
 
 /// Whether `bwrap` (Bubblewrap) is on `PATH`. The runtime builds the guest's
 /// namespace with it, so its absence means a self-hosted guest cannot start.
+#[cfg(unix)]
 fn bwrap_present() -> bool {
     std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
@@ -5993,6 +6024,7 @@ fn bwrap_present() -> bool {
 /// `$TILO_USH_BIN` first so a development tree can point at `target/debug`,
 /// then the installed location, then `PATH`. Absent from all three means this
 /// machine has no runtime and the caller falls back to `$SHELL`.
+#[cfg(unix)]
 pub fn ush_binary() -> Option<std::path::PathBuf> {
     if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
         let path = std::path::PathBuf::from(explicit);
@@ -6016,6 +6048,7 @@ pub fn ush_binary() -> Option<std::path::PathBuf> {
 /// back. What crosses the sandbox boundary is a terminal, not a namespace: the
 /// guest is built on the supervisor's side, by the supervisor's rules, and this
 /// app never learns where its layer is or what it was granted.
+#[cfg(unix)]
 fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> {
     use std::os::fd::{FromRawFd, RawFd};
     use std::os::unix::net::UnixStream;
@@ -6028,6 +6061,12 @@ fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> 
     ush_backend_on(&stream)
 }
 
+#[cfg(windows)]
+fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> {
+    Err("Tilo hosted terminal service transport is unavailable on Windows".into())
+}
+
+#[cfg(unix)]
 fn ush_backend_on(
     stream: &std::os::unix::net::UnixStream,
 ) -> Result<TerminalBackend, Box<dyn std::error::Error>> {
@@ -6069,10 +6108,12 @@ fn ush_backend_on(
 /// that matters here was created by the supervisor and passed over a socket.
 /// Resizing has to keep working — the grid reflows on every window change — so
 /// this is a real `TIOCSWINSZ`, not a stub.
+#[cfg(unix)]
 struct FdMaster {
     file: std::fs::File,
 }
 
+#[cfg(unix)]
 impl MasterPty for FdMaster {
     fn get_size(&self) -> Result<PtySize, anyhow::Error> {
         use std::os::fd::AsRawFd;
@@ -6145,6 +6186,38 @@ impl TerminalWidget {
         let (output_tx, output_rx) = bounded(PTY_QUEUE_CHUNKS);
 
         let widget = TerminalWidget::new(writer, master, output_rx);
+        #[cfg(windows)]
+        let widget = {
+            let mut widget = widget;
+            // ConPTY keeps its output pipe open while the pseudoconsole exists.
+            // Observe the child handle too, so exit is visible before closing
+            // the terminal window. Keep a killer for normal window teardown.
+            widget.child_killer = Some(backend.child.clone_killer());
+            let disconnected = widget.session_disconnected.clone();
+            let status = widget.session_status_message.clone();
+            let waker = widget.waker.clone();
+            let pending = widget.wake_pending.clone();
+            let mut child = backend.child;
+            if std::thread::Builder::new()
+                .name("tilo-terminal-child-wait".into())
+                .spawn(move || {
+                    let message = if child.wait().is_ok() {
+                        "Session ended — input unavailable"
+                    } else {
+                        "Terminal process status failed — input unavailable"
+                    };
+                    set_terminal_disconnected(&disconnected, &status, message);
+                    request_terminal_wake(&waker, &pending);
+                })
+                .is_err()
+            {
+                if let Some(killer) = &mut widget.child_killer {
+                    let _ = killer.kill();
+                }
+                widget.mark_disconnected("Terminal unavailable — process monitor could not start");
+            }
+            widget
+        };
         // Share the waker + coalescing flag with the reader thread so fresh PTY
         // output can wake an idle `ui::App` loop (instead of a ~60 Hz poll).
         let waker = widget.waker.clone();
@@ -6206,6 +6279,7 @@ impl TerminalWidget {
     /// # Errors
     ///
     /// Returns an error if PTY creation fails.
+    #[cfg(unix)]
     pub fn spawn_hosted(
         services: crate::HostedProcessServices,
     ) -> Result<Self, crate::HostedTerminalError> {
@@ -6215,6 +6289,17 @@ impl TerminalWidget {
         let backend = ush_backend_on(&stream)
             .map_err(|error| crate::HostedTerminalError::ServiceFailed(error.to_string()))?;
         Ok(Self::from_backend(backend))
+    }
+
+    /// Construct a hosted terminal only when the host provides its service.
+    ///
+    /// # Errors
+    /// Windows currently has no Tilo hosted process-service transport.
+    #[cfg(windows)]
+    pub fn spawn_hosted(
+        _services: crate::HostedProcessServices,
+    ) -> Result<Self, crate::HostedTerminalError> {
+        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
     }
 
     /// Spawn the standalone user login shell.
@@ -6268,12 +6353,15 @@ impl TerminalWidget {
             fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
                 Ok(Box::new(std::io::empty()))
             }
+            #[cfg(unix)]
             fn process_group_leader(&self) -> Option<i32> {
                 None
             }
+            #[cfg(unix)]
             fn as_raw_fd(&self) -> Option<i32> {
                 None
             }
+            #[cfg(unix)]
             fn tty_name(&self) -> Option<std::path::PathBuf> {
                 None
             }
@@ -6285,5 +6373,14 @@ impl TerminalWidget {
             std::sync::Arc::new(std::sync::Mutex::new(Box::new(NullMaster))),
             output_rx,
         ))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TerminalWidget {
+    fn drop(&mut self) {
+        if let Some(killer) = &mut self.child_killer {
+            let _ = killer.kill();
+        }
     }
 }
