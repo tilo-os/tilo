@@ -147,9 +147,11 @@ impl GridView {
     }
 
     /// Hit-test a header click; returns the column index if `p` is on a
-    /// header cell. Accounts for the horizontal scroll offset.
+    /// header cell. Accounts for the horizontal scroll offset. The header
+    /// band is half-open (`[y0, y0 + HEADER_H)`) so its bottom edge belongs
+    /// to the first body row, exactly as painted.
     pub fn header_hit(&self, p: Point) -> Option<usize> {
-        if p.y < self.rect.y0 || p.y > self.rect.y0 + HEADER_H {
+        if p.y < self.rect.y0 || p.y >= self.rect.y0 + HEADER_H {
             return None;
         }
         if p.x < self.rect.x0 || p.x > self.rect.x1 {
@@ -165,12 +167,17 @@ impl GridView {
         None
     }
 
-    /// Hit-test a body row; returns the display-order index.
+    /// Hit-test a body row; returns the display-order index. Only rows the
+    /// body actually paints (`visible_rows`) are hittable: the partial strip
+    /// under the last full row is empty on screen and is empty here too.
     pub fn row_hit(&self, p: Point) -> Option<usize> {
-        if p.y < self.rect.y0 + HEADER_H {
+        if p.y < self.rect.y0 + HEADER_H || p.x < self.rect.x0 || p.x > self.rect.x1 {
             return None;
         }
         let rel = ((p.y - self.rect.y0 - HEADER_H) / ROW_H).floor() as usize;
+        if rel >= self.visible_rows() {
+            return None;
+        }
         let idx = self.scroll_row + rel;
         if idx < self.order.len() {
             Some(idx)
@@ -276,12 +283,17 @@ impl GridView {
                 col.clone()
             };
             let max_w = (w - 2.0 * CELL_PAD) as f32;
+            // Header labels and body cells centre on their bands from the
+            // same measured line height, so their baselines line up column
+            // to column and at every text scale.
+            let (_, lh) = tr.measure(&label, 13.0, None);
             tr.draw_text(
                 scene,
                 &label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((x + CELL_PAD, r.y0 + 8.0)),
+                transform
+                    * Affine::translate((x + CELL_PAD, r.y0 + (HEADER_H - f64::from(lh)) / 2.0)),
                 Some(max_w),
             );
             // Column divider.
@@ -417,7 +429,8 @@ fn draw_cell(
         theme.text_primary
     };
 
-    let ty = cell_rect.y0 + 6.0;
+    let (_, th) = tr.measure(&truncated, 13.0, None);
+    let ty = cell_rect.y0 + (cell_rect.height() - f64::from(th)) / 2.0;
     if cell.is_numeric() {
         // Right-align numerics within the cell.
         let (tw, _) = tr.measure(&truncated, 13.0, None);
@@ -499,6 +512,29 @@ mod tests {
         assert!(r.rows[g.order[0]][0].is_null());
         assert_eq!(r.rows[g.order[1]][0], Cell::Integer(1));
         assert_eq!(r.rows[g.order[2]][0], Cell::Integer(3));
+    }
+
+    /// The header band is `[y0, y0 + HEADER_H)`: its bottom edge is the first
+    /// body row, and a point under the last painted row hits nothing.
+    #[test]
+    fn header_and_body_hits_split_exactly_where_the_paint_does() {
+        let mut tr = TextRenderer::new();
+        let result = result();
+        let mut grid = GridView::new();
+        // Header + exactly two full rows + a partial strip.
+        grid.set_rect(Rect::new(0.0, 0.0, 400.0, HEADER_H + 2.0 * ROW_H + ROW_H / 2.0));
+        grid.bind(&result, &mut tr);
+        let edge = Point::new(20.0, HEADER_H);
+        assert_eq!(grid.header_hit(edge), None, "the header's bottom edge is body");
+        assert_eq!(grid.row_hit(edge), Some(0));
+        assert_eq!(grid.header_hit(Point::new(20.0, HEADER_H - 0.5)), Some(0));
+        assert_eq!(grid.row_hit(Point::new(20.0, HEADER_H + ROW_H + 1.0)), Some(1));
+        assert_eq!(
+            grid.row_hit(Point::new(20.0, HEADER_H + 2.0 * ROW_H + 1.0)),
+            None,
+            "the unpainted partial strip under the last full row is not a row"
+        );
+        assert_eq!(grid.row_hit(Point::new(-1.0, HEADER_H + 1.0)), None);
     }
 
     #[test]

@@ -185,7 +185,10 @@ impl Widget for ShortcutRecorder {
             InputHint::paint_at(
                 scene,
                 transform,
-                Point::new(chord.x0 + 5.0, chord.center().y - 11.0),
+                Point::new(
+                    chord.x0 + 5.0,
+                    chord.center().y - crate::widget::input_hint::HEIGHT / 2.0,
+                ),
                 &InputBinding::Keyboard(self.binding()),
                 self.platform,
                 self.interaction.keyboard_family,

@@ -1937,6 +1937,13 @@ impl NotesApp {
         self.sidebar.new_page_btn_center_for_test()
     }
 
+    /// Test hook: the sidebar's laid-out rect (docked column or overlay
+    /// drawer), so a test can prove the drawer is clamped to the window.
+    #[doc(hidden)]
+    pub fn sidebar_rect_for_test(&self) -> Rect {
+        self.sidebar.rect_for_test()
+    }
+
     /// Test hook: whether a live page-tree drag is in flight.
     #[doc(hidden)]
     pub fn sidebar_drag_active_for_test(&self) -> bool {
@@ -2388,17 +2395,28 @@ impl Widget for NotesApp {
         self.text_scale = f64::from(theme.text_scale);
         self.drawer
             .set_breakpoint(NARROW_BREAKPOINT * self.text_scale);
-        self.drawer
-            .set_docked_width(SIDEBAR_WIDTH * self.text_scale);
-        self.drawer
-            .set_overlay_width(DRAWER_WIDTH * self.text_scale);
+        // The scaled drawer must still leave a scrim band of the page visible
+        // (and its own trailing controls on screen): at 2× in a phone-width
+        // window the unclamped 528px drawer ran past the window's right edge.
+        let docked_w = SIDEBAR_WIDTH * self.text_scale;
+        let reveal = f64::from(theme.tokens.spacing.s12);
+        let drawer_w = if self.rect.width() > 0.0 {
+            (DRAWER_WIDTH * self.text_scale).min((self.rect.width() - reveal).max(reveal))
+        } else {
+            DRAWER_WIDTH * self.text_scale
+        };
+        self.drawer.set_docked_width(docked_w);
+        self.drawer.set_overlay_width(drawer_w);
         // Commit the mode the tree is built with so draw/event routing
         // stays in lock-step with the live taffy structure.
         self.built_narrow = self.want_narrow;
         let narrow = self.built_narrow;
 
         let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        let _ = taffy.set_style(sidebar_node, Self::sidebar_style(narrow, self.text_scale));
+        let _ = taffy.set_style(
+            sidebar_node,
+            Self::sidebar_style(narrow, drawer_w, docked_w, self.text_scale),
+        );
         self.sidebar_node = Some(sidebar_node);
 
         let main_node = self.main.build_layout(taffy, theme, node_map);
@@ -2802,7 +2820,7 @@ impl NotesApp {
     /// edge of the content row, full height, taken out of flow so the
     /// editor keeps the whole width underneath it. Wide: a fixed-width
     /// column so the split is deterministic (no flexbox squeezing).
-    fn sidebar_style(narrow: bool, text_scale: f64) -> Style {
+    fn sidebar_style(narrow: bool, drawer_w: f64, docked_w: f64, text_scale: f64) -> Style {
         if narrow {
             Style {
                 position: taffy::Position::Absolute,
@@ -2813,7 +2831,7 @@ impl NotesApp {
                     bottom: length(0.0_f32),
                 },
                 size: Size {
-                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH * text_scale)),
+                    width: Dimension::length(num::f32_of_f64(drawer_w)),
                     height: Dimension::percent(1.0),
                 },
                 flex_shrink: 0.0,
@@ -2822,7 +2840,7 @@ impl NotesApp {
         } else {
             Style {
                 size: Size {
-                    width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH * text_scale)),
+                    width: Dimension::length(num::f32_of_f64(docked_w)),
                     height: Dimension::percent(1.0),
                 },
                 min_size: Size {

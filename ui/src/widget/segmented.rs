@@ -32,6 +32,7 @@ use crate::theme::Theme;
 use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, over};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::text::centered_text_top;
 
 /// Drives the active-segment colour. `Neutral` is the de-emphasised
 /// middle ("inherit").
@@ -252,9 +253,11 @@ impl Widget for TriStateControl {
             } else {
                 theme.text_dim
             };
-            let (tw, _) = text_renderer.measure(label, text_size, None);
+            let (tw, th) = text_renderer.measure(label, text_size, None);
             let cx = seg_rect.center().x - f64::from(tw) / 2.0;
-            let cy = self.rect.y0 + (self.rect.height() - f64::from(text_size)) / 2.0;
+            // The measured line, not the font size, is what gets centred —
+            // see `widget::text::centered_text_top`.
+            let cy = centered_text_top(self.rect.y0, self.rect.height(), f64::from(th));
             text_renderer.draw_text(
                 scene,
                 label,
@@ -815,6 +818,49 @@ mod tests {
 
     fn synth_device() -> winit::event::DeviceId {
         unsafe { std::mem::zeroed() }
+    }
+
+    /// Segment labels are centred on their measured line inside the 28 px
+    /// strip; centring on the 12 px font size alone dropped them 1.5 px.
+    #[test]
+    fn tri_state_labels_centre_their_measured_line() {
+        let labels = ["Yes", "Maybe", "No"];
+        let mut control = TriStateControl::new(
+            labels,
+            [
+                SegmentTone::Positive,
+                SegmentTone::Neutral,
+                SegmentTone::Negative,
+            ],
+        );
+        lay_out(&mut control);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        control.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let rect = control.rect;
+        assert!(rect.height() > 0.0);
+        assert_eq!(scene.encoding().resources.glyph_runs.len(), labels.len());
+
+        let size = theme.tokens.typography.scale.sm;
+        for (index, label) in labels.into_iter().enumerate() {
+            crate::widget::text::assert_glyph_run_centred_in_band(
+                &scene,
+                index,
+                label,
+                size,
+                rect.y0,
+                rect.height(),
+                &mut tr,
+                theme.text_primary,
+            );
+        }
     }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {

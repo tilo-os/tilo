@@ -245,7 +245,32 @@ fn inject_doc_for_test(outcome: DocOutcome) -> DocPortalChannel {
     }
 }
 
-const TOOLBAR_H: f64 = 56.0;
+/// 1× floors for the editor chrome. Every row is derived from the measured
+/// line box of the text it carries plus spacing tokens (see
+/// [`ChromeMetrics`]); these floors reproduce the classic density exactly at
+/// 1× and only give way when larger text needs the room.
+const TOOLBAR_MIN_H: f64 = 56.0;
+const TOOLBAR_PILL_MIN_H: f64 = 34.0;
+const CONTROL_MIN_H: f64 = 30.0;
+const SMALL_PILL_MIN_H: f64 = 28.0;
+/// Colour swatches carry no text; they keep one fixed height.
+const SWATCH_H: f64 = 26.0;
+/// The speaker-notes box never shrinks below this, however tall the
+/// property sections above it grow.
+const NOTES_MIN_H: f64 = 188.0;
+/// Width reserved for the font-size `NumberInput` in the TYPE row.
+const FONT_INPUT_W: f64 = 136.0;
+/// Deliberately off-scale: the two lines of the toolbar title block sit this
+/// close so they read as one label with a caption, not two rows.
+const TITLE_LINE_GAP: f64 = 2.0;
+/// Base (unscaled) chrome font sizes; the renderer applies the accessibility
+/// scale once when it paints them.
+const FONT_CAPTION: f32 = 11.0;
+const FONT_SUBTITLE: f32 = 11.5;
+const FONT_PILL: f32 = 12.0;
+const FONT_CONTROL: f32 = 13.0;
+const FONT_HEADING: f32 = 16.0;
+const FONT_TITLE: f32 = 17.0;
 const RAIL_W: f64 = 212.0;
 const INSPECTOR_W: f64 = 296.0;
 /// Half-size of a selection handle's *grab* zone (hit-test radius).
@@ -266,9 +291,6 @@ const NARROW_BREAKPOINT: f64 = DEFAULT_BREAKPOINT;
 /// overlay flap. It intentionally matches the rail breakpoint: a compact
 /// window must never sacrifice the canvas to two permanent sidebars.
 const INSPECTOR_BREAKPOINT: f64 = NARROW_BREAKPOINT;
-/// Size of the toolbar hamburger toggle that summons the collapsed rail.
-const HAMBURGER: f64 = 34.0;
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Edit,
@@ -401,7 +423,172 @@ struct Label {
     font: f32,
     color: LabelColor,
     weight: TextWeight,
+    /// When set, the painter elides `text` with the renderer's own metrics to
+    /// fit this many final pixels, so layout only has to reserve the slot.
+    max_w: Option<f64>,
 }
+
+/// Chrome text metrics for the editor's toolbar, rail and inspector, resolved
+/// once per frame from the renderer that paints them.
+///
+/// Slides hands the renderer base font sizes and lets it apply the
+/// accessibility scale once, so every value here is in *final* pixels: the
+/// measured line box of each chrome font and the measured width of each label
+/// the chrome reserves a slot for. `compute_chrome` is renderer-free (event
+/// handlers call it too), so it reads these instead of estimating; every row
+/// height and label slot it produces therefore matches what is painted and
+/// what is hit-tested. `fallback()` stands in until the first draw, whose
+/// `refresh_chrome_metrics` replaces it before that frame's chrome is built.
+#[derive(Clone, Debug, PartialEq)]
+struct ChromeMetrics {
+    /// Renderer text scale the widths and line boxes were measured under.
+    scale: f64,
+    /// Measured line boxes (final px) of the chrome fonts.
+    lh_caption: f64,
+    lh_subtitle: f64,
+    lh_pill: f64,
+    lh_control: f64,
+    lh_heading: f64,
+    lh_title: f64,
+    /// Measured label widths keyed by `(text, font × 10, weight)`.
+    labels: HashMap<(String, u16, u16), f64>,
+    /// Theme spacing tokens.
+    s1: f64,
+    s2: f64,
+    s3: f64,
+    s4: f64,
+}
+
+impl ChromeMetrics {
+    fn key(text: &str, font: f32, weight: TextWeight) -> (String, u16, u16) {
+        (text.to_owned(), (font * 10.0).round() as u16, weight.to_u16())
+    }
+
+    /// Resolve every chrome metric against `tr`; `labels` is the set of
+    /// `(text, font, weight)` the chrome reserves a slot for.
+    fn resolve<'a>(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        labels: impl IntoIterator<Item = (&'a str, f32, TextWeight)>,
+    ) -> Self {
+        let line_h = |tr: &mut TextRenderer, font: f32| f64::from(tr.measure("Ag", font, None).1);
+        let lh_caption = line_h(tr, FONT_CAPTION);
+        let lh_subtitle = line_h(tr, FONT_SUBTITLE);
+        let lh_pill = line_h(tr, FONT_PILL);
+        let lh_control = line_h(tr, FONT_CONTROL);
+        let lh_heading = line_h(tr, FONT_HEADING);
+        let lh_title = line_h(tr, FONT_TITLE);
+        let labels = labels
+            .into_iter()
+            .map(|(text, font, weight)| {
+                let (w, _) = tr.measure_weighted(text, font, None, weight);
+                (Self::key(text, font, weight), f64::from(w))
+            })
+            .collect();
+        let sp = &theme.tokens.spacing;
+        Self {
+            scale: f64::from(tr.text_scale()),
+            lh_caption,
+            lh_subtitle,
+            lh_pill,
+            lh_control,
+            lh_heading,
+            lh_title,
+            labels,
+            s1: f64::from(sp.s1),
+            s2: f64::from(sp.s2),
+            s3: f64::from(sp.s3),
+            s4: f64::from(sp.s4),
+        }
+    }
+
+    /// The 1× metrics used before the first draw has a renderer: every row
+    /// lands on its classic floor and label slots fall back to an estimate.
+    fn fallback() -> Self {
+        let line_h = |font: f32| f64::from(font) * 1.25;
+        Self {
+            scale: 1.0,
+            lh_caption: line_h(FONT_CAPTION),
+            lh_subtitle: line_h(FONT_SUBTITLE),
+            lh_pill: line_h(FONT_PILL),
+            lh_control: line_h(FONT_CONTROL),
+            lh_heading: line_h(FONT_HEADING),
+            lh_title: line_h(FONT_TITLE),
+            labels: HashMap::new(),
+            s1: 4.0,
+            s2: 8.0,
+            s3: 12.0,
+            s4: 16.0,
+        }
+    }
+
+    /// Final-pixel width of `text` at `font`/`weight`: measured when the
+    /// renderer has seen it, otherwise a generous per-glyph estimate.
+    fn label_w(&self, text: &str, font: f32, weight: TextWeight) -> f64 {
+        self.labels
+            .get(&Self::key(text, font, weight))
+            .copied()
+            .unwrap_or_else(|| chrome::est_width(text, f64::from(font)) * self.scale)
+    }
+
+    /// A toolbar pill: label plus `s3` each side, plus an icon slot when it
+    /// carries one.
+    fn pill_w(&self, label: &str, icon: bool) -> f64 {
+        let icon_w = if icon { TOOLBAR_ICON + self.s2 } else { 0.0 };
+        icon_w + self.label_w(label, FONT_CONTROL, TextWeight::Semibold) + 2.0 * self.s3
+    }
+
+    /// Toolbar pills: the control line box plus `s4`, never below 34 px.
+    fn pill_h(&self) -> f64 {
+        (self.lh_control + self.s4).max(TOOLBAR_PILL_MIN_H)
+    }
+
+    /// Toolbar: the two-line title block plus `s2` above and below, never
+    /// below 56 px.
+    fn toolbar_h(&self) -> f64 {
+        (self.title_block_h() + 2.0 * self.s2).max(TOOLBAR_MIN_H)
+    }
+
+    /// Title line box, the fixed 2 px seam, and the subtitle line box.
+    fn title_block_h(&self) -> f64 {
+        self.lh_title + TITLE_LINE_GAP + self.lh_subtitle
+    }
+
+    /// Inspector / rail buttons: the control line box plus `s3`, never below
+    /// 30 px.
+    fn control_h(&self) -> f64 {
+        (self.lh_control + self.s3).max(CONTROL_MIN_H)
+    }
+
+    /// Layout / background / theme pills: the pill line box plus `s3`, never
+    /// below 28 px.
+    fn small_pill_h(&self) -> f64 {
+        (self.lh_pill + self.s3).max(SMALL_PILL_MIN_H)
+    }
+
+    /// Vertical advance of a "SECTION" caption: its line box plus `s2`.
+    fn caption_adv(&self) -> f64 {
+        self.lh_caption + self.s2
+    }
+
+    /// Vertical advance of a panel heading ("TEXT", "SLIDE 3"): its line box
+    /// plus `s3`.
+    fn heading_adv(&self) -> f64 {
+        self.lh_heading + self.s3
+    }
+
+    /// The rail header row (the "SLIDES" caption and the overlay's Close
+    /// button): a control plus `s1`, never below the classic 34 px.
+    fn rail_header_h(&self) -> f64 {
+        (self.control_h() + self.s1).max(TOOLBAR_PILL_MIN_H)
+    }
+}
+
+/// Icon slot inside an icon+label toolbar pill.
+const TOOLBAR_ICON: f64 = 18.0;
+/// Leading slot of a palette pill: `s2` inset, the 12 px colour dot and a
+/// 6 px gap before the label (the dot is painted at `x0+8 .. x0+20`).
+const PALETTE_DOT_SLOT: f64 = 26.0;
 
 #[derive(Clone)]
 pub(super) enum ButtonKind {
@@ -652,6 +839,9 @@ pub struct SlidesApp {
     /// Responsive insert toolbar. Owns overflow state, layout, drawing, and
     /// pointer policy; document actions returned by it are applied here.
     toolbar_tools: ToolbarTools,
+    /// Measured chrome text metrics `compute_chrome` lays out from (see
+    /// [`ChromeMetrics`]); refreshed at the top of every draw.
+    chrome_metrics: ChromeMetrics,
     /// An in-flight host image-open request. `Some(rx)` means the XDG portal's
     /// file chooser is open on a worker thread; the chosen path arrives over
     /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
@@ -796,6 +986,7 @@ impl SlidesApp {
             rail_scroll: 0.0,
             overview: OverviewGrid::new(),
             toolbar_tools: ToolbarTools::default(),
+            chrome_metrics: ChromeMetrics::fallback(),
             portal_rx: None,
             doc_portal_rx: None,
             document_worker,
@@ -1293,7 +1484,7 @@ impl SlidesApp {
     /// helpers and the chrome agree.
     fn rail_rect(&self) -> Rect {
         let r = self.rect;
-        let body_top = r.y0 + TOOLBAR_H;
+        let body_top = r.y0 + self.chrome_metrics.toolbar_h();
         match self.rail_layout() {
             SplitLayout::Docked => {
                 let inset = RAIL_W * self.rail_flap.reveal();
@@ -1318,10 +1509,11 @@ impl SlidesApp {
                   worse at every call site for no benefit"
     )]
     fn rail_viewport(&self, rail: Rect) -> Rect {
-        let tpad = 14.0;
-        let rb_h = 30.0;
-        let list_top = rail.y0 + tpad + 20.0;
-        let list_bottom = (rail.y1 - tpad - rb_h - 12.0).max(list_top);
+        let m = &self.chrome_metrics;
+        // Header row (caption / Close) above, pinned action row below, each
+        // separated from the list by `s2`.
+        let list_top = rail.y0 + m.s2 + m.rail_header_h() + m.s2;
+        let list_bottom = (rail.y1 - m.s4 - m.control_h() - m.s2).max(list_top);
         Rect::new(rail.x0, list_top, rail.x1, list_bottom)
     }
 
@@ -1336,7 +1528,15 @@ impl SlidesApp {
                   worse at every call site for no benefit"
     )]
     fn slide_delete_zone(&self, rail: Rect) -> Rect {
-        Rect::new(rail.x0 + 8.0, rail.y1 - 54.0, rail.x1 - 8.0, rail.y1 - 10.0)
+        // Covers the pinned action row it replaces (same `s4` bottom pad and
+        // control height), inset `s2` from the rail edges.
+        let m = &self.chrome_metrics;
+        Rect::new(
+            rail.x0 + m.s2,
+            rail.y1 - m.s4 - m.control_h() - m.s2,
+            rail.x1 - m.s2,
+            rail.y1 - m.s2,
+        )
     }
 
     /// Whether a slide drag is currently hovering the delete zone (for the
@@ -1414,9 +1614,64 @@ impl SlidesApp {
 
     // --- geometry -----------------------------------------------------------
 
+    /// Every `(text, font, weight)` the chrome reserves a slot for, so
+    /// [`ChromeMetrics::resolve`] can measure each with the style it is
+    /// painted in. Titles are elided at paint time and need no entry.
+    fn chrome_label_set(&self) -> Vec<(String, f32, TextWeight)> {
+        let control = |s: &str| (s.to_owned(), FONT_CONTROL, TextWeight::Semibold);
+        let mut set: Vec<(String, f32, TextWeight)> = vec![
+            control("Present"),
+            control("Close"),
+            control("Add"),
+            control("Dup"),
+            control("Del"),
+            control("Bring front"),
+            control("Send back"),
+            control("Duplicate"),
+            control("Delete"),
+            control("Custom colour…"),
+            control("B"),
+            control("I"),
+            // The TYPE row reserves its NumberInput for a three-digit value.
+            control("999 pt"),
+        ];
+        set.extend(crate::toolbar_tools::bar_labels().into_iter().map(control));
+        set.extend(crate::toolbar_tools::menu_labels().into_iter().map(control));
+        set.extend(TextAlign::ALL.iter().map(|a| control(a.glyph())));
+        set.extend(Layout::ALL.iter().map(|l| control(l.label())));
+        set.extend(Background::ALL.iter().map(|b| control(b.label())));
+        set.extend(
+            PaletteKind::ALL
+                .iter()
+                .map(|p| (p.label().to_owned(), FONT_PILL, TextWeight::Semibold)),
+        );
+        if let Some(el) = self.selected_element()
+            && el.fill.starts_with('#')
+        {
+            set.push(control(&format!("Custom  ·  {}", el.fill)));
+        }
+        set
+    }
+
+    /// Re-resolve the chrome metrics against the renderer about to paint, so
+    /// this frame's chrome — and the hit-rects later events derive from the
+    /// same `compute_chrome` — is laid out from measured text.
+    fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let set = self.chrome_label_set();
+        // Nothing is gated on a change here — `compute_chrome` re-derives the
+        // chrome from these on every use — so the fresh set simply replaces
+        // the old one.
+        self.chrome_metrics = ChromeMetrics::resolve(
+            tr,
+            theme,
+            set.iter().map(|(text, font, weight)| (text.as_str(), *font, *weight)),
+        );
+    }
+
     fn compute_chrome(&self) -> Chrome {
         let r = self.rect;
-        let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
+        let m = &self.chrome_metrics;
+        let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.toolbar_h());
         let panels = self.compute_panels(r, toolbar);
         let (slide_dest, s) = Self::fit_slide(panels.canvas_area);
 
@@ -1424,9 +1679,10 @@ impl SlidesApp {
         let mut labels = Vec::new();
 
         // Toolbar -----------------------------------------------------------
-        let title_x = Self::toolbar_hamburger(toolbar, panels.layout, panels.reveal, &mut buttons);
-        let by = toolbar.y0 + (TOOLBAR_H - 34.0) / 2.0;
-        let bh = 34.0;
+        let title_x =
+            Self::toolbar_hamburger(toolbar, m, panels.layout, panels.reveal, &mut buttons);
+        let bh = m.pill_h();
+        let by = toolbar.y0 + (toolbar.height() - bh) / 2.0;
 
         // Right-anchored group first (Present · palette · overview grid · the
         // inspector toggle) so we know the boundary the centre tool group and
@@ -1441,23 +1697,40 @@ impl SlidesApp {
             &mut buttons,
         );
 
-        // Title block, elided so it never runs under the tools or right group.
-        let tools_x = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
-        // At phone widths the compact right-hand controls can begin before the
-        // nominal insert-tools slot. The title must yield to those controls;
-        // otherwise its elided label is painted underneath the grid/palette.
-        let title_right = tools_x.min(right_edge - 12.0);
-        let (title_rect, title_pos) =
-            self.toolbar_title_block(toolbar, title_x, title_right, &mut labels);
-
         // Centre tool group. Every insert tool must stay pointer-reachable at
         // any width: the ones that fit sit on the toolbar; the rest move behind
         // a "More" (⋯) overflow button that opens a dropdown menu. Nothing is
         // ever silently dropped.
-        let tools_right = right_edge - 12.0;
-        let toolbar_tools =
-            self.toolbar_tools
-                .layout(&mut buttons, tools_x, tools_right, by, bh, toolbar);
+        let tools_x = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
+        let tools_right = right_edge - m.s3;
+        let tools_first = buttons.len();
+        let toolbar_tools = self.toolbar_tools.layout(
+            &mut buttons,
+            tools_x,
+            tools_right,
+            by,
+            bh,
+            toolbar,
+            &|label| m.pill_w(label, false),
+            &|label| m.pill_w(label, true),
+            m.control_h(),
+        );
+        // The overflow button may sit left of the nominal tools slot when
+        // nothing else fits, so the title yields to the leftmost control that
+        // was actually placed, not to the slot.
+        let leftmost_tool = buttons
+            .get(tools_first..)
+            .unwrap_or_default()
+            .iter()
+            .filter(|b| b.rect.center().y < toolbar.y1)
+            .map(|b| b.rect.x0)
+            .fold(f64::INFINITY, f64::min);
+
+        // Title block, elided at paint time so it never runs under the tools
+        // or the right group.
+        let title_right = tools_x.min(right_edge - m.s3).min(leftmost_tool);
+        let (title_rect, title_pos) =
+            self.toolbar_title_block(toolbar, title_x, title_right, &mut labels);
 
         // Thumbnail rail ----------------------------------------------------
         let rail_viewport = self.build_rail_chrome(panels.rail, &mut buttons, &mut labels);
@@ -1580,27 +1853,24 @@ impl SlidesApp {
     /// returns the x the title block should start at, past it.
     fn toolbar_hamburger(
         toolbar: Rect,
+        m: &ChromeMetrics,
         layout: SplitLayout,
         reveal: f64,
         buttons: &mut Vec<UiButton>,
     ) -> f64 {
         let rail_collapsible = layout == SplitLayout::Overlay || reveal < 0.999;
         if rail_collapsible {
-            let hy = toolbar.y0 + (TOOLBAR_H - HAMBURGER) / 2.0;
-            let hb = Rect::new(
-                toolbar.x0 + 14.0,
-                hy,
-                toolbar.x0 + 14.0 + HAMBURGER,
-                hy + HAMBURGER,
-            );
+            let size = m.pill_h();
+            let hy = toolbar.y0 + (toolbar.height() - size) / 2.0;
+            let hb = Rect::new(toolbar.x0 + m.s4, hy, toolbar.x0 + m.s4 + size, hy + size);
             buttons.push(UiButton {
                 rect: hb,
                 kind: ButtonKind::Hamburger,
                 hit: Hit::ToggleRail,
             });
-            hb.x1 + 14.0
+            hb.x1 + m.s4
         } else {
-            toolbar.x0 + 18.0
+            toolbar.x0 + m.s4
         }
     }
 
@@ -1614,27 +1884,28 @@ impl SlidesApp {
         bh: f64,
         buttons: &mut Vec<UiButton>,
     ) -> Rect {
-        let present_w = 18.0 + 6.0 + chrome::est_width("Present", 13.0) + 22.0;
+        let m = &self.chrome_metrics;
+        let present_w = m.pill_w("Present", true);
         let present_rect = Rect::new(
-            toolbar.x1 - 18.0 - present_w,
+            toolbar.x1 - m.s4 - present_w,
             by,
-            toolbar.x1 - 18.0,
+            toolbar.x1 - m.s4,
             by + bh,
         );
         // On a narrow toolbar the palette pill collapses to just its colour dot
         // (the swatch button already hides its label below 40px wide).
         let pal_w = if toolbar.width() > 640.0 {
-            30.0 + chrome::est_width(self.deck.palette.label(), 12.0) + 22.0
+            Self::palette_pill_width(m, self.deck.palette.label())
         } else {
-            34.0
+            bh
         };
         let pal_rect = Rect::new(
-            present_rect.x0 - 10.0 - pal_w,
+            present_rect.x0 - m.s2 - pal_w,
             by,
-            present_rect.x0 - 10.0,
+            present_rect.x0 - m.s2,
             by + bh,
         );
-        let grid_rect = Rect::new(pal_rect.x0 - 10.0 - bh, by, pal_rect.x0 - 10.0, by + bh);
+        let grid_rect = Rect::new(pal_rect.x0 - m.s2 - bh, by, pal_rect.x0 - m.s2, by + bh);
         buttons.push(UiButton {
             rect: present_rect,
             kind: ButtonKind::IconText {
@@ -1678,7 +1949,8 @@ impl SlidesApp {
     ) -> f64 {
         let inspector_collapsible = insp_layout == SplitLayout::Overlay || insp_reveal < 0.999;
         if inspector_collapsible {
-            let ib = Rect::new(grid_rect.x0 - 10.0 - bh, by, grid_rect.x0 - 10.0, by + bh);
+            let gap = self.chrome_metrics.s2;
+            let ib = Rect::new(grid_rect.x0 - gap - bh, by, grid_rect.x0 - gap, by + bh);
             buttons.push(UiButton {
                 rect: ib,
                 kind: ButtonKind::IconOnly {
@@ -1707,50 +1979,52 @@ impl SlidesApp {
         // insert overflow and the always-available presentation controls, but
         // not a useful title fragment. Leave that slot empty rather than paint
         // ellipsis under a focusable control.
+        let m = &self.chrome_metrics;
         let title_max = if toolbar.width() < 480.0 {
             0.0
         } else {
-            (title_right - 12.0 - title_x).max(0.0)
+            (title_right - m.s3 - title_x).max(0.0)
         };
-        let title_pos = Point::new(title_x, toolbar.y0 + 11.0);
+        // The two-line block (title, 2 px seam, subtitle) is centred on the
+        // toolbar, so its lines keep their spacing at every text scale.
+        let block_top = toolbar.y0 + (toolbar.height() - m.title_block_h()) / 2.0;
+        let title_pos = Point::new(title_x, block_top);
         // While renaming, the inline TextInput draws the title (with selection +
-        // caret), so the static label is blanked; otherwise elide it so it never
-        // runs under the tools.
+        // caret), so the static label is blanked; otherwise the painter elides
+        // it with the renderer's own metrics to `title_max`.
         let title_text = if self.editing_title || title_max < 1.0 {
             String::new()
         } else {
-            elide(&self.deck.title, 17.0, title_max)
+            self.deck.title.clone()
         };
         labels.push(Label {
             pos: title_pos,
             text: title_text,
-            font: 17.0,
+            font: FONT_TITLE,
             color: LabelColor::Primary,
             weight: TextWeight::Bold,
+            max_w: Some(title_max),
         });
         // The whole two-line title block is the click target for renaming.
         let title_rect = Rect::new(
-            title_x - 4.0,
-            toolbar.y0 + 6.0,
+            title_x - m.s1,
+            block_top - m.s1,
             title_x + title_max,
-            toolbar.y0 + 46.0,
+            block_top + m.title_block_h() + m.s1,
         );
         if title_max >= 1.0 {
             labels.push(Label {
-                pos: Point::new(title_x, toolbar.y0 + 33.0),
-                text: elide(
-                    &format!(
-                        "Slide {} of {}  ·  {}",
-                        self.cur_slide + 1,
-                        self.deck.slides.len(),
-                        self.deck.palette.label()
-                    ),
-                    11.5,
-                    title_max,
+                pos: Point::new(title_x, block_top + m.lh_title + TITLE_LINE_GAP),
+                text: format!(
+                    "Slide {} of {}  ·  {}",
+                    self.cur_slide + 1,
+                    self.deck.slides.len(),
+                    self.deck.palette.label()
                 ),
-                font: 11.5,
+                font: FONT_SUBTITLE,
                 color: LabelColor::Dim,
                 weight: TextWeight::Regular,
+                max_w: Some(title_max),
             });
         }
         (title_rect, title_pos)
@@ -1766,26 +2040,36 @@ impl SlidesApp {
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
     ) -> Rect {
-        let tpad = 14.0;
+        let m = &self.chrome_metrics;
+        let pad = m.s4;
         let rail_viewport = self.rail_viewport(rail);
+        // Header row: the caption and (for an overlay) its Close button share
+        // one centre line.
+        let header = Rect::new(rail.x0, rail.y0 + m.s2, rail.x1, rail.y0 + m.s2 + m.rail_header_h());
         labels.push(Label {
-            pos: Point::new(rail.x0 + tpad, rail.y0 + 6.0),
+            pos: Point::new(
+                rail.x0 + pad,
+                header.y0 + (header.height() - m.lh_caption) / 2.0,
+            ),
             text: "SLIDES".into(),
-            font: 11.0,
+            font: FONT_CAPTION,
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
+            max_w: None,
         });
         // The toolbar hamburger remains a toggle, but an open overlay must
         // also advertise its local escape route where the user's attention is:
         // the flap header. This keeps the narrow panel dismissible without a
         // hunt back to the global toolbar (and gives AT a named button).
         if self.rail_layout() == SplitLayout::Overlay && self.rail_flap.reveal() > 0.001 {
-            let close_w = 56.0;
+            let close_w = m.label_w("Close", FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s3;
+            let close_h = m.control_h();
+            let close_y = header.y0 + (header.height() - close_h) / 2.0;
             let close = Rect::new(
-                rail.x1 - tpad - close_w,
-                rail.y0 + 5.0,
-                rail.x1 - tpad,
-                rail.y0 + 35.0,
+                rail.x1 - pad - close_w,
+                close_y,
+                rail.x1 - pad,
+                close_y + close_h,
             );
             buttons.push(UiButton {
                 rect: close,
@@ -1797,12 +2081,12 @@ impl SlidesApp {
                 hit: Hit::ToggleRail,
             });
         }
-        // Rail action buttons at the bottom.
-        let rb_h = 30.0;
-        let rb_y = rail.y1 - tpad - rb_h;
-        let rb_w = (rail.width() - 2.0 * tpad - 2.0 * 8.0) / 3.0;
+        // Rail action buttons at the bottom: three equal controls, `s2` apart.
+        let rb_h = m.control_h();
+        let rb_y = rail.y1 - pad - rb_h;
+        let rb_w = (rail.width() - 2.0 * pad - 2.0 * m.s2) / 3.0;
         let mk = |idx: f64, label: &str, danger: bool, hit: Hit| -> UiButton {
-            let x = rail.x0 + tpad + idx * (rb_w + 8.0);
+            let x = rail.x0 + pad + idx * (rb_w + m.s2);
             UiButton {
                 rect: Rect::new(x, rb_y, x + rb_w, rb_y + rb_h),
                 kind: ButtonKind::Text {
@@ -1869,15 +2153,16 @@ impl SlidesApp {
 
     /// Push a small dim "SECTION" header label at `x0, *y` and advance `*y`
     /// past it. Shared by every inspector section.
-    fn push_inspector_header(labels: &mut Vec<Label>, x0: f64, y: &mut f64, t: &str) {
+    fn push_inspector_header(m: &ChromeMetrics, labels: &mut Vec<Label>, x0: f64, y: &mut f64, t: &str) {
         labels.push(Label {
             pos: Point::new(x0, *y),
             text: t.to_string(),
-            font: 11.0,
+            font: FONT_CAPTION,
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
+            max_w: None,
         });
-        *y += 20.0;
+        *y += m.caption_adv();
     }
 
     /// Inspector contents for a selected element: type label, fill/stroke
@@ -1900,22 +2185,25 @@ impl SlidesApp {
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
     ) -> (f64, Option<Rect>) {
+        let m = &self.chrome_metrics;
         let mut y = y;
         labels.push(Label {
             pos: Point::new(x0, y),
             text: el.kind.label().to_uppercase(),
-            font: 16.0,
+            font: FONT_HEADING,
             color: LabelColor::Primary,
             weight: TextWeight::Bold,
+            max_w: None,
         });
-        y += 30.0;
+        y += m.heading_adv();
 
-        // Fill swatches (theme presets) plus a Custom… button that opens
-        // the embeddable colour picker for an arbitrary fill.
-        Self::push_inspector_header(labels, x0, &mut y, "FILL");
+        // Rhythm: rows inside a section are `s2` apart; sections are `s4`
+        // apart. Fill swatches (theme presets) plus a Custom… button that
+        // opens the embeddable colour picker for an arbitrary fill.
+        Self::push_inspector_header(m, labels, x0, &mut y, "FILL");
         y = self.swatch_grid(buttons, x0, inner_w, y, &FILL_ROLES, &el.fill, true);
-        y += 8.0;
-        let custom = Rect::new(x0, y, x1, y + 26.0);
+        y += m.s2;
+        let custom = Rect::new(x0, y, x1, y + m.control_h());
         buttons.push(UiButton {
             rect: custom,
             kind: ButtonKind::Text {
@@ -1930,23 +2218,23 @@ impl SlidesApp {
             },
             hit: Hit::OpenFillPicker,
         });
-        y += 26.0 + 10.0;
+        y += m.control_h() + m.s4;
 
         // Stroke swatches.
-        Self::push_inspector_header(labels, x0, &mut y, "STROKE");
+        Self::push_inspector_header(m, labels, x0, &mut y, "STROKE");
         y = self.swatch_grid(buttons, x0, inner_w, y, &STROKE_ROLES, &el.stroke, false);
-        y += 10.0;
+        y += m.s4;
 
         let font_input_rect = if el.kind == ElementKind::Text {
             let (new_y, rect) =
-                Self::build_inspector_type_row(el, x0, x1, inner_w, y, buttons, labels);
+                Self::build_inspector_type_row(m, el, x0, x1, inner_w, y, buttons, labels);
             y = new_y;
             rect
         } else {
             None
         };
 
-        y = Self::build_inspector_arrange_row(x0, x1, inner_w, y, buttons, labels);
+        y = Self::build_inspector_arrange_row(m, x0, x1, inner_w, y, buttons, labels);
 
         (y, font_input_rect)
     }
@@ -1955,6 +2243,7 @@ impl SlidesApp {
     /// duplicate/delete, each pair a half-width button. Returns the y just
     /// past it.
     fn build_inspector_arrange_row(
+        m: &ChromeMetrics,
         x0: f64,
         x1: f64,
         inner_w: f64,
@@ -1963,11 +2252,11 @@ impl SlidesApp {
         labels: &mut Vec<Label>,
     ) -> f64 {
         let mut y = y;
-        Self::push_inspector_header(labels, x0, &mut y, "ARRANGE");
-        let bh = 30.0;
-        let half = (inner_w - 8.0) / 2.0;
+        Self::push_inspector_header(m, labels, x0, &mut y, "ARRANGE");
+        let bh = m.control_h();
+        let half = (inner_w - m.s2) / 2.0;
         let front = Rect::new(x0, y, x0 + half, y + bh);
-        let back = Rect::new(x0 + half + 8.0, y, x1, y + bh);
+        let back = Rect::new(x0 + half + m.s2, y, x1, y + bh);
         buttons.push(UiButton {
             rect: front,
             kind: ButtonKind::Text {
@@ -1986,9 +2275,9 @@ impl SlidesApp {
             },
             hit: Hit::SendBack,
         });
-        y += bh + 8.0;
+        y += bh + m.s2;
         let dup = Rect::new(x0, y, x0 + half, y + bh);
-        let del = Rect::new(x0 + half + 8.0, y, x1, y + bh);
+        let del = Rect::new(x0 + half + m.s2, y, x1, y + bh);
         buttons.push(UiButton {
             rect: dup,
             kind: ButtonKind::Text {
@@ -2007,7 +2296,7 @@ impl SlidesApp {
             },
             hit: Hit::DeleteElement,
         });
-        y + bh + 6.0
+        y + bh + m.s4
     }
 
     /// The TYPE row for a selected text element: the font-size input's
@@ -2020,6 +2309,7 @@ impl SlidesApp {
                   this argument list as a throwaway struct"
     )]
     fn build_inspector_type_row(
+        m: &ChromeMetrics,
         el: &Element,
         x0: f64,
         x1: f64,
@@ -2029,12 +2319,26 @@ impl SlidesApp {
         labels: &mut Vec<Label>,
     ) -> (f64, Option<Rect>) {
         let mut y = y;
-        Self::push_inspector_header(labels, x0, &mut y, "TYPE");
-        let bh = 30.0;
+        Self::push_inspector_header(m, labels, x0, &mut y, "TYPE");
+        let bh = m.control_h();
         // The font size is a click-to-type NumberInput (with ± steppers)
-        // — the widget draws itself, so we only reserve its rect here.
-        let font_input_rect = Some(Rect::new(x0, y, x0 + 136.0, y + bh));
-        let bold = Rect::new(x1 - 36.0, y, x1, y + bh);
+        // — the widget draws itself, so we only reserve its rect here: two
+        // square steppers around a three-digit "pt" value, never narrower than
+        // the classic 136 px.
+        let font_input_w = (2.0 * bh + m.label_w("999 pt", FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s2)
+            .max(FONT_INPUT_W);
+        let font_input_rect = Some(Rect::new(x0, y, x0 + font_input_w, y + bh));
+        // Bold / italic toggles: square-ish controls sized to their glyph,
+        // right-anchored beside the input while both fit, otherwise on their
+        // own row `s2` below it so neither ever paints over the other.
+        let toggle_w = (m.label_w("B", FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s3).max(bh);
+        let toggles_w = 2.0 * toggle_w + m.s2;
+        let toggles_y = if font_input_w + m.s2 + toggles_w <= inner_w + 0.5 {
+            y
+        } else {
+            y + bh + m.s2
+        };
+        let bold = Rect::new(x1 - toggle_w, toggles_y, x1, toggles_y + bh);
         buttons.push(UiButton {
             rect: bold,
             kind: ButtonKind::Text {
@@ -2044,7 +2348,12 @@ impl SlidesApp {
             },
             hit: Hit::ToggleBold,
         });
-        let italic = Rect::new(x1 - 36.0 - 6.0 - 36.0, y, x1 - 36.0 - 6.0, y + bh);
+        let italic = Rect::new(
+            x1 - toggle_w - m.s2 - toggle_w,
+            toggles_y,
+            x1 - toggle_w - m.s2,
+            toggles_y + bh,
+        );
         buttons.push(UiButton {
             rect: italic,
             kind: ButtonKind::Text {
@@ -2054,29 +2363,39 @@ impl SlidesApp {
             },
             hit: Hit::ToggleItalic,
         });
-        y += bh + 10.0;
-        Self::push_inspector_header(labels, x0, &mut y, "ALIGN");
+        y = toggles_y + bh + m.s4;
+        Self::push_inspector_header(m, labels, x0, &mut y, "ALIGN");
         // A proper segmented control: left · center · right · justify,
         // the current alignment highlighted. Replaces the old single
-        // button that only cycled through the options blind.
+        // button that only cycled through the options blind. When the widest
+        // label (plus `s2` each side) no longer fits an equal share of the
+        // row, the group wraps into two connected rows of two, `s2` apart.
         let n = TextAlign::ALL.len();
-        let seg_w = inner_w / n as f64;
+        let widest = TextAlign::ALL
+            .iter()
+            .map(|a| m.label_w(a.glyph(), FONT_CONTROL, TextWeight::Semibold))
+            .fold(0.0_f64, f64::max);
+        let cols = if widest + 2.0 * m.s2 <= inner_w / n as f64 { n } else { 2 };
+        let seg_w = inner_w / cols as f64;
         for (i, a) in TextAlign::ALL.iter().enumerate() {
-            let sx = x0 + i as f64 * seg_w;
-            let ex = if i + 1 == n {
+            let col = i % cols;
+            let row = (i / cols) as f64;
+            let sx = x0 + col as f64 * seg_w;
+            let ex = if col + 1 == cols {
                 x1
             } else {
-                x0 + (i as f64 + 1.0) * seg_w
+                x0 + (col as f64 + 1.0) * seg_w
             };
-            let pos = if i == 0 {
+            let pos = if col == 0 {
                 SegPos::First
-            } else if i + 1 == n {
+            } else if col + 1 == cols {
                 SegPos::Last
             } else {
                 SegPos::Mid
             };
+            let sy = y + row * (bh + m.s2);
             buttons.push(UiButton {
-                rect: Rect::new(sx, y, ex, y + bh),
+                rect: Rect::new(sx, sy, ex, sy + bh),
                 kind: ButtonKind::Segment {
                     label: a.glyph().to_string(),
                     active: *a == el.align,
@@ -2085,7 +2404,8 @@ impl SlidesApp {
                 hit: Hit::SetAlign(*a),
             });
         }
-        y += bh + 14.0;
+        let rows = n.div_ceil(cols) as f64;
+        y += rows * bh + (rows - 1.0) * m.s2 + m.s4;
         (y, font_input_rect)
     }
 
@@ -2100,17 +2420,19 @@ impl SlidesApp {
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
     ) -> f64 {
+        let m = &self.chrome_metrics;
         let mut y = y;
         labels.push(Label {
             pos: Point::new(x0, y),
             text: format!("SLIDE {}", self.cur_slide + 1),
-            font: 16.0,
+            font: FONT_HEADING,
             color: LabelColor::Primary,
             weight: TextWeight::Bold,
+            max_w: None,
         });
-        y += 30.0;
+        y += m.heading_adv();
 
-        Self::push_inspector_header(labels, x0, &mut y, "LAYOUT");
+        Self::push_inspector_header(m, labels, x0, &mut y, "LAYOUT");
         let cur_layout = self.slide().map_or(Layout::TitleContent, |s| s.layout);
         y = self.wrap_pills(
             buttons,
@@ -2121,9 +2443,9 @@ impl SlidesApp {
                 .iter()
                 .map(|l| (l.label().to_string(), *l == cur_layout, Hit::SetLayout(*l))),
         );
-        y += 10.0;
+        y += m.s4;
 
-        Self::push_inspector_header(labels, x0, &mut y, "BACKGROUND");
+        Self::push_inspector_header(m, labels, x0, &mut y, "BACKGROUND");
         let cur_bg = self.slide().map_or(Background::Surface, |s| s.background);
         y = self.wrap_pills(
             buttons,
@@ -2134,11 +2456,11 @@ impl SlidesApp {
                 .iter()
                 .map(|b| (b.label().to_string(), *b == cur_bg, Hit::SetBackground(*b))),
         );
-        y += 10.0;
+        y += m.s4;
 
-        Self::push_inspector_header(labels, x0, &mut y, "DECK THEME");
+        Self::push_inspector_header(m, labels, x0, &mut y, "DECK THEME");
         y = self.wrap_palette_pills(buttons, x0, x1, y);
-        y += 10.0;
+        y += m.s4;
 
         y
     }
@@ -2161,7 +2483,13 @@ impl SlidesApp {
         labels: &mut Vec<Label>,
         buttons: &mut Vec<UiButton>,
     ) -> Rect {
-        let notes_top = (y + 6.0).max(inspector.y1 - 188.0);
+        let m = &self.chrome_metrics;
+        // The notes block sits under the property sections, pulled up to leave
+        // it `NOTES_MIN_H` when there is room. When the sections outgrow the
+        // panel (large text in a short window) it flows on below them rather
+        // than folding back over them or inverting: the box is always at
+        // least one control tall and its top is always below the sections.
+        let notes_top = y.max(inspector.y1 - NOTES_MIN_H);
         labels.push(Label {
             pos: Point::new(x0, notes_top),
             text: if self.editing_notes {
@@ -2170,11 +2498,13 @@ impl SlidesApp {
                 "SPEAKER NOTES"
             }
             .to_string(),
-            font: 11.0,
+            font: FONT_CAPTION,
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
+            max_w: Some(x1 - x0),
         });
-        let nb = Rect::new(x0, notes_top + 20.0, x1, inspector.y1 - pad);
+        let nb_y0 = notes_top + m.caption_adv();
+        let nb = Rect::new(x0, nb_y0, x1, (inspector.y1 - pad).max(nb_y0 + m.control_h()));
         buttons.push(UiButton {
             rect: nb,
             kind: ButtonKind::Text {
@@ -2210,9 +2540,9 @@ impl SlidesApp {
         is_fill: bool,
     ) -> f64 {
         let cols = 4.0;
-        let gap = 8.0;
+        let gap = self.chrome_metrics.s2;
         let sw = (inner_w - (cols - 1.0) * gap) / cols;
-        let sh = 26.0;
+        let sh = SWATCH_H;
         for (i, role) in roles.iter().enumerate() {
             let col = (i as f64) % cols;
             let row = ((i as f64) / cols).floor();
@@ -2237,11 +2567,10 @@ impl SlidesApp {
     }
 
     /// Width a palette pill needs to show its full label without truncation:
-    /// the colour dot (drawn at `x0+8 .. x0+20`), a 6px gap, the label, and a
-    /// trailing pad. `est_width` deliberately overestimates the real advance,
-    /// so a pill sized to this never clips its name.
-    fn palette_pill_width(label: &str) -> f64 {
-        26.0 + chrome::est_width(label, 12.0) + 12.0
+    /// the colour dot (drawn at `x0+8 .. x0+20`), a 6px gap, the measured
+    /// label, and a trailing `s3` pad.
+    fn palette_pill_width(m: &ChromeMetrics, label: &str) -> f64 {
+        PALETTE_DOT_SLOT + m.label_w(label, FONT_PILL, TextWeight::Semibold) + m.s3
     }
 
     /// Lay out the five deck-theme pills, each sized to fit its full name and
@@ -2250,11 +2579,12 @@ impl SlidesApp {
     /// the docked inspector at any width, instead of packing five fixed-width
     /// pills that clip their labels. Returns the y just past the last row.
     fn wrap_palette_pills(&self, buttons: &mut Vec<UiButton>, x0: f64, x1: f64, mut y: f64) -> f64 {
-        let bh = 28.0;
-        let gap = 8.0;
+        let m = &self.chrome_metrics;
+        let bh = m.small_pill_h();
+        let gap = m.s2;
         let mut x = x0;
         for p in &PaletteKind::ALL {
-            let w = Self::palette_pill_width(p.label()).min(x1 - x0);
+            let w = Self::palette_pill_width(m, p.label()).min(x1 - x0);
             if x > x0 && x + w > x1 + 0.5 {
                 x = x0;
                 y += bh + gap;
@@ -2286,12 +2616,15 @@ impl SlidesApp {
         mut y: f64,
         items: impl Iterator<Item = (String, bool, Hit)>,
     ) -> f64 {
-        let bh = 28.0;
-        let gap = 8.0;
+        let m = &self.chrome_metrics;
+        let bh = m.small_pill_h();
+        let gap = m.s2;
         let mut x = x0;
         for (label, active, hit) in items {
-            let w = chrome::est_width(&label, 12.0) + 22.0;
-            if x + w > x1 {
+            // Pills paint as `Text` buttons at the control font, so the slot is
+            // measured with that same style.
+            let w = m.label_w(&label, FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s3;
+            if x > x0 && x + w > x1 {
                 x = x0;
                 y += bh + gap;
             }
@@ -3274,11 +3607,14 @@ impl SlidesApp {
                   read worse at every call site for no benefit"
     )]
     fn title_input_rect(&self, chrome: &Chrome) -> Rect {
+        // The editor wraps the title's measured line box with `s1` above and
+        // below, so its glyphs land exactly where the static label was.
+        let m = &self.chrome_metrics;
         Rect::new(
             chrome.title_pos.x,
-            chrome.title_pos.y - 3.0,
+            chrome.title_pos.y - m.s1,
             chrome.title_rect.x1,
-            chrome.title_pos.y + 23.0,
+            chrome.title_pos.y + m.lh_title + m.s1,
         )
     }
 
@@ -4002,10 +4338,14 @@ impl SlidesApp {
             None,
             &vello::kurbo::RoundedRect::from_rect(zone, 10.0),
         );
-        let icon_sz = 18.0;
+        // Icon + label cluster centred on the zone, both axes measured with
+        // the style the label is painted in.
+        let m = &self.chrome_metrics;
+        let icon_sz = TOOLBAR_ICON;
         let label = "Drop to delete";
-        let lw = chrome::est_width(label, 12.5);
-        let total = icon_sz + 8.0 + lw;
+        let font = 12.5;
+        let (lw, lh) = tr.measure_weighted(label, font, None, TextWeight::Medium);
+        let total = icon_sz + m.s2 + f64::from(lw);
         let cx = zone.x0 + (zone.width() - total) / 2.0;
         let cy = zone.y0 + zone.height() / 2.0;
         draw_icon(
@@ -4019,9 +4359,9 @@ impl SlidesApp {
         tr.draw_text_weighted(
             scene,
             label,
-            12.5,
+            font,
             danger,
-            t * Affine::translate((cx + icon_sz + 8.0, cy - 8.0)),
+            t * Affine::translate((cx + icon_sz + m.s2, cy - f64::from(lh) / 2.0)),
             None,
             TextWeight::Medium,
         );
@@ -4180,9 +4520,16 @@ impl SlidesApp {
         l: &Label,
     ) {
         let col = self.label_color(l.color, theme, pal);
+        // Elide with the renderer's own metrics, so the ellipsis lands where
+        // the glyphs really end rather than where a per-glyph estimate did.
+        let text = match l.max_w {
+            Some(max_w) if max_w <= 0.0 => String::new(),
+            Some(max_w) => tr.elide_to_width_weighted(&l.text, l.font, max_w as f32, l.weight),
+            None => l.text.clone(),
+        };
         tr.draw_text_weighted(
             scene,
-            &l.text,
+            &text,
             l.font,
             col,
             t * Affine::translate((l.pos.x, l.pos.y)),
@@ -5064,21 +5411,6 @@ fn caret_line_home_end(text: &str, caret: usize, end: bool) -> usize {
     le
 }
 
-fn elide(label: &str, font: f64, max_w: f64) -> String {
-    if max_w <= 0.0 || chrome::est_width(label, font) <= max_w {
-        return label.to_string();
-    }
-    let mut chars: Vec<char> = label.chars().collect();
-    while !chars.is_empty() {
-        let candidate: String = chars.iter().collect::<String>().trim_end().to_string() + "…";
-        if chrome::est_width(&candidate, font) <= max_w {
-            return candidate;
-        }
-        chars.pop();
-    }
-    "…".to_string()
-}
-
 /// Write a small, unmistakably-photographic test raster to a temp PNG and
 /// return its path. Used only by the `image` `--shots` scenario so a headless
 /// screenshot can show the real decode path; never called on a live launch.
@@ -5569,6 +5901,10 @@ impl Widget for SlidesApp {
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
         self.presentation.expire_transition(theme.reduce_motion);
+        // Measure first, so everything this frame lays out — the flap and rail
+        // sync below, `compute_chrome`, and the hit-rects later events derive
+        // from it — comes from the renderer that is about to paint it.
+        self.refresh_chrome_metrics(text_renderer, theme);
         // Reconcile the rail flap with the current width (so resizing across
         // the breakpoint returns to the layout default) and advance its eased
         // reveal using real elapsed time, frame-rate independent.
@@ -8220,6 +8556,197 @@ mod tests {
         a.rect = Rect::new(0.0, 0.0, w, 800.0);
         a.sync_flaps(0.0, false);
         a
+    }
+
+    /// An app whose chrome metrics were resolved against a renderer at
+    /// `text_scale`, exactly as the first draw of a frame does.
+    fn measured_app(w: f64, text_scale: f32) -> (SlidesApp, TextRenderer) {
+        let mut app = app_sized(w);
+        let theme = Theme::dark().with_text_scale(text_scale);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        app.refresh_chrome_metrics(&mut tr, &theme);
+        (app, tr)
+    }
+
+    /// Toolbar controls other than the rail hamburger, left to right.
+    fn toolbar_controls(chrome: &Chrome) -> Vec<&UiButton> {
+        let mut controls: Vec<&UiButton> = chrome
+            .buttons
+            .iter()
+            .filter(|b| {
+                !matches!(b.kind, ButtonKind::Hamburger) && b.rect.center().y < chrome.toolbar.y1
+            })
+            .collect();
+        controls.sort_by(|a, b| a.rect.x0.total_cmp(&b.rect.x0));
+        controls
+    }
+
+    /// At 480 px the insert tools all move behind the overflow button, which
+    /// is then pulled left of the nominal tool slot. The title must yield to
+    /// that placed control, not to the slot — otherwise the ellipsis paints
+    /// under the "⋯" button.
+    #[test]
+    fn title_yields_to_the_leftmost_placed_toolbar_control_at_480() {
+        let (app, _tr) = measured_app(480.0, 1.0);
+        let chrome = app.compute_chrome();
+        let first = toolbar_controls(&chrome)
+            .first()
+            .map(|b| b.rect.x0)
+            .expect("toolbar controls");
+        assert!(
+            chrome.title_rect.x1 <= first + 0.01,
+            "title slot ends at {:.1} but a control starts at {first:.1}",
+            chrome.title_rect.x1
+        );
+        let title = chrome
+            .labels
+            .iter()
+            .find(|l| l.pos == chrome.title_pos)
+            .expect("title label");
+        let max_w = title.max_w.expect("title is elided at paint time");
+        assert!(max_w > 0.0, "480 px still shows a title fragment");
+        assert!(chrome.title_pos.x + max_w <= first - app.chrome_metrics.s3 + 0.01);
+    }
+
+    /// At 1× the measured chrome reproduces the classic density exactly:
+    /// 56 px toolbar, 34 px pills, 30 px rail controls, 28 px inspector pills.
+    #[test]
+    fn one_x_chrome_density_is_unchanged() {
+        let (app, _tr) = measured_app(NARROW_BREAKPOINT + 400.0, 1.0);
+        let chrome = app.compute_chrome();
+        assert!((chrome.toolbar.height() - 56.0).abs() < 0.01, "toolbar");
+        let present = chrome
+            .buttons
+            .iter()
+            .find(|b| matches!(b.hit, Hit::Present))
+            .expect("Present");
+        assert!((present.rect.height() - 34.0).abs() < 0.01, "toolbar pill");
+        let add = chrome
+            .buttons
+            .iter()
+            .find(|b| matches!(b.hit, Hit::NewSlide) && chrome.rail.contains(b.rect.center()))
+            .expect("rail Add");
+        assert!((add.rect.height() - 30.0).abs() < 0.01, "rail control");
+        let layout_pill = chrome
+            .buttons
+            .iter()
+            .find(|b| matches!(b.hit, Hit::SetLayout(_)))
+            .expect("layout pill");
+        assert!((layout_pill.rect.height() - 28.0).abs() < 0.01, "inspector pill");
+    }
+
+    /// At 2× every toolbar pill, rail control and inspector row follows the
+    /// measured text: labels fit their slots, pills share one centre line,
+    /// and no section caption is painted under the control below it.
+    #[test]
+    fn two_x_chrome_rows_follow_measured_text() {
+        let (mut app, mut tr) = measured_app(NARROW_BREAKPOINT + 400.0, 2.0);
+        // Select the text element so the inspector shows every section.
+        app.sel = app.slide().and_then(|s| s.elements.first().map(|e| e.id.clone()));
+        let chrome = app.compute_chrome();
+        let m = app.chrome_metrics.clone();
+        assert!(m.lh_control > 30.0, "2x control line box {}", m.lh_control);
+        assert!(
+            chrome.toolbar.height() >= m.title_block_h() + 2.0 * m.s2 - 0.01
+                && chrome.toolbar.height() > 56.0,
+            "toolbar grew to its two-line title block"
+        );
+
+        let controls = toolbar_controls(&chrome);
+        let centre = controls[0].rect.center().y;
+        for b in &controls {
+            assert!((b.rect.center().y - centre).abs() < 0.01, "one centre line");
+            assert!(b.rect.height() >= m.lh_control + m.s4 - 0.01, "pill fits its line box");
+            if let ButtonKind::Text { label, .. } | ButtonKind::IconText { label, .. } = &b.kind {
+                let (w, _) = tr.measure_weighted(label, FONT_CONTROL, None, TextWeight::Semibold);
+                assert!(
+                    b.rect.width() >= f64::from(w) + 2.0 * m.s3 - 0.01,
+                    "'{label}' needs {w:.1} + padding, pill is {:.1}",
+                    b.rect.width()
+                );
+            }
+        }
+        for pair in controls.windows(2) {
+            assert!(pair[0].rect.x1 <= pair[1].rect.x0 + 0.01, "toolbar controls never overlap");
+        }
+
+        // Inspector: captions keep clear of the control that follows them,
+        // and every text control is at least its line box tall.
+        let in_inspector = |r: Rect| chrome.inspector.contains(r.center());
+        for l in chrome.labels.iter().filter(|l| {
+            (l.font - FONT_CAPTION).abs() < 0.01 && chrome.inspector.contains(l.pos)
+        }) {
+            let caption = Rect::new(l.pos.x, l.pos.y, l.pos.x + 1.0, l.pos.y + m.lh_caption);
+            for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
+                assert!(
+                    b.rect.y0 >= caption.y1 - 0.01 || b.rect.y1 <= caption.y0 + 0.01,
+                    "'{}' caption at y {:.1}..{:.1} collides with a control at {:.1}..{:.1}",
+                    l.text,
+                    caption.y0,
+                    caption.y1,
+                    b.rect.y0,
+                    b.rect.y1
+                );
+            }
+        }
+        for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
+            match &b.kind {
+                ButtonKind::Text { label, .. } if !label.is_empty() => {
+                    assert!(b.rect.height() >= m.lh_control - 0.01, "'{label}' row fits its text");
+                }
+                // Alignment segments wrap to two rows rather than clip their
+                // labels once a quarter-width cell is too narrow for them.
+                ButtonKind::Segment { label, .. } => {
+                    let (w, _) = tr.measure_weighted(label, FONT_CONTROL, None, TextWeight::Semibold);
+                    assert!(
+                        b.rect.width() >= f64::from(w) + 2.0 * m.s2 - 0.01,
+                        "segment '{label}' needs {w:.1}, cell is {:.1}",
+                        b.rect.width()
+                    );
+                }
+                _ => {}
+            }
+        }
+        // The font-size input reserve fits two square steppers plus a
+        // three-digit value at the scaled control size, and the B/I toggles
+        // never paint over it (they wrap below when the row is too narrow).
+        let font_input = chrome.font_input_rect.expect("text element shows the TYPE row");
+        let (w, _) = tr.measure_weighted("999 pt", FONT_CONTROL, None, TextWeight::Semibold);
+        assert!(font_input.width() >= 2.0 * m.control_h() + f64::from(w) + 2.0 * m.s2 - 0.01);
+        // The speaker-notes box never inverts or folds back over the sections:
+        // it is at least one control tall and starts below the last control.
+        let notes = chrome.notes_box.expect("notes box");
+        assert!(notes.height() >= m.control_h() - 0.01, "notes box {notes:?}");
+        let sections_bottom = chrome
+            .buttons
+            .iter()
+            .filter(|b| in_inspector(b.rect) && !matches!(b.hit, Hit::EditNotes))
+            .map(|b| b.rect.y1)
+            .fold(0.0_f64, f64::max);
+        assert!(notes.y0 >= sections_bottom - 0.01, "notes box starts under the sections");
+        let inspector_controls: Vec<Rect> = chrome
+            .buttons
+            .iter()
+            .filter(|b| in_inspector(b.rect))
+            .map(|b| b.rect)
+            .chain([font_input, notes])
+            .collect();
+        for (i, a) in inspector_controls.iter().enumerate() {
+            for b in inspector_controls.iter().skip(i + 1) {
+                let overlap = a.intersect(*b);
+                assert!(
+                    overlap.width() <= 0.01 || overlap.height() <= 0.01,
+                    "inspector controls overlap: {a:?} vs {b:?}"
+                );
+            }
+        }
+        // Rail: the pinned action row grew with its labels.
+        for b in chrome.buttons.iter().filter(|b| chrome.rail.contains(b.rect.center())) {
+            if let ButtonKind::Text { label, .. } = &b.kind {
+                assert!(b.rect.height() >= m.lh_control - 0.01, "rail '{label}' fits");
+            }
+        }
     }
 
     #[test]

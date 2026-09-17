@@ -12,8 +12,7 @@ use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelEvent, Ed25519PublicKey};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -22,20 +21,38 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::sheet::{
+    Align, BodyScroll, FORM_SHEET_WIDTH, Field, Resolved, Role, Rows, SheetSpec, line_height,
+    paint_field, paint_text, paragraph_height, resolve, with_layout_renderer,
+};
 use crate::widget::identity_flow::{
     IdentityFlowError, InviteEnvelope, ScreenOutcome, build_attestation_from_invite,
 };
+use crate::widget::modal_frame::ModalAction;
 
-/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
-/// pure `f64` matrix multiply-add with no overflow trap, so it cannot panic
-/// regardless of operand magnitude — centralised here rather than repeating
-/// the exemption at every text transform composed in this module.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
-    transform * Affine::translate(offset)
+const TITLE: &str = "Accept channel invite";
+const LINK_LABEL: &str = "Invite link";
+const LINK_PLACEHOLDER: &str = "Paste a qos://invite/... URL";
+const EMPTY_HINT: &str = "Paste an invite link to see who sent it and what it grants.";
+const DECLINE_LABEL: &str = "Decline";
+const ACCEPT_LABEL: &str = "Accept invite";
+
+/// Action-row indices, in authoring order.
+const ACTION_DECLINE: usize = 0;
+const ACTION_ACCEPT: usize = 1;
+
+/// Every rect the screen paints and hit-tests, from one pass over the rows.
+#[derive(Clone, Debug, Default)]
+struct Plan {
+    link_label: Rect,
+    url: Rect,
+    /// The parsed invite's banner and expiry, when a valid link is present.
+    banner: Option<Rect>,
+    expires: Option<Rect>,
+    /// The parse error, or the hint while the field is empty.
+    status: Option<Rect>,
+    error: Option<Rect>,
+    bottom: f64,
 }
 
 pub struct InviteAcceptScreen {
@@ -53,6 +70,11 @@ pub struct InviteAcceptScreen {
     pub last_accepted_event: Option<ChannelEvent>,
     accept_error: Option<String>,
     last_cursor: Point,
+    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
+    /// without waiting for a paint.
+    layout_theme: Option<Theme>,
+    scroll: BodyScroll,
+    body_height: f64,
 }
 
 impl Default for InviteAcceptScreen {
@@ -77,6 +99,9 @@ impl InviteAcceptScreen {
             last_accepted_event: None,
             accept_error: None,
             last_cursor: Point::ZERO,
+            layout_theme: None,
+            scroll: BodyScroll::default(),
+            body_height: 0.0,
         }
     }
 
@@ -223,6 +248,10 @@ impl InviteAcceptScreen {
                     },
                 ..
             } => {
+                if self.scroll.key(logical_key, self.body_height) {
+                    *handled = true;
+                    return ScreenOutcome::Stay;
+                }
                 if !self.url_focus {
                     return ScreenOutcome::Stay;
                 }
@@ -253,7 +282,135 @@ impl InviteAcceptScreen {
                 }
                 ScreenOutcome::Stay
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.scroll.wheel(delta) {
+                    *handled = true;
+                }
+                ScreenOutcome::Stay
+            }
             _ => ScreenOutcome::Stay,
+        }
+    }
+
+    /// One geometry pass for both `apply_layout` and `draw`; hit rects are
+    /// clipped to the visible body.
+    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
+        let actions = self.actions();
+        let spec = SheetSpec {
+            title: TITLE,
+            max_width: FORM_SHEET_WIDTH,
+            actions: &actions,
+        };
+        let mut scroll = self.scroll;
+        let resolved = resolve(
+            self.rect,
+            &spec,
+            &mut scroll,
+            text_renderer,
+            theme,
+            |rows, control_h, tr, theme| {
+                let plan = self.plan(rows, control_h, tr, theme);
+                let bottom = plan.bottom;
+                (plan, bottom)
+            },
+        );
+        self.scroll = scroll;
+        let body = resolved.sheet.body();
+        self.body_height = body.height();
+        self.url_rect = BodyScroll::visible(body, resolved.plan.url);
+        self.decline_rect = resolved.sheet.action(ACTION_DECLINE);
+        self.accept_rect = resolved.sheet.action(ACTION_ACCEPT);
+        resolved
+    }
+
+    fn actions(&self) -> [ModalAction<'static>; 2] {
+        [
+            ModalAction::secondary(DECLINE_LABEL).hovered(self.decline_hovered),
+            ModalAction::primary(ACCEPT_LABEL)
+                .enabled(self.parsed.is_some())
+                .hovered(self.accept_hovered),
+        ]
+    }
+
+    /// What the status row says: who invited, or why the link failed, or
+    /// what to do while the field is empty.
+    fn status_text(&self) -> Option<(String, Role)> {
+        if self.parsed.is_some() {
+            return None;
+        }
+        match &self.parse_error {
+            Some(err) => Some((err.clone(), Role::Error)),
+            None => Some((EMPTY_HINT.to_string(), Role::Caption)),
+        }
+    }
+
+    fn banner_text(&self) -> Option<(String, String)> {
+        let env = self.parsed.as_ref()?;
+        let banner = format!(
+            "{} invited you to #{} as {:?}",
+            env.inviter_label, env.channel_name, env.role
+        );
+        let when = chrono::DateTime::<chrono::Utc>::from(
+            SystemTime::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_secs(env.expires_unix))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        )
+        .to_rfc3339();
+        Some((banner, format!("Expires {when}")))
+    }
+
+    /// Walk the body rows once: the link field, then what the link means.
+    fn plan(
+        &self,
+        mut rows: Rows,
+        control_h: f64,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Plan {
+        let sp = &theme.tokens.spacing;
+        let width = rows.width();
+        let link_label = rows.row(line_height(text_renderer, theme, Role::Label));
+        rows.gap(sp.s1);
+        let url = rows.row(control_h);
+        rows.gap(sp.s6);
+        let (mut banner, mut expires, mut status) = (None, None, None);
+        if let Some((banner_text, _)) = self.banner_text() {
+            banner = Some(rows.row(paragraph_height(
+                text_renderer,
+                theme,
+                Role::Value,
+                &banner_text,
+                width,
+            )));
+            rows.gap(sp.s1);
+            expires = Some(rows.row(line_height(text_renderer, theme, Role::Caption)));
+        } else if let Some((text, role)) = self.status_text() {
+            status = Some(rows.row(paragraph_height(
+                text_renderer,
+                theme,
+                role,
+                &text,
+                width,
+            )));
+        }
+        let error = self.accept_error.as_deref().map(|err| {
+            rows.gap(sp.s3);
+            rows.row(paragraph_height(
+                text_renderer,
+                theme,
+                Role::Error,
+                err,
+                width,
+            ))
+        });
+        Plan {
+            link_label,
+            url,
+            banner,
+            expires,
+            status,
+            error,
+            bottom: rows.bottom(),
         }
     }
 }
@@ -264,13 +421,16 @@ impl Widget for InviteAcceptScreen {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = Some(theme.clone());
+        // The screen owns the viewport, so the sheet centres on the window
+        // rather than inside a fixed box at the origin.
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(720.0),
-                height: Dimension::length(540.0),
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
             ..Default::default()
         });
@@ -286,29 +446,11 @@ impl Widget for InviteAcceptScreen {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let card_w = 560.0;
-        let card_h = 440.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let pad = 24.0;
-        self.url_rect = Rect::new(
-            card_x + pad,
-            card_y + 80.0,
-            card_x + card_w - pad,
-            card_y + 80.0 + 56.0,
-        );
-        self.accept_rect = Rect::new(
-            card_x + card_w - pad - 160.0,
-            card_y + card_h - pad - 44.0,
-            card_x + card_w - pad,
-            card_y + card_h - pad,
-        );
-        self.decline_rect = Rect::new(
-            card_x + pad,
-            card_y + card_h - pad - 44.0,
-            card_x + pad + 140.0,
-            card_y + card_h - pad,
-        );
+        if let Some(theme) = self.layout_theme.clone() {
+            with_layout_renderer(&theme, |tr| {
+                self.resolve(&theme, tr);
+            });
+        }
     }
 
     fn draw(
@@ -319,20 +461,98 @@ impl Widget for InviteAcceptScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let backdrop = Color::from_rgba8(0, 0, 0, 180);
-        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-        let card_w = 560.0;
-        let card_h = 440.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-        let pad = 24.0;
+        let resolved = self.resolve(theme, text_renderer);
+        let actions = self.actions();
+        let spec = SheetSpec {
+            title: TITLE,
+            max_width: FORM_SHEET_WIDTH,
+            actions: &actions,
+        };
+        let sheet = &resolved.sheet;
+        let plan = &resolved.plan;
 
-        Self::draw_card_chrome(scene, transform, text_renderer, theme, card, pad);
-        self.draw_url_field(scene, transform, text_renderer, theme);
-        self.draw_invite_status(scene, transform, text_renderer, theme, card, pad);
-        self.draw_decline_button(scene, transform, text_renderer, theme);
-        self.draw_accept_button(scene, transform, text_renderer, theme, card, pad);
+        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+        sheet.clip_body(scene, transform);
+        paint_text(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            plan.link_label,
+            LINK_LABEL,
+            Role::Label,
+            Align::Start,
+            false,
+        );
+        paint_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &Field {
+                rect: plan.url,
+                text: &self.url,
+                placeholder: LINK_PLACEHOLDER,
+                focused: self.url_focus,
+                editor: None,
+                multiline: false,
+            },
+        );
+        if let Some((banner, expires)) = self.banner_text() {
+            if let Some(rect) = plan.banner {
+                paint_text(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    rect,
+                    &banner,
+                    Role::Value,
+                    Align::Start,
+                    true,
+                );
+            }
+            if let Some(rect) = plan.expires {
+                paint_text(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    rect,
+                    &expires,
+                    Role::Caption,
+                    Align::Start,
+                    false,
+                );
+            }
+        } else if let (Some(rect), Some((text, role))) = (plan.status, self.status_text()) {
+            paint_text(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                &text,
+                role,
+                Align::Start,
+                true,
+            );
+        }
+        if let (Some(rect), Some(err)) = (plan.error, self.accept_error.as_deref()) {
+            paint_text(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                err,
+                Role::Error,
+                Align::Start,
+                true,
+            );
+        }
+        scene.pop_layer();
+        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
     }
 
     fn handle_event(
@@ -370,240 +590,10 @@ impl Widget for InviteAcceptScreen {
     }
 }
 
-impl InviteAcceptScreen {
-    /// The card background/border and its title.
-    fn draw_card_chrome(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        pad: f64,
-    ) {
-        let radius = 12.0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Accept channel invite",
-            22.0,
-            theme.tokens.colors.text_primary,
-            translated(transform, (card.x0 + pad, card.y0 + pad)),
-            None,
-        );
-    }
-
-    /// The URL input box and its placeholder/typed text.
-    fn draw_url_field(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.url_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(if self.url_focus { 2.0 } else { 1.0 }),
-            transform,
-            if self.url_focus {
-                theme.border_focus
-            } else {
-                theme.tokens.colors.border_standard
-            },
-            None,
-            &RoundedRect::from_rect(self.url_rect, 8.0),
-        );
-        let placeholder = if self.url.is_empty() {
-            "Paste a qos://invite/... URL".to_string()
-        } else {
-            self.url.clone()
-        };
-        let url_color = if self.url.is_empty() {
-            theme.tokens.colors.text_dim
-        } else {
-            theme.tokens.colors.text_primary
-        };
-        text_renderer.draw_text(
-            scene,
-            &placeholder,
-            13.0,
-            url_color,
-            translated(
-                transform,
-                (self.url_rect.x0 + 12.0, self.url_rect.y0 + 12.0),
-            ),
-            None,
-        );
-    }
-
-    /// The parsed invite's banner + expiry, or the parse error in its place.
-    fn draw_invite_status(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        pad: f64,
-    ) {
-        if let Some(env) = &self.parsed {
-            let banner = format!(
-                "{} invited you to #{} as {:?}",
-                env.inviter_label, env.channel_name, env.role
-            );
-            text_renderer.draw_text(
-                scene,
-                &banner,
-                15.0,
-                theme.tokens.colors.text_primary,
-                translated(transform, (card.x0 + pad, card.y0 + 170.0)),
-                None,
-            );
-            let when = chrono::DateTime::<chrono::Utc>::from(
-                SystemTime::UNIX_EPOCH
-                    .checked_add(std::time::Duration::from_secs(env.expires_unix))
-                    .unwrap_or(SystemTime::UNIX_EPOCH),
-            )
-            .to_rfc3339();
-            text_renderer.draw_text(
-                scene,
-                &format!("Expires {when}"),
-                12.0,
-                theme.tokens.colors.text_dim,
-                translated(transform, (card.x0 + pad, card.y0 + 200.0)),
-                None,
-            );
-        } else if let Some(err) = &self.parse_error {
-            text_renderer.draw_text(
-                scene,
-                err,
-                13.0,
-                Color::from_rgb8(220, 80, 80),
-                translated(transform, (card.x0 + pad, card.y0 + 170.0)),
-                None,
-            );
-        }
-    }
-
-    /// The `[Decline]` button.
-    fn draw_decline_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.decline_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.decline_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Decline",
-            13.0,
-            theme.tokens.colors.text_primary,
-            translated(
-                transform,
-                (
-                    self.decline_rect.x0 + 16.0,
-                    self.decline_rect.y0 + (self.decline_rect.height() - 13.0) / 2.0,
-                ),
-            ),
-            None,
-        );
-    }
-
-    /// The `[Accept invite]` button, disabled until an invite has parsed,
-    /// plus any accept-time error underneath it.
-    fn draw_accept_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        pad: f64,
-    ) {
-        let enabled = self.parsed.is_some();
-        let bg = if !enabled {
-            theme.tokens.colors.surfaces.base
-        } else if self.accept_hovered {
-            theme.bg_active
-        } else {
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        };
-        let label_color = if enabled {
-            Color::from_rgb8(255, 255, 255)
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            bg,
-            None,
-            &RoundedRect::from_rect(self.accept_rect, 8.0),
-        );
-        let (aw, _) = text_renderer.measure("Accept invite", 14.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Accept invite",
-            14.0,
-            label_color,
-            translated(
-                transform,
-                (
-                    self.accept_rect.x0 + (self.accept_rect.width() - f64::from(aw)) / 2.0,
-                    self.accept_rect.y0 + (self.accept_rect.height() - 14.0) / 2.0,
-                ),
-            ),
-            None,
-        );
-        if let Some(e) = &self.accept_error {
-            text_renderer.draw_text(
-                scene,
-                e,
-                12.0,
-                Color::from_rgb8(220, 80, 80),
-                translated(transform, (card.x0 + pad, self.accept_rect.y0 - 24.0)),
-                None,
-            );
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{ChannelId, Role, generate_keypair};
+    use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
     use std::time::Duration;
 
     fn fixture_url(now: SystemTime) -> String {
@@ -615,7 +605,7 @@ mod tests {
             pk,
             &sk,
             "Alice",
-            Role::Editor,
+            ChannelRole::Editor,
             now.checked_add(Duration::from_secs(3600)).unwrap_or(now),
         )
         .unwrap();
@@ -628,7 +618,7 @@ mod tests {
         let mut s = InviteAcceptScreen::new();
         s.set_url(&url);
         assert!(s.parsed().is_some(), "parse error: {:?}", s.parse_error());
-        assert_eq!(s.parsed().unwrap().role, Role::Editor);
+        assert_eq!(s.parsed().unwrap().role, ChannelRole::Editor);
     }
 
     #[test]
@@ -680,5 +670,31 @@ mod tests {
         s.set_url(&bad);
         assert!(s.parsed().is_none());
         assert!(s.parse_error().is_some());
+    }
+
+    /// Empty, invalid and valid links each get a designed row under the
+    /// field, and the field is one control tall on the body's full width.
+    #[test]
+    fn plan_has_a_status_row_for_every_link_state() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+        let mut s = InviteAcceptScreen::new();
+        let empty = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+        assert_eq!(empty.url.height(), 34.0);
+        assert_eq!((empty.url.x0, empty.url.x1), (body.x0, body.x1));
+        assert!(empty.status.is_some() && empty.banner.is_none());
+
+        s.set_url("https://example.com/not-an-invite");
+        let bad = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+        assert!(bad.status.is_some(), "a parse error has a row");
+
+        s.set_url(fixture_url(SystemTime::now()));
+        let good = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+        let banner = good.banner.expect("a valid link shows its banner");
+        let expires = good.expires.expect("and its expiry");
+        assert!(banner.y0 > good.url.y1);
+        assert!((expires.y0 - banner.y1 - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9);
+        assert!(good.status.is_none());
     }
 }

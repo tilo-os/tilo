@@ -23,12 +23,25 @@ use crate::icons::{Icon, draw_icon};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::{Metrics, Spacing};
 use crate::widget::TaffyTreeExt;
 use crate::widget::nav_split::{FlapState, SplitLayout};
 use crate::widget::{Element, Widget};
 
-pub const DEFAULT_NAVSHELL_SIDEBAR_WIDTH: f64 = 280.0;
-pub const DEFAULT_NAVSHELL_OVERVIEW_WIDTH: f64 = 340.0;
+/// The OS-wide genuine-sidebar width (`Metrics::sidebar_width`).
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+pub const DEFAULT_NAVSHELL_SIDEBAR_WIDTH: f64 = Metrics::BASE.sidebar_width as f64;
+/// The OS-wide overview column width (`Metrics::overview_width`).
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+pub const DEFAULT_NAVSHELL_OVERVIEW_WIDTH: f64 = Metrics::BASE.overview_width as f64;
+/// 20 px under `Metrics::compact_breakpoint` (720); pinned by tests and by
+/// the apps that chose this shell, so recorded rather than moved.
 pub const DEFAULT_NAVSHELL_BREAKPOINT: f64 = 700.0;
 /// Detail pane's minimum width in the side-by-side layout; overview gives up
 /// space first.
@@ -36,8 +49,15 @@ const MIN_DETAIL_WIDTH: f64 = 260.0;
 /// Caps the per-frame dt so a stale `Instant` (first frame, or a parked
 /// event loop) can't teleport a slide past its animation.
 const MAX_FRAME_DT: f64 = 0.1;
+/// Menu / Back chip square. `AppShell`'s Back button is 34; neither is a
+/// `Metrics` height yet (see the F1 layout review).
 const CHIP_SIZE: f64 = 36.0;
-const CHIP_INSET: f64 = 12.0;
+/// `spacing.s3`.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+const CHIP_INSET: f64 = Spacing::BASE.s3 as f64;
 const BACK_CHIP_WIDTH: f64 = 104.0;
 
 /// Narrows a screen-space `f64` (rect extent, alpha) to the `f32` taffy/

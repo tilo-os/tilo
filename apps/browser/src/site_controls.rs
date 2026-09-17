@@ -308,7 +308,9 @@ impl SiteControls {
         } else {
             "Ads and trackers protection"
         })
-        .with_size(56.0, 32.0)
+        // The toolbar's control height: this sits between the navigation
+        // buttons and the address field.
+        .with_size(56.0, crate::browser_widget::TOOLBAR_CONTROL_HEIGHT)
         .tooltip(if information {
             "Connection, permissions and stored data"
         } else {
@@ -326,8 +328,9 @@ impl SiteControls {
         } else {
             "Ads and trackers"
         };
+        // The theme's standard gap between rows, as every other stacked panel
+        // in the fleet uses; the 10px here was off the spacing scale.
         let mut column = Column::new()
-            .with_gap(10.0)
             .with_intrinsic_height()
             .push(Box::new(
                 Row::new()

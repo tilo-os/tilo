@@ -44,6 +44,10 @@ const HEADER_H: f64 = 26.0;
 const ROW_H: f64 = 34.0;
 const SECTION_GAP: f64 = 10.0;
 const ICON_PX: f64 = 17.0;
+/// Inset from a row's left edge to its icon. The section captions share it,
+/// so "FAVOURITES" / "SYSTEM" sit on the icons' left edge instead of 8px
+/// outside it.
+const ROW_CONTENT_INSET: f64 = 10.0;
 
 /// The laid-out geometry of the favourites band — written by the sidebar in
 /// `apply_layout` so the app (and tests / the shots demo) can synthesise a
@@ -387,7 +391,7 @@ impl PlacesSidebar {
         } else {
             tokens.colors.text_primary
         };
-        let icon_x = rect.x0 + 10.0;
+        let icon_x = rect.x0 + ROW_CONTENT_INSET;
         let icon_y = rect.y0 + (rect.height() - ICON_PX) / 2.0;
         draw_icon(
             scene,
@@ -430,12 +434,11 @@ impl PlacesSidebar {
             theme.tokens.colors.text_dim,
             transform
                 * Affine::translate((
-                    self.row_x0() + 2.0,
+                    self.row_x0() + ROW_CONTENT_INSET,
                     y + (HEADER_H * self.text_scale - f64::from(height)) / 2.0,
                 )),
             None,
         );
-        let _ = scene;
     }
 }
 

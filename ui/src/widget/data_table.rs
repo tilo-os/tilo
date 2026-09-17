@@ -23,7 +23,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
@@ -121,12 +121,21 @@ impl<Row> ColumnDef<Row> {
             } else {
                 theme.text_primary
             };
+            let size = renderer_type_size(text, theme.tokens.typography.scale.sm);
+            let label = value(row);
+            let (_, text_h) = text.measure(&label, size, None);
+            // `rect` is the whole row's cell (the body clip layer trims what
+            // scrolls out), so the text is centred on the row and never
+            // slides as the row enters or leaves the viewport.
             text.draw_text(
                 scene,
-                &value(row),
-                theme.tokens.typography.scale.sm,
+                &label,
+                size,
                 color,
-                Affine::translate((rect.x0 + CELL_PADDING_X, rect.y0 + 5.0)),
+                Affine::translate((
+                    rect.x0 + f64::from(theme.tokens.spacing.s2),
+                    centered_text_top(rect.y0, rect.height(), text_h),
+                )),
                 None,
             );
         }));
@@ -1210,31 +1219,40 @@ impl<Row> DataTable<Row> {
             ),
         );
 
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let pad_x = f64::from(tokens.spacing.s2);
         for (i, col) in self.columns.iter().enumerate() {
             let Some(cr) = self.col_rects.get(i) else {
                 continue;
             };
-            let label_y = header_rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0;
             let header = crate::i18n::I18nManager::lookup_plain(&col.header);
+            let (_, header_h) = text_renderer.measure(&header, text_size, None);
+            let label_y = centered_text_top(header_rect.y0, HEADER_HEIGHT, header_h);
             text_renderer.draw_text(
                 scene,
                 &header,
                 text_size,
                 tokens.colors.text_primary,
-                translated(transform, cr.x0 + CELL_PADDING_X, label_y),
+                translated(transform, cr.x0 + pad_x, label_y),
                 None,
             );
             if let Some(s) = &self.sort
                 && s.key == col.key
             {
                 let arrow = if s.ascending { "\u{25B2}" } else { "\u{25BC}" };
+                // The glyph shares the cell's trailing padding and the label's
+                // vertical centre, so the header reads as one aligned row.
+                let (arrow_w, arrow_h) = text_renderer.measure(arrow, text_size, None);
                 text_renderer.draw_text(
                     scene,
                     arrow,
                     text_size,
                     tokens.colors.text_dim,
-                    translated(transform, cr.x1 - 16.0, label_y),
+                    translated(
+                        transform,
+                        cr.x1 - pad_x - f64::from(arrow_w),
+                        centered_text_top(header_rect.y0, HEADER_HEIGHT, arrow_h),
+                    ),
                     None,
                 );
             }
@@ -1275,7 +1293,9 @@ impl<Row> DataTable<Row> {
                 break;
             }
             let selected = self.selectable && self.is_row_selected(ri);
-            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1.min(body_bottom));
+            // Whole-row geometry: the caller's body clip layer trims the part
+            // that scrolls past the viewport, so cells see their real row.
+            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
             // Selection fill takes precedence over the zebra stripe.
             if selected {
                 scene.fill(
@@ -1298,7 +1318,7 @@ impl<Row> DataTable<Row> {
                 TableRowState::Ready(row) => {
                     for (i, col) in self.columns.iter().enumerate() {
                         let cell_rect = match self.col_rects.get(i) {
-                            Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1.min(body_bottom)),
+                            Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1),
                             None => continue,
                         };
                         (col.render_cell)(row, scene, theme, text_renderer, cell_rect);
@@ -1307,23 +1327,23 @@ impl<Row> DataTable<Row> {
                         }
                     }
                 }
-                TableRowState::Loading => {
+                TableRowState::Loading | TableRowState::Error(_) => {
+                    let (label, color) = match row_state {
+                        TableRowState::Error(message) => (message, tokens.colors.text_primary),
+                        _ => ("Loading…", tokens.colors.text_dim),
+                    };
+                    let size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+                    let (_, text_h) = text_renderer.measure(label, size, None);
                     text_renderer.draw_text(
                         scene,
-                        "Loading…",
-                        tokens.typography.scale.sm,
-                        tokens.colors.text_dim,
-                        translated(transform, self.rect.x0 + CELL_PADDING_X, y0 + 5.0),
-                        None,
-                    );
-                }
-                TableRowState::Error(message) => {
-                    text_renderer.draw_text(
-                        scene,
-                        message,
-                        tokens.typography.scale.sm,
-                        tokens.colors.text_primary,
-                        translated(transform, self.rect.x0 + CELL_PADDING_X, y0 + 5.0),
+                        label,
+                        size,
+                        color,
+                        translated(
+                            transform,
+                            self.rect.x0 + f64::from(tokens.spacing.s2),
+                            centered_text_top(y0, row_h, text_h),
+                        ),
                         None,
                     );
                 }
@@ -1679,8 +1699,26 @@ impl<Row> DataTable<Row> {
 
 const HEADER_HEIGHT: f64 = 28.0;
 const ROW_HEIGHT: f64 = 24.0;
-const CELL_PADDING_X: f64 = 8.0;
 const WHEEL_LINE_PX: f64 = 60.0;
+
+/// Theme type sizes already carry the accessibility text scale, and the
+/// renderer applies that same scale once more inside `draw_text`/`measure`.
+/// Feed the size-based renderer APIs this renderer-relative size so the
+/// multiplier lands exactly once; it is the size-only twin of
+/// [`TextRenderer::renderer_input_style`]. The immediate-mode data widgets
+/// share it from here.
+pub(crate) fn renderer_type_size(text_renderer: &TextRenderer, resolved: f32) -> f32 {
+    text_renderer
+        .renderer_input_style(&TextStyle::new(resolved))
+        .size
+}
+
+/// Top edge that centres a measured text box of `text_h` in a band starting
+/// at `band_y0` with height `band_h`. Text taller than the band starts at the
+/// band's top rather than bleeding into the row above.
+pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
+    band_y0 + ((band_h - f64::from(text_h)) / 2.0).max(0.0)
+}
 
 /// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
 /// vello/taffy; table content stays far below `f32::MAX`.
@@ -1915,13 +1953,14 @@ impl<Row: 'static> Widget for DataTable<Row> {
         );
 
         self.draw_header(scene, transform, text_renderer, theme);
-        self.draw_rows(scene, transform, text_renderer, theme);
         let body = Rect::new(
             self.rect.x0,
             self.rect.y0 + HEADER_HEIGHT,
             self.rect.x1,
             self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h(),
         );
+        // Rows and mounted cells paint whole-row geometry inside one body
+        // clip, so a row leaving the viewport is trimmed rather than re-laid.
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -1929,6 +1968,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             transform,
             &body,
         );
+        self.draw_rows(scene, transform, text_renderer, theme);
         for cell in &mut self.mounted_cells {
             cell.widget
                 .draw(scene, transform, text_renderer, theme, presence);

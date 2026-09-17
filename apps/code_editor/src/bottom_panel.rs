@@ -496,23 +496,30 @@ impl BottomPanel {
         ];
         let mut x = self.rect.x0 + 8.0;
         for (tab, label) in &labels {
-            let (w, _) = text_renderer.measure(label, 12.0, None);
+            let active = self.tab == *tab;
+            let weight = if active {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            };
+            // Measure with the weight that is painted; centre on the measured
+            // line height so every tab label shares the strip's centre line.
+            let (w, h) = text_renderer.measure_weighted(label, 12.0, None, weight);
             let x1 = x + f64::from(w) + 24.0;
             self.tab_rects.push((x, x1, *tab));
-            let active = self.tab == *tab;
             let color = if active { c.text_primary } else { c.text_dim };
             text_renderer.draw_text_weighted(
                 scene,
                 label,
                 12.0,
                 color,
-                transform * Affine::translate((x + 6.0, self.rect.y0 + 9.0)),
+                transform
+                    * Affine::translate((
+                        x + 12.0,
+                        self.rect.y0 + (TAB_H - f64::from(h)) / 2.0,
+                    )),
                 None,
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                },
+                weight,
             );
             if active {
                 let underline = Rect::new(x, self.rect.y0 + TAB_H - 2.0, x1, self.rect.y0 + TAB_H);
@@ -608,29 +615,39 @@ impl BottomPanel {
                     Severity::Info => ("\u{2139}", c.semantic.info),
                     Severity::Hint => ("\u{2022}", c.text_dim),
                 };
+                // Three sizes on one row: centre each on the row band from its
+                // own measured line height (the old `y + 0.5` nudge aligned
+                // tops, not centres).
+                let centred = |tr: &mut TextRenderer, text: &str, size: f32| {
+                    let (_, h) = tr.measure(text, size, None);
+                    y + (ROW_H - f64::from(h)) / 2.0
+                };
+                let glyph_y = centred(text_renderer, glyph, 13.0);
                 text_renderer.draw_text(
                     scene,
                     glyph,
                     13.0,
                     sev_color,
-                    transform * Affine::translate((self.rect.x0 + 14.0, y)),
+                    transform * Affine::translate((self.rect.x0 + 14.0, glyph_y)),
                     None,
                 );
                 let loc = format!("[Ln {}, Col {}]", d.line, d.col);
+                let loc_y = centred(text_renderer, &loc, 12.0);
                 text_renderer.draw_text(
                     scene,
                     &loc,
                     12.0,
                     c.text_dim,
-                    transform * Affine::translate((self.rect.x0 + 36.0, y + 0.5)),
+                    transform * Affine::translate((self.rect.x0 + 36.0, loc_y)),
                     None,
                 );
+                let message_y = centred(text_renderer, &d.message, 13.0);
                 text_renderer.draw_text(
                     scene,
                     &d.message,
                     13.0,
                     c.neutral[8],
-                    transform * Affine::translate((self.rect.x0 + 130.0, y)),
+                    transform * Affine::translate((self.rect.x0 + 130.0, message_y)),
                     Some((self.rect.width() - 140.0) as f32),
                 );
             }
@@ -1018,6 +1035,35 @@ mod tests {
         p.activated_hit = Some(4);
         assert_eq!(p.take_activated_hit(), Some(4));
         assert_eq!(p.take_activated_hit(), None, "cleared on read");
+    }
+
+    /// Every tab label is placed from its measured line height, so the three
+    /// labels share one glyph top inside the strip and none escapes it.
+    #[test]
+    fn tab_labels_share_one_centre_line_inside_the_strip() {
+        let mut panel = BottomPanel::new();
+        panel.rect = Rect::new(0.0, 100.0, 900.0, 100.0 + PANEL_HEIGHT);
+        let theme = Theme::dark();
+        let mut tr = tr();
+        let mut scene = Scene::new();
+        panel.draw_tab_strip(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert_eq!(runs.len(), 3, "one glyph run per tab label");
+        let tops: Vec<f32> = runs.iter().map(|run| run.transform.translation[1]).collect();
+        for top in &tops {
+            assert!(
+                (top - tops[0]).abs() < 0.01,
+                "tab labels are placed on different lines: {tops:?}"
+            );
+        }
+        let (_, line_h) = tr.measure_weighted("Problems (0)", 12.0, None, TextWeight::Semibold);
+        let expected = 100.0 + (TAB_H - f64::from(line_h)) / 2.0;
+        assert!(
+            (f64::from(tops[0]) - expected).abs() < 0.01,
+            "label top {} is not centred in the {TAB_H}px strip (expected {expected})",
+            tops[0]
+        );
+        assert!(f64::from(tops[0]) + f64::from(line_h) <= 100.0 + TAB_H);
     }
 
     #[test]

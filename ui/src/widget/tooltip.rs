@@ -147,7 +147,11 @@ pub fn draw_chip(
     );
 
     let text_size = theme.tokens.typography.scale.sm;
-    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+    // Centre on the measured line, not the font size: the chip's box is
+    // sized from the font size, so the label otherwise sits low by half the
+    // face's ascent/descent difference.
+    let (_, label_h) = text_renderer.measure(label, text_size, None);
+    let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,

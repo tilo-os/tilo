@@ -886,7 +886,9 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 } else {
                     f64::from(theme.tokens.spacing.s4)
                 };
-            let ty = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
+            // Centre on the measured line, not the font size.
+            let (_, title_h) = text_renderer.measure(&self.title, title_size, None);
+            let ty = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &self.title,

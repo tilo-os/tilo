@@ -1822,6 +1822,13 @@ impl NoteTreeView {
         self.row_rects.get(idx).map(vello::kurbo::Rect::center)
     }
 
+    /// Test hook: the sidebar's laid-out rect, so a test can prove the
+    /// overlay drawer stays inside a narrow window at larger text scales.
+    #[doc(hidden)]
+    pub fn rect_for_test(&self) -> Rect {
+        self.rect
+    }
+
     /// Test hook: the x of the disclosure-triangle hit centre for row `idx`,
     /// so tests click the real glyph instead of a hard-coded pixel that the
     /// row inset would shift out from under.

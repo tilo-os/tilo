@@ -38,10 +38,19 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
+/// Default pill height: the dense control step (HIG §9.6, 28 px). Hosts that
+/// lay a chip out taller get a proportionally larger label via
+/// [`Chip::label_size_for_height`].
 const HEIGHT: f64 = 28.0;
+/// Horizontal inset, `spacing.s3` at 1× — the same inset a button uses, so a
+/// chip and a button in one row start their content on the same line.
 const PAD_X: f64 = 12.0;
+/// Lead-to-label and label-to-dismiss gap; 6 px like the button's icon gap,
+/// between `s1` (crowds the glyph) and `s2` (splits the pill into two marks).
 const GAP: f64 = 6.0;
+/// Status dot diameter, `spacing.s2` at 1×.
 const DOT_D: f64 = 8.0;
+/// Dismiss glyph edge: the label's cap height plus a hit margin.
 const X_D: f64 = 14.0;
 
 #[allow(

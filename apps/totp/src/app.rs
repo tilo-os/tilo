@@ -53,6 +53,20 @@ const ADD_BTN_H: f64 = 40.0;
 const SEARCH_H: f64 = 44.0;
 const HEADER_H: f64 = 150.0;
 const PERSISTENCE_BANNER_H: f64 = 48.0;
+/// The header actions, the search field, the persistence banner and the
+/// account list share one centred content column no wider than this at
+/// normal type. A row is an identity on the left and a code on the right; an
+/// unbounded row on a wide window put those ~1400px apart. This is a
+/// composition choice for this app (validated with 8-digit codes and long
+/// identities), not a framework width rule.
+const READABLE_CONTENT_W: f64 = 760.0;
+/// Top inset of the header's action row.
+const HEADER_BTN_TOP: f64 = 18.0;
+/// Gap between the Edit and Add buttons.
+const HEADER_BTN_GAP: f64 = 10.0;
+/// Horizontal padding inside a header button around its measured label (the
+/// `s4` spacing step, spelled out because layout runs without a theme).
+const HEADER_BTN_PAD: f64 = 16.0;
 const TOAST_TTL: Duration = Duration::from_millis(1800);
 
 fn qr_image_request() -> PickRequest {
@@ -99,11 +113,20 @@ pub struct AuthenticatorApp {
     rect: Rect,
     root_node: Option<NodeId>,
     header_rect: Rect,
+    /// The centred readable column (see [`READABLE_CONTENT_W`]) the header
+    /// actions, search, banner and list are laid out in.
+    content_rect: Rect,
     search_rect: Rect,
     add_btn_rect: Rect,
     edit_btn_rect: Rect,
     persistence_retry_rect: Rect,
     list_rect: Rect,
+    /// Measured widths of the Add and Edit button labels, captured by the
+    /// draw pass so `apply_layout` can size the buttons from the text they
+    /// carry (a larger text scale widens the button rather than spilling the
+    /// caption past it). `None` until the first paint, when the authored
+    /// widths stand in.
+    header_label_w: Option<(f64, f64)>,
 
     last_mouse: Point,
     selected: Option<AccountId>,
@@ -204,18 +227,24 @@ impl AuthenticatorApp {
         Self {
             vault: Vault::new(),
             search_provider: crate::search_provider::TotpSearchProvider::new(&Vault::new()),
-            search: TextInput::local().with_kind(ui::widget::TextInputKind::Search),
+            // The shared field owns its placeholder so the hint shares the
+            // typed text's font, gutter and centre line.
+            search: TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Search)
+                .with_placeholder("Search accounts\u{2026}"),
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
             portal_rx: None,
             rect: Rect::ZERO,
             root_node: None,
             header_rect: Rect::ZERO,
+            content_rect: Rect::ZERO,
             search_rect: Rect::ZERO,
             add_btn_rect: Rect::ZERO,
             edit_btn_rect: Rect::ZERO,
             persistence_retry_rect: Rect::ZERO,
             list_rect: Rect::ZERO,
+            header_label_w: None,
             last_mouse: Point::ZERO,
             selected: None,
             toast: None,
@@ -888,17 +917,46 @@ impl AuthenticatorApp {
             1 => "1 account".to_string(),
             n => format!("{n} accounts"),
         };
+
+        // Measure both button labels first and re-place the buttons from
+        // them, so the rects painted below are the rects the pointer hits.
+        let compact = self.rect.width() < 420.0;
+        let selected_has_secret = self
+            .selected
+            .and_then(|id| self.vault.get(id))
+            .is_some_and(crate::model::Account::secret_is_valid);
+        let edit_label = if selected_has_secret {
+            if compact { "Edit" } else { "Edit selected" }
+        } else if compact {
+            "Set up"
+        } else {
+            "Set up selected"
+        };
+        let add_label = if compact { "+ Add" } else { "+  Add account" };
+        let (edit_w, edit_h) =
+            text_renderer.measure_weighted(edit_label, 14.0, None, TextWeight::Medium);
+        let (tw, th) = text_renderer.measure_weighted(add_label, 14.0, None, TextWeight::Semibold);
+        self.header_label_w = Some((f64::from(tw), f64::from(edit_w)));
+        self.layout_header_buttons();
+
+        // The caption sits on the action row's centre line, measured with the
+        // style it is painted with, instead of at a fixed offset.
+        let (_, sub_h) = text_renderer.measure_weighted(&subtitle, 15.0, None, TextWeight::Medium);
         text_renderer.draw_text_weighted(
             scene,
             &subtitle,
             15.0,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.rect.x0 + OUTER_PAD, self.rect.y0 + 34.0)),
+            transform
+                * Affine::translate((
+                    self.content_rect.x0 + OUTER_PAD,
+                    self.add_btn_rect.center().y - f64::from(sub_h) / 2.0,
+                )),
             None,
             TextWeight::Medium,
         );
 
-        // Add button.
+        // Edit button.
         let can_edit = self.selected.is_some_and(|id| self.vault.get(id).is_some());
         let edit_hovered = can_edit && self.edit_btn_rect.contains(self.last_mouse);
         let edit_shape =
@@ -921,28 +979,11 @@ impl AuthenticatorApp {
             None,
             &edit_shape,
         );
-        let selected_has_secret = self
-            .selected
-            .and_then(|id| self.vault.get(id))
-            .is_some_and(crate::model::Account::secret_is_valid);
-        let edit_label = if selected_has_secret {
-            if self.rect.width() < 420.0 {
-                "Edit"
-            } else {
-                "Edit selected"
-            }
-        } else if self.rect.width() < 420.0 {
-            "Set up"
-        } else {
-            "Set up selected"
-        };
         let edit_color = if can_edit {
             theme.tokens.colors.text_primary
         } else {
             theme.tokens.colors.text_dim.with_alpha_factor(0.55)
         };
-        let (edit_w, edit_h) =
-            text_renderer.measure_weighted(edit_label, 14.0, None, TextWeight::Medium);
         text_renderer.draw_text_weighted(
             scene,
             edit_label,
@@ -964,15 +1005,9 @@ impl AuthenticatorApp {
             theme.accent_primary
         };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        let label = if self.rect.width() < 420.0 {
-            "+ Add"
-        } else {
-            "+  Add account"
-        };
-        let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Semibold);
         text_renderer.draw_text_weighted(
             scene,
-            label,
+            add_label,
             14.0,
             Color::WHITE,
             transform
@@ -984,7 +1019,8 @@ impl AuthenticatorApp {
             TextWeight::Semibold,
         );
 
-        // Search field (TextInput draws its own chrome + focus ring).
+        // Search field (TextInput draws its own chrome, focus ring and
+        // placeholder).
         self.search.draw(
             scene,
             transform,
@@ -992,21 +1028,46 @@ impl AuthenticatorApp {
             theme,
             &PresenceCtx::empty(),
         );
-        if self.search.value().is_empty() {
-            let pad = f64::from(theme.padding_standard);
-            text_renderer.draw_text(
-                scene,
-                "Search accounts\u{2026}",
-                16.0,
-                theme.tokens.colors.text_dim.with_alpha_factor(0.6),
-                transform
-                    * Affine::translate((
-                        self.search_rect.x0 + pad,
-                        self.search_rect.center().y - 10.0,
-                    )),
-                None,
-            );
-        }
+    }
+
+    /// The centred readable column the header actions, search, banner and
+    /// list share: the full window when it is narrower than
+    /// [`READABLE_CONTENT_W`], else that width centred in the window.
+    fn readable_column(rect: Rect) -> Rect {
+        let w = rect.width().min(READABLE_CONTENT_W);
+        let x0 = rect.x0 + (rect.width() - w) / 2.0;
+        Rect::new(x0, rect.y0, x0 + w, rect.y1)
+    }
+
+    /// Place the Add and Edit buttons on the header's action row inside the
+    /// readable column. Widths come from the measured labels once the draw
+    /// pass has supplied them and from the authored fallbacks before that.
+    /// Both `apply_layout` and `draw_header` route through here, so the rect
+    /// that is hit-tested is always the rect that was painted.
+    fn layout_header_buttons(&mut self) {
+        let compact = self.rect.width() < 420.0;
+        let (add_w, edit_w) = match self.header_label_w {
+            Some((add_lw, edit_lw)) => (
+                add_lw + 2.0 * HEADER_BTN_PAD,
+                edit_lw + 2.0 * HEADER_BTN_PAD,
+            ),
+            None if compact => (COMPACT_ADD_BTN_W, COMPACT_EDIT_BTN_W),
+            None => (ADD_BTN_W, EDIT_BTN_W),
+        };
+        let c = self.content_rect;
+        let top = self.rect.y0 + HEADER_BTN_TOP;
+        self.add_btn_rect = Rect::new(
+            c.x1 - OUTER_PAD - add_w,
+            top,
+            c.x1 - OUTER_PAD,
+            top + ADD_BTN_H,
+        );
+        self.edit_btn_rect = Rect::new(
+            self.add_btn_rect.x0 - HEADER_BTN_GAP - edit_w,
+            top,
+            self.add_btn_rect.x0 - HEADER_BTN_GAP,
+            top + ADD_BTN_H,
+        );
     }
 
     fn draw_toast(
@@ -1108,39 +1169,17 @@ impl Widget for AuthenticatorApp {
             self.rect.x1,
             self.rect.y0 + HEADER_H,
         );
-        let add_width = if self.rect.width() < 420.0 {
-            COMPACT_ADD_BTN_W
-        } else {
-            ADD_BTN_W
-        };
-        self.add_btn_rect = Rect::new(
-            self.rect.x1 - OUTER_PAD - add_width,
-            self.rect.y0 + 18.0,
-            self.rect.x1 - OUTER_PAD,
-            self.rect.y0 + 18.0 + ADD_BTN_H,
-        );
-        let edit_width = if self.rect.width() < 420.0 {
-            COMPACT_EDIT_BTN_W
-        } else {
-            EDIT_BTN_W
-        };
-        self.edit_btn_rect = Rect::new(
-            self.add_btn_rect.x0 - 10.0 - edit_width,
-            self.add_btn_rect.y0,
-            self.add_btn_rect.x0 - 10.0,
-            self.add_btn_rect.y1,
-        );
+        // Everything the user reads or acts on lives in one readable column;
+        // the header band and its hairline still span the whole window.
+        self.content_rect = Self::readable_column(self.rect);
+        let c = self.content_rect;
+        self.layout_header_buttons();
         let sy = self.rect.y0 + 88.0;
-        self.search_rect = Rect::new(
-            self.rect.x0 + OUTER_PAD,
-            sy,
-            self.rect.x1 - OUTER_PAD,
-            sy + SEARCH_H,
-        );
+        self.search_rect = Rect::new(c.x0 + OUTER_PAD, sy, c.x1 - OUTER_PAD, sy + SEARCH_H);
         self.search.apply_layout_external(self.search_rect);
 
         self.list_rect = Rect::new(
-            self.rect.x0 + 12.0,
+            c.x0 + 12.0,
             self.rect.y0
                 + HEADER_H
                 + if self.persistence_pending {
@@ -1148,14 +1187,14 @@ impl Widget for AuthenticatorApp {
                 } else {
                     0.0
                 },
-            self.rect.x1 - 12.0,
+            c.x1 - 12.0,
             self.rect.y1 - 12.0,
         );
         self.persistence_retry_rect = if self.persistence_pending {
             Rect::new(
-                self.rect.x1 - OUTER_PAD - 92.0,
+                c.x1 - OUTER_PAD - 92.0,
                 self.rect.y0 + HEADER_H + 8.0,
-                self.rect.x1 - OUTER_PAD,
+                c.x1 - OUTER_PAD,
                 self.rect.y0 + HEADER_H + 40.0,
             )
         } else {
@@ -1185,9 +1224,9 @@ impl Widget for AuthenticatorApp {
         self.draw_header(scene, transform, text_renderer, theme);
         if self.persistence_pending {
             let banner = Rect::new(
-                self.rect.x0 + OUTER_PAD,
+                self.content_rect.x0 + OUTER_PAD,
                 self.rect.y0 + HEADER_H + 8.0,
-                self.rect.x1 - OUTER_PAD,
+                self.content_rect.x1 - OUTER_PAD,
                 self.rect.y0 + HEADER_H + 40.0,
             );
             scene.fill(
@@ -1997,7 +2036,12 @@ mod tests {
         layout_at(&mut app, 1280.0, 720.0);
         let wide_list_w = app.list_rect.width();
         let wide_btn_x0 = app.add_btn_rect.x0;
-        assert!(wide_list_w > 900.0, "wide window gives a wide list");
+        // A wide window bounds the list to the readable column, so identity
+        // and code stay within one glance instead of 1000px apart.
+        assert!(
+            (wide_list_w - (READABLE_CONTENT_W - 24.0)).abs() < 0.5,
+            "wide window gives the readable-column list, got {wide_list_w}"
+        );
 
         layout_at(&mut app, 560.0, 720.0);
         assert!(
@@ -2019,6 +2063,29 @@ mod tests {
             (app.list_rect.width() - wide_list_w).abs() < 0.5,
             "list widens back to the wide layout"
         );
+    }
+
+    #[test]
+    fn header_search_and_list_share_one_centred_readable_column() {
+        let (mut app, _state) = app_with_state();
+        layout_at(&mut app, 1920.0, 1080.0);
+        let c = app.content_rect;
+        assert!((c.width() - READABLE_CONTENT_W).abs() < 0.5);
+        assert!(
+            (c.center().x - app.rect.center().x).abs() < 0.5,
+            "the column is centred in the window"
+        );
+        // Header actions, search and list all end on the column's edges.
+        assert!((app.add_btn_rect.x1 - (c.x1 - OUTER_PAD)).abs() < 0.5);
+        assert!((app.search_rect.x0 - (c.x0 + OUTER_PAD)).abs() < 0.5);
+        assert!((app.search_rect.x1 - (c.x1 - OUTER_PAD)).abs() < 0.5);
+        assert!((app.list_rect.x1 - (c.x1 - 12.0)).abs() < 0.5);
+        assert!(app.edit_btn_rect.x1 < app.add_btn_rect.x0);
+
+        // Narrower than the cap: the column is the window.
+        layout_at(&mut app, 640.0, 800.0);
+        assert!((app.content_rect.width() - 640.0).abs() < 0.5);
+        assert!((app.search_rect.x1 - (640.0 - OUTER_PAD)).abs() < 0.5);
     }
 
     #[test]

@@ -56,6 +56,82 @@ const PAD: f32 = 12.0;
 /// the strip rather than filling it edge to edge.
 const BTN_H: f32 = 34.0;
 
+/// The shared `Button` face paints its label at this renderer-relative size
+/// (`Button::measure`), and the renderer applies the accessibility text scale
+/// plus the default `TextStyle` line height. The toolbar capsules and the
+/// status band keep their authored 1× heights until that measured line no
+/// longer fits, then grow just enough to contain it — so 200% labels stop
+/// colliding with the capsule edge while 1× density is untouched.
+/// (Alignment review 2026-09-16; kept local to this file because the toolbar
+/// is sized in `build_layout`, which sees the theme but no renderer.)
+const BUTTON_LABEL_SIZE: f32 = 14.0;
+const STATUS_TEXT_SIZE: f32 = 13.0;
+const BTN_PAD_Y: f32 = 8.0;
+const STATUS_PAD_Y: f32 = 4.0;
+
+/// Line height the renderer will give `size` at `text_scale` — the default
+/// `TextStyle` leading on the scaled size, not a local copy of that factor.
+fn line_h(size: f32, text_scale: f32) -> f32 {
+    ui::text_render::TextStyle::new(size * text_scale).line_height_px()
+}
+
+/// Toolbar capsule height at `text_scale`: the authored [`BTN_H`] at 1×.
+fn btn_h(text_scale: f32) -> f32 {
+    BTN_H.max(line_h(BUTTON_LABEL_SIZE, text_scale) + 2.0 * BTN_PAD_Y)
+}
+
+/// Status band height at `text_scale`: the authored `BAR_H * 0.6` at 1×, and
+/// tall enough to contain the filename line at any scale (plan task 19).
+fn status_h(text_scale: f32) -> f32 {
+    (BAR_H * 0.6).max(line_h(STATUS_TEXT_SIZE, text_scale) + 2.0 * STATUS_PAD_Y)
+}
+
+/// A library card's action row: Details on the left, remove and favourite on
+/// the right, all inset [`CARD_ACTION_EDGE_INSET`] from the card's edges.
+///
+/// This is the *one* description of that row. `draw_library` paints these
+/// rects, `handle_event` hit-tests them, `accessibility_tree` exports them and
+/// `library_card_action_rects` hands them to tests — four call sites that used
+/// to carry their own copies of the arithmetic (and the right-hand cluster ran
+/// flush to `card.x1`, 5 px from the edge against Details' 12).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CardActions {
+    details: Rect,
+    remove: Rect,
+    favorite: Rect,
+}
+
+const CARD_ACTION_EDGE_INSET: f64 = 8.0;
+const CARD_ACTION_ROW_H: f64 = 44.0;
+const CARD_ACTION_CONTROL_W: f64 = 44.0;
+
+fn card_action_controls(card: Rect) -> CardActions {
+    let action_y = card.y1 - CARD_ACTION_ROW_H;
+    let favorite = Rect::new(
+        card.x1 - CARD_ACTION_EDGE_INSET - CARD_ACTION_CONTROL_W,
+        action_y,
+        card.x1 - CARD_ACTION_EDGE_INSET,
+        card.y1,
+    );
+    let remove = Rect::new(
+        favorite.x0 - CARD_ACTION_CONTROL_W,
+        action_y,
+        favorite.x0,
+        card.y1,
+    );
+    let details = Rect::new(
+        card.x0 + CARD_ACTION_EDGE_INSET,
+        action_y,
+        (card.x0 + 108.0).min(remove.x0),
+        card.y1,
+    );
+    CardActions {
+        details,
+        remove,
+        favorite,
+    }
+}
+
 /// Per-character label width used to size a button in `build_layout`, which
 /// gets a [`Theme`] but no [`TextRenderer`] to shape text with.
 ///
@@ -330,12 +406,14 @@ const COMPACT_SLOTS: &[Slot] = &[
 ];
 
 /// Width a button needs to show `face` with `label`.
-fn item_width(face: Face, label: &str) -> f32 {
+/// Width of one toolbar item whose capsule is `btn_h` tall ([`btn_h`] at the
+/// current text scale; [`BTN_H`] at 1×). An icon-only item is square.
+fn item_width(face: Face, label: &str, btn_h: f32) -> f32 {
     match face {
-        Face::IconOnly => BTN_H,
+        Face::IconOnly => btn_h,
         Face::Labelled => {
             let text = label.chars().count() as f32 * APPROX_CHAR_W;
-            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(BTN_H)
+            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(btn_h)
         }
         // The normal estimate is calibrated for 100% text.  At the supported
         // 200% screenshot scale the overflow label needs a real word-sized
@@ -343,7 +421,7 @@ fn item_width(face: Face, label: &str) -> f32 {
         // icon in the compact menu.
         Face::LargeOverflow => {
             let text = label.chars().count() as f32 * APPROX_CHAR_W * 2.0;
-            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(BTN_H)
+            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(btn_h)
         }
     }
 }
@@ -353,6 +431,13 @@ fn item_width(face: Face, label: &str) -> f32 {
 /// Exposed so a test can assert the strip fits a window rather than
 /// discovering it does not by finding Save missing from a screenshot.
 pub fn toolbar_width(faces: &[Face]) -> f32 {
+    toolbar_width_at(faces, BTN_H)
+}
+
+/// [`toolbar_width`] for capsules `btn_h` tall — the height `refit_toolbar`
+/// builds the buttons with, so the fit decision uses the same widths the strip
+/// will actually lay out at the theme's text scale.
+fn toolbar_width_at(faces: &[Face], btn_h: f32) -> f32 {
     let mut w = PAD * 2.0;
     for (i, slot) in SLOTS.iter().enumerate() {
         if i > 0 {
@@ -362,7 +447,7 @@ pub fn toolbar_width(faces: &[Face]) -> f32 {
             // Unreachable: `faces` and `TOOLBAR` are always built the same
             // length, one entry per `SLOTS::Item` index.
             Slot::Item(n) => match (faces.get(n), TOOLBAR.get(n)) {
-                (Some(&face), Some(item)) => item_width(face, &tr(item.1)),
+                (Some(&face), Some(item)) => item_width(face, &tr(item.1), btn_h),
                 _ => 0.0,
             },
             Slot::Separator => SEP_W,
@@ -372,16 +457,16 @@ pub fn toolbar_width(faces: &[Face]) -> f32 {
     w
 }
 
-/// Each item's presentation at a given strip width.
+/// Each item's presentation at a given strip width, for capsules `btn_h` tall.
 ///
 /// The labelled items give up their words rather than the strip giving up an
 /// item: a control that has shrunk to its glyph is still reachable, one that
 /// has fallen off the edge is not.
-fn faces_for_width(width: f32) -> Vec<Face> {
+fn faces_for_width(width: f32, btn_h: f32) -> Vec<Face> {
     let roomy: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
     // Width 0 is the first frame, before a layout has happened. Assume room;
     // the next frame corrects it with a real measurement.
-    if width <= 0.0 || toolbar_width(&roomy) <= width {
+    if width <= 0.0 || toolbar_width_at(&roomy, btn_h) <= width {
         return roomy;
     }
     if width < 600.0 {
@@ -445,6 +530,9 @@ pub struct PhotosApp {
     /// Kept local: text preference changes presentation, never document
     /// contents or another collaborator's toolbar.
     large_text_toolbar: bool,
+    /// Capsule height the toolbar was last built for ([`btn_h`] at the
+    /// theme's text scale). A change rebuilds the strip like a face change.
+    toolbar_btn_h: f32,
     compact_more_open: bool,
     compact_more_focus: usize,
     compact_more_hits: Vec<(Hit, Rect)>,
@@ -570,7 +658,8 @@ impl PhotosApp {
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
-            buttons.push((*hit, build_button(*hit, key, *icon, *face, &pending)));
+            // 1× capsules; the first `build_layout` refits them to the theme.
+            buttons.push((*hit, build_button(*hit, key, *icon, *face, BTN_H, &pending)));
         }
         Self {
             actions: ui::ActionHost::new(),
@@ -588,6 +677,7 @@ impl PhotosApp {
             separator_rects: Vec::new(),
             faces,
             large_text_toolbar: false,
+            toolbar_btn_h: BTN_H,
             compact_more_open: false,
             compact_more_focus: 0,
             compact_more_hits: Vec::new(),
@@ -652,7 +742,7 @@ impl PhotosApp {
     /// label for its lifetime. The cost lands only on a resize that crosses
     /// the threshold, and it carries the enabled state across so a rebuild
     /// never re-enables a control the document says is unavailable.
-    fn refit_toolbar(&mut self, width: f32) {
+    fn refit_toolbar(&mut self, width: f32, btn_h: f32) {
         let want = if self.large_text_toolbar {
             TOOLBAR
                 .iter()
@@ -666,9 +756,15 @@ impl PhotosApp {
                 })
                 .collect()
         } else {
-            faces_for_width(width)
+            faces_for_width(width, btn_h)
         };
-        if want == self.faces {
+        // Both heights come from the same pure `btn_h()` on the theme's scale,
+        // so exact comparison is the honest one.
+        #[allow(
+            clippy::float_cmp,
+            reason = "outputs of one pure function on one input"
+        )]
+        if want == self.faces && btn_h == self.toolbar_btn_h {
             return;
         }
         let enabled: Vec<bool> = self.buttons.iter().map(|(_, b)| b.is_enabled()).collect();
@@ -676,11 +772,12 @@ impl PhotosApp {
         for (((hit, key, icon, _), face), was_enabled) in
             TOOLBAR.iter().zip(want.iter()).zip(enabled)
         {
-            let mut button = build_button(*hit, key, *icon, *face, &self.pending);
+            let mut button = build_button(*hit, key, *icon, *face, btn_h, &self.pending);
             button.set_enabled(was_enabled);
             self.buttons.push((*hit, button));
         }
         self.faces = want;
+        self.toolbar_btn_h = btn_h;
     }
 
     /// Import `path` through the canonical durable action. The decoded source
@@ -787,12 +884,8 @@ impl PhotosApp {
                     .iter()
                     .find(|(candidate, _)| candidate == id)
                     .map(|(_, bounds)| *bounds)?;
-                Some((
-                    *card,
-                    details,
-                    Rect::new(card.x1 - 88.0, card.y1 - 44.0, card.x1 - 44.0, card.y1),
-                    Rect::new(card.x1 - 44.0, card.y1 - 44.0, card.x1, card.y1),
-                ))
+                let actions = card_action_controls(*card);
+                Some((*card, details, actions.remove, actions.favorite))
             })
             .collect()
     }
@@ -1883,12 +1976,13 @@ impl PhotosApp {
                     }];
                     if !self.album_editor {
                         let favorite_target = format!("photos:library-favorite:{id}");
-                        let favorite_bounds =
-                            Rect::new(bounds.x1 - 44.0, bounds.y1 - 44.0, bounds.x1, bounds.y1);
+                        // The same rects `draw_library` paints and the pointer
+                        // hit-tests: one description for the action row.
+                        let actions = card_action_controls(*bounds);
                         children.push(
                             AccessNode::new(Role::ToggleButton)
                                 .with_name("Favorite")
-                                .with_bounds(favorite_bounds)
+                                .with_bounds(actions.favorite)
                                 .with_state(AccessState {
                                     focusable: true,
                                     checked: Some(*favorite),
@@ -1905,12 +1999,7 @@ impl PhotosApp {
                                     format!("Remove {name} from library")
                                 })
                                 .with_description("Removes this photograph from every album")
-                                .with_bounds(Rect::new(
-                                    bounds.x1 - 88.0,
-                                    bounds.y1 - 44.0,
-                                    bounds.x1 - 44.0,
-                                    bounds.y1,
-                                ))
+                                .with_bounds(actions.remove)
                                 .with_state(AccessState {
                                     focusable: true,
                                     ..Default::default()
@@ -1923,12 +2012,7 @@ impl PhotosApp {
                                 .with_description(
                                     "Edit shared folder, people, tags, and capture date",
                                 )
-                                .with_bounds(Rect::new(
-                                    bounds.x0 + 8.0,
-                                    bounds.y1 - 44.0,
-                                    (bounds.x0 + 108.0).min(bounds.x1 - 88.0),
-                                    bounds.y1,
-                                ))
+                                .with_bounds(actions.details)
                                 .with_state(AccessState {
                                     focusable: true,
                                     ..Default::default()
@@ -2436,7 +2520,7 @@ impl PhotosApp {
                     .new_leaf(Style {
                         size: Size {
                             width: Dimension::length(SEP_W),
-                            height: Dimension::length(BTN_H * 0.6),
+                            height: Dimension::length(self.toolbar_btn_h * 0.6),
                         },
                         flex_shrink: 0.0,
                         ..Default::default()
@@ -2463,7 +2547,9 @@ impl PhotosApp {
                 Style {
                     size: Size {
                         width: Dimension::percent(1.0),
-                        height: Dimension::length(BAR_H),
+                        // `bar_h` at the scale the capsules were built for:
+                        // the authored BAR_H at 1×.
+                        height: Dimension::length(self.toolbar_btn_h + (BAR_H - BTN_H)),
                     },
                     flex_shrink: 0.0,
                     align_items: Some(AlignItems::Center),
@@ -2551,7 +2637,7 @@ impl PhotosApp {
         clippy::unwrap_used,
         reason = "this taffy node is freshly built with a fixed, valid style"
     )]
-    fn build_status_node(&self, taffy: &mut TaffyTree<()>) -> NodeId {
+    fn build_status_node(&self, taffy: &mut TaffyTree<()>, text_scale: f32) -> NodeId {
         taffy
             .new_leaf(Style {
                 size: Size {
@@ -2559,7 +2645,7 @@ impl PhotosApp {
                     height: Dimension::length(if self.status.is_empty() {
                         0.0
                     } else {
-                        BAR_H * 0.6
+                        status_h(text_scale)
                     }),
                 },
                 flex_shrink: 0.0,
@@ -2642,15 +2728,20 @@ impl PhotosApp {
             let last = (self.library_offset + self.library_items.len()).min(self.library_total);
             format!("{first}–{last} / {}", self.library_total)
         };
-        let count_width = if large_text { 180.0 } else { 100.0 };
+        // Right-align the page count to the grid's right edge from its measured
+        // width (it used to start at a fixed 100 px allowance and end wherever
+        // the digits happened to stop, ~60 px short of the cards).
+        let count_budget: f32 = if large_text { 180.0 } else { 100.0 };
+        let (count_w, _) =
+            text_renderer.measure_weighted(&count, 13.0, Some(count_budget), TextWeight::Regular);
+        let count_x = bounds.x1 - f64::from(PAD) - f64::from(count_w.min(count_budget));
         text_renderer.draw_text_weighted(
             scene,
             &count,
             13.0,
             theme.text_dim,
-            transform
-                * Affine::translate((bounds.x1 - f64::from(PAD) - count_width, heading_y + 3.0)),
-            Some(count_width as f32),
+            transform * Affine::translate((count_x, heading_y + 3.0)),
+            Some(count_budget),
             TextWeight::Regular,
         );
         if !self.library_albums.is_empty() && !large_text {
@@ -2918,21 +3009,13 @@ impl PhotosApp {
                 None,
                 &Rect::new(footer.x0, footer.y0, footer.x1, footer.y0 + 1.0),
             );
-            let action_y = card.y1 - 44.0;
-            let control_w = 44.0;
-            let details = Rect::new(
-                card.x0 + 8.0,
-                action_y,
-                (card.x0 + 108.0).min(card.x1 - control_w * 2.0),
-                card.y1,
-            );
-            let remove = Rect::new(
-                card.x1 - control_w * 2.0,
-                action_y,
-                card.x1 - control_w,
-                card.y1,
-            );
-            let star = Rect::new(card.x1 - control_w, action_y, card.x1, card.y1);
+            // One description of the action row (see `card_action_controls`):
+            // paint, hit-testing and the accessibility export all read it.
+            let CardActions {
+                details,
+                remove,
+                favorite: star,
+            } = card_action_controls(card);
             // Both text rows are explicitly constrained to this card. The
             // action row owns the bottom 44px, so no title can collide with a
             // neighboring column or a control.
@@ -3244,12 +3327,22 @@ impl PhotosApp {
             Some((panel.width() - 150.0) as f32),
             TextWeight::Medium,
         );
+        // Right-aligned to the sheet's 16 px inset — the Next button's edge on
+        // the row below — from its measured width, instead of starting at a
+        // fixed offset and ending wherever the digits stop.
+        let selected = format!("{} selected", self.album_editor_members.len());
+        let (selected_w, _) =
+            text_renderer.measure_weighted(&selected, 13.0, Some(100.0), TextWeight::Regular);
         text_renderer.draw_text_weighted(
             scene,
-            &format!("{} selected", self.album_editor_members.len()),
+            &selected,
             13.0,
             theme.text_dim,
-            transform * Affine::translate((panel.x1 - 116.0, panel.y0 + 147.0)),
+            transform
+                * Affine::translate((
+                    panel.x1 - 16.0 - f64::from(selected_w.min(100.0)),
+                    panel.y0 + 147.0,
+                )),
             Some(100.0),
             TextWeight::Regular,
         );
@@ -3786,6 +3879,7 @@ fn build_button(
     key: &str,
     icon: Icon,
     face: Face,
+    btn_h: f32,
     pending: &Rc<Cell<Option<Hit>>>,
 ) -> Button {
     let label = tr(key);
@@ -3801,11 +3895,11 @@ fn build_button(
     let width = if key == "photos-library" && matches!(face, Face::Labelled) {
         104.0
     } else {
-        item_width(face, &label)
+        item_width(face, &label, btn_h)
     };
     Button::new(key, shown, None)
         .with_icon(icon)
-        .with_size(width, BTN_H)
+        .with_size(width, btn_h)
         .tooltip(label.clone())
         .with_accessible_name(&label)
         .on_effect(move || slot.set(Some(hit)))
@@ -4184,11 +4278,11 @@ impl Widget for PhotosApp {
         // discoverable, while the four immediate navigation/edit controls
         // retain their accessible icon names without colliding.
         self.large_text_toolbar = theme.text_scale > 1.25;
-        self.refit_toolbar(self.rect.width() as f32);
+        self.refit_toolbar(self.rect.width() as f32, btn_h(theme.text_scale));
 
         let bar = self.build_toolbar_node(taffy, theme, node_map);
         let canvas = self.build_canvas_node(taffy, theme, node_map);
-        let status = self.build_status_node(taffy);
+        let status = self.build_status_node(taffy, theme.text_scale);
 
         let root = taffy
             .new_with_children(
@@ -4381,13 +4475,24 @@ impl Widget for PhotosApp {
 
         if !self.status.is_empty() {
             let inner = self.status_rect;
+            // Centre the line on its measured height inside a band sized by
+            // `status_h` — at 2× the filename used to run off the bottom of a
+            // fixed band anchored 4 px from its top (plan task 19).
+            let budget = (inner.width() - 2.0 * f64::from(PAD)) as f32;
+            let (_, line_h) = text_renderer.measure_weighted(
+                &self.status,
+                STATUS_TEXT_SIZE,
+                Some(budget),
+                TextWeight::Regular,
+            );
+            let y = inner.y0 + (inner.height() - f64::from(line_h)).max(0.0) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 &self.status,
-                13.0,
+                STATUS_TEXT_SIZE,
                 theme.text_primary,
-                transform * Affine::translate((inner.x0 + f64::from(PAD), inner.y0 + 4.0)),
-                Some((inner.width() - 2.0 * f64::from(PAD)) as f32),
+                transform * Affine::translate((inner.x0 + f64::from(PAD), y)),
+                Some(budget),
                 TextWeight::Regular,
             );
         }
@@ -4647,11 +4752,13 @@ impl Widget for PhotosApp {
                 .find(|(_, card, _)| card.contains(self.pointer))
                 .cloned()
         {
+            // Hit the same rects `draw_library` painted (`card_action_controls`).
+            let actions = card_action_controls(card);
             if !self.album_editor
-                && self.pointer.y >= card.y1 - 44.0
-                && self.pointer.x >= card.x1 - 88.0
+                && (actions.remove.contains(self.pointer)
+                    || actions.favorite.contains(self.pointer))
             {
-                if self.pointer.x >= card.x1 - 44.0 {
+                if actions.favorite.contains(self.pointer) {
                     self.library_remove_confirm = None;
                     self.commit_library_action(
                         doc,
@@ -5616,5 +5723,100 @@ mod tests {
             two_column_card_width >= 600.0,
             "200% text needs a real reading measure, got {two_column_card_width}"
         );
+    }
+
+    /// 2026-09-16 alignment review: at 200% text the toolbar's 34 px capsules
+    /// no longer held their 28 px labels and the 28.8 px status band clipped
+    /// the filename (plan task 19). Both grow from the label line the shared
+    /// renderer will draw — and stay exactly the authored size at 1×.
+    #[test]
+    fn toolbar_capsules_and_status_band_contain_their_text_at_any_scale() {
+        assert_eq!(btn_h(1.0), BTN_H, "1× keeps the authored capsule");
+        assert_eq!(status_h(1.0), BAR_H * 0.6, "1× keeps the authored band");
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let (_, label_line) = tr.measure("More", BUTTON_LABEL_SIZE, None);
+        let (_, status_line) = tr.measure("harbour.png · 1200 × 800", STATUS_TEXT_SIZE, None);
+        assert!(
+            btn_h(2.0) >= label_line + 2.0 * BTN_PAD_Y,
+            "2× capsule {} contains a {label_line} px label",
+            btn_h(2.0)
+        );
+        assert!(
+            status_h(2.0) >= status_line + 2.0 * STATUS_PAD_Y,
+            "2× band {} contains a {status_line} px line",
+            status_h(2.0)
+        );
+        // Icon-only items stay square at every scale.
+        assert_eq!(item_width(Face::IconOnly, "", btn_h(2.0)), btn_h(2.0));
+    }
+
+    /// Library card action rows keep the same inset from both card edges, so
+    /// Details on the left and the favourite star on the right read as one
+    /// row (the star cluster used to run flush to `card.x1`).
+    #[test]
+    fn library_card_actions_share_one_edge_inset() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        app.show_library();
+        let staging = tempfile::tempdir().expect("staging dir");
+        crate::seed_scenario(&mut app, &mut doc, "library", staging.path());
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        // Two frames: the first lays out roomy, the second refits the toolbar
+        // to the width it produced (see `build_layout`).
+        for _ in 0..2 {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(1200.0),
+                            height: Dimension::length(800.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1200.0),
+                        height: taffy::AvailableSpace::Definite(800.0),
+                    },
+                    |known, available, id, _, _| {
+                        measure_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                            (*p).measure(known, available, trr)
+                        })
+                    },
+                )
+                .unwrap();
+            app.apply_layout(&taffy, child, Point::ORIGIN);
+            let mut scene = Scene::new();
+            app.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::empty(),
+            );
+        }
+        let rects = app.library_card_action_rects();
+        assert!(!rects.is_empty(), "the library scenario paints cards");
+        for (card, details, _remove, star) in &rects {
+            let left_inset = details.x0 - card.x0;
+            let right_inset = card.x1 - star.x1;
+            assert!(
+                (left_inset - right_inset).abs() < 0.5,
+                "card {card:?}: Details inset {left_inset} vs star inset {right_inset}"
+            );
+        }
     }
 }
