@@ -67,6 +67,22 @@ def write_receipt(name, value):
     (EVIDENCE / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
 
 
+def completed_wpe_receipt(path, buildroot):
+    """Preflight provenance; the build consumer also checks actual source assets."""
+    if path is None:
+        raise ValueError('full-build requires a completed WPE stage receipt; compile it once in the producer')
+    spec = importlib.util.spec_from_file_location('compile_wpe_artifact', REPO / 'os/dev/wpe-stage-artifact.py')
+    artifact = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(artifact)
+    receipt = artifact.strict_json(artifact.read_bounded(path, 65536))
+    inputs = receipt.get('inputs', {})
+    artifact.validate_receipt(receipt, inputs)
+    if (inputs.get('architecture') != 'x86_64' or inputs.get('epoch') != '0'
+            or inputs.get('wpe_buildroot') != buildroot):
+        raise ValueError('completed WPE receipt does not match this native build')
+    return receipt
+
+
 def cache_configuration(environment):
     # These are the deployed broker's public S3 identities on both runner
     # placements. Do not send existing credentials to a redirected endpoint.
@@ -356,7 +372,7 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
                TILO_GENERATION=generation, TILO_SEAL_GENERATION='1',
                TILO_WITH_BROWSER='1', TILO_WPE_BOOTSTRAP='0',
                TILO_WPE_BUILD_JOBS='2', WPE_BUILDROOT_REF=wpe,
-               TILO_WPE_BUILD_CACHE_REF='code.podesta.ai/qos/tilo-development-wpe-cache-x86_64',
+               TILO_WPE_STAGE_RECEIPT=str(EVIDENCE / 'wpe-stage.json'),
                TILO_WPE_SOURCE_DATE_EPOCH='0',
                TILO_RAW_ROOTFS_RECEIPT=str(EVIDENCE / 'raw-rootfs.json'),
                TILO_RAW_ROOTFS_ONLY='1',
@@ -417,6 +433,7 @@ def retain_compilation(revision, generation, epoch, target, manifest):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('cache-only', 'full-build'), default='cache-only')
+    parser.add_argument('--wpe-stage-receipt', type=Path)
     for name in ('wpe', 'generation'):
         parser.add_argument('--' + name, default='')
     for name in ('revision', 'branch'):
@@ -427,6 +444,7 @@ def main(argv=None):
         raise ValueError('already-root native x86-64 Linux guest required')
     if run('git', 'rev-parse', 'HEAD') != args.revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
         raise ValueError('checkout must be clean and match the requested revision')
+    stage = completed_wpe_receipt(args.wpe_stage_receipt, args.wpe) if args.mode == 'full-build' else None
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700)
     EVIDENCE.mkdir(mode=0o755)
@@ -440,6 +458,7 @@ def main(argv=None):
             'scope': 'tools-container S3 compiler cache access; nested OS build not exercised'})
         return
     Path('/work/tmp').mkdir()
+    write_receipt('wpe-stage.json', stage)
     pins = pinned_inputs()
     write_receipt('inputs.json', {'purpose': 'retained-full-source-compilation',
         'installable': False, 'revision': args.revision, 'architecture': 'x86_64',
