@@ -21,7 +21,7 @@ use vello::peniko::{
 
 use crate::ColorCompat;
 use crate::theme::Theme;
-use crate::tokens::Shadow;
+use crate::tokens::{Colors, Shadow};
 
 /// Shared silhouette for lightweight desktop floats. The asymmetry is only
 /// one or two logical pixels along each edge: enough to feel soft and held,
@@ -486,9 +486,169 @@ pub fn pill(
     }
 }
 
+/// Alphas [`edge_on`] tries, ascending, until the hairline visibly moves the
+/// surface it is drawn on (HIG §9.5). Step 0 is the control hairline
+/// (`chrome::shell::HAIRLINE_ALPHA`); the ladder only climbs on grounds so
+/// dark or so light that a 26-alpha wash lands within rounding distance of
+/// the surface — relative luminance compresses at the dark end, so pure
+/// black needs more alpha for the same visible step.
+pub const EDGE_ALPHA_STEPS: &[u8] = &[26, 40, 56, 72, 92];
+
+/// Composite `over` (with its alpha) onto an opaque `ground`.
+fn blend_over(over: Color, ground: Color) -> Color {
+    let a = over.components[3];
+    let o = over.components;
+    let g = ground.components;
+    Color::new([
+        o[0] * a + g[0] * (1.0 - a),
+        o[1] * a + g[1] * (1.0 - a),
+        o[2] * a + g[2] * (1.0 - a),
+        1.0,
+    ])
+}
+
+/// How far `edge` moves `surface` once painted on it, in relative-luminance
+/// units — the measurement HIG §9.5 asks every chrome border to pass.
+#[must_use]
+pub fn edge_delta(edge: Color, surface: Color) -> f64 {
+    use crate::a11y::relative_luminance;
+    (relative_luminance(blend_over(edge, surface)) - relative_luminance(surface)).abs()
+}
+
+/// The derived 1 px rest edge of a control, card or row: a hairline
+/// measured against the surface it is painted on, never a declared
+/// `border_standard` (which is one fixed colour per theme and disappears on
+/// a raised dark surface). Walks [`EDGE_ALPHA_STEPS`] until the edge
+/// visibly registers (`tokens::colors::HAIRLINE_MIN_DELTA`).
+#[must_use]
+pub fn edge_on(surface: Color) -> Color {
+    let mut last = Colors::hairline_on(surface, EDGE_ALPHA_STEPS[0]);
+    for alpha in EDGE_ALPHA_STEPS {
+        last = Colors::hairline_on(surface, *alpha);
+        if edge_delta(last, surface) >= crate::tokens::colors::HAIRLINE_MIN_DELTA {
+            return last;
+        }
+    }
+    last
+}
+
+/// [`edge_on`] at a fixed alpha, for callers that want the control hairline
+/// (`HAIRLINE_ALPHA`) or the panel edge (`PANEL_BORDER_ALPHA`) exactly.
+#[must_use]
+pub fn edge_on_with(surface: Color, alpha: u8) -> Color {
+    Colors::hairline_on(surface, alpha)
+}
+
+/// The outline a crisp 1 px edge is stroked on: half a pixel inside `rect`,
+/// so a 1 px stroke covers exactly the outermost pixel row of the surface
+/// and never bleeds onto the ground beside it.
+#[must_use]
+pub fn edge_outline(rect: Rect, radius: f64) -> RoundedRect {
+    RoundedRect::from_rect(rect.inset(-0.5), (radius - 0.5).max(0.0))
+}
+
+/// Fill a card / row / tile and give it its derived rest edge in one call —
+/// the one way an app or shell surface paints an edged surface. The edge
+/// derives from `fill` itself: a stroke that sits entirely on the surface
+/// needs no knowledge of what is behind it.
+pub fn card(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, fill: Color) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        edge_on(fill),
+        None,
+        &edge_outline(rect, radius),
+    );
+}
+
+/// A 1 px separator between rows inside a surface: derived against
+/// `surface`, inset `inset` from both ends (HIG §9.5: `spacing.s3`, never
+/// full-bleed into a corner radius), centred on `y`.
+pub fn separator(
+    scene: &mut Scene,
+    transform: Affine,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    inset: f64,
+    surface: Color,
+) {
+    let (a, b) = (x0 + inset, x1 - inset);
+    if b <= a {
+        return;
+    }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        edge_on(surface),
+        None,
+        &Rect::new(a, y - 0.5, b, y + 0.5),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edge_on_registers_on_every_preset_surface() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let s = &theme.tokens.colors.surfaces;
+            for (name, ground) in [
+                ("base", s.base),
+                ("raised", s.raised),
+                ("overlay", s.overlay),
+                ("panel_ground", crate::chrome::shell::panel_ground(&theme)),
+            ] {
+                let edge = edge_on(ground);
+                let moved = edge_delta(edge, ground);
+                assert!(
+                    moved >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{name} edge on {:?} moved only {moved:.4} ({edge:?})",
+                    theme.name
+                );
+            }
+        }
+        // The declared border is what vanished on the dark preset: derived
+        // must register there where declared does not.
+        let dark = Theme::dark();
+        let raised = dark.tokens.colors.surfaces.raised;
+        let declared = edge_delta(dark.tokens.colors.border_standard, raised);
+        let derived = edge_delta(edge_on(raised), raised);
+        assert!(
+            declared < crate::tokens::colors::HAIRLINE_MIN_DELTA,
+            "dark border_standard on raised was the invisible edge ({declared:.4}); if this \
+             changed, the ratchet's rationale needs revisiting"
+        );
+        assert!(derived > declared, "derived {derived:.4} vs declared {declared:.4}");
+    }
+
+    #[test]
+    fn edge_on_starts_at_the_control_hairline_where_that_already_registers() {
+        // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
+        let grey = Color::from_rgb8(0x80, 0x80, 0x80);
+        assert_eq!(edge_on(grey), Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0]));
+    }
+
+    #[test]
+    fn card_edge_is_one_pixel_inside_rect() {
+        let rect = Rect::new(10.0, 20.0, 110.0, 60.0);
+        let outline = edge_outline(rect, 12.0);
+        assert_eq!(outline.rect(), Rect::new(10.5, 20.5, 109.5, 59.5));
+        assert!((outline.radii().top_left - 11.5).abs() < 1e-9);
+        // A radius under half a pixel does not go negative.
+        assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
+    }
 
     #[test]
     fn chip_colors_selected_is_solid_accent_no_border() {

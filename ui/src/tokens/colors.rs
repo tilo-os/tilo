@@ -55,7 +55,7 @@ fn composite(over: Color, ground: Color) -> Color {
 /// Minimum ground movement (WCAG relative-luminance units) for a hairline to
 /// count as visible — deliberately far below any text threshold, since it
 /// only has to catch a wash landing within rounding distance of its surface.
-const HAIRLINE_MIN_DELTA: f64 = 0.02;
+pub const HAIRLINE_MIN_DELTA: f64 = 0.02;
 
 /// Fallback wash alpha for [`Colors::lift`] when a preset has no raised tier
 /// to aim at. 15% — reads as a distinct body without blowing out contrast.

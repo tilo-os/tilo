@@ -24,7 +24,7 @@ TASKS = {
     'rename-workspace': {'goal': 'Rename the current workspace to Research.', 'fixture': 'desktop', 'efficient_steps': 10},
     'scroll-file': {'goal': 'Find Document-060.txt in Files and open it so its contents are displayed.', 'fixture': 'files', 'document': 60, 'efficient_steps': 18},
 }
-VARIANTS = {'baseline': {}, 'compact': {'viewport': [800, 700]}, 'large-text': {'text_scale': 2}}
+VARIANTS = {'baseline': {}, 'compact': {'viewport': [800, 700]}, 'large-text': {'text_scale': 2}, 'light': {'theme': 'light'}}
 NAMED_KEYS = {name.lower(): name for name in ('Enter', 'Return', 'Tab', 'Escape', 'Esc', 'Space', 'Backspace', 'Delete', 'ArrowUp', 'Up', 'ArrowDown', 'Down', 'ArrowLeft', 'Left', 'ArrowRight', 'Right', 'Home', 'End')}
 
 SYSTEM = '''You are operating a desktop application using screenshots. Complete the user's goal through visible mouse, keyboard and wheel input. Coordinates are screenshot pixels. Return one action per turn. You may use modifiers meta, ctrl, alt, shift. Keys must be one printable character or one of Enter, Return, Tab, Escape, Esc, Space, Backspace, Delete, ArrowUp, Up, ArrowDown, Down, ArrowLeft, Left, ArrowRight, Right, Home, End (case insensitive). Wheel positive dy scrolls down. Observe requests a fresh screenshot. Done means you believe the goal is complete; abort means you cannot proceed. Include only a brief visible observation and expected visible feedback, never hidden reasoning. You receive no internal application state.'''
@@ -455,10 +455,18 @@ def geometry_audit(inspection):
                 continue
             peer_pairs += 1
             ax, ay, aw, ah = a['rect']; bx, by, bw, bh = b['rect']
+            # Signed gaps between the two boxes on each axis: negative = they
+            # overlap on that axis, zero = they share an edge.
+            hgap = max(bx - (ax + aw), ax - (bx + bw))
+            vgap = max(by - (ay + ah), ay - (by + bh))
             if min(ax + aw, bx + bw) - max(ax, bx) > 1 and min(ay + ah, by + bh) - max(ay, by) > 1:
                 failures.append({'property': 'semantic_bounds_overlap_unresolved', 'targets': [a['label'], b['label']]})
+            elif hgap <= 0 and vgap <= 0:
+                # Touching (a shared edge) or a sub-pixel overlap: HIG §7 wants a
+                # token-step gap between neighbouring elements.
+                failures.append({'property': 'touching_peers', 'targets': [a['label'], b['label']], 'gap': [round(hgap, 2), round(vgap, 2)]})
     return {'measured_controls': len(controls), 'fully_clipped_controls': clipped, 'partially_clipped_controls': partial, 'peer_pairs': peer_pairs, 'failures': failures,
-            'passed': bool(controls) and not failures, 'scope': 'Visible widget and bounded projected actionable semantics; ancestor overlaps excluded. Clipped controls explicitly excluded. Overlap is a semantic-bound candidate requiring pixel/hit confirmation, not proof of painted overlap. No inference about unlabeled custom gesture areas.'}
+            'passed': bool(controls) and not failures, 'scope': 'Visible widget and bounded projected actionable semantics; ancestor overlaps excluded. Clipped controls explicitly excluded. Overlap and touching are semantic-bound candidates requiring pixel/hit confirmation, not proof of painted overlap; segments of one control that deliberately share an edge report as touching. No inference about unlabeled custom gesture areas.'}
 
 
 def deterministic_attempt(binary, out, variant):

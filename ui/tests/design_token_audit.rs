@@ -200,7 +200,16 @@ fn ratcheted_patterns() -> Vec<(&'static str, Regex, &'static str)> {
 /// Count every ratcheted pattern per file, skipping comments and `#[cfg(test)]`
 /// modules exactly as the audit above does.
 fn ratcheted_counts(files: &[PathBuf], root: &Path) -> Counts {
-    let patterns = ratcheted_patterns();
+    counts_for(files, root, &ratcheted_patterns())
+}
+
+/// The shared counter behind every ratchet in this file: `patterns` per file,
+/// keyed by the path relative to `root`.
+fn counts_for(
+    files: &[PathBuf],
+    root: &Path,
+    patterns: &[(&'static str, Regex, &'static str)],
+) -> Counts {
     let mut counts: Counts = BTreeMap::new();
     for f in files {
         let content = fs::read_to_string(f).unwrap();
@@ -214,7 +223,7 @@ fn ratcheted_counts(files: &[PathBuf], root: &Path) -> Counts {
             if is_skipped(line, i, &skip) {
                 continue;
             }
-            for (key, re, _) in &patterns {
+            for (key, re, _) in patterns {
                 if re.is_match(line) {
                     let hit = counts.entry((rel.clone(), (*key).to_string())).or_insert(0);
                     *hit = hit.saturating_add(1);
@@ -312,6 +321,112 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
         "{} app/shell baseline entr(ies) are stale. Keep the improvement by lowering {}.\n{}",
         stale.len(),
         APP_SHELL_BASELINE,
+        stale.join("\n"),
+    );
+}
+
+// ===========================================================================
+// Declared edges on chrome surfaces (HIG §9.5). `border_standard` is one fixed
+// colour per theme; stroked on a raised or overlay surface it is three shades
+// from its ground on the dark preset and vanishes. Chrome derives its edges
+// (`ui::surface::{edge_on, card, separator}`, `chrome::{panel_border,
+// chrome_hairline, selection_tier}`) instead. Apps are not in this scope: §7
+// allows `border_standard` as a rule on `surfaces.base` in app content.
+
+/// Recorded counts of declared border / ramp tokens in chrome production code.
+const CHROME_BORDER_BASELINE: &str = "tests/chrome_declared_border_baseline.txt";
+
+/// The one ratcheted pattern for chrome edges, in the same shape as
+/// [`ratcheted_patterns`] so the shared counter and baseline plumbing apply.
+fn declared_border_patterns() -> Vec<(&'static str, Regex, &'static str)> {
+    vec![(
+        "declared_border",
+        Regex::new(r"\.border_standard\b|\.border_strong\b|overlay_border_strong|colors\.neutral\[")
+            .unwrap(),
+        "declared border/ramp token on a chrome surface (HIG §9.5) — derive the edge with \
+         ui::surface::{edge_on, card, separator} or ui::chrome::{panel_border, \
+         chrome_hairline, selection_tier}",
+    )]
+}
+
+/// The chrome-edge pattern must match the shapes it names and nothing else.
+#[test]
+fn declared_border_pattern_matches_the_shapes_it_names() {
+    let (_, re, _) = declared_border_patterns().remove(0);
+    for hit in [
+        "theme.tokens.colors.border_standard,",
+        "let bc = theme.border_standard;",
+        "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
+        "c.overlay_border_strong",
+        "colors.neutral[3]",
+    ] {
+        assert!(re.is_match(hit), "{hit:?} is a declared edge and must match");
+    }
+    for miss in [
+        "theme.border_focus",
+        "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
+        "border_standard: p.border,",
+        "ui::surface::edge_on(fill)",
+        "let neutral = colors.text_dim;",
+    ] {
+        assert!(!re.is_match(miss), "{miss:?} is not a declared edge and must not match");
+    }
+}
+
+/// Chrome may not gain a declared edge, and a file that sheds one lowers its
+/// record in the same commit. Refresh with `UPDATE_CHROME_BORDER_BASELINE=1`
+/// only after reviewing that every change is a reduction.
+#[test]
+fn declared_borders_in_chrome_do_not_grow() {
+    let ui_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repository = ui_root.parent().expect("ui crate lives in the repository");
+    let mut files = Vec::new();
+    walk(&ui_root.join("src/widget"), &mut files);
+    walk(&ui_root.join("src/chrome"), &mut files);
+    for extra in ["src/surface.rs", "src/status_bubble.rs"] {
+        let path = ui_root.join(extra);
+        if path.is_file() {
+            files.push(path);
+        }
+    }
+    walk(&repository.join("shell/src"), &mut files);
+    assert!(!files.is_empty(), "chrome edge audit found no files to scan");
+    files.sort();
+
+    let patterns = declared_border_patterns();
+    let found = counts_for(&files, repository, &patterns);
+    let baseline_path = ui_root.join(CHROME_BORDER_BASELINE);
+    if std::env::var_os("UPDATE_CHROME_BORDER_BASELINE").is_some_and(|value| value == "1") {
+        write_baseline(
+            &baseline_path,
+            &[
+                "Declared border / ramp tokens on chrome surfaces (HIG §9.5).",
+                "Format: <path relative to repository root> <pattern> <count>",
+                "This is a ratchet, not approval: counts may only move down.",
+            ],
+            &found,
+        );
+        return;
+    }
+    let baseline = read_baseline(&baseline_path);
+    let message = |pattern: &str| -> String {
+        patterns
+            .iter()
+            .find(|(key, _, _)| *key == pattern)
+            .map(|(_, _, message)| (*message).to_string())
+            .unwrap_or_default()
+    };
+    let (grew, stale) = ratchet_failures(&found, &baseline, &message);
+    assert!(
+        grew.is_empty(),
+        "{} chrome file(s) gained a declared edge.\n{}",
+        grew.len(),
+        grew.join("\n"),
+    );
+    assert!(
+        stale.is_empty(),
+        "{} entr(ies) in {CHROME_BORDER_BASELINE} are higher than the tree; the ratchet only moves down:\n{}",
+        stale.len(),
         stale.join("\n"),
     );
 }

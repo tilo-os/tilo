@@ -715,14 +715,24 @@ fn run_with_args_with_attachment(
     }
 
     if let Some(headless) = &args.headless {
-        let root = spec.live_root(&args)?;
+        // A named `--scenario` drives the screenshot fixture (the same root
+        // `--shots --scenario` renders) so its geometry can be dumped; without
+        // one the live root is driven, as before. The theme follows the
+        // screenshot policy (`QOS_SHOTS_THEME`, `QOS_SHOTS_TEXT_SCALE`,
+        // `--text-scale`), defaulting to dark at 1×.
+        let root = if args.scenario.is_some() {
+            spec.screenshot_root(&args)?
+        } else {
+            spec.live_root(&args)?
+        };
+        let theme = shot_theme(&args);
         let code = if let Some(history) = spec.history_definition {
             if !spec.history_app_global_storage { return Err(LaunchError::Operation("History requires explicit storage provenance for a custom opener".into())); }
             let (state, autosave) = spec.open_state_with_args.map_or_else(|| (spec.open_state)(spec.app_id), |open| open(spec.app_id, &args));
             let registration = crate::history_mode::HistoryRegistration::installed_app_state(history, Some(&autosave), uuid::Uuid::new_v4())
                 .map_err(|error| LaunchError::Operation(error.to_string()))?;
-            headless::run_opened(headless, root, spec.app_id, state, autosave, Some(registration))
-        } else { headless::run(headless, root, spec.app_id) };
+            headless::run_opened(headless, root, spec.app_id, state, autosave, Some(registration), theme)
+        } else { headless::run_with_theme(headless, root, spec.app_id, theme) };
         std::process::exit(code);
     }
 
@@ -1101,7 +1111,9 @@ fn parse_args_extended(
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
         }
-        if parsed.scenario.is_some() {
+        // A headless drive may name a scenario: it dumps that fixture's
+        // geometry, the counterpart of `--shots --scenario`.
+        if parsed.scenario.is_some() && parsed.headless.is_none() {
             return Err(LaunchError::ShotsOnly("--scenario".to_owned()));
         }
         if let Some(extra) = parsed
