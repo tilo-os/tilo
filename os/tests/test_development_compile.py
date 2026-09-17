@@ -25,6 +25,28 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_native_payload_does_not_require_windows_or_kernel_artifacts(self):
+        driver.validate_inputs(WPE, '1', REVISION, 'refs/heads/codex/test',
+                               mode='native-payload', architecture='aarch64')
+        with self.assertRaises(ValueError):
+            driver.validate_inputs(WPE, '1', REVISION, 'refs/heads/codex/test',
+                                   mode='full-build', architecture='aarch64')
+
+    def test_native_reuse_requires_full_assembly_and_receipt_pin(self):
+        valid = dict(wpe=WPE, generation='1', revision=REVISION,
+                     branch='refs/heads/codex/test', mode='full-build',
+                     native_builder_receipt='native.json', native_builder_sha256='a' * 64)
+        driver.validate_inputs(**valid)
+        for changes in ({'mode': 'native-payload'}, {'native_builder_receipt': None},
+                        {'native_builder_sha256': ''}, {'native_builder_sha256': 'latest'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                driver.validate_inputs(**(valid | changes))
+
+    def test_native_payload_rejects_board_specific_mode(self):
+        with self.assertRaises(ValueError):
+            driver.validate_inputs(WPE, '1', REVISION, 'refs/heads/codex/test',
+                mode='native-payload', architecture='aarch64', hardware_profile='lenovo-83ed')
+
     def test_firmware_artifact_selection_is_explicit_and_independently_pinned(self):
         reference = 'code.sandbox.example/qos/tilo-firmware@sha256:' + '1' * 64
         valid = dict(mode='full-build', profile='lenovo-83ed', reference=reference,
