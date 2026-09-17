@@ -31,7 +31,7 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, Size, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::compositor::frame::FrameBuilder;
-use crate::shell::overlay_host::{
+use crate::shell::capture_surface::{
     CaptureMirrorHandoffLayer, CaptureSurfaceKind, CaptureSurfaceRequest,
 };
 
