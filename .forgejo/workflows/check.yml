@@ -111,6 +111,7 @@ jobs:
           bash os/tests/packaging_subprocess_invariants.sh
           bash os/tests/shell_subprocess_invariants.sh
           bash os/tests/fs_subprocess_invariants.sh
+          bash os/tests/disks_subprocess_invariants.sh
           bash os/tests/secret_service_subprocess_invariants.sh
           bash os/tests/secureboot_signing_test.sh
           bash os/tests/image_trust_update_gate.sh
