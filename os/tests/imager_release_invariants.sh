@@ -204,9 +204,18 @@ else
   bad 'Homebrew promotion can replace a newer release or reject a valid upgrade'
 fi
 
+if python3 "$repo/apps/imager/packaging/test_release_catalog.py" \
+    && [ "$(grep -c -- '--copy-to apps/imager/release-catalog.json' "$workflow")" -eq 3 ] \
+    && grep -Fq 'sign-installer-release.sh' "$workflow" \
+    && grep -Fq 'media_list="$(python3' "$repo/apps/imager/packaging/verify-linux-release.sh"; then
+  ok 'all native consumers select one supported catalog and release trust covers its media inventory'
+else
+  bad 'versioned installer catalog selection or media trust coverage is incomplete'
+fi
+
 grep -Fq 'AppImage.asc' "$workflow" \
   && grep -Fq 'tilo-installer-*.asc' "$workflow" \
-  && grep -Fq 'tilo-installer-catalog-v1.json' "$repo/apps/imager/packaging/verify-linux-release.sh" \
+  && grep -Fq 'release-catalog.py' "$repo/apps/imager/packaging/verify-linux-release.sh" \
   && grep -Fq 'tilo-release-key.asc' "$workflow" \
   && grep -Fq 'IMAGER_LINUX_SIGNING_FINGERPRINT' "$workflow" \
   && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \

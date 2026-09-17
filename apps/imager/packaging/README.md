@@ -202,3 +202,19 @@ every attachment back and compares its exact bytes, then makes the complete
 release public in one final API update. A failed upload therefore leaves a
 recoverable private draft; an already-public release is immutable and cannot be
 filled in or changed by a rerun.
+
+### Versioned installer catalogs
+
+Every native host embeds exactly one `tilo-installer-catalog-v1.json` or
+`tilo-installer-catalog-v2.json`. The filename must match the document schema;
+missing, duplicate, unsupported, or conflicting catalogs fail before packaging.
+Schema 1 remains supported for generic media. Schema 2 also identifies media
+for a specific hardware profile.
+
+Each Linux signing lane checks the catalog archive size and SHA-256 before
+signing every listed medium for its architecture. Promotion authenticates the
+selected catalog with the independently expected OpenPGP identity, then verifies
+every listed medium against both that catalog and its detached signature. Both
+generic architectures remain mandatory. Supporting versioned catalogs does not
+create a board image: the corresponding signed OS and medium build must supply
+the board artifact and provenance before it can enter the release catalog.
