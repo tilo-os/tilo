@@ -78,6 +78,7 @@ pub struct SettingsApp {
     /// mutation boundaries, never during the per-frame resource query.
     account_resources: Vec<accounts::Account>,
     account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
+    device_mesh_commands: ui::LocalState<Option<crate::actions::DeviceMeshOperation>>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     local_operation: Option<tilo_actions::InvocationId>,
@@ -124,6 +125,7 @@ impl SettingsApp {
             search_provider: crate::search_provider::SettingsSearchProvider::new(),
             account_resources: accounts::AccountStore::load().all().to_vec(),
             account_commands: ui::LocalState::new(None),
+            device_mesh_commands: ui::LocalState::new(None),
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             local_operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             local_operation: None,
@@ -340,7 +342,11 @@ impl SettingsApp {
                 panes::bluetooth::BluetoothPane::new()
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::DeviceMesh => panes::device_mesh::build(),
+            Category::DeviceMesh => Box::new(
+                panes::device_mesh::DeviceMeshPane::new()
+                    .with_command_state(&self.device_mesh_commands)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::Sound => Box::new(
                 panes::audio::AudioPane::new().with_operation_status(&self.local_operation_status),
             ),
@@ -1074,6 +1080,13 @@ impl SettingsApp {
                     }
                 }
             }
+            crate::actions::DEVICE_MESH_OPERATION_TYPE => {
+                let operation: crate::actions::DeviceMeshOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::DeviceMesh);
+                self.device_mesh_commands.set(Some(operation));
+                Ok(())
+            }
             _ => return Ok(None),
         };
         accepted.map_err(|error| error.to_string())?;
@@ -1105,6 +1118,8 @@ impl Widget for SettingsApp {
             crate::actions::PRINTER_OPERATION_TYPE,
             crate::actions::USER_OPERATION_TYPE,
             crate::actions::AGENT_MODEL_OPERATION_TYPE,
+            crate::actions::DEVICE_MESH_OPERATION_TYPE,
+            crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
         ]
     }
 
@@ -1344,6 +1359,8 @@ impl Widget for SettingsApp {
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Result<bool, String> {
+        use agent_provider_config::{ProviderConfig, ProviderProfile, ProviderProtocol};
+
         if type_id == crate::actions::UPDATE_OPERATION_TYPE
             && kind == tilo_actions::OperationKind::View
         {
@@ -1354,6 +1371,90 @@ impl Widget for SettingsApp {
                 return Ok(true);
             }
             return Err("operation kind does not match update operation".into());
+        }
+        if type_id == crate::actions::AGENT_PROVIDER_OPERATION_TYPE {
+            if kind != tilo_actions::OperationKind::Effect {
+                return Err("provider configuration requires an effect operation".into());
+            }
+            let operation: crate::actions::AgentProviderOperation =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let protocol = |label: &str| match label {
+                "anthropic" => Ok(ProviderProtocol::Anthropic),
+                "openai-compatible" => Ok(ProviderProtocol::OpenAiCompatible),
+                _ => Err("unsupported provider protocol".to_string()),
+            };
+            let mut config = ProviderConfig::load();
+            match operation {
+                crate::actions::AgentProviderOperation::Add { protocol: label } => {
+                    config.upsert(ProviderProfile::hosted(protocol(&label)?));
+                }
+                crate::actions::AgentProviderOperation::SetProtocol {
+                    id,
+                    protocol: label,
+                } => {
+                    let profile = config
+                        .profiles
+                        .iter_mut()
+                        .find(|profile| profile.id == id)
+                        .ok_or_else(|| "provider is no longer available".to_string())?;
+                    profile.protocol = protocol(&label)?;
+                }
+                crate::actions::AgentProviderOperation::SetEnabled { id, enabled } => {
+                    let profile = config
+                        .profiles
+                        .iter_mut()
+                        .find(|profile| profile.id == id)
+                        .ok_or_else(|| "provider is no longer available".to_string())?;
+                    profile.enabled = enabled;
+                }
+                crate::actions::AgentProviderOperation::Remove { id } => {
+                    if !config.profiles.iter().any(|profile| profile.id == id) {
+                        return Err("provider is no longer available".into());
+                    }
+                    tilo_model_gateway::remove_api_key(&id)
+                        .map_err(|error| format!("provider vault key was not removed: {error}"))?;
+                    let _ = config.remove(&id);
+                }
+                crate::actions::AgentProviderOperation::SetDefault { id } => {
+                    let available = config.profiles.iter().any(|profile| {
+                        profile.id == id && profile.enabled && profile.default_model.is_some()
+                    });
+                    if !available {
+                        return Err("provider cannot currently be selected as default".into());
+                    }
+                    config.default_profile = Some(id);
+                }
+                crate::actions::AgentProviderOperation::SetDetails {
+                    id,
+                    label,
+                    endpoint,
+                    model,
+                } => {
+                    if label.trim().is_empty() || endpoint.trim().is_empty() {
+                        return Err("provider name and endpoint are required".into());
+                    }
+                    let profile = config
+                        .profiles
+                        .iter_mut()
+                        .find(|profile| profile.id == id)
+                        .ok_or_else(|| "provider is no longer available".to_string())?;
+                    profile.label = label;
+                    profile.endpoint = endpoint;
+                    if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
+                        if !profile.models.iter().any(|candidate| candidate.id == model) {
+                            profile
+                                .models
+                                .push(agent_provider_config::ModelDescriptor::new(model.clone()));
+                        }
+                        profile.default_model = Some(model);
+                    }
+                }
+            }
+            config
+                .save()
+                .map_err(|error| format!("provider settings were not saved: {error}"))?;
+            self.select(Category::AgentModels);
+            return Ok(true);
         }
         if type_id == crate::actions::ACCOUNT_OPERATION_TYPE {
             let operation: crate::actions::AccountOperation =
@@ -1428,8 +1529,15 @@ impl Widget for SettingsApp {
                 }
                 (
                     tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Open { .. },
-                ) => Ok(true),
+                    crate::actions::AccountOperation::Open { id },
+                ) => {
+                    // Accounts have no separate read-only detail surface. Open
+                    // the exact account's settings form instead of discarding
+                    // the canonical id and landing on a generic list.
+                    self.account_commands
+                        .set(Some(crate::panes::accounts::AccountViewCommand::Edit(id)));
+                    Ok(true)
+                }
                 _ => Err("operation kind does not match account operation".into()),
             };
         }
@@ -1474,6 +1582,7 @@ impl Widget for SettingsApp {
                 | crate::actions::PRINTER_OPERATION_TYPE
                 | crate::actions::USER_OPERATION_TYPE
                 | crate::actions::AGENT_MODEL_OPERATION_TYPE
+                | crate::actions::DEVICE_MESH_OPERATION_TYPE
         ) && kind == tilo_actions::OperationKind::Effect
         {
             let start = self.start_local_device_operation(kind, type_id, payload, doc, path)?;
@@ -1492,6 +1601,7 @@ impl Widget for SettingsApp {
             (
                 tilo_actions::OperationKind::View,
                 operation @ (crate::actions::AccountOperation::Add { .. }
+                | crate::actions::AccountOperation::Open { .. }
                 | crate::actions::AccountOperation::Edit { .. }
                 | crate::actions::AccountOperation::Reauthenticate { .. }
                 | crate::actions::AccountOperation::CancelForm
@@ -1505,7 +1615,6 @@ impl Widget for SettingsApp {
                     path,
                 )?;
             }
-            (tilo_actions::OperationKind::View, crate::actions::AccountOperation::Open { .. }) => {}
             (
                 tilo_actions::OperationKind::Effect,
                 operation @ (crate::actions::AccountOperation::SubmitForm

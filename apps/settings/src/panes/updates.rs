@@ -993,7 +993,7 @@ impl UpdatesPane {
                     .push(Box::new(
                         Text::new("Restart to apply the staged image.")
                             .with_size(11.0)
-                            .with_color(ui::Theme::dark().text_dim),
+                            .dimmed(),
                     ))
                     .push(Box::new(
                         Row::new()
