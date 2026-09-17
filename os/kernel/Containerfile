@@ -246,6 +246,9 @@ RUN set -eux; \
         CONFIG_SECURITY_LOCKDOWN_LSM=y \
         CONFIG_SECURITY_DMESG_RESTRICT=y \
         CONFIG_BPF_UNPRIV_DEFAULT_OFF=y \
+        '# CONFIG_ACPI_CUSTOM_METHOD is not set' \
+        '# CONFIG_ACPI_CONFIGFS is not set' \
+        '# CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set' \
         CONFIG_PREEMPT=y \
         CONFIG_PREEMPT_DYNAMIC=y \
         CONFIG_HZ_1000=y \

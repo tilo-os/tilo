@@ -169,6 +169,13 @@ if grep -Fqx '# CONFIG_MODULE_UNLOAD is not set' "$running_kernel_config" 2>/dev
 else
   warn "running kernel retains module-unload or livepatch mutation paths"
 fi
+if grep -Fqx '# CONFIG_ACPI_CUSTOM_METHOD is not set' "$running_kernel_config" 2>/dev/null \
+   && grep -Fqx '# CONFIG_ACPI_CONFIGFS is not set' "$running_kernel_config" 2>/dev/null \
+   && grep -Fqx '# CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "running kernel accepts no runtime ACPI or SSDT injection"
+else
+  warn "running kernel retains a runtime ACPI or SSDT injection path"
+fi
 for interface in \
   DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
