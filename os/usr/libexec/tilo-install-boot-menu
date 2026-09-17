@@ -124,18 +124,31 @@ firmware_entry_bytes() {
 }
 
 verify_firmware_entries() {
-  local state="$1" record name expected actual
+  local state="$1" order="$2" next="$3" record name expected actual id
+  local -A captured=()
+  local -a required=()
   while IFS= read -r record; do
     name="${record%%=*}"
     expected="${record#*=}"
     [[ "$name" =~ ^Boot[0-9A-Fa-f]{4}-$EFI_GLOBAL_GUID$ ]] \
       && [[ "$expected" =~ ^([0-9a-f]{2})+$ ]] \
       || die "invalid boot-entry bytes in firmware snapshot: $state"
+    id="${name:4:4}"
+    id="${id^^}"
+    [ -z "${captured[$id]+present}" ] || die "ambiguous firmware boot entry ID: $id"
+    captured[$id]=1
     actual="$(firmware_entry_bytes "$EFIVARS/$name")" \
       || die "existing firmware entry $name is missing or unreadable; snapshot retained at $state; entry bytes were not restored"
     [ "$actual" = "$expected" ] \
       || die "existing firmware entry $name changed; snapshot retained at $state; entry bytes were not restored"
   done < <(sed -n 's/^boot_entry=//p' "$state")
+  IFS=, read -r -a required <<< "$order"
+  [ -z "$next" ] || required+=("$next")
+  for id in "${required[@]}"; do
+    id="${id^^}"
+    [ -n "${captured[$id]+present}" ] \
+      || die "firmware snapshot is missing readable Boot$id bytes referenced by BootOrder or BootNext: $state"
+  done
 }
 
 firmware_snapshot() {
@@ -161,7 +174,7 @@ firmware_snapshot() {
       [ -n "$bytes" ] || die "empty firmware boot entry: $entry"
       printf 'boot_entry=%s=%s\n' "${entry##*/}" "$bytes" >> "$temporary"
     done
-    verify_firmware_entries "$temporary"
+    verify_firmware_entries "$temporary" "$order" "$next"
   fi
   mv -f -- "$temporary" "$state"
 }
@@ -180,11 +193,11 @@ firmware_restore() {
   # Do not reinstate an order/default that could now point at another loader.
   # Detection is not restoration: retain the exact snapshot and fail the
   # installation instead of rewriting opaque foreign EFI_LOAD_OPTION data.
-  verify_firmware_entries "$state"
+  verify_firmware_entries "$state" "$order" "$next"
   "$EFIBOOTMGR" -o "$order" >/dev/null || die "could not restore the original firmware BootOrder"
   if [ -n "$next" ]; then "$EFIBOOTMGR" -n "$next" >/dev/null; else "$EFIBOOTMGR" -N >/dev/null; fi \
     || die "could not restore the original firmware BootNext"
-  verify_firmware_entries "$state"
+  verify_firmware_entries "$state" "$order" "$next"
 }
 
 case "${1:-}" in
