@@ -1,15 +1,11 @@
 //! File-byte preservation. This does not prove a later endpoint displacement.
-use super::super::super::{
-    migration::{PinnedDirectory, same_snapshot},
-    nofollow::metadata_nofollow,
-};
+use super::super::super::{migration::same_snapshot, nofollow::metadata_nofollow};
 use super::{
     Arc, AtomicBool, Change, ConnectionId, ConnectionStore, DurableAck, EndpointIdentity, File,
     Lifecycle, OperationId, OperationReceipt, Page, PageCursor, Path, PreservedObject,
     RecoveryEntry, RecoveryId, RecoveryReason, RecoveryReservation, RecoveryState, RelativePath,
     Row, Side, StoreError, VerifiedBaseline, format, storage,
 };
-use cap_fs_ext::MetadataExt;
 use cap_primitives::fs::Metadata;
 use sha2::{Digest, Sha256};
 use std::{
@@ -23,7 +19,7 @@ fn object_directory(
     store: &ConnectionStore,
     id: RecoveryId,
     create: bool,
-) -> Result<Arc<PinnedDirectory>, StoreError> {
+) -> Result<Arc<storage::Directory>, StoreError> {
     store.validate()?;
     let name = format::hex(&id.operation.connection.0);
     let parent = &store.storage.recovery;
@@ -31,8 +27,8 @@ fn object_directory(
         Ok(metadata) => parent.open_child(OsStr::new(&name), &metadata)?,
         Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
             let child = parent.create_child(OsStr::new(&name))?;
-            storage::sync_directory(&child.file)?;
-            storage::sync_directory(&parent.file)?;
+            storage::sync_directory(&child)?;
+            storage::sync_directory(&parent)?;
             child
         }
         Err(error) => return Err(error.into()),
@@ -169,20 +165,21 @@ impl ConnectionStore {
             storage::sync_file(&target)?;
             storage::validate_file(&parent, &object_name, &target, &target_identity)?;
             // Independently reopen and reread the private object; never reuse the source hash as evidence.
-            let mut reread = storage::open_file(&parent, &object_name, false)?;
+            let mut reread = storage::reread_file(&parent, &object_name)?;
             let reread_identity = storage::regular(&reread)?;
-            if reread_identity.ino() != target_identity.ino() {
+            if storage::file_identity(&reread_identity) != storage::file_identity(&target_identity)
+            {
                 return Err(StoreError::IdentityChanged);
             }
             let (verified, count) = hash_file(&mut reread, flag, size)?;
             if verified != hash
                 || count != size
-                || !same_snapshot(&reread_identity, &storage::regular(&reread)?)
+                || !storage::same_snapshot(&reread_identity, &storage::regular(&reread)?)
             {
                 return Err(StoreError::RecoveryRequired);
             }
             storage::validate_file(&parent, &object_name, &target, &target_identity)?;
-            storage::sync_directory(&parent.file)?;
+            storage::sync_directory(&parent)?;
             self.validate()?;
             entry.state = 1;
             #[cfg(unix)]
@@ -199,14 +196,22 @@ impl ConnectionStore {
             });
             entry.object = Some(format::ObjectIdentity {
                 root: self.storage.identity.clone(),
-                inode: reread_identity.ino(),
+                file_id: storage::file_identity(&reread_identity),
             });
             self.append(Change::Bytes {
                 entry,
                 expected: connection.revision,
                 fence: connection.fence,
             })?;
-            Ok(self.ack(PreservedObject { id, file: reread }))
+            Ok(self.ack(PreservedObject {
+                id,
+                file: reread,
+                // The independent read handle permits the original writer;
+                // retain that writer's deny-write/delete sharing for the full
+                // returned reader lifetime, without reopening a second writer.
+                #[cfg(windows)]
+                _writer_guard: target,
+            }))
         })();
         if matches!(
             result,
@@ -226,16 +231,18 @@ impl ConnectionStore {
         }
         let parent = object_directory(self, entry.id(), false)?;
         let object_name = name(entry.id());
-        let mut file = storage::open_file(&parent, &object_name, false)?;
+        let mut file = storage::reread_file(&parent, &object_name)?;
         let identity = storage::regular(&file)?;
-        if identity.ino() != object.inode {
+        if storage::file_identity(&identity) != object.file_id.require_platform()? {
             return Err(StoreError::IdentityChanged);
         }
         let Some(format::State::File { sha256, bytes, .. }) = entry.content else {
             return Err(StoreError::RecoveryRequired);
         };
         let (actual, size) = hash_file(&mut file, &AtomicBool::new(false), bytes)?;
-        if actual != sha256 || size != bytes || !same_snapshot(&identity, &storage::regular(&file)?)
+        if actual != sha256
+            || size != bytes
+            || !storage::same_snapshot(&identity, &storage::regular(&file)?)
         {
             return Err(StoreError::RecoveryRequired);
         }
