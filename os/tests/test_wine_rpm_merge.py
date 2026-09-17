@@ -85,6 +85,16 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(M.semantic_header(header()), M.semantic_header(header(
             Buildhost='builder-b', Buildtime='9999', Payloadcompressor='xz')))
 
+    def test_native_target_bookkeeping_does_not_change_noarch_payload(self):
+        self.assertEqual(
+            M.semantic_header(header(Optflags='-O2 -m64', Platform='x86_64-redhat-linux')),
+            M.semantic_header(header(Optflags='-O2 -m32', Platform='i686-redhat-linux')),
+        )
+        self.assertNotEqual(
+            M.semantic_header(header(Optflags='-O2 -m64', Filedigests='abc')),
+            M.semantic_header(header(Optflags='-O2 -m32', Filedigests='changed')),
+        )
+
     def test_file_script_dependency_trigger_or_license_changes_reject_merge(self):
         for name in ('Filedigests', 'Basenames', 'Filemodes', 'Fileusername', 'Fileflags',
                      'Prein', 'Requirename', 'Requireversion', 'Triggername', 'License'):
