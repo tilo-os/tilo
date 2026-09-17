@@ -204,7 +204,7 @@ fn sample_files(source_id: &str) -> Vec<SnapFile> {
             (0, "workspace/", "", true),
             (1, "shared/", "6.4 GB", true),
             (2, "design.excalidraw", "8.1 MB", false),
-            (1, "qos/", "3.2 GB", true),
+            (1, "tilo/", "3.2 GB", true),
             (2, "src/", "1.9 GB", true),
             (1, "notes/", "180 MB", true),
             (2, "meeting-2026-07.qdoc", "2.4 MB", false),
@@ -225,7 +225,7 @@ fn sample_files(source_id: &str) -> Vec<SnapFile> {
             (1, "Pictures/", "18.4 GB", true),
             (2, "2026-trip/", "3.1 GB", true),
             (1, "Projects/", "9.8 GB", true),
-            (2, "quickdesktop/", "1.2 GB", true),
+            (2, "tilo/", "1.2 GB", true),
             (1, ".config/", "240 MB", false),
         ],
     };

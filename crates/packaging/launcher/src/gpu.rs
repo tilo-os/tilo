@@ -22,7 +22,10 @@
 //!
 //! Both are selected by environment variable, and both must name a file
 //! that exists **inside the sandbox** — this module derives the paths
-//! and [`crate::sandbox`] binds them.
+//! and the Linux sandbox launcher binds them.
+//!
+//! [`select_for_driver`] uses explicit driver/search inputs on every host.
+//! Sysfs discovery and default host search paths are Linux-only.
 //!
 //! # Derivation, not a hardcoded vendor
 //!
@@ -53,6 +56,7 @@ pub const VK_ICD_FILENAMES_ENV: &str = "VK_ICD_FILENAMES";
 
 /// Directories the EGL vendor JSONs are installed in, most-specific
 /// first. `/etc` overrides `/usr` by GLVND's own convention.
+#[cfg(target_os = "linux")]
 const EGL_VENDOR_DIRS: &[&str] = &[
     "/etc/glvnd/egl_vendor.d",
     "/usr/share/glvnd/egl_vendor.d",
@@ -60,6 +64,7 @@ const EGL_VENDOR_DIRS: &[&str] = &[
 ];
 
 /// Directories the Vulkan ICD manifests are installed in.
+#[cfg(target_os = "linux")]
 const VULKAN_ICD_DIRS: &[&str] = &[
     "/etc/vulkan/icd.d",
     "/usr/share/vulkan/icd.d",
@@ -83,6 +88,7 @@ pub struct IcdSearch {
     pub vulkan_icd_dirs: Vec<PathBuf>,
 }
 
+#[cfg(target_os = "linux")]
 impl Default for IcdSearch {
     fn default() -> Self {
         Self {
@@ -152,6 +158,7 @@ impl GpuSelection {
 ///
 /// `/dev/dri/renderD128` → `/sys/class/drm/renderD128/device/driver` →
 /// symlink basename. `None` when sysfs has no such link.
+#[cfg(target_os = "linux")]
 pub fn driver_for(node: &Path) -> Option<String> {
     let name = node.file_name()?.to_str()?;
     let link = Path::new("/sys/class/drm").join(name).join("device/driver");
@@ -304,6 +311,7 @@ fn render_dirs(dirs: &[PathBuf]) -> String {
 }
 
 /// Derive the loader pinning for `node`, reading its driver from sysfs.
+#[cfg(target_os = "linux")]
 pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
     let driver = driver_for(node);
     match driver {
@@ -371,6 +379,10 @@ pub fn select_for_driver(node: &Path, driver: &str, search: &IcdSearch) -> GpuSe
 mod tests {
     use super::*;
 
+    fn host_icd_name(driver: &str) -> String {
+        format!("{driver}_icd.{}.json", host_arch_token())
+    }
+
     /// Build a fixture ICD tree. `egl` and `vulkan` are
     /// `(file_name, library_path)` pairs written as real manifests, so the
     /// production scanner parses real JSON off a real filesystem.
@@ -413,9 +425,9 @@ mod tests {
                 ("50_mesa.json", "libEGL_mesa.so.0"),
             ],
             &[
-                ("nvidia_icd.x86_64.json", "/usr/lib64/libGLX_nvidia.so.0"),
-                ("radeon_icd.x86_64.json", "/usr/lib64/libvulkan_radeon.so"),
-                ("intel_icd.x86_64.json", "/usr/lib64/libvulkan_intel.so"),
+                (&host_icd_name("nvidia"), "/usr/lib64/libGLX_nvidia.so.0"),
+                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
+                (&host_icd_name("intel"), "/usr/lib64/libvulkan_intel.so"),
             ],
         );
         let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "amdgpu", &search);
@@ -427,7 +439,7 @@ mod tests {
         );
         assert_eq!(
             sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
-            Some("radeon_icd.x86_64.json".as_ref()),
+            Some(host_icd_name("radeon").as_str().as_ref()),
             "notes: {:?}",
             sel.notes
         );
@@ -437,7 +449,7 @@ mod tests {
             .iter()
             .find(|(k, _)| *k == VK_DRIVER_FILES_ENV)
             .expect("VK_DRIVER_FILES derived");
-        assert!(vk.1.ends_with("radeon_icd.x86_64.json"), "{vk:?}");
+        assert!(vk.1.ends_with(&host_icd_name("radeon")), "{vk:?}");
         assert!(
             env.iter()
                 .any(|(k, v)| *k == VK_ICD_FILENAMES_ENV && *v == vk.1),
@@ -461,8 +473,8 @@ mod tests {
                 ("50_mesa.json", "libEGL_mesa.so.0"),
             ],
             &[
-                ("nvidia_icd.x86_64.json", "/usr/lib64/libGLX_nvidia.so.0"),
-                ("radeon_icd.x86_64.json", "/usr/lib64/libvulkan_radeon.so"),
+                (&host_icd_name("nvidia"), "/usr/lib64/libGLX_nvidia.so.0"),
+                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
             ],
         );
         let sel = select_for_driver(Path::new("/dev/dri/renderD129"), "nvidia", &search);
@@ -472,7 +484,7 @@ mod tests {
         );
         assert_eq!(
             sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
-            Some("nvidia_icd.x86_64.json".as_ref())
+            Some(host_icd_name("nvidia").as_str().as_ref())
         );
     }
 
@@ -484,7 +496,7 @@ mod tests {
         let search = fixture(
             tmp.path(),
             &[("50_mesa.json", "libEGL_mesa.so.0")],
-            &[("intel_icd.x86_64.json", "/usr/lib64/libvulkan_intel.so")],
+            &[(&host_icd_name("intel"), "/usr/lib64/libvulkan_intel.so")],
         );
         let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "i915", &search);
         assert_eq!(
@@ -493,7 +505,7 @@ mod tests {
         );
         assert_eq!(
             sel.vulkan_icd_json.as_deref().and_then(|p| p.file_name()),
-            Some("intel_icd.x86_64.json".as_ref())
+            Some(host_icd_name("intel").as_str().as_ref())
         );
         assert!(!sel.is_empty());
     }
@@ -507,7 +519,7 @@ mod tests {
         let search = fixture(
             tmp.path(),
             &[("50_mesa.json", "libEGL_mesa.so.0")],
-            &[("radeon_icd.x86_64.json", "/usr/lib64/libvulkan_radeon.so")],
+            &[(&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so")],
         );
         // `lima` is a Mesa driver with no Vulkan implementation: EGL
         // pins, Vulkan does not.
@@ -533,22 +545,32 @@ mod tests {
         assert_eq!(unknown.notes.len(), 2, "{:?}", unknown.notes);
     }
 
-    /// A multilib host installs `foo_icd.i686.json` next to
-    /// `foo_icd.x86_64.json`, naming the same library — only the one this
-    /// process can dlopen is eligible, or the selection is ambiguous.
+    /// Manifests for the host and a different recognized architecture name
+    /// the same library — only the host file is eligible, or selection is ambiguous.
     #[test]
     fn foreign_architecture_manifests_are_not_candidates() {
+        let foreign_arch = ARCH_TOKENS
+            .iter()
+            .copied()
+            .find(|arch| *arch != host_arch_token())
+            .expect("a recognized architecture different from this host");
+        let foreign_name = format!("radeon_icd.{foreign_arch}.json");
         let tmp = tempfile::tempdir().unwrap();
         let search = fixture(
             tmp.path(),
             &[("50_mesa.json", "libEGL_mesa.so.0")],
             &[
-                ("radeon_icd.i686.json", "/usr/lib/libvulkan_radeon.so"),
-                ("radeon_icd.x86_64.json", "/usr/lib64/libvulkan_radeon.so"),
+                (&foreign_name, "/usr/lib/libvulkan_radeon.so"),
+                (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
             ],
         );
         let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "amdgpu", &search);
         let picked = sel.vulkan_icd_json.expect("exactly one arch is eligible");
+        assert_eq!(
+            picked,
+            search.vulkan_icd_dirs[0].join(host_icd_name("radeon")),
+            "the foreign manifest must not replace or make the host manifest ambiguous"
+        );
         assert!(
             picked.to_string_lossy().contains(host_arch_token()),
             "picked {picked:?} on {}",
@@ -600,11 +622,25 @@ mod tests {
         let search = fixture(
             tmp.path(),
             &[("50_mesa.json", "libEGL_mesa.so.0")],
-            &[("radeon_icd.x86_64.json", "/usr/lib64/libvulkan_radeon.so")],
+            &[(&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so")],
         );
         let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "amdgpu", &search);
         let binds = sel.manifest_files();
-        for (key, value) in sel.env() {
+        assert_eq!(
+            binds,
+            vec![
+                search.egl_vendor_dirs[0].join("50_mesa.json"),
+                search.vulkan_icd_dirs[0].join(host_icd_name("radeon")),
+            ],
+            "both loader manifests must be selected before checking their binds: {:?}",
+            sel.notes
+        );
+        let env = sel.env();
+        assert_eq!(
+            env.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            vec![EGL_VENDOR_ENV, VK_DRIVER_FILES_ENV, VK_ICD_FILENAMES_ENV]
+        );
+        for (key, value) in env {
             assert!(
                 binds.iter().any(|b| b.display().to_string() == value),
                 "{key} points at {value}, which is not bound into the sandbox"
@@ -615,6 +651,7 @@ mod tests {
     /// The sysfs lookup must not invent a driver for a path that isn't
     /// a DRM node.
     #[test]
+    #[cfg(target_os = "linux")]
     fn driver_lookup_rejects_non_drm_paths() {
         assert_eq!(driver_for(Path::new("/dev/null")), None);
         assert_eq!(driver_for(Path::new("/dev/dri/renderD9999")), None);
@@ -624,6 +661,7 @@ mod tests {
     /// driver → installed ICDs → env — has to produce a file that exists.
     /// This is the path the compositor actually calls.
     #[test]
+    #[cfg(target_os = "linux")]
     fn host_render_node_resolves_to_files_that_exist() {
         let Some(node) = std::fs::read_dir("/dev/dri")
             .ok()

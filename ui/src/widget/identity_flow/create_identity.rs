@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! +----------------------------------------+
-//! | qOS — create your identity             |
+//! | Tilo — create your identity             |
 //! |                                        |
 //! | [explanation paragraph]                |
 //! |                                        |
@@ -438,7 +438,7 @@ impl CreateIdentityScreen {
     ) {
         text_renderer.draw_text(
             scene,
-            "Create your qOS identity",
+            "Create your Tilo identity",
             22.0,
             theme.tokens.colors.text_primary,
             translated(transform, card.x0 + card_pad, card.y0 + card_pad),

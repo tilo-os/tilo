@@ -12,7 +12,7 @@
 use std::time::SystemTime;
 
 use collab_types::{ArtifactKind, OpClass};
-use qos_actions::{ActionContext, ActionFacet};
+use tilo_actions::{ActionContext, ActionFacet};
 
 /// Opaque: only ever compared for equality (revert/restore callbacks
 /// pass it back to the caller). The caller picks the byte layout —
@@ -115,7 +115,7 @@ impl HistoryEntry {
                 context
                     .facets
                     .iter()
-                    .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
+                    .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
             })
     }
 }
@@ -133,7 +133,7 @@ pub struct HistoryFilter {
     /// Empty = all op classes.
     pub op_classes: Vec<OpClass>,
     /// `None` disables the range. Half-open, matching the convention
-    /// used elsewhere in qOS so two adjacent filters never double-count
+    /// used elsewhere in Tilo so two adjacent filters never double-count
     /// a boundary entry.
     pub time_range: Option<(SystemTime, SystemTime)>,
     /// App id or label, case-insensitive. Empty means every app, including
@@ -499,7 +499,7 @@ mod tests {
                 "files.entry",
                 "brief.md",
             )
-            .with_app("org.qos.Files", "Files")
+            .with_app("org.tilo.Files", "Files")
             .with_group("issue:42", "Launch brief", "issue")
             .with_facet(ActionFacet::new("file-type", "Markdown"))
             .with_facet(ActionFacet::new("path", "/work/brief.md")),

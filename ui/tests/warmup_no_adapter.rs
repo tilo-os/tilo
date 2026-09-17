@@ -33,13 +33,13 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Set in the child so the same test function runs the child body.
-const CHILD_MARKER: &str = "QOS_WARMUP_NO_ADAPTER_CHILD";
+const CHILD_MARKER: &str = "TILO_WARMUP_NO_ADAPTER_CHILD";
 
 /// `wgpu::Backends::from_comma_list` skips tokens it doesn't recognise, so
 /// an unknown name yields an empty backend set on every platform. Preferred
 /// over naming a real-but-absent backend (`metal` on Linux), which would
 /// stop simulating anything on a Mac.
-const NO_BACKENDS: &str = "qos-no-such-backend";
+const NO_BACKENDS: &str = "tilo-no-such-backend";
 
 /// Child exit code for "the environment still has an adapter" — the
 /// simulation failed, so the run proves nothing.
@@ -82,8 +82,8 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
         .env_remove("WGPU_ADAPTER_NAME")
         // Warmup is on by default, but the parent's environment might
         // have turned it off; the child needs it on to test anything.
-        .env("QOS_STARTUP_WARM", "on")
-        .env_remove("QOS_STARTUP_METRICS_PATH")
+        .env("TILO_STARTUP_WARM", "on")
+        .env_remove("TILO_STARTUP_METRICS_PATH")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()

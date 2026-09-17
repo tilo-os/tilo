@@ -17,9 +17,9 @@
 //! ([`note_placement_for_launch`]); the toplevel adoption reads the
 //! note back and splices the window in.
 
-use crate::compositor::tab_binding::Placement;
 use crate::shell::chrome_state::OpenTarget;
 use crate::shell::state::{GroupId, StripId, WorkspaceTree};
+use crate::shell::tab_binding::Placement;
 
 /// In the strip's **unscrolled canvas space** — the same space
 /// [`ui::widget::GroupRow::usable_at`] resolves widths in, so a seam's
@@ -366,7 +366,7 @@ mod tests {
         viewport: Option<&StripViewport>,
     ) -> (Vec<GroupId>, GroupId) {
         note_placement_for_launch(package_id, tree, viewport);
-        crate::compositor::tab_binding::adopt_toplevel(tree, surface_id, Some(app_id.to_string()));
+        crate::shell::tab_binding::adopt_toplevel(tree, surface_id, Some(app_id.to_string()));
         let landed = tree.workspaces[0].strips[0]
             .window_groups
             .iter()
@@ -405,7 +405,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.qos.seamfixture",
+            "dev.tilo.seamfixture",
             "seamfixture",
             9101,
             Some(&view),
@@ -433,7 +433,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.qos.nextseamfixture",
+            "dev.tilo.nextseamfixture",
             "nextseamfixture",
             9102,
             Some(&view),
@@ -463,7 +463,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.qos.besidefixture",
+            "dev.tilo.besidefixture",
             "besidefixture",
             9103,
             Some(&view),
@@ -491,7 +491,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.qos.tabbedfixture",
+            "dev.tilo.tabbedfixture",
             "tabbedfixture",
             9104,
             Some(&view),

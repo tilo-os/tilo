@@ -200,8 +200,8 @@ fn participant_names_use_room_then_handle_then_local_id_without_raw_peer_ids() {
 
     let unnamed = LocalIdentity::with_lookup(HANDLE, |_| PeerLabels::new());
     assert_eq!(
-        unnamed.resolve(Some(&route), Some("qos-agent")),
-        "qos-agent"
+        unnamed.resolve(Some(&route), Some("tilo-agent")),
+        "tilo-agent"
     );
     let fallback = unnamed.resolve(Some(&route), None);
     assert!(!fallback.is_empty());

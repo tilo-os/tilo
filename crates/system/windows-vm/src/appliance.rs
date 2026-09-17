@@ -17,7 +17,7 @@ use crate::{
 
 pub const HOST_PROTOCOL_MAJOR: u16 = 1;
 
-/// An immutable projection of grants already resolved by qOS's workspace
+/// An immutable projection of grants already resolved by Tilo's workspace
 /// permission service. This is transport input, not a second policy database.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VmLaunchGrants {
@@ -36,7 +36,7 @@ pub struct VmLaunchGrants {
     pub portal_documents: Vec<PortalDocumentGrant>,
 }
 
-/// Access granted by qOS's file portal for one opaque document handle.
+/// Access granted by Tilo's file portal for one opaque document handle.
 ///
 /// This is deliberately not a filesystem permission or a host path.  The
 /// capability broker is the only component allowed to turn it into a private
@@ -54,7 +54,7 @@ impl PortalDocumentAccess {
     }
 }
 
-/// A document the user selected through qOS's file portal.
+/// A document the user selected through Tilo's file portal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortalDocumentGrant {
     /// An unguessable, broker-owned portal document handle.  It is never a
@@ -81,7 +81,7 @@ pub struct ShareBinding {
     pub read_only: bool,
 }
 
-/// Short-lived resources materialised by the existing qOS capability service.
+/// Short-lived resources materialised by the existing Tilo capability service.
 /// Dropping or explicitly revoking `lease_id` is the broker's responsibility.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrokeredLaunch {
@@ -153,7 +153,7 @@ impl BrokeredLaunch {
 
 pub trait CapabilityBroker: Send + Sync {
     /// Opens egress and portal exports only for fields present in the resolved
-    /// qOS grant snapshot. Implementations must return clipboard/microphone no
+    /// Tilo grant snapshot. Implementations must return clipboard/microphone no
     /// broader than requested; the appliance verifies that invariant.
     fn materialize(&self, request: &LaunchRequest) -> Result<BrokeredLaunch, LaunchError>;
 
@@ -596,7 +596,7 @@ pub enum LaunchError {
     CatalogRollback { stored: u64, received: u64 },
     #[error("the guest has not reported its Windows licensing state")]
     GuestLicenseUnknown,
-    #[error("capability broker returned access broader than the qOS grant: {0}")]
+    #[error("capability broker returned access broader than the Tilo grant: {0}")]
     BrokerEscalated(&'static str),
     #[error("the appliance domain disappeared")]
     DomainDisappeared,
@@ -674,7 +674,7 @@ mod tests {
                 applications: vec![PublishedApplication {
                     id: "word".to_string(),
                     display_name: "Word".to_string(),
-                    remote_app_alias: "qos-word".to_string(),
+                    remote_app_alias: "tilo-word".to_string(),
                     icon_sha256: None,
                     associations: vec![Association {
                         kind: AssociationKind::Extension,
@@ -694,7 +694,7 @@ mod tests {
             Ok(GuestLaunch {
                 endpoint: RdpEndpoint {
                     address: (IpAddr::V4(Ipv4Addr::LOCALHOST), 3389).into(),
-                    username: "qos".to_string(),
+                    username: "tilo".to_string(),
                     certificate_sha256: "a".repeat(64),
                 },
                 password: Secret::new(b"secret".to_vec()),
@@ -750,8 +750,8 @@ mod tests {
         WindowsAppliance::new(
             ApplianceConfig::recommended(
                 "01234567-89ab-cdef-0123-456789abcdef",
-                "/var/lib/qos/windows/system.qcow2",
-                "/var/lib/qos/windows/nvram.fd",
+                "/var/lib/tilo/windows/system.qcow2",
+                "/var/lib/tilo/windows/nvram.fd",
             ),
             store,
             Backend(DomainState::Running),
@@ -779,7 +779,7 @@ mod tests {
             &directory,
             Agent {
                 available: false,
-                alias_on_launch: "qos-word".to_string(),
+                alias_on_launch: "tilo-word".to_string(),
             },
             BrokeredLaunch::deny_all("lease"),
         );
@@ -796,7 +796,7 @@ mod tests {
             &directory,
             Agent {
                 available: true,
-                alias_on_launch: "qos-word".to_string(),
+                alias_on_launch: "tilo-word".to_string(),
             },
             BrokeredLaunch::deny_all("lease"),
         );
@@ -815,7 +815,7 @@ mod tests {
             &directory,
             Agent {
                 available: true,
-                alias_on_launch: "qos-word".to_string(),
+                alias_on_launch: "tilo-word".to_string(),
             },
             BrokeredLaunch {
                 lease_id: "lease".to_string(),
@@ -824,7 +824,7 @@ mod tests {
                 clipboard: false,
                 microphone: false,
                 shares: vec![ShareBinding {
-                    drive_name: "QOS1".to_string(),
+                    drive_name: "TILO1".to_string(),
                     portal_document_id: "portal-document".to_string(),
                     host_path: crate::portal_lease_root().join("lease/document"),
                     read_only: false,
@@ -849,7 +849,7 @@ mod tests {
             &directory,
             Agent {
                 available: true,
-                alias_on_launch: "qos-word".to_string(),
+                alias_on_launch: "tilo-word".to_string(),
             },
             BrokeredLaunch::deny_all("lease"),
         );
@@ -877,7 +877,7 @@ mod tests {
             &directory,
             Agent {
                 available: true,
-                alias_on_launch: "qos-word".to_string(),
+                alias_on_launch: "tilo-word".to_string(),
             },
             BrokeredLaunch {
                 lease_id: "lease".to_string(),
@@ -905,7 +905,7 @@ mod tests {
             &directory,
             Agent {
                 available: true,
-                alias_on_launch: "qos-different".to_string(),
+                alias_on_launch: "tilo-different".to_string(),
             },
             BrokeredLaunch::deny_all("lease"),
         );
@@ -926,7 +926,7 @@ mod tests {
             &directory,
             Agent {
                 available: true,
-                alias_on_launch: "qos-word".to_string(),
+                alias_on_launch: "tilo-word".to_string(),
             },
             BrokeredLaunch::deny_all("lease"),
         );
@@ -945,7 +945,7 @@ mod tests {
             &directory,
             Agent {
                 available: false,
-                alias_on_launch: "qos-word".to_string(),
+                alias_on_launch: "tilo-word".to_string(),
             },
             BrokeredLaunch::deny_all("lease"),
         );
@@ -954,7 +954,7 @@ mod tests {
             applications: vec![PublishedApplication {
                 id: "word".to_string(),
                 display_name: "Word".to_string(),
-                remote_app_alias: "qos-word".to_string(),
+                remote_app_alias: "tilo-word".to_string(),
                 icon_sha256: None,
                 associations: Vec::new(),
                 uninstall_available: false,

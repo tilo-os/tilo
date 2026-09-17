@@ -7,7 +7,7 @@
 //! cargo run -p ui --example ui-lab -- identity_flow_demo
 //!
 //! # Persist to a directory (the demo writes identity.json on success):
-//! cargo run -p ui --example ui-lab -- identity_flow_demo --persist /tmp/qos-alice
+//! cargo run -p ui --example ui-lab -- identity_flow_demo --persist /tmp/tilo-alice
 //!
 //! # Jump to a specific screen pre-seeded with sample data:
 //! cargo run -p ui --example ui-lab -- identity_flow_demo --screen recovery_share
@@ -111,6 +111,8 @@ impl IdentityStore for DemoFileStore {
 }
 
 pub fn run(args: &[String]) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     let screen = args
         .windows(2)
         .find(|w| w.first().is_some_and(|flag| flag == "--screen"))
@@ -151,7 +153,7 @@ pub fn run(args: &[String]) {
     );
 
     let state = State::new();
-    let app = App::new(state, Box::new(flow));
+    let app = App::from_scoped_parts(wake_scope, state, Box::new(flow));
     app.run();
 }
 

@@ -1,8 +1,8 @@
 @0xd9f8e5b8a1c44d10;
 
-# qOS format-router RPC schema. The host exposes a single FormatRouter
+# Tilo format-router RPC schema. The host exposes a single FormatRouter
 # capability over a Unix-domain stream socket at
-# $XDG_RUNTIME_DIR/qos/services/format-router.sock . Clients (FS daemon,
+# $XDG_RUNTIME_DIR/tilo/services/format-router.sock . Clients (FS daemon,
 # apps) call detect/importAs/exportAs/list against this interface.
 
 struct Confidence {

@@ -1,4 +1,4 @@
-//! The qOS UI toolkit: retained-mode, CRDT-native widgets.
+//! The Tilo UI toolkit: retained-mode, CRDT-native widgets.
 //!
 //! # Reach for the toolkit's stack through the toolkit
 //!
@@ -45,6 +45,13 @@ pub mod accesskit_bridge;
 pub mod action_host;
 pub mod action_palette;
 pub mod animation;
+#[cfg(test)]
+extern crate self as ui;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/support/application.rs"]
+pub(crate) mod application_test_support;
+
 pub mod app;
 pub mod caps_lock;
 pub mod chrome;
@@ -57,11 +64,12 @@ pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 /// Shared by the WebView's page buffers and the video decoder's hardware
 /// frames.
-#[cfg(feature = "dmabuf-import")]
+#[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
 pub mod floating_surface;
+pub mod font_catalog;
 pub mod format;
 pub mod fullscreen;
 pub mod gesture;
@@ -79,6 +87,7 @@ pub mod image_store;
 pub mod input;
 pub mod interaction;
 pub mod launch;
+pub mod live_collaboration;
 pub mod local_state;
 pub mod math;
 pub mod mpris;
@@ -95,6 +104,7 @@ pub mod presence;
 pub mod profiling;
 pub mod query_text;
 pub mod realtime_continuity;
+pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
 pub mod text_assistance;
 pub mod text_break;
@@ -122,6 +132,7 @@ pub mod undo;
 pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
+pub mod wake;
 pub mod warmup;
 pub mod webview;
 pub mod widget;
@@ -139,7 +150,7 @@ pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
-pub use app::{App, local_surface_id};
+pub use app::{ActionUiRoute, App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
@@ -158,7 +169,6 @@ pub use interaction::{
 };
 pub use local_state::{
     LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
-    WakeHandle,
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
@@ -211,7 +221,7 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
-pub use qos_actions;
+pub use tilo_actions;
 pub use widget::ModelView;
 pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
@@ -231,6 +241,7 @@ pub use widget::{RouteError, RouteHandle, Router};
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
+pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
     HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
     RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
@@ -250,6 +261,10 @@ pub use history_source::{
     HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource,
     compare_entries, deterministic_narrative, heads_for_entry, participant_display_label,
     validate_narrative, version_index_for_entry,
+};
+pub use live_collaboration::{
+    CollaborationExperience, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PersonPresence,
+    SemanticActivity, StatusOrigin, StatusSharing,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
@@ -297,6 +312,7 @@ pub use widget::merge_strategy::{
 pub use animation::{Animated, Curve, Lerp, Spring, Transition, ease_out};
 
 pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
+pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
 // The capability model (`collab_types::caps`), reached through the
 // toolkit. These are re-exports, not toolkit-local copies — see
 // `permissions/mod.rs`.
@@ -305,3 +321,8 @@ pub use permissions::{
     Actor, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
     Scope as CapScope, Subject, UserId, Verb,
 };
+
+pub mod application;
+pub mod application_view;
+
+pub mod bound_dispatch;

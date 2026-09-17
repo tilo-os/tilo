@@ -1,0 +1,202 @@
+use super::*;
+use cosmic_text::fontdb::{Query, Style, Weight};
+use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping};
+
+fn fixture() -> FontCatalog {
+    FontCatalog::controlled_fixture(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        "en-US",
+    )
+}
+
+#[test]
+fn controlled_catalog_has_only_the_twenty_manifest_faces() {
+    let catalog = fixture();
+    let fs = catalog.load().unwrap();
+    assert_eq!(fs.db().len(), 20); // 15 single faces plus five TTC faces.
+    let root = catalog.root().canonicalize().unwrap();
+    for face in fs.db().faces() {
+        match &face.source {
+            fontdb::Source::File(path) => assert!(path.starts_with(&root)),
+            _ => panic!("canonical file must stay file-backed"),
+        }
+    }
+    for (generic, expected) in [
+        (Family::SansSerif, "Noto Sans"),
+        (Family::Serif, "Noto Serif"),
+        (Family::Monospace, "Noto Sans Mono"),
+    ] {
+        for weight in [Weight::NORMAL, Weight(600), Weight::BOLD] {
+            let id = fs
+                .db()
+                .query(&Query {
+                    families: &[generic],
+                    weight,
+                    ..Query::default()
+                })
+                .unwrap();
+            assert!(
+                fs.db()
+                    .face(id)
+                    .unwrap()
+                    .families
+                    .iter()
+                    .any(|f| f.0 == expected)
+            );
+        }
+    }
+    for expected in ["Noto Sans", "Noto Serif"] {
+        let id = fs
+            .db()
+            .query(&Query {
+                families: &[Family::Name(expected)],
+                style: Style::Italic,
+                ..Query::default()
+            })
+            .unwrap();
+        assert_eq!(fs.db().face(id).unwrap().style, Style::Italic);
+    }
+    for expected in ["Noto Sans Math", "Adwaita Sans", "Noto Sans Symbols 2"] {
+        assert!(
+            fs.db()
+                .query(&Query {
+                    families: &[Family::Name(expected)],
+                    ..Query::default()
+                })
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn named_host_fonts_survive_but_reserved_claimants_do_not() {
+    let catalog = fixture();
+    let mut called = false;
+    let mut named_id = None;
+    let mut duplicate_id = None;
+    let mut alias_id = None;
+    let mut ambient_adwaita_id = None;
+    let product = FontCatalog::product(catalog.root(), "en-US");
+    let fs = product
+        .load_with_system(|db| {
+            called = true;
+            let face = db.faces().next().unwrap().clone();
+            let mut duplicate = face.clone();
+            duplicate.families = vec![("Noto Sans".into(), face.families[0].1)];
+            duplicate_id = Some(db.push_face_info(duplicate));
+            let mut alias = face.clone();
+            alias.families = vec![("Noto Sans Hebrew Light".into(), face.families[0].1)];
+            alias_id = Some(db.push_face_info(alias));
+            let mut ambient = face.clone();
+            ambient.families = vec![("Adwaita Sans".into(), face.families[0].1)];
+            ambient_adwaita_id = Some(db.push_face_info(ambient));
+            let mut other = face;
+            other.families = vec![("Local Named Test".into(), other.families[0].1)];
+            named_id = Some(db.push_face_info(other));
+        })
+        .unwrap();
+    assert!(called);
+    assert!(fs.db().face(duplicate_id.unwrap()).is_none());
+    assert!(fs.db().face(alias_id.unwrap()).is_none());
+    assert!(fs.db().face(named_id.unwrap()).is_some());
+    assert_eq!(
+        fs.db().query(&Query {
+            families: &[Family::Name("Adwaita Sans")],
+            ..Query::default()
+        }),
+        ambient_adwaita_id
+    );
+    catalog
+        .load_with_system(|_| panic!("controlled catalog must never discover ambient fonts"))
+        .unwrap();
+}
+
+#[test]
+fn missing_or_corrupt_resources_fail_before_system_discovery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let catalog = FontCatalog::product(root, "en-US");
+    let error = catalog
+        .load_with_system(|_| panic!("must not mask missing manifest"))
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("manifest.toml"));
+    std::fs::write(root.join("manifest.toml"), MANIFEST).unwrap();
+    let error = catalog
+        .load_with_system(|_| panic!("must not mask missing font"))
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("NotoSans[wght].ttf"));
+    let mut bytes = std::fs::read(fixture().root().join("NotoSans[wght].ttf")).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(root.join("NotoSans[wght].ttf"), bytes).unwrap();
+    let error = catalog
+        .load_with_system(|_| panic!("must not mask corruption"))
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("SHA-256"));
+}
+
+#[test]
+fn canonical_scripts_resolve_the_declared_families() {
+    let mut fs = fixture().load().unwrap();
+    for (text, expected) in [
+        ("مرحبا", "Noto Sans Arabic"),
+        ("שלום", "Noto Sans Hebrew"),
+        ("नमस्ते", "Noto Sans Devanagari"),
+        ("বাংলা", "Noto Sans Bengali"),
+        ("สวัสดี", "Noto Sans Thai"),
+        ("日本語", "Noto Sans CJK SC"),
+        ("ひらがな", "Noto Sans CJK JP"),
+        ("한글", "Noto Sans CJK KR"),
+        ("🙂", "Noto Color Emoji"),
+    ] {
+        let mut buffer = Buffer::new(&mut fs, Metrics::new(18.0, 24.0));
+        buffer.set_text(
+            text,
+            &Attrs::new().family(Family::SansSerif),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut fs, false);
+        let glyphs: Vec<_> = buffer.layout_runs().flat_map(|run| run.glyphs).collect();
+        assert!(!glyphs.is_empty(), "{text}");
+        for glyph in glyphs {
+            assert_ne!(glyph.glyph_id, 0, "{text}");
+            assert!(
+                fs.db()
+                    .face(glyph.font_id)
+                    .unwrap()
+                    .families
+                    .iter()
+                    .any(|f| f.0 == expected),
+                "{text}: expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn adwaita_axis_order_is_part_of_the_fixture_contract() {
+    use skrifa::{FontRef, MetadataProvider};
+    let fs = fixture().load().unwrap();
+    let id = fs
+        .db()
+        .query(&Query {
+            families: &[Family::Name("Adwaita Sans")],
+            ..Query::default()
+        })
+        .unwrap();
+    let tags = fs
+        .db()
+        .with_face_data(id, |bytes, index| {
+            FontRef::from_index(bytes, index)
+                .unwrap()
+                .axes()
+                .iter()
+                .map(|axis| axis.tag().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert_eq!(tags, ["opsz", "wght"]);
+}

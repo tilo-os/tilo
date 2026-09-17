@@ -1,7 +1,7 @@
 //! Typed requests from sandboxed system surfaces to shell-owned tools.
 //!
 //! The wire deliberately cannot carry a program, package id, or argv. A caller
-//! chooses from this enum; the shell maps it to an installed qOS package and
+//! chooses from this enum; the shell maps it to an installed Tilo package and
 //! validates the contextual data before launching anything.
 
 use std::io::{BufRead, BufReader, Write};
@@ -11,8 +11,8 @@ use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 
 pub const TOOL_PROTOCOL_VERSION: u32 = 1;
-pub const TOOL_SERVICE_FD_ENV: &str = "QOS_SVC_TOOLS_FD";
-pub const TOOL_CONTEXT_ENV: &str = "QOS_TOOL_CONTEXT";
+pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
+pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
 const MAX_WIRE_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,10 +129,10 @@ impl ToolIntent {
     /// contextual surface.
     pub fn package_id(&self) -> Option<&'static str> {
         match self {
-            Self::Vpn { .. } => Some("dev.qos.vpn"),
-            Self::Firewall { .. } => Some("dev.qos.firewall"),
-            Self::Disks { .. } => Some("dev.qos.disks"),
-            Self::Backups { .. } => Some("dev.qos.backups"),
+            Self::Vpn { .. } => Some("dev.tilo.vpn"),
+            Self::Firewall { .. } => Some("dev.tilo.firewall"),
+            Self::Disks { .. } => Some("dev.tilo.disks"),
+            Self::Backups { .. } => Some("dev.tilo.backups"),
             Self::WorkspaceSettings { .. } => None,
         }
     }
@@ -156,12 +156,12 @@ pub struct ToolReply {
 /// # Errors
 ///
 /// Returns an error message if `intent` fails [`ToolIntent::validate`], the process is not
-/// attached to a qOS workspace or its tool service, the request is too large to send, or the
+/// attached to a Tilo workspace or its tool service, the request is too large to send, or the
 /// shell rejects or fails to answer the request.
 pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
     intent.validate()?;
-    let workspace_id = std::env::var("QOS_WORKSPACE_ID")
-        .map_err(|_| "Settings is not attached to a qOS workspace".to_string())?;
+    let workspace_id = std::env::var("TILO_WORKSPACE_ID")
+        .map_err(|_| "Settings is not attached to a Tilo workspace".to_string())?;
     let raw_fd: i32 = std::env::var(TOOL_SERVICE_FD_ENV)
         .map_err(|_| "The shell tool service is unavailable".to_string())?
         .parse()
@@ -257,7 +257,7 @@ mod tests {
         let intent = ToolIntent::Firewall {
             route: FirewallRoute::Rules,
         };
-        assert_eq!(intent.package_id(), Some("dev.qos.firewall"));
+        assert_eq!(intent.package_id(), Some("dev.tilo.firewall"));
         let json = serde_json::to_value(intent).unwrap();
         assert_eq!(json["tool"], "firewall");
         assert_eq!(json["route"], "rules");

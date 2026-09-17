@@ -1,14 +1,20 @@
 //! `org.freedesktop.impl.portal.Settings` backend.
+#[cfg(target_os = "linux")]
 use super::PortalContext;
 use super::desktop_services::PortalSetting;
 use std::collections::{BTreeMap, HashMap};
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
 use zbus::zvariant::OwnedValue;
+#[cfg(target_os = "linux")]
 pub struct SettingsBackend {
     ctx: PortalContext,
 }
+#[cfg(target_os = "linux")]
 impl SettingsBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self { ctx }
@@ -35,6 +41,7 @@ impl SettingsBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn spawn_signal_emitter(
     connection: zbus::Connection,
     mut changes: tokio::sync::broadcast::Receiver<(String, String, PortalSetting)>,
@@ -72,10 +79,11 @@ pub fn spawn_signal_emitter(
         .detach();
 }
 
-/// Mirror qOS's live appearance store into the standard portal namespace.
+/// Mirror Tilo's live appearance store into the standard portal namespace.
 /// The compositor watches the same file on the same cadence, so applications
 /// and shell chrome switch coherently and `SettingChanged` is emitted only
 /// when a value truly changes.
+#[cfg(target_os = "linux")]
 pub fn spawn_appearance_monitor(settings: super::desktop_services::SettingsServiceHandle) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(750));
@@ -144,6 +152,7 @@ fn grouped(
     result
 }
 #[interface(name = "org.freedesktop.impl.portal.Settings")]
+#[cfg(target_os = "linux")]
 impl SettingsBackend {
     #[zbus(property, name = "version")]
     const fn version(&self) -> u32 {

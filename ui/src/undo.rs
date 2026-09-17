@@ -31,7 +31,7 @@
 //! [`Widget::tooltip`](crate::widget::Widget::tooltip) already use.
 //!
 //! There is a third channel in the same family, one step earlier: an app whose
-//! edits are dispatched [`qos_actions`](crate::action_host) actions reports the
+//! edits are dispatched [`tilo_actions`](crate::action_host) actions reports the
 //! bracket around them through
 //! [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action),
 //! and [`record_dispatched_action`] is where a host turns that into the undo
@@ -183,7 +183,7 @@ pub fn shortcut(character: &str, ctrl: bool, shift: bool) -> Option<UndoRequest>
 ///
 /// * **Not draining at all.** [`take_committed_action`](crate::widget::Widget::take_committed_action)
 ///   is rising-edge, so a host that never reads it records nothing — an app
-///   whose edits all travel through [`qos_actions`](crate::action_host) then has
+///   whose edits all travel through [`tilo_actions`](crate::action_host) then has
 ///   an empty undo history no matter how much the user changed. The driver did
 ///   exactly this, which made undo unobservable to every headless test of such
 ///   an app.
@@ -224,7 +224,11 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     author: &crate::permissions::UserId,
 ) -> bool {
     let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();
+    let mut visited = std::collections::HashSet::new();
     for w_ptr in std::iter::once(root).chain(node_map.values().copied()) {
+        if !visited.insert(w_ptr.cast::<()>()) {
+            continue;
+        }
         // SAFETY: see the function's safety note. The reference is created and
         // dropped inside this iteration, so no two overlap.
         let w = unsafe { &mut *w_ptr };
@@ -234,6 +238,62 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     }
     let Some(before) = earliest_bracket(state, brackets) else {
         return false;
+    };
+    if state.doc.get_heads() == before {
+        return false;
+    }
+    state.record_committed_action_authored(before, None, None, Some(author.clone()));
+    true
+}
+
+/// Bound host variant. The exclusive owner keeps root and both maps stable.
+pub(crate) unsafe fn record_dispatched_action_bound(
+    state: &mut crate::state::State,
+    root: *mut dyn crate::widget::Widget,
+    nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    bindings: &crate::bound_dispatch::BoundNodeMap,
+    author: &crate::permissions::UserId,
+) -> bool {
+    let mut brackets = Vec::new();
+    {
+        // SAFETY: the host provides its live, exclusively owned root. This borrow
+        // ends before any descendant pointer is admitted below.
+        let root = unsafe { &mut *root };
+        if let Ok(_entry) = crate::bound_dispatch::enter_widget(root)
+            && let Some(before) = root.take_committed_action()
+        {
+            brackets.push(before);
+        }
+    }
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(root.cast::<()>());
+    let mut bound_changed = false;
+    for (&node, &pointer) in nodes {
+        if !visited.insert(pointer.cast::<()>()) {
+            continue;
+        }
+        if let Some(binding) = bindings.binding_for(node) {
+            // SAFETY: the stable host topology supplies exclusive node access;
+            // metadata/lifetime checks precede delivery under its canonical Doc.
+            let drained = binding.with_record_frame(&mut state.doc, false, |doc, _| unsafe {
+                crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
+                    binding.drain_widget_actions(widget, doc)
+                })
+            });
+            bound_changed |= matches!(drained, Ok(Ok(Ok(true))));
+        } else {
+            // SAFETY: each unique live node is visited only once this sweep.
+            if let Ok(Some(before)) = unsafe {
+                crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
+                    widget.take_committed_action()
+                })
+            } {
+                brackets.push(before);
+            }
+        }
+    }
+    let Some(before) = earliest_bracket(state, brackets) else {
+        return bound_changed;
     };
     if state.doc.get_heads() == before {
         return false;

@@ -1,4 +1,4 @@
-//! Pure, versioned schema and structural editor for qOS serialized UI graphs.
+//! Pure, versioned schema and structural editor for Tilo serialized UI graphs.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

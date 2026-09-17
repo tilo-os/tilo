@@ -6,30 +6,52 @@
 //! a [`GlobalShortcutsService`] request to ask for consent and install the
 //! actual key grabs.  There is deliberately no generic D-Bus key-grab path.
 
+#[cfg(target_os = "linux")]
+use super::lifecycle::LifecycleEntry;
+#[cfg(target_os = "linux")]
+use super::lifecycle::LifecycleResource;
+#[cfg(target_os = "linux")]
+use zbus::interface;
+#[cfg(target_os = "linux")]
+use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
+use zbus::object_server::SignalContext;
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+#[cfg(target_os = "linux")]
+use zbus::zvariant::Value;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::oneshot;
 use winit::event::Modifiers;
 use winit::keyboard::PhysicalKey;
-use zbus::interface;
-use zbus::names::OwnedUniqueName;
-use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedValue, Str, Value};
+#[cfg(any(test, target_os = "linux"))]
+use zbus::zvariant::OwnedValue;
+#[cfg(target_os = "linux")]
+use zbus::zvariant::Str;
 
+use super::PortalCaller;
 use super::desktop_services::PortalResult;
-use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
-use super::{PortalCaller, PortalContext, auth::authenticate_call};
+use super::lifecycle::PortalLifecycle;
+#[cfg(target_os = "linux")]
+use super::{PortalContext, auth::authenticate_call};
 use crate::shell::portal_dialog::{
     PortalDialogQueue, ShortcutBindingDecision, ShortcutBindingRequest, ShortcutBindingRow,
 };
 
+#[cfg(target_os = "linux")]
 const MAX_SESSIONS: usize = 128;
+#[cfg(any(test, target_os = "linux"))]
 const MAX_SHORTCUTS: usize = 64;
+#[cfg(any(test, target_os = "linux"))]
 const MAX_ID_BYTES: usize = 128;
+#[cfg(any(test, target_os = "linux"))]
 const MAX_TEXT_BYTES: usize = 1024;
 const MAX_QUEUED_ACTIVATIONS: usize = 1024;
 
+#[cfg(any(test, target_os = "linux"))]
 type ShortcutWire = (String, HashMap<String, OwnedValue>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +73,7 @@ pub struct GlobalShortcut {
 }
 
 impl GlobalShortcut {
+    #[cfg(target_os = "linux")]
     fn wire(&self) -> ShortcutWire {
         let mut options = HashMap::new();
         if let Some(description) = &self.description {
@@ -69,7 +92,7 @@ impl GlobalShortcut {
     }
 }
 
-/// The response to qOS's binding sheet.  `Allowed` is intentionally a list:
+/// The response to Tilo's binding sheet.  `Allowed` is intentionally a list:
 /// users may approve some requested shortcuts and reject conflicting ones.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GlobalShortcutConsent {
@@ -99,7 +122,7 @@ impl GlobalShortcutsServiceHandle {
     pub fn new(service: Arc<dyn GlobalShortcutsService>) -> Self {
         Self(service)
     }
-    fn request_bind(
+    pub fn request_bind(
         &self,
         request: GlobalShortcutBindingRequest,
         reply: oneshot::Sender<PortalResult<GlobalShortcutConsent>>,
@@ -109,19 +132,19 @@ impl GlobalShortcutsServiceHandle {
     fn release_session(&self, session: &str) {
         self.0.release_session(session)
     }
-    fn cancel_bind(&self, handle: &str) {
+    pub fn cancel_bind(&self, handle: &str) {
         self.0.cancel_bind(handle);
     }
 }
 
-struct UnavailableGlobalShortcuts;
+pub struct UnavailableGlobalShortcuts;
 impl GlobalShortcutsService for UnavailableGlobalShortcuts {
     fn request_bind(
         &self,
         _: GlobalShortcutBindingRequest,
         _: oneshot::Sender<PortalResult<GlobalShortcutConsent>>,
     ) -> PortalResult<()> {
-        PortalResult::Unavailable("qOS global-shortcut chrome is not attached".into())
+        PortalResult::Unavailable("Tilo global-shortcut chrome is not attached".into())
     }
     fn release_session(&self, _: &str) {}
 }
@@ -139,7 +162,7 @@ struct ShellShortcutRegistry {
     installed: Vec<InstalledShortcut>,
 }
 
-/// Concrete qOS shortcut service.  It uses the same compositor-owned review
+/// Concrete Tilo shortcut service.  It uses the same compositor-owned review
 /// sheet as other sensitive portal actions, then keeps only canonical physical
 /// accelerators.  There is no executable/action data in this registry: a hit
 /// can only queue `Activated` for the already-authenticated portal session.
@@ -282,7 +305,7 @@ impl GlobalShortcutsService for ShellGlobalShortcutsService {
                     .and_then(canonical_accelerator);
                 let status = accelerator.as_deref().and_then(|accelerator| {
                     if is_reserved_accelerator(accelerator) {
-                        Some("Reserved by qOS. Choose another shortcut.".into())
+                        Some("Reserved by Tilo. Choose another shortcut.".into())
                     } else if let Some(app_id) = installed.get(accelerator) {
                         Some(format!(
                             "Already used by {}. Choose another shortcut.",
@@ -367,6 +390,14 @@ struct Session {
     owner: String,
     caller: PortalCaller,
     shortcuts: Vec<GlobalShortcut>,
+    #[cfg(any(test, target_os = "linux"))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     binding: bool,
 }
 
@@ -467,6 +498,7 @@ impl GlobalShortcutsHandle {
 }
 
 #[derive(Clone)]
+#[cfg(target_os = "linux")]
 pub struct GlobalShortcutsBackend {
     ctx: PortalContext,
     state: Arc<Mutex<ShortcutState>>,
@@ -474,6 +506,7 @@ pub struct GlobalShortcutsBackend {
     lifecycle: PortalLifecycle,
 }
 
+#[cfg(target_os = "linux")]
 impl GlobalShortcutsBackend {
     /// A backend without chrome reports unavailable on `BindShortcuts`; it
     /// never records a pretend system-wide key grab.
@@ -532,6 +565,7 @@ impl GlobalShortcutsBackend {
 }
 
 #[interface(name = "org.freedesktop.impl.portal.GlobalShortcuts")]
+#[cfg(target_os = "linux")]
 impl GlobalShortcutsBackend {
     #[zbus(property, name = "version")]
     const fn version(&self) -> u32 {
@@ -920,6 +954,7 @@ impl GlobalShortcutsBackend {
 /// Deliver activation events accumulated by the compositor handle. `serve`
 /// should spawn this after registering the backend; keeping it independent
 /// makes the bridge usable in shell tests without a D-Bus connection.
+#[cfg(target_os = "linux")]
 pub fn spawn_signal_emitter(
     connection: zbus::Connection,
     handle: GlobalShortcutsHandle,
@@ -948,6 +983,7 @@ pub fn spawn_signal_emitter(
     })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn decode_shortcuts(wire: Vec<ShortcutWire>) -> Option<Vec<GlobalShortcut>> {
     if wire.len() > MAX_SHORTCUTS {
         return None;
@@ -975,12 +1011,14 @@ fn decode_shortcuts(wire: Vec<ShortcutWire>) -> Option<Vec<GlobalShortcut>> {
         })
         .collect()
 }
+#[cfg(any(test, target_os = "linux"))]
 fn option_text(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     options
         .get(key)
         .and_then(|value| value.try_clone().ok())
         .and_then(|value| String::try_from(value).ok())
 }
+#[cfg(any(test, target_os = "linux"))]
 fn valid_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_ID_BYTES
@@ -988,9 +1026,11 @@ fn valid_id(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
+#[cfg(any(test, target_os = "linux"))]
 fn valid_text(value: &str) -> bool {
     value.len() <= MAX_TEXT_BYTES && !value.chars().any(char::is_control)
 }
+#[cfg(target_os = "linux")]
 fn valid_parent(value: &str) -> bool {
     value.len() <= MAX_TEXT_BYTES && !value.chars().any(char::is_control)
 }
@@ -1160,7 +1200,7 @@ fn accelerator_for_code(code: &str, modifiers: Modifiers) -> Option<String> {
     Some(format!("{}+{code}", parts.join("+")))
 }
 
-/// qOS-owned accelerators always win.  Exposed to the trusted dialog so it
+/// Tilo-owned accelerators always win.  Exposed to the trusted dialog so it
 /// can explain a rejected capture before any registry mutation occurs.
 pub fn is_reserved_accelerator(accelerator: &str) -> bool {
     matches!(
@@ -1201,16 +1241,15 @@ mod tests {
 
     #[test]
     fn compositor_handle_cannot_activate_unbound_id() {
-        let backend = GlobalShortcutsBackend::new(test_context());
-        let handle = backend.handle();
+        let handle = test_handle();
         assert!(!handle.activate("/org/freedesktop/portal/desktop/session/x", "unknown", 1));
     }
 
     #[test]
     fn compositor_event_bridge_only_delivers_bound_ids() {
-        let backend = GlobalShortcutsBackend::new(test_context());
+        let handle = test_handle();
         let session = "/org/freedesktop/portal/desktop/session/x";
-        backend.state.lock().unwrap().sessions.insert(
+        handle.state.lock().unwrap().sessions.insert(
             session.into(),
             Session {
                 owner: ":1.7".into(),
@@ -1223,7 +1262,6 @@ mod tests {
                 binding: false,
             },
         );
-        let handle = backend.handle();
         assert!(handle.activate(session, "toggle", 9));
         assert!(!handle.activate(session, "other", 10));
         assert_eq!(
@@ -1334,17 +1372,11 @@ mod tests {
         );
     }
 
-    fn test_context() -> PortalContext {
-        let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-            crate::shell::state::Workspace::test_default(
-                crate::shell::state::WorkspaceId(1),
-                "test",
-            ),
-        );
-        PortalContext::new_with_null_spawners(
-            grants,
-            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoDeny),
-            crate::portal::CallerMap::new(),
-        )
+    fn test_handle() -> GlobalShortcutsHandle {
+        GlobalShortcutsHandle {
+            state: Arc::new(Mutex::new(ShortcutState::default())),
+            lifecycle: PortalLifecycle::new(),
+            service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+        }
     }
 }

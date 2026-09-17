@@ -1,7 +1,7 @@
 //! Screen 5 — mint a channel invite.
 //!
 //! Channel owner picks a title + expiry, clicks "Generate invite", and gets
-//! back a `qos://invite/<base32>` URL (with Copy/Revoke buttons) and a
+//! back a `tilo://invite/<base32>` URL (with Copy/Revoke buttons) and a
 //! QR-code rendering of it.
 //!
 //! Cryptographic flow: generate a one-time delegation keypair, wrap the
@@ -657,7 +657,7 @@ mod tests {
             .mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now())
             .unwrap()
             .clone();
-        assert!(s.last_url().unwrap().starts_with("qos://invite/"));
+        assert!(s.last_url().unwrap().starts_with("tilo://invite/"));
         assert_eq!(env.role, Role::Editor);
     }
 

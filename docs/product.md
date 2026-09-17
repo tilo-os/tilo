@@ -1,4 +1,4 @@
-# qOS product vision — apps & system surface
+# Tilo product vision — apps & system surface
 
 The bar: everything we ship must be **genuinely usable for most users**, not just
 toy/demo use cases. No mock/example data — apps start empty and operate on real
@@ -92,17 +92,17 @@ diff/merge tool, text-snippet tool, hex editor.
 
 - **Settings** — network, mouse/keyboard, time, users, printers (visual previews of
   all print jobs + real printer status/settings — placement TBD), external account
-  management (email/WebDAV/Nextcloud/…), qOS identity management (transfer to/from
+  management (email/WebDAV/Nextcloud/…), Tilo identity management (transfer to/from
   device), update manager.
 - **Themes** — browse, change, customize, create themes.
 - **Firewall**.
 - **Software store** — open questions: how does installing work? how are apps
   distributed? role of Flatpaks? how does proper app isolation work?
-- **Remote machines** — start remote desktop sessions (to other qOS: render locally,
+- **Remote machines** — start remote desktop sessions (to other Tilo: render locally,
   stream data only!); VNC + SSH. Goal: seamlessly operate your own NAS/homeserver,
-  which is just another qOS system running your selected workspaces in a "relay mode."
+  which is just another Tilo system running your selected workspaces in a "relay mode."
 - **Backups / snapshots** manager.
-- **ISO / installation creator** — install arbitrary .isos; install qOS (to USB or
+- **ISO / installation creator** — install arbitrary .isos; install Tilo (to USB or
   disk; option to make a USB a permanent install); customizable install options
   (user creation etc.) incl. fully headless install.
 - **Activity monitor**.

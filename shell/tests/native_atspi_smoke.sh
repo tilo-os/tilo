@@ -26,11 +26,11 @@ fi
   exit 1
 }
 
-shell_pid=${QOS_SHELL_PID:-}
+shell_pid=${TILO_SHELL_PID:-}
 if [[ -z "$shell_pid" ]]; then
   shell_pid=$(pgrep -o -f '^/usr/bin/shell --backend drm( |$)' || true)
 fi
-[[ -n "$shell_pid" ]] || { echo "qOS compositor process is absent" >&2; exit 1; }
+[[ -n "$shell_pid" ]] || { echo "Tilo compositor process is absent" >&2; exit 1; }
 
 atspi_address=$(
   gdbus call --session \
@@ -50,7 +50,7 @@ for _ in $(seq 1 200); do
   sleep 0.05
 done
 [[ -n "$app_bus" ]] || {
-  echo "qOS compositor did not register on the AT-SPI bus" >&2
+  echo "Tilo compositor did not register on the AT-SPI bus" >&2
   echo "shell pid: $shell_pid" >&2
   busctl --address="$atspi_address" list --no-pager >&2 || true
   exit 1
@@ -275,7 +275,7 @@ case "$mode" in
       click_named "Use existing"
       wait_for_names "Identity backup file" "Back"
       focus_named "Identity backup file"
-      set_text_named "Identity backup file" "qos-atspi-edit-probe"
+      set_text_named "Identity backup file" "tilo-atspi-edit-probe"
       click_named "Back"
       wait_for_names "Use existing" "Create identity"
 
@@ -294,10 +294,10 @@ case "$mode" in
     fi
     ;;
   desktop)
-    wait_for_names "qOS workspace"
+    wait_for_names "Tilo workspace"
     ;;
   lock)
-    wait_for_names "qOS lock screen" "Password" "Type your password and press Enter"
+    wait_for_names "Tilo lock screen" "Password" "Type your password and press Enter"
     ;;
 esac
 

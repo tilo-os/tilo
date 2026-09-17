@@ -1,4 +1,4 @@
-//! Settings panes as a qOS global-search source.
+//! Settings panes as a Tilo global-search source.
 //!
 //! Mirrors the reference wiring in [`apps/contacts`]: Settings declares its
 //! searchable type by implementing [`SearchProvider`] over the static list of
@@ -10,10 +10,10 @@
 //!
 //! This indexes **panes** (navigation), not individual toggles — those are
 //! already exported to Ctrl+K as *actions* through the app's
-//! [`ResourceProvider`](qos_actions::ResourceProvider); giving pane results a
+//! [`ResourceProvider`](tilo_actions::ResourceProvider); giving pane results a
 //! distinct `Settings` kind keeps the two groups apart in the palette.
 
-use qos_actions::{ActionAddress, Resource};
+use tilo_actions::{ActionAddress, Resource};
 use ui::search::{
     DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
     SearchPage, SearchProvider, SearchResult,
@@ -199,12 +199,12 @@ mod tests {
         for (category, hit) in Category::ALL.iter().copied().zip(hits) {
             let address = hit.action_address().expect("canonical action address");
             assert_eq!(address, crate::actions::open_pane_address(category));
-            let spec = qos_actions::door::resolve(&resources, &address)
+            let spec = tilo_actions::door::resolve(&resources, &address)
                 .expect("the search address is exported by Settings");
-            assert_eq!(spec.kind, qos_actions::OperationKind::View);
-            assert_eq!(spec.contract, qos_actions::ActionContract::view());
+            assert_eq!(spec.kind, tilo_actions::OperationKind::View);
+            assert_eq!(spec.contract, tilo_actions::ActionContract::view());
             let kind = spec.kind;
-            let encoded = qos_actions::door::encode(&resources, &address, None)
+            let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("the exported operation encodes");
             assert!(
                 app.invoke_resource_operation(
@@ -264,9 +264,9 @@ mod tests {
             .expect("the widget resolves a current canonical resource at activation time");
         assert_eq!(resource.id.as_str(), address.resource);
         let resources = [resource];
-        let resolved = qos_actions::door::resolve(&resources, &address)
+        let resolved = tilo_actions::door::resolve(&resources, &address)
             .expect("resolved resource exports the exact open action");
-        assert_eq!(resolved.kind, qos_actions::OperationKind::View);
+        assert_eq!(resolved.kind, tilo_actions::OperationKind::View);
 
         let stale_resource = ActionAddress::new("settings.section:removed-pane", "open");
         let stale_action = ActionAddress::new(
@@ -276,6 +276,6 @@ mod tests {
         assert!(Widget::resource(&app, &doc, &stale_resource.resource).is_none());
         let current_resource = Widget::resource(&app, &doc, &stale_action.resource)
             .expect("the current resource remains resolvable");
-        assert!(qos_actions::door::resolve(&[current_resource], &stale_action).is_none());
+        assert!(tilo_actions::door::resolve(&[current_resource], &stale_action).is_none());
     }
 }

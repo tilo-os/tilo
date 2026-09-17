@@ -1,6 +1,6 @@
 # notes
 
-A native note-taking app for qOS. Pages live in a side-tree; each page
+A native note-taking app for Tilo. Pages live in a side-tree; each page
 is a stack of editable blocks (paragraphs, headings, bullets,
 checklists, code, dividers) with inline marks for bold, italic, code,
 and `[[Page]]` links. Cmd-K jumps to any page. A transient status bubble

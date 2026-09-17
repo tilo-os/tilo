@@ -6,69 +6,14 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
-type AppProxy = winit::event_loop::EventLoopProxy<crate::app::UserEvent>;
-
-fn proxy_slot() -> &'static RwLock<Option<AppProxy>> {
-    static PROXY: OnceLock<RwLock<Option<AppProxy>>> = OnceLock::new();
-    PROXY.get_or_init(|| RwLock::new(None))
-}
-
-fn set_event_loop_proxy(proxy: Option<AppProxy>) {
-    let mut slot = proxy_slot()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *slot = proxy;
-}
-
-pub(crate) struct EventLoopProxyGuard;
-
-pub(crate) fn install_event_loop_proxy(proxy: AppProxy) -> EventLoopProxyGuard {
-    set_event_loop_proxy(Some(proxy));
-    EventLoopProxyGuard
-}
-
-impl Drop for EventLoopProxyGuard {
-    fn drop(&mut self) {
-        set_event_loop_proxy(None);
-    }
-}
-
-fn wake_app() {
-    let slot = proxy_slot()
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(proxy) = slot.as_ref() {
-        let _ = proxy.send_event(crate::app::UserEvent::Wake);
-    }
-}
-
-/// Cloneable capability for background work to schedule one application
-/// synchronization/redraw pass.
-///
-/// The standard live lifecycle installs the event-loop destination
-/// automatically. A handle can be created before the window starts and is a
-/// harmless no-op in a headless process; no app-owned proxy or global setup is
-/// required.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WakeHandle;
-
-impl WakeHandle {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-
-    /// Wake the live application event loop, if one is installed.
-    pub fn wake(self) {
-        wake_app();
-    }
-}
+pub use crate::wake::WakeHandle;
 
 struct LocalStateInner<T> {
     value: RwLock<T>,
     revision: AtomicU64,
+    wake: WakeHandle,
 }
 
 /// A cloneable handle to typed, process-local application state.
@@ -93,6 +38,7 @@ impl<T> LocalState<T> {
             inner: Arc::new(LocalStateInner {
                 value: RwLock::new(value),
                 revision: AtomicU64::new(0),
+                wake: WakeHandle::new(),
             }),
         }
     }
@@ -116,14 +62,18 @@ impl<T> LocalState<T> {
     }
 
     /// As [`Self::set`], reporting whether the replacement was published.
-    /// Returns `false` once the revision namespace is exhausted; the value is
-    /// then left untouched, so a bound widget cannot mistake a new value for
-    /// one it already observed under a wrapped revision.
+    /// Returns `false` when the captured owner is closed or the revision
+    /// namespace is exhausted. The value is then left untouched, so a bound
+    /// widget cannot mistake a new value for one it already observed under a
+    /// wrapped revision.
     pub fn try_set(&self, value: T) -> bool {
         self.replace(value).is_some()
     }
 
     fn replace(&self, value: T) -> Option<u64> {
+        if !self.inner.wake.authorize_publication() {
+            return None;
+        }
         let mut current = self
             .inner
             .value
@@ -144,8 +94,12 @@ impl<T> LocalState<T> {
     }
 
     /// As [`Self::update`], reporting whether `update` ran. Returns `false`
-    /// at revision exhaustion without invoking `update`.
+    /// when the captured owner is closed or at revision exhaustion, without
+    /// invoking `update`.
     pub fn try_update(&self, update: impl FnOnce(&mut T)) -> bool {
+        if !self.inner.wake.authorize_publication() {
+            return false;
+        }
         let mut value = self
             .inner
             .value
@@ -171,18 +125,20 @@ impl<T> LocalState<T> {
         self.inner.revision.load(Ordering::Relaxed).checked_add(1)
     }
 
-    /// Create a thread-safe writer that wakes the application after mutation.
+    /// Create a thread-safe writer that wakes this state's captured owner after
+    /// mutation.
     ///
-    /// Create it wherever the state is created and move a clone into each
-    /// worker. The standard [`App`](crate::App) lifecycle installs its event
-    /// loop automatically; no proxy or string message needs to cross app code.
+    /// The owner is captured once by [`LocalState::new`], so writers requested
+    /// under another app keep the original destination. State created outside
+    /// a wake scope is permanently detached. Live apps should construct state
+    /// and roots inside an [`App`](crate::App) factory or explicit scope.
     pub fn writer(&self) -> LocalStateWriter<T>
     where
         T: Send + Sync + 'static,
     {
         LocalStateWriter {
             state: self.clone(),
-            wake: Arc::new(wake_app),
+            wake: self.inner.wake.clone(),
         }
     }
 }
@@ -240,7 +196,7 @@ impl<T: Clone + PartialEq> LocalBinding<T> {
 /// A background-safe [`LocalState`] mutation handle with event-loop wakeup.
 pub struct LocalStateWriter<T> {
     state: LocalState<T>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    wake: WakeHandle,
 }
 
 /// Typed state for restartable background work where only the latest run may
@@ -262,6 +218,7 @@ pub struct LatestRequest<T> {
     receiver: Receiver<(u64, T)>,
     generation: Arc<AtomicU64>,
     pending: Option<u64>,
+    wake: WakeHandle,
 }
 
 impl<T> Default for LatestRequest<T> {
@@ -279,6 +236,7 @@ impl<T> LatestRequest<T> {
             receiver,
             generation: Arc::new(AtomicU64::new(0)),
             pending: None,
+            wake: WakeHandle::new(),
         }
     }
 
@@ -295,14 +253,18 @@ impl<T> LatestRequest<T> {
                 sender: self.sender.clone(),
                 generation: Arc::clone(&self.generation),
                 request_generation: 0,
-                wake: WakeHandle::new(),
+                wake: self.wake.clone(),
             },
         }
     }
 
     /// Fallible form of [`Self::begin`]. Returns `None` without changing state
-    /// once no unique completion generation remains.
+    /// when the captured owner is closed or no unique completion generation
+    /// remains.
     pub fn try_begin(&mut self) -> Option<RequestCompletion<T>> {
+        if !self.wake.authorize_publication() {
+            return None;
+        }
         // Reserve `u64::MAX` as a terminal invalidation marker. It is never
         // handed to a completion capability, so an exhausted counter cannot
         // make an old completion current again.
@@ -318,7 +280,7 @@ impl<T> LatestRequest<T> {
             sender: self.sender.clone(),
             generation: Arc::clone(&self.generation),
             request_generation: generation,
-            wake: WakeHandle::new(),
+            wake: self.wake.clone(),
         })
     }
 
@@ -348,15 +310,21 @@ impl<T> LatestRequest<T> {
     }
 
     #[must_use]
-    pub const fn is_pending(&self) -> bool {
-        self.pending.is_some()
+    pub fn is_pending(&self) -> bool {
+        self.wake.is_active() && self.pending.is_some()
     }
 
     /// Drain the accepted result, discarding messages from stale generations.
     pub fn try_take(&mut self) -> Option<T> {
+        if !self.wake.is_active() {
+            self.pending = None;
+            while self.receiver.try_recv().is_ok() {}
+            return None;
+        }
         while let Ok((generation, value)) = self.receiver.try_recv() {
             if self.pending == Some(generation)
                 && self.generation.load(Ordering::Acquire) == generation
+                && self.wake.is_active()
             {
                 self.pending = None;
                 return Some(value);
@@ -379,22 +347,27 @@ impl<T> RequestCompletion<T> {
     /// expensive units for cooperative cancellation.
     #[must_use]
     pub fn is_current(&self) -> bool {
-        self.generation.load(Ordering::Acquire) == self.request_generation
+        self.request_generation != 0
+            && self.wake.is_active()
+            && self.generation.load(Ordering::Acquire) == self.request_generation
     }
 
     /// Publish a result only if no newer request or cancellation won first.
-    /// Returns whether the result was accepted and the app was woken.
+    /// Returns whether the result was accepted. The captured owner may close
+    /// after authorization and suppress notification without revoking it.
     pub fn complete(self, value: T) -> bool {
-        if !self.is_current() {
+        if self.request_generation == 0
+            || self.generation.load(Ordering::Acquire) != self.request_generation
+            || !self.wake.authorize_publication()
+        {
             return false;
         }
         if self.sender.send((self.request_generation, value)).is_err() {
             return false;
         }
-        // `begin` may have won between the first freshness check and the
-        // channel send. The inbox will discard that message; report it as
-        // stale and avoid an unnecessary wake as well.
-        if !self.is_current() {
+        // Check only generation here: a close after successful authorization may
+        // suppress notification, but does not revoke the accepted publication.
+        if self.generation.load(Ordering::Acquire) != self.request_generation {
             return false;
         }
         self.wake.wake();
@@ -447,8 +420,11 @@ impl<T> LatestTask<T> {
         }
     }
 
-    /// Fallible form of [`Self::begin`]. Returns `None` without publishing the
-    /// running state once no unique generation remains.
+    /// Fallible form of [`Self::begin`]. `Some` means the running state and a
+    /// unique task generation were accepted for publication; it does not mean
+    /// that a wake was delivered or scheduled. Returns `None` without
+    /// publishing when the captured owner is closed, the state revision
+    /// namespace is exhausted, or the task generation namespace is exhausted.
     pub fn try_begin(&self, running: T) -> Option<TaskCompletion<T>>
     where
         T: Send + Sync + 'static,
@@ -510,6 +486,9 @@ impl<T> TaskCompletion<T> {
     /// this between units of work for cooperative cancellation.
     #[must_use]
     pub fn is_current(&self) -> bool {
+        if self.run == 0 || !self.writer.wake.is_active() {
+            return false;
+        }
         let generation = self
             .generation
             .lock()
@@ -518,19 +497,23 @@ impl<T> TaskCompletion<T> {
     }
 
     /// Publish `value` only if no newer run or cancellation won the race.
-    /// Returns whether the value was accepted and the application was woken.
+    /// Returns whether the value was accepted. The captured owner may close
+    /// after authorization and suppress notification without revoking it.
     pub fn complete(self, value: T) -> bool {
         let generation = self
             .generation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *generation != self.run {
+        if self.run == 0 || *generation != self.run {
             return false;
         }
-        // Hold the generation guard until the accepted value is committed;
-        // begin/cancel cannot interleave after the freshness check.
-        let accepted = self.writer.try_set(value);
+        // state.try_set authorizes once and publishes while begin/cancel cannot
+        // change the generation. Never invoke the sink while holding this lock.
+        let accepted = self.writer.state.try_set(value);
         drop(generation);
+        if accepted {
+            self.writer.wake.wake();
+        }
         accepted
     }
 }
@@ -539,50 +522,54 @@ impl<T> Clone for LocalStateWriter<T> {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
-            wake: Arc::clone(&self.wake),
+            wake: self.wake.clone(),
         }
     }
 }
 
 impl<T> LocalStateWriter<T> {
-    /// Replace the value and schedule synchronization and redraw.
-    /// At revision exhaustion this is a no-op. Use [`Self::try_set`] to learn
-    /// whether a wake was scheduled.
+    /// Replace the value and request synchronization and redraw.
+    ///
+    /// The mutation is accepted only while the captured owner is open and its
+    /// revision namespace is not exhausted. The return value from
+    /// [`Self::try_set`] reports publication acceptance, not wake delivery or
+    /// scheduling.
     pub fn set(&self, value: T) {
         let _ = self.try_set(value);
     }
 
-    /// As [`Self::set`], reporting whether the replacement was published.
+    /// As [`Self::set`], reporting whether the replacement was accepted for
+    /// publication. `false` means the captured owner is closed or the
+    /// revision namespace is exhausted; no wake delivery or scheduling is
+    /// implied by `true`.
     pub fn try_set(&self, value: T) -> bool {
         if !self.state.try_set(value) {
             return false;
         }
-        (self.wake)();
+        self.wake.wake();
         true
     }
 
-    /// Mutate the value once and schedule synchronization and redraw.
-    /// At revision exhaustion this is a no-op. Use [`Self::try_update`] to
-    /// learn whether a wake was scheduled.
+    /// Mutate the value once and request synchronization and redraw.
+    ///
+    /// The mutation is accepted only while the captured owner is open and its
+    /// revision namespace is not exhausted. The return value from
+    /// [`Self::try_update`] reports publication acceptance, not wake delivery
+    /// or scheduling.
     pub fn update(&self, update: impl FnOnce(&mut T)) {
         let _ = self.try_update(update);
     }
 
-    /// As [`Self::update`], reporting whether the mutation was published.
+    /// As [`Self::update`], reporting whether the mutation was accepted for
+    /// publication. `false` means the captured owner is closed or the
+    /// revision namespace is exhausted; the callback is not invoked. `true`
+    /// does not mean that a wake was delivered or scheduled.
     pub fn try_update(&self, update: impl FnOnce(&mut T)) -> bool {
         if !self.state.try_update(update) {
             return false;
         }
-        (self.wake)();
+        self.wake.wake();
         true
-    }
-
-    #[cfg(test)]
-    fn for_test(state: &LocalState<T>, wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self {
-            state: state.clone(),
-            wake: Arc::new(wake),
-        }
     }
 }
 
@@ -608,8 +595,21 @@ impl LocalState<String> {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::TryRecvError;
 
     use super::*;
+    use crate::wake::{WakeEvent, WakeScope};
+
+    fn bound_scope() -> (WakeScope, Receiver<WakeEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let mut scope = WakeScope::new();
+        scope
+            .bind(move |event| {
+                let _ = tx.send(event);
+            })
+            .unwrap();
+        (scope, rx)
+    }
 
     #[test]
     fn clones_share_typed_value_and_revision() {
@@ -664,18 +664,18 @@ mod tests {
 
     #[test]
     fn background_writer_wakes_once_after_each_completed_mutation() {
-        let state = LocalState::new(vec![1]);
-        let wakes = Arc::new(AtomicUsize::new(0));
-        let observed = Arc::clone(&wakes);
-        let writer = LocalStateWriter::for_test(&state, move || {
-            observed.fetch_add(1, Ordering::Relaxed);
-        });
+        let (scope, rx) = bound_scope();
+        let state = {
+            let _entry = scope.enter();
+            LocalState::new(vec![1])
+        };
+        let writer = state.writer();
 
         writer.update(|values| values.push(2));
         writer.set(vec![3]);
         assert_eq!(state.get(), vec![3]);
         assert_eq!(state.revision(), 2);
-        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+        assert_eq!(rx.try_iter().count(), 2);
     }
 
     #[test]
@@ -786,5 +786,256 @@ mod tests {
         assert!(!inert_completion.is_current());
         assert!(!inert_completion.complete("late"));
         assert_eq!(state.get(), "cancelled");
+    }
+
+    #[test]
+    fn writer_keeps_creation_owner_when_requested_under_another_scope() {
+        let (mut a, a_rx) = bound_scope();
+        let (b, b_rx) = bound_scope();
+        let state = {
+            let _entry = a.enter();
+            LocalState::new(0)
+        };
+        let writer = {
+            let _entry = b.enter();
+            state.writer()
+        };
+        assert!(
+            std::thread::spawn(move || writer.try_set(1))
+                .join()
+                .unwrap()
+        );
+        assert_eq!(state.get(), 1);
+        assert_eq!(state.revision(), 1);
+        assert!(a.accepts(&a_rx.try_recv().unwrap()));
+        assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+        a.close();
+        b.handle().wake();
+        assert!(b.accepts(&b_rx.try_recv().unwrap()));
+    }
+
+    #[test]
+    fn closed_state_rejects_direct_writer_and_binding_publications() {
+        let (mut scope, rx) = bound_scope();
+        let state = {
+            let _entry = scope.enter();
+            LocalState::new(7)
+        };
+        let writer = state.writer();
+        let (_, mut binding) = LocalBinding::new(&state);
+        scope.close();
+        assert!(!state.try_set(8));
+        assert!(!state.try_update(|_| panic!("closed direct callback ran")));
+        assert!(!writer.try_set(9));
+        assert!(!writer.try_update(|_| panic!("closed writer callback ran")));
+        binding.publish(&10);
+        assert_eq!(state.get(), 7);
+        assert_eq!(state.revision(), 0);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn authorized_update_can_finish_after_nonblocking_close() {
+        use std::time::Duration;
+
+        let (mut scope, rx) = bound_scope();
+        let state = {
+            let _entry = scope.enter();
+            LocalState::new(1)
+        };
+        let writer = state.writer();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            writer.try_update(|value| {
+                entered_tx.send(()).unwrap();
+                resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                *value = 2;
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // If close waits for the mutation callback, its 5s timeout fails the test.
+        scope.close();
+        let replacement_scope = WakeScope::new();
+        let replacement = {
+            let _entry = replacement_scope.enter();
+            LocalState::new(100)
+        };
+        resume_tx.send(()).unwrap();
+        assert!(worker.join().unwrap());
+        assert_eq!(state.get(), 2);
+        assert_eq!(state.revision(), 1);
+        assert_eq!(replacement.get(), 100);
+        assert_eq!(replacement.revision(), 0);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn update_may_publish_second_state_and_close_its_scope() {
+        let (mut scope, rx) = bound_scope();
+        let (first, second) = {
+            let _entry = scope.enter();
+            (LocalState::new(0), LocalState::new(0))
+        };
+        assert!(first.writer().try_update(|value| {
+            assert!(second.writer().try_set(2));
+            scope.close();
+            *value = 1;
+        }));
+        assert_eq!(first.get(), 1);
+        assert_eq!(second.get(), 2);
+        let old = rx.try_recv().unwrap();
+        assert!(!scope.accepts(&old));
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn task_begin_under_another_scope_keeps_the_state_creation_owner() {
+        let (a, a_rx) = bound_scope();
+        let (b, b_rx) = bound_scope();
+        let task = {
+            let _entry = a.enter();
+            LatestTask::new(0)
+        };
+        let completion = {
+            let _entry = b.enter();
+            task.begin(1)
+        };
+        assert!(
+            std::thread::spawn(move || completion.complete(2))
+                .join()
+                .unwrap()
+        );
+        assert!(a.accepts(&a_rx.try_recv().unwrap()));
+        assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert_eq!(task.state().get(), 2);
+    }
+
+    #[test]
+    fn close_rejects_task_and_request_without_explicit_cancel() {
+        let (mut scope, rx) = bound_scope();
+        let (task, mut request) = {
+            let _entry = scope.enter();
+            (LatestTask::new(0), LatestRequest::new())
+        };
+        let task_completion = task.begin(1);
+        let request_completion = request.begin();
+        scope.close();
+        assert!(!task_completion.is_current());
+        assert!(!request_completion.is_current());
+        assert!(!task_completion.complete(2));
+        assert!(!request_completion.complete(3));
+        assert_eq!(task.state().get(), 1);
+        assert!(!request.is_pending());
+        assert_eq!(request.try_take(), None);
+        assert!(task.try_begin(4).is_none());
+        assert!(request.try_begin().is_none());
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn closed_zero_generation_fallbacks_are_permanently_stale() {
+        let mut scope = WakeScope::new();
+        let (task, mut request) = {
+            let _entry = scope.enter();
+            (LatestTask::new(0), LatestRequest::<u32>::new())
+        };
+        scope.close();
+        let task_fallback = task.begin(1);
+        let request_fallback = request.begin();
+        assert!(!task_fallback.is_current());
+        assert!(!request_fallback.is_current());
+        assert!(!task_fallback.complete(2));
+        assert!(!request_fallback.complete(2));
+        assert_eq!(*task.generation.lock().unwrap(), 0);
+        assert_eq!(request.generation.load(Ordering::Acquire), 0);
+        assert_eq!(task.state().get(), 0);
+    }
+
+    #[test]
+    fn request_begin_keeps_owner_and_closed_inbox_discards_queued_result() {
+        let (mut a, a_rx) = bound_scope();
+        let (b, b_rx) = bound_scope();
+        let mut request = {
+            let _entry = a.enter();
+            LatestRequest::new()
+        };
+        let completion = {
+            let _entry = b.enter();
+            request.begin()
+        };
+        assert!(
+            std::thread::spawn(move || completion.complete(42))
+                .join()
+                .unwrap()
+        );
+        let event = a_rx.try_recv().unwrap();
+        assert!(a.accepts(&event));
+        assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+        a.close();
+        assert_eq!(request.try_take(), None);
+        assert!(!request.is_pending());
+        assert!(!a.accepts(&event));
+    }
+
+    #[test]
+    fn writer_publication_before_binding_flushes_one_pending_event() {
+        let mut scope = WakeScope::new();
+        let state = {
+            let _entry = scope.enter();
+            LocalState::new(0)
+        };
+        let writer = state.writer();
+        std::thread::spawn(move || {
+            writer.set(1);
+            writer.set(2);
+        })
+        .join()
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        scope
+            .bind(move |event| {
+                let _ = tx.send(event);
+            })
+            .unwrap();
+        assert!(scope.accepts(&rx.try_recv().unwrap()));
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        assert_eq!(state.get(), 2);
+    }
+
+    #[test]
+    fn dropped_owner_leaves_all_retained_capabilities_closed() {
+        let (state, task, mut request, task_completion, request_completion) = {
+            let scope = WakeScope::new();
+            let _entry = scope.enter();
+            let state = LocalState::new(0);
+            let task = LatestTask::new(0);
+            let mut request = LatestRequest::new();
+            let task_completion = task.begin(1);
+            let request_completion = request.begin();
+            (state, task, request, task_completion, request_completion)
+        };
+        assert!(!state.writer().try_set(2));
+        assert!(!task_completion.complete(2));
+        assert!(!request_completion.complete(2));
+        assert_eq!(task.state().get(), 1);
+        assert_eq!(request.try_take(), None);
+    }
+
+    #[test]
+    fn task_wake_sink_runs_after_generation_lock_is_released() {
+        let mut scope = WakeScope::new();
+        let task = {
+            let _entry = scope.enter();
+            LatestTask::new(0)
+        };
+        let reentrant_task = task.clone();
+        scope
+            .bind(move |_| {
+                assert!(reentrant_task.try_cancel(3));
+            })
+            .unwrap();
+        assert!(task.begin(1).complete(2));
+        assert_eq!(task.state().get(), 3);
     }
 }

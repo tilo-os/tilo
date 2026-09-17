@@ -1,4 +1,4 @@
-//! qOS application launcher library surface.
+//! Tilo application launcher library surface.
 //!
 //! The launcher is implemented mostly as pure functions so the binary
 //! in `main.rs` is just argv parsing + orchestration.
@@ -22,7 +22,7 @@
 //!   apps); read its module docs before touching it.
 //!
 //! The launcher-facing manifest surface is kept in [`manifest`]; policy types
-//! are shared with `qos-pkg`.
+//! are shared with `tilo-pkg`.
 
 #![cfg_attr(
     test,
@@ -39,17 +39,23 @@
 
 pub mod appdir;
 pub mod capabilities;
+#[cfg(target_os = "linux")]
 pub mod dbus_proxy;
 pub mod gpu;
 pub mod hardening;
+#[cfg(target_os = "linux")]
 pub mod host;
+#[cfg(target_os = "linux")]
 pub mod landlock;
+#[cfg(target_os = "linux")]
 pub mod landlock_shim;
 pub mod manifest;
 pub mod netgate;
 pub mod profile;
 pub mod registry;
+#[cfg(target_os = "linux")]
 pub mod run;
+#[cfg(target_os = "linux")]
 pub mod sandbox;
 pub mod seccomp;
 pub mod services;

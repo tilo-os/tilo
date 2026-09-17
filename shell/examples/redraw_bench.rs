@@ -18,6 +18,9 @@
 //! cargo run -p shell --example redraw_bench --release
 //! ```
 
+#[path = "support/populated_shell_fixture.rs"]
+mod populated_shell_fixture;
+
 use std::array;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
@@ -26,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ROOT};
+use populated_shell_fixture::PopulatedShellFixture;
 use shell::compositor::backend::drm::paint::{
     BridgePhaseTiming, SceneDamage, VelloDrmBridge, XrgbCpuWriteMode, XrgbHistoryCommit,
     XrgbTargetHistory,
@@ -41,11 +45,11 @@ const SAMPLE_COUNT: usize = 1_000;
 const MEAN_LIMIT_US: u128 = 25_000;
 const P99_LIMIT_US: u128 = 50_000;
 const ACTION_TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_overview_button"];
-const PROFILE_ENV: &str = "QOS_REDRAW_BENCH_PROFILE";
-const PROFILE_OUTPUT_ENV: &str = "QOS_REDRAW_BENCH_PROFILE_OUTPUT";
-const SCENE_REUSE_ENV: &str = "QOS_REDRAW_BENCH_SCENE_REUSE";
-const GEOMETRY_REUSE_ENV: &str = "QOS_REDRAW_BENCH_GEOMETRY_REUSE";
-const XRGB_DAMAGE_ENV: &str = "QOS_DRM_XRGB_DAMAGE";
+const PROFILE_ENV: &str = "TILO_REDRAW_BENCH_PROFILE";
+const PROFILE_OUTPUT_ENV: &str = "TILO_REDRAW_BENCH_PROFILE_OUTPUT";
+const SCENE_REUSE_ENV: &str = "TILO_REDRAW_BENCH_SCENE_REUSE";
+const GEOMETRY_REUSE_ENV: &str = "TILO_REDRAW_BENCH_GEOMETRY_REUSE";
+const XRGB_DAMAGE_ENV: &str = "TILO_DRM_XRGB_DAMAGE";
 const VELLO_GPU_TIMESTAMPS_ENV: &str = "VELLO_GPU_TIMESTAMPS";
 const VELLO_GPU_DISPATCH_TIMESTAMPS_ENV: &str = "VELLO_GPU_DISPATCH_TIMESTAMPS";
 const MAX_SCENE_REUSE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
@@ -1777,7 +1781,7 @@ fn run() -> Result<(), String> {
             "{PROFILE_ENV}=1 is required when {VELLO_GPU_TIMESTAMPS_ENV}=1 or {VELLO_GPU_DISPATCH_TIMESTAMPS_ENV}=1; timestamp-instrumented runs are diagnostic-only"
         ));
     }
-    let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+    let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())?;
     let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
     let xrgb_damage_available = xrgb_damage_requested && bridge.xrgb_history_available();
     let sparse_tile_bounds_requested =
@@ -2316,13 +2320,13 @@ mod tests {
         BridgePhaseTiming, CpuXrgbWriteTotals, GateOutcome, GeometryReuseRejection,
         GeometryReuseTelemetry, GpuDispatchTimingTotals, HEIGHT, MAX_ACTION_CORRELATION_RECORDS,
         MAX_SCENE_REUSE_PAYLOAD_BYTES, MAX_SCENE_REUSE_RETAINED_BYTES, MAX_SCENE_REUSE_SNAPSHOTS,
-        MEAN_LIMIT_US, P99_LIMIT_US, RenderAttemptTotals, SampleError, SceneReuseObservation,
-        SceneReuseRenderMode, SceneReuseTelemetry, WIDTH, action_correlation_enabled,
-        direct_path_workgroup_configuration_is_valid, dispatch_click, dispatch_stage_breakdown,
-        dispatch_timestamp_status_after_take, gate_outcome, geometry_reuse_configuration_is_valid,
-        geometry_reuse_requested_from_value, geometry_reuse_telemetry_enabled,
-        gpu_dispatch_timestamp_status_name, meets_gates, open_profile_output,
-        profile_output_path_from_value, scene_reuse_configuration_is_valid,
+        MEAN_LIMIT_US, P99_LIMIT_US, PopulatedShellFixture, RenderAttemptTotals, SampleError,
+        SceneReuseObservation, SceneReuseRenderMode, SceneReuseTelemetry, WIDTH,
+        action_correlation_enabled, direct_path_workgroup_configuration_is_valid, dispatch_click,
+        dispatch_stage_breakdown, dispatch_timestamp_status_after_take, gate_outcome,
+        geometry_reuse_configuration_is_valid, geometry_reuse_requested_from_value,
+        geometry_reuse_telemetry_enabled, gpu_dispatch_timestamp_status_name, meets_gates,
+        open_profile_output, profile_output_path_from_value, scene_reuse_configuration_is_valid,
         scene_reuse_requested_from_value, scene_reuse_telemetry_enabled,
         summarize_diagnostic_values, summarize_samples, timestamp_profile_configuration_is_valid,
         write_action_correlation_profile, xrgb_damage_requested_from_value,
@@ -2333,7 +2337,6 @@ mod tests {
         BridgeError, SceneDamage, SharedCoarseGeometryDiagnostic, VelloDrmBridge, XrgbCpuWriteMode,
         XrgbHistoryCommit, XrgbTargetHistory,
     };
-    use shell::compositor::frame::FrameBuilder;
     use std::ffi::OsString;
     use std::io::{self, Write};
     use ui::taffy::NodeId;
@@ -3692,7 +3695,7 @@ mod tests {
             .expect("the test clock is after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "qos-redraw-bench-profile-output-{}-{stamp}",
+            "tilo-redraw-bench-profile-output-{}-{stamp}",
             std::process::id()
         ));
         {
@@ -3712,7 +3715,8 @@ mod tests {
 
     #[test]
     fn benchmark_actions_alternate_quick_settings_open_and_outside_dismissal() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let _initial_scene = frame.paint();
         let mut document = AutoCommit::new();
         let modifiers = Modifiers::default();
@@ -3757,7 +3761,8 @@ mod tests {
 
     #[test]
     fn benchmark_actions_produce_bounded_damage() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let _initial = frame.paint_with_damage();
         let mut document = AutoCommit::new();
         let modifiers = Modifiers::default();
@@ -3812,7 +3817,8 @@ mod tests {
 
     #[test]
     fn native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let width = usize::try_from(WIDTH).expect("native width fits usize");
         let height = usize::try_from(HEIGHT).expect("native height fits usize");
         let pitch = width.checked_mul(4).expect("native pitch fits usize");
@@ -4063,7 +4069,8 @@ mod tests {
 
     #[test]
     fn native_4k_benchmark_actions_use_one_and_two_target_xrgb_history() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let width = usize::try_from(WIDTH).expect("native width fits usize");
         let height = usize::try_from(HEIGHT).expect("native height fits usize");
         let pitch = width.checked_mul(4).expect("native pitch fits usize");
@@ -4182,7 +4189,8 @@ mod tests {
     #[test]
     #[ignore = "explicit native-4K shared-coarse fine diagnostic"]
     fn native_4k_shared_coarse_damage_pixels_are_exact() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let width = usize::try_from(WIDTH).expect("native width fits usize");
         let height = usize::try_from(HEIGHT).expect("native height fits usize");
         let pitch = width.checked_mul(4).expect("native pitch fits usize");
@@ -4243,7 +4251,8 @@ mod tests {
     #[test]
     #[ignore = "explicit native-4K dense repeatability diagnostic"]
     fn native_4k_dense_oracle_is_repeatable_within_and_across_contexts() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let mut repeatability = DenseRepeatabilityHarness::new();
         let mut document = AutoCommit::new();
         let modifiers = Modifiers::default();
@@ -4584,7 +4593,8 @@ mod tests {
         let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).expect("geometry bridge");
         let mut full = vec![0_u8; len];
         let mut sparse = vec![0_u8; len];
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let mut document = AutoCommit::new();
         let modifiers = Modifiers::default();
         let mut focus: Option<NodeId> = None;
@@ -6255,7 +6265,8 @@ mod tests {
     }
 
     fn fixed_quick_settings_pose_candidate(permille: u16) -> shell::compositor::frame::FramePaint {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let _closed_baseline = frame.paint_with_damage();
         let _settled_closed_baseline = frame.paint_with_damage();
         assert!(

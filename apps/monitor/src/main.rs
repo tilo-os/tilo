@@ -73,7 +73,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_interaction_bench(viewport);
     }
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.monitor", monitor::app_root)
+        &LaunchSpec::new("dev.tilo.monitor", monitor::app_root)
             .shot_handler(render_shot)
             .scenarios(&[
                 "detail",
@@ -123,12 +123,12 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 /// Unlike the generic launch harness, this app owns its shot renderer, so it
 /// must explicitly thread text scale and reduced-motion preferences through.
 fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
-    let reduce_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| {

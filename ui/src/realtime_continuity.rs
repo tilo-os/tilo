@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn semantic_intents_reject_transport_and_secret_shaped_values() {
         let safe = RealtimeResumeIntent {
-            provider: "qos.chat".into(),
+            provider: "tilo.chat".into(),
             room_id: "voice-42".into(),
             semantic_position: Some("workspace-acme".into()),
             media: RealtimeMediaFacets {
@@ -241,7 +241,7 @@ mod tests {
     fn command_reply_and_event_json_round_trip_without_extension_fields() {
         let command = RealtimeCommand::Register {
             intent: RealtimeResumeIntent {
-                provider: "qos.chat".into(),
+                provider: "tilo.chat".into(),
                 room_id: "voice-42".into(),
                 semantic_position: Some("workspace-acme".into()),
                 media: RealtimeMediaFacets {
@@ -277,7 +277,7 @@ mod tests {
             event
         );
 
-        let malformed = br#"{"kind":"register","intent":{"provider":"qos.chat","room_id":"voice-42","semantic_position":null,"media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},"controls":{"microphone_muted":false,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":false},"credential":"secret"}}"#;
+        let malformed = br#"{"kind":"register","intent":{"provider":"tilo.chat","room_id":"voice-42","semantic_position":null,"media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},"controls":{"microphone_muted":false,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":false},"credential":"secret"}}"#;
         assert!(serde_json::from_slice::<RealtimeCommand>(malformed).is_err());
     }
 

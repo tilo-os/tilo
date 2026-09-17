@@ -6,7 +6,7 @@
 //! lock screen's password field ([`crate::compositor::lock_controller`]) —
 //! hidden content + captured input + credential-gated unlock together are
 //! the lock's security boundary. (`ext-session-lock-v1` is also served as a
-//! standard trigger; qOS renders this overlay rather than a client lock
+//! standard trigger; Tilo renders this overlay rather than a client lock
 //! surface.)
 //!
 //! Colours come from the OS [`Theme`] so the lock screen matches the rest of
@@ -105,7 +105,7 @@ pub struct LockLayout {
 impl LockLayout {
     /// Resolve a bounded primary-output layout. The backend already gives the
     /// compositor logical output geometry, therefore device scale must not be
-    /// multiplied into the card a second time. Only qOS's explicit UI scale
+    /// multiplied into the card a second time. Only Tilo's explicit UI scale
     /// participates here, then is capped by available space.
     pub fn for_output(output: LockOutput, theme: &Theme) -> Self {
         let width = output.size.0.max(1.0);
@@ -233,7 +233,7 @@ pub fn build_accessibility_tree(
     let layout = LockLayout::for_output(output, theme);
 
     let mut root = AccessNode::new(AccessRole::Window);
-    root.set_label("qOS lock screen");
+    root.set_label("Tilo lock screen");
     root.set_bounds(AccessRect::new(0.0, 0.0, width.max(1.0), height.max(1.0)));
 
     let mut clock = AccessNode::new(AccessRole::Label);
@@ -335,7 +335,7 @@ pub fn draw_lock_scene(
 
 /// As [`draw_lock_scene`], using an optional compositor-owned private image
 /// behind the lock scrim. The image data has already been normalised and read
-/// from qOS's private cache; this renderer never opens an app-provided URI.
+/// from Tilo's private cache; this renderer never opens an app-provided URI.
 pub fn draw_lock_scene_with_wallpaper(
     outputs: &[LockOutput],
     theme: &Theme,

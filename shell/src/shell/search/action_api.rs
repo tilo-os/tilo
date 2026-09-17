@@ -16,7 +16,7 @@ use automerge::{AutoCommit, ObjId};
 // The app protocol owns the action vocabulary. Re-exporting it here keeps the
 // shell's public action API stable while making catalogue, palette, app and
 // transport binding use the same types and validation rules.
-pub use qos_actions::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
+pub use tilo_actions::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
@@ -86,7 +86,7 @@ pub struct ExportedAction {
     pub score: i32,
     /// What an invocation must carry, empty for the nullary majority.
     pub params: Vec<ActionParam>,
-    pub contract: Option<qos_actions::ActionContract>,
+    pub contract: Option<tilo_actions::ActionContract>,
 }
 
 /// Permission hook: decides whether a caller may *see* a given resource.
@@ -244,7 +244,7 @@ impl SelectedAction<'_> {
         &self.result.params
     }
 
-    pub fn contract(&self) -> Option<&qos_actions::ActionContract> {
+    pub fn contract(&self) -> Option<&tilo_actions::ActionContract> {
         self.result.contract.as_ref()
     }
 
@@ -689,8 +689,8 @@ mod tests {
                 on_invoke: Some(std::rc::Rc::new(|_, _, _, _| {
                     Ok(ActionReceipt {
                         broker_invocation_id: Some(73),
-                        update: qos_actions::InvocationUpdate::Accepted {
-                            invocation: qos_actions::InvocationId::new(),
+                        update: tilo_actions::InvocationUpdate::Accepted {
+                            invocation: tilo_actions::InvocationId::new(),
                         },
                     })
                 })),
@@ -725,7 +725,7 @@ mod tests {
         assert_eq!(receipt.broker_invocation_id, Some(73));
         assert!(matches!(
             receipt.update,
-            qos_actions::InvocationUpdate::Accepted { .. }
+            tilo_actions::InvocationUpdate::Accepted { .. }
         ));
     }
 

@@ -1,6 +1,6 @@
 //! Owner-authenticated local transport gate used by the mandatory partition
 //! release harness. It is disabled unless the daemon is explicitly launched
-//! with `QOS_FS_TRANSPORT_GATE_SOCKET`.
+//! with `TILO_FS_TRANSPORT_GATE_SOCKET`.
 
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -12,8 +12,8 @@ use std::sync::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 
-pub const TRANSPORT_GATE_SOCKET_ENV: &str = "QOS_FS_TRANSPORT_GATE_SOCKET";
-pub const TRANSPORT_GATE_INITIAL_ENV: &str = "QOS_FS_TRANSPORT_GATE_INITIAL";
+pub const TRANSPORT_GATE_SOCKET_ENV: &str = "TILO_FS_TRANSPORT_GATE_SOCKET";
+pub const TRANSPORT_GATE_INITIAL_ENV: &str = "TILO_FS_TRANSPORT_GATE_INITIAL";
 
 #[derive(Clone, Debug, Default)]
 pub struct TransportGate(Arc<AtomicBool>);

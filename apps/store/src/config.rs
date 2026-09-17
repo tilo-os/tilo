@@ -1,8 +1,8 @@
-//! `$XDG_CONFIG_HOME/qos-store/` on-disk state.
+//! `$XDG_CONFIG_HOME/tilo-store/` on-disk state.
 //!
 //! Two files, and only one of them is defined here:
 //!
-//!   * `registries.toml` — the list of qOS registries the user pulls
+//!   * `registries.toml` — the list of Tilo registries the user pulls
 //!     entries from. **Owned by [`app_catalogue::config`]**, not by
 //!     this app. The desktop's search box reads the same file to decide
 //!     what software the machine could open, so a second definition of
@@ -68,7 +68,7 @@ mod tests {
 
     /// Shared lock used to serialise the env-var-touching tests in
     /// this module. Without it, cargo's default parallel test
-    /// runner races on `QOS_STORE_CONFIG_DIR` and the assertions
+    /// runner races on `TILO_STORE_CONFIG_DIR` and the assertions
     /// see a value another test set.
     fn env_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -87,28 +87,28 @@ mod tests {
     impl Drop for Guard<'_> {
         fn drop(&mut self) {
             match &self.prev {
-                Some(v) => unsafe { std::env::set_var("QOS_STORE_CONFIG_DIR", v) },
-                None => unsafe { std::env::remove_var("QOS_STORE_CONFIG_DIR") },
+                Some(v) => unsafe { std::env::set_var("TILO_STORE_CONFIG_DIR", v) },
+                None => unsafe { std::env::remove_var("TILO_STORE_CONFIG_DIR") },
             }
             match &self.prev_official {
-                Some(v) => unsafe { std::env::set_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH", v) },
-                None => unsafe { std::env::remove_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH") },
+                Some(v) => unsafe { std::env::set_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", v) },
+                None => unsafe { std::env::remove_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH") },
             }
         }
     }
 
     fn scoped_dir(td: &TempDir) -> Guard<'static> {
         let lock = env_lock();
-        let prev = std::env::var_os("QOS_STORE_CONFIG_DIR");
-        let prev_official = std::env::var_os("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH");
+        let prev = std::env::var_os("TILO_STORE_CONFIG_DIR");
+        let prev_official = std::env::var_os("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH");
         let trust = td.path().join("registry-owner.pub");
         std::fs::write(
             &trust,
             "d5dd5851bebac876b19986485184213ead36b67595b7efedf1144c120033b0bb\n",
         )
         .unwrap();
-        unsafe { std::env::set_var("QOS_STORE_CONFIG_DIR", td.path()) };
-        unsafe { std::env::set_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust) };
+        unsafe { std::env::set_var("TILO_STORE_CONFIG_DIR", td.path()) };
+        unsafe { std::env::set_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust) };
         Guard {
             _lock: lock,
             prev,
@@ -140,7 +140,7 @@ mod tests {
         let _g = scoped_dir(&td);
         let regs = load_registries();
         assert_eq!(regs.registries.len(), 1);
-        assert_eq!(regs.registries[0].name, "qOS main");
+        assert_eq!(regs.registries[0].name, "Tilo main");
         assert!(td.path().join("registries.toml").exists());
     }
 
@@ -167,12 +167,12 @@ enabled = false
         let td = TempDir::new().unwrap();
         let _g = scoped_dir(&td);
         let cfg = StoreConfig {
-            last_filter: Some(SourceFilter::Qos),
+            last_filter: Some(SourceFilter::Tilo),
             last_query: Some("term".into()),
         };
         save_config(&cfg);
         let back = load_config();
-        assert_eq!(back.last_filter, Some(SourceFilter::Qos));
+        assert_eq!(back.last_filter, Some(SourceFilter::Tilo));
         assert_eq!(back.last_query.as_deref(), Some("term"));
     }
 }

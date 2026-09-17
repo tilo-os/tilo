@@ -1829,7 +1829,7 @@ pub struct WordProcessorWidget {
     /// The compact toolbar's labeled, keyboard/semantic shared swatch grid.
     /// It is local view state; selecting a colour routes through `ToolAction`.
     compact_swatch_palette: CompactSwatchPalette,
-    action_palette_request: Option<qos_actions::ActionAddress>,
+    action_palette_request: Option<tilo_actions::ActionAddress>,
     /// Comment/tracked-change visibility, materialized items, card drawing, and
     /// frame-local action hit targets. Document mutation remains editor policy.
     review: ReviewOverlay,
@@ -1865,9 +1865,9 @@ pub struct WordProcessorWidget {
     /// What the in-flight [`Self::portal_rx`] request is for (open a document,
     /// save the current one, or insert an image). Set alongside `portal_rx`.
     portal_purpose: Option<PortalPurpose>,
-    resource_file_invocation: Option<qos_actions::InvocationId>,
-    resource_file_result: Option<qos_actions::InvocationUpdate>,
-    pending_resource_open: Option<(qos_actions::InvocationId, std::path::PathBuf)>,
+    resource_file_invocation: Option<tilo_actions::InvocationId>,
+    resource_file_result: Option<tilo_actions::InvocationUpdate>,
+    pending_resource_open: Option<(tilo_actions::InvocationId, std::path::PathBuf)>,
     /// A resource-invoked revision to focus after the next mutable sync has
     /// refreshed the history model. `invoke_resource_operation` only receives
     /// an immutable document, so deferring avoids a second, stale timeline.
@@ -2009,11 +2009,11 @@ impl WordProcessorWidget {
         }
     }
 
-    // ---- qOS action dispatch ------------------------------------------------
+    // ---- Tilo action dispatch ------------------------------------------------
 
     /// Dispatch one [`WordProcessorAction`](crate::actions::WordProcessorAction) —
     /// the single CRDT-mutation path shared with the Ctrl+K palette — through the
-    /// qOS action executor. Document heads before the event's first action are
+    /// Tilo action executor. Document heads before the event's first action are
     /// stashed so the host records **one** undo boundary bracketing the whole event.
     fn perform_action(
         &mut self,
@@ -2024,7 +2024,7 @@ impl WordProcessorWidget {
             state,
             crate::actions::WORD_PROCESSOR_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Writer", "Writer", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action),
         );
     }
 
@@ -2459,7 +2459,7 @@ impl WordProcessorWidget {
     /// Test hook: the last action an affordance dispatched through
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[cfg(test)]
-    pub(crate) fn last_dispatched_for_test(&self) -> Option<&qos_actions::EncodedAction> {
+    pub(crate) fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -2931,7 +2931,7 @@ impl WordProcessorWidget {
     }
 
     /// Toolbar "Insert image" affordance. Opens the host **XDG file-chooser
-    /// portal** (per the qOS HIG the app never draws its own picker): the D-Bus
+    /// portal** (per the Tilo HIG the app never draws its own picker): the D-Bus
     /// round-trip + host dialog run on a worker thread ([`portal::PickRequest`]);
     /// the chosen path comes back over a channel drained each frame in
     /// [`Self::drain_portal`], which inserts the image at the caret. A second
@@ -3057,19 +3057,19 @@ impl WordProcessorWidget {
                 };
                 if let Some(invocation) = self.resource_file_invocation.take() {
                     self.resource_file_result = Some(match result {
-                        Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         },
                         Err(message) if message == "file picker was cancelled" => {
-                            qos_actions::InvocationUpdate::Cancelled {
+                            tilo_actions::InvocationUpdate::Cancelled {
                                 invocation,
                                 message: Some(message),
                             }
                         }
-                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "word_processor.file_operation_failed".into(),
                                 message,
                                 details: None,
@@ -3086,9 +3086,9 @@ impl WordProcessorWidget {
                 self.portal_rx = None;
                 self.portal_purpose = None;
                 if let Some(invocation) = self.resource_file_invocation.take() {
-                    self.resource_file_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_file_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "word_processor.portal_worker_lost".into(),
                             message: "file picker stopped without returning a result".into(),
                             details: None,
@@ -8004,7 +8004,7 @@ impl WordProcessorWidget {
         let now = std::time::Instant::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
-                qos_actions::InteractionAnchor::Text { ranges, .. } => ranges
+                tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
                     .iter()
                     .map(|range| {
                         (
@@ -8014,7 +8014,7 @@ impl WordProcessorWidget {
                         )
                     })
                     .collect::<Vec<_>>(),
-                qos_actions::InteractionAnchor::Objects { ids } => ids
+                tilo_actions::InteractionAnchor::Objects { ids } => ids
                     .iter()
                     .filter_map(|id| {
                         self.blocks
@@ -9241,7 +9241,7 @@ impl Widget for WordProcessorWidget {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -9249,7 +9249,7 @@ impl Widget for WordProcessorWidget {
     ) -> Result<bool, String> {
         use crate::actions::WordProcessorOperation;
 
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -9292,8 +9292,8 @@ impl Widget for WordProcessorWidget {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -9301,7 +9301,7 @@ impl Widget for WordProcessorWidget {
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         use crate::actions::WordProcessorOperation;
 
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -9339,12 +9339,12 @@ impl Widget for WordProcessorWidget {
             self.set_file(destination, format);
             self.try_write_to_current_path(doc)?;
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         } else if self.path.is_some() && !force_picker {
             self.try_write_to_current_path(doc)?;
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         } else {
             self.request_save_as();
@@ -9355,11 +9355,11 @@ impl Widget for WordProcessorWidget {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .resource_file_result
             .as_ref()
@@ -9388,13 +9388,13 @@ impl Widget for WordProcessorWidget {
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
             self.resource_file_result =
                 Some(match self.try_open_document_in_place(state, &open_path) {
-                    Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     },
-                    Err(message) => qos_actions::InvocationUpdate::Failed {
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "word_processor.open_failed".into(),
                             message,
                             details: None,
@@ -10016,7 +10016,7 @@ impl Widget for WordProcessorWidget {
     fn needs_commit(&self) -> bool {
         self.needs_commit
     }
-    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
         self.needs_commit.then(|| {
             let resource_id = self.path.as_ref().map_or_else(
                 || "word-processor.document:untitled".to_string(),
@@ -10028,13 +10028,13 @@ impl Widget for WordProcessorWidget {
                 .and_then(|path| path.file_name())
                 .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or("Untitled document");
-            qos_actions::ActionContext::for_resource(
+            tilo_actions::ActionContext::for_resource(
                 "Edit document",
                 resource_id,
                 "word_processor.document",
                 resource_label,
             )
-            .with_app("org.qos.Writer", "Writer")
+            .with_app("org.tilo.Writer", "Writer")
         })
     }
     fn on_commit(&mut self) {
@@ -10049,14 +10049,14 @@ impl Widget for WordProcessorWidget {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
-    fn take_action_palette_request(&mut self) -> Option<qos_actions::ActionAddress> {
+    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.action_palette_request.take()
     }
     /// Publish the resource tree Ctrl+K walks (delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`]).
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
     fn needs_redraw(&self) -> bool {
         self.dirty
@@ -10510,7 +10510,7 @@ impl WordProcessorWidget {
             ToolAction::Sub => self.dispatch_exclusive_mark(state, "sub", "super"),
             ToolAction::Hyperlink => {
                 if !self.selection_blocks_cached().is_empty() {
-                    self.action_palette_request = Some(qos_actions::ActionAddress::new(
+                    self.action_palette_request = Some(tilo_actions::ActionAddress::new(
                         "word-processor.document",
                         "set-hyperlink",
                     ));
@@ -12396,7 +12396,7 @@ mod tests {
         assert_eq!(context.action_label, "Edit document");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
-            Some("org.qos.Writer")
+            Some("org.tilo.Writer")
         );
         assert_eq!(
             context
@@ -12680,15 +12680,15 @@ mod tests {
     }
 
     /// The `EncodedAction` a resource's immediate `ActionSpec` carries.
-    fn spec_encoded(res: &qos_actions::Resource, id: &str) -> qos_actions::EncodedAction {
+    fn spec_encoded(res: &tilo_actions::Resource, id: &str) -> tilo_actions::EncodedAction {
         let spec = res
             .actions
             .iter()
             .find(|a| a.id == id)
             .unwrap_or_else(|| panic!("spec {id}"));
         match &spec.input {
-            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
+            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
         }
     }
 
@@ -13200,7 +13200,7 @@ mod tests {
         wp.apply_tool(&mut state.doc, ToolAction::Hyperlink);
         assert_eq!(
             Widget::take_action_palette_request(&mut wp),
-            Some(qos_actions::ActionAddress::new(
+            Some(tilo_actions::ActionAddress::new(
                 "word-processor.document",
                 "set-hyperlink"
             ))
@@ -14160,7 +14160,7 @@ mod tests {
     /// PNG (so the header-edit affordance — band wash + dashed outline + caret —
     /// can be eyeballed). Renders through the real five-pass draw; asserts a
     /// non-trivial image was produced. Output path is overridable via
-    /// `$QOS_WP_HEADER_SHOT` for manual inspection.
+    /// `$TILO_WP_HEADER_SHOT` for manual inspection.
     #[test]
     fn header_edit_mode_renders_a_frame() {
         let (mut state, mut wp) = bound();
@@ -14231,7 +14231,7 @@ mod tests {
             "header band laid for the active context"
         );
 
-        let out = std::env::var("QOS_WP_HEADER_SHOT")
+        let out = std::env::var("TILO_WP_HEADER_SHOT")
             .unwrap_or_else(|_| format!("{}/header-edit-mode.png", std::env::temp_dir().display()));
         ui::offscreen::OffscreenRenderer::new(w, h).render_png(
             &scene,
@@ -15205,9 +15205,9 @@ mod tests {
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
         // Redirect the persisted user-dict to a throwaway dir so the test never
-        // writes the real `~/.config/qos/userdict.txt`. (The in-memory add is
+        // writes the real `~/.config/tilo/userdict.txt`. (The in-memory add is
         // what the assertions below check; persistence is best-effort.)
-        let tmp = std::env::temp_dir().join(format!("qos-userdict-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tilo-userdict-test-{}", std::process::id()));
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &tmp);
         }
@@ -18301,7 +18301,7 @@ mod tests {
 
     // ---- visual review shots ----------------------------------------------
     // A guarded renderer that writes PNGs of the fixed surfaces for eyeballing.
-    // Set `QOS_WP_REVIEW_SHOTS=<dir>` to emit them; a normal `cargo test` run
+    // Set `TILO_WP_REVIEW_SHOTS=<dir>` to emit them; a normal `cargo test` run
     // leaves it a no-op (no GPU work, no files).
 
     /// Run the full five-pass + overlay draw and write a PNG to `dir/name.png`.
@@ -18375,7 +18375,7 @@ mod tests {
 
     #[test]
     fn render_review_shots() {
-        let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") else {
+        let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") else {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
@@ -18478,7 +18478,7 @@ mod tests {
     /// compact, and compact-overflow states from one rendering pass.
     #[test]
     fn render_responsive_review_shots() {
-        let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") else {
+        let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") else {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
@@ -18656,7 +18656,7 @@ mod history_strip_tests {
         state.doc.merge(&mut bob).expect("peers merge");
 
         // Keep the fixture's authored labels independent of the developer's
-        // local qOS identity, which production history otherwise registers for
+        // local Tilo identity, which production history otherwise registers for
         // the local Automerge actor on refresh.
         for (handle, hue) in [("alice", 210.0_f32), ("bob", 25.0_f32)] {
             let actor = automerge::ActorId::from(handle.as_bytes()).to_hex_string();

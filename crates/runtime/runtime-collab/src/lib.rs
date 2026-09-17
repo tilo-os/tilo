@@ -1,4 +1,4 @@
-//! `runtime-collab` — Cap'n Proto client for the qOS
+//! `runtime-collab` — Cap'n Proto client for the Tilo
 //! collaboration broker.
 //!
 //! ## Usage shape
@@ -233,7 +233,7 @@ pub use collab_capnp::task_run_stream::Client as TaskRunStreamClient;
 
 /// Version tag distinguishing a certified join presentation from invalid
 /// identity bytes.
-pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"qos-collab-certified-join-v1\0";
+pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"tilo-collab-certified-join-v1\0";
 
 /// Peer-verifiable proof that an enrolled device joined one workspace.
 /// `device_certificate` is the JSON form supplied by `runtime-identity`; the
@@ -277,7 +277,7 @@ impl CertifiedJoinIdentity {
     }
 }
 
-/// Try to dial the qOS collab broker via the launcher-supplied service
+/// Try to dial the Tilo collab broker via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (likely: app
 /// running as a Flatpak on stock Linux) or the fd is no longer open.
 ///
@@ -1183,7 +1183,7 @@ impl ChannelHandle {
 
     /// Ask this session to open the "say something about this" surface,
     /// addressed to the compositor on the far end of this socket, not the
-    /// room. `reference` is a serialised `qos_reference::ResourceRef`
+    /// room. `reference` is a serialised `tilo_reference::ResourceRef`
     /// (JSON); `beside` is `(x, y, w, h)` **in this window's own
     /// coordinates** — the session converts, since only it knows where this
     /// window sits on a desktop. The panel can't be drawn here: it opens
@@ -1396,7 +1396,7 @@ pub struct ActionEvent {
     /// The registry type id the action was encoded under. Names the app
     /// that owns the document it belongs to.
     pub type_id: String,
-    /// The encoded action, exactly as `qos_actions::EncodedAction`
+    /// The encoded action, exactly as `tilo_actions::EncodedAction`
     /// carries it.
     pub payload: Vec<u8>,
     /// The broker's attribution for whoever sent the frame. Who *sent*
@@ -1466,8 +1466,8 @@ impl ActionStream {
 }
 
 /// What one exported action's invocation must carry, as it crosses the
-/// wire — the transport-side twin of `qos_actions::door::InputSpec`.
-/// Kept here rather than depending on `qos-actions` so this crate stays
+/// wire — the transport-side twin of `tilo_actions::door::InputSpec`.
+/// Kept here rather than depending on `tilo-actions` so this crate stays
 /// a client for one socket; an app wanting the richer type converts at
 /// its own edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1689,7 +1689,7 @@ pub struct Invocation {
     /// resulting change commits under — not an authority; the session
     /// already decided this may happen.
     pub actor: String,
-    /// Serialized broker-owned [`qos_actions::ActionContext`] when this
+    /// Serialized broker-owned [`tilo_actions::ActionContext`] when this
     /// invocation originated from a leased workspace task. Empty for ordinary
     /// invocations so legacy application callers remain context-neutral.
     pub context_json: String,
@@ -1979,7 +1979,7 @@ impl PresenceHandle {
 
     /// Publish an invocation-scoped semantic interaction. The broker derives
     /// the actor from this authenticated handle; the JSON carries only the
-    /// versioned action/target lifecycle from `qos_actions`.
+    /// versioned action/target lifecycle from `tilo_actions`.
     ///
     /// # Errors
     ///
@@ -1995,6 +1995,26 @@ impl PresenceHandle {
             let mut b = req.get();
             b.set_key_bytes(key_bytes);
             b.set_interaction_json(interaction_json);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Publish or clear (`text == ""`) the local participant's short status.
+    /// The broker authenticates authorship; `automatic` is presentation
+    /// provenance, not authority.
+    pub async fn publish_status(
+        &self,
+        key_bytes: &[u8],
+        text: &str,
+        automatic: bool,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_status_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_text(text);
+            b.set_automatic(automatic);
         }
         req.send().promise.await?;
         Ok(())
@@ -2080,10 +2100,14 @@ pub enum PresencePayload {
     Following {
         target: Option<String>,
     },
-    /// Versioned `qos_actions::InteractionUpdate` JSON. Actor identity is the
+    /// Versioned `tilo_actions::InteractionUpdate` JSON. Actor identity is the
     /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
     /// caller-controlled payload.
     InteractionJson(String),
+    Status {
+        text: String,
+        automatic: bool,
+    },
     Arrived,
     Left,
 }
@@ -2169,6 +2193,14 @@ fn decode_presence_payload(
                 })?
                 .to_owned(),
         ),
+        W::Status(value) => PresencePayload::Status {
+            text: value
+                .get_text()?
+                .to_str()
+                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?
+                .to_owned(),
+            automatic: value.get_automatic(),
+        },
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,
     })
@@ -2331,9 +2363,9 @@ mod tests {
     use super::*;
     use std::env;
 
-    fn clear_qos_env() {
+    fn clear_tilo_env() {
         for (key, _) in env::vars() {
-            if key.starts_with("QOS_") {
+            if key.starts_with("TILO_") {
                 unsafe { env::remove_var(&key) };
             }
         }
@@ -2341,7 +2373,7 @@ mod tests {
 
     #[test]
     fn try_connect_without_env_returns_service_fd_missing() {
-        clear_qos_env();
+        clear_tilo_env();
         // Not using `expect_err` because `CollabClient` intentionally
         // doesn't implement `Debug` (the underlying capnp client hook
         // isn't `Debug`).

@@ -127,7 +127,7 @@ pub struct SnippetsApp {
     /// [`SnippetsAction`] through this: the host brackets the undo boundary,
     /// applies the action through the executor (so it replays byte-identically on
     /// peers, exactly as the Ctrl+K palette does), and records the last one so a
-    /// test can prove a button and its [`qos_actions::ActionSpec`] build the
+    /// test can prove a button and its [`tilo_actions::ActionSpec`] build the
     /// identical action.
     actions: ui::ActionHost,
 }
@@ -152,6 +152,94 @@ enum Action {
     DismissSidebar,
     /// Return from the detail pane to the list in single-pane push mode.
     PushBack,
+}
+
+impl Action {
+    fn semantic_id(&self) -> String {
+        match self {
+            Self::Select(Selection::Smart(smart)) => format!(
+                "snippets.sidebar.smart:{}",
+                smart.label().to_lowercase().replace(' ', "-")
+            ),
+            Self::Select(Selection::Folder(folder)) => {
+                format!("snippets.sidebar.folder:{}", actions::stable_key(folder))
+            }
+            Self::Select(Selection::Tag(tag)) => {
+                format!("snippets.sidebar.tag:{}", actions::stable_key(tag))
+            }
+            Self::OpenSnippet(id) => format!("snippets.snippet:{id}.open"),
+            Self::NewSnippet => "snippets.library.new-snippet".into(),
+            Self::Copy(id) => format!("snippets.snippet:{id}.copy"),
+            Self::Expand(id) => format!("snippets.snippet:{id}.expand"),
+            Self::ToggleFavorite(id) => format!("snippets.snippet:{id}.toggle-favorite"),
+            Self::Duplicate(id) => format!("snippets.snippet:{id}.duplicate"),
+            Self::Delete(id) => format!("snippets.snippet:{id}.delete"),
+            Self::FocusSearch => "snippets.library.search".into(),
+            Self::ClearSearch => "snippets.library.clear-search".into(),
+            Self::SetLanguage(id, _) => format!("snippets.snippet:{id}.set-language"),
+            Self::ToggleSidebar => "snippets.sidebar.toggle".into(),
+            Self::DismissSidebar => "snippets.sidebar.dismiss".into(),
+            Self::PushBack => "snippets.navigation.back".into(),
+        }
+    }
+
+    fn accessible_label(&self, app: &SnippetsApp) -> String {
+        match self {
+            Self::Select(Selection::Smart(smart)) => smart.label().into(),
+            Self::Select(Selection::Folder(folder)) => format!("Folder {folder}"),
+            Self::Select(Selection::Tag(tag)) => format!("Tag {tag}"),
+            Self::OpenSnippet(id) => app.library.get(*id).map_or_else(
+                || "Open snippet".into(),
+                |snippet| format!("Open {}", snippet.title),
+            ),
+            Self::NewSnippet => "New snippet".into(),
+            Self::Copy(_) => "Copy snippet".into(),
+            Self::Expand(_) => "Fill variables and copy".into(),
+            Self::ToggleFavorite(id) => {
+                if app.library.get(*id).is_some_and(|snippet| snippet.favorite) {
+                    "Unstar snippet".into()
+                } else {
+                    "Star snippet".into()
+                }
+            }
+            Self::Duplicate(_) => "Duplicate snippet".into(),
+            Self::Delete(_) => "Delete snippet".into(),
+            Self::FocusSearch => "Search snippets".into(),
+            Self::ClearSearch => "Clear search".into(),
+            Self::SetLanguage(_, language) => format!("Set language to {}", language.label()),
+            Self::ToggleSidebar => "Toggle folders and tags".into(),
+            Self::DismissSidebar => "Close folders and tags".into(),
+            Self::PushBack => "Back to snippet list".into(),
+        }
+    }
+
+    fn canonical_address(&self) -> Option<tilo_actions::ActionAddress> {
+        match self {
+            Self::OpenSnippet(id) => Some(actions::open_snippet_address(*id)),
+            Self::Select(Selection::Tag(tag)) => Some(actions::reveal_tag_address(tag)),
+            Self::NewSnippet => Some(tilo_actions::ActionAddress::new(
+                "snippets.library",
+                "new-snippet",
+            )),
+            Self::FocusSearch => Some(tilo_actions::ActionAddress::new(
+                "snippets.library",
+                "search",
+            )),
+            Self::ToggleFavorite(id) => Some(tilo_actions::ActionAddress::new(
+                actions::snippet_resource_id(*id),
+                "toggle-favorite",
+            )),
+            Self::Delete(id) => Some(tilo_actions::ActionAddress::new(
+                actions::snippet_resource_id(*id),
+                "delete",
+            )),
+            Self::SetLanguage(id, _) => Some(tilo_actions::ActionAddress::new(
+                actions::snippet_resource_id(*id),
+                "set-language",
+            )),
+            _ => None,
+        }
+    }
 }
 
 impl SnippetsApp {
@@ -260,7 +348,7 @@ impl SnippetsApp {
     }
 
     /// Dispatch one [`SnippetsAction`] — the single mutation path shared with the
-    /// Ctrl+K palette. The action runs through the qOS executor (a pinned actor +
+    /// Ctrl+K palette. The action runs through the Tilo executor (a pinned actor +
     /// committed change, so it replays byte-identically on peers), the shared
     /// document being authoritative; the in-memory library is then re-projected
     /// from it so the panes reflect the change this frame. The heads captured
@@ -271,7 +359,7 @@ impl SnippetsApp {
             doc,
             actions::SNIPPETS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Snippets", "Snippets", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Snippets", "Snippets", action),
         );
         self.refresh_from_doc(doc);
     }
@@ -588,7 +676,7 @@ impl SnippetsApp {
     }
 
     #[doc(hidden)]
-    pub fn last_dispatched_for_test(&self) -> Option<qos_actions::EncodedAction> {
+    pub fn last_dispatched_for_test(&self) -> Option<tilo_actions::EncodedAction> {
         self.actions.last_dispatched().cloned()
     }
 
@@ -688,13 +776,13 @@ impl ui::widget::Widget for SnippetsApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
@@ -729,13 +817,13 @@ impl ui::widget::Widget for SnippetsApp {
 
     /// Publish the library + its snippets so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if id == "snippets.library" {
             return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
                 .pop();
@@ -1019,15 +1107,87 @@ impl ui::widget::Widget for SnippetsApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.expand
-            .as_ref()
-            .and_then(ExpandModal::accessibility)
-            .or_else(|| {
-                self.search_input
-                    .is_focused()
-                    .then(|| self.search_input.accessibility())
-                    .flatten()
+        if let Some(modal) = self.expand.as_ref().and_then(ExpandModal::accessibility) {
+            return Some(modal);
+        }
+
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut seen = std::collections::HashSet::new();
+        let children = self
+            .hit
+            .iter()
+            .filter_map(|(bounds, action)| {
+                let target = action.semantic_id();
+                seen.insert(target.clone()).then(|| {
+                    let role = if matches!(action, Action::FocusSearch) {
+                        Role::TextInput
+                    } else if matches!(action, Action::ToggleFavorite(_)) {
+                        Role::ToggleButton
+                    } else {
+                        Role::Button
+                    };
+                    AccessNode::new(role)
+                        .with_name(action.accessible_label(self))
+                        .with_action_target(target)
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: matches!(action, Action::FocusSearch)
+                                && self.search_input.is_focused(),
+                            checked: match action {
+                                Action::ToggleFavorite(id) => {
+                                    self.library.get(*id).map(|snippet| snippet.favorite)
+                                }
+                                _ => None,
+                            },
+                            ..Default::default()
+                        })
+                })
             })
+            .collect();
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Snippets")
+                .with_semantic_key("snippets.application")
+                .with_children(children),
+        )
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut seen = std::collections::HashSet::new();
+        self.hit
+            .iter()
+            .filter_map(|(_, action)| {
+                let control_id = action.semantic_id();
+                seen.insert(control_id.clone())
+                    .then(|| ui::widget::ControlBindingMetadata {
+                        control_id: control_id.clone(),
+                        kind: action.canonical_address().map_or_else(
+                            || ui::widget::ControlBindingKind::SemanticAction(control_id),
+                            ui::widget::ControlBindingKind::Action,
+                        ),
+                    })
+            })
+            .collect()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
+            return false;
+        }
+        let Some(hit_action) = self.hit.iter().find_map(|(_, candidate)| {
+            (candidate.semantic_id() == target).then(|| candidate.clone())
+        }) else {
+            return false;
+        };
+        self.apply(hit_action, state);
+        true
     }
 
     fn needs_commit(&self) -> bool {
@@ -2892,8 +3052,8 @@ mod tests {
             Widget::resource(&app, &doc, &resource_id).expect("a resource for the target snippet");
         let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
         let spec_encoded = match &spec.input {
-            qos_actions::ActionInput::Immediate(e) => e.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("delete is immediate"),
+            tilo_actions::ActionInput::Immediate(e) => e.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("delete is immediate"),
         };
 
         app.delete_for_test(id, &mut doc);
@@ -2937,8 +3097,8 @@ mod tests {
             .find(|a| a.id == "toggle-favorite")
             .unwrap();
         let spec_encoded = match &spec.input {
-            qos_actions::ActionInput::Immediate(e) => e.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("toggle-favorite is immediate"),
+            tilo_actions::ActionInput::Immediate(e) => e.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("toggle-favorite is immediate"),
         };
 
         app.toggle_favorite_for_test(id, &mut doc);

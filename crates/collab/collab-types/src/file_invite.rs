@@ -16,10 +16,10 @@ use crate::canonical::CanonicalError;
 use crate::crypto::{Ed25519PublicKey, Signature, VerifyError, sign_event, verify_event};
 use crate::files::FileRecordId;
 
-pub const FILE_INVITE_DOMAIN_TAG: &str = "qos-file-invite-v1";
-pub const FILE_INVITE_LINK_PREFIX: &str = "qos-file://v1/";
+pub const FILE_INVITE_DOMAIN_TAG: &str = "tilo-file-invite-v1";
+pub const FILE_INVITE_LINK_PREFIX: &str = "tilo-file://v1/";
 pub const MAX_FILE_INVITE_TOKEN_BYTES: usize = 16 * 1024;
-const BEARER_HASH_DOMAIN: &[u8] = b"qos-file-bearer-v1\0";
+const BEARER_HASH_DOMAIN: &[u8] = b"tilo-file-bearer-v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

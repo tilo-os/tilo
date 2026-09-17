@@ -20,7 +20,7 @@ pub const NATURAL_SCROLL_KEY: &str = "natural_scroll";
 pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
 pub const POINTER_SPEED_KEY: &str = "pointer_speed";
 pub const KEY_REPEAT_KEY: &str = "key_repeat";
-/// Exact host-imported delay; a qOS slider choice clears this pair.
+/// Exact host-imported delay; a Tilo slider choice clears this pair.
 pub const KEY_REPEAT_DELAY_MS_KEY: &str = "key_repeat_delay_ms";
 /// Exact host-imported rate. Zero means repeat is disabled.
 pub const KEY_REPEAT_RATE_HZ_KEY: &str = "key_repeat_rate_hz";
@@ -852,7 +852,7 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("qos-input-watch-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-input-watch-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir.join("settings.json")
     }

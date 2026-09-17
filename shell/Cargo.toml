@@ -9,7 +9,7 @@ license.workspace = true
 
 [features]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
-# the QOS_TEST_CONTROL Unix socket the same way the headless backend
+# the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent
 # `ui::UserEvent`s into the App via winit's `EventLoopProxy`. Disable
 # in production builds to drop the test surface (`--no-default-features
@@ -37,9 +37,9 @@ hdr-decode = ["ffmpeg-next"]
 # Compile the tests that need libavcodec to actually *carry* HEVC —
 # `tests/hdr_decode_pipeline.rs`, which encodes with libx265 and decodes
 # with the HEVC decoder. Off by default because that is a property of the
-# host's ffmpeg, not of qOS: Fedora builds `libavcodec-free` with
+# host's ffmpeg, not of Tilo: Fedora builds `libavcodec-free` with
 # `--disable-decoder='h264,hevc,vc1,vvc'` and ships no libx265, so on the
-# platform qOS is built from and runs on, those tests cannot observe
+# platform Tilo is built from and runs on, those tests cannot observe
 # their subject. Compiling them anyway meant one passed by printing
 # "skipping" and two failed forever. Enable on a host with an
 # HEVC-capable libavcodec (rpmfusion `libavcodec-freeworld`, or a
@@ -60,14 +60,11 @@ dev-session = []
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
-# One owner for ~/.config/qos/settings.json.
+# One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../crates/system/settings-store" }
 desktop-policy = { path = "../crates/system/desktop-policy" }
 tokio = { workspace = true, features = ["full"] }
-# qOS owns the producer side of portal ScreenCast streams.  `pipewire-rs`
-# talks to the session daemon directly; sandboxed apps only receive a remote
-# after the portal has granted a session.
-pipewire = "0.10.1"
+
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -84,9 +81,7 @@ uuid.workspace = true
 # `home_dir`/`config_dir`/`cache_dir` API is identical.
 dirs.workspace = true
 qcms.workspace = true
-smithay-client-toolkit = "0.20.0"
-wayland-client.workspace = true
-wayland-protocols = "0.32.12"
+
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-gossip.workspace = true
@@ -94,28 +89,16 @@ iroh-mdns-address-lookup.workspace = true
 bytes.workspace = true
 futures-lite.workspace = true
 blake3.workspace = true
-smithay = { version = "0.7", default-features = false, features = [
-    "wayland_frontend",
-    "backend_winit",
-    "renderer_glow",
-    "desktop",
-    # DRM/KMS, seat, udev, and libinput support for bare-TTY sessions.
-    "backend_drm",
-    "backend_libinput",
-    "backend_udev",
-    "backend_session_libseat",
-    "renderer_gl",
-] }
-# DRM construction errors must reach the entry point without panicking when
-# another compositor already owns the seat.
+
+# Phase 5 Task 5.1: structured error type for DRM backend construction.
+# Bubbles up clean error messages to the binary entry point instead of
+# panicking — the host machine (Gnome already holds the seat) needs the
+# `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
 
 ui = { path = "../ui" }
-# `ui::App` publishes ordinary app windows through `accesskit_winit`. The
-# compositor owns no winit application window, so its trusted chrome (including
-# OOBE and the desktop tour) uses AccessKit's native Unix/AT-SPI adapter.
-accesskit_unix = "0.23.0"
-qos-actions = { path = "../crates/collab/actions" }
+
+tilo-actions = { path = "../crates/collab/actions" }
 # The record/room-index store. The compositor keeps one document per room
 # listing which records that room holds, in the same store shape (atomic
 # writes, single-writer lock, debounced writer) an app's own state uses.
@@ -146,11 +129,8 @@ xattr = "1.6.1"
 # Power management: suspend-on-idle, lid / power-key policy, suspend
 # inhibitors, and battery thresholds over systemd-logind + UPower. The pure
 # policy core is unit-testable without a bus; the service actuates via zbus.
-qos-power-mgmt = { path = "../crates/system/power" }
-# Session-lock unlock reuses the greeter's greetd/PAM conversation
-# (`greetd_client::verify_password` — verify credentials without starting a
-# session) so login and unlock share one non-leaky auth path.
-greeter = { path = "../crates/session/greeter" }
+tilo-power-mgmt = { path = "../crates/system/power" }
+
 winit.workspace = true
 # The native winit backend uses vello-on-wgpu directly rather than smithay's
 # glow renderer.
@@ -168,21 +148,14 @@ vello.workspace = true
 # The compositor, portal, and peer sync share one locked `WorkspaceTree`.
 # Already a transitive via wgpu — pinning here is one-line and keeps Cargo
 # collapsed to a single copy in the workspace lock.
-qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
+tilo-startup-metrics = { path = "../crates/system/tilo-startup-metrics" }
 parking_lot.workspace = true
-# Host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
-# latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
-# aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
-seccompiler.workspace = true
+
 # Direct libc dep so we can name the SYS_* and AF_PACKET constants required by
 # the deny-list filter without going through seccompiler's re-export. ui
 # already pulls libc transitively, so Cargo collapses to one copy in the lock.
 libc.workspace = true
-# Landlock per-capability in-kernel FS/net enforcement (`plan/security.md`
-# §7.1). Applied by the `__sandbox-exec` launcher shim AFTER bwrap sets up
-# the namespace, so it layers on top of bwrap + seccomp + netns. Linux-only;
-# best-effort at runtime (degrades silently on kernels without Landlock).
-landlock.workspace = true
+
 # Peer invitations are base64-url wrapped signed JSON tickets containing the
 # owner's stable iroh EndpointAddr.
 base64.workspace = true
@@ -192,7 +165,7 @@ bs58.workspace = true
 # copy), which keeps the test image self-contained — bootc is immutable so we
 # can't rely on a runtime-installed `libopenh264.so`.
 openh264.workspace = true
-qos-projector = { path = "../crates/system/projector" }
+tilo-projector = { path = "../crates/system/projector" }
 # Hardware H.264 encode (VA-API / NVENC) via libavcodec. Opt-in behind
 # the `vaapi` / `nvenc` features. `default-features = false` +
 # `features = ["codec", "software-scaling"]` pulls only libavcodec +
@@ -214,27 +187,25 @@ ffmpeg-next = { version = "8", optional = true, default-features = false, featur
 # 4.4.x — staying on the same major avoids a duplicate compile + runtime
 # copy of the entire async-task stack zbus drags in.
 zbus = { workspace = true, features = ["tokio", "p2p"] }
-# EIS is the protocol transport required by InputCapture.  The calloop
-# feature lets its socket state live beside the compositor event loop.
-reis = { version = "0.7.1", features = ["calloop"] }
+
 # BlueZ over D-Bus. The compositor owns the pairing agent because answering
 # "do these six digits match?" decides whether a nearby device may inject
 # keystrokes — not a dialog an application may draw.
-qos-bluez = { path = "../crates/system/qos-bluez" }
+tilo-bluez = { path = "../crates/system/tilo-bluez" }
 # `test_control::Command::Snapshot` encodes the offscreen RGBA result as PNG.
 png.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # The broker validates inbound `SignedOp` envelopes against the
 # channel's role table before fan-out; the Iroh actor carries them
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
-# the validator live in `qos-collab-types`.
+# the validator live in `tilo-collab-types`.
 collab-types = { path = "../crates/collab/collab-types" }
 channel-crypto = { path = "../crates/collab/channel-crypto" }
 # The reusable video-streaming stack (H.264 encode/decode, per-share frame
 # transport substrate, throttle). `network::{encoder,surface_stream,streaming}`
 # re-export from here so the compositor's surface streaming and the chat call
 # app share a single copy of the codec + wire format.
-qos-callstream = { path = "../crates/collab/qos-callstream" }
+tilo-callstream = { path = "../crates/collab/tilo-callstream" }
 # `firstboot` provisions a fresh single-device identity at first login
 # via `threshold-identity::ThresholdIdentity::bootstrap_single_device_seed`,
 # which yields the raw dalek-compatible seed + pubkey that the
@@ -254,24 +225,21 @@ rand_core = { workspace = true, features = ["getrandom"] }
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
-# `qos-launcher` binary to build the actual bwrap + seccomp + Landlock
+# `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../crates/packaging/launcher" }
-# Session-owned Windows compatibility broker. The shell supplies the trusted
-# launcher registry and fresh workspace capability authority.
-compat-service = { path = "../crates/windows/compat-service" }
-windows-vm = { path = "../crates/system/windows-vm" }
+
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.
-desktop-entry = { package = "qos-desktop-entry", path = "../crates/system/desktop-entry" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../crates/system/desktop-entry" }
 # User root identity + device cert + revocation. See
 # `network::identity` for the peer-side wiring: on connect we
 # expect the remote to present its device pubkey + cert; we validate
 # the cert against the workspace owner's root key and cross-check
 # the revocation list before accepting any of the peer's CRDT ops.
-qos-user-identity = { path = "../crates/identity/qos-user-identity" }
-qos-relay = { path = "../crates/hosting/qos-relay" }
+tilo-user-identity = { path = "../crates/identity/tilo-user-identity" }
+tilo-relay = { path = "../crates/hosting/tilo-relay" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
@@ -299,9 +267,8 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
-wayland-client.workspace = true
-# Canonical-bytes encoder for wire-format round-trip tests in
-# `src/network/protocol.rs`. `qos-collab-types` already uses this for
+# Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
+# `src/network/protocol.rs`. `tilo-collab-types` already uses this for
 # signing; the test verifies `NeighbourMsg::AppCrdtIncrementalSigned`
 # survives the same codec.
 postcard = { workspace = true, features = ["alloc"] }
@@ -333,7 +300,7 @@ wgpu.workspace = true
 # the `vello = "0.2.1"` runtime dep; Cargo collapses to a single copy.
 vello_encoding.workspace = true
 # Tempdir helper for `network::behaviour::load_or_create_keypair` tests so we
-# never write a real key to `/var/lib/qos-fs/peer-key` from the test suite.
+# never write a real key to `/var/lib/tilo-fs/peer-key` from the test suite.
 tempfile.workspace = true
 # `tests/portal_test.rs` joins the server- and client-side handshake of an
 # in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
@@ -354,8 +321,8 @@ naga = { version = "29", features = ["wgsl-in"] }
 
 # Keep the public CLI name stable if `src/bin/` is reorganized.
 [[bin]]
-name = "qos-control"
-path = "src/bin/qos-control.rs"
+name = "tilo-control"
+path = "src/bin/tilo-control.rs"
 
 [[test]]
 name = "it"
@@ -363,3 +330,53 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Tilo owns the producer side of portal ScreenCast streams.  `pipewire-rs`
+# talks to the session daemon directly; sandboxed apps only receive a remote
+# after the portal has granted a session.
+pipewire = "0.10.1"
+smithay-client-toolkit = "0.20.0"
+wayland-client.workspace = true
+wayland-protocols = "0.32.12"
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+    "backend_winit",
+    "renderer_glow",
+    "desktop",
+    # Phase 5 Task 5.1: real DRM/KMS + libseat + udev + libinput
+    # backend for running on a bare TTY. See
+    # `shell/src/compositor/backend/drm/` for the implementation
+    # and `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
+    # (Phase 5) for design intent.
+    "backend_drm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "renderer_gl",
+] }
+# Phase 2 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`:
+# host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
+# latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
+# aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
+seccompiler.workspace = true
+# Landlock per-capability in-kernel FS/net enforcement (`plan/security.md`
+# §7.1). Applied by the `__sandbox-exec` launcher shim AFTER bwrap sets up
+# the namespace, so it layers on top of bwrap + seccomp + netns. Linux-only;
+# best-effort at runtime (degrades silently on kernels without Landlock).
+landlock.workspace = true
+# `ui::App` publishes ordinary app windows through `accesskit_winit`. The
+# compositor owns no winit application window, so its trusted chrome (including
+# OOBE and the desktop tour) uses AccessKit's native Unix/AT-SPI adapter.
+accesskit_unix = "0.23.0"
+# EIS is the protocol transport required by InputCapture.  The calloop
+# feature lets its socket state live beside the compositor event loop.
+reis = { version = "0.7.1", features = ["calloop"] }
+# Session-lock unlock reuses the greeter's greetd/PAM conversation
+# (`greetd_client::verify_password` — verify credentials without starting a
+# session) so login and unlock share one non-leaky auth path.
+greeter = { path = "../crates/session/greeter" }
+# Session-owned Windows compatibility broker. The shell supplies the trusted
+# launcher registry and fresh workspace capability authority.
+compat-service = { path = "../crates/windows/compat-service" }
+windows-vm = { path = "../crates/system/windows-vm" }

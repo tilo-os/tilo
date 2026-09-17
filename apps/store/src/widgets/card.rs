@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────────┐
-//! │ [icon]  Name                 v0.1.0 · qOS main            [Action]   │
+//! │ [icon]  Name                 v0.1.0 · Tilo main            [Action]   │
 //! │ [ ⎔  ]  One-line description                                         │
 //! └──────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -46,8 +46,8 @@ pub fn store_card(
     action_click_key: &str,
     theme: &ui::Theme,
     images: Option<ui::ImageStore>,
-    action_binding: Option<ui::qos_actions::ActionBinding<()>>,
-    detail_binding: Option<ui::qos_actions::ActionBinding<()>>,
+    action_binding: Option<ui::tilo_actions::ActionBinding<()>>,
+    detail_binding: Option<ui::tilo_actions::ActionBinding<()>>,
     compact: bool,
     large_text: bool,
     operation_active: bool,
@@ -232,7 +232,7 @@ pub fn store_card(
     };
     // Source is metadata, not branding. A neutral OS surface keeps the browse
     // page calm and lets artwork plus the primary action establish hierarchy;
-    // qOS/Flatpak provenance remains explicit in the identity line.
+    // Tilo/Flatpak provenance remains explicit in the identity line.
     let card_fill = theme.bg_primary;
     let card = Container::new().with_fill(card_fill).with_child(content);
     if compact {
@@ -268,11 +268,11 @@ fn icon_artwork(
 fn badge_line(item: &StoreItem) -> String {
     let v = item.latest_version();
     match &item.source {
-        StoreSource::Qos { .. } => {
+        StoreSource::Tilo { .. } => {
             if v.is_empty() {
-                "qOS verified".into()
+                "Tilo verified".into()
             } else {
-                format!("qOS verified · v{v}")
+                format!("Tilo verified · v{v}")
             }
         }
         StoreSource::Flathub => {
@@ -287,7 +287,7 @@ fn badge_line(item: &StoreItem) -> String {
 
 fn source_line(item: &StoreItem) -> String {
     match &item.source {
-        StoreSource::Qos { .. } => "qOS verified".into(),
+        StoreSource::Tilo { .. } => "Tilo verified".into(),
         StoreSource::Flathub => "Flathub".into(),
     }
 }

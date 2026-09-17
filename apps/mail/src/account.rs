@@ -1,11 +1,11 @@
 //! Mail's view of the shared multi-account store.
 //!
 //! ## One shared store, one vault
-//! Account *management* in qOS lives in the **Settings app**, not in Mail —
+//! Account *management* in Tilo lives in the **Settings app**, not in Mail —
 //! the same way display, network, and Bluetooth settings do. Mail only
 //! *consumes* the account list to fetch and send. The canonical store is the
 //! shared [`accounts`] crate: a single JSON document under
-//! `$XDG_CONFIG_HOME/qos/accounts/` holding every account of every type, with
+//! `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
 //! credentials kept out of it entirely and sealed in the encrypted
 //! [`accounts::SecretVault`].
 //!
@@ -171,8 +171,8 @@ impl AccountStore {
         Self { accounts, active }
     }
 
-    /// Persist to the default qOS config root
-    /// (`$XDG_CONFIG_HOME/qos/accounts/`). The in-app account add/edit/remove
+    /// Persist to the default Tilo config root
+    /// (`$XDG_CONFIG_HOME/tilo/accounts/`). The in-app account add/edit/remove
     /// flow calls this so accounts survive a restart; a no-op (Ok) when the
     /// config root can't be resolved (read-only environment / `--shots`).
     ///
@@ -324,7 +324,7 @@ mod tests {
     }
 
     fn temp_root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("qos-mail-accounts-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tilo-mail-accounts-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]

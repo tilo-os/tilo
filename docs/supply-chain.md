@@ -1,7 +1,7 @@
-# qOS supply-chain security (operations)
+# Tilo supply-chain security (operations)
 
 Status of security-plan §9 (signing / reproducibility / transparency) and how to
-operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-architecture-plan.md`.
+operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-architecture-plan.md`.
 
 ## What's in place
 
@@ -12,9 +12,9 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   `keys/cosign.pub` is the
   verifier; signing requires `COSIGN_KEY_REF` to name a non-exportable
   KMS/HSM key. Exportable private-key material is rejected by the workflow.
-- **Verify-before-update.** The image ships `/usr/share/qos/cosign.pub` + an
+- **Verify-before-update.** The image ships `/usr/share/tilo/cosign.pub` + an
   `/etc/containers/policy.json` that **requires** a valid signature for
-  `code.podesta.ai/qos/qos` (+ `registries.d` sigstore-attachment lookup). So
+  `code.podesta.ai/qos/tilo` (+ `registries.d` sigstore-attachment lookup). So
   `bootc upgrade` refuses an unsigned/tampered OS image.
 - **SBOM.** CI generates an SPDX SBOM (syft) and attaches it as a **signed**
   in-toto attestation to the image (`cosign attest`). Audit with
@@ -114,7 +114,7 @@ The signing key is the root of update trust — rotate on exposure or schedule.
 ## Still missing (§9 follow-ups)
 
 - **Installed-client transparency enforcement.** Release CI publishes Rekor
-  evidence, but the installed update path currently enforces the qOS signature
+  evidence, but the installed update path currently enforces the Tilo signature
   through containers-policy; it does not independently require a fresh Rekor
   inclusion proof and checkpoint before booting the image.
 - **Independent transparency witness.** Rekor provides public append-only

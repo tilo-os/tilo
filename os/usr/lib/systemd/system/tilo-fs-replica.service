@@ -1,0 +1,35 @@
+[Unit]
+Description=Tilo complete authenticated filesystem replica
+After=network-online.target tilo-relay-firstboot.service
+Wants=network-online.target
+Requires=tilo-relay-firstboot.service
+After=tilo-relay.service
+BindsTo=tilo-relay.service
+ConditionPathExists=/etc/tilo/home-peer.toml
+ConditionPathExists=!/var/lib/tilo-relay/decommissioned
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/fs replica --config /etc/tilo/home-peer.toml
+Restart=always
+RestartSec=3
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadOnlyPaths=/etc/tilo /var/lib/tilo
+ReadWritePaths=/var/lib/tilo/full-replica
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

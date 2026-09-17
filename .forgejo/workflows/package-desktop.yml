@@ -15,7 +15,7 @@ on:
       - "rust-toolchain.toml"
       - "shell/**"
       - "crates/packaging/launcher/**"
-      - "crates/session/qos-unlock-helper/**"
+      - "crates/session/tilo-unlock-helper/**"
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
@@ -32,7 +32,7 @@ on:
       - "rust-toolchain.toml"
       - "shell/**"
       - "crates/packaging/launcher/**"
-      - "crates/session/qos-unlock-helper/**"
+      - "crates/session/tilo-unlock-helper/**"
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
@@ -53,11 +53,12 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: never
   # Tags and explicit full-native dispatches use the native-ARM pool.
-  QOS_DESKTOP_ARM64_RELEASES: "1"
+  TILO_DESKTOP_ARM64_RELEASES: "1"
 
 jobs:
   validate:
     runs-on: runner
+    timeout-minutes: 30
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
       release_arches: ${{ steps.lanes.outputs.release_arches }}
@@ -77,7 +78,7 @@ jobs:
             diagnostic=qemu-wrapper-compile
           elif ! test "$(<dist/VERSION)" = "$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)"; then
             diagnostic=arch-version-drift
-          elif ! grep -Fxq "%{!?qos_version:%global qos_version $(<dist/VERSION)}" dist/rpm/qos-session.spec; then
+          elif ! grep -Fxq "%{!?tilo_version:%global tilo_version $(<dist/VERSION)}" dist/rpm/tilo-session.spec; then
             diagnostic=rpm-version-drift
           elif ! dist/ci/run-dev-session-test.sh; then
             diagnostic=dev-session-contract
@@ -121,7 +122,7 @@ jobs:
           amd64_targets="arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|"$'\n'"$common_targets"
           arm64_targets="arch|docker.io/gomasy/archlinuxarm@sha256:2b73dc79eaf9b816d0e41345258766ac3cb6bb2b407125d9f5b31cf94e177488|"$'\n'"$common_targets"
           release_arches=amd64
-          if [[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]] &&
+          if [[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]] &&
              [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
             release_arches=amd64,arm64
             matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg arm64_targets "$arm64_targets" --arg amd64_runner "$amd64_runner" --arg arm64_runner "$arm64_runner" '{include:[
@@ -180,18 +181,18 @@ jobs:
       - name: Build and install-test all five target userspaces
         env:
           # Runner-level cache credentials must never enter pull-request code.
-          QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
+          TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
           # The larger runner supports six native compiler processes.
-          QOS_CARGO_JOBS: "6"
-          QOS_LANE_TARGETS: ${{ matrix.targets }}
+          TILO_CARGO_JOBS: "6"
+          TILO_LANE_TARGETS: ${{ matrix.targets }}
           # RPM signing is restricted to protected desktop tags and happens in
           # the Fedora packaging userspace, where rpm-sign is installed. The
           # key is never available to pull requests or ordinary branch builds.
-          QOS_RPM_SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
-          QOS_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}
-          QOS_RPM_SIGNING_KEY_B64: ${{ secrets.QOS_RPM_SIGNING_KEY_B64 }}
-          QOS_RPM_SIGNING_KEY_ID: ${{ secrets.QOS_RPM_SIGNING_KEY_ID }}
-          QOS_RPM_SIGNING_FINGERPRINT: ${{ vars.QOS_RPM_SIGNING_FINGERPRINT }}
+          TILO_RPM_SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
+          TILO_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}
+          TILO_RPM_SIGNING_KEY_B64: ${{ secrets.TILO_RPM_SIGNING_KEY_B64 }}
+          TILO_RPM_SIGNING_KEY_ID: ${{ secrets.TILO_RPM_SIGNING_KEY_ID }}
+          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
         shell: bash
         run: |
           while IFS='|' read -r distro image revision; do
@@ -203,7 +204,7 @@ jobs:
               exit 1
             fi
             echo "::endgroup::"
-          done <<<"$QOS_LANE_TARGETS"
+          done <<<"$TILO_LANE_TARGETS"
       # Forgejo's native artifact service implements the v3 protocol. Upstream
       # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
@@ -241,6 +242,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: package
     runs-on: runner
+    timeout-minutes: 120
     enable-openid-connect: true
     steps:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -248,13 +250,13 @@ jobs:
           path: release
       - name: Publish immutable desktop payloads and advance their channels
         env:
-          DESKTOP_AUDIENCE: ${{ vars.QOS_DESKTOP_RELEASE_AUDIENCE }}
-          CONTINUOUS_OS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+          DESKTOP_AUDIENCE: ${{ vars.TILO_DESKTOP_RELEASE_AUDIENCE }}
+          CONTINUOUS_OS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}
         shell: bash
         run: |
           set -euo pipefail
           [[ -n ${DESKTOP_AUDIENCE:-} ]] || {
-            printf 'QOS_DESKTOP_RELEASE_AUDIENCE is required\n' >&2
+            printf 'TILO_DESKTOP_RELEASE_AUDIENCE is required\n' >&2
             exit 1
           }
           jwt=$(curl --fail --silent --show-error \
@@ -268,7 +270,7 @@ jobs:
           variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
           put_immutable() {
             local file=$1 url=$2 response status remote
-            response=$(mktemp "$RUNNER_TEMP/qos-desktop-response.XXXXXX")
+            response=$(mktemp "$RUNNER_TEMP/tilo-desktop-response.XXXXXX")
             status=$(curl --silent --show-error --retry 3 --retry-all-errors \
               --output "$response" --write-out '%{http_code}' \
               --header "Authorization: Bearer $jwt" \
@@ -276,7 +278,7 @@ jobs:
             case "$status" in
               200|201|204) ;;
               409)
-                remote=$(mktemp "$RUNNER_TEMP/qos-existing-desktop.XXXXXX")
+                remote=$(mktemp "$RUNNER_TEMP/tilo-existing-desktop.XXXXXX")
                 curl --fail --silent --show-error --retry 3 --retry-all-errors \
                   --header "Authorization: Bearer $jwt" "$url" --output "$remote"
                 cmp --silent "$file" "$remote"
@@ -297,22 +299,22 @@ jobs:
           }
           shopt -s nullglob
           found=0
-          for bundle in release/fedora-44-*/qos-desktop-os-*.tar.gz; do
+          for bundle in release/fedora-44-*/tilo-desktop-os-*.tar.gz; do
             found=1
-            arch=${bundle##*qos-desktop-os-}
+            arch=${bundle##*tilo-desktop-os-}
             arch=${arch%.tar.gz}
             digest_file="$bundle.sha256"
             (cd "$(dirname "$bundle")" && sha256sum --check --strict "${digest_file##*/}")
-            url="$package_api/qos-desktop-os/$version/${bundle##*/}"
+            url="$package_api/tilo-desktop-os/$version/${bundle##*/}"
             put_immutable "$bundle" "$url"
             put_immutable "$digest_file" "$url.sha256"
             digest=$(awk '{print $1}' "$digest_file")
             upper=${arch^^}
-            update_variable "QOS_DESKTOP_PAYLOAD_URL_$upper" "$url"
-            update_variable "QOS_DESKTOP_PAYLOAD_SHA256_$upper" "$digest"
+            update_variable "TILO_DESKTOP_PAYLOAD_URL_$upper" "$url"
+            update_variable "TILO_DESKTOP_PAYLOAD_SHA256_$upper" "$digest"
             if [[ $arch == x86_64 ]]; then
-              update_variable QOS_DESKTOP_PAYLOAD_URL "$url"
-              update_variable QOS_DESKTOP_PAYLOAD_SHA256 "$digest"
+              update_variable TILO_DESKTOP_PAYLOAD_URL "$url"
+              update_variable TILO_DESKTOP_PAYLOAD_SHA256 "$digest"
             fi
           done
           [[ $found == 1 ]]
@@ -330,6 +332,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: validate
     runs-on: runner
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -340,9 +343,9 @@ jobs:
         run: |
           git fetch --no-tags origin \
             +refs/heads/main:refs/remotes/origin/main \
-            +refs/notes/qos-check-ci:refs/notes/qos-check-ci
+            +refs/notes/tilo-check-ci:refs/notes/tilo-check-ci
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-          receipt=$(git notes --ref=qos-check-ci show "$GITHUB_SHA")
+          receipt=$(git notes --ref=tilo-check-ci show "$GITHUB_SHA")
           grep -Eq '^select=success affected=success run=[0-9]+ sha='"$GITHUB_SHA"'$' \
             <<<"$receipt"
 
@@ -350,6 +353,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: [validate, package, release-guard]
     runs-on: runner
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -375,7 +379,7 @@ jobs:
           (cd release && sha256sum -- * > SHA256SUMS)
       - name: Publish package-manager repositories
         env:
-          QOS_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: dist/ci/publish-forgejo-packages.sh release "${GITHUB_REF_NAME#desktop-v}"
       - name: Publish checksummed, install-tested artifacts
         uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
@@ -387,4 +391,4 @@ jobs:
           token: ${{ secrets.RELEASE_TOKEN }}
           release-dir: release
           override: true
-          release-notes: "qOS desktop session ${{ github.ref_name }}. Every attached package was built and install-tested inside its target distribution and architecture userspace."
+          release-notes: "Tilo Desktop session ${{ github.ref_name }}. Every attached package was built and install-tested inside its target distribution and architecture userspace."

@@ -8,11 +8,11 @@
 #
 # Usage:   scripts/perf/pgo-instrument.sh
 # Emits:   target/pgo-profraw/            (empty; populated by runs)
-#          target/pgo-instrumented/shell  (and terminal / file-explorer / qos-install)
+#          target/pgo-instrumented/shell  (and terminal / file-explorer / tilo-install)
 
 set -euo pipefail
 
-DISTROBOX="${QOS_DISTROBOX:-}"
+DISTROBOX="${TILO_DISTROBOX:-}"
 run_in_env() {
     if [ -n "$DISTROBOX" ]; then
         distrobox enter "$DISTROBOX" -- "$@"
@@ -30,7 +30,7 @@ mkdir -p "$PROFRAW" "$BUILD"
 
 # Instrumented binaries have to write .profraw somewhere writable, and
 # the default is `$PWD` — force everything into one dir.
-export LLVM_PROFILE_FILE="$PROFRAW/qos-%p-%m.profraw"
+export LLVM_PROFILE_FILE="$PROFRAW/tilo-%p-%m.profraw"
 
 # `-Zprofile` is unstable and needs nightly; PGO with `-C
 # profile-generate` is stable and covers what we need.
@@ -42,7 +42,7 @@ run_in_env bash -c "cd $ROOT && cargo build --release \
 echo
 echo "Instrumented binaries at $BUILD/release/:"
 ls -la "$BUILD/release/shell" "$BUILD/release/terminal" \
-       "$BUILD/release/file-explorer" "$BUILD/release/qos-install" 2>&1 | head
+       "$BUILD/release/file-explorer" "$BUILD/release/tilo-install" 2>&1 | head
 echo
 echo "Now exercise them; each run drops .profraw files at $PROFRAW/."
 echo "Then merge with: scripts/perf/pgo-merge.sh"

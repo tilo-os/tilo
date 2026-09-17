@@ -14,7 +14,7 @@ PROFILE="${PROFILE:-thin-app}"
 packages=()
 features=()
 binary_crates=()
-for manifest in "$REPO"/apps/*/qos-app.toml; do
+for manifest in "$REPO"/apps/*/tilo-app.toml; do
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"
     binary="$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)"
@@ -42,7 +42,7 @@ fi
 thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 
 cd "$REPO"
-QOS_THIN_BIN_CRATES="$thin_crates" \
+TILO_THIN_BIN_CRATES="$thin_crates" \
 RUSTC_WORKSPACE_WRAPPER="$REPO/tools/rustc-thin-app-wrapper.sh" \
 cargo build --locked --profile "$PROFILE" --features "$feature_csv" \
     -p runtime-dylib "${packages[@]}"

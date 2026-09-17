@@ -923,7 +923,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let mut transport = LocalTransport::new();
         let ambient = ActionContext::default()
-            .with_app("org.qos.Notes", "Notes")
+            .with_app("org.tilo.Notes", "Notes")
             .with_purpose("Prepare launch")
             .with_group("issue:42", "Launch", "issue");
         let dispatched = invoke_with_context(

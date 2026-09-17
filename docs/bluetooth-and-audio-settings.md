@@ -2,7 +2,7 @@
 
 ## Bluetooth
 
-Settings uses the shared `qos-bluez` client through `os-actions::bluez`; it
+Settings uses the shared `tilo-bluez` client through `os-actions::bluez`; it
 does not invoke `bluetoothctl`. The process-wide client deliberately keeps one
 system-bus connection alive because BlueZ binds discovery to the connection
 that started it. All device actions use the BlueZ object path, not a MAC

@@ -74,9 +74,9 @@ fn battery_allows(on_battery: bool, present: bool, percent: u8) -> bool {
 }
 
 fn power_allows() -> bool {
-    let snapshot = qos_power_mgmt::sysfs_battery_snapshot();
+    let snapshot = tilo_power_mgmt::sysfs_battery_snapshot();
     battery_allows(
-        qos_power_mgmt::sysfs_on_battery(),
+        tilo_power_mgmt::sysfs_on_battery(),
         snapshot.present,
         snapshot.percent,
     )
@@ -107,7 +107,11 @@ fn storage_allows(path: &Path) -> bool {
     }
     // SAFETY: the successful call above initialized the complete structure.
     let stats = unsafe { stats.assume_init() };
-    storage_values_allow(stats.f_blocks, stats.f_bavail, stats.f_frsize)
+    #[cfg(target_os = "linux")]
+    let (blocks, available) = (stats.f_blocks, stats.f_bavail);
+    #[cfg(not(target_os = "linux"))]
+    let (blocks, available) = (u64::from(stats.f_blocks), u64::from(stats.f_bavail));
+    storage_values_allow(blocks, available, stats.f_frsize)
 }
 
 async fn sample(cache_root: &Path) -> PredictivePolicy {

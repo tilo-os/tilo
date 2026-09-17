@@ -3,7 +3,7 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 app="$repo_root/crates/session/greeter/src/greeter_app.rs"
-policy="$repo_root/os/etc/polkit-1/rules.d/49-qos-greeter-fingerprint.rules"
+policy="$repo_root/os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules"
 container="$repo_root/os/Containerfile"
 
 ok() { printf 'ok - %s\n' "$1"; }
@@ -30,7 +30,7 @@ fi
 if grep -Fq 'subject.user === "greetd"' "$policy" \
    && grep -Fq 'net.reactivated.fprint.device.setusername' "$policy" \
    && ! grep -Eq 'action\.id === "net\.reactivated\.fprint\.device\.(enroll|verify)"' "$policy" \
-   && grep -Fq '49-qos-greeter-fingerprint.rules' "$container"; then
+   && grep -Fq '49-tilo-greeter-fingerprint.rules' "$container"; then
   ok 'image grants only fprintd account selection to the greeter service'
 else
   bad 'greeter fprintd policy is missing, broad, or absent from the image'

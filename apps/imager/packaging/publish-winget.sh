@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit the generated qOS.Imager manifest to Microsoft's public WinGet index.
+# Submit the generated Tilo.Imager manifest to Microsoft's public WinGet index.
 set -euo pipefail
 
 : "${GITHUB_REF_NAME:?missing release tag}"
@@ -86,26 +86,26 @@ for _ in $(seq 1 6); do
 done
 [ -d "$work/repo/.git" ] || { printf 'GitHub fork did not become ready\n' >&2; exit 1; }
 
-branch="qos-imager-${version}"
+branch="tilo-imager-${version}"
 git -C "$work/repo" switch -c "$branch"
-destination="$work/repo/manifests/q/qOS/Imager/$version"
-[ ! -e "$destination" ] || { printf 'WinGet already contains qOS.Imager %s\n' "$version"; exit 0; }
+destination="$work/repo/manifests/q/Tilo/Imager/$version"
+[ ! -e "$destination" ] || { printf 'WinGet already contains Tilo.Imager %s\n' "$version"; exit 0; }
 mkdir -p "$destination"
 cp "$manifest_source"/*.yaml "$destination/"
-git -C "$work/repo" config user.name "qOS release automation"
-git -C "$work/repo" config user.email "release-bot@qos.dev"
+git -C "$work/repo" config user.name "Tilo release automation"
+git -C "$work/repo" config user.email "release-bot@tilo.dev"
 git -C "$work/repo" add "$destination"
-git -C "$work/repo" commit -m "New version: qOS.Imager version $version"
+git -C "$work/repo" commit -m "New version: Tilo.Imager version $version"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git -C "$work/repo" push -f origin "$branch"
 
 payload="$(python3 - "$WINGET_GITHUB_USER" "$branch" "$version" <<'PY'
 import json, sys
 user, branch, version = sys.argv[1:]
 print(json.dumps({
-    "title": f"New version: qOS.Imager version {version}",
+    "title": f"New version: Tilo.Imager version {version}",
     "head": f"{user}:{branch}",
     "base": "master",
-    "body": "Automated submission from the signed qOS Imager release pipeline.",
+    "body": "Automated submission from the signed Tilo Imager release pipeline.",
 }))
 PY
 )"

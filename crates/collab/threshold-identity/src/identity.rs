@@ -176,7 +176,7 @@ impl ThresholdIdentity {
             .saturating_add(key_package.len())
             .saturating_add(public_package.len());
         let mut out = Zeroizing::new(Vec::with_capacity(capacity));
-        out.extend_from_slice(b"QOSFRS2\0");
+        out.extend_from_slice(b"TLOFRS2\0");
         out.extend_from_slice(&key_len.to_be_bytes());
         out.extend_from_slice(&public_len.to_be_bytes());
         out.extend_from_slice(&key_package);
@@ -194,7 +194,7 @@ impl ThresholdIdentity {
     /// Returns an error when the envelope is malformed, oversized, internally
     /// inconsistent, or does not describe a valid threshold participant.
     pub fn from_device_secret(blob: &[u8], total_shares: u16) -> Result<Self, ThresholdError> {
-        if blob.len() < 16 || blob.get(..8) != Some(b"QOSFRS2\0") {
+        if blob.len() < 16 || blob.get(..8) != Some(b"TLOFRS2\0") {
             return Err(ThresholdError::FrostInternal(
                 "invalid device-share envelope".to_string(),
             ));

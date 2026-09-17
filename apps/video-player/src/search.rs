@@ -4,7 +4,7 @@
 //! therefore goes through the same fresh action door as a click or an agent,
 //! rather than retaining a closure over a previously-opened file.
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,

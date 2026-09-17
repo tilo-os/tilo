@@ -11,7 +11,7 @@ kargs = [
   # framebuffer console so a screendump still shows the boot.
   "console=tty0",
   "console=ttyS0,115200",
-  # Keep the local display on the UKI's signed qOS splash. Fatal boot errors
+  # Keep the local display on the UKI's signed Tilo splash. Fatal boot errors
   # still replace it; the serial console remains complete for diagnostics.
   "quiet",
   "splash",

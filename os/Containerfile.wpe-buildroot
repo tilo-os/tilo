@@ -13,11 +13,11 @@ RUN dnf install -y 'dnf5-command(builddep)' \
       meson ninja-build gperf unifdef libgbm-devel curl xz \
       wayland-devel wayland-protocols-devel libepoxy-devel \
       libinput-devel systemd-devel \
- && install -d -m 0755 /usr/lib/qos \
+ && install -d -m 0755 /usr/lib/tilo \
  && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
-      | LC_ALL=C sort > /usr/lib/qos/wpe-buildroot-packages.txt \
- && uname -m > /usr/lib/qos/wpe-buildroot-arch \
- && test -s /usr/lib/qos/wpe-buildroot-packages.txt \
+      | LC_ALL=C sort > /usr/lib/tilo/wpe-buildroot-packages.txt \
+ && uname -m > /usr/lib/tilo/wpe-buildroot-arch \
+ && test -s /usr/lib/tilo/wpe-buildroot-packages.txt \
  && dnf clean all \
  && find /etc/yum.repos.d -type f -delete \
  && rm -rf /var/cache/dnf /var/cache/libdnf5

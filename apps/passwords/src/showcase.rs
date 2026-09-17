@@ -1600,9 +1600,9 @@ impl PasswordsSurface {
                     if path
                         .extension()
                         .and_then(|v| v.to_str())
-                        .is_none_or(|ext| !ext.eq_ignore_ascii_case("qospw"))
+                        .is_none_or(|ext| !ext.eq_ignore_ascii_case("tilopw"))
                     {
-                        path.set_extension("qospw");
+                        path.set_extension("tilopw");
                     }
                     let passphrase = Zeroizing::new(self.backup_password.value().to_owned());
                     let result = self.write_encrypted_backup(&path, &passphrase);
@@ -3823,22 +3823,22 @@ impl Widget for PasswordsSurface {
         }
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["qos.passwords.operation"]
+        &["tilo.passwords.operation"]
     }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
         let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
         out.extend(self.items.iter().map(actions::item_resource));
         out
     }
     fn invoke_resource_operation(
         &mut self,
-        _kind: ui::qos_actions::OperationKind,
+        _kind: ui::tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if type_id != "qos.passwords.operation" {
+        if type_id != "tilo.passwords.operation" {
             return Ok(false);
         }
         let operation: crate::actions::PasswordOperation = serde_json::from_slice(payload)
@@ -5092,11 +5092,29 @@ impl Widget for PasswordsSurface {
                     .with_children(controls),
             ];
         }
-        Some(
-            AccessNode::new(Role::Window)
-                .with_name("Passwords")
-                .with_children(children),
-        )
+        fn normalize_sibling_keys(node: &mut AccessNode, path: &str) {
+            if node.children.iter().any(|child| child.key.is_some()) {
+                for (index, child) in node.children.iter_mut().enumerate() {
+                    if child.key.is_none() {
+                        child.key = Some(ui::a11y::hash_key(&(
+                            path,
+                            child.role,
+                            child.name.as_deref(),
+                            index,
+                        )));
+                    }
+                }
+            }
+            for (index, child) in node.children.iter_mut().enumerate() {
+                normalize_sibling_keys(child, &format!("{path}/{index}"));
+            }
+        }
+
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("Passwords")
+            .with_children(children);
+        normalize_sibling_keys(&mut root, "passwords");
+        Some(root)
     }
     fn perform_semantic_action(
         &mut self,
@@ -5439,7 +5457,7 @@ mod tests {
     #[test]
     fn app_access_is_scrollable_revocable_and_assistive_on_a_phone() {
         let root = std::env::temp_dir().join(format!(
-            "qos-passwords-access-ui-{}-{}",
+            "tilo-passwords-access-ui-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5626,7 +5644,7 @@ mod tests {
     #[test]
     fn type_filters_and_favorites_are_real_vault_state() {
         let root = std::env::temp_dir().join(format!(
-            "qos-passwords-favorites-{}-{:?}",
+            "tilo-passwords-favorites-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -5676,7 +5694,7 @@ mod tests {
     #[test]
     fn polished_surface_saves_searches_and_updates_real_store() {
         let root = std::env::temp_dir().join(format!(
-            "qos-passwords-surface-{}-{:?}",
+            "tilo-passwords-surface-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -5742,7 +5760,7 @@ mod tests {
     #[test]
     fn secret_row_has_distinct_copy_and_reveal_targets() {
         let root = std::env::temp_dir().join(format!(
-            "qos-passwords-secret-actions-{}-{:?}",
+            "tilo-passwords-secret-actions-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -5771,7 +5789,7 @@ mod tests {
     #[test]
     fn editing_preserves_app_specific_secret_fields() {
         let root = std::env::temp_dir().join(format!(
-            "qos-passwords-custom-fields-{}-{:?}",
+            "tilo-passwords-custom-fields-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -5873,7 +5891,7 @@ mod tests {
     #[test]
     fn every_delete_path_requires_confirmation_before_mutating_the_vault() {
         let root = std::env::temp_dir().join(format!(
-            "qos-passwords-delete-confirm-{}-{:?}",
+            "tilo-passwords-delete-confirm-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -5904,8 +5922,8 @@ mod tests {
                 .unwrap();
         assert!(
             app.invoke_resource_operation(
-                ui::qos_actions::OperationKind::Effect,
-                "qos.passwords.operation",
+                ui::tilo_actions::OperationKind::Effect,
+                "tilo.passwords.operation",
                 &payload,
                 &doc,
                 &automerge::ROOT,
@@ -5927,10 +5945,12 @@ mod tests {
     #[test]
     fn portal_descriptor_import_previews_conflicts_before_writing() {
         use std::io::Write;
-        let root =
-            std::env::temp_dir().join(format!("qos-passwords-import-store-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "tilo-passwords-import-store-{}",
+            std::process::id()
+        ));
         let csv_path =
-            std::env::temp_dir().join(format!("qos-passwords-import-{}.csv", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-passwords-import-{}.csv", std::process::id()));
         let mut selected = std::fs::File::create(&csv_path).unwrap();
         selected
             .write_all(
@@ -5982,9 +6002,12 @@ mod tests {
 
     #[test]
     fn plaintext_export_requires_acknowledgement_and_round_trips() {
-        let root =
-            std::env::temp_dir().join(format!("qos-passwords-export-store-{}", std::process::id()));
-        let out = std::env::temp_dir().join(format!("qos-passwords-export-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "tilo-passwords-export-store-{}",
+            std::process::id()
+        ));
+        let out =
+            std::env::temp_dir().join(format!("tilo-passwords-export-{}", std::process::id()));
         let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
         app.model = Some(crate::PasswordsModel::open_in(&root));
         app.model
@@ -6019,7 +6042,7 @@ mod tests {
     #[test]
     fn encrypted_backup_and_restore_flow_preserves_complete_items() {
         let base = std::env::temp_dir().join(format!(
-            "qos-passwords-backup-flow-{}-{:?}",
+            "tilo-passwords-backup-flow-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -6044,7 +6067,7 @@ mod tests {
             ui::portal::PortalOutcome::Opened(destination.clone()),
         ));
         app.poll_transfers();
-        let backup_path = destination.with_extension("qospw");
+        let backup_path = destination.with_extension("tilopw");
         assert!(std::fs::metadata(&backup_path).unwrap().len() > 32);
         #[cfg(unix)]
         {
@@ -6064,7 +6087,7 @@ mod tests {
         restored.model = Some(crate::PasswordsModel::open_in(&restored_root));
         restored.restore_portal = Some(ui::portal::inject_open_file_for_test(
             std::fs::File::open(&backup_path).unwrap(),
-            "portable-vault.qospw",
+            "portable-vault.tilopw",
         ));
         restored.poll_transfers();
         assert!(matches!(

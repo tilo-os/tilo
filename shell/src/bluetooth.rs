@@ -6,17 +6,23 @@
 //! nearby device gets to inject keystrokes and read audio.
 //!
 //! That makes it the compositor's job and nobody else's: an application
-//! must not be able to draw a pairing dialog, or answer one. `qos-bluez`
+//! must not be able to draw a pairing dialog, or answer one. `tilo-bluez`
 //! provides the agent object; this module owns it, keeps it registered
 //! for the session's life, and turns each question into something the OS chrome can render and reply to.
 //!
 //! The Settings app can *start* a pairing (`Device1.Pair`), but the prompt that results belongs here.
 
+#[cfg(any(test, target_os = "linux"))]
+use tracing::warn;
+
 use std::sync::{Arc, Mutex};
 
-use qos_bluez::agent::{AgentEvent, AgentRegistration, PairingAgent};
-use qos_bluez::{BluezClient, PairingReply, PairingReplySender, PairingRequest};
-use tracing::{info, warn};
+#[cfg(target_os = "linux")]
+use tilo_bluez::BluezClient;
+#[cfg(target_os = "linux")]
+use tilo_bluez::agent::{AgentEvent, AgentRegistration, PairingAgent};
+use tilo_bluez::{PairingReply, PairingReplySender, PairingRequest};
+use tracing::info;
 
 /// The prompt currently on screen, if any, and the channel that answers it.
 ///
@@ -57,11 +63,12 @@ impl PairingPromptHandle {
 
     /// Post a question. Any prompt already up is refused rather than
     /// silently replaced — dropping its reply channel is read as a decline by the agent, so an abandoned pairing fails closed.
+    #[cfg(any(test, target_os = "linux"))]
     fn post(&self, request: PairingRequest, reply: PairingReplySender) {
         if let Ok(mut s) = self.inner.lock() {
             if let Some(prev) = s.current.take() {
                 warn!(
-                    target: "qos::bluetooth",
+                    target: "tilo::bluetooth",
                     device = %prev.request.device_path,
                     "a second pairing question arrived; declining the first"
                 );
@@ -80,7 +87,7 @@ impl PairingPromptHandle {
             return false;
         };
         info!(
-            target: "qos::bluetooth",
+            target: "tilo::bluetooth",
             device = %pending.request.device_path,
             accepted = !matches!(reply, PairingReply::Reject),
             "pairing prompt answered"
@@ -105,6 +112,7 @@ impl PairingPromptHandle {
 }
 
 /// A registered agent plus the task pumping its events. Dropping this stops the pump; call [`Self::shutdown`] to also unregister from `BlueZ`.
+#[cfg(target_os = "linux")]
 pub struct PairingService {
     registration: AgentRegistration,
     pump: tokio::task::JoinHandle<()>,
@@ -112,6 +120,7 @@ pub struct PairingService {
     handle: PairingPromptHandle,
 }
 
+#[cfg(target_os = "linux")]
 impl PairingService {
     /// Connect to `BlueZ`, register the pairing agent, and start feeding
     /// prompts to `handle`.
@@ -130,13 +139,13 @@ impl PairingService {
             .map_err(|e| format!("cannot reach org.bluez: {e}"))?;
         // Prime the name cache so the first prompt can title itself without calling back into a daemon blocked waiting on us.
         if let Err(e) = client.devices().await {
-            warn!(target: "qos::bluetooth", error = %e, "could not preload device names");
+            warn!(target: "tilo::bluetooth", error = %e, "could not preload device names");
         }
         let (agent, mut events) = PairingAgent::new(client.names());
         let registration = AgentRegistration::register(client.connection(), agent)
             .await
             .map_err(|e| format!("bluetoothd refused the pairing agent: {e}"))?;
-        info!(target: "qos::bluetooth", path = registration.path(), "pairing agent registered");
+        info!(target: "tilo::bluetooth", path = registration.path(), "pairing agent registered");
 
         let pump_handle = handle.clone();
         let pump = tokio::spawn(async move {
@@ -172,12 +181,13 @@ impl PairingService {
         self.handle.dismiss();
         self.pump.abort();
         if let Err(e) = self.registration.unregister().await {
-            warn!(target: "qos::bluetooth", error = %e, "could not unregister the pairing agent");
+            warn!(target: "tilo::bluetooth", error = %e, "could not unregister the pairing agent");
         }
     }
 }
 
 /// Convenience for the compositor boot path: start the service on `rt`, logging rather than failing when there's no Bluetooth on this machine.
+#[cfg(target_os = "linux")]
 pub fn spawn_on(
     rt: &tokio::runtime::Handle,
     handle: PairingPromptHandle,
@@ -186,7 +196,7 @@ pub fn spawn_on(
         match PairingService::start(handle).await {
             Ok(svc) => Some(svc),
             Err(e) => {
-                info!(target: "qos::bluetooth", "no pairing agent this session: {e}");
+                info!(target: "tilo::bluetooth", "no pairing agent this session: {e}");
                 None
             }
         }
@@ -196,7 +206,7 @@ pub fn spawn_on(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_bluez::PairingPrompt;
+    use tilo_bluez::PairingPrompt;
 
     fn request(name: &str) -> PairingRequest {
         PairingRequest {

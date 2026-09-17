@@ -42,8 +42,8 @@ pub const DEFAULT_BLANK_MINUTES: u32 = 10;
 /// display effectively never blank while still accepting every UI choice.
 pub const MAX_BLANK_MINUTES: u32 = 30;
 
-/// Resolve the shared settings path (`$XDG_CONFIG_HOME/qos/settings.json`,
-/// falling back to `~/.config/qos/settings.json`) — the same file the
+/// Resolve the shared settings path (`$XDG_CONFIG_HOME/tilo/settings.json`,
+/// falling back to `~/.config/tilo/settings.json`) — the same file the
 /// Settings app and the rest of the compositor read.
 pub fn settings_path() -> Option<PathBuf> {
     settings_store::settings_path()

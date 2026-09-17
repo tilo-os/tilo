@@ -452,14 +452,20 @@ pub struct PhotosApp {
     compact_more_hits: Vec<(Hit, Rect)>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
-    pending_resource_open: Option<(qos_actions::InvocationId, String)>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
+    pending_resource_open: Option<(tilo_actions::InvocationId, String)>,
     canvas_state: CanvasState,
     search_provider: crate::search::PhotosSearchProvider,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
     /// An unchanged `sync` must not rebuild a full-library index.
     search_heads: Vec<automerge::ChangeHash>,
+    /// A rejected index generation never erases the last-good provider. This
+    /// bounded diagnostic is visible and exported until a later refresh
+    /// succeeds.
+    search_refresh_error: Option<String>,
+    #[cfg(test)]
+    force_search_refresh_error: bool,
     /// The library is deliberately a bounded presentation slice.  The CRDT
     /// can hold considerably more entries than a window can paint or an
     /// assistive technology should receive in one update.
@@ -605,6 +611,9 @@ impl PhotosApp {
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
             search_heads: Vec::new(),
+            search_refresh_error: None,
+            #[cfg(test)]
+            force_search_refresh_error: false,
             library_items: Vec::new(),
             library_total: 0,
             library_offset: 0,
@@ -1000,8 +1009,8 @@ impl PhotosApp {
             doc,
             crate::actions::PHOTOS_ACTION_TYPE,
             &crate::actions::PhotosAction::set(&next),
-            qos_actions::ActionContext::for_action(
-                "org.qos.Photos",
+            tilo_actions::ActionContext::for_action(
+                "org.tilo.Photos",
                 "Photos",
                 &crate::actions::PhotosAction::set(&next),
             ),
@@ -1021,7 +1030,7 @@ impl PhotosApp {
             doc,
             crate::actions::PHOTOS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Photos", "Photos", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
         );
     }
 
@@ -1029,7 +1038,7 @@ impl PhotosApp {
         // A local `untitled-1` counter collides when two offline replicas
         // create their first album. Mint the durable identity independently
         // of its editable name so concurrent creations remain separate.
-        let id = format!("photos.album:{}", qos_actions::InvocationId::new().0);
+        let id = format!("photos.album:{}", tilo_actions::InvocationId::new().0);
         self.album_editor = true;
         self.album_editor_creating = true;
         self.album_editor_id = Some(id);
@@ -1539,16 +1548,13 @@ impl PhotosApp {
             crate::actions::PhotosOperation::ShareReference { resource_id } => {
                 let exists = PhotosDoc::image(doc)
                     .is_some_and(|image| crate::actions::resource_id(&image) == resource_id)
-                    || PhotosDoc::library(doc)
-                        .photos
-                        .iter()
-                        .any(|photo| photo.id == resource_id);
+                    || PhotosDoc::photo(doc, &resource_id).is_some();
                 if exists {
                     // This is deliberately a local clipboard handoff, not an
                     // invented upload or recipient-delivery success. The
                     // address identifies either the open editor image or an
                     // unselected, addressable library card.
-                    ui::clipboard_copy(&format!("qos://resource/{resource_id}"));
+                    ui::clipboard_copy(&format!("tilo://resource/{resource_id}"));
                     self.notice = Some(tr("photos-share-copied"));
                 } else {
                     let error = tr("photos-share-failed");
@@ -1561,8 +1567,13 @@ impl PhotosApp {
                     self.save_to(path.as_deref().unwrap_or(&Self::suggested_save_path(&open)));
                 }
             }
-            crate::actions::PhotosOperation::View
-            | crate::actions::PhotosOperation::ViewAlbum { .. }
+            crate::actions::PhotosOperation::View => {
+                self.library_mode = false;
+                self.album_editor = false;
+                self.metadata_editor = false;
+            }
+            crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
             | crate::actions::PhotosOperation::ViewPerson { .. }
             | crate::actions::PhotosOperation::ViewTag { .. }
@@ -1577,7 +1588,7 @@ impl PhotosApp {
     /// photographs if a collaborator removed the album after search indexed
     /// it.
     fn view_album(&mut self, doc: &AutoCommit, album_id: &str) -> Result<(), String> {
-        if PhotosDoc::library(doc).album(album_id).is_none() {
+        if PhotosDoc::album(doc, album_id).is_none() {
             return Err("that album is no longer in the library".to_owned());
         }
         self.library_mode = true;
@@ -1716,12 +1727,7 @@ impl PhotosApp {
                     self.perform_effect(crate::actions::PhotosOperation::Open { path: None }, doc);
             }
             Hit::Library => {
-                self.library_mode = true;
-                self.active_album = None;
-                self.active_folder = None;
-                self.active_person = None;
-                self.active_tag = None;
-                self.notice = None;
+                let _ = self.perform_effect(crate::actions::PhotosOperation::ViewLibrary, doc);
             }
             Hit::RotateLeft => self.commit_edits(doc, edits.rotated_left()),
             Hit::RotateRight => self.commit_edits(doc, edits.rotated_right()),
@@ -2393,14 +2399,14 @@ impl PhotosApp {
                 self.open_path(doc, &path);
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_result = Some(if self.open_image_path().is_some() {
-                        qos_actions::InvocationUpdate::Succeeded {
+                        tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         }
                     } else {
-                        qos_actions::InvocationUpdate::Failed {
+                        tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "photos.open_failed".into(),
                                 message: tr("photos-open-failed"),
                                 details: None,
@@ -2414,7 +2420,7 @@ impl PhotosApp {
             Ok(ui::portal::PortalOutcome::Cancelled) => {
                 self.picker = None;
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
                         message: Some("photo selection was cancelled".into()),
                     });
@@ -2424,9 +2430,9 @@ impl PhotosApp {
                 self.picker = None;
                 self.notice = Some(format!("{}: {message}", tr("photos-open-failed")));
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "photos.portal_failed".into(),
                             message,
                             details: None,
@@ -2439,9 +2445,9 @@ impl PhotosApp {
                 self.picker = None;
                 self.notice = Some("The system file picker stopped unexpectedly".into());
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "photos.portal_disconnected".into(),
                             message: "the system file picker stopped unexpectedly".into(),
                             details: None,
@@ -2466,7 +2472,13 @@ impl PhotosApp {
     /// The status line: the file, its edited size, and any notice.
     fn status_text(&self, doc: &AutoCommit) -> String {
         let Some(open) = PhotosDoc::image(doc) else {
-            return self.notice.clone().unwrap_or_default();
+            return self
+                .notice
+                .iter()
+                .chain(self.search_refresh_error.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("  ·  ");
         };
         let edits = PhotosDoc::edits(doc);
         let (w, h) = open.edited_size(&edits);
@@ -2479,7 +2491,22 @@ impl PhotosApp {
             s.push_str("  ·  ");
             s.push_str(n);
         }
+        if let Some(error) = &self.search_refresh_error {
+            s.push_str("  ·  ");
+            s.push_str(error);
+        }
         s
+    }
+
+    fn refresh_search_provider(
+        &self,
+        doc: &AutoCommit,
+    ) -> Result<(), ui::search::SearchCatalogError> {
+        #[cfg(test)]
+        if self.force_search_refresh_error {
+            return Err(ui::search::SearchCatalogError::NonCanonicalResult);
+        }
+        self.search_provider.sync(doc)
     }
 
     fn empty_state_text(&self) -> (String, String) {
@@ -2790,7 +2817,14 @@ impl PhotosApp {
             self.draw_album_editor(scene, transform, text_renderer, theme, presence);
             return;
         }
-        let bounds = self.canvas_rect;
+        let mut bounds = self.canvas_rect;
+        // On a desktop the details sheet is a persistent side panel, not a
+        // transient popover. Give it an actual layout lane so filters, cards,
+        // and destructive controls never continue underneath an opaque sheet
+        // and emerge as clipped half-targets at its edge.
+        if self.metadata_editor && theme.text_scale <= 1.25 && bounds.width() >= 620.0 {
+            bounds.x1 = (bounds.x1 - 432.0).max(bounds.x0);
+        }
         // Enlarged text needs its own density rule. Five desktop cards leave
         // only a few words of metadata per card at 200%, which makes labels
         // overlap their independent destructive controls.
@@ -4630,19 +4664,25 @@ impl Widget for PhotosApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
         match operation {
+            crate::actions::PhotosOperation::View => {
+                self.library_mode = false;
+                self.album_editor = false;
+                self.metadata_editor = false;
+            }
+            crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
             crate::actions::PhotosOperation::ViewAlbum { album_id } => {
                 self.view_album(doc, &album_id)?;
             }
@@ -4673,8 +4713,8 @@ impl Widget for PhotosApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -4695,21 +4735,21 @@ impl Widget for PhotosApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn start_resource_operation_with_document(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -4732,12 +4772,12 @@ impl Widget for PhotosApp {
                 doc,
                 crate::actions::PHOTOS_ACTION_TYPE,
                 &action,
-                qos_actions::ActionContext::for_action("org.qos.Photos", "Photos", &action),
+                tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
             )
             .map_err(|error| error.to_string())?;
         self.notice = Some("Imported Camera photo".to_owned());
         Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            qos_actions::ActionOutput {
+            tilo_actions::ActionOutput {
                 value: Some(serde_json::Value::String(id.clone())),
                 resources: vec![id],
             },
@@ -4746,11 +4786,11 @@ impl Widget for PhotosApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .pending_resource_open
@@ -4758,7 +4798,7 @@ impl Widget for PhotosApp {
                 .is_some_and(|(pending, _)| *pending == invocation)
         {
             self.pending_resource_open = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("photo opening was cancelled".into()),
             });
@@ -4769,7 +4809,7 @@ impl Widget for PhotosApp {
             // caller has cancelled the action.
             self.picker = None;
             self.resource_invocation = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("photo selection was cancelled".into()),
             });
@@ -4794,14 +4834,14 @@ impl Widget for PhotosApp {
         if let Some((invocation, path)) = self.pending_resource_open.take() {
             self.open_path(doc, &path);
             self.resource_result = Some(if self.open_image_path().is_some() {
-                qos_actions::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             } else {
-                qos_actions::InvocationUpdate::Failed {
+                tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "photos.open_failed".into(),
                         message: tr("photos-open-failed"),
                         details: None,
@@ -4821,14 +4861,17 @@ impl Widget for PhotosApp {
         for (hit, button) in &mut self.buttons {
             button.set_enabled(Self::enabled(*hit, has_image, edited));
         }
-        self.status = self.status_text(doc);
         let heads = doc.get_heads();
         let document_changed = heads != self.search_heads;
         if document_changed {
-            self.search_provider = crate::search::PhotosSearchProvider::new(doc);
-            self.search_heads = heads;
+            self.search_refresh_error = match self.refresh_search_provider(doc) {
+                Ok(()) => None,
+                Err(error) => Some(format!("Photo search kept its previous index: {error}")),
+            };
             self.thumbnail_unavailable.clear();
+            self.search_heads = heads;
         }
+        self.status = self.status_text(doc);
         let library = PhotosDoc::library(doc);
         let membership = self.active_album.as_ref().and_then(|id| {
             library
@@ -5540,9 +5583,26 @@ impl Widget for PhotosApp {
     /// running as its own process offer the identical surface at the identical
     /// addresses. Without this the tree existed but only a caller already
     /// inside this process could reach it.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        use qos_actions::ResourceProvider;
-        crate::actions::PhotosResources.resources(doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        use tilo_actions::ResourceProvider;
+        let mut resources = crate::actions::PhotosResources.resources(doc);
+        if let Some(error) = &self.search_refresh_error {
+            resources.push(crate::actions::search_status_resource(error));
+        }
+        resources
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        use tilo_actions::ResourceProvider;
+        if id == "photos.search-status" {
+            return self
+                .search_refresh_error
+                .as_deref()
+                .map(crate::actions::search_status_resource);
+        }
+        self.search_provider
+            .resource(id)
+            .or_else(|| crate::actions::PhotosResources.resource(doc, id))
     }
 
     /// Keep the palette projection derived from the same fresh document
@@ -5719,9 +5779,9 @@ mod tests {
     use crate::model::{Album, LibraryPhoto};
     use crate::shots_pattern;
     use automerge::ROOT;
-    use qos_actions::ResourceProvider;
+    use tilo_actions::ResourceProvider;
 
-    fn has_resource_id(resource: &qos_actions::Resource, id: &str) -> bool {
+    fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
         resource.id.0 == id
             || resource
                 .children
@@ -5744,7 +5804,7 @@ mod tests {
         });
         PhotosDoc::set_library(&mut doc, &library);
         let before = PhotosDoc::library(&doc);
-        let payload = qos_actions::EncodedAction::encode_operation(
+        let payload = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ViewAlbum {
                 album_id: "photos.album:trip".into(),
@@ -5754,7 +5814,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 PHOTOS_OPERATION_TYPE,
                 &payload.payload,
                 &doc,
@@ -5770,7 +5830,7 @@ mod tests {
             "navigation must not alter membership"
         );
 
-        let stale = qos_actions::EncodedAction::encode_operation(
+        let stale = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ViewAlbum {
                 album_id: "photos.album:gone".into(),
@@ -5780,7 +5840,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 PHOTOS_OPERATION_TYPE,
                 &stale.payload,
                 &doc,
@@ -5796,7 +5856,7 @@ mod tests {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let payload = qos_actions::EncodedAction::encode_operation(
+        let payload = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ShareReference {
                 resource_id: "photos.photo:missing".into(),
@@ -5806,7 +5866,7 @@ mod tests {
 
         let error = Widget::invoke_resource_operation(
             &mut app,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             PHOTOS_OPERATION_TYPE,
             &payload.payload,
             &doc,
@@ -6233,7 +6293,7 @@ mod tests {
     fn cancelling_a_portal_invocation_is_terminal_and_drops_late_results() {
         let mut app = PhotosApp::new();
         let doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let (tx, rx) = std::sync::mpsc::channel();
         app.picker = Some(rx);
         app.resource_invocation = Some(invocation);
@@ -6242,7 +6302,7 @@ mod tests {
             .expect("cancellation must resolve the accepted invocation");
         assert!(matches!(
             update,
-            qos_actions::InvocationUpdate::Cancelled { invocation: id, .. } if id == invocation
+            tilo_actions::InvocationUpdate::Cancelled { invocation: id, .. } if id == invocation
         ));
         assert!(app.picker.is_none());
         assert!(app.resource_invocation.is_none());
@@ -6252,11 +6312,11 @@ mod tests {
             "a late portal completion must have no receiver after cancellation"
         );
 
-        let direct = qos_actions::InvocationId::new();
+        let direct = tilo_actions::InvocationId::new();
         app.pending_resource_open = Some((direct, "/late-direct.png".into()));
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, direct, true, &doc, &ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { invocation, .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { invocation, .. })
                 if invocation == direct
         ));
         assert!(app.pending_resource_open.is_none());
@@ -6422,5 +6482,44 @@ mod tests {
                 && rect.y0 >= app.canvas_rect.y0
                 && rect.y1 <= app.canvas_rect.y1
         }));
+    }
+
+    #[test]
+    fn rejected_search_refresh_keeps_last_good_index_and_exports_diagnostic() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
+        let first_id = first.id.clone();
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first],
+                albums: Vec::new(),
+            },
+        );
+        app.sync(&mut doc, &ROOT);
+        assert!(app.search_provider.resource(&first_id).is_some());
+
+        let mut library = PhotosDoc::library(&doc);
+        let second = LibraryPhoto::from_image(OpenImage::from_path("/photos/second.png", 20, 10));
+        let second_id = second.id.clone();
+        library.photos.push(second);
+        PhotosDoc::set_library(&mut doc, &library);
+        app.force_search_refresh_error = true;
+        app.sync(&mut doc, &ROOT);
+
+        assert!(app.search_provider.resource(&first_id).is_some());
+        assert!(app.search_provider.resource(&second_id).is_none());
+        assert!(app.status.contains("kept its previous index"));
+        let diagnostic = Widget::resource(&app, &doc, "photos.search-status")
+            .expect("rejected refresh is an exact addressable resource");
+        assert_eq!(diagnostic.kind, "photos.diagnostic");
+        assert!(diagnostic.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            Widget::resources(&app, &doc)
+                .iter()
+                .any(|resource| resource.id.0 == "photos.search-status")
+        );
     }
 }

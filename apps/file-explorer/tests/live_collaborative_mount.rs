@@ -20,7 +20,7 @@ use iroh::endpoint::{Endpoint, presets};
 async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendants() {
     let fuse = match std::fs::metadata("/dev/fuse") {
         Ok(fuse) => fuse,
-        Err(error) if std::env::var_os("QOS_FS_FUSE_REQUIRED").is_none() => {
+        Err(error) if std::env::var_os("TILO_FS_FUSE_REQUIRED").is_none() => {
             eprintln!("skipping: requires /dev/fuse + fusermount3 ({error})");
             return;
         }
@@ -74,7 +74,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     let quick_fs =
         QuickFS::new(namespace, hydrator, heuristics).with_availability(availability.clone());
     let mut config = Config::default();
-    config.mount_options = vec![MountOption::FSName("qos_files_live_test".into())];
+    config.mount_options = vec![MountOption::FSName("tilo_files_live_test".into())];
     let session = fuser::spawn_mount2(quick_fs, &mount, &config).unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -89,8 +89,8 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
         tokio::task::yield_now().await;
     }
 
-    let previous_roots = std::env::var_os("QOS_WORKSPACE_ROOTS");
-    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &mount) };
+    let previous_roots = std::env::var_os("TILO_WORKSPACE_ROOTS");
+    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &mount) };
     let mut files = FileExplorerWidget::with_persistence(None, None);
     files.navigate(mount.clone());
     assert_eq!(files.entries().len(), expected.len() + 1);
@@ -203,8 +203,8 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
 
     drop(files);
     match previous_roots {
-        Some(value) => unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", value) },
-        None => unsafe { std::env::remove_var("QOS_WORKSPACE_ROOTS") },
+        Some(value) => unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", value) },
+        None => unsafe { std::env::remove_var("TILO_WORKSPACE_ROOTS") },
     }
     session.umount_and_join().unwrap();
     shutdown_endpoint.close().await;

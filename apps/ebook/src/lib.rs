@@ -1,4 +1,4 @@
-//! Books — qOS native EPUB reader (CRDT-native, built on the `ui` toolkit).
+//! Books — Tilo native EPUB reader (CRDT-native, built on the `ui` toolkit).
 //!
 //! Layered so each piece is testable in isolation: [`model`] (pure data +
 //! the shared annotation model reused by the PDF reader/word processor),

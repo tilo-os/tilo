@@ -1,4 +1,4 @@
-//! Semantic, capture-free adapter between Chat calls and qOS realtime
+//! Semantic, capture-free adapter between Chat calls and Tilo realtime
 //! continuity. Capture handles, peer tickets, device ids, credentials, and
 //! voice membership never enter this projection.
 
@@ -10,7 +10,7 @@ use crate::doc::ChatDoc;
 use crate::model::ChannelKind;
 
 pub const CHAT_CONTINUATION_SCHEMA: u16 = 1;
-const CHAT_REALTIME_PROVIDER: &str = "qos.chat";
+const CHAT_REALTIME_PROVIDER: &str = "tilo.chat";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,7 +62,7 @@ impl ChatRealtimeContinuity {
         self.next_request = self.next_request.saturating_add(1);
         ui::collaboration::CollabRequest::RealtimeCommand {
             request_id: self.next_request,
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             command,
         }
     }

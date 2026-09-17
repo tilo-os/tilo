@@ -129,6 +129,7 @@ fn click_at(host: &mut ShellOverlayHost, p: vello::kurbo::Point) {
 fn host_with_portal(
     prompts: PromptQueueHandle,
     pickers: FilePickerQueue,
+    picker_root: &std::path::Path,
 ) -> (ShellOverlayHost, GrantStoreHandle, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(WS);
@@ -140,8 +141,18 @@ fn host_with_portal(
         let owner = shell::shell::state::local_user_id();
         t.adopt_ownerless_workspaces(&owner);
     }
-    let (mut host, _chrome) =
-        shell::shell::build_nirios_overlay_host_with_handle(handle.clone(), false);
+    let mut inputs =
+        shell::shell::hosted_inputs::HostedTileInputs::fixture().expect("Files fixture");
+    inputs.picker_scope = Some(portal::PickerScope {
+        initial_dir: picker_root.to_path_buf(),
+        roots: vec![picker_root.to_path_buf()],
+    });
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_inputs(
+        handle.clone(),
+        false,
+        ui::record::RecordStore::in_memory(),
+        inputs,
+    );
     layout(&mut host, VIEW_W, VIEW_H);
     host.set_portal_queues(prompts, pickers);
     (host, GrantStoreHandle::new(handle), id)
@@ -171,19 +182,10 @@ fn layout(host: &mut ShellOverlayHost, w: f32, h: f32) {
     host.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
 }
 
-/// `PickerScope::for_user` roots the dialog at the user's own directories
-/// and refuses to navigate outside them — that gating is the thing under
-/// test, so the scratch directory goes where a real pick happens.
+/// The host explicitly scopes the real dialog to this isolated user directory.
+/// The requesting app receives neither the root nor a grant until the user picks.
 fn user_dir() -> tempfile::TempDir {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .expect("HOME must be set: it is what the picker scopes the dialog to");
-    assert!(
-        home.is_dir(),
-        "HOME ({}) must exist, or the dialog has no root to open in",
-        home.display()
-    );
-    tempfile::TempDir::new_in(&home).expect("scratch dir under HOME")
+    tempfile::tempdir().expect("isolated picker root")
 }
 
 async fn portal_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'static>) {
@@ -202,7 +204,7 @@ async fn portal_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'sta
         .expect("p2p connection pair");
     let proxy = Proxy::new(
         &client,
-        "org.freedesktop.impl.portal.desktop.qos",
+        "org.freedesktop.impl.portal.desktop.tilo",
         OBJECT_PATH,
         "org.freedesktop.impl.portal.FileChooser",
     )
@@ -314,7 +316,7 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
 
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
     let pickers = FilePickerQueue::new();
-    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone());
+    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
     let (_srv, _cli, proxy) = portal_proxy(context(grants.clone(), prompts, pickers, ws)).await;
 
     // The app's request. Parks on the dialog, so it runs concurrently.
@@ -421,7 +423,7 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
 
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
     let pickers = FilePickerQueue::new();
-    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone());
+    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
 
     // Prove the starting condition rather than assuming it: nothing in
     // this workspace grants the app anything under `fresh` yet.
@@ -529,9 +531,10 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_the_dialog_answers_the_app_instead_of_hanging_it() {
+    let dir = user_dir();
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
     let pickers = FilePickerQueue::new();
-    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone());
+    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
     let (_srv, _cli, proxy) = portal_proxy(context(grants, prompts, pickers, ws)).await;
 
     let call = tokio::spawn(async move {
@@ -574,9 +577,10 @@ async fn cancelling_the_dialog_answers_the_app_instead_of_hanging_it() {
 /// than a cancel the app can retry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_request_while_a_dialog_is_up_is_answered_not_stacked() {
+    let dir = user_dir();
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
     let pickers = FilePickerQueue::new();
-    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone());
+    let (mut host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
     let ctx = context(grants, prompts, pickers.clone(), ws);
     let (_srv, _cli, proxy) = portal_proxy(ctx).await;
     let proxy = Arc::new(proxy);

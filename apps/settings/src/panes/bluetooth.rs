@@ -4,12 +4,12 @@
 
 use crate::widgets::{El, caption, card_with_action, rows, setting_row, value_row};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
-use qos_bluez::{DeviceInfo, PairOutcome};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use taffy::{NodeId, TaffyTree};
+use tilo_bluez::{DeviceInfo, PairOutcome};
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
 use vello::Scene;

@@ -21,7 +21,7 @@ pub struct VersionMeta {
     /// [`commit_stamped`] for a real one; consumers must render an unstamped peer's change as "time unknown" rather than as 1970.
     pub time_ms: i64,
     pub change_hash: String,
-    /// Optional Automerge commit message. qOS action dispatch uses this for
+    /// Optional Automerge commit message. Tilo action dispatch uses this for
     /// durable semantic provenance; ordinary app commits may use it freely.
     pub message: Option<String>,
 }
@@ -57,7 +57,7 @@ pub fn commit_stamped_with_message(
     commit_stamped_at_with_message(doc, secs, message)
 }
 
-fn commit_stamped_at_with_message(
+pub fn commit_stamped_at_with_message(
     doc: &mut AutoCommit,
     unix_secs: i64,
     message: Option<String>,

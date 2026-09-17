@@ -263,7 +263,7 @@ pub fn dark_overlays() -> OverlayTiers {
 /// visibility, because a veneer's perceptual step depends on where the ground
 /// sits on the lightness curve. These were solved for: black at 15 / 31 / 60
 /// reproduces the dark tiers' ΔL* (≈ 5 / 10.5 / 21) to within half a unit on
-/// the ground *and* card colour of every light theme qOS ships — see
+/// the ground *and* card colour of every light theme Tilo ships — see
 /// `light_overlays_match_the_dark_perceptual_step`.
 pub fn light_overlays() -> OverlayTiers {
     let k = |a: u8| Color::from_rgba8(0, 0, 0, a);
@@ -924,10 +924,10 @@ impl Colors {
         })
     }
 
-    /// The original qOS look — the slate-and-indigo "nirios concept"
+    /// The original Tilo look — the slate-and-indigo "tilo concept"
     /// palette, preserved verbatim as a selectable preset. Every value here
     /// is Tailwind ground truth; see the tests for the mapping.
-    pub fn qos_blue() -> Self {
+    pub fn tilo_blue() -> Self {
         Self {
             neutral: ColorRamp {
                 stops: [
@@ -999,7 +999,7 @@ impl Colors {
 mod tests {
     //! The **new graphite default** ([`Colors::dark`]) pins its identity
     //! surfaces/text/accent and asserts WCAG AA; the **preserved concept
-    //! palette** ([`Colors::qos_blue`]) pins Tailwind ground truth
+    //! palette** ([`Colors::tilo_blue`]) pins Tailwind ground truth
     //! byte-for-byte.
     use super::*;
     use crate::a11y::contrast_ratio;
@@ -1099,15 +1099,15 @@ mod tests {
         for (name, c) in [
             ("dark", Colors::dark()),
             ("light", Colors::light()),
-            ("qos_blue", Colors::qos_blue()),
+            ("tilo_blue", Colors::tilo_blue()),
         ] {
             assert_eq!(c.surfaces.overlay.a(), 255, "{name} overlay must be opaque");
         }
     }
 
     #[test]
-    fn qos_blue_neutral_ramp_is_tailwind_slate_950_through_50() {
-        let n = &Colors::qos_blue().neutral;
+    fn tilo_blue_neutral_ramp_is_tailwind_slate_950_through_50() {
+        let n = &Colors::tilo_blue().neutral;
         assert_eq!(rgb(n[0]), [2, 6, 23], "slate-950 #020617");
         assert_eq!(rgb(n[1]), [15, 23, 42], "slate-900 #0f172a");
         assert_eq!(rgb(n[2]), [30, 41, 59], "slate-800 #1e293b");
@@ -1122,8 +1122,8 @@ mod tests {
     }
 
     #[test]
-    fn qos_blue_accent_ramp_is_tailwind_indigo_950_through_50() {
-        let a = &Colors::qos_blue().accent;
+    fn tilo_blue_accent_ramp_is_tailwind_indigo_950_through_50() {
+        let a = &Colors::tilo_blue().accent;
         assert_eq!(rgb(a[0]), [30, 27, 75], "indigo-950 #1e1b4b");
         assert_eq!(rgb(a[1]), [49, 46, 129], "indigo-900 #312e81");
         assert_eq!(rgb(a[2]), [55, 48, 163], "indigo-800 #3730a3");
@@ -1138,8 +1138,8 @@ mod tests {
     }
 
     #[test]
-    fn qos_blue_semantic_colors_match_tailwind() {
-        let s = &Colors::qos_blue().semantic;
+    fn tilo_blue_semantic_colors_match_tailwind() {
+        let s = &Colors::tilo_blue().semantic;
         assert_eq!(rgb(s.success), [16, 185, 129], "emerald-500 #10b981");
         assert_eq!(rgb(s.warning), [245, 158, 11], "amber-500   #f59e0b");
         assert_eq!(rgb(s.danger), [239, 68, 68], "red-500     #ef4444");
@@ -1147,8 +1147,8 @@ mod tests {
     }
 
     #[test]
-    fn qos_blue_surfaces_match_concept_layered_palette() {
-        let s = &Colors::qos_blue().surfaces;
+    fn tilo_blue_surfaces_match_concept_layered_palette() {
+        let s = &Colors::tilo_blue().surfaces;
         assert_eq!(rgb(s.base), [15, 23, 42], "slate-900 #0f172a");
         assert_eq!(rgb(s.raised), [30, 41, 59], "slate-800 #1e293b");
         assert_eq!(rgba(s.overlay), [0, 0, 0, 255], "opaque deep menu surface");
@@ -1158,8 +1158,8 @@ mod tests {
     }
 
     #[test]
-    fn qos_blue_text_and_border_tokens_match_concept() {
-        let c = Colors::qos_blue();
+    fn tilo_blue_text_and_border_tokens_match_concept() {
+        let c = Colors::tilo_blue();
         assert_eq!(rgba(c.text_primary), [255, 255, 255, 255], "white");
         assert_eq!(rgb(c.text_dim), [148, 163, 184], "slate-400 #94a3b8");
         assert_eq!(rgb(c.border_standard), [51, 65, 85], "slate-700 #334155");

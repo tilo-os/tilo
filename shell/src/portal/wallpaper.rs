@@ -1,17 +1,27 @@
 //! `org.freedesktop.impl.portal.Wallpaper` backend.
+#[cfg(target_os = "linux")]
 use super::desktop_services::WallpaperRequest;
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
+#[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
+#[cfg(target_os = "linux")]
 pub struct WallpaperBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
     dialogs: PortalDialogQueue,
 }
+#[cfg(target_os = "linux")]
 impl WallpaperBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -25,6 +35,7 @@ impl WallpaperBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
     options
         .get(key)
@@ -50,6 +61,7 @@ fn valid_uri(uri: &str) -> bool {
         && !uri.chars().any(char::is_control)
 }
 #[interface(name = "org.freedesktop.impl.portal.Wallpaper")]
+#[cfg(target_os = "linux")]
 impl WallpaperBackend {
     async fn set_wallpaper_uri(
         &self,
@@ -171,7 +183,7 @@ mod tests {
     #[test]
     fn uri_rejects_path_and_controls() {
         assert!(valid_uri("file:///run/user/1000/doc/token/a.png"));
-        assert!(!valid_uri("document://qos/a.png"));
+        assert!(!valid_uri("document://tilo/a.png"));
         assert!(!valid_uri("/tmp/a.png"));
         assert!(!valid_uri("file:///tmp/a\n.png"));
     }

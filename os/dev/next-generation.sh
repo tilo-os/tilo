@@ -1,17 +1,17 @@
 #!/bin/bash
-# Print the generation number the next qOS image should carry.
+# Print the generation number the next Tilo image should carry.
 #
 #   ./os/dev/next-generation.sh            # next in the published series
 #   ./os/dev/next-generation.sh --current  # the newest already published
 #
 # The generation is what bounded rollback is arithmetic on, so how it is produced
 # is a correctness question rather than a bookkeeping one (see
-# crates/system/qos-rollback/src/generation.rs):
+# crates/system/tilo-rollback/src/generation.rs):
 #
 #   * dense — `+1` per published image. The retention window means "N, N-1, N-2",
 #     so a sparse sequence keeps fewer images than it claims to. Worse, the floor
 #     is a TPM NV counter and advancing it from A to B costs B-A NV writes;
-#     qos-rollback refuses an advance of more than 64 outright, so a numbering
+#     tilo-rollback refuses an advance of more than 64 outright, so a numbering
 #     that jumps by hundreds soft-bricks the machine into recovery-key-only.
 #   * monotonic — an image must never carry a number an older image already used,
 #     or two different images would share one sealed policy.
@@ -34,7 +34,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 # Where the published series lives. The generation counts published images, so it
 # is read from the repository `bootc upgrade` pulls from, not from a scratch
 # registry a disk build happened to push to.
-QOS_PUBLISH_REPO="${QOS_PUBLISH_REPO:-code.podesta.ai/qos/qos}"
+TILO_PUBLISH_REPO="${TILO_PUBLISH_REPO:-code.podesta.ai/qos/tilo}"
 
 WANT=next
 case "${1:-}" in
@@ -49,7 +49,7 @@ esac
 # an empty list would silently restart the series at 1 and hand out a number that
 # is already taken.
 #
-# QOS_REGISTRY_CREDS ("user:token") is the explicit path, and it is what CI uses.
+# TILO_REGISTRY_CREDS ("user:token") is the explicit path, and it is what CI uses.
 # It is converted immediately into a mode-0600 temporary auth file. Passing it
 # through a credential command-line option would expose the token in process argv.
 # Discovering an auth file works interactively and is unreliable in a job: the
@@ -57,41 +57,45 @@ esac
 # file at all, and the first file that *exists* is not necessarily the one with the
 # entry — which fails as "authentication required" and looks like a permissions
 # problem rather than a lookup one.
-QOS_REGISTRY_CREDS="${QOS_REGISTRY_CREDS:-}"
+TILO_REGISTRY_CREDS="${TILO_REGISTRY_CREDS:-}"
+# A validation-only bootstrap may treat an authenticated registry's exact
+# "name unknown" response as an empty series. Publication never sets this:
+# auth, transport and every other lookup failure remain fatal.
+TILO_ALLOW_EMPTY_SERIES="${TILO_ALLOW_EMPTY_SERIES:-0}"
 
 # Cosign performs separate registry requests after tag discovery. Give it the
 # same explicit credential in a private Docker config instead of relying on a
 # runner credential helper that may not exist inside the job container.
-QOS_COSIGN_AUTH_DIR=""
+TILO_COSIGN_AUTH_DIR=""
 cleanup_auth() {
-  [ -z "$QOS_COSIGN_AUTH_DIR" ] || rm -r "$QOS_COSIGN_AUTH_DIR"
+  [ -z "$TILO_COSIGN_AUTH_DIR" ] || rm -r "$TILO_COSIGN_AUTH_DIR"
 }
 trap cleanup_auth EXIT
-if [ -n "$QOS_REGISTRY_CREDS" ]; then
-  case "$QOS_REGISTRY_CREDS" in
+if [ -n "$TILO_REGISTRY_CREDS" ]; then
+  case "$TILO_REGISTRY_CREDS" in
     *:*) ;;
-    *) die "QOS_REGISTRY_CREDS must be user:token" ;;
+    *) die "TILO_REGISTRY_CREDS must be user:token" ;;
   esac
-  [ -n "${QOS_REGISTRY_CREDS%%:*}" ] && [ -n "${QOS_REGISTRY_CREDS#*:}" ] \
-    || die "QOS_REGISTRY_CREDS must contain a non-empty user and token"
-  QOS_COSIGN_AUTH_DIR="$(mktemp -d)"
-  chmod 0700 "$QOS_COSIGN_AUTH_DIR"
-  encoded="$(printf '%s' "$QOS_REGISTRY_CREDS" | base64 | tr -d '\n')"
+  [ -n "${TILO_REGISTRY_CREDS%%:*}" ] && [ -n "${TILO_REGISTRY_CREDS#*:}" ] \
+    || die "TILO_REGISTRY_CREDS must contain a non-empty user and token"
+  TILO_COSIGN_AUTH_DIR="$(mktemp -d)"
+  chmod 0700 "$TILO_COSIGN_AUTH_DIR"
+  encoded="$(printf '%s' "$TILO_REGISTRY_CREDS" | base64 | tr -d '\n')"
   printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
-    "${QOS_PUBLISH_REPO%%/*}" "$encoded" > "$QOS_COSIGN_AUTH_DIR/config.json"
-  chmod 0600 "$QOS_COSIGN_AUTH_DIR/config.json"
-  export DOCKER_CONFIG="$QOS_COSIGN_AUTH_DIR"
+    "${TILO_PUBLISH_REPO%%/*}" "$encoded" > "$TILO_COSIGN_AUTH_DIR/config.json"
+  chmod 0600 "$TILO_COSIGN_AUTH_DIR/config.json"
+  export DOCKER_CONFIG="$TILO_COSIGN_AUTH_DIR"
 fi
 
 # skopeo is not installed everywhere this runs — the host is image-based and the CI
 # runner does not ship it — so fall back to running it in a container.
-SKOPEO_IMAGE="${QOS_SKOPEO_IMAGE:-quay.io/skopeo/stable:latest}"
-QOS_GENERATION_VERIFY_KEY="${QOS_GENERATION_VERIFY_KEY:-keys/cosign.pub}"
+SKOPEO_IMAGE="${TILO_SKOPEO_IMAGE:-quay.io/skopeo/stable:latest}"
+TILO_GENERATION_VERIFY_KEY="${TILO_GENERATION_VERIFY_KEY:-keys/cosign.pub}"
 
 # An auth file that actually carries an entry for this registry, not merely the
 # first one that exists.
 find_authfile() {
-  local host="${QOS_PUBLISH_REPO%%/*}" f
+  local host="${TILO_PUBLISH_REPO%%/*}" f
   for f in "${REGISTRY_AUTH_FILE:-}" \
            "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/auth.json" \
            "$HOME/.config/containers/auth.json" \
@@ -105,22 +109,22 @@ find_authfile() {
 
 list_tags() {
   local auth tmp rc encoded
-  if [ -n "$QOS_REGISTRY_CREDS" ]; then
-    case "$QOS_REGISTRY_CREDS" in
+  if [ -n "$TILO_REGISTRY_CREDS" ]; then
+    case "$TILO_REGISTRY_CREDS" in
       *:*) ;;
-      *) echo "QOS_REGISTRY_CREDS must be user:token" >&2; return 1 ;;
+      *) echo "TILO_REGISTRY_CREDS must be user:token" >&2; return 1 ;;
     esac
-    [ -n "${QOS_REGISTRY_CREDS%%:*}" ] && [ -n "${QOS_REGISTRY_CREDS#*:}" ] || {
-      echo "QOS_REGISTRY_CREDS must contain a non-empty user and token" >&2
+    [ -n "${TILO_REGISTRY_CREDS%%:*}" ] && [ -n "${TILO_REGISTRY_CREDS#*:}" ] || {
+      echo "TILO_REGISTRY_CREDS must contain a non-empty user and token" >&2
       return 1
     }
     tmp="$(mktemp -d)" || return 1
     chmod 0700 "$tmp" || { rm -r "$tmp"; return 1; }
     auth="$tmp/auth.json"
-    encoded="$(printf '%s' "$QOS_REGISTRY_CREDS" | base64 | tr -d '\n')" \
+    encoded="$(printf '%s' "$TILO_REGISTRY_CREDS" | base64 | tr -d '\n')" \
       || { rm -r "$tmp"; return 1; }
     if ! printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
-        "${QOS_PUBLISH_REPO%%/*}" "$encoded" > "$auth" \
+        "${TILO_PUBLISH_REPO%%/*}" "$encoded" > "$auth" \
       || ! chmod 0600 "$auth"; then
       rm -r "$tmp"
       return 1
@@ -129,7 +133,7 @@ list_tags() {
 
   if command -v skopeo >/dev/null 2>&1; then
     if [ -n "${auth:-}" ]; then
-      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$QOS_PUBLISH_REPO"; then
+      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$TILO_PUBLISH_REPO"; then
         rc=0
       else
         rc=$?
@@ -137,7 +141,7 @@ list_tags() {
       rm -r "$tmp"
       return $rc
     fi
-    skopeo list-tags "docker://$QOS_PUBLISH_REPO"
+    skopeo list-tags "docker://$TILO_PUBLISH_REPO"
     return $?
   fi
 
@@ -147,9 +151,9 @@ list_tags() {
 
   if [ -z "${auth:-}" ]; then
     auth="$(find_authfile)" || {
-    echo "no container auth file carries an entry for ${QOS_PUBLISH_REPO%%/*}." >&2
-    echo "Log in (podman login ${QOS_PUBLISH_REPO%%/*}), or set" >&2
-    echo "QOS_REGISTRY_CREDS=user:token." >&2
+    echo "no container auth file carries an entry for ${TILO_PUBLISH_REPO%%/*}." >&2
+    echo "Log in (podman login ${TILO_PUBLISH_REPO%%/*}), or set" >&2
+    echo "TILO_REGISTRY_CREDS=user:token." >&2
     return 1; }
   # Copy into a directory of our own first. The resulting file is streamed over
   # stdin below: an Actions job commonly controls a host Docker daemon, which
@@ -162,10 +166,10 @@ list_tags() {
   fi
   if "$engine" run --rm --interactive \
       --entrypoint /bin/sh \
-      -e REGISTRY_AUTH_FILE=/tmp/qos-auth.json \
+      -e REGISTRY_AUTH_FILE=/tmp/tilo-auth.json \
       "$SKOPEO_IMAGE" -ceu \
       'umask 077; cat > "$REGISTRY_AUTH_FILE"; exec skopeo list-tags "docker://$1"' \
-      sh "$QOS_PUBLISH_REPO" < "$tmp/auth.json"; then
+      sh "$TILO_PUBLISH_REPO" < "$tmp/auth.json"; then
     rc=0
   else
     rc=$?
@@ -174,12 +178,25 @@ list_tags() {
   return $rc
 }
 
-tags="$(list_tags)" || die "could not list tags of
-  $QOS_PUBLISH_REPO — the published generation series is unreadable, and guessing
+tag_error="$(mktemp)"
+if tags="$(list_tags 2>"$tag_error")"; then
+  cat "$tag_error" >&2
+elif [ "$TILO_ALLOW_EMPTY_SERIES" = 1 ] \
+    && grep -Fq 'fetching tags list: name unknown' "$tag_error" \
+    && ! grep -Eiq 'unauthorized|denied|authentication required' "$tag_error"; then
+  echo "[tilo] validation bootstrap: $TILO_PUBLISH_REPO has no published series yet" >&2
+  tags='{"Tags":[]}'
+else
+  lookup_error="$(cat "$tag_error")"
+  rm -f "$tag_error"
+  die "could not list tags of
+  $TILO_PUBLISH_REPO — the published generation series is unreadable, and guessing
   it would produce an image whose generation collides with one already published.
-  Log in (podman login code.podesta.ai) or pass QOS_GENERATION=<N> explicitly.
+  Log in (podman login code.podesta.ai) or pass TILO_GENERATION=<N> explicitly.
   The tag listing said:
-$(printf '%s' "$tags" | sed 's/^/    /')"
+$(printf '%s' "$lookup_error" | sed 's/^/    /')"
+fi
+rm -f "$tag_error"
 
 # The highest gen<N> tag. `sort -n | tail -1` rather than a max in the pipeline,
 # because a lexical sort makes gen9 the newest of gen9..gen10.
@@ -191,14 +208,14 @@ current="$(printf '%s\n' "$generations" | tail -1)"
 current="${current:-0}"
 
 verify_signed_generation() {
-  local generation="$1" image="$QOS_PUBLISH_REPO:gen$1" signatures provenance
+  local generation="$1" image="$TILO_PUBLISH_REPO:gen$1" signatures provenance
   command -v cosign >/dev/null 2>&1 || die \
     "cosign is required: unsigned registry tags are not a generation oracle"
-  [ -s "$QOS_GENERATION_VERIFY_KEY" ] || die \
-    "release verification key is missing: $QOS_GENERATION_VERIFY_KEY"
-  signatures="$(cosign verify --key "$QOS_GENERATION_VERIFY_KEY" "$image")" || die \
-    "gen$generation has no valid transparency-logged qOS release signature"
-  provenance="$(cosign verify-attestation --key "$QOS_GENERATION_VERIFY_KEY" \
+  [ -s "$TILO_GENERATION_VERIFY_KEY" ] || die \
+    "release verification key is missing: $TILO_GENERATION_VERIFY_KEY"
+  signatures="$(cosign verify --key "$TILO_GENERATION_VERIFY_KEY" "$image")" || die \
+    "gen$generation has no valid transparency-logged Tilo release signature"
+  provenance="$(cosign verify-attestation --key "$TILO_GENERATION_VERIFY_KEY" \
     --type slsaprovenance1 "$image")" || die \
     "gen$generation has no valid transparency-logged SLSA provenance"
   printf '%s' "$provenance" | jq -e --argjson generation "$generation" '
@@ -224,9 +241,9 @@ if [ "$current" != 0 ]; then
   done <<< "$generations"
 
   current_digest="$(verify_signed_generation "$current")"
-  latest_signatures="$(cosign verify --key "$QOS_GENERATION_VERIFY_KEY" \
-    "$QOS_PUBLISH_REPO:latest")" || die \
-    "latest has no valid transparency-logged qOS release signature"
+  latest_signatures="$(cosign verify --key "$TILO_GENERATION_VERIFY_KEY" \
+    "$TILO_PUBLISH_REPO:latest")" || die \
+    "latest has no valid transparency-logged Tilo release signature"
   latest_digest="$(printf '%s' "$latest_signatures" | jq -er \
     '.[0].critical.image["docker-manifest-digest"]')"
   [ "$latest_digest" = "$current_digest" ] || die \
@@ -243,12 +260,12 @@ next=$(( current + 1 ))
 # A gen tag for the number we are about to hand out means the series was read
 # wrong, and reusing it would give two images one sealed policy.
 if printf '%s' "$tags" | grep -q "\"gen$next\""; then
-  die "gen$next is already a tag in $QOS_PUBLISH_REPO, but gen$current was read as the
+  die "gen$next is already a tag in $TILO_PUBLISH_REPO, but gen$current was read as the
   newest. Refusing to reuse a published generation number."
 fi
 
 if [ "$current" = 0 ]; then
-  msg "no gen<N> tags in $QOS_PUBLISH_REPO yet — starting the series at 1"
+  msg "no gen<N> tags in $TILO_PUBLISH_REPO yet — starting the series at 1"
 else
   msg "published generation series tops out at $current; next is $next"
 fi

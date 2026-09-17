@@ -264,7 +264,7 @@ mod tests {
              that cannot see it is answering about itself"
         );
         assert!(
-            !which("qos-no-such-binary-should-ever-exist"),
+            !which("tilo-no-such-binary-should-ever-exist"),
             "a name that is on no $PATH entry must not be reported as found"
         );
         // A name containing a separator is a path, not a $PATH lookup.
@@ -293,7 +293,7 @@ mod tests {
     /// missing — they must return a `"<binary> not installed"` error string.
     #[test]
     fn missing_binary_returns_not_installed_error() {
-        let r = run("definitely-not-a-real-binary-qos-test", &["--help"]);
+        let r = run("definitely-not-a-real-binary-tilo-test", &["--help"]);
         assert!(r.is_err());
         let msg = r.unwrap_err();
         assert!(msg.contains("not installed"), "got: {msg}");

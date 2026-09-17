@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Assert the invariants an encrypted root depends on. Run against a BUILT image:
 #
-#   podman run --rm --entrypoint /bin/bash localhost/qos:latest \
-#       /usr/libexec/qos/boot-chain-test.sh
+#   podman run --rm --entrypoint /bin/bash localhost/tilo:latest \
+#       /usr/libexec/tilo/boot-chain-test.sh
 #
 # or from the source tree with OS_ROOT pointing at an unpacked rootfs. The
 # checks exist because the image once shipped without an initramfs while also
-# offering `qos-install --encrypt`, a combination in which the kernel reaches the
+# offering `tilo-install --encrypt`, a combination in which the kernel reaches the
 # LUKS device and then has no userspace to open it.
 #
 # Exit codes:
@@ -112,9 +112,9 @@ for kver in "${kvers[@]}"; do
   # the image back needs to descend into a squashfs, which needs privileges an
   # unprivileged image builder does not have — there, lsinitrd returns nothing
   # and an initramfs that does carry cryptsetup looks like one that does not.
-  mods="$OS_ROOT/usr/lib/qos/initramfs-modules.txt"
+  mods="$OS_ROOT/usr/lib/tilo/initramfs-modules.txt"
   if [ -s "$mods" ]; then
-    for want in crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback; do
+    for want in crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback; do
       if grep -qx "$want" "$mods"; then
         ok "initramfs includes the $want module"
       else
@@ -124,7 +124,7 @@ for kver in "${kvers[@]}"; do
   elif [ -s "$img" ] && command -v lsinitrd >/dev/null 2>&1 \
        && [ -n "$(lsinitrd "$img" 2>/dev/null)" ]; then
     listing="$(lsinitrd "$img" 2>/dev/null)"
-    for want in systemd-cryptsetup cryptsetup qos-rollback-initrd-unlock; do
+    for want in systemd-cryptsetup cryptsetup tilo-rollback-initrd-unlock; do
       if printf '%s' "$listing" | grep -q "$want"; then
         ok "initramfs carries $want"
       else
@@ -137,29 +137,29 @@ for kver in "${kvers[@]}"; do
 done
 
 # 5. The encryption backend must exist wherever the installer can run.
-for f in /usr/libexec/qos-disk-encrypt /usr/libexec/qos-secureboot; do
+for f in /usr/libexec/tilo-disk-encrypt /usr/libexec/tilo-secureboot; do
   if [ -x "$OS_ROOT$f" ]; then ok "$f present"; else bad "$f missing or not executable"; fi
 done
 
 # 6. Exactly one unit grows the root filesystem on the composefs layout.
 #    `GrowFileSystem=yes` gives the root partition the GPT attribute that makes
-#    systemd-gpt-auto-generator start systemd-growfs-root.service. In qOS `/`
+#    systemd-gpt-auto-generator start systemd-growfs-root.service. In Tilo `/`
 #    is a composefs overlay, while the block-backed btrfs is mounted at
 #    `/sysroot`; masking the stock unit without a replacement leaves the
 #    installation's extra space unused.
-growfs_unit="$OS_ROOT/usr/lib/systemd/system/qos-growfs-sysroot.service"
-growfs_dropin="$OS_ROOT/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf"
+growfs_unit="$OS_ROOT/usr/lib/systemd/system/tilo-growfs-sysroot.service"
+growfs_dropin="$OS_ROOT/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf"
 if [ ! -f "$growfs_unit" ]; then
-  bad "qos-growfs-sysroot.service missing — nothing grows the root filesystem"
+  bad "tilo-growfs-sysroot.service missing — nothing grows the root filesystem"
 else
   ours="$(grep -E '^ConditionPathIsMountPoint=' "$growfs_unit" | head -1)"
   exec_line="$(grep -E '^ExecStart=' "$growfs_unit" | head -1)"
   [ "$ours" = "ConditionPathIsMountPoint=/sysroot" ] \
-    && ok "qos growfs is gated on /sysroot" \
-    || bad "qos growfs does not require /sysroot (${ours:-none})"
+    && ok "tilo growfs is gated on /sysroot" \
+    || bad "tilo growfs does not require /sysroot (${ours:-none})"
   [ "$exec_line" = "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot" ] \
-    && ok "qos growfs targets the block-backed /sysroot" \
-    || bad "qos growfs targets the wrong path (${exec_line:-none})"
+    && ok "tilo growfs targets the block-backed /sysroot" \
+    || bad "tilo growfs targets the wrong path (${exec_line:-none})"
 fi
 
 if [ ! -f "$growfs_dropin" ]; then
@@ -182,19 +182,19 @@ fi
 # The path fallback keeps this invariant useful in a minimal unpacked root.
 growfs_enabled=""
 if command -v systemctl >/dev/null 2>&1; then
-  case "$(systemctl --root="$OS_ROOT" is-enabled qos-growfs-sysroot.service 2>/dev/null)" in
+  case "$(systemctl --root="$OS_ROOT" is-enabled tilo-growfs-sysroot.service 2>/dev/null)" in
     enabled|enabled-runtime|static) growfs_enabled=yes ;;
     *) growfs_enabled=no ;;
   esac
-elif [ -e "$OS_ROOT/etc/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service" ]; then
+elif [ -e "$OS_ROOT/etc/systemd/system/multi-user.target.wants/tilo-growfs-sysroot.service" ]; then
   growfs_enabled=yes
 else
   growfs_enabled=no
 fi
 if [ "$growfs_enabled" = yes ]; then
-  ok "qos-growfs-sysroot.service is enabled"
+  ok "tilo-growfs-sysroot.service is enabled"
 else
-  bad "qos-growfs-sysroot.service is not enabled — the filesystem is never grown"
+  bad "tilo-growfs-sysroot.service is not enabled — the filesystem is never grown"
 fi
 
 [ "$fail" -eq 0 ] && printf '\nall boot-chain invariants hold\n'

@@ -4,7 +4,7 @@
 //! Mount / unmount / format / eject / benchmark are privileged, per-machine
 //! effects against real block devices (via udisks2 / polkit, or the CLI
 //! fallback). They change the running system, never the shared Automerge
-//! document, so by the qOS action-model recipe (`docs/action-model-recipe.md`)
+//! document, so by the Tilo action-model recipe (`docs/action-model-recipe.md`)
 //! **none of them is an `Action`** — none crosses the CRDT executor. The
 //! resource + action-model finding is recorded in [`crate::actions`], and the
 //! functions here deliberately take no `AutoCommit`: they cannot touch the doc.
@@ -371,11 +371,11 @@ mod tests {
     fn command_chain_reports_the_last_failure_when_nothing_runs() {
         // Two programs that certainly do not exist → an Err carrying the last.
         let specs = vec![
-            CommandSpec::new("qos-no-such-tool-a", &["x"]),
-            CommandSpec::new("qos-no-such-tool-b", &["y"]),
+            CommandSpec::new("tilo-no-such-tool-a", &["x"]),
+            CommandSpec::new("tilo-no-such-tool-b", &["y"]),
         ];
         let r = run_command_chain(&specs);
         assert!(r.is_err());
-        assert!(r.unwrap_err().contains("qos-no-such-tool-b"));
+        assert!(r.unwrap_err().contains("tilo-no-such-tool-b"));
     }
 }
