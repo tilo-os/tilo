@@ -374,10 +374,13 @@ impl SettingsApp {
             Category::KeyboardShortcuts => panes::keyboard_shortcuts::build(),
             Category::TimeDate => panes::time_date::build(),
             Category::Users => Box::new(
-                panes::users::UsersPane::new().with_operation_status(&self.local_operation_status),
+                panes::users::UsersPane::new()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
             ),
             Category::Printers => Box::new(
                 panes::printers::PrintersPane::new()
+                    .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Power => Box::new(
@@ -391,6 +394,7 @@ impl SettingsApp {
             Category::DefaultApps => panes::personal_apps::build(),
             Category::Storage => Box::new(
                 panes::storage::StoragePane::new()
+                    .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::ExternalAccounts => {
@@ -410,6 +414,7 @@ impl SettingsApp {
             }
             Category::AgentModels => Box::new(
                 panes::agent_models::AgentModelsPane::new()
+                    .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::RegionFormats => panes::region::build(),
@@ -456,11 +461,10 @@ impl SettingsApp {
         }
     }
 
-    /// Route a canonical device-local operation into the exact one-shot
-    /// document latch consumed by its pane.  The pane remains the sole owner
-    /// of the privileged command, its availability checks, progress UI, and
-    /// final success/error notice; this adapter deliberately never performs a
-    /// second system call.
+    /// Route a canonical device-local operation through process-local typed
+    /// state. The pane remains the sole owner of the privileged command, its
+    /// availability checks, progress UI, and final notice. The collaborative
+    /// document is intentionally absent from this transport.
     #[allow(
         clippy::too_many_lines,
         reason = "the three device-local protocols are kept together to audit their pane-latch routing"
@@ -470,11 +474,9 @@ impl SettingsApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
+        _doc: &mut automerge::AutoCommit,
+        _path: &automerge::ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use automerge::transaction::Transactable;
-
         if kind != tilo_actions::OperationKind::Effect {
             return Err("device-local settings commands must be effect operations".into());
         }
@@ -511,7 +513,7 @@ impl SettingsApp {
                 Self::apply_time_date_operation(operation),
             );
         }
-        let accepted = match type_id {
+        let accepted: Result<(), String> = match type_id {
             crate::actions::UPDATE_OPERATION_TYPE => {
                 let operation: crate::actions::UpdateOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -524,54 +526,6 @@ impl SettingsApp {
                 self.local_pane_command
                     .set(Some(crate::actions::LocalPaneCommand::Updates(operation)));
                 Ok(())
-            }
-            crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE => {
-                let operation: crate::actions::KeyboardSourceOperation =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                self.select(Category::MouseKeyboard);
-                let mut prefs = crate::prefs::SystemPrefs::load().input;
-                prefs.normalise_keyboard_sources();
-                match operation {
-                    crate::actions::KeyboardSourceOperation::Add { label } => {
-                        let available =
-                            crate::input_sources::installed_catalog()
-                                .iter()
-                                .any(|entry| {
-                                    entry.label == label
-                                        && !prefs.keyboard_layouts.contains(&entry.id)
-                                });
-                        if !available
-                            || prefs.keyboard_layouts.len()
-                                >= settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
-                        {
-                            return Err("keyboard input source is no longer available".into());
-                        }
-                        doc.put(path, panes::mouse_keyboard::ADD_SOURCE_PICKER_KEY, label)
-                            .and_then(|()| {
-                                doc.put(path, panes::mouse_keyboard::ADD_SOURCE_KEY, true)
-                            })
-                    }
-                    crate::actions::KeyboardSourceOperation::MoveUp { index } => {
-                        if index == 0 || index >= prefs.keyboard_layouts.len() {
-                            return Err("keyboard input source can no longer move up".into());
-                        }
-                        doc.put(path, format!("input.source.{index}.up"), true)
-                    }
-                    crate::actions::KeyboardSourceOperation::MoveDown { index } => {
-                        if index + 1 >= prefs.keyboard_layouts.len() {
-                            return Err("keyboard input source can no longer move down".into());
-                        }
-                        doc.put(path, format!("input.source.{index}.down"), true)
-                    }
-                    crate::actions::KeyboardSourceOperation::Remove { index } => {
-                        if prefs.keyboard_layouts.len() <= 1
-                            || index >= prefs.keyboard_layouts.len()
-                        {
-                            return Err("keyboard input source can no longer be removed".into());
-                        }
-                        doc.put(path, format!("input.source.{index}.remove"), true)
-                    }
-                }
             }
             crate::actions::POWER_OPERATION_TYPE => {
                 let operation: crate::actions::PowerOperation =
@@ -712,57 +666,36 @@ impl SettingsApp {
                 let operation: crate::actions::StorageOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Storage);
-                match operation {
-                    crate::actions::StorageOperation::CleanupCaches => {
-                        doc.put(path, panes::storage::CLEAN_KEY, true)
-                    }
-                    crate::actions::StorageOperation::FreeSyncedFiles => {
-                        doc.put(path, panes::storage::SYNC_FREE_KEY, true)
-                    }
-                    crate::actions::StorageOperation::OpenDisks => {
-                        doc.put(path, panes::storage::DISKS_KEY, true)
-                    }
-                    crate::actions::StorageOperation::OpenBackups => {
-                        doc.put(path, panes::storage::BACKUPS_KEY, true)
-                    }
-                }
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::Storage(operation)));
+                Ok(())
             }
             crate::actions::AUDIO_OPERATION_TYPE => {
                 let operation: crate::actions::AudioOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 let graph = media::audio::enumerate();
                 self.select(Category::Sound);
-                // Existing validation helpers write the proposed UI scalar;
-                // keep that scratch state process-local rather than using the
-                // collaborative Settings document as a command bus.
-                let mut local_doc = automerge::AutoCommit::new();
-                let doc = &mut local_doc;
-                let path = automerge::ROOT;
-                let validated = match operation.clone() {
+                let validated: Result<(), String> = match operation.clone() {
                     crate::actions::AudioOperation::SetOutputVolume { value } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
                             return Err("output volume must be between 0 and 1".into());
                         }
-                        doc.put(path, panes::audio::VOLUME_KEY, value)
+                        Ok(())
                     }
-                    crate::actions::AudioOperation::SetOutputMuted { muted } => {
-                        doc.put(path, panes::audio::MUTED_KEY, muted)
-                    }
+                    crate::actions::AudioOperation::SetOutputMuted { .. } => Ok(()),
                     crate::actions::AudioOperation::SetInputVolume { value } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
                             return Err("input volume must be between 0 and 1".into());
                         }
-                        doc.put(path, panes::audio::INPUT_VOLUME_KEY, value)
+                        Ok(())
                     }
                     crate::actions::AudioOperation::SetBalance { value } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
                             return Err("output balance must be between 0 and 1".into());
                         }
-                        doc.put(path, panes::audio::BALANCE_KEY, value)
+                        Ok(())
                     }
-                    crate::actions::AudioOperation::SetMono { enabled } => {
-                        doc.put(path, panes::audio::MONO_KEY, enabled)
-                    }
+                    crate::actions::AudioOperation::SetMono { .. } => Ok(()),
                     crate::actions::AudioOperation::SetDeviceProfile {
                         device_id,
                         profile_index,
@@ -777,11 +710,8 @@ impl SettingsApp {
                             .iter()
                             .find(|profile| profile.index == profile_index && profile.available)
                             .ok_or_else(|| "audio profile is no longer available".to_string())?;
-                        doc.put(
-                            path,
-                            panes::audio::device_profile_key(device_id),
-                            profile.description.as_str(),
-                        )
+                        let _ = profile;
+                        Ok(())
                     }
                     crate::actions::AudioOperation::RouteStream {
                         stream_id,
@@ -807,16 +737,15 @@ impl SettingsApp {
                         } else {
                             &graph.sources
                         };
-                        let label = match device_id {
-                            None => panes::audio::FOLLOW_DEFAULT.to_string(),
+                        match device_id {
+                            None => {}
                             Some(id) => devices
                                 .iter()
                                 .find(|device| device.id == id)
-                                .ok_or_else(|| "audio route is no longer available".to_string())?
-                                .description
-                                .clone(),
-                        };
-                        doc.put(path, panes::audio::stream_sink_key(stream_id), label)
+                                .ok_or_else(|| "audio route is no longer available".to_string())
+                                .map(|_| ())?,
+                        }
+                        Ok(())
                     }
                     crate::actions::AudioOperation::SetStreamVolume { stream_id, value } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
@@ -830,7 +759,7 @@ impl SettingsApp {
                         if !exists {
                             return Err("audio stream is no longer available".into());
                         }
-                        doc.put(path, panes::audio::stream_volume_key(stream_id), value)
+                        Ok(())
                     }
                     crate::actions::AudioOperation::SetStreamMuted { stream_id, muted } => {
                         let exists = graph
@@ -841,46 +770,27 @@ impl SettingsApp {
                         if !exists {
                             return Err("audio stream is no longer available".into());
                         }
-                        doc.put(path, panes::audio::stream_muted_key(stream_id), muted)
+                        let _ = muted;
+                        Ok(())
                     }
-                    crate::actions::AudioOperation::ToggleDiagnostics => {
-                        doc.put(path, panes::audio::ADVANCED_KEY, true)
-                    }
-                    crate::actions::AudioOperation::TestChannel { left } => doc.put(
-                        path,
-                        if left {
-                            panes::audio::TEST_LEFT_KEY
-                        } else {
-                            panes::audio::TEST_RIGHT_KEY
-                        },
-                        true,
-                    ),
-                    crate::actions::AudioOperation::ToggleMicrophoneMeter => {
-                        doc.put(path, panes::audio::MIC_TEST_KEY, true)
-                    }
+                    crate::actions::AudioOperation::ToggleDiagnostics
+                    | crate::actions::AudioOperation::TestChannel { .. }
+                    | crate::actions::AudioOperation::ToggleMicrophoneMeter => Ok(()),
                     crate::actions::AudioOperation::SelectOutput { device_id } => {
-                        let device = graph.sink_by_id(device_id).ok_or_else(|| {
+                        graph.sink_by_id(device_id).ok_or_else(|| {
                             "audio output device is no longer available".to_string()
                         })?;
-                        doc.put(
-                            path,
-                            panes::audio::OUTPUT_DEVICE_KEY,
-                            device.description.as_str(),
-                        )
+                        Ok(())
                     }
                     crate::actions::AudioOperation::SelectInput { device_id } => {
-                        let device = graph
+                        graph
                             .sources
                             .iter()
                             .find(|device| device.id == device_id)
                             .ok_or_else(|| {
                                 "audio input device is no longer available".to_string()
                             })?;
-                        doc.put(
-                            path,
-                            panes::audio::INPUT_DEVICE_KEY,
-                            device.description.as_str(),
-                        )
+                        Ok(())
                     }
                     crate::actions::AudioOperation::RoutePlayback {
                         stream_id,
@@ -893,14 +803,10 @@ impl SettingsApp {
                         {
                             return Err("playback stream is no longer available".into());
                         }
-                        let device = graph.sink_by_id(device_id).ok_or_else(|| {
+                        graph.sink_by_id(device_id).ok_or_else(|| {
                             "audio output device is no longer available".to_string()
                         })?;
-                        doc.put(
-                            path,
-                            panes::audio::stream_sink_key(stream_id),
-                            device.description.as_str(),
-                        )
+                        Ok(())
                     }
                     crate::actions::AudioOperation::RouteRecording {
                         stream_id,
@@ -913,18 +819,14 @@ impl SettingsApp {
                         {
                             return Err("recording stream is no longer available".into());
                         }
-                        let device = graph
+                        graph
                             .sources
                             .iter()
                             .find(|device| device.id == device_id)
                             .ok_or_else(|| {
                                 "audio input device is no longer available".to_string()
                             })?;
-                        doc.put(
-                            path,
-                            panes::audio::stream_sink_key(stream_id),
-                            device.description.as_str(),
-                        )
+                        Ok(())
                     }
                 };
                 validated.map_err(|error| error.to_string())?;
@@ -936,9 +838,6 @@ impl SettingsApp {
                 let operation: crate::actions::DisplayOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Displays);
-                let mut local_doc = automerge::AutoCommit::new();
-                let doc = &mut local_doc;
-                let path = automerge::ROOT;
                 let snapshot = settings_store::hardware::DisplayHardwareSnapshot::load();
                 let output = |connector: &str| {
                     snapshot
@@ -949,77 +848,54 @@ impl SettingsApp {
                         .find(|output| output.descriptor.connector == connector)
                         .ok_or_else(|| "display output is no longer available".to_string())
                 };
-                let validated = match operation.clone() {
+                let validated: Result<(), String> = match operation.clone() {
                     crate::actions::DisplayOperation::SetBrightness { value } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
                             return Err("display brightness must be between 0 and 1".into());
                         }
-                        doc.put(path, panes::display::BRIGHTNESS_KEY, value)
+                        Ok(())
                     }
-                    crate::actions::DisplayOperation::SetAutoBrightness { enabled } => {
-                        doc.put(path, panes::display::AUTO_BRIGHTNESS_KEY, enabled)
-                    }
-                    crate::actions::DisplayOperation::SetNightLight { enabled } => {
-                        doc.put(path, panes::display::NIGHT_LIGHT_KEY, enabled)
-                    }
+                    crate::actions::DisplayOperation::SetAutoBrightness { .. }
+                    | crate::actions::DisplayOperation::SetNightLight { .. } => Ok(()),
                     crate::actions::DisplayOperation::SetNightLightTemperature { label } => {
                         if !["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
                             .contains(&label.as_str())
                         {
                             return Err("unsupported Night Light warmth".into());
                         }
-                        doc.put(path, panes::display::NIGHT_LIGHT_TEMPERATURE_KEY, label)
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetScale { label } => {
                         if !["100%", "125%", "150%", "175%", "200%"].contains(&label.as_str()) {
                             return Err("unsupported display scale".into());
                         }
-                        doc.put(path, panes::display::DISPLAY_SCALE_KEY, label)
+                        Ok(())
                     }
-                    crate::actions::DisplayOperation::SetEnabled { connector, enabled } => {
+                    crate::actions::DisplayOperation::SetEnabled { connector, .. }
+                    | crate::actions::DisplayOperation::SetPrimary { connector, .. } => {
                         let _ = output(&connector)?;
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "enabled"),
-                            enabled,
-                        )
-                    }
-                    crate::actions::DisplayOperation::SetPrimary { connector, primary } => {
-                        let _ = output(&connector)?;
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "primary"),
-                            primary,
-                        )
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetOutputScale { connector, label } => {
                         let _ = output(&connector)?;
                         if !["100%", "125%", "150%", "175%", "200%"].contains(&label.as_str()) {
                             return Err("unsupported output scale".into());
                         }
-                        doc.put(path, panes::display::output_key(&connector, "scale"), label)
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetPosition { connector, label } => {
                         let _ = output(&connector)?;
                         if label.len() > 160 {
                             return Err("display position label is too long".into());
                         }
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "position"),
-                            label,
-                        )
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetMirror { connector, label } => {
                         let _ = output(&connector)?;
                         if label.len() > 160 {
                             return Err("display mirror label is too long".into());
                         }
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "mirror"),
-                            label,
-                        )
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetModeLabel { connector, label } => {
                         let output = output(&connector)?;
@@ -1031,7 +907,7 @@ impl SettingsApp {
                         {
                             return Err("display mode is no longer supported by that output".into());
                         }
-                        doc.put(path, panes::display::output_key(&connector, "mode"), label)
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetTransformLabel { connector, label } => {
                         let _ = output(&connector)?;
@@ -1045,11 +921,7 @@ impl SettingsApp {
                         {
                             return Err("unsupported display orientation".into());
                         }
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "transform"),
-                            label,
-                        )
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetColorProfileLabel { connector, label } => {
                         let output = output(&connector)?;
@@ -1063,40 +935,26 @@ impl SettingsApp {
                                 "colour profile is no longer available for that output".into()
                             );
                         }
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "color_profile"),
-                            label,
-                        )
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetMode { connector, mode } => {
                         let output = output(&connector)?;
                         if !output.descriptor.modes.contains(&mode) {
                             return Err("display mode is no longer supported by that output".into());
                         }
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "mode"),
-                            mode.label(),
-                        )
+                        Ok(())
                     }
-                    crate::actions::DisplayOperation::SetTransform {
-                        connector,
-                        transform,
-                    } => {
+                    crate::actions::DisplayOperation::SetTransform { connector, .. } => {
                         let _ = output(&connector)?;
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "transform"),
-                            panes::display::transform_label(transform),
-                        )
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetHdr { connector, enabled } => {
                         let output = output(&connector)?;
                         if !output.descriptor.hdr {
                             return Err("HDR is not available for that output".into());
                         }
-                        doc.put(path, panes::display::output_key(&connector, "hdr"), enabled)
+                        let _ = enabled;
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetVrr { connector, enabled } => {
                         let output = output(&connector)?;
@@ -1105,7 +963,8 @@ impl SettingsApp {
                                 "variable refresh rate is not available for that output".into()
                             );
                         }
-                        doc.put(path, panes::display::output_key(&connector, "vrr"), enabled)
+                        let _ = enabled;
+                        Ok(())
                     }
                     crate::actions::DisplayOperation::SetColorProfile { connector, profile } => {
                         let output = output(&connector)?;
@@ -1116,30 +975,11 @@ impl SettingsApp {
                                 "colour profile is no longer available for that output".into()
                             );
                         }
-                        let label = profile.as_ref().map_or_else(
-                            || "System default".to_string(),
-                            |profile| {
-                                output.color_profile_labels.get(profile).map_or_else(
-                                    || profile.clone(),
-                                    |name| format!("{name} · {profile}"),
-                                )
-                            },
-                        );
-                        doc.put(
-                            path,
-                            panes::display::output_key(&connector, "color_profile"),
-                            label,
-                        )
+                        Ok(())
                     }
-                    crate::actions::DisplayOperation::Apply => {
-                        doc.put(path, panes::display::APPLY_DISPLAY_KEY, true)
-                    }
-                    crate::actions::DisplayOperation::Confirm => {
-                        doc.put(path, panes::display::KEEP_DISPLAY_KEY, true)
-                    }
-                    crate::actions::DisplayOperation::Revert => {
-                        doc.put(path, panes::display::REVERT_DISPLAY_KEY, true)
-                    }
+                    crate::actions::DisplayOperation::Apply
+                    | crate::actions::DisplayOperation::Confirm
+                    | crate::actions::DisplayOperation::Revert => Ok(()),
                 };
                 validated.map_err(|error| error.to_string())?;
                 self.local_pane_command
@@ -1150,13 +990,9 @@ impl SettingsApp {
                 let operation: crate::actions::PrinterOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Printers);
-                match operation {
-                    crate::actions::PrinterOperation::Refresh => {
-                        doc.put(path, panes::printers::REFRESH_KEY, true)
-                    }
-                    crate::actions::PrinterOperation::Discover => {
-                        doc.put(path, panes::printers::SCAN_KEY, true)
-                    }
+                let validated: Result<(), String> = match operation.clone() {
+                    crate::actions::PrinterOperation::Refresh
+                    | crate::actions::PrinterOperation::Discover => Ok(()),
                     crate::actions::PrinterOperation::SetDefault { name } => {
                         if !os_actions::printing::queues()
                             .unwrap_or_default()
@@ -1165,11 +1001,7 @@ impl SettingsApp {
                         {
                             return Err("printer queue is no longer available".into());
                         }
-                        doc.put(
-                            path,
-                            panes::printers::queue_action_key("default", &name),
-                            true,
-                        )
+                        Ok(())
                     }
                     crate::actions::PrinterOperation::SetEnabled { name, enabled } => {
                         let queue = os_actions::printing::queues()
@@ -1182,11 +1014,7 @@ impl SettingsApp {
                         if !allowed {
                             return Err("printer queue state changed; refresh and try again".into());
                         }
-                        doc.put(
-                            path,
-                            panes::printers::queue_action_key("enabled", &name),
-                            true,
-                        )
+                        Ok(())
                     }
                     crate::actions::PrinterOperation::Remove { name } => {
                         if !os_actions::printing::queues()
@@ -1196,11 +1024,7 @@ impl SettingsApp {
                         {
                             return Err("printer queue is no longer available".into());
                         }
-                        doc.put(
-                            path,
-                            panes::printers::queue_action_key("remove", &name),
-                            true,
-                        )
+                        Ok(())
                     }
                     crate::actions::PrinterOperation::CancelJob { id } => {
                         if !os_actions::printing::jobs()
@@ -1210,7 +1034,7 @@ impl SettingsApp {
                         {
                             return Err("print job is no longer available".into());
                         }
-                        doc.put(path, panes::printers::job_action_key("cancel", &id), true)
+                        Ok(())
                     }
                     crate::actions::PrinterOperation::RetryJob { id } => {
                         if !os_actions::printing::jobs()
@@ -1220,168 +1044,31 @@ impl SettingsApp {
                         {
                             return Err("print job is no longer available".into());
                         }
-                        doc.put(path, panes::printers::job_action_key("retry", &id), true)
+                        Ok(())
                     }
-                }
+                };
+                validated.map_err(|error| error.to_string())?;
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::Printer(operation)));
+                Ok(())
             }
             crate::actions::USER_OPERATION_TYPE => {
                 let operation: crate::actions::UserOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Users);
-                let user = |username: &str| {
-                    crate::panes::users::users_for_display()
-                        .into_iter()
-                        .find(|user| user.username == username && !user.current)
-                        .ok_or_else(|| "user account is no longer available".to_string())
-                };
-                match operation {
-                    crate::actions::UserOperation::SetAdmin { username, admin } => {
-                        let live = user(&username)?;
-                        if live.admin == admin {
-                            return Err("user role already has that value".into());
-                        }
-                        doc.put(path, format!("settings.users.role.{username}"), true)
-                    }
-                    crate::actions::UserOperation::SetAutologin { username, enabled } => {
-                        let live = user(&username)?;
-                        if live.automatic_login == enabled {
-                            return Err("automatic-login state already has that value".into());
-                        }
-                        doc.put(path, format!("settings.users.autologin.{username}"), true)
-                    }
-                    crate::actions::UserOperation::Remove {
-                        username,
-                        remove_files,
-                    } => {
-                        let _ = user(&username)?;
-                        let key = if remove_files {
-                            format!("settings.users.confirm_remove.{username}")
-                        } else {
-                            format!("settings.users.confirm_remove_keep.{username}")
-                        };
-                        doc.put(path, key, true)
-                    }
-                }
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::User(operation)));
+                Ok(())
             }
             crate::actions::AGENT_MODEL_OPERATION_TYPE => {
                 let operation: crate::actions::AgentModelOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::AgentModels);
-                let snapshot = panes::agent_models::live_snapshot()
-                    .map_err(|error| format!("local model manager is unavailable: {error}"))?;
-                let find_model = |id: &str| {
-                    snapshot
-                        .models
-                        .iter()
-                        .find(|model| model.package.id == id)
-                        .ok_or_else(|| "local model is no longer available".to_string())
-                };
-                match operation {
-                    crate::actions::AgentModelOperation::StageAccelerator => {
-                        let allowed = snapshot.accelerator_setup.as_ref().is_some_and(|setup| {
-                            matches!(
-                                setup.status,
-                                panes::agent_models::AcceleratorSetupState::Available
-                                    | panes::agent_models::AcceleratorSetupState::Error { .. }
-                            )
-                        });
-                        if !allowed {
-                            return Err("accelerator setup is not currently available".into());
-                        }
-                        doc.put(path, panes::agent_models::ACCELERATOR_SETUP_KEY, true)
-                    }
-                    crate::actions::AgentModelOperation::Install { id, revision } => {
-                        let package = snapshot.recommendation.as_ref().ok_or_else(|| {
-                            "a signed recommended model is not currently available".to_string()
-                        })?;
-                        let accelerator_ready = snapshot
-                            .accelerator_setup
-                            .as_ref()
-                            .is_none_or(|setup| !setup.status.blocks_model_setup());
-                        if package.id != id
-                            || package.revision != revision
-                            || snapshot.hardware.fit
-                                == panes::agent_models::HardwareFit::Unsupported
-                            || !accelerator_ready
-                        {
-                            return Err("recommended model or hardware capability changed; refresh and review it again".into());
-                        }
-                        doc.put(path, panes::agent_models::CONFIRM_KEY, true)
-                    }
-                    crate::actions::AgentModelOperation::Start { id } => {
-                        let model = find_model(&id)?;
-                        if !matches!(
-                            &model.phase,
-                            panes::agent_models::LocalModelPhase::Ready { running: false, .. }
-                        ) {
-                            return Err("local model state changed; refresh and try again".into());
-                        }
-                        doc.put(
-                            path,
-                            panes::agent_models::model_key(
-                                &id,
-                                panes::agent_models::ModelAction::Start,
-                            ),
-                            true,
-                        )
-                    }
-                    crate::actions::AgentModelOperation::Stop { id } => {
-                        let model = find_model(&id)?;
-                        if !matches!(
-                            &model.phase,
-                            panes::agent_models::LocalModelPhase::Ready { running: true, .. }
-                        ) {
-                            return Err("local model state changed; refresh and try again".into());
-                        }
-                        doc.put(
-                            path,
-                            panes::agent_models::model_key(
-                                &id,
-                                panes::agent_models::ModelAction::Stop,
-                            ),
-                            true,
-                        )
-                    }
-                    crate::actions::AgentModelOperation::Retry { id, revision } => {
-                        let model = find_model(&id)?;
-                        if model.package.revision != revision
-                            || !matches!(
-                                &model.phase,
-                                panes::agent_models::LocalModelPhase::Error { .. }
-                            )
-                        {
-                            return Err("local model state changed; refresh and try again".into());
-                        }
-                        doc.put(
-                            path,
-                            panes::agent_models::model_key(
-                                &id,
-                                panes::agent_models::ModelAction::Retry,
-                            ),
-                            true,
-                        )
-                    }
-                    crate::actions::AgentModelOperation::Remove { id } => {
-                        let model = find_model(&id)?;
-                        if !matches!(
-                            &model.phase,
-                            panes::agent_models::LocalModelPhase::Ready { .. }
-                                | panes::agent_models::LocalModelPhase::Error { .. }
-                        ) {
-                            return Err(
-                                "local model cannot be removed while its state is changing".into(),
-                            );
-                        }
-                        doc.put(
-                            path,
-                            panes::agent_models::model_key(
-                                &id,
-                                panes::agent_models::ModelAction::Remove,
-                            ),
-                            true,
-                        )
-                    }
-                }
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::AgentModel(
+                        operation,
+                    )));
+                Ok(())
             }
             crate::actions::DEVICE_MESH_OPERATION_TYPE => {
                 let operation: crate::actions::DeviceMeshOperation =
@@ -1392,15 +1079,15 @@ impl SettingsApp {
             }
             _ => return Ok(None),
         };
-        accepted.map_err(|error| error.to_string())?;
+        accepted?;
         let token = crate::actions::local_operation_token(type_id, payload)?;
         self.local_operation_status
             .set(crate::actions::LocalOperationStatus::Running {
                 token: token.clone(),
             });
         self.local_operation_token = Some(token);
-        // The latch has only been admitted. The selected pane reports the
-        // actual terminal result through `poll_resource_operation`.
+        // The process-local command has only been admitted. The selected pane
+        // reports the actual terminal result through `poll_resource_operation`.
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 
@@ -2495,13 +2182,40 @@ mod tests {
 
     #[test]
     fn hardware_effect_admission_never_mutates_the_collaborative_document() {
+        use std::collections::BTreeSet;
+
+        let _config = crate::prefs::test_env::ConfigGuard::new("device-local-admission");
         let mut app = SettingsApp::new();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
-        let cases = [
+        let keyboard_label = crate::input_sources::installed_catalog()
+            .into_iter()
+            .find(|source| source.id != crate::prefs::SystemPrefs::load().input.keyboard_layout)
+            .expect("the bounded installed catalogue has an alternate keyboard source")
+            .label;
+        let cases = vec![
             (
                 crate::actions::UPDATE_OPERATION_TYPE,
                 serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap(),
+            ),
+            (
+                crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::KeyboardSourceOperation::Add {
+                    label: keyboard_label,
+                })
+                .unwrap(),
+            ),
+            (
+                crate::actions::INPUT_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::InputOperation::SetTapToClick {
+                    enabled: false,
+                })
+                .unwrap(),
+            ),
+            (
+                crate::actions::TIME_DATE_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::TimeDateOperation::SetHourCycle { h24: true })
+                    .unwrap(),
             ),
             (
                 crate::actions::POWER_OPERATION_TYPE,
@@ -2528,7 +2242,35 @@ mod tests {
                 serde_json::to_vec(&crate::actions::DisplayOperation::SetBrightness { value: 0.5 })
                     .unwrap(),
             ),
+            (
+                crate::actions::STORAGE_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::StorageOperation::OpenDisks).unwrap(),
+            ),
+            (
+                crate::actions::PRINTER_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::PrinterOperation::Refresh).unwrap(),
+            ),
+            (
+                crate::actions::USER_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::UserOperation::SetAdmin {
+                    username: "bounded-missing-user".into(),
+                    admin: true,
+                })
+                .unwrap(),
+            ),
+            (
+                crate::actions::AGENT_MODEL_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::AgentModelOperation::StageAccelerator).unwrap(),
+            ),
+            (
+                crate::actions::DEVICE_MESH_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::DeviceMeshOperation::SetRole {
+                    role: "Personal".into(),
+                })
+                .unwrap(),
+            ),
         ];
+        let mut covered = BTreeSet::new();
         for (type_id, payload) in cases {
             let heads = doc.get_heads();
             assert!(matches!(
@@ -2543,11 +2285,53 @@ mod tests {
                 Some(ui::widget::ResourceOperationStart::Accepted)
             ));
             assert_eq!(doc.get_heads(), heads, "{type_id} touched Automerge");
-            assert!(app.local_pane_command.get().is_some());
+            covered.insert(type_id);
             app.local_pane_command.set(None);
+            app.device_mesh_commands.set(None);
             app.local_operation_status
                 .set(crate::actions::LocalOperationStatus::Idle);
+            app.local_operation_token = None;
         }
+
+        let heads = doc.get_heads();
+        assert!(
+            app.invoke_resource_operation(
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ACCOUNT_OPERATION_TYPE,
+                &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap(),
+                &doc,
+                &root,
+            )
+            .expect("account form command is admitted")
+        );
+        assert_eq!(doc.get_heads(), heads, "account command touched Automerge");
+        covered.insert(crate::actions::ACCOUNT_OPERATION_TYPE);
+
+        let heads = doc.get_heads();
+        assert!(
+            app.invoke_resource_operation(
+                tilo_actions::OperationKind::Effect,
+                crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
+                &serde_json::to_vec(&crate::actions::AgentProviderOperation::Add {
+                    protocol: "anthropic".into(),
+                })
+                .unwrap(),
+                &doc,
+                &root,
+            )
+            .expect("provider command is admitted")
+        );
+        assert_eq!(doc.get_heads(), heads, "provider command touched Automerge");
+        covered.insert(crate::actions::AGENT_PROVIDER_OPERATION_TYPE);
+
+        assert_eq!(
+            covered,
+            crate::actions::DEVICE_LOCAL_OPERATION_TYPES
+                .iter()
+                .copied()
+                .collect(),
+            "the unchanged-heads matrix must cover the complete closed set"
+        );
     }
 
     #[test]
