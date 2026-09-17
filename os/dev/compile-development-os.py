@@ -48,7 +48,8 @@ CACHE_CREDENTIALS = {'AWS_ACCESS_KEY_ID': 'aws_access_key_id',
 def validate_inputs(wpe, generation, revision, branch, mode='full-build',
                     architecture='x86_64', kernel_candidate='', wpe_stage_receipt=None,
                     wpe_adoption_receipt=None, wpe_adoption_sha256='',
-                    fex_payload_candidate='', windows_guest_candidate=''):
+                    fex_payload_candidate='', windows_guest_candidate='', hardware_profile='generic'):
+    hardware_definition(hardware_profile, architecture)
     if architecture not in ARCHITECTURES:
         raise ValueError('unsupported native architecture')
     if mode == 'full-build' and architecture == 'aarch64' and not kernel_candidate:
@@ -75,6 +76,64 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
         raise ValueError('full committed source revision required')
     if not branch.startswith('refs/heads/codex/'):
         raise ValueError('provisional full compilation is restricted to codex branches')
+
+
+def hardware_definition(profile, architecture):
+    """Use the image builder's declarative profile contract, without mutation."""
+    if profile == 'generic':
+        return None
+    spec = importlib.util.spec_from_file_location('compile_hardware', REPO / 'os/dev/hardware_profile.py')
+    hardware = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hardware)
+    definition = hardware.load_definition(profile, REPO / 'os/hardware/profiles')
+    if definition['architecture'] != architecture:
+        raise ValueError(f'{profile} requires a native {definition["architecture"]} builder')
+    return definition
+
+
+def local_hardware_inputs(profile, architecture):
+    """Fail before cache probes or compilation if locally staged firmware is invalid.
+
+    Firmware stays in the existing ignored build-context directory. This does not
+    publish it or arrange transport to a remote runner. The image builder repeats
+    verification when it consumes the bytes.
+    """
+    definition = hardware_definition(profile, architecture)
+    if definition is None or not definition['firmware']:
+        return {}
+    directory = REPO / 'os/hardware/firmware' / profile
+
+    def regular(relative):
+        path = REPO
+        for component in relative.parts:
+            path /= component
+            if path.is_symlink():
+                raise ValueError('local firmware path contains a symlink')
+        if not path.is_file():
+            raise ValueError(f'stage the {profile} firmware first: {relative.name}')
+        return path
+
+    manifest_path = regular((directory / 'manifest.json').relative_to(REPO))
+    if manifest_path.stat().st_size > 16384:
+        raise ValueError('firmware manifest is too large')
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if (not isinstance(manifest, dict)
+            or set(manifest) != {'schema_version', 'profile', 'files'}
+            or type(manifest['schema_version']) is not int or manifest['schema_version'] != 1
+            or manifest['profile'] != profile):
+        raise ValueError('invalid firmware manifest for selected hardware profile')
+    hashes = manifest['files']
+    if not isinstance(hashes, dict) or set(hashes) != set(definition['firmware']):
+        raise ValueError('firmware manifest must name exactly the hardware definition files')
+    for name, digest in hashes.items():
+        if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+            raise ValueError(f'invalid firmware SHA256 for {name}')
+        path = regular((directory / name).relative_to(REPO))
+        with path.open('rb') as stream:
+            actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+        if path.stat().st_size == 0 or actual != digest:
+            raise ValueError(f'firmware SHA256 mismatch: {name}')
+    return hashes
 
 
 def run(*command, env=None, capture=True, timeout=None):
@@ -432,7 +491,8 @@ def installation_tooling(image):
 
 def build_environment(wpe, generation, revision, manifest, signer, cache,
                       architecture='x86_64', pins=None, adoption_sha256='',
-                      fex_payload_candidate='', windows_guest_candidate=''):
+                      fex_payload_candidate='', windows_guest_candidate='', hardware_profile='generic'):
+    hardware_definition(hardware_profile, architecture)
     # No inherited TILO_BUILD_ARGS, prebuilt payload, skip-build or remote engine
     # settings can change this from a complete, local, source build.
     allowed = ('PATH', 'HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'REGISTRY_AUTH_FILE')
@@ -453,7 +513,7 @@ def build_environment(wpe, generation, revision, manifest, signer, cache,
                TILO_WPE_SOURCE_DATE_EPOCH='0',
                TILO_RAW_ROOTFS_RECEIPT=str(EVIDENCE / 'raw-rootfs.json'),
                TILO_RAW_ROOTFS_ONLY='1',
-               TILO_SKIP_BUILD='0', TILO_HARDWARE_PROFILE='generic',
+               TILO_SKIP_BUILD='0', TILO_HARDWARE_PROFILE=hardware_profile,
                TILO_BUILD_ARGS='--build-arg TILO_PREBUILT_APPS=0 --build-arg TILO_PREBUILT_DESKTOP=0 --build-arg TILO_CARGO_BUILD_JOBS=2 --build-arg TILO_REQUIRE_COMPILER_CACHE=1')
     if adoption_sha256:
         if wpe or not re.fullmatch(r'[0-9a-f]{64}', adoption_sha256):
@@ -527,6 +587,8 @@ def main(argv=None):
     parser.add_argument('--wpe-adoption-receipt', type=Path)
     parser.add_argument('--wpe-adoption-sha256', default='')
     parser.add_argument('--architecture', choices=tuple(ARCHITECTURES), default='x86_64')
+    parser.add_argument('--hardware-profile', default='generic',
+                        help='Hardware definition; firmware must already be staged locally in os/hardware/firmware/PROFILE')
     parser.add_argument('--kernel-candidate', default='')
     parser.add_argument('--fex-payload-candidate', default='')
     parser.add_argument('--windows-guest-candidate', default='')
@@ -539,7 +601,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate,
                     args.wpe_stage_receipt, args.wpe_adoption_receipt, args.wpe_adoption_sha256,
-                    args.fex_payload_candidate, args.windows_guest_candidate)
+                    args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile)
     for candidate in (args.rpms_candidate, args.builder_candidate):
         if candidate:
             immutable_candidate(candidate)
@@ -547,6 +609,7 @@ def main(argv=None):
         raise ValueError('already-root matching native Linux guest required')
     if run('git', 'rev-parse', 'HEAD') != args.revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
         raise ValueError('checkout must be clean and match the requested revision')
+    firmware = local_hardware_inputs(args.hardware_profile, args.architecture) if args.mode == 'full-build' else {}
     stage = adopted = adoption_raw = None
     if args.mode == 'full-build':
         if args.wpe_adoption_receipt:
@@ -579,6 +642,7 @@ def main(argv=None):
     write_receipt('native-inputs.json', native_inputs)
     write_receipt('inputs.json', {'purpose': 'retained-full-source-compilation',
         'installable': False, 'revision': args.revision, 'architecture': args.architecture,
+        'hardware_profile': args.hardware_profile, 'firmware_sha256': firmware,
         'generation': args.generation, 'wpe_candidate': args.wpe or None, 'builder': args.builder_candidate,
         'wpe_input_mode': 'adopted-development' if adopted is not None else 'current-producer',
         'wpe_adoption_sha256': args.wpe_adoption_sha256 or None,
@@ -623,7 +687,7 @@ def main(argv=None):
         '--output', str(PRIVATE / 'public')))
     shutil.copytree(PRIVATE / 'public', EVIDENCE / 'public-trust')
     env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache, args.architecture, pins, args.wpe_adoption_sha256,
-                            args.fex_payload_candidate, args.windows_guest_candidate)
+                            args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile)
     epoch = int(run('git', 'show', '-s', '--format=%ct', args.revision))
     env['SOURCE_DATE_EPOCH'] = str(epoch)
     compile_with_capacity_watchdog(env)
