@@ -220,6 +220,7 @@ async fn invocation_preserves_typed_argument_maps_through_the_broker() {
                 "content": "sha256:0123456789abcdef"
             });
 
+            let mut transported = None;
             for arguments in [original.clone(), json!({})] {
                 let invoke = server.handle(call(
                     "qos_invoke",
@@ -246,19 +247,20 @@ async fn invocation_preserves_typed_argument_maps_through_the_broker() {
                     .expect("MCP invocation uses the canonical typed-argument envelope");
                 let decoded: serde_json::Map<String, Value> =
                     serde_json::from_str(encoded).expect("typed argument envelope contains JSON");
-                assert_eq!(Value::Object(decoded), arguments);
+                assert_eq!(&decoded, arguments.as_object().unwrap());
+                if arguments == original {
+                    transported = Some(decoded);
+                }
             }
 
-            let delivered = original.as_object().unwrap();
+            let delivered = transported.expect("nonempty argument map crossed the broker");
             let params = [qos_actions::ActionParam::required(
                 "region",
                 qos_actions::ParamType::Text,
                 "normalized crop region",
             )];
-            let crop_only = serde_json::Map::from_iter([(
-                "region".to_string(),
-                delivered["region"].clone(),
-            )]);
+            let crop_only =
+                serde_json::Map::from_iter([("region".to_string(), delivered["region"].clone())]);
             let bound = qos_actions::ActionArgs::bind_json(&params, &crop_only)
                 .expect("a transported crop region remains typed text");
             assert_eq!(
