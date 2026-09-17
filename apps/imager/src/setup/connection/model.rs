@@ -31,6 +31,11 @@ pub struct RelativePath {
     components: Vec<NativeName>,
 }
 impl RelativePath {
+    /// Construct a bounded relative path without interpreting Unix bytes as text.
+    ///
+    /// # Errors
+    /// Returns `InvalidPath` for empty, absolute, traversal or NUL-containing paths,
+    /// and `LimitExceeded` when a path, component or depth exceeds its bound.
     pub fn unix(path: &[u8]) -> Result<Self, ModelError> {
         if path.len() > MAX_PATH_UNITS {
             return Err(ModelError::LimitExceeded);
@@ -41,6 +46,11 @@ impl RelativePath {
             .collect();
         Self::validate(components)
     }
+    /// Construct a bounded relative path preserving native Windows UTF-16 units.
+    ///
+    /// # Errors
+    /// Returns `InvalidPath` for empty, absolute, traversal, reserved or unsafe
+    /// names, and `LimitExceeded` when a path, component or depth exceeds its bound.
     pub fn windows(path: &[u16]) -> Result<Self, ModelError> {
         if path.len() > MAX_PATH_UNITS {
             return Err(ModelError::LimitExceeded);
@@ -81,9 +91,8 @@ impl RelativePath {
                     .map(|u| if (97..=122).contains(u) { u - 32 } else { *u })
                     .collect();
                 let reserved = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
-                let numbered = stem.len() == 4
-                    && (stem[..3] == [67, 79, 77] || stem[..3] == [76, 80, 84])
-                    && ([49, 50, 51, 52, 53, 54, 55, 56, 57, 185, 178, 179].contains(&stem[3]));
+                let numbered = matches!(stem.as_slice(), [67, 79, 77, number] | [76, 80, 84, number]
+                    if [49, 50, 51, 52, 53, 54, 55, 56, 57, 185, 178, 179].contains(number));
                 if numbered
                     || reserved
                         .iter()
@@ -99,12 +108,17 @@ impl RelativePath {
         &self.components
     }
     pub fn encoding(&self) -> Encoding {
-        match self.components[0] {
-            NativeName::Unix(_) => Encoding::Unix,
-            NativeName::Windows(_) => Encoding::Windows,
+        match self.components.first() {
+            Some(NativeName::Windows(_)) => Encoding::Windows,
+            // Constructors require at least one homogeneous native component.
+            Some(NativeName::Unix(_)) | None => Encoding::Unix,
         }
     }
     /// Lossless conversion only; never replacement characters or host-OS guessing.
+    ///
+    /// # Errors
+    /// Returns `InvalidPath` if text or names cannot be represented safely in the
+    /// requested encoding, or `LimitExceeded` if the converted path exceeds a bound.
     pub fn to_encoding(&self, encoding: Encoding) -> Result<Self, ModelError> {
         if self.encoding() == encoding {
             return Ok(self.clone());
@@ -158,8 +172,9 @@ impl RelativePath {
         self.contains(other) || other.contains(self)
     }
     pub(crate) fn parent(&self) -> Option<Self> {
-        (self.components.len() > 1).then(|| Self {
-            components: self.components[..self.components.len() - 1].to_vec(),
+        let (_, parent) = self.components.split_last()?;
+        (!parent.is_empty()).then(|| Self {
+            components: parent.to_vec(),
         })
     }
 }
@@ -190,7 +205,8 @@ impl EntryState {
 }
 /// Explicit endpoint facts. Canonical keys must come from that endpoint's
 /// actual comparison semantics, including case and normalization, for EVERY
-/// candidate native path. Missing evidence blocks the comparison.
+/// candidate native path and uncertain observation scope. Missing evidence
+/// blocks comparisons whose scope disjointness cannot be established.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NamePolicy {
     Exact,
@@ -235,6 +251,12 @@ pub struct ObservedTree {
     pub(crate) observation: Observation,
 }
 impl ObservedTree {
+    /// Validate bounded adapter observations and endpoint namespace evidence.
+    ///
+    /// # Errors
+    /// Rejects excessive entries, scope issues or name evidence; duplicate paths;
+    /// absent/non-directory parents; wrong native encodings; entries supplied for
+    /// an unavailable endpoint; and malformed or inconsistent canonical keys.
     pub fn new(
         endpoint: Endpoint,
         entries: impl IntoIterator<Item = (RelativePath, EntryState)>,
@@ -275,10 +297,11 @@ impl ObservedTree {
                 if total_bytes > MAX_CANONICAL_KEY_BYTES {
                     return Err(ModelError::LimitExceeded);
                 }
-                if let Some(parent) = path.parent() {
-                    if keys.get(&parent).map(Vec::as_slice) != Some(&key[..key.len() - 1]) {
-                        return Err(ModelError::InvalidKeys);
-                    }
+                if let Some(parent) = path.parent()
+                    && keys.get(&parent).map(Vec::as_slice)
+                        != key.split_last().map(|(_, prefix)| prefix)
+                {
+                    return Err(ModelError::InvalidKeys);
                 }
             }
         }
@@ -311,14 +334,13 @@ fn bounded_entries(
         }
     }
     for path in result.keys() {
-        if let Some(parent) = path.parent() {
-            if result
+        if let Some(parent) = path.parent()
+            && result
                 .get(&parent)
                 .or_else(|| result.get(&parent.logical()))
                 != Some(&EntryState::Directory)
-            {
-                return Err(ModelError::InvalidTree);
-            }
+        {
+            return Err(ModelError::InvalidTree);
         }
     }
     Ok(result)
@@ -346,6 +368,11 @@ impl VerifiedBaseline {
             entries: None,
         }
     }
+    /// Accept a bounded store-adapter assertion of a durably verified baseline.
+    ///
+    /// # Errors
+    /// Rejects excessive entries, duplicate paths (including lossless native
+    /// aliases), and paths whose parent is absent or is not a directory.
     pub fn from_verified(
         connection: ConnectionId,
         source: EndpointIdentity,
@@ -407,7 +434,7 @@ pub enum ConnectionStatus {
     ChangesPending,
     SourceUnavailable,
     DestinationUnavailable,
-    /// Reserved for the durable service; a pure ReconcilePlan never emits this.
+    /// Reserved for the durable service; a pure `ReconcilePlan` never emits this.
     UpToDate,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
