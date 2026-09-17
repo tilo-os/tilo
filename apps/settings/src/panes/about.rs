@@ -165,7 +165,7 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         "Identity backup",
         rows(vec![
             caption(
-                "Create an encrypted portable copy of your identity. qOS asks for a passphrase, \
+                "Create an encrypted portable copy of your identity. Tilo asks for a passphrase, \
                  lets you choose where to save it, and verifies the copy before confirming success.",
             ),
             Box::new(
