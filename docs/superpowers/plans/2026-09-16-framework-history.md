@@ -23,6 +23,8 @@
 
 ### Task 1: Shared graph-based History controller
 
+**Status:** Reviewed and committed in `3ba856d2e`; 10 controller tests pass.
+
 **Files:** Create ui/src/history_mode/mod.rs and ui/src/history_mode/tests.rs; add module export to ui/src/lib.rs only.
 
 **Interfaces:** Consume existing HistorySource, HistoryEntryId, group_entries, compare_entries, AutoCommit and RecordId. Produce public HistoryController, HistoryResource, PreviewSide, HistorySnapshot, RestoreReview and HistoryError. Keep UI/host details out of these types. HistoryResource includes app id and record id (and namespace/room identity to prevent cross-workspace reuse); HistorySnapshot exposes immutable bytes and exact heads. RestoreReview binds resource, selection and reviewed live heads. Methods cover new, refresh, select, compare-side selection, snapshot, back_to_live, review_restore and validate_restore. The latter only validates; actual writes and permissions belong to Task 3.
@@ -36,6 +38,8 @@
 
 ### Task 2: Transactional content-only restoration engine
 
+**Status:** Reviewed and committed in `6237abd52`; exact-root engine extended by Task2b.
+
 **Files:** new ui/src/history_mode/restore.rs and focused tests; reuse existing Automerge APIs without changing the old undo helper for unrelated callers.
 
 **Interfaces:** Consume Task 1's immutable snapshot/review and explicit app-owned content root schema. Produce a fallible restore preparation/application interface that does not commit or claim authorization. The host in Task 3 supplies exclusive canonical record action custody and current permissions. It must reject pending edits, unknown schema roots or unsupported patch semantics before touching live state.
@@ -48,6 +52,8 @@
 
 ### Task 2b: Explicit mixed-content schema selection
 
+**Status:** Reviewed and committed in `4d6bdf425`; 36 restore tests and 46 full History tests pass.
+
 **Discovery:** The complete app audit found dynamic root families (Browser bookmarks, Store drafts) and mixed nested trees (Sheets workbook content/view, Remote profile/presence). Whole-root restoration alone cannot satisfy the all-app contract.
 
 - [ ] Extend the checked engine with explicit audited root-family and nested content selectors. Resolve current/target key membership without guessing all roots or leaking generated static schemas. Reject ambiguous/overlapping/reserved selectors before mutation.
@@ -55,6 +61,8 @@
 - [ ] Keep the same exact-frontier, typed-content, rollback, no-op and one-pending-transaction guarantees. Add separate focused RED/GREEN evidence and independent review before enabling mixed-root app restore.
 
 ### Task 3a: Canonical owned restore transaction
+
+**Status:** Reviewed and committed in `022e935ed`; 11 focused and 59 native tests pass. Existing bound admission mismatch is a required Task3b correction.
 
 **Files:** narrow ui/src/state and bound_dispatch changes; focused history transaction tests.
 
@@ -65,9 +73,9 @@
 
 ### Task 3b: Shared host surface and enforced preview/restore boundary
 
-**Files:** ui/src/application.rs, ui/src/widget/app_widget.rs, new focused ui/src/history_mode host/surface/preview modules, and narrow bound_dispatch integration if necessary. Add focused integration tests beside owning modules.
+**Files:** ui/src/app.rs, ui/src/headless.rs, ui/src/widget/tile_host.rs, ui/src/application.rs, ui/src/widget/app_widget.rs, ui/src/launch.rs, focused ui/src/history_mode host/surface/preview modules, and narrow permissions/binding-policy integration where required. Add focused integration tests beside owning modules.
 
-**Interfaces:** Consume Task 1's controller and Task 2's checked restore engine. Introduce a required explicit preview-rendering contract for registered persistent apps; exact signature is finalized against migration inventory before this task dispatch. The shared host owns the History surface and isolated preview lifetime. No application duplicates controller state. Use current CallbackBinding and owned ActionFrame for restore.
+**Interfaces:** Consume Task1's controller, Task2/2b's checked restore engine, and Task3a's canonical owned restore transaction. Introduce a required explicit preview-rendering contract for registered persistent apps; exact signature is finalized against migration inventory before this task dispatch. The shared host owns the History surface and isolated preview lifetime. No application duplicates controller state. Use current CallbackBinding and owned ActionFrame for restore.
 
 - [ ] Record precise host/preview interface and file ownership in the task brief before implementation, based on current inventory and peer feedback.
 - [ ] Add failing production-path tests for automatic entry point, history selection, mutation/effect refusal, live-update isolation, Back to live, stale confirmation and current authorization.
@@ -88,7 +96,7 @@
 
 ### Task 4b: Complete application migration
 
-**Files:** all managed application registration/root files identified by /tmp/qos-history-migration-inventory.md; existing Writer history_panel/widget and File Explorer history integration; docs explaining the enforced contract.
+**Files:** all managed application registration/root files identified by .superpowers/sdd/2026-09-16-framework-history/migration-inventory.md and app-migration-checklist.md; existing Writer history_panel/widget and File Explorer history integration; docs explaining the enforced contract.
 
 **Interfaces:** Consume Task 3's finalized preview contract, automatic shared History surface, and host navigation intent. App renderers consume supplied snapshots without live services. Update the task brief with the authoritative complete app checklist before dispatch.
 
