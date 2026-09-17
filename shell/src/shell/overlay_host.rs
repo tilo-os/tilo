@@ -41,7 +41,8 @@ use ui::widget::{
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::capture_surface::{
-    CaptureMirrorImage, CaptureSurfaceKind, CaptureSurfaceRequest,
+    CaptureMirrorImage, CaptureSurfaceKind, CaptureSurfaceRequest, capture_mirror_initial_size,
+    capture_mirror_origin, visible_capture_spawn,
 };
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::collaborators_overlay::{
@@ -787,92 +788,6 @@ pub enum WifiSecretAction {
 }
 
 pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
-
-fn capture_mirror_origin(
-    bounds: Rect,
-    source: Option<Rect>,
-    window_size: vello::kurbo::Size,
-) -> Point {
-    let top = bounds.y0 + 52.0;
-    let right = bounds.x1 - window_size.width - 16.0;
-    let bottom = bounds.y1 - window_size.height - 16.0;
-    let left = bounds.x0 + 16.0;
-    let candidates = [
-        Point::new(right, bottom),
-        Point::new(right, top),
-        Point::new(left, bottom),
-        Point::new(left, top),
-    ];
-    source.map_or(candidates[0], |source| {
-        candidates
-            .into_iter()
-            .enumerate()
-            .min_by(|(ai, a), (bi, b)| {
-                let a_rect = Rect::from_origin_size(*a, window_size);
-                let b_rect = Rect::from_origin_size(*b, window_size);
-                let a_overlap = a_rect.intersect(source).area().max(0.0);
-                let b_overlap = b_rect.intersect(source).area().max(0.0);
-                a_overlap.total_cmp(&b_overlap).then_with(|| ai.cmp(bi))
-            })
-            .map_or(candidates[0], |(_, origin)| origin)
-    })
-}
-
-/// Keep the ownership handoff meaningful when its source lives on the
-/// continuous desktop but wholly outside the physical output. Visible pixels
-/// are used exactly; off-screen pixels collapse to a small edge portal on the
-/// side where the source lives, so the resulting `PiP` arrives from its real
-/// virtual direction instead of popping in at the destination.
-fn visible_capture_spawn(bounds: Rect, source: Option<Rect>) -> Option<Rect> {
-    const PORTAL_WIDTH: f64 = 84.0;
-    const PORTAL_HEIGHT: f64 = 52.0;
-    const EDGE_INSET: f64 = 6.0;
-    const TOP_SAFE: f64 = 48.0;
-
-    let source = source.filter(|rect| rect.is_finite() && rect.area() > 1.0)?;
-    let visible = source.intersect(bounds);
-    if visible.width() > 1.0 && visible.height() > 1.0 {
-        return Some(visible);
-    }
-
-    let center = source.center();
-    let x = if center.x < bounds.x0 {
-        bounds.x0 + EDGE_INSET
-    } else if center.x > bounds.x1 {
-        bounds.x1 - EDGE_INSET - PORTAL_WIDTH
-    } else {
-        (center.x - PORTAL_WIDTH / 2.0).clamp(
-            bounds.x0 + EDGE_INSET,
-            bounds.x1 - EDGE_INSET - PORTAL_WIDTH,
-        )
-    };
-    let y = if center.y < bounds.y0 {
-        bounds.y0 + TOP_SAFE
-    } else if center.y > bounds.y1 {
-        bounds.y1 - EDGE_INSET - PORTAL_HEIGHT
-    } else {
-        (center.y - PORTAL_HEIGHT / 2.0)
-            .clamp(bounds.y0 + TOP_SAFE, bounds.y1 - EDGE_INSET - PORTAL_HEIGHT)
-    };
-    Some(Rect::new(x, y, x + PORTAL_WIDTH, y + PORTAL_HEIGHT))
-}
-
-fn capture_mirror_initial_size(
-    viewport: Rect,
-    source_aspect: f64,
-    preferred: Option<vello::kurbo::Size>,
-) -> vello::kurbo::Size {
-    let requested_width = preferred.map_or(420.0, |size| size.width);
-    let width_cap = (viewport.width() * 0.44).clamp(300.0, 720.0);
-    let width = requested_width.min(width_cap).clamp(240.0, 720.0);
-    let aspect = preferred
-        .filter(|size| size.width > 1.0 && size.height > 1.0)
-        .map_or(source_aspect, |size| size.width / size.height)
-        .max(0.1);
-    let height_cap = (viewport.height() * 0.55).max(135.0);
-    let height = (width / aspect).clamp(135.0, 520.0).min(height_cap);
-    vello::kurbo::Size::new(width, height)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShortcutGuideFocus {
@@ -23911,69 +23826,6 @@ mod tests {
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
-
-    #[test]
-    fn pip_placement_avoids_its_source_and_keeps_edge_margin() {
-        let bounds = Rect::new(0.0, 0.0, 1600.0, 900.0);
-        let size = vello::kurbo::Size::new(420.0, 200.0);
-        let bottom_right_source = Rect::new(900.0, 400.0, 1580.0, 880.0);
-        let origin = capture_mirror_origin(bounds, Some(bottom_right_source), size);
-        let placed = Rect::from_origin_size(origin, size);
-        assert_eq!(placed.x1, 1584.0);
-        assert_eq!(
-            placed.y0, 52.0,
-            "top-right should beat an obscured bottom-right"
-        );
-        assert_eq!(placed.intersect(bottom_right_source).area(), 0.0);
-
-        let default = capture_mirror_origin(bounds, None, size);
-        assert_eq!(default, Point::new(1164.0, 684.0));
-    }
-
-    #[test]
-    fn offscreen_pip_source_enters_from_its_virtual_desktop_edge() {
-        let bounds = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        let left =
-            visible_capture_spawn(bounds, Some(Rect::new(-1_200.0, 180.0, -200.0, 780.0))).unwrap();
-        assert_eq!(left.x0, 6.0);
-        assert!(left.y0 >= 48.0 && left.y1 <= 894.0);
-
-        let right =
-            visible_capture_spawn(bounds, Some(Rect::new(1_900.0, 120.0, 2_900.0, 720.0))).unwrap();
-        assert_eq!(right.x1, 1_594.0);
-
-        let partly_visible = Rect::new(1_500.0, 100.0, 1_900.0, 500.0);
-        assert_eq!(
-            visible_capture_spawn(bounds, Some(partly_visible)),
-            Some(Rect::new(1_500.0, 100.0, 1_600.0, 500.0))
-        );
-    }
-
-    #[test]
-    fn compact_pip_initial_size_preserves_aspect_without_dominating_viewport() {
-        let compact = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let size = capture_mirror_initial_size(compact, 16.0 / 9.0, None);
-        assert_eq!(size.width, 352.0);
-        assert_eq!(size.height, 198.0);
-        assert!(size.width < compact.width() / 2.0);
-
-        let preferred =
-            capture_mirror_initial_size(compact, 1.0, Some(vello::kurbo::Size::new(480.0, 270.0)));
-        assert_eq!(preferred.width, 352.0);
-        assert_eq!(preferred.height, 198.0);
-    }
-
-    #[test]
-    fn tall_pinned_screenshot_uses_a_readable_initial_viewport() {
-        let compact = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let size = capture_mirror_initial_size(
-            compact,
-            524.0 / 3_021.0,
-            Some(vello::kurbo::Size::new(340.0, 420.0)),
-        );
-        assert_eq!(size.width, 340.0);
-        assert_eq!(size.height, 330.0);
-    }
 
     #[test]
     fn capture_surface_requests_reuse_live_id_and_add_pinned_surface() {
