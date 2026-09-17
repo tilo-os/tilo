@@ -112,6 +112,16 @@ impl LiveAccountTester {
         Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
     }
 
+    fn imap_tagged_ok(response: &str, tag: &str) -> bool {
+        response.lines().any(|line| {
+            let mut tokens = line.split_ascii_whitespace();
+            tokens.next() == Some(tag)
+                && tokens
+                    .next()
+                    .is_some_and(|status| status.eq_ignore_ascii_case("OK"))
+        })
+    }
+
     /// Complete TLS, read the greeting, authenticate, and log out. A TCP
     /// accept alone is deliberately not success: it says nothing about the
     /// saved credential or whether this is an IMAP endpoint.
@@ -188,10 +198,7 @@ impl LiveAccountTester {
             Some("tilo1"),
             std::time::Instant::now() + Self::NETWORK_TIMEOUT,
         )?;
-        let accepted = login.lines().any(|line| {
-            line.get(..7)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("tilo1 OK"))
-        });
+        let accepted = Self::imap_tagged_ok(&login, "tilo1");
         if !accepted {
             return Err("IMAP server rejected the saved credential".into());
         }
@@ -286,6 +293,31 @@ mod tests {
         )
         .expect("tagged completion");
         assert!(parsed.contains("tilo1 OK"));
+    }
+
+    #[test]
+    fn imap_login_requires_an_exact_matching_success_status() {
+        assert!(LiveAccountTester::imap_tagged_ok(
+            "tilo1 OK LOGIN completed\r\n",
+            "tilo1"
+        ));
+        assert!(LiveAccountTester::imap_tagged_ok(
+            "tilo1 ok LOGIN completed\r\n",
+            "tilo1"
+        ));
+        for response in [
+            "tilo1 NO credential rejected\r\n",
+            "tilo1 BAD invalid login\r\n",
+            "tilo1 OKAY invalid status\r\n",
+            "tilo2 OK unrelated command\r\n",
+            "* OK untagged response\r\n",
+            "tilo1 NO rejected\r\n* OK server ready\r\n",
+        ] {
+            assert!(
+                !LiveAccountTester::imap_tagged_ok(response, "tilo1"),
+                "{response:?}"
+            );
+        }
     }
 
     #[test]

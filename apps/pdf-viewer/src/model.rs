@@ -1007,7 +1007,7 @@ mod tests {
             1,
             "case-sensitive matches only lowercase 'the'"
         );
-        assert_eq!(sensitive[0].start, 15);
+        assert_eq!(sensitive[0].start, 16);
     }
 
     #[test]

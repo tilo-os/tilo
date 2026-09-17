@@ -288,20 +288,21 @@ fn view_mode_toggle_switches_between_list_and_grid() {
 }
 
 #[test]
-fn initial_path_prefers_workspace_then_home_then_cwd_then_root() {
-    // `initial_path()` composes three fallback sources in order. We can't
-    // mock all of them in-process, but we can assert the public contract:
-    // the returned path is either the canonical workspace root, the user's home, the cwd, or
-    // `/` — and that the first existing option is chosen. On a normal dev
-    // machine `/workspace` does not exist, so we expect home or cwd.
-    use file_explorer::model::{WORKSPACE_ROOT, initial_path};
+fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root() {
+    // Assert the exact startup path for the current environment, including
+    // configured mounts and the sandbox's granted user home. An explicit
+    // workspace override suppresses the legacy /workspace fallback.
+    use file_explorer::model::{initial_path, user_home, workspace_roots};
     let p = initial_path();
-    let workspace = std::path::PathBuf::from(WORKSPACE_ROOT);
-    let home = dirs::home_dir();
+    let workspace = workspace_roots().into_iter().next();
+    let legacy = PathBuf::from("/workspace");
+    let home = user_home();
     let cwd = std::env::current_dir().ok();
 
-    if workspace.exists() {
+    if let Some(workspace) = workspace {
         assert_eq!(p, workspace, "workspace wins when present");
+    } else if std::env::var_os("TILO_WORKSPACE_ROOTS").is_none() && legacy.exists() {
+        assert_eq!(p, legacy, "legacy workspace wins without an override");
     } else if let Some(h) = home {
         assert_eq!(p, h, "home is the next fallback when workspace absent");
     } else if let Some(c) = cwd {

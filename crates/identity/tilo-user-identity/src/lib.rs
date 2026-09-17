@@ -30,11 +30,12 @@
 //!    with Ed25519.
 //!
 //! The domain-tag constants are **frozen wire ABI** and must never
-//! change:
+//! change. Their historical `qos` prefix is protocol data, independent of
+//! the product's display name:
 //!
-//! - [`DEVCERT_PREIMAGE_TAG`]     — `tilo-devcert-v1\0`
-//! - [`REVOCATION_PREIMAGE_TAG`]  — `tilo-revocation-v1\0`
-//! - [`ENROLLMENT_PREIMAGE_TAG`]  — `tilo-enrollment-v1\0`
+//! - [`DEVCERT_PREIMAGE_TAG`]     — `qos-devcert-v1\0`
+//! - [`REVOCATION_PREIMAGE_TAG`]  — `qos-revocation-v1\0`
+//! - [`ENROLLMENT_PREIMAGE_TAG`]  — `qos-enrollment-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -225,14 +226,17 @@ mod tests {
     /// silently disconnect every device in the field. Freeze them.
     #[test]
     fn signing_preimage_is_frozen_abi() {
-        assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
+        assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"qos-devcert-v1\0");
         assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 15);
 
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
+        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"qos-revocation-v1\0");
         assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 18);
 
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v1\0");
+        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"qos-enrollment-v1\0");
         assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 18);
+
+        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"qos-dir-delta-v1\0");
+        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 17);
     }
 
     #[test]
