@@ -47,7 +47,7 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic          b"TiloVEPRJ"
+//! 0       8     magic          b"QosVEPRJ"
 //! 8       2     version        u16 LE — what wrote this file
 //! 10      2     min_reader     u16 LE — the oldest reader that may open it
 //! 12      4     payload_len    u32 LE — length of the Automerge document
@@ -77,7 +77,10 @@ use crate::doc::VideoDoc;
 use crate::model::Project;
 
 /// First eight bytes of every project file.
-pub const MAGIC: &[u8; 8] = b"TiloVEPRJ";
+///
+/// This persisted identifier predates the product rename and must remain stable so existing
+/// projects continue to open.
+pub const MAGIC: &[u8; 8] = b"QosVEPRJ";
 
 /// The format version this build writes.
 pub const FORMAT_VERSION: u16 = 1;
