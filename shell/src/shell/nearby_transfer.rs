@@ -1195,6 +1195,31 @@ mod tests {
     }
 
     #[test]
+    fn secure_source_is_anchored_across_intermediate_rename_and_symlink_swap() {
+        let tmp = TempDir::new().unwrap();
+        let grant = tmp.path().join("grant");
+        let folder = grant.join("folder");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("report.txt"), b"original").unwrap();
+
+        let source = SecureNearbySource::open_beneath(&grant, &folder).unwrap();
+        let moved = grant.join("moved");
+        fs::rename(&folder, &moved).unwrap();
+        std::os::unix::fs::symlink("/etc", &folder).unwrap();
+
+        assert!(
+            SecureNearbySource::open_beneath(&grant, &folder.join("passwd")).is_err(),
+            "an intermediate symlink swap must not escape the grant"
+        );
+        let mut store = NearbyTransferStore::open(tmp.path().join("store"), 10).unwrap();
+        let staged = store
+            .stage_secure_with_id(source, "peer".into(), 10, [9; 16])
+            .expect("opened directory capability remains anchored after rename");
+        assert_eq!(staged.kind, TransferKind::FolderArchive);
+        assert!(store.object_path(staged.id).is_file());
+    }
+
+    #[test]
     fn extraction_rejects_parent_traversal() {
         let tmp = TempDir::new().unwrap();
         let archive_path = tmp.path().join("bad.tar");
