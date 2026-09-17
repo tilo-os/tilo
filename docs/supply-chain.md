@@ -141,7 +141,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
   set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built +
-  pushed by the `snapshot-rpms` CI job to `code.podesta.ai/tilo/rpms`), pinned in
+  pushed by the `snapshot-rpms` CI job to `code.podesta.ai/qos/rpms`), pinned in
   `os/rpms-snapshot.env` (`RPMS_REF=…@sha256`). Every `os/Containerfile` `dnf
   install` mounts that repo and installs from it only
   (`--setopt=reposdir=/repo`), never live Fedora mirrors.
