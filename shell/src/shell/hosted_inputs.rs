@@ -209,6 +209,7 @@ impl HostedTileInputs {
         before != tree.native_document_tabs.len()
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn restore_documents(&self, tree: &mut super::state::WorkspaceTree) {
         // Old profiles can contain already closed tabs. Filter before filesystem I/O.
         self.prune_documents(tree);
