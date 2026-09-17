@@ -462,6 +462,26 @@ struct InspectorRects {
     font_input: Option<Rect>,
 }
 
+/// Reusable horizontal geometry for every inspector section.
+#[derive(Clone, Copy)]
+struct InspectorColumns {
+    left: f64,
+    right: f64,
+    width: f64,
+}
+
+impl InspectorColumns {
+    fn new(inspector: Rect, padding: f64) -> Self {
+        let left = inspector.x0 + padding;
+        let right = inspector.x1 - padding;
+        Self {
+            left,
+            right,
+            width: right - left,
+        }
+    }
+}
+
 /// Framework event state shared by the small embedded-widget routers.
 ///
 /// Keeping this boundary explicit prevents every router from mirroring the
@@ -2047,21 +2067,19 @@ impl SlidesApp {
         labels: &mut Vec<Label>,
     ) -> InspectorRects {
         let pad = 16.0;
-        let x0 = inspector.x0 + pad;
-        let x1 = inspector.x1 - pad;
-        let inner_w = x1 - x0;
+        let columns = InspectorColumns::new(inspector, pad);
         let y = inspector.y0 + pad;
 
         let (y, font_input_rect) = if let Some(el) = self.selected_element() {
-            self.build_inspector_element(el, x0, x1, inner_w, y, buttons, labels)
+            self.build_inspector_element(el, columns, y, buttons, labels)
         } else {
             (
-                self.build_inspector_slide_props(x0, x1, y, buttons, labels),
+                self.build_inspector_slide_props(columns.left, columns.right, y, buttons, labels),
                 None,
             )
         };
 
-        let nb = self.build_inspector_notes(inspector, x0, x1, pad, y, labels, buttons);
+        let nb = self.build_inspector_notes(inspector, columns, pad, y, labels, buttons);
 
         InspectorRects {
             notes: Some(nb),
@@ -2086,25 +2104,17 @@ impl SlidesApp {
     /// swatches, (text elements only) the TYPE row, and the arrange actions.
     /// Returns the y just past the arrange row and the font-size input's
     /// rect (`Some` only for a selected text element).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the inspector's shared column geometry plus the selected element and the two \
-                  output buffers every section pushes into; bundling them would only re-create \
-                  this argument list as a throwaway struct"
-    )]
     fn build_inspector_element(
         &self,
         el: &Element,
-        x0: f64,
-        x1: f64,
-        inner_w: f64,
+        columns: InspectorColumns,
         y: f64,
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
     ) -> (f64, Option<Rect>) {
         let mut y = y;
         labels.push(Label {
-            pos: Point::new(x0, y),
+            pos: Point::new(columns.left, y),
             text: el.kind.label().to_uppercase(),
             font: 16.0,
             color: LabelColor::Primary,
@@ -2114,10 +2124,10 @@ impl SlidesApp {
 
         // Fill swatches (theme presets) plus a Custom… button that opens
         // the embeddable colour picker for an arbitrary fill.
-        Self::push_inspector_header(labels, x0, &mut y, "FILL");
-        y = self.swatch_grid(buttons, x0, inner_w, y, &FILL_ROLES, &el.fill, true);
+        Self::push_inspector_header(labels, columns.left, &mut y, "FILL");
+        y = self.swatch_grid(buttons, columns, y, &FILL_ROLES, &el.fill, true);
         y += 8.0;
-        let custom = Rect::new(x0, y, x1, y + 26.0);
+        let custom = Rect::new(columns.left, y, columns.right, y + 26.0);
         buttons.push(UiButton {
             rect: custom,
             kind: ButtonKind::Text {
@@ -2135,20 +2145,26 @@ impl SlidesApp {
         y += 26.0 + 10.0;
 
         // Stroke swatches.
-        Self::push_inspector_header(labels, x0, &mut y, "STROKE");
-        y = self.swatch_grid(buttons, x0, inner_w, y, &STROKE_ROLES, &el.stroke, false);
+        Self::push_inspector_header(labels, columns.left, &mut y, "STROKE");
+        y = self.swatch_grid(buttons, columns, y, &STROKE_ROLES, &el.stroke, false);
         y += 10.0;
 
         let font_input_rect = if el.kind == ElementKind::Text {
-            let (new_y, rect) =
-                Self::build_inspector_type_row(el, x0, x1, inner_w, y, buttons, labels);
+            let (new_y, rect) = Self::build_inspector_type_row(el, columns, y, buttons, labels);
             y = new_y;
             rect
         } else {
             None
         };
 
-        y = Self::build_inspector_arrange_row(x0, x1, inner_w, y, buttons, labels);
+        y = Self::build_inspector_arrange_row(
+            columns.left,
+            columns.right,
+            columns.width,
+            y,
+            buttons,
+            labels,
+        );
 
         (y, font_input_rect)
     }
@@ -2215,28 +2231,20 @@ impl SlidesApp {
     /// The TYPE row for a selected text element: the font-size input's
     /// reserved rect, bold/italic toggles, and an alignment segmented
     /// control. Returns the y just past it and the font-size input's rect.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the inspector's shared column geometry plus the selected element and the two \
-                  output buffers every section pushes into; bundling them would only re-create \
-                  this argument list as a throwaway struct"
-    )]
     fn build_inspector_type_row(
         el: &Element,
-        x0: f64,
-        x1: f64,
-        inner_w: f64,
+        columns: InspectorColumns,
         y: f64,
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
     ) -> (f64, Option<Rect>) {
         let mut y = y;
-        Self::push_inspector_header(labels, x0, &mut y, "TYPE");
+        Self::push_inspector_header(labels, columns.left, &mut y, "TYPE");
         let bh = 30.0;
         // The font size is a click-to-type NumberInput (with ± steppers)
         // — the widget draws itself, so we only reserve its rect here.
-        let font_input_rect = Some(Rect::new(x0, y, x0 + 136.0, y + bh));
-        let bold = Rect::new(x1 - 36.0, y, x1, y + bh);
+        let font_input_rect = Some(Rect::new(columns.left, y, columns.left + 136.0, y + bh));
+        let bold = Rect::new(columns.right - 36.0, y, columns.right, y + bh);
         buttons.push(UiButton {
             rect: bold,
             kind: ButtonKind::Text {
@@ -2246,7 +2254,12 @@ impl SlidesApp {
             },
             hit: Hit::ToggleBold,
         });
-        let italic = Rect::new(x1 - 36.0 - 6.0 - 36.0, y, x1 - 36.0 - 6.0, y + bh);
+        let italic = Rect::new(
+            columns.right - 36.0 - 6.0 - 36.0,
+            y,
+            columns.right - 36.0 - 6.0,
+            y + bh,
+        );
         buttons.push(UiButton {
             rect: italic,
             kind: ButtonKind::Text {
@@ -2257,18 +2270,18 @@ impl SlidesApp {
             hit: Hit::ToggleItalic,
         });
         y += bh + 10.0;
-        Self::push_inspector_header(labels, x0, &mut y, "ALIGN");
+        Self::push_inspector_header(labels, columns.left, &mut y, "ALIGN");
         // A proper segmented control: left · center · right · justify,
         // the current alignment highlighted. Replaces the old single
         // button that only cycled through the options blind.
         let n = TextAlign::ALL.len();
-        let seg_w = inner_w / n as f64;
+        let seg_w = columns.width / n as f64;
         for (i, a) in TextAlign::ALL.iter().enumerate() {
-            let sx = x0 + i as f64 * seg_w;
+            let sx = columns.left + i as f64 * seg_w;
             let ex = if i + 1 == n {
-                x1
+                columns.right
             } else {
-                x0 + (i as f64 + 1.0) * seg_w
+                columns.left + (i as f64 + 1.0) * seg_w
             };
             let pos = if i == 0 {
                 SegPos::First
@@ -2347,17 +2360,10 @@ impl SlidesApp {
 
     /// Speaker notes box (always shown at the bottom of the inspector).
     /// Returns its rect.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the inspector's shared column geometry plus the two output buffers it pushes \
-                  into; bundling them would only re-create this argument list as a throwaway \
-                  struct"
-    )]
     fn build_inspector_notes(
         &self,
         inspector: Rect,
-        x0: f64,
-        x1: f64,
+        columns: InspectorColumns,
         pad: f64,
         y: f64,
         labels: &mut Vec<Label>,
@@ -2365,7 +2371,7 @@ impl SlidesApp {
     ) -> Rect {
         let notes_top = (y + 6.0).max(inspector.y1 - 188.0);
         labels.push(Label {
-            pos: Point::new(x0, notes_top),
+            pos: Point::new(columns.left, notes_top),
             text: if self.editing_notes {
                 "SPEAKER NOTES  (editing — Esc)"
             } else {
@@ -2376,7 +2382,12 @@ impl SlidesApp {
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
         });
-        let nb = Rect::new(x0, notes_top + 20.0, x1, inspector.y1 - pad);
+        let nb = Rect::new(
+            columns.left,
+            notes_top + 20.0,
+            columns.right,
+            inspector.y1 - pad,
+        );
         buttons.push(UiButton {
             rect: nb,
             kind: ButtonKind::Text {
@@ -2395,17 +2406,10 @@ impl SlidesApp {
                   other inspector layout helpers; converting to an associated function would \
                   read worse at every call site for no benefit"
     )]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent swatch-grid input (geometry, the role list, the \
-                  active role, fill-vs-stroke); bundling them would only re-create this \
-                  argument list as a throwaway struct"
-    )]
     fn swatch_grid(
         &self,
         buttons: &mut Vec<UiButton>,
-        x0: f64,
-        inner_w: f64,
+        columns: InspectorColumns,
         mut y: f64,
         roles: &[&str],
         current: &str,
@@ -2413,12 +2417,12 @@ impl SlidesApp {
     ) -> f64 {
         let cols = 4.0;
         let gap = 8.0;
-        let sw = (inner_w - (cols - 1.0) * gap) / cols;
+        let sw = (columns.width - (cols - 1.0) * gap) / cols;
         let sh = 26.0;
         for (i, role) in roles.iter().enumerate() {
             let col = (i as f64) % cols;
             let row = ((i as f64) / cols).floor();
-            let x = x0 + col * (sw + gap);
+            let x = columns.left + col * (sw + gap);
             let yy = y + row * (sh + gap);
             buttons.push(UiButton {
                 rect: Rect::new(x, yy, x + sw, yy + sh),
@@ -8829,6 +8833,29 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn text_alignment_segments_fill_the_shared_inspector_columns() {
+        let (mut app, _doc, _id) = selected_text_app();
+        sized(&mut app, 1280.0, 800.0);
+        let chrome = app.compute_chrome();
+        let segments: Vec<Rect> = chrome
+            .buttons
+            .iter()
+            .filter_map(|button| {
+                matches!(button.kind, ButtonKind::Segment { .. }).then_some(button.rect)
+            })
+            .collect();
+
+        assert_eq!(segments.len(), TextAlign::ALL.len());
+        assert_eq!(segments[0].x0, chrome.inspector.x0 + 16.0);
+        assert_eq!(segments.last().unwrap().x1, chrome.inspector.x1 - 16.0);
+        let width = segments[0].width();
+        for pair in segments.windows(2) {
+            assert_eq!(pair[0].x1, pair[1].x0, "segments meet without gaps");
+            assert_eq!(pair[1].width(), width, "segments divide the row evenly");
         }
     }
 
