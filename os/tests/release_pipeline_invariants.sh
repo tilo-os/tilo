@@ -165,7 +165,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
-  && grep -Fq 'image: code.sandbox.example/tilo/tilo-builder:latest' "$apps" \
+  && grep -Fq 'image: code.sandbox.example/qos/qos-builder:latest' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \

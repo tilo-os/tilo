@@ -681,8 +681,8 @@ jobs:
           # (~1-2 min). Export only final-stage dependencies: mode=max
           # duplicates the multi-gigabyte Rust build graph and can exhaust
           # the runner before BuildKit can finish or clean up.
-          cache-from: type=registry,ref=code.sandbox.example/tilo/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/tilo/tilo-buildcache:${{ matrix.arch }},mode=min
+          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }},mode=min
 
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
