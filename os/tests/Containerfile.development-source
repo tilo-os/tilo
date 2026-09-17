@@ -1,11 +1,13 @@
 FROM registry.fedoraproject.org/fedora@sha256:61beafd34111e1cb85fb49377ceadeee0a53622dbc20670ed8ca303f0e17ed9c
-RUN dnf -y install podman python3 openssl ca-certificates sbsigntools systemd-boot-unsigned && dnf clean all
+RUN dnf -y install podman python3 openssl ca-certificates sbsigntools systemd-boot-unsigned /usr/bin/bootctl && \
+    test -x /usr/bin/bootctl && dnf clean all
 COPY cosign /usr/local/bin/cosign
 COPY dev/ /fixture/os/dev/
 COPY development_source_registry.py /fixture/os/tests/development_source_registry.py
 COPY development_signer.py /fixture/os/tests/development_signer.py
 COPY test_development_signer.py /fixture/os/tests/test_development_signer.py
+COPY test_development_loader.py /fixture/os/tests/test_development_loader.py
 # A private VFS store avoids overlay-on-overlay assumptions in disposable CI.
 RUN printf '[storage]\ndriver="vfs"\ngraphroot="/var/lib/containers/storage"\nrunroot="/run/containers/storage"\n' > /etc/containers/storage.conf && \
     printf '[engine]\ncgroup_manager="cgroupfs"\nevents_logger="file"\n' > /etc/containers/containers.conf
-ENTRYPOINT ["/bin/bash", "-euc", "python3 /fixture/os/tests/test_development_signer.py; python3 /fixture/os/tests/development_signer.py; python3 /fixture/os/tests/development_source_registry.py"]
+ENTRYPOINT ["/bin/bash", "-euc", "python3 /fixture/os/tests/test_development_signer.py; python3 /fixture/os/tests/test_development_loader.py; python3 /fixture/os/tests/development_signer.py; python3 /fixture/os/tests/development_source_registry.py"]
