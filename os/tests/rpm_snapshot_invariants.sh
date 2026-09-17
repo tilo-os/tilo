@@ -138,10 +138,14 @@ has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo ${resolve
   'snapshot proves the frozen repo resolves the complete transaction offline'
 has "$image_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
   'production CI rejects a stale frozen package manifest before building'
+has "$image_workflow" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
+  'production CI accepts only the real digest-pinned RPM registry path'
 has "$relay_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
   'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'
+has "$build_script" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
+  'local builds accept only the real digest-pinned RPM registry path'
 
 if grep -Rqs --exclude-dir=output --include='Containerfile*' 'DROP_RPMDB_WAL' \
   "$repo/os" || grep -Fq 'DROP_RPMDB_WAL' "$workflow"; then
