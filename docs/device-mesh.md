@@ -117,7 +117,14 @@ authorization.
 - **Nearby Send** uses the resumable content transport, but Files sees only
   short-lived handles bound to its authenticated workspace and connection.
   The receiver consents locally, source traversal is anchored to an opened
-  capability, and staging work is bounded and canceled on teardown.
+  capability, and staging work is bounded and canceled on teardown. Receive
+  destinations are likewise opaque handles minted only from that Files
+  instance's writable grants. The receiver chooses a destination for the exact
+  transfer; “remember” lasts only for the live authenticated Files session and
+  never turns a path into ambient authority. Installation stays anchored to an
+  open directory descriptor, uses collision-safe names, and retains bounded
+  completion/failure health so interrupted receives can be recovered without
+  silently falling back to Downloads.
 - **Call handoff** moves a typed call session and its controls, not an app's
   capture handles. The target compositor asks once, mints local camera,
   microphone, or screen grants only after consent, and revokes the whole batch
