@@ -41,6 +41,46 @@ impl Read for DelayedEof {
     }
 }
 
+struct InputAfterFile {
+    ready: PathBuf,
+    input: Cursor<Vec<u8>>,
+    waited: bool,
+}
+
+impl Read for InputAfterFile {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if !self.waited {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !self.ready.exists() {
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "owned child did not publish its pid",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            self.waited = true;
+        }
+        self.input.read(bytes)
+    }
+}
+
+struct BrokenWriter;
+
+impl std::io::Write for BrokenWriter {
+    fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "injected MCP output failure",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
 fn bounded_framing_recovers_after_an_oversized_line() {
     let mut bytes = vec![b'x'; MAX_REQUEST_BYTES + 1];
@@ -267,6 +307,48 @@ fn eof_reaps_owned_children_and_early_exit_interrupts_idle_input() {
     .unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(error.to_string().contains("exited"));
+}
+
+#[test]
+fn output_failure_reaps_the_surviving_child_and_releases_the_profile() {
+    let Some(root) = isolated_root(
+        "runtime_host::mcp_process::tests::output_failure_reaps_the_surviving_child_and_releases_the_profile",
+    ) else {
+        return;
+    };
+    let pid_file = root.join("surviving-child.pid");
+    let manifest = validate_manifest(AppManifest {
+        apps: vec![AppSpec {
+            id: "dev.qos.survivor".into(),
+            executable: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+            ],
+        }],
+    })
+    .unwrap();
+    let input = InputAfterFile {
+        ready: pid_file.clone(),
+        input: Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n".to_vec()),
+        waited: false,
+    };
+
+    let error = serve(&root, manifest, input, BrokenWriter).unwrap_err();
+    assert!(error.to_string().contains("injected MCP output failure"));
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: signal 0 only checks whether the exact recorded child still exists.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    let reopened = crate::runtime_host::Session::start(&root).unwrap();
+    drop(reopened);
 }
 
 #[test]
