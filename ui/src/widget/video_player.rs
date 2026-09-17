@@ -2349,64 +2349,8 @@ impl Widget for VideoPlayer {
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
-            } if self.focused && key_event.state == ElementState::Pressed => {
-                match &key_event.logical_key {
-                    Key::Named(NamedKey::Space) if self.has_media() => {
-                        self.toggle_play();
-                        self.show_controls();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowLeft) if self.has_media() => {
-                        let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
-                        self.seek_to_ms(self.position_ms.saturating_sub(step));
-                        self.show_controls();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight) if self.has_media() => {
-                        let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
-                        self.seek_to_ms(self.position_ms.saturating_add(step));
-                        self.show_controls();
-                        *handled = true;
-                    }
-                    Key::Character(c) if c.eq_ignore_ascii_case("f") => {
-                        self.toggle_fullscreen();
-                        *handled = true;
-                    }
-                    Key::Character(c) if c.eq_ignore_ascii_case("m") => {
-                        if self.has_media() {
-                            self.toggle_mute();
-                            self.show_controls();
-                            *handled = true;
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowUp) if self.has_media() => {
-                        self.set_volume(self.volume + 0.05);
-                        self.show_controls();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowDown) if self.has_media() => {
-                        self.set_volume(self.volume - 0.05);
-                        self.show_controls();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Home) if self.has_media() => {
-                        self.seek_to_ms(0);
-                        self.show_controls();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::End) if self.has_media() => {
-                        self.seek_to_ms(self.duration_ms);
-                        self.show_controls();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Escape) if self.open_menu.is_some() => {
-                        self.open_menu = None;
-                        self.gear_expanded = None;
-                        self.dirty = true;
-                        *handled = true;
-                    }
-                    _ => {}
-                }
+            } if self.handle_key_input(&key_event.logical_key, key_event.state) => {
+                *handled = true;
             }
             _ => {}
         }
@@ -2600,6 +2544,61 @@ impl Widget for VideoPlayer {
 }
 
 impl VideoPlayer {
+    /// Route one logical keyboard input through the focused player surface.
+    ///
+    /// The application shell can use this same narrow input surface instead
+    /// of manufacturing platform-owned `winit::KeyEvent` values. Returning
+    /// `true` means the player consumed the key.
+    pub fn handle_key_input(&mut self, logical_key: &Key, state: ElementState) -> bool {
+        if !self.focused || state != ElementState::Pressed {
+            return false;
+        }
+        match logical_key {
+            Key::Named(NamedKey::Space) if self.has_media() => {
+                self.toggle_play();
+                self.show_controls();
+            }
+            Key::Named(NamedKey::ArrowLeft) if self.has_media() => {
+                let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
+                self.seek_to_ms(self.position_ms.saturating_sub(step));
+                self.show_controls();
+            }
+            Key::Named(NamedKey::ArrowRight) if self.has_media() => {
+                let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
+                self.seek_to_ms(self.position_ms.saturating_add(step));
+                self.show_controls();
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("f") => self.toggle_fullscreen(),
+            Key::Character(c) if c.eq_ignore_ascii_case("m") && self.has_media() => {
+                self.toggle_mute();
+                self.show_controls();
+            }
+            Key::Named(NamedKey::ArrowUp) if self.has_media() => {
+                self.set_volume(self.volume + 0.05);
+                self.show_controls();
+            }
+            Key::Named(NamedKey::ArrowDown) if self.has_media() => {
+                self.set_volume(self.volume - 0.05);
+                self.show_controls();
+            }
+            Key::Named(NamedKey::Home) if self.has_media() => {
+                self.seek_to_ms(0);
+                self.show_controls();
+            }
+            Key::Named(NamedKey::End) if self.has_media() => {
+                self.seek_to_ms(self.duration_ms);
+                self.show_controls();
+            }
+            Key::Named(NamedKey::Escape) if self.open_menu.is_some() => {
+                self.open_menu = None;
+                self.gear_expanded = None;
+                self.dirty = true;
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// Routes a left-press at `self.last_cursor` through the settings menu,
     /// the setting icons + gear, then the standard transport controls, in
     /// that priority order.
@@ -3126,36 +3125,16 @@ mod tests {
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
 
-    fn press(key: Key) -> WindowEvent {
-        // Same construction idiom as the block_editor tests: zero a KeyEvent
-        // (its `platform_specific` field has no public constructor) then set the
-        // fields we assert on.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
     fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
@@ -3216,9 +3195,9 @@ mod tests {
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.set_focus(true);
         assert!(!vp.is_playing());
-        assert!(dispatch(&mut vp, &press(Key::Named(NamedKey::Space))));
+        assert!(vp.handle_key_input(&Key::Named(NamedKey::Space), ElementState::Pressed));
         assert!(vp.is_playing(), "Space started playback via the engine");
-        assert!(dispatch(&mut vp, &press(Key::Named(NamedKey::Space))));
+        assert!(vp.handle_key_input(&Key::Named(NamedKey::Space), ElementState::Pressed));
         assert!(!vp.is_playing(), "Space paused it again");
     }
 
@@ -3231,9 +3210,9 @@ mod tests {
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.set_focus(true);
         vp.seek_to_ms(20_000);
-        assert!(dispatch(&mut vp, &press(Key::Named(NamedKey::ArrowRight))));
+        assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowRight), ElementState::Pressed));
         assert_eq!(vp.position_ms(), 25_000, "→ seeks forward 5s");
-        assert!(dispatch(&mut vp, &press(Key::Named(NamedKey::ArrowLeft))));
+        assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowLeft), ElementState::Pressed));
         assert_eq!(vp.position_ms(), 20_000, "← seeks back 5s");
         // The seek propagated to the engine, not just the widget cache.
         assert_eq!(vp.engine().unwrap().position_ms(), 20_000);
@@ -3248,7 +3227,7 @@ mod tests {
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
         vp.duration_ms = 100_000;
-        vp.show_controls();
+        vp.reveal_controls();
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
@@ -3272,7 +3251,7 @@ mod tests {
         });
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-        vp.show_controls();
+        vp.reveal_controls();
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
@@ -3292,7 +3271,7 @@ mod tests {
         let mut vp = VideoPlayer::new();
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
         vp.duration_ms = 100_000;
-        vp.show_controls();
+        vp.reveal_controls();
         let baseline = {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -3326,7 +3305,7 @@ mod tests {
         let mut vp = VideoPlayer::new().with_engine(engine);
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
         vp.duration_ms = 100_000;
-        vp.show_controls();
+        vp.reveal_controls();
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
@@ -3361,9 +3340,9 @@ mod tests {
             None,
             "no opinion until asked"
         );
-        assert!(dispatch(&mut vp, &press(Key::Character("f".into()))));
+        assert!(vp.handle_key_input(&Key::Character("f".into()), ElementState::Pressed));
         assert_eq!(Widget::fullscreen_intent(&vp), Some(true));
-        assert!(dispatch(&mut vp, &press(Key::Character("F".into()))));
+        assert!(vp.handle_key_input(&Key::Character("F".into()), ElementState::Pressed));
         assert_eq!(Widget::fullscreen_intent(&vp), Some(false));
     }
 
@@ -3462,7 +3441,7 @@ mod tests {
     fn large_text_controls_use_two_reachable_rows_while_one_x_is_unchanged() {
         let mut regular = VideoPlayer::new();
         regular.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        regular.show_controls();
+        regular.reveal_controls();
         regular.set_setting(PlayerSetting::toggle(
             "captions",
             Icon::FileText,
@@ -3483,7 +3462,7 @@ mod tests {
 
         let mut accessible = VideoPlayer::new();
         accessible.rect = regular.rect;
-        accessible.show_controls();
+        accessible.reveal_controls();
         accessible.set_setting(PlayerSetting::toggle(
             "captions",
             Icon::FileText,
@@ -3508,7 +3487,7 @@ mod tests {
     fn mixed_priority_settings_surface_as_icons_and_under_the_gear() {
         let mut vp = VideoPlayer::new();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.show_controls();
+        vp.reveal_controls();
         // A high-priority toggle (own icon) + a priority-0 choice (under the gear).
         vp.set_setting(PlayerSetting::toggle(
             "captions",
@@ -3545,7 +3524,7 @@ mod tests {
         let mut vp = VideoPlayer::new();
         // Narrow bar + many priority settings ⇒ only the top few fit as icons.
         vp.rect = Rect::new(0.0, 0.0, 560.0, 315.0);
-        vp.show_controls();
+        vp.reveal_controls();
         for p in 1..=8 {
             vp.set_setting(PlayerSetting::button(
                 format!("act{p}"),
@@ -3582,7 +3561,7 @@ mod tests {
     fn resolution_setting_round_trips_through_the_player() {
         let mut vp = VideoPlayer::new();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.show_controls();
+        vp.reveal_controls();
         vp.set_setting(PlayerSetting::choice(
             "resolution",
             Icon::Monitor,
@@ -3630,7 +3609,7 @@ mod tests {
     fn gear_toggle_setting_flips_and_emits() {
         let mut vp = VideoPlayer::new();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        vp.show_controls();
+        vp.reveal_controls();
         // Priority 0 ⇒ under the gear.
         vp.set_setting(PlayerSetting::toggle(
             "autoplay",
