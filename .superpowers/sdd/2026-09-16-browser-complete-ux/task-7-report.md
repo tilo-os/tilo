@@ -54,20 +54,37 @@
 - Native focused command: `target/chromium-tools/bin/ctest --test-dir target/chromium-build --output-on-failure -R '^(protocol|fullscreen-state)$'`
 - Native focused result: 2/2 passed.
 
+### Review fix round 1 — Root content edge and retained layout topology
+
+- Important 1 RED test added: `page_entry_while_window_is_already_fullscreen_starts_hint_and_blocks_stale_tree_events`.
+- RED command: `cargo test -p browser fullscreen --lib`.
+- RED result: exit 101; 6 passed and 1 failed because a page fullscreen edge received after ordinary OS fullscreen did not create the exit hint.
+- Important 2 RED test added: `escape_release_is_blocked_until_immersive_tree_is_rebuilt`.
+- RED command: `cargo test -p browser escape_release_is_blocked_until_immersive_tree_is_rebuilt --lib`.
+- RED result: exit 101; 0 passed and 1 failed because Escape release fell through against the retained immersive tree after Escape press changed the live state.
+- Production fix: the root now observes active-tab content-fullscreen edges during sync, starts a fresh three-second hint when actual window fullscreen is already active, and records the immersive topology used to build the retained tree. Early Escape remains available; other events are consumed until the retained topology matches live state. Layout application and drawing also use the recorded topology.
+- GREEN command: `cargo test -p browser --lib browser_tabs::tests::`.
+- GREEN result: exit 0; 30 passed, 0 failed, 0 ignored, 166 filtered out.
+- Native protocol minor assessment: `ValidCommand`, `Client::Event`, and CEF dictionary construction remain private to `host.cc`; the existing native pure-test seam covers only `FullscreenState`. A protocol-boundary test would require extracting a second representation or linking CEF host internals, so no native refactor or repeated native build was added in this focused fix.
+
 ## Regression verification
 
 - `cargo test -p ui fullscreen --lib`: 17 passed, 0 failed; the linker emitted the existing large `__eh_frame` warning.
 - Fresh final `cargo test -p browser --lib` after the hint-row correction: 191 passed, 0 failed, 3 ignored.
+- Review fix round 1 full browser library: `cargo test -p browser --lib` exited 0 with 193 passed, 0 failed, 3 ignored on the integrated tree; the build emitted one unrelated `ui/src/animation_schedule.rs` dead-code warning.
 - `git diff --check` on every owned tracked source path: clean.
 
 ## Commits
 
 - `7ead72f254857d38c09ce59b990e19c81df9ea8e` — `Implement native browser fullscreen flow` (owned source and tests only).
+- `2e0015b157aed1026b99eefb91ef01a6c6676d18` — `Fix fullscreen transition event routing` (review fix round 1 source and tests only).
 
 ## Verification and artifacts
 
 - Required single optimized Rust build: `cargo build -p browser --profile thin-app` exited 0 in 2m00s.
 - Parent candidate: `target/thin-app/browser`, 27,900,192 bytes, SHA-256 `95c99934a4d92bc4fba8fee9485ab74bfcbc435e3b1af9a70301ca5f5bf44ae3`.
+- Review fix round 1 single optimized Rust build: `cargo build -p browser --profile thin-app` exited 0 in 3m44s on the integrated tree.
+- Review fix round 1 parent candidate: `target/thin-app/browser`, 28,017,728 bytes, SHA-256 `76b3eb12c8cc6421412d7fdcc4ae14090c1ebf44e92660e07f4741c2f408ff00`.
 - Native host: `target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host`, 8,535,168 bytes, SHA-256 `330f5211430dccdcb700fc6ddfdb937e5f0c50f65a631622a3841cca109852bf`.
 - Bare `ctest` was unavailable on `PATH` (exit 127); the repository-provisioned `target/chromium-tools/bin/ctest` command above was used and passed.
 - No owned source path remained modified after source commit and the optimized build.
