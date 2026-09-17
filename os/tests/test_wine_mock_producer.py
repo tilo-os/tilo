@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Boundary tests for the Mock input handoff; no Mock/build simulation claims."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,6 +20,19 @@ IMAGE = 'example.invalid/mock@sha256:' + 'a' * 64
 
 
 class Boundaries(unittest.TestCase):
+    def test_streamed_diagnostics_keep_exact_bytes_and_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / 'command.log'
+            stream = io.TextIOWrapper(io.BytesIO())
+            command = [sys.executable, '-c',
+                       "import os; os.write(1, b'progress\\n'); os.write(2, b'failure\\xff\\n'); raise SystemExit(7)"]
+            with patch.object(producer.sys, 'stdout', stream):
+                with self.assertRaises(subprocess.CalledProcessError) as failure:
+                    producer.run(command, log)
+            self.assertEqual(failure.exception.returncode, 7)
+            self.assertEqual(stream.buffer.getvalue(), b'progress\nfailure\xff\n')
+            self.assertEqual(log.read_bytes().split(b'\n', 1)[1], stream.buffer.getvalue())
+
     def test_i686_execution_failure_keeps_kernel_diagnostic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
