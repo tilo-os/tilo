@@ -20,7 +20,7 @@ ok() { printf 'ok    %s\n' "$*"; }
 
 fragment_has() {
   case "$1" in
-    CONFIG_X86_*|CONFIG_LEGACY_VSYSCALL_*|CONFIG_RANDOMIZE_MEMORY=*|CONFIG_SCHED_MC_PRIO=*|CONFIG_SND_SOC_INTEL_AVS_MACH_I2S_TEST=*)
+    CONFIG_X86_*|CONFIG_DEVPORT=*|CONFIG_IA32_EMULATION=*|CONFIG_USELIB=*|CONFIG_LEGACY_VSYSCALL_*|CONFIG_RANDOMIZE_MEMORY=*|CONFIG_SCHED_MC_PRIO=*|CONFIG_SND_SOC_INTEL_AVS_MACH_I2S_TEST=*)
       grep -Fqx "$1" "$x86_kernel_config" ;;
     *) grep -Fqx "$1" "$kernel_config" ;;
   esac
@@ -45,6 +45,11 @@ done < <(awk '$1 !~ /^#/ && NF == 3 && $2 == "=" { sub(/^-/, "", $1); print $1, 
 
 for required in \
   CONFIG_MODULE_SIG_FORCE=y \
+  CONFIG_MODULE_FORCE_LOAD=n \
+  CONFIG_MODULE_UNLOAD=n \
+  CONFIG_MODULE_FORCE_UNLOAD=n \
+  CONFIG_LIVEPATCH=n \
+  CONFIG_DEBUG_FS=n \
   CONFIG_STRICT_KERNEL_RWX=y \
   CONFIG_STRICT_MODULE_RWX=y \
   CONFIG_RANDOMIZE_BASE=y \
@@ -62,9 +67,18 @@ for required in \
   CONFIG_BPF_UNPRIV_DEFAULT_OFF=y \
   CONFIG_PROC_KCORE=n \
   CONFIG_DEVKMEM=n \
+  CONFIG_DEVPORT=n \
+  CONFIG_X86_MSR=n \
+  CONFIG_X86_CPUID=n \
+  CONFIG_IA32_EMULATION=y \
+  CONFIG_X86_X32_ABI=n \
+  CONFIG_USELIB=n \
   CONFIG_COREDUMP=n \
   CONFIG_FW_LOADER_USER_HELPER=n \
   CONFIG_FW_LOADER_USER_HELPER_FALLBACK=n \
+  CONFIG_ACPI_CUSTOM_METHOD=n \
+  CONFIG_ACPI_CONFIGFS=n \
+  CONFIG_EFI_CUSTOM_SSDT_OVERLAYS=n \
   CONFIG_KEXEC=n \
   CONFIG_KEXEC_FILE=n \
   CONFIG_KEXEC_HANDOVER=n \
@@ -140,12 +154,20 @@ for required in \
 done
 [ "$fail" -ne 0 ] || ok 'required kernel self-protection options are pinned'
 
-if grep -Eq '^CONFIG_(X86_|LEGACY_VSYSCALL_|RANDOMIZE_MEMORY=|SCHED_MC_PRIO=|SND_SOC_INTEL_AVS_MACH_I2S_TEST=)' "$kernel_config" "$arm64_kernel_config"; then
+if grep -Eq '^CONFIG_(X86_|DEVPORT=|IA32_EMULATION=|USELIB=|LEGACY_VSYSCALL_|RANDOMIZE_MEMORY=|SCHED_MC_PRIO=|SND_SOC_INTEL_AVS_MACH_I2S_TEST=)' "$kernel_config" "$arm64_kernel_config"; then
   bad 'x86-only settings leaked into shared or ARM64 kernel fragments'
 fi
 grep -Fq 'CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y' \
   "$repo/os/kernel/Containerfile" \
   || bad 'x86 kernel build does not verify both address-randomization layers'
+grep -Fq "'# CONFIG_DEVPORT is not set' '# CONFIG_X86_MSR is not set'" \
+  "$repo/os/kernel/Containerfile" \
+  && grep -Fq "'# CONFIG_X86_CPUID is not set'" "$repo/os/kernel/Containerfile" \
+  || bad 'x86 kernel build does not verify removal of raw CPU and I/O devices'
+grep -Fq "CONFIG_IA32_EMULATION=y '# CONFIG_X86_X32_ABI is not set'" \
+  "$repo/os/kernel/Containerfile" \
+  && grep -Fq "'# CONFIG_USELIB is not set'" "$repo/os/kernel/Containerfile" \
+  || bad 'x86 kernel does not preserve i686 while rejecting obsolete ABIs'
 
 for live_absence in DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
