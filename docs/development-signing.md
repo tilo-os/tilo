@@ -77,7 +77,37 @@ python3 os/tests/test_development_trust.py
 Without the expected digest, validation checks structure and internal hashes
 only; it cannot authenticate who selected those public identities. The
 expected digest must not be obtained from the same untrusted transfer being
-checked. No OS build consumes this bundle yet.
+checked.
+
+### Container-only development staging
+
+`build-image.sh` accepts the public bundle through an explicit named build
+context. It validates the bundle on the host and again inside the rootfs before
+dracut. The image records public fingerprints and the pinned manifest under
+`/usr/share/tilo/development-trust/`. The registry owner is derived from the
+bundle; a conflicting supplied owner is rejected. EFI material is public
+provenance only; this does not enroll a certificate or sign a UKI.
+
+```sh
+TILO_PUBLIC_TRUST_MODE=development \
+TILO_PUBLIC_TRUST_BUNDLE="$PUBLIC_BUNDLE" \
+TILO_PUBLIC_TRUST_MANIFEST_SHA256="$EXPECTED_PUBLIC_BUNDLE_SHA256" \
+TILO_IMAGE=localhost/tilo-development:trust-test \
+  bash os/dev/build-image.sh
+```
+
+All normal pinned build inputs are still required. Development mode rejects
+skip-build and production aliases, and returns after container creation,
+before disk imaging. This is a prerequisite staging interface, **not an
+installable or boot-validated development OS**. The required isolated registry,
+update-origin contract and signed disk/VM path below remain unimplemented.
+Production defaults compare the selected public bytes with the unchanged
+tracked keys and reject development bundles.
+
+The tiny `bash os/tests/named_public_trust_context.sh` fixture proves named
+context precedence using scratch images without network access or downloaded
+base images. It passed on Podman 5.8.1; BuildKit execution is still required
+before claiming that backend is verified.
 
 ## Isolated development-image design — implementation still required
 
@@ -89,10 +119,11 @@ these boundaries:
    artifact staging, and CI upload paths. Only its owner can read it. Key
    operations consume paths; never print private bytes or shell-trace commands
    containing secrets. The image context receives public material only.
-2. Add an explicit **public-only named build context** for the development
-   Cosign key, PCR key and EFI certificate. Default/release builds continue to
-   use their existing pinned inputs. Include a development marker and public
-   fingerprints in image provenance. Reject private-key PEM blocks, unexpected
+2. Container staging provides an explicit **public-only named build context**
+   for the development Cosign key, PCR key, EFI certificate and registry owner.
+   Default/release builds continue to use their existing pinned inputs. The
+   image includes a development marker and public fingerprints in provenance.
+   Validation rejects private-key PEM blocks, unexpected
    files and redirected paths in the public bundle.
 3. Apply PCR and image trust before dracut and UKI construction. Rebuild the
    initramfs, UKI and composefs seal together; verify that their embedded public
@@ -102,8 +133,9 @@ these boundaries:
    required-signature policy. Add a narrowly scoped development update-origin
    contract shared by image metadata and installer validation. The current
    `hardware_profile.py` and `tilo-install` deliberately reject that origin;
-   no development-origin override exists today. Production policy must keep
-   rejecting test repositories and test identities.
+   no development-origin override exists today. Production OS origin validation must keep
+   rejecting test repositories; production signature verification must keep its
+   independently pinned production identity.
 5. Install an independent test signer outside the checkout and runner temporary
    directory. Keep the same root-ownership, canonical-path, signature and
    payload-preservation checks as the existing interface. Do not add a bypass
