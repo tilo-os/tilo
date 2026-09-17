@@ -84,7 +84,65 @@ fn contacts_export_request(current_name: &str) -> PickRequest {
 }
 
 const TOOLBAR_H: f64 = 48.0;
+/// Base sizes of the toolbar's people-count and button labels, and the
+/// authored 1× button height; the bar and its buttons grow with these lines.
+const TOOLBAR_TEXT: f32 = 14.0;
+const TOOLBAR_BUTTON_TEXT: f32 = 13.0;
+const TOOLBAR_BUTTON_H: f64 = 32.0;
+/// Authored 1× list row height; rows grow past it only when the measured
+/// name + subtitle lines need more (see [`ContactRowMetrics`]).
 const ROW_H: f64 = 62.0;
+/// Base text sizes of a list row's name and subtitle lines.
+const ROW_NAME_TEXT: f32 = 15.0;
+const ROW_SUB_TEXT: f32 = 12.0;
+/// Authored 1× avatar diameter in a list row.
+const ROW_AVATAR: f64 = 40.0;
+/// Vertical padding above and below a row's text block (the spacing scale's
+/// `s3`; literal because rows are solved in a renderer-less layout pass).
+const ROW_TEXT_PAD: f64 = 12.0;
+
+/// Height of one line of `size`-pt text at `text_scale` — the same value
+/// `TextRenderer::measure` reports for a single line, so the renderer-less
+/// layout pass and the painter agree on every row.
+fn line_h(size: f32, text_scale: f32) -> f64 {
+    let scale = if text_scale.is_finite() {
+        text_scale.clamp(0.5, 4.0)
+    } else {
+        1.0
+    };
+    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+}
+
+/// List-row geometry for the current text scale. Built once per layout /
+/// paint and shared by the virtualised row rects, the scroll extent, the
+/// keyboard ensure-visible path and the row painter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ContactRowMetrics {
+    /// Row height: the authored 62px, or name + subtitle lines plus padding.
+    row_h: f64,
+    /// Line heights of the two text rows.
+    name_h: f64,
+    sub_h: f64,
+    /// Avatar diameter, never taller than the text block it sits beside.
+    avatar: f64,
+}
+
+impl ContactRowMetrics {
+    fn new(text_scale: f32) -> Self {
+        let name_h = line_h(ROW_NAME_TEXT, text_scale);
+        let sub_h = line_h(ROW_SUB_TEXT, text_scale);
+        // An `s3` of breathing room above and below the text block: at 1× that
+        // is 33.75 + 24 < 62, so the authored row wins; at 2× it is 91.5.
+        let row_h = (name_h + sub_h + 2.0 * ROW_TEXT_PAD).max(ROW_H);
+        let avatar = (name_h + sub_h).max(ROW_AVATAR);
+        Self {
+            row_h,
+            name_h,
+            sub_h,
+            avatar,
+        }
+    }
+}
 /// A contacts book can be shared with a directory service and contain many
 /// thousands of people.  The in-memory model is intentionally complete (so
 /// search and exact resource resolution remain truthful), but the hand-drawn
@@ -100,6 +158,8 @@ const TOAST_LIFETIME: Duration = Duration::from_millis(2600);
 const DIVIDER_W: f64 = 6.0;
 const PAD: f64 = 16.0;
 const FIELD_H: f64 = 38.0;
+/// Authored 1× height of the Sort / Group filter pills under the search box.
+const FILTER_H: f64 = 30.0;
 /// File reads happen on the UI-owned import completion path, so keep them
 /// bounded even when an automation supplies a path rather than the picker.
 const MAX_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -782,6 +842,9 @@ pub struct ContactsApp {
     push: PushNav,
     /// Whether the last layout resolved to the narrow single-pane mode.
     narrow: bool,
+    /// The theme's text scale, cached during layout so row heights, the
+    /// push breakpoint and header stacking follow the type they carry.
+    text_scale: f32,
 
     last_mouse: Point,
     dirty: bool,
@@ -902,6 +965,7 @@ impl ContactsApp {
             last_detail_click: None,
             push: PushNav::default(),
             narrow: false,
+            text_scale: 1.0,
             last_mouse: Point::ZERO,
             dirty: true,
             relayout: true,
@@ -1473,8 +1537,9 @@ impl ContactsApp {
         if total == 0 || self.list_body.height() <= 0.0 {
             return;
         }
-        let row_top = index as f64 * ROW_H;
-        let row_bottom = row_top + ROW_H;
+        let row_h = self.row_metrics().row_h;
+        let row_top = index as f64 * row_h;
+        let row_bottom = row_top + row_h;
         let viewport_top = self.list_scroll;
         let viewport_bottom = viewport_top + self.list_body.height();
         if row_top < viewport_top {
@@ -1482,7 +1547,7 @@ impl ContactsApp {
         } else if row_bottom > viewport_bottom {
             self.list_scroll = row_bottom - self.list_body.height();
         }
-        let max_scroll = (total as f64 * ROW_H - self.list_body.height()).max(0.0);
+        let max_scroll = (total as f64 * row_h - self.list_body.height()).max(0.0);
         self.list_scroll = self.list_scroll.clamp(0.0, max_scroll);
     }
 
@@ -1933,27 +1998,17 @@ impl Default for ContactsApp {
 impl ContactsApp {
     fn layout(&mut self) {
         let r = self.rect;
-        // Toolbar across the top.
-        let content_top = r.y0 + TOOLBAR_H;
+        // Toolbar across the top; its height follows the people-count line.
+        let toolbar_h = self.toolbar_h();
+        let content_top = r.y0 + toolbar_h;
         let content = Rect::new(r.x0, content_top, r.x1, r.y1);
 
-        // Toolbar buttons (right-aligned).
-        let btn_y = r.y0 + (TOOLBAR_H - 32.0) / 2.0;
-        let compact_toolbar = self.toolbar_is_compact();
-        let mut x = r.x1 - PAD;
-        let new_w = if compact_toolbar { 40.0 } else { 104.0 };
-        self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + 32.0);
-        x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
-        let exp_w = if compact_toolbar { 40.0 } else { 86.0 };
-        self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + 32.0);
-        x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
-        let imp_w = if compact_toolbar { 40.0 } else { 86.0 };
-        self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + 32.0);
+        self.layout_toolbar_buttons(r, toolbar_h);
 
         // Responsive split: side-by-side when wide, single-pane push when
         // narrow. The choice is driven purely from the allocated width.
         let avail_w = content.width();
-        self.narrow = PushNav::is_narrow(avail_w);
+        self.narrow = PushNav::is_narrow_at(avail_w, self.text_scale);
         if self.narrow {
             // Single-pane push: the list and detail each fill the whole
             // content width and slide horizontally as one swaps for the
@@ -1985,13 +2040,21 @@ impl ContactsApp {
             self.hit.back = Rect::ZERO;
         }
 
-        // List header: search + filter row.
+        // List header: search + filter row. Control heights follow the text
+        // they carry, so a 2× placeholder or filter label is never clipped by
+        // a 1× field; at 1× the authored heights win.
+        let search_h = (line_h(14.0, self.text_scale) + 2.0 * ROW_TEXT_PAD).max(FIELD_H);
+        // The filter pills keep their authored height: the shared `Chip`
+        // derives its label size from the pill height, so growing the pill
+        // here would only enlarge a label the toolkit already double-scales
+        // (see the review's framework findings).
+        let filter_h = FILTER_H;
         let search_y = self.list_rect.y0 + PAD;
         self.hit.search = Rect::new(
             self.list_rect.x0 + PAD,
             search_y,
             self.list_rect.x1 - PAD,
-            search_y + FIELD_H,
+            search_y + search_h,
         );
         self.search.apply_layout_external(self.hit.search);
         let filt_y = self.hit.search.y1 + 10.0;
@@ -2000,13 +2063,13 @@ impl ContactsApp {
             self.list_rect.x0 + PAD,
             filt_y,
             self.list_rect.x0 + PAD + half,
-            filt_y + 30.0,
+            filt_y + filter_h,
         );
         self.hit.group = Rect::new(
             self.hit.sort.x1 + 8.0,
             filt_y,
             self.list_rect.x1 - PAD,
-            filt_y + 30.0,
+            filt_y + filter_h,
         );
 
         // List body (scroll region).
@@ -2024,12 +2087,13 @@ impl ContactsApp {
         let ids = self.visible_ids();
         self.visible_row_count = ids.len();
         self.empty_list_action = self.empty_list_action_for(ids.is_empty());
-        let content_h = ids.len() as f64 * ROW_H;
+        let row_h = self.row_metrics().row_h;
+        let content_h = ids.len() as f64 * row_h;
         let max_scroll = (content_h - self.list_body.height()).max(0.0);
         self.list_scroll = self.list_scroll.clamp(0.0, max_scroll);
         self.list_rows.clear();
-        let first_visible = (self.list_scroll / ROW_H).floor().max(0.0) as usize;
-        let visible_rows = (self.list_body.height() / ROW_H).ceil().max(1.0) as usize;
+        let first_visible = (self.list_scroll / row_h).floor().max(0.0) as usize;
+        let visible_rows = (self.list_body.height() / row_h).ceil().max(1.0) as usize;
         let start = first_visible
             .saturating_sub(LIST_OVERSCAN_ROWS)
             .min(ids.len());
@@ -2038,16 +2102,16 @@ impl ContactsApp {
             .saturating_add(LIST_OVERSCAN_ROWS)
             .min(ids.len());
         self.list_row_start = start;
-        let mut ry = self.list_body.y0 - self.list_scroll + start as f64 * ROW_H;
+        let mut ry = self.list_body.y0 - self.list_scroll + start as f64 * row_h;
         for id in ids
             .iter()
             .skip(start)
             .take(end.saturating_sub(start))
             .copied()
         {
-            let rr = Rect::new(self.list_body.x0, ry, self.list_body.x1, ry + ROW_H);
+            let rr = Rect::new(self.list_body.x0, ry, self.list_body.x1, ry + row_h);
             self.list_rows.push((id, rr));
-            ry += ROW_H;
+            ry += row_h;
         }
 
         // Detail / form layout.
@@ -2068,8 +2132,49 @@ impl ContactsApp {
     /// At phone-sized widths, preserve all three toolbar actions without
     /// letting fixed English labels overlap.  The compact glyph labels have
     /// explicit accessible names and host tooltips (see [`Widget::tooltip`]).
+    /// Below this width the toolbar buttons collapse to icon-only faces. The
+    /// breakpoint grows with the same factor the labelled button widths do,
+    /// so a scaled row never asks for more width than the window has.
     fn toolbar_is_compact(&self) -> bool {
-        self.rect.width() < 520.0
+        self.rect.width() < 520.0 * f64::from(self.text_scale.max(1.0))
+    }
+
+    /// List-row geometry at the current text scale — one description shared
+    /// by the virtualised row rects, scroll extent, ensure-visible and paint.
+    fn row_metrics(&self) -> ContactRowMetrics {
+        ContactRowMetrics::new(self.text_scale)
+    }
+
+    /// Toolbar height: the authored 48px, or the people-count line plus its
+    /// padding once the type has grown past that. Layout and paint share it.
+    fn toolbar_h(&self) -> f64 {
+        (line_h(TOOLBAR_TEXT, self.text_scale) + 2.0 * ROW_TEXT_PAD).max(TOOLBAR_H)
+    }
+
+    /// Toolbar button height: the authored 32px, or the 13pt label line plus
+    /// a small pad, so a scaled "Import" never spills out of its face.
+    fn toolbar_button_h(&self) -> f64 {
+        (line_h(TOOLBAR_BUTTON_TEXT, self.text_scale) + 8.0).max(TOOLBAR_BUTTON_H)
+    }
+
+    /// Toolbar buttons (right-aligned), centred on the bar. Their labels are
+    /// text, so the authored widths grow with the text scale; the compact
+    /// icon-only faces stay square to the button height.
+    fn layout_toolbar_buttons(&mut self, r: Rect, toolbar_h: f64) {
+        let btn_h = self.toolbar_button_h();
+        let btn_y = r.y0 + (toolbar_h - btn_h) / 2.0;
+        let compact_toolbar = self.toolbar_is_compact();
+        let grow = f64::from(self.text_scale.max(1.0));
+        let mut x = r.x1 - PAD;
+        let compact_w = 40.0_f64.max(btn_h);
+        let new_w = if compact_toolbar { compact_w } else { 104.0 * grow };
+        self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + btn_h);
+        x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
+        let exp_w = if compact_toolbar { compact_w } else { 86.0 * grow };
+        self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + btn_h);
+        x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
+        let imp_w = if compact_toolbar { compact_w } else { 86.0 * grow };
+        self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + btn_h);
     }
 
     fn empty_list_action_for(&self, is_empty: bool) -> EmptyListAction {
@@ -2422,7 +2527,7 @@ impl ContactsApp {
             // past the edges, and skip whichever pane is fully off-screen.
             let content = Rect::new(
                 self.rect.x0,
-                self.rect.y0 + TOOLBAR_H,
+                self.rect.y0 + self.toolbar_h(),
                 self.rect.x1,
                 self.rect.y1,
             );
@@ -2602,11 +2707,12 @@ impl ContactsApp {
     fn draw_toolbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         let compact = self.toolbar_is_compact();
+        let toolbar_h = self.toolbar_h();
         let bar = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + TOOLBAR_H,
+            self.rect.y0 + toolbar_h,
         );
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bar);
         scene.stroke(
@@ -2627,17 +2733,18 @@ impl ContactsApp {
         // on a narrow window the buttons crowd in and it would otherwise bleed
         // under the Import button.
         let count_x = self.rect.x0 + PAD;
-        let count_w = f64::from(
-            tr.measure_weighted(&count, 14.0, None, TextWeight::Semibold)
-                .0,
-        );
-        if count_x + count_w < self.hit.import.x0 - 12.0 {
+        let (count_w, count_h) =
+            tr.measure_weighted(&count, TOOLBAR_TEXT, None, TextWeight::Semibold);
+        if count_x + f64::from(count_w) < self.hit.import.x0 - 12.0 {
             tr.draw_text_weighted(
                 scene,
                 &count,
-                14.0,
+                TOOLBAR_TEXT,
                 c.text_primary,
-                t * Affine::translate((count_x, self.rect.y0 + (TOOLBAR_H - 14.0) / 2.0)),
+                t * Affine::translate((
+                    count_x,
+                    self.rect.y0 + (toolbar_h - f64::from(count_h)) / 2.0,
+                )),
                 None,
                 TextWeight::Semibold,
             );
@@ -2695,7 +2802,7 @@ impl ContactsApp {
     ) {
         let area = Rect::new(
             self.rect.x0,
-            self.rect.y0 + TOOLBAR_H,
+            self.rect.y0 + self.toolbar_h(),
             self.rect.x1,
             self.rect.y1,
         );
@@ -2762,6 +2869,7 @@ impl ContactsApp {
         );
 
         // Rows (clipped to body).
+        let metrics = self.row_metrics();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.list_body);
         for (id, rr) in &self.list_rows {
             if rr.y1 < self.list_body.y0 || rr.y0 > self.list_body.y1 {
@@ -2771,7 +2879,7 @@ impl ContactsApp {
                 continue;
             };
             let selected = self.selected == Some(*id);
-            Self::draw_list_row(scene, t, tr, theme, contact, *rr, selected);
+            Self::draw_list_row(scene, t, tr, theme, contact, *rr, selected, &metrics);
         }
         if self.list_rows.is_empty() {
             self.draw_list_empty_state(scene, t, tr, theme);
@@ -2790,8 +2898,10 @@ impl ContactsApp {
         contact: &Contact,
         rr: Rect,
         selected: bool,
+        m: &ContactRowMetrics,
     ) {
         let c = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
         if selected {
             let bg = RoundedRect::from_rect(rr.inset(-0.0), f64::from(theme.tokens.radii.md));
             scene.fill(
@@ -2807,50 +2917,59 @@ impl ContactsApp {
                 t,
                 theme.accent_primary,
                 None,
-                &Rect::new(rr.x0, rr.y0 + 8.0, rr.x0 + 3.0, rr.y1 - 8.0),
+                &Rect::new(
+                    rr.x0,
+                    rr.y0 + f64::from(sp.s2),
+                    rr.x0 + 3.0,
+                    rr.y1 - f64::from(sp.s2),
+                ),
             );
         }
-        // Avatar.
-        let av = Rect::new(
-            rr.x0 + 14.0,
-            rr.y0 + 11.0,
-            rr.x0 + 14.0 + 40.0,
-            rr.y0 + 11.0 + 40.0,
-        );
+        // Avatar: the same `PAD` inset as the search and filter controls
+        // above the list, vertically centred in the row.
+        let av_y = rr.y0 + (rr.height() - m.avatar) / 2.0;
+        let av = Rect::new(rr.x0 + PAD, av_y, rr.x0 + PAD + m.avatar, av_y + m.avatar);
         draw_avatar(scene, t, tr, theme, av, &contact.initials());
-        let tx = av.x1 + 12.0;
-        // Elide name + subtitle to a single line each so a narrow list
-        // pane (the docked split at 800px, or a long org name) never wraps
-        // a row to two cramped lines inside its fixed height.
-        let avail = (rr.x1 - tx - 26.0).max(24.0) as f32;
-        let name =
-            tr.elide_to_width_weighted(&contact.display_name(), 15.0, avail, TextWeight::Semibold);
+        let tx = av.x1 + f64::from(sp.s3);
+        // Name and subtitle stack as one measured block centred in the row,
+        // each elided to a single line so a narrow pane never wraps a row.
+        let star_w = if contact.favorite { PAD + 6.0 } else { 0.0 };
+        let avail = (rr.x1 - tx - PAD - star_w).max(24.0) as f32;
+        let block_h = m.name_h + m.sub_h;
+        let name_y = rr.y0 + (rr.height() - block_h) / 2.0;
+        let name = tr.elide_to_width_weighted(
+            &contact.display_name(),
+            ROW_NAME_TEXT,
+            avail,
+            TextWeight::Semibold,
+        );
         tr.draw_text_weighted(
             scene,
             &name,
-            15.0,
+            ROW_NAME_TEXT,
             c.text_primary,
-            t * Affine::translate((tx, rr.y0 + 13.0)),
+            t * Affine::translate((tx, name_y)),
             None,
             TextWeight::Semibold,
         );
         let sub = contact.subtitle();
         if !sub.is_empty() {
-            let sub = tr.elide_to_width(&sub, 12.0, avail);
+            let sub = tr.elide_to_width(&sub, ROW_SUB_TEXT, avail);
             tr.draw_text(
                 scene,
                 &sub,
-                12.0,
+                ROW_SUB_TEXT,
                 c.text_dim,
-                t * Affine::translate((tx, rr.y0 + 33.0)),
+                t * Affine::translate((tx, name_y + m.name_h)),
                 None,
             );
         }
         if contact.favorite {
+            // The star sits on the name line's centre, inset like the avatar.
             draw_star(
                 scene,
                 t,
-                Point::new(rr.x1 - 18.0, rr.y0 + 20.0),
+                Point::new(rr.x1 - PAD - 6.0, name_y + m.name_h / 2.0),
                 6.0,
                 theme.accent_primary,
                 true,
@@ -2862,7 +2981,7 @@ impl ContactsApp {
             t,
             c.border_standard.with_alpha_factor(0.5),
             None,
-            &Line::new((rr.x0 + 14.0, rr.y1), (rr.x1 - 14.0, rr.y1)),
+            &Line::new((rr.x0 + PAD, rr.y1), (rr.x1 - PAD, rr.y1)),
         );
     }
 
@@ -3037,7 +3156,14 @@ impl ContactsApp {
         y: f64,
     ) -> (f64, f64) {
         let c = &theme.tokens.colors;
-        let av = Rect::new(x0, y, x0 + 72.0, y + 72.0);
+        let sp = &theme.tokens.spacing;
+        // Every header row is stacked from its measured line: name, subtitle
+        // and chips can no longer land on each other when the type scales.
+        let name_h = f64::from(tr.measure("Ag", 26.0, None).1);
+        let sub_h = f64::from(tr.measure("Ag", 14.0, None).1);
+        let chip_text_h = f64::from(tr.measure("Ag", 11.0, None).1);
+        let av_size = (name_h + sub_h).max(72.0);
+        let av = Rect::new(x0, y, x0 + av_size, y + av_size);
         draw_avatar(scene, t, tr, theme, av, &contact.initials());
 
         // Action buttons (favorite star, Edit, Delete) — top right.
@@ -3074,7 +3200,7 @@ impl ContactsApp {
 
         // Name + subtitle on their own full-width rows beneath the avatar.
         let head_w = (x1 - x0).max(40.0) as f32;
-        let name_y = y + 88.0;
+        let name_y = y + av_size + f64::from(sp.s4);
         let name =
             tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
         tr.draw_text_weighted(
@@ -3086,7 +3212,7 @@ impl ContactsApp {
             None,
             TextWeight::Bold,
         );
-        let mut hy = name_y + 36.0;
+        let mut hy = name_y + name_h + f64::from(sp.s1);
         let sub = contact.subtitle();
         if !sub.is_empty() {
             let sub = tr.elide_to_width(&sub, 14.0, head_w);
@@ -3098,17 +3224,25 @@ impl ContactsApp {
                 t * Affine::translate((x0, hy)),
                 None,
             );
-            hy += 26.0;
+            hy += sub_h + f64::from(sp.s2);
         }
-        // Group badges below the name/subtitle.
+        // Group badges below the name/subtitle: pills sized from their label
+        // line, wrapping onto further rows rather than being dropped.
         if !contact.groups.is_empty() {
+            let chip_h = (chip_text_h + f64::from(sp.s2)).max(20.0);
+            let pad_x = f64::from(sp.s2);
+            let gap = f64::from(sp.s2);
             let mut bx = x0;
-            let by = hy;
+            let mut by = hy;
             for g in &contact.groups {
                 let tw = f64::from(tr.measure(&g.value, 11.0, None).0);
-                let bw = tw + 18.0;
-                let br = Rect::new(bx, by, bx + bw, by + 20.0);
-                let shape = RoundedRect::from_rect(br, 10.0);
+                let bw = tw + 2.0 * pad_x;
+                if bx > x0 && bx + bw > x1 {
+                    bx = x0;
+                    by += chip_h + gap;
+                }
+                let br = Rect::new(bx, by, bx + bw, by + chip_h);
+                let shape = RoundedRect::from_rect(br, chip_h / 2.0);
                 scene.fill(
                     Fill::NonZero,
                     t,
@@ -3121,19 +3255,16 @@ impl ContactsApp {
                     &g.value,
                     11.0,
                     theme.accent_primary,
-                    t * Affine::translate((bx + 9.0, by + 4.0)),
+                    t * Affine::translate((bx + pad_x, by + (chip_h - chip_text_h) / 2.0)),
                     None,
                 );
-                bx += bw + 8.0;
-                if bx > x1 - 60.0 {
-                    break;
-                }
+                bx += bw + gap;
             }
-            hy += 28.0;
+            hy = by + chip_h + gap;
         }
 
         // Start of the field sections below the header block.
-        (name_y, hy + 12.0)
+        (name_y, hy + f64::from(sp.s3))
     }
 
     /// Phone/email/address/birthday/website/notes sections, in order, each
@@ -4052,26 +4183,48 @@ fn detail_field(
     value: &str,
 ) {
     let c = &theme.tokens.colors;
+    let sp = &theme.tokens.spacing;
+    // The label column is sized from the widest label the app can show, so
+    // every value in a card starts on one edge and a scaled label never runs
+    // under its value. At 1× the authored 78px column still wins.
+    let widest = f64::from(
+        tr.measure(DETAIL_WIDEST_LABEL, DETAIL_LABEL_TEXT, None)
+            .0,
+    );
+    let label_col = (widest + f64::from(sp.s4)).max(DETAIL_LABEL_COL);
+    let (_, label_h) = tr.measure(label, DETAIL_LABEL_TEXT, None);
+    let (_, value_line_h) = tr.measure("Ag", DETAIL_VALUE_TEXT, None);
+    // Label and the value's first line share a centre.
+    let label_y = *y + (f64::from(value_line_h) - f64::from(label_h)) / 2.0;
     tr.draw_text(
         scene,
         label,
-        12.0,
+        DETAIL_LABEL_TEXT,
         c.text_dim,
-        t * Affine::translate((x0, *y + 2.0)),
-        Some(64.0),
+        t * Affine::translate((x0, label_y)),
+        Some((label_col - f64::from(sp.s2)) as f32),
     );
-    let vw = (x1 - x0 - 78.0).max(40.0);
-    let h = f64::from(tr.measure(value, 14.0, Some(vw as f32)).1);
+    let vw = (x1 - x0 - label_col).max(40.0);
+    let h = f64::from(tr.measure(value, DETAIL_VALUE_TEXT, Some(vw as f32)).1);
     tr.draw_text(
         scene,
         value,
-        14.0,
+        DETAIL_VALUE_TEXT,
         c.text_primary,
-        t * Affine::translate((x0 + 78.0, *y)),
+        t * Affine::translate((x0 + label_col, *y)),
         Some(vw as f32),
     );
-    *y += h.max(20.0) + 8.0;
+    *y += h.max(20.0) + f64::from(sp.s2);
 }
+
+/// Base sizes of a detail card's field label and value.
+const DETAIL_LABEL_TEXT: f32 = 12.0;
+const DETAIL_VALUE_TEXT: f32 = 14.0;
+/// Authored 1× width of the detail label column.
+const DETAIL_LABEL_COL: f64 = 78.0;
+/// The widest label a detail card can show (see `TYPE_OPTIONS`, "date",
+/// "url"); it sizes the label column so values align across every row.
+const DETAIL_WIDEST_LABEL: &str = "mobile";
 
 fn type_label(draft: &Contact, target: TypeTarget) -> &str {
     let s = match target {
@@ -4797,9 +4950,10 @@ impl Widget for ContactsApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = theme.text_scale;
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -7686,6 +7840,32 @@ mod tests {
     use automerge::ReadDoc;
     use taffy::{AvailableSpace, Dimension, Size, Style};
     use vello::kurbo::Point;
+
+    /// List rows, the toolbar and its buttons keep their authored 1× sizes
+    /// and grow from the measured lines they carry at larger text scales, so
+    /// the 2× name/subtitle collision and the clipped people-count are gone.
+    #[test]
+    fn row_and_toolbar_metrics_follow_the_text_scale() {
+        let one = ContactRowMetrics::new(1.0);
+        assert_eq!(one.row_h, ROW_H);
+        assert_eq!(one.avatar, ROW_AVATAR);
+
+        let two = ContactRowMetrics::new(2.0);
+        assert!(two.row_h >= two.name_h + two.sub_h + 2.0 * ROW_TEXT_PAD);
+        assert!(two.row_h > one.row_h);
+        assert!(two.avatar >= ROW_AVATAR && two.avatar <= two.row_h);
+
+        let mut app = ContactsApp::new();
+        assert_eq!(app.toolbar_h(), TOOLBAR_H);
+        assert_eq!(app.toolbar_button_h(), TOOLBAR_BUTTON_H);
+        app.text_scale = 2.0;
+        assert!(app.toolbar_h() >= line_h(TOOLBAR_TEXT, 2.0) + 2.0 * ROW_TEXT_PAD);
+        assert!(app.toolbar_button_h() >= line_h(TOOLBAR_BUTTON_TEXT, 2.0));
+        assert!(app.toolbar_button_h() < app.toolbar_h());
+        // The scaled row grid is what the virtualised rows and the
+        // ensure-visible path read, so they agree with the painter.
+        assert_eq!(app.row_metrics(), two);
+    }
 
     #[test]
     fn shared_chip_style_keeps_selected_chips_legible_in_every_app_theme() {
@@ -10874,7 +11054,8 @@ mod tests {
         h.app.selected = h.app.store.contacts.first().map(|contact| contact.id);
         h.relayout();
 
-        let viewport_capacity = (h.app.list_body.height() / ROW_H).ceil() as usize;
+        let viewport_capacity =
+            (h.app.list_body.height() / h.app.row_metrics().row_h).ceil() as usize;
         assert_eq!(h.app.visible_row_count, 1_000);
         assert!(
             h.app.list_rows.len() <= viewport_capacity + LIST_OVERSCAN_ROWS * 2,
