@@ -5,6 +5,8 @@
 //! personal device with a live display advertisement. Proposals carry their
 //! previous placement and are never applied implicitly.
 
+use std::collections::BTreeMap;
+
 use crate::shell::device_fabric::{DisplayEdge, DisplayRect};
 use crate::shell::personal_continuity::DeviceId;
 
@@ -111,6 +113,7 @@ pub fn propose_layout(
             || &item.peer == local
             || item.range_mm > MAX_RANGE_MM
             || item.confidence_milli < MIN_CONFIDENCE_MILLI
+            || item.observed_unix_ms > now_unix_ms
             || now_unix_ms.saturating_sub(item.observed_unix_ms) > MAX_EVIDENCE_AGE_MS
             || proposals
                 .iter()
@@ -207,9 +210,19 @@ pub fn summarize_health(
     observations: impl IntoIterator<Item = DeviceHealthObservation>,
     now_unix_ms: u64,
 ) -> Vec<DeviceHealthView> {
-    observations
-        .into_iter()
-        .filter(|item| item.certified)
+    let mut newest = BTreeMap::<DeviceId, DeviceHealthObservation>::new();
+    for item in observations {
+        if item.certified
+            && item.observed_unix_ms <= now_unix_ms
+            && newest
+                .get(&item.peer)
+                .is_none_or(|existing| existing.observed_unix_ms < item.observed_unix_ms)
+        {
+            newest.insert(item.peer.clone(), item);
+        }
+    }
+    newest
+        .into_values()
         .take(MAX_CALIBRATION_PROPOSALS)
         .map(|item| {
             let stale = now_unix_ms.saturating_sub(item.observed_unix_ms) > STALE_HEALTH_MS;
@@ -293,6 +306,10 @@ mod tests {
 
         let devices = vec![display("local", 0, true), display("nearby", 500, true)];
         assert!(propose_layout(&local, &devices, &[evidence(1)], 10_001).is_empty());
+        assert!(
+            propose_layout(&local, &devices, &[evidence(10_002)], 10_001).is_empty(),
+            "future local observations must not remain fresh through saturation"
+        );
     }
 
     #[test]
@@ -358,5 +375,32 @@ mod tests {
                 DeviceDegradedReason::RoutePressure,
             ]
         );
+    }
+
+    #[test]
+    fn health_uses_the_newest_local_observation_per_exact_peer() {
+        let base = DeviceHealthObservation {
+            peer: id("tablet"),
+            certified: true,
+            online: false,
+            observed_unix_ms: 10,
+            latency_ms: Some(900),
+            power: DevicePower::Battery(2),
+            energy_saver: true,
+            active_routes: MAX_ACTIVE_ROUTES,
+        };
+        let fresh = DeviceHealthObservation {
+            online: true,
+            observed_unix_ms: 20,
+            latency_ms: Some(12),
+            power: DevicePower::Charging(80),
+            energy_saver: false,
+            active_routes: 1,
+            ..base.clone()
+        };
+        let views = summarize_health([fresh, base], 21);
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].reachability, DeviceReachability::Online);
+        assert!(views[0].degraded.is_empty());
     }
 }
