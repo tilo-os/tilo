@@ -5017,6 +5017,38 @@ mod tests {
     }
 
     #[test]
+    fn smart_tab_activation_persists_and_draws_its_full_content() {
+        let mut h = Harness::new(1280.0, 800.0);
+        let selected_before = h.app.selected;
+        let smart_tab = h
+            .lay()
+            .tabs
+            .iter()
+            .find(|(_, tab)| *tab == Tab::Smart)
+            .map(|(rect, _)| *rect)
+            .expect("SMART tab has a hit target");
+
+        assert!(h.click(center(smart_tab)), "the SMART tab claims its click");
+        assert_eq!(h.app.tab, Tab::Smart);
+        assert_eq!(DisksDoc::tab(&h.doc), Tab::Smart.key());
+        assert_eq!(
+            h.app.selected, selected_before,
+            "changing detail tabs must not retarget the selected drive"
+        );
+
+        h.draw();
+        let expected_height = h
+            .app
+            .drive()
+            .map(|drive| h.app.content_height(drive))
+            .expect("the seeded app has a selected drive");
+        assert_eq!(
+            h.app.content_h, expected_height,
+            "the real draw pass publishes the SMART tab's complete scroll extent"
+        );
+    }
+
+    #[test]
     fn clicking_a_partition_segment_selects_it_and_scopes_actions() {
         let mut h = Harness::new(1280.0, 800.0);
         // nvme partitions: 0=EFI 1=root 2=home 3=swap. Click the root segment.
