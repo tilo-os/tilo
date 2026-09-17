@@ -8,6 +8,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::shell::device_fabric::{DisplayEdge, DisplayRect};
 use crate::shell::personal_continuity::DeviceId;
 
@@ -106,8 +108,18 @@ impl SpatialCalibrationState {
         self.evidence.retain(|item| &item.peer != peer);
     }
 
-    pub fn take_revert(&mut self, peer: &DeviceId) -> Option<DisplayRect> {
-        self.previous.remove(peer)
+    #[must_use]
+    pub fn revert_rect(&self, peer: &DeviceId) -> Option<DisplayRect> {
+        self.previous.get(peer).copied()
+    }
+
+    pub fn finish_revert(&mut self, peer: &DeviceId) {
+        self.previous.remove(peer);
+    }
+
+    #[must_use]
+    pub fn revertible_peers(&self) -> Vec<DeviceId> {
+        self.previous.keys().cloned().collect()
     }
 }
 
@@ -211,7 +223,7 @@ pub fn propose_layout(
     proposals
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DevicePower {
     #[default]
     Unknown,
@@ -260,7 +272,7 @@ pub struct DeviceHealthView {
     pub degraded: Vec<DeviceDegradedReason>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceHealthReport {
     pub probe_nonce: [u8; 16],
     pub power: DevicePower,
@@ -347,6 +359,16 @@ impl DeviceHealthTracker {
         self.measured.remove(peer);
     }
 
+    pub fn retain_peers(&mut self, mut keep: impl FnMut(&DeviceId) -> bool) {
+        self.pending.retain(|peer, _| keep(peer));
+        self.measured.retain(|peer, _| keep(peer));
+    }
+
+    pub fn clear(&mut self) {
+        self.pending.clear();
+        self.measured.clear();
+    }
+
     #[must_use]
     pub fn observation(
         &self,
@@ -356,6 +378,7 @@ impl DeviceHealthTracker {
         active_routes: u8,
         now: Instant,
         now_unix_ms: u64,
+        presence_observed_unix_ms: u64,
     ) -> DeviceHealthObservation {
         let measured = self.measured.get(peer);
         let age_ms = measured
@@ -366,7 +389,9 @@ impl DeviceHealthTracker {
             peer: peer.clone(),
             certified,
             online,
-            observed_unix_ms: now_unix_ms.saturating_sub(age_ms),
+            observed_unix_ms: measured.map_or(presence_observed_unix_ms, |_| {
+                now_unix_ms.saturating_sub(age_ms)
+            }),
             latency_ms: measured.map(|item| item.latency_ms),
             power: measured.map_or(DevicePower::Unknown, |item| item.power),
             energy_saver: measured.is_some_and(|item| item.energy_saver),
@@ -616,6 +641,7 @@ mod tests {
             2,
             now + Duration::from_millis(12),
             20_000,
+            20_000,
         );
         assert_eq!(observation.latency_ms, Some(12));
         assert_eq!(observation.power, DevicePower::Battery(64));
@@ -640,7 +666,8 @@ mod tests {
         assert_eq!(devices[1].rect, Some(proposal.previous));
         state.remember_apply(&proposal);
         assert!(state.proposals(&local, &devices, 10_001).is_empty());
-        assert_eq!(state.take_revert(&tablet), Some(proposal.previous));
-        assert_eq!(state.take_revert(&tablet), None);
+        assert_eq!(state.revert_rect(&tablet), Some(proposal.previous));
+        state.finish_revert(&tablet);
+        assert_eq!(state.revert_rect(&tablet), None);
     }
 }
