@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-builder-image
+  group: build-builder-image-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -106,7 +106,7 @@ jobs:
             RUST_CHANNEL=${{ env.RUST_CHANNEL }}
           tags: code.sandbox.example/qos/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           cache-from: type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ matrix.arch }},mode=max
+          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}', github.sha, matrix.arch) }},mode=max
 
       - name: Install checksum-pinned Cosign
         run: ./os/dev/install-cached-cosign.sh
@@ -263,15 +263,29 @@ jobs:
           else
             sudo -n dnf install -y podman skopeo
           fi
-      - name: Verify and promote the tested native builder index
+      - name: Verify and publish the tested native builder index
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          BUILDER_REF: ${{ github.ref }}
         run: |
+          set -euo pipefail
           channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
+          # Feature builds are reviewable candidates. Only main may advance
+          # shared builder aliases after the native/cache acceptance gates.
+          tags=(--tag "candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+          if [ "$BUILDER_REF" = refs/heads/main ]; then
+            tags=(--tag "$GITHUB_SHA" --tag "$channel" --tag latest)
+          fi
           python3 os/dev/promote-native-index.py \
             --repository code.sandbox.example/qos/tilo-builder \
-            --tag "$GITHUB_SHA" --tag "$channel" --tag latest \
+            "${tags[@]}" \
             --revision "$GITHUB_SHA" --descriptors native-children \
             --signing-key env://COSIGN_PRIVATE_KEY --output builder-index.txt
           cat builder-index.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain the immutable builder reference
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: builder-index-${{ github.sha }}
+          path: builder-index.txt
+          if-no-files-found: error

@@ -11,6 +11,11 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
+    inputs:
+      builder_image:
+        description: 'Optional immutable tested builder index (code.sandbox.example/qos/tilo-builder@sha256:...)'
+        required: false
+        type: string
 
 concurrency:
   group: check-${{ github.ref }}
@@ -44,11 +49,35 @@ env:
     (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
 
 jobs:
+  builder:
+    runs-on: runner
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - name: Resolve the CI builder before starting job containers
+        id: resolve
+        env:
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=code.sandbox.example/qos/tilo-builder:latest
+          if [ -n "$REQUESTED_BUILDER" ]; then
+            [[ "$REQUESTED_BUILDER" =~ ^code\.podesta\.ai/qos/tilo-builder@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::builder_image must be an immutable tilo-builder SHA-256 reference'
+              exit 1
+            }
+            image="$REQUESTED_BUILDER"
+          fi
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
   select:
+    needs: builder
     runs-on: runner
     timeout-minutes: 15
     container:
-      image: code.sandbox.example/qos/tilo-builder:latest
+      image: ${{ needs.builder.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -109,6 +138,7 @@ jobs:
           python3 os/tests/uki_hardware_profile.py
           python3 os/tests/image_build_profile.py
           python3 os/tests/native_index_promotion.py
+          python3 os/tests/test_builder_candidate_workflow.py
           python3 os/tests/test_rpm_snapshot_architecture.py
           python3 os/tests/test_fex_payload.py
           python3 os/tests/test_fex_patches.py
@@ -177,7 +207,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   affected:
-    needs: select
+    needs: [builder, select]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -185,7 +215,7 @@ jobs:
       max-parallel: 4
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     container:
-      image: code.sandbox.example/qos/tilo-builder:latest
+      image: ${{ needs.builder.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
