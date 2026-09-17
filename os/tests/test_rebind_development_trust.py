@@ -1,0 +1,140 @@
+import importlib.util
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import sys
+import unittest
+from unittest.mock import patch
+import test_development_trust as fixtures
+
+DEV = Path(__file__).resolve().parents[1] / 'dev'
+sys.path.insert(0, str(DEV))
+spec = importlib.util.spec_from_file_location('rebind', DEV / 'rebind-development-trust.py')
+rebind = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rebind)
+
+@unittest.skipUnless(hasattr(os, 'getuid') and os.getuid() == 0 and shutil.which('openssl'), 'native root fixture required')
+class RebindTests(unittest.TestCase):
+    setUpClass = classmethod(fixtures.PublicBundleTests.setUpClass.__func__)
+
+    def setUp(self):
+        fixtures.PublicBundleTests.setUp(self)
+        self.image = Path(self.temporary.name) / 'image'
+        self.old = self.output
+        digest = fixtures.trust.validate(self.old)['manifest_sha256']
+        self.target = 'registry.test/tilo-development/os:old'
+        rebind.installer.install(self.old, self.old, self.image / 'usr/share/tilo',
+            'development', digest, 'ab' * 32, self.target, self.image)
+        for relative, data in [('usr/lib/tilo/generation', b'7\n'),
+                               ('usr/lib/modules/test/vmlinuz', b'kernel bytes'),
+                               ('usr/lib/modules/test/initramfs.img', b'old initramfs')]:
+            path = self.image / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        (self.image / 'usr/lib/systemd/boot/efi').mkdir(parents=True)
+        owner = Path(self.temporary.name) / 'new-owner'
+        owner.write_text('cd' * 32 + '\n')
+        self.new = Path(self.temporary.name) / 'new'
+        fixtures.trust.create([*self.sources[:3], owner], self.new)
+        self.arguments = dict(disposable=True, old_bundle=self.old, old_manifest=digest,
+            old_target=self.target, new_bundle=self.new,
+            new_manifest=fixtures.trust.validate(self.new)['manifest_sha256'],
+            new_target='registry.test/tilo-development/os:new', new_owner='cd' * 32,
+            architecture=platform.machine(), generation=7)
+
+    def snapshot(self):
+        return {str(path.relative_to(self.image)): path.read_bytes()
+                for path in self.image.rglob('*') if path.is_file()}
+
+    def test_replacement_preserves_kernel_generation_and_requires_initramfs(self):
+        before = self.snapshot()
+        result = rebind.replace(self.image, **self.arguments)
+        after = self.snapshot()
+        marker = json.loads((self.image / rebind.hardware.DEVELOPMENT_PATH / 'initramfs-rebind-required.json').read_text())
+        self.assertEqual(marker['purpose'], 'tilo-development-initramfs-rebind-required')
+        self.assertEqual(marker['architecture'], platform.machine())
+        self.assertEqual(marker['new_manifest_sha256'], self.arguments['new_manifest'])
+        self.assertEqual(len(marker['original_kernel_sha256']), 64)
+        self.assertEqual(len(marker['original_initramfs_sha256']), 64)
+        self.assertTrue(result['initramfs_regeneration_required'])
+        self.assertFalse(result['installable'])
+        with self.assertRaisesRegex(ValueError, 'verified initramfs regeneration'):
+            rebind.retention.source.mounted_identity(self.image, self.arguments['new_target'],
+                self.arguments['new_manifest'], platform.machine())
+        with self.assertRaisesRegex(ValueError, 'verified initramfs regeneration'):
+            rebind.retention.rootfs.source.mounted_identity(self.image, self.arguments['new_target'],
+                self.arguments['new_manifest'], platform.machine())
+        for name in before:
+            if name.startswith('usr/lib/'):
+                self.assertEqual(before[name], after[name])
+        self.assertEqual(rebind.hardware.development_origin(self.image), self.arguments['new_target'])
+        self.assertEqual(after['usr/share/tilo/trust/tilo-main-registry-owner.pub'], b'cd' * 32 + b'\n')
+
+    def test_interrupted_replacement_leaves_acceptance_blocking_marker(self):
+        with patch.object(rebind.os, 'replace', side_effect=OSError('fixture interruption')):
+            with self.assertRaises(OSError):
+                rebind.replace(self.image, **self.arguments)
+        with self.assertRaisesRegex(ValueError, 'verified initramfs regeneration'):
+            rebind.retention.source.mounted_identity(self.image, self.target,
+                self.arguments['old_manifest'], platform.machine())
+
+    def test_invalid_independent_inputs_leave_all_old_bytes_unchanged(self):
+        for field, value in [('old_manifest', '0' * 64), ('new_manifest', '0' * 64),
+                             ('old_target', 'registry.test/tilo-development/os:wrong'),
+                             ('new_target', 'code.sandbox.example/qos/tilo:latest'),
+                             ('new_owner', 'ef' * 32), ('generation', 8), ('disposable', False),
+                             ('architecture', 'wrong')]:
+            before = self.snapshot()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                rebind.replace(self.image, **(self.arguments | {field: value}))
+            self.assertEqual(before, self.snapshot())
+
+    def test_completed_and_redirected_destinations_fail_before_writes(self):
+        for relative in ('boot/EFI/Linux', 'kernel', 'usr/lib/systemd/boot/efi/loader.efi.signed'):
+            path = self.image / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'completed')
+            before = self.snapshot()
+            with self.assertRaises(ValueError):
+                rebind.replace(self.image, **self.arguments)
+            self.assertEqual(before, self.snapshot())
+            path.unlink()
+        key = self.image / 'usr/share/tilo/cosign.pub'
+        original = key.read_bytes()
+        key.unlink()
+        key.symlink_to(self.old / 'cosign.pub')
+        with self.assertRaises(ValueError):
+            rebind.replace(self.image, **self.arguments)
+        self.assertEqual((self.old / 'cosign.pub').read_bytes(), original)
+
+    def test_invalid_old_policy_or_bundle_redirect_leaves_old_state_unchanged(self):
+        policy = self.image / 'etc/containers/policy.json'
+        original = policy.read_bytes()
+        policy.write_text('{"default":[{"type":"insecureAcceptAnything"}]}')
+        before = self.snapshot()
+        with self.assertRaises(ValueError):
+            rebind.replace(self.image, **self.arguments)
+        self.assertEqual(before, self.snapshot())
+        policy.write_bytes(original)
+        key = self.old / 'cosign.pub'
+        key.unlink()
+        key.symlink_to(self.sources[0])
+        before = self.snapshot()
+        with self.assertRaises(ValueError):
+            rebind.replace(self.image, **self.arguments)
+        self.assertEqual(before, self.snapshot())
+
+    def test_profile_target_changes_but_selection_is_preserved(self):
+        definition = dict(schema_version=1, id='fixture', architecture=platform.machine(), devicetree=None, firmware={})
+        profile = dict(schema_version=1, id='fixture', architecture=platform.machine(), devicetree=None,
+                       devicetree_sha256=None, target_update_ref=self.target)
+        (self.image / rebind.hardware.DEFINITION_PATH).write_text(json.dumps(definition))
+        (self.image / rebind.hardware.PROFILE_PATH).write_text(json.dumps(profile))
+        rebind.replace(self.image, **self.arguments)
+        self.assertEqual(rebind.hardware.read_profile(self.image), profile | {'target_update_ref': self.arguments['new_target']})
+        self.assertEqual(json.loads((self.image / rebind.hardware.DEFINITION_PATH).read_text()), definition)
+
+if __name__ == '__main__':
+    unittest.main()

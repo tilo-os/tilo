@@ -75,6 +75,9 @@ def image_identity(raw, source, architecture, revision):
 
 
 def mounted_identity(root, target, manifest_digest, architecture):
+    pending = root / hardware.DEVELOPMENT_PATH / 'initramfs-rebind-required.json'
+    if pending.exists() or pending.is_symlink():
+        raise ValueError('development trust replacement requires verified initramfs regeneration')
     if hardware.development_origin(root) != target:
         raise ValueError('image development update origin differs')
     manifest = hardware.trusted_path(root, hardware.DEVELOPMENT_PATH / 'manifest.json', regular=True)
