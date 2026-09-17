@@ -3,8 +3,9 @@ use automerge::{
     AutoCommit, AutomergeError, ChangeHash, ObjType, ReadDoc, TextEncoding,
     transaction::Transactable,
 };
-use std::collections::BTreeSet;
 mod projection;
+mod schema;
+mod selection;
 mod writer;
 pub use projection::ContentProjection;
 
@@ -35,13 +36,83 @@ pub struct HistoryRestoreRoot {
     pub expected_type: RestoreValueType,
 }
 
+/// Declarative family captures are nonempty UTF-8 strings without control characters.
+/// Their byte length is in `1..=max_capture_bytes` (maximum 256). Affixes
+/// are ASCII, at most 256 bytes each; the nonempty prefix contains `.` or `:`.
+/// Keys with the fixed affixes but invalid captures fail content validation.
+#[derive(Clone, Copy, Debug)]
+pub enum HistoryRootPattern {
+    Exact(&'static str),
+    Affix {
+        prefix: &'static str,
+        suffix: &'static str,
+        max_capture_bytes: usize,
+    },
+}
+#[derive(Clone, Copy, Debug)]
+pub struct HistoryRootSelector {
+    pub pattern: HistoryRootPattern,
+    /// An exact property must exist; a family must have at least one member.
+    pub required: bool,
+    pub node: HistoryRestoreNode,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum HistoryRestoreNode {
+    Whole {
+        expected_type: RestoreValueType,
+    },
+    /// Retain the current container and reconcile only declared map children.
+    /// Lists/text must be selected whole; positional overlays are not supported.
+    MapOverlay(&'static HistoryMapOverlay),
+}
+#[derive(Debug)]
+pub struct HistoryMapOverlay {
+    pub fields: &'static [HistoryMapField],
+    /// Select membership for all keys other than the fixed fields.
+    pub entries: Option<&'static HistoryMapEntries>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct HistoryMapField {
+    pub key: &'static str,
+    pub required: bool,
+    pub node: HistoryRestoreNode,
+}
+#[derive(Debug)]
+pub struct HistoryMapEntries {
+    /// Nonempty application identity, bounded to at most 1024 UTF-8 bytes.
+    pub key_limit_bytes: usize,
+    pub node: HistoryRestoreNode,
+    pub membership: HistoryMembership,
+    pub on_create: PreservedOnCreate,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum HistoryMembership {
+    /// Deleting an identity deletes its complete subtree, including protected
+    /// descendants. Retained identities keep current unselected descendants.
+    TargetAuthoritative,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreservedOnCreate {
+    /// Copy selected fields only; the combined result validator must accept
+    /// missing operational fields. Historical operational values never return.
+    Omit,
+    /// Refuse any target identity missing from the current keyed map.
+    Reject,
+}
+
 #[derive(Debug)]
 pub struct HistoryRestoreSchema {
     pub id: &'static str,
     pub version: u32,
+    /// Convenience exact whole-node selectors; checked together with `selectors`.
     pub roots: &'static [HistoryRestoreRoot],
+    pub selectors: &'static [HistoryRootSelector],
     pub preserved_roots: &'static [&'static str],
+    pub preserved: &'static [HistoryRootPattern],
+    /// Read-only validation of current/target selected content and shape.
     pub validate: fn(&AutoCommit) -> Result<(), String>,
+    /// Read-only validation of combined restored content/current operational state.
+    pub validate_result: fn(&AutoCommit) -> Result<(), String>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +123,7 @@ pub struct PreparedContentRestore {
     current: ContentProjection,
     target: ContentProjection,
     protected: ContentProjection,
+    protected_identities: selection::IdentityPaths,
     encoding: TextEncoding,
 }
 impl PreparedContentRestore {
@@ -131,7 +203,8 @@ impl RestoreError {
 /// Both current and historical content must satisfy the registered schema.
 /// Targets with content conflicts or rich-text blocks are unsupported. All
 /// replayed sequence marks use `ExpandMark::None` for their current ranges.
-/// Internal object identities of changed content roots may be recreated.
+/// Internal object identities of whole selected nodes may be recreated. Mixed
+/// structural ancestors and retained entities keep their current identities.
 /// This value grants no authority: the host must check the reviewed resource,
 /// lifetime and current permission inside its exclusive record action frame.
 ///
@@ -144,7 +217,7 @@ pub fn prepare_content_restore(
     current_heads: &[ChangeHash],
     target_heads: &[ChangeHash],
 ) -> Result<PreparedContentRestore, RestoreError> {
-    validate_schema(schema)?;
+    schema::validate(schema)?;
     require_committed(doc)?;
     let mut source = doc.clone();
     let current_heads = sorted_heads(current_heads);
@@ -173,7 +246,8 @@ pub fn prepare_content_restore(
     }
     let target = validated_content(&target_doc, schema)?;
     let current = validated_content(doc, schema)?;
-    let protected = projection::protected(doc, schema)?;
+    (schema.validate_result)(doc).map_err(RestoreError::SchemaInvalid)?;
+    let (protected, protected_identities) = selection::protected(doc, schema, &target, None)?;
     let prepared = PreparedContentRestore {
         schema,
         current_heads,
@@ -181,6 +255,7 @@ pub fn prepare_content_restore(
         current,
         target,
         protected,
+        protected_identities,
         encoding: doc.text_encoding(),
     };
     if prepared.current != prepared.target {
@@ -209,9 +284,17 @@ pub fn apply_prepared_content_restore(
     if validated_content(doc, prepared.schema)? != prepared.current {
         return Err(RestoreError::StaleReview);
     }
-    if projection::protected(doc, prepared.schema)? != prepared.protected {
+    if selection::protected(
+        doc,
+        prepared.schema,
+        &prepared.target,
+        Some(&prepared.protected_identities),
+    )?
+    .0 != prepared.protected
+    {
         return Err(RestoreError::ProtectedStateChanged);
     }
+    (prepared.schema.validate_result)(doc).map_err(RestoreError::SchemaInvalid)?;
     if prepared.current == prepared.target {
         return Ok(RestoreOutcome::Unchanged);
     }
@@ -246,32 +329,11 @@ fn require_committed(doc: &AutoCommit) -> Result<(), RestoreError> {
         Ok(())
     }
 }
-fn validate_schema(schema: &HistoryRestoreSchema) -> Result<(), RestoreError> {
-    if schema.id.is_empty() || schema.version == 0 || schema.roots.is_empty() {
-        return Err(RestoreError::InvalidSchema(
-            "schema id, nonzero version and content roots are required".into(),
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    for root in schema.roots {
-        if root.key.is_empty()
-            || root.key.starts_with("qos:")
-            || schema.preserved_roots.contains(&root.key)
-            || !seen.insert(root.key)
-        {
-            return Err(RestoreError::InvalidSchema(format!(
-                "duplicate, empty or protected root {}",
-                root.key
-            )));
-        }
-    }
-    Ok(())
-}
 fn validated_content(
     doc: &AutoCommit,
     schema: &HistoryRestoreSchema,
 ) -> Result<ContentProjection, RestoreError> {
-    let projection = projection::content(doc, schema)?;
+    let projection = selection::content(doc, schema)?;
     (schema.validate)(doc).map_err(RestoreError::SchemaInvalid)?;
     Ok(projection)
 }
@@ -279,11 +341,19 @@ fn write_and_check(
     doc: &mut AutoCommit,
     prepared: &PreparedContentRestore,
 ) -> Result<(), RestoreError> {
-    writer::write(doc, &prepared.current, &prepared.target)?;
+    writer::write(doc, prepared.schema, &prepared.current, &prepared.target)?;
+    (prepared.schema.validate_result)(doc).map_err(RestoreError::SchemaInvalid)?;
     if validated_content(doc, prepared.schema)? != prepared.target {
         return Err(RestoreError::ContentPostconditionMismatch);
     }
-    if projection::protected(doc, prepared.schema)? != prepared.protected {
+    if selection::protected(
+        doc,
+        prepared.schema,
+        &prepared.target,
+        Some(&prepared.protected_identities),
+    )?
+    .0 != prepared.protected
+    {
         return Err(RestoreError::ProtectedStateChanged);
     }
     Ok(())
@@ -292,3 +362,7 @@ fn write_and_check(
 #[cfg(test)]
 #[path = "restore/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "restore/selector_tests.rs"]
+mod selector_tests;

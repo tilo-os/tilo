@@ -1,9 +1,9 @@
 //! Object-id-independent, conflict-aware semantic values used for exact checks.
-use super::{HistoryRestoreSchema, RestoreError, RestoreValueType, ScalarType};
-use automerge::{AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, marks::Mark};
+use super::{RestoreError, RestoreValueType, ScalarType};
+use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value, marks::Mark};
 use std::collections::BTreeMap;
 
-type Properties = BTreeMap<String, Vec<Node>>;
+pub(super) type Properties = BTreeMap<String, Vec<Node>>;
 
 /// Immutable semantic content. Equality includes scalar types, floating-point
 /// bits, list order, text and current mark ranges/values, but not internal `ObjIds`.
@@ -42,6 +42,7 @@ impl SemanticMark {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Node {
+    Protected(ObjId, Box<Node>),
     Scalar(ExactScalar),
     Map(ObjType, Properties),
     List(Vec<Vec<Node>>, Vec<SemanticMark>),
@@ -57,6 +58,7 @@ pub(super) enum Node {
 impl Node {
     pub fn value_type(&self) -> RestoreValueType {
         match self {
+            Self::Protected(_, node) => node.value_type(),
             Self::Map(kind, _) => RestoreValueType::Object(*kind),
             Self::List(..) => RestoreValueType::Object(ObjType::List),
             Self::Text { .. } => RestoreValueType::Object(ObjType::Text),
@@ -76,51 +78,7 @@ impl Node {
     }
 }
 
-pub(super) fn content(
-    doc: &AutoCommit,
-    schema: &HistoryRestoreSchema,
-) -> Result<ContentProjection, RestoreError> {
-    let mut result = BTreeMap::new();
-    for root in schema.roots {
-        let values = property(doc, &ROOT, root.key.into(), root.key, true, 0)?;
-        if values.is_empty() {
-            if root.required {
-                return Err(RestoreError::SchemaInvalid(format!(
-                    "missing required root {}",
-                    root.key
-                )));
-            }
-        } else if values
-            .first()
-            .is_some_and(|node| node.value_type() != root.expected_type)
-        {
-            return Err(RestoreError::SchemaInvalid(format!(
-                "wrong type for root {}",
-                root.key
-            )));
-        }
-        result.insert(root.key.into(), values);
-    }
-    Ok(ContentProjection(result))
-}
-
-pub(super) fn protected(
-    doc: &AutoCommit,
-    schema: &HistoryRestoreSchema,
-) -> Result<ContentProjection, RestoreError> {
-    let mut result = BTreeMap::new();
-    for key in doc.keys(ROOT) {
-        if !schema.roots.iter().any(|root| root.key == key) {
-            result.insert(
-                key.clone(),
-                property(doc, &ROOT, key.clone().into(), &key, false, 0)?,
-            );
-        }
-    }
-    Ok(ContentProjection(result))
-}
-
-fn property(
+pub(super) fn property(
     doc: &AutoCommit,
     object: &ObjId,
     prop: Prop,
@@ -141,7 +99,14 @@ fn property(
     }
     values
         .into_iter()
-        .map(|(value, id)| node(doc, &id, value, path, is_content, depth))
+        .map(|(value, id)| {
+            let node = node(doc, &id, value, path, is_content, depth)?;
+            Ok(if is_content {
+                node
+            } else {
+                Node::Protected(id, Box::new(node))
+            })
+        })
         .collect()
 }
 
