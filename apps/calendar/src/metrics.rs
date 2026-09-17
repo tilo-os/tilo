@@ -10,14 +10,13 @@
 //! header and chip height in the calendar is solved through [`line_h`] and
 //! [`at_least_whole`], never through a private `size × 1.25`.
 
-use ui::text_render::TextStyle;
 
 /// Height of one line of `size`-pt text at the renderer's `text_scale`.
 ///
 /// The clamp matches `TextRenderer::set_text_scale`, so a theme scale the
 /// renderer refuses to honour is not honoured here either.
 pub(crate) fn line_h(size: f32, text_scale: f32) -> f64 {
-    f64::from(TextStyle::new(size * sanitized(text_scale)).line_height_px())
+    ui::text_metrics::line_height_px(size, text_scale)
 }
 
 /// The largest of an authored 1× minimum and a measured occupied height.
@@ -31,7 +30,7 @@ pub(crate) fn at_least(minimum: f64, measured: f64) -> f64 {
 /// fraction short of the text plus the gap the painter leaves, and every
 /// height lands on a whole pixel at every scale.
 pub(crate) fn at_least_whole(minimum: f64, measured: f64) -> f64 {
-    measured.ceil().max(minimum)
+    ui::text_metrics::at_least_whole(minimum, measured)
 }
 
 fn sanitized(text_scale: f32) -> f32 {

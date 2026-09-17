@@ -114,12 +114,7 @@ const ROW_AVATAR: f64 = 40.0;
 /// layout pass and the painter agree on every row. The crate's one copy of
 /// the line-height formula.
 fn line_h(size: f32, text_scale: f32) -> f64 {
-    let scale = if text_scale.is_finite() {
-        text_scale.clamp(0.5, 4.0)
-    } else {
-        1.0
-    };
-    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+    ui::text_metrics::line_height_px(size, text_scale)
 }
 
 /// The authored (or token) 1× minimum, or the measured line plus its theme
@@ -128,7 +123,7 @@ fn line_h(size: f32, text_scale: f32) -> f64 {
 /// short of the text plus the gap the painter leaves, and every height is a
 /// whole pixel at every scale.
 fn at_least_whole(minimum: f64, measured: f64) -> f64 {
-    measured.ceil().max(minimum)
+    ui::text_metrics::at_least_whole(minimum, measured)
 }
 
 /// Base (unscaled) text sizes handed to the legacy renderer, read from the
