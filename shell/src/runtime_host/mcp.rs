@@ -245,7 +245,11 @@ impl McpServer {
                         a.revision,
                         a.resource,
                         a.action,
-                        Some(Value::Object(a.arguments).to_string()),
+                        Some(format!(
+                            "{}{}",
+                            qos_actions::ARGUMENTS_JSON_PREFIX,
+                            Value::Object(a.arguments)
+                        )),
                         None,
                     )
                     .map_err(|e| format!("{e:?}"))?;
