@@ -3449,6 +3449,21 @@ fn install_device_fabric_bridge(
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
+                DeviceFabricUiAction::ApplyCalibration { device } => {
+                    crate::shell::device_fabric_runtime::apply_spatial_calibration(
+                        &fabric_net,
+                        &device,
+                    )?;
+                }
+                DeviceFabricUiAction::DismissCalibration { device } => {
+                    crate::shell::device_fabric_runtime::dismiss_spatial_calibration(&device)?;
+                }
+                DeviceFabricUiAction::RevertCalibration { device } => {
+                    crate::shell::device_fabric_runtime::revert_spatial_calibration(
+                        &fabric_net,
+                        &device,
+                    )?;
+                }
                 DeviceFabricUiAction::GrantControl { controller } => {
                     let _ = crate::shell::device_fabric_runtime::grant_input_control(
                         &fabric_net,
