@@ -588,3 +588,15 @@ fn cancellation_fixture_has_no_entry_after_its_last_read() {
     let r = operation("large", &["--read-chunk".into(), req.to_string()]).unwrap();
     assert_eq!(bytes(&r).unwrap(), b"final chunk");
 }
+#[test]
+fn copy_manifest_diagnostic_exposes_verified_portable_entries() {
+    let report = operation("large", &["--copy-manifest".into()]).unwrap();
+    let entries = report.get("entries").and_then(Value::as_array).unwrap();
+    let large = entries
+        .iter()
+        .find(|e| e["size"] == 12 * 1_048_576)
+        .unwrap();
+    assert!(large["copy_times"].is_object());
+    assert_eq!(large["content_readable"], true);
+    assert_eq!(report["diagnostic_only"], true);
+}

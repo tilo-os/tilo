@@ -8,10 +8,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut args = std::env::args_os().skip(1);
     let path = args.next().ok_or("expected regular image path")?;
+    let mut copy_manifest = false;
     let mut read_limit = limits::READ_BYTES;
     let mut operation = limits::NativeOperation::Probe { root: 5 };
     while let Some(arg) = args.next() {
-        if arg == "--manifest" {
+        if arg == "--copy-manifest" {
+            copy_manifest = true;
+            operation = limits::NativeOperation::Manifest { root: 5 };
+        } else if arg == "--manifest" {
             operation = limits::NativeOperation::Manifest { root: 5 };
         } else if arg == "--read-chunk" {
             operation = limits::NativeOperation::ReadChunk {
@@ -50,7 +54,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .checked_add(Duration::from_secs(limits::WALL_SECONDS))
             .ok_or("wall deadline overflow")?,
     )?;
-    println!("{}", serde_json::to_string(&report)?);
+    if copy_manifest {
+        let manifest = qos_ntfs_helper::manifest::verify(&report, 5)?;
+        let identity = qos_ntfs_helper::protocol::identity(&report, 5)?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "diagnostic_only": true, "stats": report.stats,
+                "identity": {"volume": identity.volume, "root": identity.root, "upcase": identity.upcase_sha256},
+                "native_identity": identity, "entries": manifest.entries,
+                "issues": manifest.issues, "upcase": manifest.upcase,
+                "facts_digest": qos_ntfs_helper::manifest::metadata_digest(&report.facts, 5)?
+            })
+        );
+    } else {
+        println!("{}", serde_json::to_string(&report)?);
+    }
     Ok(())
 }
 #[cfg(not(unix))]

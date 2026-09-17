@@ -1,7 +1,5 @@
 //! Authenticated Linux client; owns only an IPC socket, never an NTFS device FD.
-use crate::{
-    CHUNK_BYTES, Entry, Identity, Issue, Operation, Reply, Request, Response, SCHEMA, socket,
-};
+use crate::{CHUNK_BYTES, Identity, Issue, Operation, Reply, Request, Response, SCHEMA, socket};
 use sha2::{Digest, Sha256};
 use std::os::unix::ffi::OsStrExt;
 use std::{
@@ -30,12 +28,7 @@ pub struct Client {
     next: u64,
     identity: Identity,
 }
-pub struct Manifest {
-    pub generation: u64,
-    pub entries: Vec<Entry>,
-    pub issues: Vec<Issue>,
-    pub upcase: Vec<u16>,
-}
+pub use crate::Manifest;
 impl Client {
     /// Connect only through root-owned, non-writable directories; authenticate the root broker.
     /// # Errors
