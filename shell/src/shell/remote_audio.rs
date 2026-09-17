@@ -104,6 +104,7 @@ pub struct RemoteAudioView {
     pub consents: Vec<RemoteAudioConsentView>,
 }
 
+#[derive(Clone)]
 struct PendingInbound {
     source: DeviceId,
     target: DeviceId,
@@ -287,7 +288,9 @@ pub fn request(
         let mut state = state()
             .lock()
             .map_err(|_| "remote audio service is unavailable".to_string())?;
-        if state.outbound.len() + state.inbound.len() >= MAX_REMOTE_AUDIO_SESSIONS {
+        if state.outbound.len() + state.inbound.len() + state.pending.len()
+            >= MAX_REMOTE_AUDIO_SESSIONS
+        {
             return Err("too many remote audio routes are active".into());
         }
         let selection = state
@@ -347,11 +350,20 @@ pub fn authorize(
         .ok_or_else(|| "that remote audio request expired".to_string())?;
     let authorization = approved.then(random_nonzero_16);
     if let Some(authorization) = authorization {
-        let sink = PcmSink::start()?;
+        let sink = match PcmSink::start() {
+            Ok(sink) => sink,
+            Err(error) => {
+                if let Ok(mut state) = state().lock() {
+                    state.pending.insert(session_id, pending);
+                }
+                return Err(error);
+            }
+        };
         let mut state = state()
             .lock()
             .map_err(|_| "remote audio service is unavailable".to_string())?;
         if state.outbound.len() + state.inbound.len() >= MAX_REMOTE_AUDIO_SESSIONS {
+            state.pending.insert(session_id, pending);
             return Err("too many remote audio routes are active".into());
         }
         state.inbound.insert(
@@ -423,7 +435,8 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             session_id, label, ..
         } => {
             if let Ok(mut state) = state().lock()
-                && state.pending.len() < MAX_REMOTE_AUDIO_SESSIONS
+                && state.pending.len() + state.inbound.len() + state.outbound.len()
+                    < MAX_REMOTE_AUDIO_SESSIONS
                 && !state.pending.contains_key(session_id)
                 && !state.inbound.contains_key(session_id)
             {
@@ -485,21 +498,38 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             sequence,
             pcm_s16le,
         } => {
-            if let Ok(mut state) = state().lock()
-                && let Some(route) = state.inbound.get_mut(session_id)
-                && frame_matches(
-                    &route.source,
-                    &route.target,
-                    route.authorization,
-                    route.last_sequence,
+            let mut failed = false;
+            if let Ok(mut state) = state().lock() {
+                if let Some(route) = state.inbound.get_mut(session_id)
+                    && frame_matches(
+                        &route.source,
+                        &route.target,
+                        route.authorization,
+                        route.last_sequence,
+                        &envelope.source,
+                        &envelope.target,
+                        *authorization,
+                        *sequence,
+                    )
+                {
+                    if route.sink.try_write(pcm_s16le.clone()).is_ok() {
+                        route.last_sequence = *sequence;
+                    } else {
+                        failed = true;
+                    }
+                }
+                if failed {
+                    state.inbound.remove(session_id);
+                }
+            }
+            if failed {
+                let _ = network.send_personal_fabric_action(
                     &envelope.source,
-                    &envelope.target,
-                    *authorization,
-                    *sequence,
-                )
-                && route.sink.try_write(pcm_s16le.clone()).is_ok()
-            {
-                route.last_sequence = *sequence;
+                    PersonalFabricAction::RemoteAudioStop {
+                        session_id: *session_id,
+                        authorization: *authorization,
+                    },
+                );
             }
             true
         }
@@ -691,6 +721,12 @@ impl PcmCapture {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| format!("start PipeWire remote audio capture: {error}"))?;
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("check PipeWire remote audio capture: {error}"))?
+        {
+            return Err(format!("PipeWire remote audio capture ended ({status})"));
+        }
         let stdout = child
             .stdout
             .take()
@@ -754,6 +790,12 @@ impl PcmSink {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| format!("start PipeWire remote audio sink: {error}"))?;
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("check PipeWire remote audio sink: {error}"))?
+        {
+            return Err(format!("PipeWire remote audio sink ended ({status})"));
+        }
         let stdin = child
             .stdin
             .take()
@@ -770,7 +812,14 @@ impl PcmSink {
         })
     }
 
-    fn try_write(&self, bytes: Vec<u8>) -> Result<(), String> {
+    fn try_write(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+        if let Some(status) = self
+            .child
+            .try_wait()
+            .map_err(|error| format!("check remote audio sink: {error}"))?
+        {
+            return Err(format!("remote audio sink ended ({status})"));
+        }
         match self.sender.as_ref().map(|sender| sender.try_send(bytes)) {
             Some(Ok(())) | Some(Err(TrySendError::Full(_))) => Ok(()),
             Some(Err(TrySendError::Disconnected(_))) | None => {
