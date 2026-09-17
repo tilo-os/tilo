@@ -411,7 +411,10 @@ fn draw_resume_card(
         scene,
         "Resume →",
         theme.tokens.typography.scale.sm,
-        vello::peniko::Color::WHITE,
+        theme
+            .tokens
+            .colors
+            .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
         at(transform, button.x0 + 10.0, button.y0 + 8.0),
         None,
         ui::text_render::TextWeight::Medium,
