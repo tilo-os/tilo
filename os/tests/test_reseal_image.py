@@ -109,6 +109,18 @@ elif args[:2] != ['image', 'exists']: sys.exit(99)
         build = next(call for call in calls if 'build' in call)
         self.assertEqual(build[build.index('-t') + 1], IMAGE)
 
+    def test_empty_options_cannot_fall_back_to_mutable_legacy_mode(self):
+        for options in (['--iidfile', ''], ['--source-date-epoch', ''],
+                        ['--iidfile', '', '--source-date-epoch', '']):
+            with self.subTest(options=options):
+                result = subprocess.run(
+                    ['bash', str(self.root / 'reseal-image.sh'),
+                     'localhost/tilo:latest', 'a' * 128, *options],
+                    env=self.env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('empty option value', result.stderr)
+                self.assertFalse((self.root / 'calls').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

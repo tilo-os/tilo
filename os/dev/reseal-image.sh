@@ -11,6 +11,7 @@ shift 2
 iidfile=""; epoch=""
 while [ "$#" -gt 0 ]; do
   [ "$#" -ge 2 ] || die "missing option value: $1"
+  [ -n "$2" ] || die "empty option value: $1"
   case "$1" in
     --iidfile) [ -z "$iidfile" ] || die "duplicate --iidfile"; iidfile="$2" ;;
     --source-date-epoch) [ -z "$epoch" ] || die "duplicate --source-date-epoch"; epoch="$2" ;;
