@@ -17597,6 +17597,7 @@ name = "windows-app"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "bounded-command",
  "compat-service",
  "runtime-dylib",
  "runtime-portal",
