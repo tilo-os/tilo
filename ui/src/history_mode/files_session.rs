@@ -58,6 +58,7 @@ pub(super) struct FileController {
     pub restore: FileRestoreSession,
     pub message: String,
     pub preview_changed: bool,
+    pub presentation_invalidated: bool,
     pub review_changed: bool,
     pub live_updates: bool,
     active: bool,
@@ -91,6 +92,7 @@ impl FileController {
             restore: FileRestoreSession::default(),
             message: "Loading file history".into(),
             preview_changed: false,
+            presentation_invalidated: false,
             review_changed: false,
             live_updates: false,
             active: true,
@@ -145,10 +147,26 @@ impl FileController {
         self.active
     }
     pub fn activate(&mut self) {
+        self.advance();
+        self.key.selection = None;
+        self.parent = None;
+        self.live_updates = false;
+        self.versions.clear();
+        self.current_revision = None;
+        self.after = None;
+        self.before = None;
+        self.preview_changed = true;
         self.active = true;
         self.refreshing = false;
         self.next_poll = std::time::Instant::now();
         self.load();
+    }
+    /// Learned only from a successful authorized immutable metadata read.
+    pub fn resource_identity(
+        &self,
+    ) -> Option<(uuid::Uuid, uuid::Uuid, collab_types::FileRecordId)> {
+        self.scope
+            .map(|scope| (scope.workspace_id, scope.mount_lifetime, scope.record_id))
     }
     pub fn selected(&self) -> Option<FileVersionId> {
         self.key.selection
@@ -220,6 +238,15 @@ impl FileController {
             })
     }
     fn hide(&mut self) {
+        // A denial is a barrier even for successful reads that already returned
+        // but have not delivered their completion. Exact operation settlement
+        // remains bound to host/binding/request independently of this epoch.
+        self.advance();
+        self.presentation_invalidated = true;
+        self.key.selection = None;
+        self.parent = None;
+        self.live_updates = false;
+        self.review_operation = None;
         self.after = None;
         self.before = None;
         self.versions.clear();
@@ -349,7 +376,7 @@ impl FileController {
                             self.message="Restore creates a new file revision and preserves existing history".into();
                         }
                         Ok(_) => {
-                            self.review = None;
+                            self.hide();
                             self.message = "Review belongs to another file or mount".into();
                         }
                         Err(outcome) => {
@@ -593,6 +620,88 @@ mod tests {
             mount_lifetime: uuid::Uuid::from_u128(2),
             record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
+        }
+    }
+    #[test]
+    fn round1_denial_fences_delayed_preview_and_review_but_keeps_exact_settlement() {
+        for changed_binding in [false, true] {
+            let mut controller = controller();
+            controller.active = false;
+            let version = FileVersionV1 {
+                id: FileVersionId(uuid::Uuid::from_u128(8)),
+                record_id: scope().record_id,
+                parents: vec![],
+                actor: collab_types::FileActor {
+                    person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                    device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                },
+                timestamp_ms: 1,
+                content_hash: Some(collab_types::ContentHash([3; 32])),
+                metadata_hash: collab_types::ContentHash([4; 32]),
+                provenance: collab_types::FileProvenance::Create,
+            };
+            controller.key.selection = Some(version.id);
+            let key = controller.key;
+            let nonce = controller.confirmation_token();
+            let review = Review {
+                schema_version: 1,
+                workspace_id: scope().workspace_id,
+                mount_lifetime: scope().mount_lifetime,
+                record_id: scope().record_id,
+                frontier: scope().frontier,
+            };
+            let operation = Operation::Restore {
+                version_id: version.id,
+            };
+            let request = controller.restore.prepare(review, operation).unwrap();
+            let denial = if changed_binding {
+                let mut foreign = scope();
+                foreign.mount_lifetime = uuid::Uuid::new_v4();
+                controller.scope = Some(scope());
+                Reply::Activity(Ok((foreign, vec![], None)))
+            } else {
+                Reply::Activity(Err(Error::NotVisible))
+            };
+            // The reads succeeded before revocation, but their completions arrive
+            // after the newer access denial. The channel order is deterministic.
+            for reply in [
+                denial,
+                Reply::Selection(Ok((
+                    FileHistorySnapshot {
+                        scope: scope(),
+                        version,
+                        content: FileHistoricalContent::Bytes(Arc::from(&b"protected"[..])),
+                    },
+                    None,
+                ))),
+                Reply::Review(operation, Ok(review)),
+                Reply::Outcome(
+                    request,
+                    Outcome::RecoveryPending {
+                        intent_id: request.intent_id,
+                    },
+                ),
+            ] {
+                controller.tx.send(Completion { key, reply }).unwrap();
+            }
+            controller.drain();
+            assert!(
+                controller.after.is_none(),
+                "denial must fence already-returned but delayed protected bytes"
+            );
+            assert!(
+                controller.review.is_none(),
+                "denial must fence delayed authorized review"
+            );
+            assert_ne!(controller.confirmation_token(), nonce);
+            assert_eq!(controller.selected(), None);
+            assert_eq!(controller.restore.request, Some(request));
+            assert_eq!(
+                controller.restore.outcome,
+                Some(Outcome::RecoveryPending {
+                    intent_id: request.intent_id
+                })
+            );
         }
     }
     #[test]

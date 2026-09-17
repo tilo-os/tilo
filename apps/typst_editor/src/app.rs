@@ -306,7 +306,7 @@ impl TypstApp {
 
     /// Build the live library from `dir`: every `.typ` file found there, or a
     /// single blank starter when the directory is empty or absent.
-    fn from_library(dir: Option<&std::path::Path>) -> Self {
+    pub(crate) fn from_library(dir: Option<&std::path::Path>) -> Self {
         let mut documents = Vec::new();
         if let Some(dir) = dir {
             documents = Self::scan_dir(dir);
@@ -538,6 +538,7 @@ impl TypstApp {
     // ----- file I/O -------------------------------------------------------
 
     fn save_dir() -> Option<PathBuf> {
+        if let Some(dir) = std::env::var_os("QOS_TYPST_LIBRARY_DIR") { return Some(PathBuf::from(dir)); }
         dirs::document_dir()
             .or_else(dirs::data_dir)
             .map(|d| d.join("typst_editor"))
@@ -1751,6 +1752,8 @@ fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
 }
 
 impl Widget for TypstApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> { Some(&crate::framework_history::HISTORY) }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }

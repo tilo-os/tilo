@@ -18,6 +18,7 @@ from presentation_feedback import summarize_presentation
 from input_latency import summarize_input_latency
 from render_boundaries import summarize_render_boundaries
 from main_stages import summarize_main_stages
+from worker_handoff import summarize_worker_handoffs
 from scratchpad_effects import (validate_scratchpad_typing, validate_scratchpad_scroll,
                                validate_scratchpad_frame_states)
 
@@ -83,6 +84,15 @@ def diagnostics_drained(lines, expected_cpu_ids):
         if any(not expected_cpu_ids <= {r.get('cpu_frame_id') for r in group} for group in groups):
             return False
     if main and not expected_cpu_ids <= {r.get('cpu_frame_id') for r in main}:
+        return False
+    handoffs=rows(lines,'qos-native-worker-handoff ')
+    if handoffs and not expected_cpu_ids <= {r.get('cpu_frame_id') for r in handoffs}:
+        return False
+    # A handoff is emitted before rendering, including auxiliary frames that
+    # have no profiled CPU identity. Do not terminate between that row and its
+    # corresponding worker outcome just because measured frames have drained.
+    worker_keys={(r.get('worker_id'),r.get('worker_frame_ix')) for r in groups[1]}
+    if any((r.get('worker_id'),r.get('worker_frame_ix')) not in worker_keys for r in handoffs):
         return False
     return True
 
@@ -231,6 +241,7 @@ def main(app_kind='scratchpad'):
         report['input_to_presentation'] = summarize_input_latency(scenario, lines, frames)
         report['render_boundaries'] = summarize_render_boundaries(lines, measured)
         report['main_stages'] = summarize_main_stages(lines, measured)
+        report['worker_handoffs'] = summarize_worker_handoffs(lines, measured)
         if len(measured)<1000:
             raise ValueError('Fewer than 1000 measured active frames')
         if hashes!={str(path):digest(path) for path in identity_paths}:

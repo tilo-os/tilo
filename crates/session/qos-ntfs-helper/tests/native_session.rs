@@ -191,6 +191,138 @@ fn typed_manifest_requires_positive_completions_and_scopes_native_metadata() {
     missing.facts.retain(|f| f["kind"] != "attributes_end");
     assert!(qos_ntfs_helper::manifest::verify(&missing, 5).is_err());
 }
+
+#[test]
+fn native_standard_information_times_preserve_exact_signed_100ns_values() {
+    for image in ["times", "times-v1"] {
+        let raw = manifest(image).unwrap();
+        let expected_layout = if image == "times" { 72 } else { 48 };
+        let facts = raw["facts"].as_array().unwrap();
+        let record = facts
+            .iter()
+            .find(|fact| {
+                fact["kind"] == "entry" && fact["name"] == "680065006c006c006f002e00740078007400"
+            })
+            .unwrap()["record"]
+            .clone();
+        assert!(facts.iter().any(|fact| {
+            fact["kind"] == "attribute"
+                && fact["record"] == record
+                && fact["type"] == 16
+                && fact["name"] == ""
+                && fact["size"] == expected_layout
+        }));
+        let report: qos_ntfs_helper::protocol::Report = serde_json::from_value(raw).unwrap();
+        let checked = qos_ntfs_helper::manifest::verify(&report, 5).unwrap();
+        let hello = checked
+            .entries
+            .iter()
+            .find(|entry| entry.path == vec!["hello.txt".encode_utf16().collect::<Vec<_>>()])
+            .unwrap();
+        assert_eq!(
+            hello.copy_times,
+            Some(qos_ntfs_protocol::CopyTimes {
+                last_access_100ns: 116_444_736_012_345_678,
+                last_data_change_100ns: 116_444_735_999_999_999,
+            }),
+            "{image}"
+        );
+        assert_eq!(hello.copy_times_unavailable_reason, None, "{image}");
+    }
+}
+
+#[test]
+fn copy_times_unavailability_is_typed_and_does_not_hide_readable_content() {
+    use qos_ntfs_protocol::CopyTimesUnavailableReason as Reason;
+
+    let raw = manifest("times").unwrap();
+    let report: qos_ntfs_helper::protocol::Report = serde_json::from_value(raw).unwrap();
+    let hello_record = report
+        .facts
+        .iter()
+        .find(|fact| {
+            fact["kind"] == "entry" && fact["name"] == "680065006c006c006f002e00740078007400"
+        })
+        .and_then(|fact| fact["record"].as_u64())
+        .unwrap();
+    let check = |report: qos_ntfs_helper::protocol::Report, reason| {
+        let checked = qos_ntfs_helper::manifest::verify(&report, 5).unwrap();
+        let entry = checked
+            .entries
+            .iter()
+            .find(|entry| entry.record == hello_record)
+            .unwrap();
+        assert!(entry.content_readable);
+        assert_eq!(entry.copy_times, None);
+        assert_eq!(entry.copy_times_unavailable_reason, Some(reason));
+    };
+
+    let mut missing: qos_ntfs_helper::protocol::Report =
+        serde_json::from_value(manifest("times").unwrap()).unwrap();
+    missing.facts.retain(|fact| {
+        fact["record"] != hello_record
+            || !((fact["kind"] == "attribute" && fact["type"] == 16)
+                || (fact["kind"] == "chunk" && fact["attribute"] == 16))
+    });
+    check(missing, Reason::MissingStandardInformation);
+
+    let mut duplicate: qos_ntfs_helper::protocol::Report =
+        serde_json::from_value(manifest("times").unwrap()).unwrap();
+    let at = duplicate
+        .facts
+        .iter()
+        .position(|fact| {
+            fact["record"] == hello_record && fact["kind"] == "attribute" && fact["type"] == 16
+        })
+        .unwrap();
+    let extra = duplicate.facts[at].clone();
+    duplicate.facts.insert(at, extra);
+    check(duplicate, Reason::DuplicateStandardInformation);
+
+    let mut unsupported: qos_ntfs_helper::protocol::Report =
+        serde_json::from_value(manifest("times").unwrap()).unwrap();
+    unsupported
+        .facts
+        .iter_mut()
+        .find(|fact| {
+            fact["record"] == hello_record && fact["kind"] == "attribute" && fact["type"] == 16
+        })
+        .unwrap()["size"] = json!(64);
+    check(unsupported, Reason::UnsupportedStandardInformationLayout);
+
+    let mut invalid: qos_ntfs_helper::protocol::Report =
+        serde_json::from_value(manifest("times").unwrap()).unwrap();
+    invalid
+        .facts
+        .iter_mut()
+        .find(|fact| {
+            fact["record"] == hello_record && fact["kind"] == "chunk" && fact["attribute"] == 16
+        })
+        .unwrap()["offset"] = json!(1);
+    check(invalid, Reason::InvalidStandardInformationCoverage);
+
+    let mut wrong_instance: qos_ntfs_helper::protocol::Report =
+        serde_json::from_value(manifest("times").unwrap()).unwrap();
+    wrong_instance
+        .facts
+        .iter_mut()
+        .find(|fact| {
+            fact["record"] == hello_record && fact["kind"] == "chunk" && fact["attribute"] == 16
+        })
+        .unwrap()["instance"] = json!(65_535);
+    check(wrong_instance, Reason::InvalidStandardInformationCoverage);
+
+    let mut invalid_flags: qos_ntfs_helper::protocol::Report =
+        serde_json::from_value(manifest("times").unwrap()).unwrap();
+    invalid_flags
+        .facts
+        .iter_mut()
+        .find(|fact| {
+            fact["record"] == hello_record && fact["kind"] == "attribute" && fact["type"] == 16
+        })
+        .unwrap()["flags"] = json!(1);
+    check(invalid_flags, Reason::InvalidStandardInformationCoverage);
+}
 #[test]
 fn manifest_missing_directory_completion_is_not_positive_enumeration() {
     let raw = manifest("clean").unwrap();

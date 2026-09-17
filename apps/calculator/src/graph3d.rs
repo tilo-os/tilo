@@ -188,6 +188,21 @@ impl SurfaceKey {
 }
 
 impl Graph3dScreen {
+    /// Pure graph rendering for a frozen History model; no editing controls.
+    pub(crate) fn draw_history_canvas(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        model: &CalcModel,
+        area: Rect,
+    ) {
+        self.canvas = area;
+        self.zoom.settle(model.view3d.zoom);
+        draw::fill_rect(scene, t, area, theme.bg_primary);
+        self.draw_surfaces(scene, t, theme, model);
+    }
+
     /// Resolve docked-vs-overlay + panel / canvas / scrim / toggle rects from
     /// the current width. Re-derived every layout pass so a resize reflows.
     fn resolve_panel(&mut self, area: Rect) {

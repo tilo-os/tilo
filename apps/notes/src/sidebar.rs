@@ -959,6 +959,7 @@ impl Widget for NoteTreeView {
         }
         Some(
             AccessNode::new(Role::Tree)
+                .with_semantic_key("notes.page-tree")
                 .with_name("Pages")
                 .with_state(AccessState::new().focusable(true).focused(self.is_focused))
                 .with_children(children),

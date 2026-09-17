@@ -37,6 +37,9 @@
 
 pub mod actions;
 pub mod address_overlay;
+pub mod autofill;
+mod credentials;
+mod address_controls;
 mod back_hold;
 pub mod blocker;
 pub mod browser_tab_strip;

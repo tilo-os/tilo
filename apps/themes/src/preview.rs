@@ -203,6 +203,49 @@ impl PreviewPane {
         }
     }
 
+    pub(crate) fn draw_snapshot(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, rect: Rect) {
+        self.rect = rect;
+        self.draw_specimen(scene, t, tr);
+    }
+    fn draw_specimen(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer) {
+        if self.rect.width() < 8.0 {
+            return;
+        }
+        let th = &self.theme;
+        let layout = SpecimenLayout::new(th, self.rect);
+
+        // 1. Desktop background (surface base).
+        draw::fill_rect(scene, t, self.rect, th.bg_app);
+
+        // The "app window" card occupies the pane minus a margin.
+        draw::fill_rrect(scene, t, layout.card, layout.radius + 4.0, th.bg_primary);
+        draw::stroke_rrect(
+            scene,
+            t,
+            layout.card,
+            layout.radius + 4.0,
+            th.border_standard,
+            1.0,
+        );
+
+        // 2. Title bar.
+        self.draw_title_bar(scene, t, tr, layout.card, layout.radius);
+
+        // 3. Typography — the specimen is shaped in the theme's chosen font
+        //    family (via `font_choice`) so a font change re-renders here live.
+        self.draw_typography_section(scene, t, tr, &layout, layout.typography_y);
+        // 4. Buttons.
+        self.draw_buttons_section(scene, t, tr, &layout, layout.buttons_y);
+        // 5. Controls (toggle, checkbox, slider).
+        self.draw_controls_section(scene, t, tr, &layout, layout.controls_y);
+        // 6. List with a selected row.
+        Self::draw_list_section(scene, t, tr, &layout, layout.list_y);
+        // 7. Badges.
+        self.draw_badges_section(scene, t, tr, &layout, layout.badges_y);
+        // 8. Charts (bar chart + sparkline) sharing a row.
+        Self::draw_charts_section(scene, t, tr, &layout, layout.charts_y);
+    }
+
     /// Rebuild the live theme from the selected spec.
     pub fn set_spec(&mut self, spec: &ThemeSpec) {
         self.theme = spec.to_theme();
@@ -295,42 +338,7 @@ impl Widget for PreviewPane {
         _os_theme: &Theme,
         _p: &PresenceCtx,
     ) {
-        if self.rect.width() < 8.0 {
-            return;
-        }
-        let th = &self.theme;
-        let layout = SpecimenLayout::new(th, self.rect);
-
-        // 1. Desktop background (surface base).
-        draw::fill_rect(scene, t, self.rect, th.bg_app);
-
-        // The "app window" card occupies the pane minus a margin.
-        draw::fill_rrect(scene, t, layout.card, layout.radius + 4.0, th.bg_primary);
-        draw::stroke_rrect(
-            scene,
-            t,
-            layout.card,
-            layout.radius + 4.0,
-            th.border_standard,
-            1.0,
-        );
-
-        // 2. Title bar.
-        self.draw_title_bar(scene, t, tr, layout.card, layout.radius);
-
-        // 3. Typography — the specimen is shaped in the theme's chosen font
-        //    family (via `font_choice`) so a font change re-renders here live.
-        self.draw_typography_section(scene, t, tr, &layout, layout.typography_y);
-        // 4. Buttons.
-        self.draw_buttons_section(scene, t, tr, &layout, layout.buttons_y);
-        // 5. Controls (toggle, checkbox, slider).
-        self.draw_controls_section(scene, t, tr, &layout, layout.controls_y);
-        // 6. List with a selected row.
-        Self::draw_list_section(scene, t, tr, &layout, layout.list_y);
-        // 7. Badges.
-        self.draw_badges_section(scene, t, tr, &layout, layout.badges_y);
-        // 8. Charts (bar chart + sparkline) sharing a row.
-        Self::draw_charts_section(scene, t, tr, &layout, layout.charts_y);
+        self.draw_specimen(scene, t, tr);
     }
 
     fn name(&self) -> &'static str {

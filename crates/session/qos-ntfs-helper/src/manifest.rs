@@ -1,6 +1,6 @@
-//! Schema-2 positive completion verifier. Native facts are untrusted, bounded data.
+//! Native report schema-2 positive completion verifier. Native facts are untrusted, bounded data.
 use crate::protocol::{Report, identity};
-use qos_ntfs_protocol::{Entry, Issue, NativePath};
+use qos_ntfs_protocol::{CopyTimes, CopyTimesUnavailableReason, Entry, Issue, NativePath};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -131,6 +131,97 @@ struct Metadata {
     coverage: BTreeMap<(u64, String, Option<u64>), u64>,
     expected: BTreeMap<(u64, String, Option<u64>), u64>,
     security: Option<u64>,
+    standard_information: StandardInformation,
+}
+#[derive(Default)]
+struct StandardInformation {
+    declarations: u32,
+    instance: Option<u64>,
+    length: Option<u64>,
+    bytes: Vec<u8>,
+    invalid: bool,
+}
+impl StandardInformation {
+    fn attribute(&mut self, length: u64, flags: u64, instance: Option<u64>) {
+        self.declarations = self.declarations.saturating_add(1);
+        if self.declarations == 1 {
+            self.length = Some(length);
+            self.instance = instance;
+            self.invalid = flags != 0 || instance.is_none();
+        }
+    }
+
+    fn chunk(&mut self, instance: Option<u64>, offset: Option<u64>, hex: Option<&str>) {
+        if self.declarations != 1 || instance != self.instance {
+            self.invalid = true;
+            return;
+        }
+        let Some(offset) = offset else {
+            self.invalid = true;
+            return;
+        };
+        let Ok(expected) = u64::try_from(self.bytes.len()) else {
+            self.invalid = true;
+            return;
+        };
+        let Some(hex) = hex else {
+            self.invalid = true;
+            return;
+        };
+        let Ok(data) = unhex(hex) else {
+            self.invalid = true;
+            return;
+        };
+        if offset != expected
+            || data.is_empty()
+            || data.len() > 4096
+            || self.bytes.len().saturating_add(data.len()) > 72
+        {
+            self.invalid = true;
+            return;
+        }
+        self.bytes.extend_from_slice(&data);
+    }
+
+    fn result(&self) -> (Option<CopyTimes>, Option<CopyTimesUnavailableReason>) {
+        use CopyTimesUnavailableReason::{
+            DuplicateStandardInformation, InvalidStandardInformationCoverage,
+            MissingStandardInformation, UnsupportedStandardInformationLayout,
+        };
+        if self.declarations == 0 {
+            return (None, Some(MissingStandardInformation));
+        }
+        if self.declarations != 1 {
+            return (None, Some(DuplicateStandardInformation));
+        }
+        if !matches!(self.length, Some(48 | 72)) {
+            return (None, Some(UnsupportedStandardInformationLayout));
+        }
+        if self.invalid
+            || usize::try_from(self.length.unwrap_or_default()).ok() != Some(self.bytes.len())
+        {
+            return (None, Some(InvalidStandardInformationCoverage));
+        }
+        let Some(last_data_change) = self.bytes.get(8..16) else {
+            return (None, Some(InvalidStandardInformationCoverage));
+        };
+        let Some(last_access) = self.bytes.get(24..32) else {
+            return (None, Some(InvalidStandardInformationCoverage));
+        };
+        let Ok(last_data_change) = <[u8; 8]>::try_from(last_data_change) else {
+            return (None, Some(InvalidStandardInformationCoverage));
+        };
+        let Ok(last_access) = <[u8; 8]>::try_from(last_access) else {
+            return (None, Some(InvalidStandardInformationCoverage));
+        };
+        (
+            Some(CopyTimes {
+                last_access_100ns: i64::from_le_bytes(last_access),
+                last_data_change_100ns: i64::from_le_bytes(last_data_change),
+            }),
+            None,
+        )
+    }
 }
 impl Metadata {
     fn attribute(&mut self, f: &Value, directory: bool) -> io::Result<()> {
@@ -141,6 +232,11 @@ impl Metadata {
         let attr_name = text(f, "name")?.to_owned();
         let length = num(f, "size")?;
         let flags = num(f, "flags")?;
+        let instance = f.get("instance").and_then(Value::as_u64);
+        let standard_information = ty == 16 && attr_name.is_empty();
+        if standard_information {
+            self.standard_information.attribute(length, flags, instance);
+        }
         if ty == 128 && attr_name.is_empty() && !directory {
             if self.size.replace(length).is_some() {
                 self.pending.push("attribute-extents".into());
@@ -151,8 +247,13 @@ impl Metadata {
                 self.pending.push("data-flags".into());
             }
         } else {
+            let instance = if standard_information {
+                instance
+            } else {
+                Some(num(f, "instance")?)
+            };
             self.expected
-                .insert((ty, attr_name.clone(), Some(num(f, "instance")?)), length);
+                .insert((ty, attr_name.clone(), instance), length);
         }
         if ty == 128 && !attr_name.is_empty() {
             self.pending.push("named-data-stream".into());
@@ -187,11 +288,23 @@ impl Metadata {
                 if self.attributes_end != 0 {
                     return Err(bad());
                 }
-                let k = (
-                    num(f, "attribute")?,
-                    text(f, "name")?.to_owned(),
-                    f.get("instance").and_then(Value::as_u64),
-                );
+                let ty = num(f, "attribute")?;
+                let name = text(f, "name")?.to_owned();
+                let instance = f.get("instance").and_then(Value::as_u64);
+                if ty == 16 && name.is_empty() {
+                    self.standard_information.chunk(
+                        instance,
+                        f.get("offset").and_then(Value::as_u64),
+                        f.get("hex").and_then(Value::as_str),
+                    );
+                    self.coverage.insert(
+                        (ty, name, instance),
+                        u64::try_from(self.standard_information.bytes.len())
+                            .map_err(io::Error::other)?,
+                    );
+                    return Ok(());
+                }
+                let k = (ty, name, instance);
                 let at = self.coverage.entry(k).or_default();
                 if num(f, "offset")? != *at {
                     return Err(bad());
@@ -422,6 +535,7 @@ impl Verifier {
             meta.pending.push("meta.security-provenance".into());
         }
         meta.readable &= meta.size.is_some() && record >= 16;
+        let (copy_times, copy_times_unavailable_reason) = meta.standard_information.result();
         self.record_pending(&path, &meta.pending);
         let entry = Entry {
             token: String::new(),
@@ -434,6 +548,8 @@ impl Verifier {
             metadata_digest: metadata_digest(group, record)?,
             content_readable: meta.readable,
             enumeration_complete,
+            copy_times,
+            copy_times_unavailable_reason,
             fidelity_pending: meta.pending,
         };
         if self

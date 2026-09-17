@@ -362,12 +362,15 @@ impl DiffMergeApp {
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
+        self.merge.reconcile_content(doc);
+        if !self.merge.context_matches(doc) { return; }
         self.actions.dispatch_with_context(
             doc,
             crate::actions::DIFFMERGE_ACTION_TYPE,
             action,
             qos_actions::ActionContext::for_action("org.qos.Diff", "Diff", action),
         );
+        self.merge.acknowledge_content(doc);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -380,8 +383,8 @@ impl DiffMergeApp {
     /// The presentation context Ctrl+K needs to build the merge resource tree.
     /// `None` unless a three-way merge with at least one change hunk is the
     /// active mode — the diff mode is read-only and mutates nothing.
-    pub(crate) fn merge_resource_ctx(&self) -> Option<crate::actions::MergeResourceCtx> {
-        if self.mode != Mode::Merge {
+    pub(crate) fn merge_resource_ctx(&self, doc: &AutoCommit) -> Option<crate::actions::MergeResourceCtx> {
+        if self.mode != Mode::Merge || !self.merge.context_matches(doc) {
             return None;
         }
         self.merge.resource_ctx()
@@ -974,6 +977,8 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> { Some(&crate::framework_history::HISTORY) }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::DIFFMERGE_OPERATION_TYPE]
     }
@@ -1232,6 +1237,7 @@ impl Widget for DiffMergeApp {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.merge.reconcile_content(state);
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
@@ -1402,6 +1408,7 @@ impl Widget for DiffMergeApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        self.merge.reconcile_content(state);
         if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
             return false;
         }
@@ -2522,5 +2529,30 @@ mod tests {
             vec![(hunk, "theirs".to_string())],
             "the pointer-driven resolution was recorded in the CRDT"
         );
+    }
+}
+
+#[cfg(test)]
+mod history_input_tests {
+    use super::*;
+    use crate::doc::MergeDoc;
+    #[test]
+    fn restored_output_invalidates_queued_hunks_even_with_same_label_and_choices() {
+        let mut app = DiffMergeApp::new_demo();
+        app.mode = Mode::Merge;
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let hunk = app.merge.model().change_indices()[0];
+        app.merge.resolve(hunk, crate::actions::HunkChoice::Theirs);
+        let pending = app.merge.take_pending_action().unwrap();
+        MergeDoc::set_merged(&mut doc, "Restored output without matching original inputs\n");
+        let heads = doc.get_heads();
+        assert!(Widget::resources(&app, &doc).iter().flat_map(|r| &r.children).all(|r| r.kind != "diffmerge.conflict"));
+        app.perform_action(&mut doc, &pending);
+        assert_eq!(doc.get_heads(), heads);
+        assert_eq!(MergeDoc::merged_text(&doc), "Restored output without matching original inputs\n");
+        assert!(!app.perform_semantic_action(&format!("diffmerge.merge.resolve:{hunk}:ours"), &ui::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(MergeDoc::merged_text(&doc), "Restored output without matching original inputs\n");
     }
 }

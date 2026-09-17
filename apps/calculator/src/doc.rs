@@ -87,7 +87,7 @@ pub fn row_id_at(doc: &AutoCommit, collection: &str, index: usize) -> Option<Str
     visible_ids(doc, collection).get(index).cloned()
 }
 
-fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
+pub(crate) fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
     let Some(rows) = map_at(doc, HISTORY) else {
         return Vec::new();
     };
@@ -105,7 +105,7 @@ fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
         })
         .collect()
 }
-fn load_graph(doc: &AutoCommit, collection: &str) -> Vec<PlotFn> {
+pub(crate) fn load_graph(doc: &AutoCommit, collection: &str) -> Vec<PlotFn> {
     let Some(rows) = map_at(doc, collection) else {
         return Vec::new();
     };
@@ -114,7 +114,7 @@ fn load_graph(doc: &AutoCommit, collection: &str) -> Vec<PlotFn> {
         Some(PlotFn { expr: get_str(doc, &row, "expr").unwrap_or_default(), visible: !matches!(doc.get(&row, "visible").ok().flatten(), Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Boolean(false))) })
     }).collect()
 }
-fn legacy_rows(doc: &AutoCommit, key: &str) -> Vec<(String, String, bool)> {
+pub(crate) fn legacy_rows(doc: &AutoCommit, key: &str) -> Vec<(String, String, bool)> {
     let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, key) else {
         return Vec::new();
     };

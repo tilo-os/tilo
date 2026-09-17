@@ -669,31 +669,9 @@ impl CalcScreen {
             let Some(entry) = model.history.get(*i) else {
                 continue;
             };
-            let row = Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0);
-            draw::fill_rrect(scene, t, row, 8.0, c.neutral[1]);
-            let expr_r = Rect::new(row.x0 + 12.0, row.y0 + 6.0, row.x1 - 12.0, row.y0 + 26.0);
-            draw::text_in(
-                scene,
-                tr,
-                t,
-                expr_r,
-                &engine::prettify(&entry.expr),
-                13.0,
-                c.text_dim,
-                Align::Left,
-                TextWeight::Regular,
-            );
-            let res_r = Rect::new(row.x0 + 12.0, row.y0 + 24.0, row.x1 - 12.0, row.y1 - 4.0);
-            draw::text_in(
-                scene,
-                tr,
-                t,
-                res_r,
-                &format!("= {}", entry.result),
-                18.0,
-                c.text_primary,
-                Align::Right,
-                TextWeight::Semibold,
+            draw_recorded_row(
+                scene, t, tr, theme,
+                Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0), entry,
             );
         }
         scene.pop_layer();
@@ -785,6 +763,43 @@ fn key_colors(theme: &Theme, role: KeyRole, hovered: bool, pressed: bool) -> (Co
         base
     };
     (fill, text)
+}
+
+/// Shared presentation of a recorded calculation, without keypad/actions.
+pub(crate) fn draw_recorded_row(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    row: Rect,
+    entry: &crate::model::HistoryEntry,
+) {
+    let c = &theme.tokens.colors;
+    draw::fill_rrect(scene, t, row, 8.0, c.neutral[1]);
+    let expr_r = Rect::new(row.x0 + 12.0, row.y0 + 6.0, row.x1 - 12.0, row.y0 + 26.0);
+    draw::text_in(
+        scene,
+        tr,
+        t,
+        expr_r,
+        &engine::prettify(&entry.expr),
+        13.0,
+        c.text_dim,
+        Align::Left,
+        TextWeight::Regular,
+    );
+    let res_r = Rect::new(row.x0 + 12.0, row.y0 + 24.0, row.x1 - 12.0, row.y1 - 4.0);
+    draw::text_in(
+        scene,
+        tr,
+        t,
+        res_r,
+        &format!("= {}", entry.result),
+        18.0,
+        c.text_primary,
+        Align::Right,
+        TextWeight::Semibold,
+    );
 }
 
 #[cfg(test)]

@@ -1606,6 +1606,56 @@ mod tests {
         assert!(parse_crop_arg("1,1,1,1").is_none(), "a crop must fit");
     }
 
+    #[test]
+    fn published_crop_schema_accepts_canonical_wire_coordinates() {
+        let resources = PhotosResources.resources(&doc_with_image());
+        let crop = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "crop")
+            .expect("crop is published");
+        let params = crop.params();
+        let schema = params[0].schema.as_ref().expect("crop publishes a schema");
+        let pattern = schema["pattern"]
+            .as_str()
+            .expect("crop schema publishes a string pattern");
+
+        for region in [
+            "0.16666666666666666,0,0.6666666666666666,1",
+            "0,0,1,1",
+            " \t0.25, 0, 0.75, 1\n",
+        ] {
+            let value = serde_json::json!(region);
+            qos_actions::validate_json_schema(&value, schema)
+                .unwrap_or_else(|error| panic!("schema rejected {region:?}: {error}"));
+            let supplied = serde_json::json!({ "region": region });
+            ActionArgs::bind_json(params, supplied.as_object().unwrap())
+                .unwrap_or_else(|error| panic!("binding rejected {region:?}: {error}"));
+        }
+
+        for value in [
+            serde_json::json!(0.5),
+            serde_json::json!("0.1,0.2,0.3"),
+            serde_json::json!("0.1,wat,0.3,0.4"),
+            serde_json::json!("1.1,0,0.5,1"),
+            serde_json::json!("-0.1,0,0.5,1"),
+        ] {
+            assert!(
+                qos_actions::validate_json_schema(&value, schema).is_err(),
+                "schema accepted invalid crop region {value}"
+            );
+            let supplied = serde_json::json!({ "region": value });
+            assert!(
+                ActionArgs::bind_json(params, supplied.as_object().unwrap()).is_err(),
+                "binding accepted invalid crop arguments {supplied}"
+            );
+        }
+        assert!(
+            !pattern.contains('\\'),
+            "published crop patterns must not rely on escaped decimal points: {pattern}"
+        );
+    }
+
     /// A prompted crop that cannot be parsed must leave the photograph alone
     /// rather than crop it to nothing.
     #[test]

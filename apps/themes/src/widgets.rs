@@ -76,6 +76,35 @@ struct RowView {
 }
 
 impl ThemeRow {
+    pub(crate) fn draw_snapshot(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect) {
+        self.rect = rect;
+        self.paint(scene, t, tr, theme);
+    }
+    fn paint(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let radius = theme.radius_standard.min(12.0);
+        // Row background: selected → accent-tinted; else hover / raised —
+        // the same tiering weather's saved-place chip uses.
+        let bg = if self.view.selected {
+            lerp(theme.bg_app, theme.accent_primary, 0.18)
+        } else if self.view.hover {
+            theme.bg_hover
+        } else {
+            theme.bg_primary
+        };
+        draw::fill_rrect(scene, t, self.rect, radius, bg);
+        let (border, bw) = if self.view.selected {
+            (theme.accent_primary, 1.5)
+        } else {
+            (theme.border_standard.multiply_alpha(0.6), 1.0)
+        };
+        draw::stroke_rrect(scene, t, self.rect, radius, border, bw);
+
+        let sw = self.draw_swatch(scene, t, theme);
+        self.draw_name_and_tag(scene, t, tr, theme, sw);
+        self.draw_active_badge(scene, t, tr, theme);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn from_spec(spec: &ThemeSpec, selected: bool) -> Self {
         Self {
             id: spec.id.clone(),
@@ -306,30 +335,9 @@ impl Widget for ThemeRow {
         theme: &Theme,
         _p: &PresenceCtx,
     ) {
-        let radius = theme.radius_standard.min(12.0);
-        // Row background: selected → accent-tinted; else hover / raised —
-        // the same tiering weather's saved-place chip uses.
-        let bg = if self.view.selected {
-            lerp(theme.bg_app, theme.accent_primary, 0.18)
-        } else if self.view.hover {
-            theme.bg_hover
-        } else {
-            theme.bg_primary
-        };
-        draw::fill_rrect(scene, t, self.rect, radius, bg);
-        let (border, bw) = if self.view.selected {
-            (theme.accent_primary, 1.5)
-        } else {
-            (theme.border_standard.multiply_alpha(0.6), 1.0)
-        };
-        draw::stroke_rrect(scene, t, self.rect, radius, border, bw);
-
-        let sw = self.draw_swatch(scene, t, theme);
-        self.draw_name_and_tag(scene, t, tr, theme, sw);
-        self.draw_active_badge(scene, t, tr, theme);
+        self.paint(scene, t, tr, theme);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn handle_event(
         &mut self,
         event: &WindowEvent,

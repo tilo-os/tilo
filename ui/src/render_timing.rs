@@ -238,3 +238,6 @@ mod tests {
         );
     }
 }
+
+#[path = "render_handoff.rs"]
+pub(crate) mod handoff;

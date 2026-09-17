@@ -16,11 +16,38 @@ impl HistoryHost {
         self.after.preview = None;
         self.timeline.set_selection(None);
     }
+    pub(super) fn reconcile_file_target(&mut self) -> bool {
+        let HistorySourceRegistration::CheckedFiles { source, .. } = self.source() else {
+            return false;
+        };
+        let target = source.target();
+        let binding = target.as_ref().map(|target| target.binding);
+        if binding == self.observed_file_binding {
+            return false;
+        }
+        self.close_files_presentation();
+        if let Some(old) = self.files.take() {
+            self.retired_files.push(old);
+        }
+        self.observed_file_binding = binding;
+        self.file_target_resolved = false;
+        self.timeline.set_entries(vec![]);
+        self.unavailable = Text::new("Select a file with versioned history");
+        if self.open {
+            if let Some(target) = target {
+                let mut files = FileController::new(target);
+                files.activate();
+                self.files = Some(files);
+            }
+        }
+        true
+    }
     pub(super) fn refresh_files(&mut self, mut changed: bool) {
         let HistorySourceRegistration::CheckedFiles { source, .. } = self.source() else {
             return;
         };
         let source = source.clone();
+        changed |= self.reconcile_file_target();
         let request = source.take_open();
         if let Some(version) = request {
             self.open = true;
@@ -29,34 +56,16 @@ impl HistoryHost {
         }
         if self.open {
             if let Some(target) = source.target() {
-                // Once open, the selected owner stays pinned until an explicit
-                // new History request or a return-to-live/reopen transition.
-                let switch = self.files.as_ref().is_none_or(|files| {
-                    files.target.binding != target.binding
-                        && (request.is_some() || self.selected.is_empty())
-                });
-                if switch {
-                    self.close_files_presentation();
-                    self.requested_file_version = request.flatten();
-                    if let Some(old) = self.files.take() {
-                        self.retired_files.push(old);
-                    }
-                    if let Some(index) = self
-                        .retired_files
-                        .iter()
-                        .position(|old| old.target.binding == target.binding)
-                    {
-                        self.files = Some(self.retired_files.remove(index));
-                    } else {
-                        self.files = Some(FileController::new(target));
-                    }
+                if self.files.is_none() {
+                    self.files = Some(FileController::new(target));
                     if let Some(files) = &mut self.files {
                         files.activate();
                     }
                     changed = true;
-                } else if request.is_some()
-                    || self.files.as_ref().is_some_and(|files| !files.is_active())
-                {
+                } else if self.files.as_ref().is_some_and(|files| !files.is_active()) {
+                    // Reopening an already active owner is idempotent. Its exact
+                    // immutable selection stays installed; only a different
+                    // requested version below starts a new selection lifetime.
                     if let Some(files) = &mut self.files {
                         files.activate();
                     }
@@ -76,18 +85,60 @@ impl HistoryHost {
                 changed = true;
             }
         }
-        let selected = self
+        let mut selected = self
             .timeline
             .selection()
             .and_then(|(start, _)| self.timeline.entries().get(start))
             .map(|entry| FileVersionId(uuid::Uuid::from_bytes(entry.id.0)));
+        if let Some(files) = &mut self.files {
+            changed |= files.drain();
+        }
+        if !self.file_target_resolved {
+            if let Some(identity) = self
+                .files
+                .as_ref()
+                .and_then(FileController::resource_identity)
+            {
+                // The new descriptor first establishes current authorized identity.
+                // Reuse the old session, never transplant its request/receipts onto
+                // this fresh descriptor. Paths and transient binding IDs do not match.
+                if let Some(index) = self
+                    .retired_files
+                    .iter()
+                    .position(|old| old.resource_identity() == Some(identity))
+                {
+                    let mut retained = self.retired_files.remove(index);
+                    let requested = self
+                        .requested_file_version
+                        .or_else(|| self.files.as_ref().and_then(FileController::selected));
+                    if let Some(fresh) = &self.files {
+                        retained.target.label = fresh.target.label.clone();
+                    }
+                    self.close_files_presentation();
+                    retained.activate();
+                    self.files = Some(retained);
+                    self.requested_file_version = requested;
+                    selected = None;
+                    changed = true;
+                }
+                self.file_target_resolved = true;
+            }
+        }
         let Some(files) = &mut self.files else {
             if changed {
                 self.rebuild_toolbar();
             }
             return;
         };
-        changed |= files.drain();
+        if files.presentation_invalidated {
+            files.presentation_invalidated = false;
+            self.selected.clear();
+            self.timeline.set_selection(None);
+            selected = None;
+            self.requested_file_version = None;
+            self.review = None;
+            self.review_request = None;
+        }
         if let Some(requested) = self.requested_file_version.take().or(selected) {
             if Some(requested) != files.selected() {
                 files.select(requested, None);
@@ -202,6 +253,15 @@ impl HistoryHost {
         }
     }
     pub(super) fn service_file_review(&mut self, command: review::ReviewCommand) {
+        // Root callbacks can change selection after refresh but before the
+        // runner services a queued dialog command. Recheck at this final door.
+        if self.reconcile_file_target() {
+            self.rebuild_toolbar();
+            return;
+        }
+        if !self.file_target_resolved {
+            return;
+        }
         let Some(files) = &mut self.files else {
             return;
         };
@@ -236,6 +296,9 @@ impl HistoryHost {
         self.show_review(None, message);
     }
     pub(super) fn review_file_compensation(&mut self, redo: bool) {
+        if !self.file_target_resolved {
+            return;
+        }
         let Some(files) = &mut self.files else {
             return;
         };
@@ -472,6 +535,292 @@ mod tests {
         assert!(
             host.review.is_none(),
             "a stale confirmation cannot reopen the cancelled dialog"
+        );
+    }
+    #[test]
+    fn round1_root_target_replacement_or_removal_invalidates_queued_confirmation() {
+        use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
+        use collab_types::files::*;
+        struct Transport;
+        impl FileHistoryTransport for Transport {
+            fn read(
+                &self,
+                _: FileHistoryReadQueryV1,
+            ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
+                Err(FileHistoryReadErrorV1::Unavailable)
+            }
+            fn preview(
+                &self,
+                _: FileHistoryReadScopeV1,
+                _: FileVersionId,
+            ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
+                Err(FileHistoryReadErrorV1::Unavailable)
+            }
+            fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
+                Err(CheckedHistoryOutcomeV1::Unavailable)
+            }
+            fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
+                CheckedHistoryOutcomeV1::Unavailable
+            }
+            fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
+                CheckedHistoryOutcomeV1::Unavailable
+            }
+        }
+        for (remove, late) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut host = test_host();
+            let HistorySourceRegistration::CheckedFiles { source, .. } = host.source() else {
+                panic!()
+            };
+            let source = source.clone();
+            let record = collab_types::FileRecordId(uuid::Uuid::from_u128(3));
+            let target = FileHistoryTarget {
+                binding: uuid::Uuid::new_v4(),
+                record,
+                label: "A".into(),
+                transport: std::sync::Arc::new(Transport),
+            };
+            source.set_target(Some(target.clone()));
+            host.open = true;
+            host.refresh(&AutoCommit::new());
+            host.file_target_resolved = true;
+            let files = host.files.as_mut().unwrap();
+            files.review = Some((
+                FileRestoreReviewV1 {
+                    schema_version: 1,
+                    workspace_id: uuid::Uuid::from_u128(1),
+                    mount_lifetime: uuid::Uuid::from_u128(2),
+                    record_id: record,
+                    frontier: [4; 32],
+                },
+                Operation::Restore {
+                    version_id: FileVersionId(uuid::Uuid::from_u128(8)),
+                },
+            ));
+            let nonce = files.confirmation_token();
+            host.selected = vec![crate::HistoryEntryId(*uuid::Uuid::from_u128(8).as_bytes())];
+            let replacement = if remove {
+                None
+            } else {
+                Some(FileHistoryTarget {
+                    binding: uuid::Uuid::new_v4(),
+                    label: "B".into(),
+                    ..target.clone()
+                })
+            };
+            if !late {
+                source.set_target(replacement.clone());
+            }
+            host.commands
+                .borrow_mut()
+                .push_back(Command::Review(review::ReviewCommand::FileConfirm(nonce)));
+            host.refresh(&AutoCommit::new());
+            if late {
+                source.set_target(replacement);
+            }
+            if let Some(command) = host.review_request.take() {
+                host.service_file_review(command);
+            }
+            assert!(
+                host.selected.is_empty(),
+                "resource replacement/removal must clear the pinned presentation"
+            );
+            assert!(host.review.is_none());
+            assert!(
+                host.files
+                    .as_ref()
+                    .is_none_or(|files| files.restore.request.is_none())
+            );
+            let old = host
+                .retired_files
+                .iter()
+                .find(|files| files.target.binding == target.binding)
+                .unwrap();
+            assert!(old.restore.request.is_none());
+            assert!(old.review.is_none());
+            assert_ne!(old.confirmation_token(), nonce);
+        }
+    }
+
+    #[test]
+    fn round1_resource_recovery_keeps_original_transport_and_rejects_wrong_lifetime() {
+        use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
+        use collab_types::files::*;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Transport {
+            scope: FileHistoryReadScopeV1,
+            results: AtomicUsize,
+            reviews: AtomicUsize,
+        }
+        impl FileHistoryTransport for Transport {
+            fn read(
+                &self,
+                _: FileHistoryReadQueryV1,
+            ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
+                Ok(FileHistoryReadValueV1::Page(FileHistoryPageV1 {
+                    scope: self.scope,
+                    versions: vec![],
+                    total_versions: 0,
+                    heads: vec![],
+                    current_revision: None,
+                    next_after: None,
+                }))
+            }
+            fn preview(
+                &self,
+                _: FileHistoryReadScopeV1,
+                _: FileVersionId,
+            ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
+                Err(FileHistoryReadErrorV1::Unavailable)
+            }
+            fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
+                self.reviews.fetch_add(1, Ordering::SeqCst);
+                Err(CheckedHistoryOutcomeV1::ReadOnly)
+            }
+            fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
+                CheckedHistoryOutcomeV1::Unavailable
+            }
+            fn result(&self, intent: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
+                self.results.fetch_add(1, Ordering::SeqCst);
+                CheckedHistoryOutcomeV1::RecoveryPending { intent_id: intent }
+            }
+        }
+        fn settle(host: &mut HistoryHost) {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !host.file_target_resolved && std::time::Instant::now() < end {
+                host.refresh(&AutoCommit::new());
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(host.file_target_resolved);
+        }
+        let scope = FileHistoryReadScopeV1 {
+            workspace_id: uuid::Uuid::from_u128(1),
+            mount_lifetime: uuid::Uuid::from_u128(2),
+            record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(3)),
+            frontier: [4; 32],
+        };
+        let original = Arc::new(Transport {
+            scope,
+            results: AtomicUsize::new(0),
+            reviews: AtomicUsize::new(0),
+        });
+        let original_handle: Arc<dyn FileHistoryTransport> = original.clone();
+        let target = FileHistoryTarget {
+            binding: uuid::Uuid::new_v4(),
+            record: scope.record_id,
+            label: "same display path".into(),
+            transport: original_handle.clone(),
+        };
+        let mut host = test_host();
+        let HistorySourceRegistration::CheckedFiles { source, .. } = host.source() else {
+            panic!()
+        };
+        let source = source.clone();
+        source.set_target(Some(target.clone()));
+        host.open = true;
+        host.refresh(&AutoCommit::new());
+        settle(&mut host);
+        let selected = FileVersionId(uuid::Uuid::from_u128(8));
+        host.files.as_mut().unwrap().select(selected, None);
+        let active_nonce = host.files.as_ref().unwrap().confirmation_token();
+        source.open(Some(selected));
+        host.refresh(&AutoCommit::new());
+        assert_eq!(host.files.as_ref().unwrap().selected(), Some(selected));
+        assert_eq!(
+            host.files.as_ref().unwrap().confirmation_token(),
+            active_nonce,
+            "repeated open of an active exact selection must not restart its presentation lifetime"
+        );
+        let review = FileRestoreReviewV1 {
+            schema_version: 1,
+            workspace_id: scope.workspace_id,
+            mount_lifetime: scope.mount_lifetime,
+            record_id: scope.record_id,
+            frontier: scope.frontier,
+        };
+        let request = host
+            .files
+            .as_mut()
+            .unwrap()
+            .restore
+            .prepare(
+                review,
+                Operation::Restore {
+                    version_id: FileVersionId(uuid::Uuid::from_u128(8)),
+                },
+            )
+            .unwrap();
+        assert!(host.files.as_mut().unwrap().restore.receive(
+            request,
+            CheckedHistoryOutcomeV1::RecoveryPending {
+                intent_id: request.intent_id
+            }
+        ));
+        source.set_target(None);
+        host.refresh(&AutoCommit::new());
+        assert!(host.files.is_none());
+        let fresh = Arc::new(Transport {
+            scope,
+            results: AtomicUsize::new(0),
+            reviews: AtomicUsize::new(0),
+        });
+        let fresh_binding = uuid::Uuid::new_v4();
+        source.set_target(Some(FileHistoryTarget {
+            binding: fresh_binding,
+            record: scope.record_id,
+            label: "same display path".into(),
+            transport: fresh.clone(),
+        }));
+        host.refresh(&AutoCommit::new());
+        settle(&mut host);
+        assert_eq!(host.observed_file_binding, Some(fresh_binding));
+        for _ in 0..3 {
+            host.refresh(&AutoCommit::new());
+            assert_eq!(host.files.as_ref().unwrap().target.binding, target.binding);
+        }
+        let files = host.files.as_mut().unwrap();
+        assert!(Arc::ptr_eq(&files.target.transport, &original_handle));
+        assert_eq!(files.restore.request, Some(request));
+        assert!(files.restore.prepare(review, request.operation).is_err());
+        files.check_result();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while original.results.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(original.results.load(Ordering::SeqCst), 1);
+        assert_eq!(fresh.results.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            original.reviews.load(Ordering::SeqCst) + fresh.reviews.load(Ordering::SeqCst),
+            0,
+            "authorized read identity recovery must not require writable review"
+        );
+        let mut remounted = scope;
+        remounted.mount_lifetime = uuid::Uuid::new_v4();
+        let replacement = FileHistoryTarget {
+            binding: uuid::Uuid::new_v4(),
+            record: scope.record_id,
+            label: "same display path".into(),
+            transport: Arc::new(Transport {
+                scope: remounted,
+                results: AtomicUsize::new(0),
+                reviews: AtomicUsize::new(0),
+            }),
+        };
+        source.set_target(Some(replacement.clone()));
+        host.refresh(&AutoCommit::new());
+        settle(&mut host);
+        assert_eq!(
+            host.files.as_ref().unwrap().target.binding,
+            replacement.binding
+        );
+        assert!(host.files.as_ref().unwrap().restore.request.is_none());
+        assert!(
+            host.retired_files
+                .iter()
+                .any(|old| old.restore.request == Some(request)
+                    && Arc::ptr_eq(&old.target.transport, &original_handle))
         );
     }
 }

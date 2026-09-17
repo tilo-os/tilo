@@ -146,6 +146,15 @@ impl PreviewPane {
         self.recompute_current();
     }
 
+    /// Frozen page navigation: all inputs are bounded local view coordinates.
+    pub(crate) fn set_snapshot_view(&mut self, page: usize, zoom: f64, scroll: (f64, f64)) {
+        self.fit_width = false;
+        self.viewport.set_zoom(self.viewport.fit_width_zoom() * zoom);
+        self.scroll_to_page(page);
+        self.viewport.pan_by(scroll.0, scroll.1);
+        self.recompute_current();
+    }
+
     pub fn set_pages(&mut self, pages: &[PageImage]) {
         self.set_pages_with_text(pages, &[]);
     }

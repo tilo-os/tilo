@@ -53,8 +53,8 @@ mod tests {
         std::fs::write(
             &executable,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" \"$QOS_BROWSER_PRIVATE\" \"$QOS_BROWSER_APP_ROOT\" \"$QOS_CHROMIUM_PROFILE\" > '{}'\n",
-                capture.display()
+                "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" \"$QOS_BROWSER_PRIVATE\" \"$QOS_BROWSER_APP_ROOT\" \"$QOS_CHROMIUM_PROFILE\" > '{capture}.tmp'\nmv '{capture}.tmp' '{capture}'\n",
+                capture = capture.display()
             ),
         )
         .unwrap();

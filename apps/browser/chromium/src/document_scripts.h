@@ -4,6 +4,9 @@
 #include "include/cef_parser.h"
 #include <functional>
 #include <set>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 
 namespace qos {
 inline std::string ScriptSource(const std::vector<CefString>& scripts) {
@@ -35,13 +38,14 @@ class DocumentScripts final : public CefDevToolsMessageObserver {
     :browser_(browser),ready_(std::move(ready)),failure_(std::move(failure)) {}
   void Attach() {
     registration_=browser_->GetHost()->AddDevToolsMessageObserver(this);
-    enabling_=true;pending_=browser_->GetHost()->ExecuteDevToolsMethod(0,"Page.enable",nullptr);
+    enabling_=true;Trace("enable-submit",0);pending_=browser_->GetHost()->ExecuteDevToolsMethod(0,"Page.enable",nullptr);Trace("enable-return",pending_);
     if(!pending_) failure_();
   }
   void Detach() { registration_=nullptr;browser_=nullptr; }
   bool Busy() const { return pending_!=0 || desired_!=installed_; }
   void Configure(const std::string& source) { desired_=source;if(!pending_) Start(); }
   void OnDevToolsMethodResult(CefRefPtr<CefBrowser>,int id,bool success,const void* result,size_t size) override {
+    Trace("result",id);
     if(id!=pending_) return;
     pending_=0;
     if(!success) { failure_();return; }
@@ -54,6 +58,11 @@ class DocumentScripts final : public CefDevToolsMessageObserver {
   }
   void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override { if(browser_ && pending_) { pending_=0;failure_(); } }
  private:
+  void Trace(const char* stage,int id) const {
+    const char* trace=std::getenv("QOS_WEBVIEW_PROFILE");
+    if(trace && std::strcmp(trace,"trace")==0)
+      std::cerr<<"qos-script-registration "<<stage<<" id="<<id<<" pending="<<pending_<<" enabling="<<enabling_<<"\n";
+  }
   void Start() {
     if(!browser_ || desired_==installed_) { if(browser_) ready_();return; }
     auto params=CefDictionaryValue::Create();

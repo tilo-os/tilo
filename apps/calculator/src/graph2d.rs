@@ -188,6 +188,21 @@ const ROW_GAP: f64 = 8.0;
 const BASE_ROW_H: f64 = crate::mathfield::CARD_MIN_H + 2.0 * CARD_PAD_Y;
 
 impl Graph2dScreen {
+    /// Pure graph rendering for a frozen History model; no editing controls.
+    pub(crate) fn draw_history_canvas(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+        area: Rect,
+    ) {
+        self.canvas = area;
+        self.zoom.settle(model.view2d);
+        self.draw_canvas(scene, t, tr, theme, model, (None, &model.view2d));
+    }
+
     /// Resolve docked-vs-overlay and the panel / canvas / scrim / toggle rects
     /// from the current width. Re-derived every layout pass so a resize reflows.
     fn resolve_panel(&mut self, area: Rect) {

@@ -199,6 +199,8 @@ pub struct MergeView {
     /// merged buffer (a projection of the external inputs, not a replayable
     /// action) and clears any stale per-hunk resolutions.
     pending_seed: bool,
+    expected_content: Option<crate::doc::AuthoredSnapshot>,
+    merged_output: String,
     /// A conflict resolution the user just triggered via a chip, waiting to be
     /// drained by the parent app and dispatched as a [`DiffmergeAction`] through
     /// the shared action path (so a chip and Ctrl+K produce one undo boundary).
@@ -229,10 +231,33 @@ impl MergeView {
             active_hunk: None,
             cursor: Point::ZERO,
             dirty: true,
-            pending_seed: true,
+            pending_seed: false,
+            expected_content: None,
+            merged_output: String::new(),
             pending_action: None,
             metrics: Metrics::default(),
         }
+    }
+
+    pub(crate) fn context_matches(&self, doc: &AutoCommit) -> bool {
+        self.expected_content.as_ref().is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
+    }
+    pub(crate) fn acknowledge_content(&mut self, doc: &AutoCommit) {
+        self.expected_content = Some(crate::doc::authored_snapshot(doc));
+        self.merged_output = MergeDoc::merged_text(doc);
+    }
+    /// Historical/remote content cannot identify the unsaved original input hunks.
+    pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
+        if !self.pending_seed && !self.context_matches(doc) {
+            self.model = MergeModel::default();
+            self.base_label.clear(); self.ours_label.clear(); self.theirs_label.clear();
+            self.pending_action = None;
+            self.action_hits.clear(); self.hunk_spans.clear();
+            self.active_hunk = None;
+            self.expected_content = None;
+            self.dirty = true;
+        }
+        self.merged_output = MergeDoc::merged_text(doc);
     }
 
     /// Place the panel at `rect` directly (the parent app owns the toolbar
@@ -978,7 +1003,7 @@ impl MergeView {
             transform,
             &merged_body,
         );
-        let lines: Vec<String> = self.model.merged_lines();
+        let lines: Vec<String> = self.merged_output.lines().map(str::to_owned).collect();
         for (i, line) in lines.iter().enumerate() {
             let ly = merged_body.y0 + 4.0 + i as f64 * m.row_h;
             if ly > merged_body.y1 {
@@ -1023,12 +1048,10 @@ impl Widget for MergeView {
             MergeDoc::clear_resolutions(state);
             MergeDoc::set_merged(state, &self.model.merged_text());
             self.pending_seed = false;
+            self.acknowledge_content(state);
             return;
         }
-        // Seed once for a late joiner that has no buffer yet.
-        if !MergeDoc::has_merged(state) {
-            MergeDoc::set_merged(state, &self.model.merged_text());
-        }
+        self.reconcile_content(state);
         // Reconcile chip state from resolutions recorded by (possibly remote)
         // actions, so a reload or a peer shows the same take-a-side selections.
         // The merged `Text` itself stays authoritative — the actions already
@@ -1431,7 +1454,7 @@ fn draw_lines(
     }
 }
 
-fn draw_code_segments(
+pub(crate) fn draw_code_segments(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,

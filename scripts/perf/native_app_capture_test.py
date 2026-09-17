@@ -5,6 +5,17 @@ import collect_scratchpad_native_test as failure_tests
 
 
 class CaptureGateTests(unittest.TestCase):
+    def test_drain_waits_for_worker_after_an_auxiliary_handoff(self):
+        def row(prefix, **fields):
+            return prefix+' '+json.dumps(fields)
+        lines=[row(prefix,cpu_frame_id=1,worker_id=1,worker_frame_ix=0)
+               for prefix in ('qos-native-send','qos-native-worker','qos-native-present-call',
+                              'qos-native-worker-handoff')]
+        lines.append(row('qos-native-worker-handoff',cpu_frame_id=None,worker_id=2,worker_frame_ix=0))
+        self.assertFalse(capture.diagnostics_drained(lines,{1}))
+        lines.append(row('qos-native-worker',cpu_frame_id=None,worker_id=2,worker_frame_ix=0))
+        self.assertTrue(capture.diagnostics_drained(lines,{1}))
+
     def test_drain_waits_for_post_send_diagnostics_but_supports_legacy(self):
         def row(prefix, cpu):
             return prefix+' '+json.dumps(dict(cpu_frame_id=cpu))
@@ -15,6 +26,10 @@ class CaptureGateTests(unittest.TestCase):
         lines.append(row('qos-native-main-stages',1))
         self.assertFalse(capture.diagnostics_drained(lines,{1,2}))
         lines.append(row('qos-native-main-stages',2))
+        self.assertTrue(capture.diagnostics_drained(lines,{1,2}))
+        lines.append(row('qos-native-worker-handoff',1))
+        self.assertFalse(capture.diagnostics_drained(lines,{1,2}))
+        lines.append(row('qos-native-worker-handoff',2))
         self.assertTrue(capture.diagnostics_drained(lines,{1,2}))
 
     def test_exit_after_last_effect_is_still_a_failure(self):

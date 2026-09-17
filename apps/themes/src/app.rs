@@ -621,11 +621,9 @@ impl ThemesApp {
     /// theme (so a capture shows real editing); the live install focuses the
     /// first preset.
     fn seed_document_if_needed(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Import the old Phase-1 text before local presentation seeding. The
-        // importer only creates missing ids, so it is safe when an old and a
-        // new client merge concurrently.
-        doc::migrate_legacy_catalog(state, path);
-        doc::initialize_catalog(state, path);
+        // Persisted libraries are read-only at startup, including legacy Text
+        // and a restored version with no catalog roots. Explicit edits create
+        // only their addressed native override inside the canonical action.
         if !self.selected.is_empty() {
             return;
         }
@@ -636,7 +634,7 @@ impl ThemesApp {
         };
         // Built-ins are product data and custom demo content is inserted as
         // independently keyed native records (never a JSON catalog blob).
-        doc::save_catalog(state, path, &cat);
+        if self.shot.demo { doc::save_catalog(state, path, &cat); }
         let sel = if self.shot.demo {
             cat.last().map(|s| s.id.clone()).unwrap_or_default()
         } else {
@@ -646,8 +644,10 @@ impl ThemesApp {
         self.edit_token = TokenId::Accent;
         // The applied OS theme: adopt whatever is already persisted in the
         // shared store, else default to the seeded selection.
-        let active = store::load_active_id().unwrap_or_else(|| sel.clone());
-        doc::put_str(state, path, doc::KEY_ACTIVE, &active);
+        if doc::get_str(state, path, doc::KEY_ACTIVE).is_none() {
+            let active = store::load_active_id().unwrap_or_else(|| sel.clone());
+            doc::put_str(state, path, doc::KEY_ACTIVE, &active);
+        }
     }
 
     /// Steps 3-5 of [`Widget::sync`]: load the persisted catalog, resolve the
@@ -673,7 +673,8 @@ impl ThemesApp {
 
         // Two-way reconcile the editor controls.
         let bound_key = (selected.clone(), edit_token);
-        let changed = self.bound_key.as_ref() != Some(&bound_key);
+        let changed = self.bound_key.as_ref() != Some(&bound_key)
+            || self.catalog.iter().find(|s| s.id == selected) != catalog.get(idx);
         if changed {
             // LOAD: spec → controls; rebuild the colour picker.
             let spec = catalog.get(idx)?.clone();
@@ -1380,6 +1381,8 @@ impl ThemesApp {
 }
 
 impl Widget for ThemesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> { Some(&crate::framework_history::HISTORY) }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["themes.apply", "themes.export", "themes.new"]
     }
@@ -2727,5 +2730,36 @@ mod tests {
             !app.needs_animation_frame(),
             "an idle theme gallery must not keep the compositor at vsync"
         );
+    }
+}
+
+#[cfg(test)]
+mod history_reconcile_tests {
+    use super::*;
+    #[test]
+    fn historical_library_change_reloads_controls_and_preserves_active() {
+        let mut d = AutoCommit::new();
+        let mut spec = crate::model::seed_custom();
+        doc::save_catalog(&mut d, &automerge::ROOT, &[spec.clone()]);
+        doc::put_str(&mut d, &automerge::ROOT, doc::KEY_ACTIVE, "saved-applied-identity");
+        let mut app = ThemesApp::new();
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(doc::get_str(&d, &automerge::ROOT, doc::KEY_ACTIVE).as_deref(), Some("saved-applied-identity"));
+        app.selected = spec.id.clone();
+        app.sync(&mut d, &automerge::ROOT);
+        spec.accent = [1,2,3];
+        spec.radius_norm = 0.13;
+        spec.spacing_norm = 0.91;
+        spec.font = "Source Serif".into();
+        doc::set_token(&mut d, &automerge::ROOT, &spec.id, TokenId::Accent, spec.accent);
+        doc::set_radius(&mut d, &automerge::ROOT, &spec.id, spec.radius_norm);
+        doc::set_spacing(&mut d, &automerge::ROOT, &spec.id, spec.spacing_norm);
+        doc::set_font(&mut d, &automerge::ROOT, &spec.id, &spec.font);
+        let heads = d.get_heads();
+        app.sync(&mut d, &automerge::ROOT);
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(d.get_heads(), heads, "stale controls must never rewrite restored content");
+        assert_eq!(app.customizer.picker_color(), [1,2,3]);
+        assert!((app.customizer.radius() - 0.13).abs() < 0.001);
     }
 }

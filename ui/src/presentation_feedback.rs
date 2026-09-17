@@ -33,6 +33,13 @@ impl Observer {
         }
     }
 
+    /// Emitted only under the native timing gate. The caller brackets complete
+    /// row construction and this emission, reporting that cost one frame later.
+    pub(crate) fn log_native_handoff(&self, mut row: serde_json::Value) {
+        row["worker_id"] = serde_json::json!(self.worker_id());
+        crate::native_scenario::log::emit_json("qos-native-worker-handoff", row);
+    }
+
     pub(crate) fn log_native_present(
         &self,
         worker_frame_ix: u64,

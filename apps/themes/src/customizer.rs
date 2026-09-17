@@ -669,14 +669,7 @@ impl Customizer {
                 .spec
                 .as_ref()
                 .map_or([128, 128, 128], |s| s.token(*tok));
-            draw::fill_rrect(scene, t, *r, 6.0, model::color(col));
-            let sel = *tok == self.edit_token;
-            let ring = if sel {
-                theme.accent_primary
-            } else {
-                theme.border_standard
-            };
-            draw::stroke_rrect(scene, t, *r, 6.0, ring, if sel { 2.5 } else { 1.0 });
+            draw_token_chip(scene, t, theme, *r, col, *tok == self.edit_token);
         }
         // Caption: selected token + hex.
         if let Some(spec) = &self.spec {
@@ -1017,5 +1010,21 @@ impl Customizer {
                 break;
             }
         }
+    }
+}
+
+/// The same color swatch paint used by live customization and frozen library views.
+fn draw_token_chip(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, rgb: [u8;3], selected: bool) {
+    draw::fill_rrect(scene, t, rect, 6.0, model::color(rgb));
+    let ring = if selected { theme.accent_primary } else { theme.border_standard };
+    draw::stroke_rrect(scene, t, rect, 6.0, ring, if selected {2.5} else {1.0});
+}
+
+pub(crate) fn draw_snapshot_tokens(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, spec: &ThemeSpec, rect: Rect) {
+    draw::text(tr, scene, t, &format!("{} · radius {:.2} · spacing {:.2}",spec.font,spec.radius_norm,spec.spacing_norm), 13., theme.text_primary, rect.x0, rect.y0);
+    for (i, token) in TokenId::ALL.iter().enumerate() {
+        let y = rect.y0 + 34. + i as f64 * 38.;
+        draw_token_chip(scene, t, theme, Rect::new(rect.x0,y,rect.x0+28.,y+28.),spec.token(*token),false);
+        draw::text(tr,scene,t,&format!("{} · {}",token.label(),model::hex(spec.token(*token))),12.,theme.text_primary,rect.x0+40.,y+5.);
     }
 }

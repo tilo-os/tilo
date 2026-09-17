@@ -92,6 +92,8 @@ struct TrackHold {
 )]
 pub struct Scrollable {
     axis: ScrollAxis,
+    reveal_focus: bool,
+    last_focus_path: Option<Vec<usize>>,
     offset_x: f32,
     offset_y: f32,
     content_w: f32,
@@ -183,6 +185,8 @@ impl Scrollable {
     pub fn new(axis: ScrollAxis) -> Self {
         Self {
             axis,
+            reveal_focus: false,
+            last_focus_path: None,
             offset_x: 0.0,
             offset_y: 0.0,
             content_w: 0.0,
@@ -484,6 +488,14 @@ impl Scrollable {
             self.cursor_initialized = false;
         }
     }
+    /// Reveal newly focused controls while allowing manual scroll away from
+    /// unchanged focus. Opt-in for form panels; ordinary scrolling is unchanged.
+    #[must_use]
+    pub fn with_focus_reveal(mut self) -> Self {
+        self.reveal_focus = true;
+        self
+    }
+
     pub fn scroll_into_view(&mut self, x: f32, y: f32, w: f32, h: f32) {
         let (ox, oy) = (self.offset_x, self.offset_y);
         if y < self.offset_y {
@@ -1291,6 +1303,31 @@ impl Widget for Scrollable {
             self.clamp();
         }
         // Flash the overlay bar the first frame content overflows.
+        if self.reveal_focus {
+            fn focused(widget: &dyn Widget, path: &mut Vec<usize>) -> Option<(Vec<usize>, Rect)> {
+                if widget.is_focusable() && widget.is_focused() {
+                    return Some((path.clone(), widget.get_rect()));
+                }
+                for (index, child) in widget.children().into_iter().enumerate() {
+                    path.push(index);
+                    if let Some(found) = focused(child, path) { return Some(found); }
+                    path.pop();
+                }
+                None
+            }
+            let focus = self.child.as_ref().and_then(|child| focused(child.as_ref(), &mut Vec::new()));
+            let path = focus.as_ref().map(|(path, _)| path.clone());
+            if path != self.last_focus_path {
+                self.last_focus_path = path;
+                if let Some((_, rect)) = focus {
+                    self.scroll_into_view(px(rect.x0-self.rect.x0)+self.offset_x,
+                        px(rect.y0-self.rect.y0)+self.offset_y,px(rect.width()),px(rect.height()));
+                    if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
+                        child.apply_layout(taffy, node, Point::new(self.rect.x0-f64::from(self.offset_x),self.rect.y0-f64::from(self.offset_y)));
+                    }
+                }
+            }
+        }
         let scrollable_now = self.vbar_active() || self.hbar_active();
         if scrollable_now && !self.was_overflowing && self.last_activity.is_none() {
             self.wake();
@@ -2102,6 +2139,28 @@ mod tests {
 
     use crate::widget::{Column, Text};
     use std::collections::HashMap;
+
+    #[test]
+    fn focus_reveal_scrolls_new_focus_but_preserves_manual_scroll() {
+        use crate::{LocalState, widget::TextInput};
+        let mut input = TextInput::from_state(&LocalState::new(String::new())).with_id("last");
+        input.set_focus(true);
+        let mut column = Column::new().with_intrinsic_height();
+        for _ in 0..15 { column=column.push(Box::new(Text::new("Spacer row"))); }
+        column=column.push(Box::new(input));
+        let mut scroll=Scrollable::new_vertical().with_height(150.0).with_focus_reveal().with_child(Box::new(column));
+        let theme=Theme::dark();let mut tree=TaffyTree::<()>::new();let mut nodes=HashMap::new();let mut text=TextRenderer::new();
+        let node=scroll.build_layout(&mut tree,&theme,&mut nodes);
+        tree.compute_layout_with_measure(node,Size {width:taffy::AvailableSpace::Definite(400.0),height:taffy::AvailableSpace::Definite(150.0)},|known,available,node,_,_| {
+            nodes.get(&node).map(|p|unsafe{(**p).measure(known,available,&mut text)}).unwrap_or(Size::ZERO)
+        }).unwrap();
+        scroll.apply_layout(&tree,node,Point::ZERO);
+        assert!(scroll.offset_y()>0.0,"keyboard focus below viewport must be revealed");
+        let rect=scroll.child.as_ref().unwrap().children().last().unwrap().get_rect();
+        assert!(rect.y0>=scroll.rect.y0 && rect.y1<=scroll.rect.y1+0.5,"focused input must be visible: {rect:?}");
+        scroll.set_offset_y(0.0);scroll.apply_layout(&tree,node,Point::ZERO);
+        assert_eq!(scroll.offset_y(),0.0,"manual scrolling must not snap back to unchanged focus");
+    }
 
     fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
         let theme = Theme::dark();

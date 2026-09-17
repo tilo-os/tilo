@@ -465,6 +465,8 @@ fn rejected_navigation_is_visible_and_does_not_change_current_uri() {
     let (dir, host) = helper_fixture("exec cat >/dev/null");
     let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     *engine.shared.uri.lock().unwrap() = "https://old.example".into();
+    // Model the helper reporting failure before this new navigation attempt.
+    engine.shared.failed.store(true, Ordering::Release);
     engine.tx.close();
     engine.send(WebViewCommand::Navigate("https://new.example".into()));
     assert_eq!(*engine.shared.uri.lock().unwrap(), "https://old.example");
@@ -698,6 +700,7 @@ fn hiding_retains_last_frame_for_recomposed_tab_until_next_paint() {
     let (dir, host) = helper_fixture("exec cat >/dev/null");
     let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     *engine.frames().lock().unwrap() = Some(super::super::Frame {
+        trace_id: None,
         rgba: Arc::new(vec![255, 0, 0, 255]),
         width: 1,
         height: 1,
@@ -917,4 +920,39 @@ fn site_protocol_roundtrips_bounded_status_and_rejects_malformed_fields() {
         encode_command(command).unwrap(),
         serde_json::json!({"op":"site_action","request_id":7,"origin":"https://a.test","generation":2,"action":"clear"})
     );
+}
+
+#[test]
+fn credential_protocol_encodes_actions_without_secret_fields() {
+    use crate::webview::{CredentialAction, CredentialRequest};
+    let request = CredentialRequest {
+        request_id: 7, origin: "https://example.test".into(), document: "2".into(),
+        action: CredentialAction::Save { capture: "3".into() },
+    };
+    let command = WebViewCommand::Credentials(request.clone());
+    assert!(command_within_limits(&command));
+    assert_eq!(encode_command(command).unwrap(), json!({"op":"credential_action","request_id":7,
+        "origin":"https://example.test","document":"2","action":"save","capture":"3"}));
+    let mut stale=request.clone();stale.document="0".into();
+    assert!(!command_within_limits(&WebViewCommand::Credentials(stale)));
+    let mut bad=request;bad.action=CredentialAction::Fill{form:"01".into(),account:"account".into()};
+    assert!(!command_within_limits(&WebViewCommand::Credentials(bad)));
+}
+
+#[test]
+fn credential_protocol_rejects_secret_or_unbounded_reply_fields() {
+    let base=json!({"event":"credential_result","tab":1,"request_id":7,"action":"capture",
+        "origin":"https://example.test","document":"2","success":true,"message":"Choose Save",
+        "capture":"3","username":"synthetic-user"});
+    assert!(validate_event(&base).is_ok());
+    assert!(matches!(decode_event(&base),Some(WebViewEvent::CredentialResult(reply)) if reply.capture.as_deref()==Some("3")));
+    for (key,value) in [("password",json!("must-not-cross")),("document",json!("9007199254740992")),
+        ("username",json!("x".repeat(1025))),("success",json!("yes"))] {
+        let mut bad=base.clone();bad[key]=value;assert!(validate_event(&bad).is_err(),"{key}");
+    }
+    let mut list=json!({"event":"credential_result","request_id":1,"action":"list","origin":"https://example.test",
+        "document":"2","success":true,"message":"Done","accounts":[{"id":"one","username":"user"}]});
+    assert!(validate_event(&list).is_ok());
+    list["accounts"][0]["password"]=json!("must-not-cross");assert!(validate_event(&list).is_err());
+    list["accounts"]=json!(vec![json!({"id":"one","username":"user"});65]);assert!(validate_event(&list).is_err());
 }

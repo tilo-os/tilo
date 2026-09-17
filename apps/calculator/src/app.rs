@@ -1100,6 +1100,10 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl Widget for CalculatorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::CALCULATOR_OPERATION_TYPE]
     }

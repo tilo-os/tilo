@@ -422,6 +422,7 @@ impl BrowserTabs {
             return;
         }
         self.active_mut().exit_content_fullscreen();
+        self.active_mut().deactivate_credentials();
         self.active().engine_handle().set_visible(false);
         self.active_id = id;
         self.address_focus_node = None;

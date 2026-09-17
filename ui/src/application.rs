@@ -635,6 +635,7 @@ impl AppComponent {
             view_retry: None,
             record_error: None,
             record_retry: None,
+            record_retry_target: None,
             teardown_error: None,
         };
         self.context.closing.set(true);
@@ -848,6 +849,8 @@ pub struct ComponentCloseReport {
     pub view_retry: Option<Rc<InstanceViewStore>>,
     pub record_error: Option<String>,
     pub record_retry: Option<RecordStore>,
+    /// Exact legacy owner for scoped close/retry; None keeps component close behavior.
+    pub record_retry_target: Option<crate::RecordId>,
     /// Reserved for fallible lifecycle results. Arbitrary app panics propagate.
     pub teardown_error: Option<String>,
 }
@@ -857,10 +860,12 @@ impl ComponentCloseReport {
     /// Returns the original owner's current persistence failure.
     pub fn retry_record(&mut self) -> Result<(), String> {
         if let Some(records) = &self.record_retry {
-            records
-                .try_flush()
-                .inspect_err(|error| self.record_error = Some(error.clone()))?;
+            match &self.record_retry_target {
+                Some(id) => records.try_flush_record(id),
+                None => records.try_flush(),
+            }.inspect_err(|error| self.record_error = Some(error.clone()))?;
             self.record_retry = None;
+            self.record_retry_target = None;
             self.record_error = None;
         }
         Ok(())

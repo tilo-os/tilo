@@ -28,6 +28,8 @@ enum Command {
     Activity,
     Before,
     After,
+    PreviousPage,
+    NextPage,
     Scope(usize),
     Review(review::ReviewCommand),
     FileParent(collab_types::FileVersionId),
@@ -56,6 +58,8 @@ pub struct HistoryHost {
     files: Option<super::files_session::FileController>,
     retired_files: Vec<super::files_session::FileController>,
     requested_file_version: Option<collab_types::FileVersionId>,
+    observed_file_binding: Option<uuid::Uuid>,
+    file_target_resolved: bool,
     toolbar: Column,
     timeline: ActivityTimeline,
     unavailable: Text,
@@ -132,7 +136,7 @@ impl HistoryHost {
             review_request: None,
             review_node: None,
             clock: review::unix_now,
-            controller, files: None, retired_files: vec![], requested_file_version: None,
+            controller, files: None, retired_files: vec![], requested_file_version: None, observed_file_binding: None, file_target_resolved: false,
             toolbar,
             unavailable,
             unavailable_node: None,
@@ -345,7 +349,7 @@ impl HistoryHost {
         if self.invalid_owner { return false; }
         if self.assets.has_results() { return true; }
         if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source() {
-            if source.wants_open() || self.files.as_ref().is_some_and(super::files_session::FileController::has_results) || self.retired_files.iter().any(super::files_session::FileController::has_results) { return true; }
+            if source.target().map(|target|target.binding)!=self.observed_file_binding || source.wants_open() || self.files.as_ref().is_some_and(super::files_session::FileController::has_results) || self.retired_files.iter().any(super::files_session::FileController::has_results) { return true; }
         }
         if self.open_requested.get() || !self.commands.borrow().is_empty() || (self.width < 600.0) != (width < 600.0) { return true; }
         let selected: Vec<_> = self.timeline.selection().and_then(|(start, end)| self.timeline.entries().get(start..=end))
@@ -370,7 +374,8 @@ impl HistoryHost {
             .controller
             .as_ref()
             .is_some_and(HistoryController::has_live_updates);
-        let mut changed = false;
+        let target_changed=self.reconcile_file_target();
+        let mut changed = target_changed;
         if self.open_requested.replace(false) {
             self.open = !self.open;
             self.returning_live = !self.open;
@@ -379,6 +384,8 @@ impl HistoryHost {
         }
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
+            // These callbacks were produced by the superseded presentation.
+            if target_changed && matches!(command,Command::Review(_) | Command::FileParent(_) | Command::FileUndo | Command::FileRedo | Command::FileCheck | Command::FileRetry | Command::FileRefresh) { continue; }
             changed = true;
             match command {
                 Command::Review(command) => {
@@ -407,6 +414,13 @@ impl HistoryHost {
                     self.returning_live = true;
                     if let Some(controller) = &mut self.controller {
                         controller.back_to_live();
+                    }
+                }
+                Command::PreviousPage | Command::NextPage => {
+                    if let Some(preview) = &mut self.canvas_mut().preview {
+                        preview.navigate(if matches!(command, Command::NextPage) {
+                            super::PreviewNavigation::NextPage
+                        } else { super::PreviewNavigation::PreviousPage });
                     }
                 }
                 Command::Activity => self.activity_page = true,
@@ -563,6 +577,18 @@ impl HistoryHost {
                 toolbar = toolbar.push(Box::new(
                     Row::new().push(Box::new(header)).push(Box::new(compare)),
                 ));
+            }
+            if let Some(preview) = &self.canvas().preview {
+                let pages = preview.accessibility().pages;
+                if pages.len() > 1 {
+                    let current = preview.view().page;
+                    let label = pages.iter().find(|(id, _)| Some(id) == current.as_ref())
+                        .map_or("Page", |(_, title)| title.as_str());
+                    toolbar = toolbar.push(Box::new(Text::new(label)))
+                        .push(Box::new(Row::new()
+                            .push(Box::new(self.command_button("history-previous-page", "Previous page", Command::PreviousPage)))
+                            .push(Box::new(self.command_button("history-next-page", "Next page", Command::NextPage)))));
+                }
             }
         }
         if self

@@ -35,6 +35,8 @@
 pub mod actions;
 pub mod app;
 pub mod component;
+pub mod framework_history;
+pub mod production;
 pub use component::definition;
 pub mod doc;
 pub mod legacy_import;

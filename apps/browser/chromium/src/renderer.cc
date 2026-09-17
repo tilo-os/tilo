@@ -1,5 +1,7 @@
 #include "site_policy.h"
 #include "host.h"
+#include "credential_forms.h"
+#include "credential_document.h"
 #include "cosmetics.h"
 #include "include/cef_browser.h"
 #include "include/cef_frame.h"
@@ -8,11 +10,20 @@
 #include "include/cef_render_process_handler.h"
 #include "include/cef_v8.h"
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <unistd.h>
 #include <map>
 #include <vector>
 
 namespace {
 constexpr size_t kMaxMediaFrames=64;
+void TraceCredential(const char* stage,int browser=0) {
+  static const bool enabled=[] {const char* value=std::getenv("QOS_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
+  static unsigned count=0;
+  if(enabled && count++<64) std::fprintf(stderr,"[chromium-credential-renderer] pid=%d browser=%d %s\n",int(getpid()),browser,stage);
+}
 // Deliberately require a direct web document. Inherited about:blank/srcdoc and
 // blob documents are excluded: a URL alone cannot prove their creator origin.
 // This also excludes chrome:, chrome-extension:, devtools:, file: and data:.
@@ -39,7 +50,22 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
   CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override { return this; }
 
   void OnContextCreated(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context> context) override {
+    TraceCredential(IsWebDocument(frame)?"web-context-created":"nonweb-context-created",browser->GetIdentifier());
     if(!IsWebDocument(frame)) return;
+    if(frame->IsMain() && credential_context_sequence_<9007199254740991ULL) {
+      CefRefPtr<CefV8Value> forms;
+      CefRefPtr<CefV8Exception> exception;
+      if(context->Enter()) {
+        context->Eval(qos::kCredentialForms,frame->GetURL(),0,forms,exception);
+        context->Exit();
+      }
+      TraceCredential(forms && forms->IsObject()?"forms-created":"forms-unavailable");
+      if(forms && forms->IsObject()) {
+        credential_contexts_[browser->GetIdentifier()]={browser,context,frame,
+            std::to_string(++credential_context_sequence_),{},forms};
+        TraceCredential("forms-stored",browser->GetIdentifier());
+      }
+    }
     auto& config=configs_[browser->GetIdentifier()];
     // A renderer process may contain only a cross-origin child; its remote
     // main frame cannot identify the top-level origin. Ask the browser for a
@@ -62,9 +88,28 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
       context->Eval("(()=>{let playing=null;const update=()=>{const next=[...document.querySelectorAll('audio,video')].some(e=>!e.paused&&!e.ended&&e.readyState>1);if(next!==playing){playing=next;__qosMediaState(next)}};for(const event of ['play','playing','canplay','pause','ended','emptied'])addEventListener(event,update,true);update()})()",frame->GetURL(),0,result,exception);context->Exit();
     }
   }
-  void OnBrowserDestroyed(CefRefPtr<CefBrowser> browser) override { media_contexts.erase(browser->GetIdentifier());configs_.erase(browser->GetIdentifier()); }
+  void OnBrowserDestroyed(CefRefPtr<CefBrowser> browser) override {
+    TraceCredential("browser-destroyed",browser->GetIdentifier());
+    // CEF can create a replacement handle with the same numeric ID before
+    // destroying the old handle during cross-origin navigation.
+    auto credential=credential_contexts_.find(browser->GetIdentifier());
+    if(credential!=credential_contexts_.end() && credential->second.browser->IsSame(browser))
+      credential_contexts_.erase(credential);
+    media_contexts.erase(browser->GetIdentifier());configs_.erase(browser->GetIdentifier());
+  }
   void OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
                          CefRefPtr<CefV8Context> context) override {
+    auto credential=credential_contexts_.find(browser->GetIdentifier());
+    if(credential!=credential_contexts_.end() && credential->second.context->IsSame(context)) {
+      if(!credential->second.generation.empty()) {
+        auto message=CefProcessMessage::Create("qos.credential_context_closed");
+        auto args=message->GetArgumentList();args->SetString(0,credential->second.generation);
+        args->SetString(1,credential->second.token);args->SetString(2,frame->GetURL());
+        frame->SendProcessMessage(PID_BROWSER,message);
+      }
+      TraceCredential("forms-context-released");
+      credential_contexts_.erase(credential);
+    }
     auto key=frame->GetIdentifier().ToString();
     auto browser_media=media_contexts.find(browser->GetIdentifier());
     if(browser_media!=media_contexts.end()) {auto media=browser_media->second.find(key);if(media!=browser_media->second.end() && media->second.context->IsSame(context)) {auto message=CefProcessMessage::Create("qos.media_context_closed");message->GetArgumentList()->SetDouble(0,static_cast<double>(media->second.token));frame->SendProcessMessage(PID_BROWSER,message);browser_media->second.erase(media);}if(browser_media->second.empty())media_contexts.erase(browser_media);}
@@ -78,6 +123,29 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,
                                 CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_BROWSER) return false;
+    if(message->GetName()=="qos.credential_action") {
+      CredentialAction(browser,frame,message->GetArgumentList());return true;
+    }
+    if(message->GetName()=="qos.credential_probe") {
+      TraceCredential("probe-received",browser->GetIdentifier());
+      auto args=message->GetArgumentList();
+      auto found=credential_contexts_.find(browser->GetIdentifier());
+      if(!frame || !frame->IsMain() || !frame->IsValid() || args->GetSize()!=2 ||
+         args->GetType(0)!=VTYPE_STRING || args->GetType(1)!=VTYPE_STRING ||
+         !qos::ValidCredentialCounter(args->GetString(0).ToString()) ||
+         args->GetString(1)!=frame->GetURL() || found==credential_contexts_.end()) {
+        TraceCredential(!frame?"probe-no-frame":!frame->IsMain()?"probe-not-main":!frame->IsValid()?"probe-invalid-frame":args->GetSize()!=2?"probe-argument-count":args->GetType(0)!=VTYPE_STRING?"probe-generation-type":args->GetType(1)!=VTYPE_STRING?"probe-url-type":!qos::ValidCredentialCounter(args->GetString(0).ToString())?"probe-invalid-generation":args->GetString(1)!=frame->GetURL()?"probe-url-mismatch":"probe-missing-forms");return true;}
+      auto live=frame->GetV8Context();
+      if(!found->second.browser->IsSame(browser) || !live || !live->IsValid() || !found->second.context->IsSame(live) ||
+         found->second.frame->GetIdentifier()!=frame->GetIdentifier()) {
+        TraceCredential(!live?"probe-no-context":!live->IsValid()?"probe-invalid-context":!found->second.context->IsSame(live)?"probe-context-mismatch":"probe-frame-mismatch");return true;}
+      TraceCredential("probe-accepted");
+      found->second.generation=args->GetString(0).ToString();
+      auto response=CefProcessMessage::Create("qos.credential_context");
+      auto fields=response->GetArgumentList();fields->SetString(0,found->second.generation);
+      fields->SetString(1,found->second.token);fields->SetString(2,frame->GetURL());
+      frame->SendProcessMessage(PID_BROWSER,response);return true;
+    }
     auto& config=configs_[browser->GetIdentifier()];
     if(message->GetName()=="qos.filters") {
       auto args=message->GetArgumentList();auto found=filter_tokens_.find(frame->GetIdentifier().ToString());
@@ -90,6 +158,116 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     ApplyScripts(frame,config.scripts);return true;
   }
  private:
+  struct CredentialContext {
+    CefRefPtr<CefBrowser> browser;
+    CefRefPtr<CefV8Context> context;
+    CefRefPtr<CefFrame> frame;
+    std::string token, generation;
+    CefRefPtr<CefV8Value> forms;
+  };
+  std::map<int,CredentialContext> credential_contexts_;
+  uint64_t credential_context_sequence_=0;
+  void CredentialAction(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefListValue> args) {
+    if(!frame || !frame->IsMain() || !frame->IsValid() || args->GetSize()!=4 ||
+       args->GetType(0)!=VTYPE_STRING || args->GetType(1)!=VTYPE_STRING ||
+       args->GetType(2)!=VTYPE_STRING || args->GetType(3)!=VTYPE_DICTIONARY ||
+       !qos::ValidCredentialCounter(args->GetString(0).ToString()) ||
+       !qos::ValidCredentialCounter(args->GetString(2).ToString()))return;
+    auto found=credential_contexts_.find(browser->GetIdentifier());
+    if(found==credential_contexts_.end())return;
+    // Copy ref-counted context state before calling JS, which can navigate and
+    // synchronously invalidate the map entry through input handlers.
+    const auto bound=found->second;
+    auto live=frame->GetV8Context();
+    if(!bound.browser->IsSame(browser) || bound.generation!=args->GetString(0).ToString() || bound.token!=args->GetString(1).ToString() ||
+       !live || !live->IsValid() || !bound.context->IsSame(live) ||
+       bound.frame->GetIdentifier()!=frame->GetIdentifier() ||
+       !qos::Origin(frame->GetURL()).starts_with("https://"))return;
+    auto command=args->GetDictionary(3);
+    if(command->GetType("action")!=VTYPE_STRING)return;
+    const auto action=command->GetString("action").ToString();
+    const bool discover=action=="discover" || action=="discover_addresses";
+    const bool validate=action=="validate",capture=action=="capture",fill=action=="fill",address=action=="fill_address";
+    if(!discover && !validate && !capture && !fill && !address)return;
+    CefDictionaryValue::KeyList keys;command->GetKeys(keys);
+    const size_t expected=discover?1:(capture || validate)?2:fill?4:3;
+    if(keys.size()!=expected)return;
+    for(const auto& key:keys) {
+      if(key=="action")continue;
+      if(key=="form" && !discover)continue;
+      if(fill && (key=="username" || key=="password"))continue;
+      if(address && key=="profile")continue;
+      return;
+    }
+    CefV8ValueList arguments;
+    if(!discover) {
+      if(command->GetType("form")!=VTYPE_STRING || !qos::ValidCredentialCounter(command->GetString("form").ToString()))return;
+    }
+    if(fill) {
+      if(command->GetType("username")!=VTYPE_STRING || command->GetString("username").length()>1024 ||
+         command->GetType("password")!=VTYPE_STRING || command->GetString("password").empty() ||
+         command->GetString("password").length()>4096)return;
+    }
+    if(!bound.context->Enter())return;
+    if(!discover)arguments.push_back(CefV8Value::CreateString(command->GetString("form")));
+    if(fill) {
+      arguments.push_back(CefV8Value::CreateString(command->GetString("username")));
+      arguments.push_back(CefV8Value::CreateString(command->GetString("password")));
+    }
+    if(address) {
+      if(command->GetType("profile")!=VTYPE_DICTIONARY){bound.context->Exit();return;}
+      auto profile=command->GetDictionary("profile");CefDictionaryValue::KeyList fields;profile->GetKeys(fields);
+      if(fields.empty() || fields.size()>9){bound.context->Exit();return;}
+      auto object=CefV8Value::CreateObject(nullptr,nullptr);
+      for(const auto& field:fields) {
+        const auto key=field.ToString();
+        if((key!="full_name" && key!="given_name" && key!="family_name" && key!="street" &&
+            key!="city" && key!="region" && key!="postal_code" && key!="country") ||
+           profile->GetType(field)!=VTYPE_STRING || profile->GetString(field).length()>1024) {
+          bound.context->Exit();return;
+        }
+        object->SetValue(field,CefV8Value::CreateString(profile->GetString(field)),V8_PROPERTY_ATTRIBUTE_NONE);
+      }
+      arguments.push_back(object);
+    }
+    const auto method=action=="discover_addresses"?"discoverAddresses":address?"fillAddress":action;
+    auto function=bound.forms->GetValue(method);
+    auto value=function && function->IsFunction()?function->ExecuteFunctionWithContext(bound.context,nullptr,arguments):nullptr;
+    auto result=CefDictionaryValue::Create();result->SetBool("success",false);
+    if(discover && value && value->IsArray() && value->GetArrayLength()<=32) {
+      auto forms=CefListValue::Create();bool valid=true;
+      for(int i=0;i<value->GetArrayLength();++i) {
+        auto item=value->GetValue(i);if(!item || !item->IsObject()){valid=false;break;}
+        auto id=item->GetValue("id");
+        if(!id || !id->IsString() || !qos::ValidCredentialCounter(id->GetStringValue().ToString())){valid=false;break;}
+        auto entry=CefDictionaryValue::Create();entry->SetString("id",id->GetStringValue());
+        if(action=="discover") {
+          auto username=item->GetValue("username"),kind=item->GetValue("kind");
+          if(!username || !username->IsString() || username->GetStringValue().length()>1024 ||
+             !kind || !kind->IsString() || (kind->GetStringValue()!="current-password" && kind->GetStringValue()!="new-password")){valid=false;break;}
+          entry->SetString("username",username->GetStringValue());entry->SetString("kind",kind->GetStringValue());
+        }
+        forms->SetDictionary(forms->GetSize(),entry);
+      }
+      if(valid){result->SetBool("success",true);result->SetList("forms",forms);}
+    } else if(capture && value && value->IsObject()) {
+      auto username=value->GetValue("username"),password=value->GetValue("password");
+      if(username && username->IsString() && username->GetStringValue().length()<=1024 &&
+         password && password->IsString() && !password->GetStringValue().empty() && password->GetStringValue().length()<=4096) {
+        result->SetBool("success",true);result->SetString("username",username->GetStringValue());
+        result->SetString("password",password->GetStringValue());
+      }
+      value->SetValue("password",CefV8Value::CreateUndefined(),V8_PROPERTY_ATTRIBUTE_NONE);
+    } else if((fill || address || validate) && value && value->IsBool())result->SetBool("success",value->GetBoolValue());
+    bound.context->Exit();
+    auto current=credential_contexts_.find(browser->GetIdentifier());
+    if(current==credential_contexts_.end() || current->second.generation!=bound.generation ||
+       current->second.token!=bound.token || !bound.context->IsValid())return;
+    auto reply=CefProcessMessage::Create("qos.credential_result");auto fields=reply->GetArgumentList();
+    fields->SetString(0,bound.generation);fields->SetString(1,bound.token);
+    fields->SetString(2,args->GetString(2));fields->SetDictionary(3,result);
+    frame->SendProcessMessage(PID_BROWSER,reply);
+  }
   void ApplyScripts(CefRefPtr<CefFrame> frame,const std::vector<CefString>& scripts) {
     if(!IsWebDocument(frame)) return;
     auto context=frame->GetV8Context();if(!context || !context->IsValid()) return;

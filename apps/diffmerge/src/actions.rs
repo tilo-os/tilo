@@ -669,8 +669,12 @@ fn ensure_trailing_newline(text: &str) -> String {
 
 impl ResourceProvider for crate::app::DiffMergeApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.merge_resource_ctx() {
+        match self.merge_resource_ctx(doc) {
             Some(ctx) => provide_resources(&ctx, doc),
+            None if crate::doc::MergeDoc::has_merged(doc) => provide_resources(&MergeResourceCtx {
+                title: "Saved merge output · original inputs unavailable".into(),
+                model: MergeModel::default(),
+            }, doc),
             None => self.diff_resource_ctx().map_or_else(
                 || vec![workspace_operations()],
                 |ctx| provide_diff_resources(&ctx),
