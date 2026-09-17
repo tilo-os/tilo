@@ -52,6 +52,13 @@ impl DiffView {
         diff.lines.len() as f64 * ROW_H + 8.0
     }
 
+    /// Offset from a row's top that centres a `FONT`-sized monospace line in
+    /// `ROW_H` (measured once per draw pass, not the old fixed `+ 2.0`).
+    fn text_dy(tr: &mut TextRenderer) -> f64 {
+        let (_, h) = tr.measure_styled("M", FONT, None, TextWeight::Regular, false, true);
+        (ROW_H - f64::from(h)) / 2.0
+    }
+
     /// Draw the diff into `viewport`, scrolled down by `scroll` px.
     /// `hover_hunk` highlights the stage button on that hunk. Returns the
     /// hunk-stage button rects for hit-testing.
@@ -151,6 +158,7 @@ impl DiffView {
         let x0 = viewport.x0;
         let top = viewport.y0 - scroll;
         let mut last_hunk: Option<usize> = None;
+        let text_dy = Self::text_dy(tr);
 
         for (i, line) in diff.lines.iter().enumerate() {
             let y = top + i as f64 * ROW_H;
@@ -171,7 +179,9 @@ impl DiffView {
                 &mut last_hunk,
                 &mut buttons,
             );
-            Self::draw_unified_row_content(scene, tr, t, theme, diff, line, x0, y, settings);
+            Self::draw_unified_row_content(
+                scene, tr, t, theme, diff, line, x0, y, settings, text_dy,
+            );
         }
         buttons
     }
@@ -262,9 +272,11 @@ impl DiffView {
         x0: f64,
         y: f64,
         settings: Settings,
+        text_dy: f64,
     ) {
         let c = &theme.tokens.colors;
-        Self::draw_linenos(scene, tr, t, theme, x0, y, line);
+        let ty = y + text_dy;
+        Self::draw_linenos(scene, tr, t, theme, x0, y, line, text_dy);
 
         // Marker glyph + content.
         let content_x = x0 + GUTTER_W;
@@ -278,7 +290,7 @@ impl DiffView {
             DiffLineKind::Deletion => draw::del_fg(theme),
             _ => c.text_dim,
         };
-        draw::mono(scene, tr, t, marker, FONT, marker_color, content_x, y + 2.0);
+        draw::mono(scene, tr, t, marker, FONT, marker_color, content_x, ty);
 
         let text_x = content_x + 14.0;
         match line.kind {
@@ -291,7 +303,7 @@ impl DiffView {
                     FONT,
                     c.semantic.info,
                     content_x,
-                    y + 2.0,
+                    ty,
                 );
             }
             DiffLineKind::Meta => {
@@ -303,7 +315,7 @@ impl DiffView {
                     FONT,
                     c.text_dim,
                     content_x,
-                    y + 2.0,
+                    ty,
                 );
             }
             _ => Self::draw_code(
@@ -314,7 +326,7 @@ impl DiffView {
                 &line.content,
                 &diff.language,
                 text_x,
-                y + 2.0,
+                ty,
                 settings.syntax_highlight,
             ),
         }
@@ -336,6 +348,7 @@ impl DiffView {
         draw::vline(scene, t, mid, viewport.y0, viewport.y1, c.border_standard);
 
         let top = viewport.y0 - scroll;
+        let text_dy = Self::text_dy(tr);
         // Pair deletions/additions into aligned rows. We walk lines and
         // emit left (old) / right (new) cells; context spans both.
         let rows = pair_rows(&diff.lines);
@@ -359,7 +372,9 @@ impl DiffView {
                 } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
                     draw::fill_rect(scene, t, left, c.surfaces.raised);
                 }
-                Self::draw_half(scene, tr, t, theme, line, viewport.x0, y, settings, true);
+                Self::draw_half(
+                    scene, tr, t, theme, line, viewport.x0, y, settings, true, text_dy,
+                );
             }
             if let Some(ri) = pr.right
                 && let Some(line) = diff.lines.get(ri)
@@ -369,7 +384,7 @@ impl DiffView {
                 } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
                     draw::fill_rect(scene, t, right, c.surfaces.raised);
                 }
-                Self::draw_half(scene, tr, t, theme, line, mid, y, settings, false);
+                Self::draw_half(scene, tr, t, theme, line, mid, y, settings, false, text_dy);
             }
         }
         Vec::new()
@@ -390,8 +405,10 @@ impl DiffView {
         y: f64,
         settings: Settings,
         is_left: bool,
+        text_dy: f64,
     ) {
         let c = &theme.tokens.colors;
+        let ty = y + text_dy;
         let no = if is_left {
             line.old_lineno
         } else {
@@ -400,7 +417,7 @@ impl DiffView {
         if let Some(n) = no {
             let s = n.to_string();
             let w = f64::from(draw::mono_width(tr, &s, FONT));
-            draw::mono(scene, tr, t, &s, FONT, c.text_dim, x0 + 44.0 - w, y + 2.0);
+            draw::mono(scene, tr, t, &s, FONT, c.text_dim, x0 + 44.0 - w, ty);
         }
         let text_x = x0 + 54.0;
         match line.kind {
@@ -413,7 +430,7 @@ impl DiffView {
                     FONT,
                     c.semantic.info,
                     text_x,
-                    y + 2.0,
+                    ty,
                 );
             }
             DiffLineKind::Meta => {
@@ -425,7 +442,7 @@ impl DiffView {
                     FONT,
                     c.text_dim,
                     text_x,
-                    y + 2.0,
+                    ty,
                 );
             }
             _ => Self::draw_code(
@@ -436,7 +453,7 @@ impl DiffView {
                 &line.content,
                 "text",
                 text_x,
-                y + 2.0,
+                ty,
                 settings.syntax_highlight,
             ),
         }
@@ -450,8 +467,10 @@ impl DiffView {
         x0: f64,
         y: f64,
         line: &DiffLine,
+        text_dy: f64,
     ) {
         let c = &theme.tokens.colors;
+        let ty = y + text_dy;
         let old = line.old_lineno.map(|n| n.to_string()).unwrap_or_default();
         let new = line.new_lineno.map(|n| n.to_string()).unwrap_or_default();
         // Right-align both columns within the gutter.
@@ -465,7 +484,7 @@ impl DiffView {
             FONT,
             c.text_dim,
             x0 + 40.0 - ow,
-            y + 2.0,
+            ty,
         );
         draw::mono(
             scene,
@@ -475,7 +494,7 @@ impl DiffView {
             FONT,
             c.text_dim,
             x0 + 84.0 - nw,
-            y + 2.0,
+            ty,
         );
         draw::vline(
             scene,
@@ -530,7 +549,8 @@ impl DiffView {
     ) -> HunkButton {
         let c = &theme.tokens.colors;
         let size = 11.0f32;
-        let tw = f64::from(tr.measure_weighted(label, size, None, TextWeight::Medium).0);
+        let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+        let tw = f64::from(tw);
         let bw = tw + 20.0;
         let bx = right_x - bw;
         let by = row.y0 + 2.0;
@@ -550,7 +570,8 @@ impl DiffView {
             size,
             fg,
             bx + (bw - tw) / 2.0,
-            by + (ROW_H - 4.0 - f64::from(size)) / 2.0,
+            // Centre on the measured line height, not the font size.
+            by + (brect.height() - f64::from(th)) / 2.0,
             None,
             TextWeight::Medium,
         );

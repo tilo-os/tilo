@@ -215,11 +215,17 @@ impl PanelsView {
             (RemoteAction::Pull, "Pull"),
             (RemoteAction::Push, "Push"),
         ];
-        let bw = 84.0;
         let bh = 30.0;
         let by = rect.y0 + (rect.height() - bh) / 2.0;
-        let mut bx = rect.x1 - 16.0 - bw;
+        let mut bx = rect.x1 - 16.0;
         for (action, label) in actions.iter().rev() {
+            // Size each button from its measured label (plus symmetric
+            // padding) rather than a fixed 84px that a longer locale
+            // overflows; keep a comfortable minimum so short verbs stay
+            // easy to hit.
+            let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
+            let bw = (lw + 32.0).max(72.0);
+            bx -= bw;
             let brect = Rect::new(bx, by, bx + bw, by + bh);
             let primary = *action == RemoteAction::Push;
             let hovered = hover == Some(*action);
@@ -240,7 +246,7 @@ impl PanelsView {
                 c.text_primary
             };
             draw::fill_round(scene, t, brect, 6.0, bg);
-            let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
+            let ty_1 = draw::centered_top(tr, label, 12.0, TextWeight::Medium, by, bh);
             draw::text_weighted(
                 scene,
                 tr,
@@ -249,7 +255,7 @@ impl PanelsView {
                 12.0,
                 fg,
                 bx + (bw - lw) / 2.0,
-                by + 7.0,
+                ty_1,
                 None,
                 TextWeight::Medium,
             );
@@ -257,7 +263,7 @@ impl PanelsView {
                 rect: brect,
                 action: PanelHit::Remote(*action),
             });
-            bx -= bw + 8.0;
+            bx -= 8.0;
         }
     }
 
@@ -273,6 +279,10 @@ impl PanelsView {
         let c = &theme.tokens.colors;
         draw::fill_round(scene, t, rect, 10.0, c.surfaces.raised);
         draw::stroke_round(scene, t, rect, 10.0, 1.0, c.border_standard);
+        // Title and count pill share the header band's centre line.
+        let header_h = 40.0;
+        let (cw, _) = tr.measure_weighted(title, 13.0, None, TextWeight::Semibold);
+        let ty_2 = draw::centered_top(tr, title, 13.0, TextWeight::Semibold, rect.y0, header_h);
         draw::text_weighted(
             scene,
             tr,
@@ -281,21 +291,18 @@ impl PanelsView {
             13.0,
             c.text_primary,
             rect.x0 + 16.0,
-            rect.y0 + 14.0,
+            ty_2,
             None,
             TextWeight::Semibold,
         );
-        let cw = f64::from(
-            tr.measure_weighted(title, 13.0, None, TextWeight::Semibold)
-                .0,
-        );
+        let pill_h = 18.0;
         draw::pill(
             scene,
             tr,
             t,
-            rect.x0 + 16.0 + cw + 8.0,
-            rect.y0 + 12.0,
-            18.0,
+            rect.x0 + 16.0 + f64::from(cw) + 8.0,
+            rect.y0 + (header_h - pill_h) / 2.0,
+            pill_h,
             &count.to_string(),
             c.text_dim,
             c.lift(0.72),
