@@ -161,6 +161,148 @@ struct CardHeaderArgs<'a> {
     width: f32,
 }
 
+/// Measured inputs for [`card_header_layout`]: the card's origin and width,
+/// the avatar radius, and the line boxes / widths measured with the styles
+/// the header paints with.
+#[derive(Clone, Copy, Debug)]
+struct CardHeaderMetrics {
+    x: f64,
+    y: f64,
+    width: f64,
+    avatar_r: f64,
+    name_h: f64,
+    email_h: f64,
+    date_w: f64,
+    to_w: f64,
+    gap: f64,
+}
+
+/// Where a message card's header pieces land.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CardHeaderLayout {
+    avatar_c: Point,
+    /// Left edge of the name/email column.
+    text_x: f64,
+    name_y: f64,
+    name_h: f64,
+    email_y: f64,
+    email_h: f64,
+    /// Width the name and email may occupy before eliding: up to the start
+    /// of the right column minus a gap.
+    from_budget: f64,
+    /// Left edges of the right-aligned date and recipients lines.
+    date_x: f64,
+    to_x: f64,
+    /// Bottom of the header (where the body starts).
+    bottom: f64,
+}
+
+/// Lay out a message card header. The name+email block is centred on the
+/// avatar; the date and the "to …" line are both right-aligned to the card's
+/// right edge (one shared edge, not a fixed 150px column), and the name/email
+/// budget stops one gap before whichever of them reaches further left.
+fn card_header_layout(m: &CardHeaderMetrics) -> CardHeaderLayout {
+    let avatar_c = Point::new(m.x + m.avatar_r + 1.0, m.y + m.avatar_r + 1.0);
+    let text_x = m.x + 2.0 * m.avatar_r + 10.0;
+    let block_h = m.name_h + m.email_h;
+    let name_y = avatar_c.y - block_h / 2.0;
+    let email_y = name_y + m.name_h;
+    let right = m.x + m.width;
+    let date_x = right - m.date_w;
+    let to_x = right - m.to_w;
+    let from_budget = (date_x.min(to_x) - m.gap - text_x).max(0.0);
+    let block_bottom = (email_y + m.email_h).max(avatar_c.y + m.avatar_r);
+    // The 1× header keeps its authored 48px rhythm; taller text pushes the
+    // body down instead of painting the first paragraph over the email line.
+    let bottom = (block_bottom + m.gap).max(m.y + 48.0);
+    CardHeaderLayout {
+        avatar_c,
+        text_x,
+        name_y,
+        name_h: m.name_h,
+        email_y,
+        email_h: m.email_h,
+        from_budget,
+        date_x,
+        to_x,
+        bottom,
+    }
+}
+
+/// Vertical bands of one message-list row, measured from the styles the row
+/// paints with and shared by the hit list and the painter so the star the
+/// pointer hits is the star that was drawn, at every text scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ListRowMetrics {
+    row_h: f64,
+    /// Top of the sender line and its line box.
+    name_y: f64,
+    name_h: f64,
+    /// Top of the subject line and its line box.
+    subj_y: f64,
+    subj_h: f64,
+    /// Top of the snippet line and its line box.
+    snippet_y: f64,
+    snippet_h: f64,
+    /// Avatar centre: on the sender + subject block.
+    avatar_cy: f64,
+    /// Centre line of the star / paperclip glyphs: the snippet line.
+    icon_cy: f64,
+}
+
+impl ListRowMetrics {
+    /// The 1× row before anything has been measured (and for the geometry
+    /// tests, which never paint): the same rule applied to the 1× line boxes.
+    fn fallback() -> Self {
+        Self::from_line_boxes(16.875, 15.625, 14.375, 4.0, 12.0)
+    }
+
+    /// Measure the three text lines with their paint styles.
+    fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        let (_, name_h) = tr.measure_weighted("Ag", 13.5, None, TextWeight::Bold);
+        let (_, subj_h) = tr.measure_weighted("Ag", 12.5, None, TextWeight::Semibold);
+        let (_, snippet_h) = tr.measure("Ag", 11.5, None);
+        Self::from_line_boxes(
+            f64::from(name_h),
+            f64::from(subj_h),
+            f64::from(snippet_h),
+            f64::from(sp.s1),
+            f64::from(sp.s3),
+        )
+    }
+
+    /// Stack sender, subject and snippet with the small related gap between
+    /// them and the row padding above and below; the row is never shorter
+    /// than the authored 1× row and is rounded up to whole pixels so its
+    /// hairline stays crisp.
+    fn from_line_boxes(name_h: f64, subj_h: f64, snippet_h: f64, gap: f64, pad: f64) -> Self {
+        let name_y = pad;
+        let subj_y = name_y + name_h + gap;
+        let snippet_y = subj_y + subj_h + gap;
+        let row_h = (snippet_y + snippet_h + pad).ceil().max(LIST_ROW_H);
+        Self {
+            row_h,
+            name_y,
+            name_h,
+            subj_y,
+            subj_h,
+            snippet_y,
+            snippet_h,
+            avatar_cy: (name_y + subj_y + subj_h) / 2.0,
+            icon_cy: snippet_y + snippet_h / 2.0,
+        }
+    }
+
+    /// The star's hit rect for a row: a 24px target centred on the painted
+    /// glyph (`right - 24 .. right - 8` on the snippet line).
+    fn star_hit(&self, row: Rect) -> Rect {
+        let right = row.x1 - 14.0;
+        let cy = row.y0 + self.icon_cy;
+        Rect::new(right - 28.0, cy - 12.0, right - 4.0, cy + 12.0)
+    }
+}
+
 /// Everything [`Pane::draw_list_row`] needs about one row that
 /// [`Pane::draw_list`] has already resolved: the message, its slot rect, its
 /// thread size, and its selection/hover/swipe state.
@@ -182,6 +324,9 @@ pub struct Pane {
     hits: Vec<(Rect, Hit)>,
     /// List pane only: the search field.
     search_input: Option<TextInput>,
+    /// List pane only: the row bands measured on the last paint, read by the
+    /// hit list. `None` until the first paint, when the 1× rule stands in.
+    list_metrics: Option<ListRowMetrics>,
     // list swipe state
     swipe: Option<SwipeState>,
     mouse_down_row: Option<(MessageId, Point)>,
@@ -229,6 +374,7 @@ impl Pane {
             rect: Rect::ZERO,
             hits: Vec::new(),
             search_input,
+            list_metrics: None,
             swipe: None,
             mouse_down_row: None,
             reader_attachment_hits: Vec::new(),
@@ -249,6 +395,11 @@ impl Pane {
     }
 
     // ---- geometry / hit-list, recomputed from the current rect + state ----
+
+    /// The list row bands from the last paint, or the 1× rule before it.
+    fn list_metrics(&self) -> ListRowMetrics {
+        self.list_metrics.unwrap_or_else(ListRowMetrics::fallback)
+    }
 
     fn header_left_inset(&self) -> f64 {
         let st = self.shared.borrow();
@@ -380,16 +531,18 @@ impl Pane {
                 Hit::SearchClear,
             ));
         }
+        let m = self.list_metrics();
         let mut ly = r.y0 + HEADER_H;
         for (id, _len) in st.list_rows() {
             if ly >= r.y1 {
                 break;
             }
-            let row = Rect::new(r.x0, ly, r.x1, ly + LIST_ROW_H);
-            let star = Rect::new(row.x1 - 36.0, row.y0 + 8.0, row.x1 - 12.0, row.y0 + 32.0);
-            hits.push((star, Hit::RowStar(id)));
+            let row = Rect::new(r.x0, ly, r.x1, ly + m.row_h);
+            // The star target sits on the painted glyph (snippet line, right
+            // edge) — not on the date at the row's top.
+            hits.push((m.star_hit(row), Hit::RowStar(id)));
             hits.push((row, Hit::Row(id)));
-            ly += LIST_ROW_H;
+            ly += m.row_h;
         }
     }
 
@@ -670,7 +823,8 @@ impl Pane {
         } else if hov {
             fill_round(scene, t, rect, 8.0, c.lift(0.35));
         }
-        let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
+        let sp = &theme.tokens.spacing;
+        let cy = rect.y0 + FOLDER_ROW_H / 2.0;
         let label_col = if selected {
             c.text_primary
         } else {
@@ -678,41 +832,58 @@ impl Pane {
         };
         let icon_box = Rect::new(
             rect.x0 + 12.0,
-            rect.y0 + FOLDER_ROW_H / 2.0 - 9.0,
+            cy - 9.0,
             rect.x0 + 30.0,
-            rect.y0 + FOLDER_ROW_H / 2.0 + 9.0,
+            cy + 9.0,
         );
         let icon_col = if selected { c.accent[5] } else { c.neutral[6] };
         f.icon().draw(scene, t, icon_box, icon_col);
+
+        // The unread badge is measured first so the title can be elided into
+        // the width that is actually left, instead of wrapping at a fixed
+        // budget onto the next row.
+        let unread = if active_account {
+            st.mailbox.unread_count(f)
+        } else {
+            0
+        };
+        let badge = (unread > 0).then(|| {
+            let txt = unread.to_string();
+            let (twd, th) = tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
+            let bw = (f64::from(twd) + 14.0).max(20.0);
+            let rect = Rect::new(
+                rect.x1 - bw - f64::from(sp.s2),
+                rect.y0 + 8.0,
+                rect.x1 - f64::from(sp.s2),
+                rect.y0 + 28.0,
+            );
+            (txt, f64::from(twd), f64::from(th), rect)
+        });
+
+        let text_x = rect.x0 + 40.0;
+        let label_right = badge
+            .as_ref()
+            .map_or(rect.x1 - f64::from(sp.s2), |(_, _, _, b)| b.x0 - f64::from(sp.s2));
+        let weight = if selected {
+            TextWeight::Semibold
+        } else {
+            TextWeight::Regular
+        };
+        let title = elide(tr, f.title(), 13.0, weight, label_right - text_x);
+        let (_, th) = tr.measure_weighted(&title, 13.0, None, weight);
         tr.draw_text_weighted(
             scene,
-            f.title(),
+            &title,
             13.0,
             label_col,
-            t * Affine::translate((rect.x0 + 40.0, ty)),
-            Some(120.0),
-            if selected {
-                TextWeight::Semibold
-            } else {
-                TextWeight::Regular
-            },
+            t * Affine::translate((text_x, cy - f64::from(th) / 2.0)),
+            None,
+            weight,
         );
-        if !active_account {
+
+        let Some((txt, twd, th, badge)) = badge else {
             return;
-        }
-        let unread = st.mailbox.unread_count(f);
-        if unread == 0 {
-            return;
-        }
-        let txt = unread.to_string();
-        let (twd, _) = tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
-        let bw = (f64::from(twd) + 14.0).max(20.0);
-        let badge = Rect::new(
-            rect.x1 - bw - 8.0,
-            rect.y0 + 8.0,
-            rect.x1 - 8.0,
-            rect.y0 + 28.0,
-        );
+        };
         let bg = if selected { c.accent[5] } else { c.neutral[3] };
         fill_round(scene, t, badge, 10.0, bg);
         tr.draw_text_weighted(
@@ -720,10 +891,7 @@ impl Pane {
             &txt,
             11.0,
             Color::WHITE,
-            t * Affine::translate((
-                f64::midpoint(badge.x0, badge.x1) - f64::from(twd) / 2.0,
-                badge.y0 + 4.0,
-            )),
+            t * Affine::translate((badge.center().x - twd / 2.0, badge.center().y - th / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -1002,8 +1170,9 @@ impl Pane {
         now_min: i64,
     ) {
         let unread = !msg.read;
-        self.draw_list_row_identity(scene, t, tr, theme, row, msg, unread, now_min);
-        Self::draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread);
+        let m = self.list_metrics();
+        self.draw_list_row_identity(scene, t, tr, theme, row, msg, unread, now_min, m);
+        Self::draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread, m);
     }
 
     /// The unread dot, avatar, sender name, and relative date of a list row.
@@ -1022,6 +1191,7 @@ impl Pane {
         msg: &Message,
         unread: bool,
         now_min: i64,
+        m: ListRowMetrics,
     ) {
         let c = &theme.tokens.colors;
         if unread {
@@ -1030,7 +1200,7 @@ impl Pane {
                 t,
                 c.accent[5],
                 None,
-                &Circle::new(Point::new(row.x0 + 14.0, row.y0 + LIST_ROW_H / 2.0), 4.0),
+                &Circle::new(Point::new(row.x0 + 14.0, row.center().y), 4.0),
             );
         }
         draw_avatar(
@@ -1039,7 +1209,7 @@ impl Pane {
             t,
             theme,
             &self.shared.borrow().images,
-            Point::new(row.x0 + 42.0, row.y0 + 26.0),
+            Point::new(row.x0 + 42.0, row.y0 + m.avatar_cy),
             17.0,
             &msg.from,
             0,
@@ -1052,30 +1222,37 @@ impl Pane {
         } else {
             TextWeight::Medium
         };
+        // The date is measured first so the name is elided into the width
+        // that is actually left of it.
+        let date = format_relative(msg.timestamp_min, now_min);
+        let (dw, dh) = tr.measure(&date, 11.5, None);
         let name = elide(
             tr,
             &msg.from.display(),
             13.5,
             name_weight,
-            right - text_x - 56.0,
+            right - f64::from(dw) - f64::from(theme.tokens.spacing.s3) - text_x,
         );
         tr.draw_text_weighted(
             scene,
             &name,
             13.5,
             c.text_primary,
-            t * Affine::translate((text_x, row.y0 + 12.0)),
+            t * Affine::translate((text_x, row.y0 + m.name_y)),
             None,
             name_weight,
         );
-        let date = format_relative(msg.timestamp_min, now_min);
-        let (dw, _) = tr.measure(&date, 11.5, None);
+        // Bottom-align the date's line box to the name's so the baselines
+        // meet at every text scale.
         tr.draw_text(
             scene,
             &date,
             11.5,
             c.text_dim,
-            t * Affine::translate((right - f64::from(dw), row.y0 + 13.0)),
+            t * Affine::translate((
+                right - f64::from(dw),
+                row.y0 + m.name_y + m.name_h - f64::from(dh),
+            )),
             None,
         );
     }
@@ -1095,12 +1272,13 @@ impl Pane {
         msg: &Message,
         len: usize,
         unread: bool,
+        m: ListRowMetrics,
     ) {
         let c = &theme.tokens.colors;
         let text_x = row.x0 + 70.0;
         let right = row.x1 - 14.0;
 
-        let subj_y = row.y0 + 32.0;
+        let subj_y = row.y0 + m.subj_y;
         let subj_col = if unread { c.text_primary } else { c.neutral[7] };
         let subj_weight = if unread {
             TextWeight::Semibold
@@ -1119,17 +1297,20 @@ impl Pane {
             subj_weight,
         );
         if len > 1 {
+            // Thread-size badge: a capsule centred on the subject line.
             let badge_txt = len.to_string();
-            let (bw, _) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
+            let (bw, bh) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
+            let subj_cy = subj_y + m.subj_h / 2.0;
+            let badge_h = (f64::from(bh) + 2.0).max(16.0);
             let bx = right - f64::from(bw) - 12.0;
-            let badge = Rect::new(bx - 6.0, subj_y - 1.0, right, subj_y + 15.0);
-            fill_round(scene, t, badge, 8.0, c.neutral[3]);
+            let badge = Rect::new(bx - 6.0, subj_cy - badge_h / 2.0, right, subj_cy + badge_h / 2.0);
+            fill_round(scene, t, badge, badge_h / 2.0, c.neutral[3]);
             tr.draw_text_weighted(
                 scene,
                 &badge_txt,
                 10.5,
                 c.neutral[8],
-                t * Affine::translate((bx, subj_y + 1.0)),
+                t * Affine::translate((bx, subj_cy - f64::from(bh) / 2.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -1148,13 +1329,16 @@ impl Pane {
             &snippet,
             11.5,
             c.text_dim,
-            t * Affine::translate((text_x, row.y0 + 52.0)),
+            t * Affine::translate((text_x, row.y0 + m.snippet_y)),
             None,
         );
 
+        // Star and paperclip sit on the snippet line's centre; the star's hit
+        // rect (`ListRowMetrics::star_hit`) is centred on this same glyph.
+        let icon_cy = row.y0 + m.icon_cy;
         // A favourited mail shows a solid, filled star; an unstarred one a
         // faint outline — the state reads at a glance, not just as a colour.
-        let star_box = Rect::new(right - 24.0, row.y0 + 48.0, right - 8.0, row.y0 + 64.0);
+        let star_box = Rect::new(right - 24.0, icon_cy - 8.0, right - 8.0, icon_cy + 8.0);
         if msg.starred {
             Icon::Star.draw_filled(scene, t, star_box, c.semantic.warning);
         } else {
@@ -1164,7 +1348,7 @@ impl Pane {
             Icon::Paperclip.draw(
                 scene,
                 t,
-                Rect::new(right - 44.0, row.y0 + 48.0, right - 30.0, row.y0 + 62.0),
+                Rect::new(right - 44.0, icon_cy - 7.0, right - 30.0, icon_cy + 7.0),
                 c.text_dim,
             );
         }
@@ -1756,60 +1940,15 @@ impl Pane {
             width,
         } = *args;
         let c = &theme.tokens.colors;
-        let card_x1 = cx + f64::from(width);
         let st = self.shared.borrow();
-        draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &st.images,
-            Point::new(cx + 18.0, cy + 18.0),
-            17.0,
-            &msg.from,
-            0,
-        );
-        let from_name = elide(
-            tr,
-            &msg.from.display(),
-            13.5,
-            TextWeight::Semibold,
-            f64::from(width - 150.0),
-        );
-        tr.draw_text_weighted(
-            scene,
-            &from_name,
-            13.5,
-            c.text_primary,
-            t * Affine::translate((cx + 44.0, cy + 6.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let from_email = elide(
-            tr,
-            &msg.from.email,
-            11.5,
-            TextWeight::Regular,
-            f64::from(width - 150.0),
-        );
-        tr.draw_text(
-            scene,
-            &from_email,
-            11.5,
-            c.text_dim,
-            t * Affine::translate((cx + 44.0, cy + 24.0)),
-            None,
-        );
+        let width = f64::from(width);
+
+        // Measure every piece with the style it is painted with, then let one
+        // layout place them: the name/email block is centred on the avatar,
+        // and the right column (date over recipients) shares one right edge.
         let date = format_absolute(msg.timestamp_min);
-        let (dw, _) = tr.measure(&date, 11.5, None);
-        tr.draw_text(
-            scene,
-            &date,
-            11.5,
-            c.text_dim,
-            t * Affine::translate((card_x1 - f64::from(dw), cy + 8.0)),
-            None,
-        );
+        let (dw, dh) = tr.measure(&date, 11.5, None);
+        let to_budget = (width * 0.4).max(150.0).min(width - 60.0);
         let to_line = elide(
             tr,
             &format!(
@@ -1822,17 +1961,90 @@ impl Pane {
             ),
             11.0,
             TextWeight::Regular,
-            150.0,
+            to_budget,
+        );
+        let (tow, toh) = tr.measure(&to_line, 11.0, None);
+        let (_, name_h) = tr.measure_weighted("Ag", 13.5, None, TextWeight::Semibold);
+        let (_, email_h) = tr.measure("Ag", 11.5, None);
+        let layout = card_header_layout(&CardHeaderMetrics {
+            x: cx,
+            y: cy,
+            width,
+            avatar_r: 17.0,
+            name_h: f64::from(name_h),
+            email_h: f64::from(email_h),
+            date_w: f64::from(dw),
+            to_w: f64::from(tow),
+            gap: f64::from(theme.tokens.spacing.s3),
+        });
+
+        draw_avatar(
+            scene,
+            tr,
+            t,
+            theme,
+            &st.images,
+            layout.avatar_c,
+            17.0,
+            &msg.from,
+            0,
+        );
+        let from_name = elide(
+            tr,
+            &msg.from.display(),
+            13.5,
+            TextWeight::Semibold,
+            layout.from_budget,
+        );
+        tr.draw_text_weighted(
+            scene,
+            &from_name,
+            13.5,
+            c.text_primary,
+            t * Affine::translate((layout.text_x, layout.name_y)),
+            None,
+            TextWeight::Semibold,
+        );
+        let from_email = elide(
+            tr,
+            &msg.from.email,
+            11.5,
+            TextWeight::Regular,
+            layout.from_budget,
+        );
+        tr.draw_text(
+            scene,
+            &from_email,
+            11.5,
+            c.text_dim,
+            t * Affine::translate((layout.text_x, layout.email_y)),
+            None,
+        );
+        // Date and recipients bottom-align their line boxes to the name and
+        // email lines, so the two columns read as two rows.
+        tr.draw_text(
+            scene,
+            &date,
+            11.5,
+            c.text_dim,
+            t * Affine::translate((
+                layout.date_x,
+                layout.name_y + layout.name_h - f64::from(dh),
+            )),
+            None,
         );
         tr.draw_text(
             scene,
             &to_line,
             11.0,
             c.text_dim,
-            t * Affine::translate((card_x1 - 150.0, cy + 24.0)),
+            t * Affine::translate((
+                layout.to_x,
+                layout.email_y + layout.email_h - f64::from(toh),
+            )),
             None,
         );
-        cy + 48.0
+        layout.bottom
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2407,6 +2619,9 @@ impl Widget for Pane {
             if req {
                 self.set_search_focus(true);
             }
+            // Measure the row bands for this text scale before the hit list
+            // is rebuilt from them, so hits and paint describe the same rows.
+            self.list_metrics = Some(ListRowMetrics::measure(tr, theme));
         }
         self.rebuild_hits();
         match self.role {
@@ -2834,6 +3049,70 @@ mod tests {
             !before,
             "Star button toggled the flag"
         );
+    }
+
+    #[test]
+    fn list_row_bands_stack_without_overlap_and_the_star_hit_covers_its_glyph() {
+        let m = ListRowMetrics::fallback();
+        // 1× keeps the authored row height (rounded up to a whole pixel).
+        assert_eq!(m.row_h, 79.0);
+        // Sender, subject and snippet are separate bands, top to bottom.
+        assert!(m.subj_y >= m.name_y + m.name_h);
+        assert!(m.snippet_y >= m.subj_y + m.subj_h);
+        assert!(m.snippet_y + m.snippet_h <= m.row_h);
+        // The star target contains the painted 16px glyph on the snippet line.
+        let row = Rect::new(0.0, 100.0, 340.0, 100.0 + m.row_h);
+        let hit = m.star_hit(row);
+        let right = row.x1 - 14.0;
+        let glyph = Rect::new(
+            right - 24.0,
+            row.y0 + m.icon_cy - 8.0,
+            right - 8.0,
+            row.y0 + m.icon_cy + 8.0,
+        );
+        assert_eq!(hit.union(glyph), hit, "star hit rect contains the glyph");
+        assert!(hit.y0 > row.y0 + m.name_y, "the target is not over the date line");
+
+        // Doubled line boxes (200% text) grow the row instead of overlapping.
+        let big = ListRowMetrics::from_line_boxes(33.75, 31.25, 28.75, 4.0, 12.0);
+        assert!(big.row_h > m.row_h);
+        assert!(big.subj_y >= big.name_y + big.name_h);
+        assert!(big.snippet_y >= big.subj_y + big.subj_h);
+        assert!(big.snippet_y + big.snippet_h + 12.0 <= big.row_h);
+    }
+
+    #[test]
+    fn card_header_right_column_shares_one_edge_and_centres_on_the_avatar() {
+        let m = CardHeaderMetrics {
+            x: 100.0,
+            y: 200.0,
+            width: 500.0,
+            avatar_r: 17.0,
+            name_h: 16.875,
+            email_h: 14.375,
+            date_w: 110.0,
+            to_w: 40.0,
+            gap: 12.0,
+        };
+        let l = card_header_layout(&m);
+        // Date and recipients end on the same right edge — the card's.
+        assert!((l.date_x + m.date_w - 600.0).abs() < 1e-6);
+        assert!((l.to_x + m.to_w - 600.0).abs() < 1e-6);
+        // Name + email block is centred on the avatar's centre line.
+        let block_mid = (l.name_y + l.email_y + l.email_h) / 2.0;
+        assert!((block_mid - l.avatar_c.y).abs() < 1e-6);
+        // The sender column stops one gap before the wider right-column line.
+        assert!((l.text_x + l.from_budget + m.gap - l.date_x).abs() < 1e-6);
+        // 1× keeps the authored 48px header rhythm.
+        assert!((l.bottom - (m.y + 48.0)).abs() < 1e-6);
+        // Larger text grows the header instead of overlapping the body.
+        let tall = CardHeaderMetrics {
+            name_h: 33.75,
+            email_h: 28.75,
+            ..m
+        };
+        let lt = card_header_layout(&tall);
+        assert!(lt.bottom >= lt.email_y + tall.email_h + tall.gap);
     }
 
     #[test]
