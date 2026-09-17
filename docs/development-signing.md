@@ -108,7 +108,8 @@ All normal pinned build inputs are still required. Development mode rejects
 skip-build and production aliases, and returns after container creation,
 before disk imaging. This is a prerequisite staging interface, **not an
 installable or boot-validated development OS**. Registry provisioning and the
-signed disk/VM path below remain unimplemented.
+end-to-end signed disk/VM acceptance below remain incomplete. A separate
+creation-only disk command is described below.
 Production defaults compare the selected public bytes with the unchanged
 tracked keys and reject development bundles.
 
@@ -370,7 +371,7 @@ remain required before using a rebound image for installation.
 ## Private disk-file allocation boundary
 
 `os/dev/private_disk_image.py` supplies the file-allocation boundary for the
-planned disk consumer. It requires an already-root Linux caller and a canonical,
+development disk consumer. It requires an already-root Linux caller and a canonical,
 root-owned private output directory. It creates a new sparse regular file with
 exclusive creation, holds the directory and file descriptors, and verifies the
 same inode, owner, permissions, link count and size before handoff and retention.
@@ -378,10 +379,42 @@ Existing paths are rejected, including links and special files. Failure cleanup
 removes only the file it created, even if the output directory was renamed.
 
 The consumer must call `validate()` immediately before handing the path to its
-trusted installer and call `retain()` only after independent disk verification.
+trusted installer. Retaining an unaccepted test output is not disk verification;
+only independent installed-content and boot checks can establish acceptance.
 This helper does not invoke bootc, allocate a physical disk, prove free-space
 sufficiency, or protect against a malicious root process. Its root Linux tests
 use private sparse temporary files; signed disk and VM acceptance remain separate.
+
+## Creation-only development test disks
+
+`os/dev/create-development-disk.py` composes authenticated immutable source
+verification, EFI/PCR verification and exclusive disk-file allocation. It
+executes the verified local image ID with implicit pulling disabled. The
+packaged `bootc` must advertise all required installation flags; source and
+target signature policy and fetch checks remain enabled.
+
+This command is for an operator-provisioned disposable native QEMU/KVM guest
+with no device passthrough. It rejects WSL, user namespaces, remote container
+configuration, exposed TPM devices and EFI variables. Those checks cannot prove
+that a VM is disposable. Privileged Podman can access that VM's devices, so the
+runner's isolation remains a prerequisite. Do not run it on the laptop or an
+ordinary persistent VM. No physical disks are valid output arguments.
+
+The caller supplies the independently pinned public bundle, source digest,
+update origin, source revision, architecture, generation, composefs seal and
+exact systemd measurement version. Output must be a new regular file in an
+existing private root-owned directory. Failed installation or source teardown
+removes the newly allocated output.
+
+A successful receipt says `tilo-development-unaccepted-test-disk`, with
+`installed_bytes_verified`, `vm_boot_verified` and `installable` all false.
+It establishes command completion and output-file identity only. The actual
+installed manifest, origin, partitions, EFI/UKI/PCR bytes, signature-policy
+negative cases and boot behavior still need verification against the completed
+candidate. The development build's container-only stop remains enabled.
+
+Command/lifecycle tests do not establish runtime compatibility with the packaged
+bootc, sufficient disk capacity, correct installed content or bootability.
 
 ## Production provisioning later
 
