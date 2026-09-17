@@ -122,6 +122,7 @@ jobs:
           python3 os/tests/test_wine_rpm_contract.py
           python3 os/tests/test_fetch_wine_source.py
           python3 os/tests/test_wine_mock_producer.py
+          python3 os/tests/test_wine_ci_cleanup.py
           python3 os/tests/test_wine_rpm_merge.py
           python3 os/tests/imager_media_profiles.py
           python3 apps/imager/packaging/test_generate_winget.py
