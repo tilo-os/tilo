@@ -1,10 +1,9 @@
 # Development signing and production provisioning
 
-The current preparation has no production signing service. Disposable test
-identities can exercise signature checks; they cannot establish a production
-release or trust on the laptop. No backup is available, so this preparation
-does not install, partition, write USB media, change physical firmware, or enroll
-keys on the host. A development image must remain visibly identified as such.
+Disposable test identities can exercise signature checks; they cannot establish
+a production release or trust on physical hardware. The procedures here do not
+install, partition, write USB media, change physical firmware, or enroll keys on
+the host. A development image must remain visibly identified as such.
 
 ## Existing trust boundaries
 
@@ -41,8 +40,7 @@ The first test creates an ephemeral OpenPGP identity outside the checkout,
 exercises real signatures, and removes its private keyring. The other tests
 exercise catalog selection, synthetic PE-envelope mutations and installer
 preflight fixtures. They do not establish firmware acceptance, measured boot,
-an installable OS image, or hardware compatibility. Service-blocked FEX/VM
-validation remains separate and must not be rerouted through this work.
+an installable OS image, or hardware compatibility.
 
 ## Isolated development-image design — implementation still required
 
@@ -76,8 +74,8 @@ these boundaries:
 6. Before any VM boot test, use a unique cycle with disposable QCOW2 disks,
    software TPM state and a private firmware variable store. Never pass through
    a host block device, physical TPM, or efivarfs. Enrollment is permitted only
-   in that VM's variable store. This document does not authorize or launch a
-   currently blocked VM validation task.
+   in that VM's variable store. This VM procedure is planned; the development
+   build and enrollment integration described here is not implemented yet.
 
 The planned path needs tests proving both acceptance of the correct development
 identity and rejection of substituted keys, mismatched measurements, unsigned
@@ -145,5 +143,5 @@ test key to work.
    board's reviewed update reference. Those values are build results, not
    placeholders to invent beforehand.
 7. Complete installer/media, update/rollback and physical hardware acceptance.
-   Resolve the missing backup before any future destructive installation step.
+   Confirm a recoverable backup before any destructive installation step.
    Development signature tests do not remove any of these release gates.
