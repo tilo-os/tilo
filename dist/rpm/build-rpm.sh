@@ -77,7 +77,19 @@ rpmbuild_cmd=(
 if command -v rpmbuild >/dev/null 2>&1; then
     "${rpmbuild_cmd[@]}"
 else
-    container=$(cat "$repo_root/.build-container")
+    if [ ! -s "$repo_root/.build-container" ]; then
+        echo "rpmbuild is unavailable: install rpm-build locally or create .build-container with your distrobox name (see DEVELOPMENT.md)." >&2
+        exit 1
+    fi
+    container=$(head -n1 "$repo_root/.build-container" | tr -d '[:space:]')
+    if [ -z "$container" ]; then
+        echo ".build-container must contain a distrobox name (see DEVELOPMENT.md)." >&2
+        exit 1
+    fi
+    if ! command -v distrobox >/dev/null 2>&1; then
+        echo "distrobox is unavailable: install it or install rpm-build locally." >&2
+        exit 1
+    fi
     printf -v quoted '%q ' "${rpmbuild_cmd[@]}"
     distrobox enter "$container" -- bash -lc "$quoted"
 fi

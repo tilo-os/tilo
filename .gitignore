@@ -8,7 +8,10 @@ os/tilo-desktop
 # staged payload, tarball and the built RPMs.
 dist/rpm/build/
 
-# BranchBox
+# Local build routing (see DEVELOPMENT.md)
+.build-container
+
+# Legacy BranchBox credentials and local state (keep untracked)
 .branchbox/registry.json
 .branchbox/secure/
 .branchbox/secure/tunnels/
