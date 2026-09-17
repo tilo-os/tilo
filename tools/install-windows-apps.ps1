@@ -109,3 +109,7 @@ foreach ($application in $applications) {
     }
     [pscustomobject]@{ Application = $title; Executable = $destination; Shortcut = $shortcutPath }
 }
+
+# Explorer can retain a stale app catalog even when the shortcuts are valid.
+# Do not report a successful installation without checking what Start exposes.
+& (Join-Path $PSScriptRoot 'check-windows-start-apps.ps1') -Apps $applications

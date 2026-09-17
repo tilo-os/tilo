@@ -104,6 +104,12 @@ Start menu entries under **Tilo**:
 This builds before copying executables to `%LOCALAPPDATA%\Tilo\Applications`.
 Close an installed app before updating its executable. Application documents
 remain in their normal user data locations; the installer does not move them.
+The installer also checks both Windows' application catalog and `Get-StartApps`
+against the installed executable paths. A shortcut on disk alone is insufficient:
+Explorer can retain a stale catalog. If this check fails after copying succeeds,
+restart Windows Explorer when no file operations are running, or sign out and
+back in, then run `./tools/check-windows-start-apps.ps1 -Apps hex-editor` (substitute
+the affected package names). The installer does not restart the desktop shell.
 
 Private identity files and local account-vault keys use the shared `private-fs`
 crate. On Windows, files are created with a protected, current-user-only DACL;
