@@ -1828,16 +1828,11 @@ impl RemoteApp {
 
     /// Route one event into the focused field's input and write the result
     /// back. Returns whether the input consumed it.
-    #[allow(clippy::too_many_arguments)]
     fn route_to_focused_field(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &EventRouteCtx<'_>,
     ) -> bool {
         let Some(f) = self.focus else { return false };
         let before = self.inputs.get(f).value().to_string();
@@ -1846,14 +1841,14 @@ impl RemoteApp {
         let (mut handled, mut focus_target) = (false, None);
         input.handle_event(
             event,
-            scale,
-            &modifiers,
+            ctx.scale_factor,
+            &ctx.modifiers,
             state,
-            path,
+            ctx.path,
             &mut handled,
             &mut focus_target,
-            node_id,
-            taffy,
+            ctx.node_id,
+            ctx.taffy,
         );
         if self.inputs.get(f).value() != before {
             self.commit_field(f);
@@ -1886,39 +1881,37 @@ impl Default for RemoteApp {
 // the offline screenshot and first launch are immediately meaningful.
 // ===========================================================================
 
-/// Build one seed [`Connection`]. Broken out of [`seed_connections`] purely to
-/// keep that function's line count down — the field list is identical to
-/// [`Connection`] itself, just positional.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one positional field per Connection column; a builder struct would \
-              just move the same ten values into named fields for a private \
-              seed-data helper used only here"
-)]
-fn seeded_connection(
-    name: &str,
-    host: &str,
+/// Readable fixture input for a seeded connection. Named fields keep adjacent
+/// strings, enums, and booleans from being silently transposed as the sample
+/// roster evolves.
+struct ConnectionSeed<'a> {
+    name: &'a str,
+    host: &'a str,
     port: u16,
-    user: &str,
+    user: &'a str,
     kind: ConnectionKind,
     auth: AuthMethod,
-    last: &str,
+    last_used: &'a str,
     presence: Presence,
-    group: &str,
-    fav: bool,
-) -> Connection {
-    Connection {
-        id: Uuid::new_v4(),
-        name: name.into(),
-        host: host.into(),
-        port,
-        user: user.into(),
-        kind,
-        auth,
-        last_used: last.into(),
-        presence,
-        group: group.into(),
-        favorite: fav,
+    group: &'a str,
+    favorite: bool,
+}
+
+impl ConnectionSeed<'_> {
+    fn build(self) -> Connection {
+        Connection {
+            id: Uuid::new_v4(),
+            name: self.name.into(),
+            host: self.host.into(),
+            port: self.port,
+            user: self.user.into(),
+            kind: self.kind,
+            auth: self.auth,
+            last_used: self.last_used.into(),
+            presence: self.presence,
+            group: self.group.into(),
+            favorite: self.favorite,
+        }
     }
 }
 
@@ -1933,54 +1926,58 @@ fn seed_connections() -> Vec<Connection> {
 fn seed_connections_lab_and_office() -> Vec<Connection> {
     let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
     vec![
-        seeded_connection(
-            "Build Box",
-            "build.lab.internal",
-            22,
-            "admin",
-            ConnectionKind::Ssh,
-            AuthMethod::PublicKey,
-            "12m ago",
-            Presence::Online,
-            "lab",
-            true,
-        ),
-        seeded_connection(
-            "Studio Node",
-            &studio_node,
-            0,
-            "",
-            ConnectionKind::Tilo,
-            AuthMethod::DeviceIdentity,
-            "just now",
-            Presence::Online,
-            "Tilo",
-            true,
-        ),
-        seeded_connection(
-            "Office NAS",
-            "10.0.0.20",
-            5900,
-            "media",
-            ConnectionKind::Vnc,
-            AuthMethod::Password,
-            "2h ago",
-            Presence::Online,
-            "home",
-            false,
-        ),
-        seeded_connection(
-            "Win Workstation",
-            "10.0.0.31",
-            3389,
-            "quinten",
-            ConnectionKind::Rdp,
-            AuthMethod::Password,
-            "yesterday",
-            Presence::Offline,
-            "work",
-            false,
-        ),
+        ConnectionSeed {
+            name: "Build Box",
+            host: "build.lab.internal",
+            port: 22,
+            user: "admin",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::PublicKey,
+            last_used: "12m ago",
+            presence: Presence::Online,
+            group: "lab",
+            favorite: true,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Studio Node",
+            host: &studio_node,
+            port: 0,
+            user: "",
+            kind: ConnectionKind::Tilo,
+            auth: AuthMethod::DeviceIdentity,
+            last_used: "just now",
+            presence: Presence::Online,
+            group: "Tilo",
+            favorite: true,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Office NAS",
+            host: "10.0.0.20",
+            port: 5900,
+            user: "media",
+            kind: ConnectionKind::Vnc,
+            auth: AuthMethod::Password,
+            last_used: "2h ago",
+            presence: Presence::Online,
+            group: "home",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Win Workstation",
+            host: "10.0.0.31",
+            port: 3389,
+            user: "quinten",
+            kind: ConnectionKind::Rdp,
+            auth: AuthMethod::Password,
+            last_used: "yesterday",
+            presence: Presence::Offline,
+            group: "work",
+            favorite: false,
+        }
+        .build(),
     ]
 }
 
@@ -1989,54 +1986,58 @@ fn seed_connections_lab_and_office() -> Vec<Connection> {
 fn seed_connections_remote_and_backup() -> Vec<Connection> {
     let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
     vec![
-        seeded_connection(
-            "Edge Gateway",
-            "edge.example.com",
-            2222,
-            "root",
-            ConnectionKind::Ssh,
-            AuthMethod::PublicKey,
-            "3d ago",
-            Presence::Online,
-            "prod",
-            false,
-        ),
-        seeded_connection(
-            "Pi Cluster Head",
-            "192.168.4.2",
-            22,
-            "pi",
-            ConnectionKind::Ssh,
-            AuthMethod::Password,
-            "1w ago",
-            Presence::Offline,
-            "lab",
-            false,
-        ),
-        seeded_connection(
-            "Workshop Laptop",
-            &workshop_laptop,
-            0,
-            "",
-            ConnectionKind::Tilo,
-            AuthMethod::DeviceIdentity,
-            "5h ago",
-            Presence::Online,
-            "Tilo",
-            false,
-        ),
-        seeded_connection(
-            "Backup Vault",
-            "vault.example.com",
-            5901,
-            "ops",
-            ConnectionKind::Vnc,
-            AuthMethod::Password,
-            "Never",
-            Presence::Unknown,
-            "prod",
-            false,
-        ),
+        ConnectionSeed {
+            name: "Edge Gateway",
+            host: "edge.example.com",
+            port: 2222,
+            user: "root",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::PublicKey,
+            last_used: "3d ago",
+            presence: Presence::Online,
+            group: "prod",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Pi Cluster Head",
+            host: "192.168.4.2",
+            port: 22,
+            user: "pi",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::Password,
+            last_used: "1w ago",
+            presence: Presence::Offline,
+            group: "lab",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Workshop Laptop",
+            host: &workshop_laptop,
+            port: 0,
+            user: "",
+            kind: ConnectionKind::Tilo,
+            auth: AuthMethod::DeviceIdentity,
+            last_used: "5h ago",
+            presence: Presence::Online,
+            group: "Tilo",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Backup Vault",
+            host: "vault.example.com",
+            port: 5901,
+            user: "ops",
+            kind: ConnectionKind::Vnc,
+            auth: AuthMethod::Password,
+            last_used: "Never",
+            presence: Presence::Unknown,
+            group: "prod",
+            favorite: false,
+        }
+        .build(),
     ]
 }
 
@@ -2872,15 +2873,7 @@ impl Widget for RemoteApp {
                 state: ElementState::Released,
                 ..
             } if self.focus.is_some() => {
-                self.route_to_focused_field(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    state,
-                    ctx.path,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                self.route_to_focused_field(event, state, &ctx);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3612,15 +3605,7 @@ impl RemoteApp {
         // A focused field tracks the pointer so a drag extends its
         // selection past the edge of the box.
         if self.focus.is_some() {
-            self.route_to_focused_field(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                state,
-                ctx.path,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            self.route_to_focused_field(event, state, ctx);
         }
     }
 
@@ -3706,15 +3691,7 @@ impl RemoteApp {
             // here selects — rather than the click only meaning "focus".
             if let Action::FocusField(f) = action {
                 self.focus_field(f);
-                self.route_to_focused_field(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    state,
-                    ctx.path,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                self.route_to_focused_field(event, state, ctx);
             } else {
                 self.apply(action, state);
             }
@@ -3739,15 +3716,7 @@ impl RemoteApp {
     ) {
         self.handle_key(logical_key, text, ctx.modifiers.state(), state, handled);
         if !*handled && self.focus.is_some() {
-            *handled = self.route_to_focused_field(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                state,
-                ctx.path,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            *handled = self.route_to_focused_field(event, state, ctx);
         }
     }
 
@@ -6558,6 +6527,29 @@ mod tests {
             )
             .unwrap();
         app.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn seeded_connections_have_unique_identity_and_valid_transport_fields() {
+        let connections = seed_connections();
+        assert_eq!(connections.len(), 8, "the preview roster stays intentional");
+
+        let mut names = std::collections::HashSet::new();
+        for connection in &connections {
+            assert!(
+                names.insert(connection.name.as_str()),
+                "duplicate seed name"
+            );
+            assert!(!connection.name.is_empty());
+            assert!(!connection.host.is_empty());
+            assert!(!connection.group.is_empty());
+            if connection.kind == ConnectionKind::Tilo {
+                assert_eq!(connection.port, 0);
+                assert_eq!(connection.auth, AuthMethod::DeviceIdentity);
+            } else {
+                assert_ne!(connection.port, 0, "network transports need a port");
+            }
+        }
     }
 
     #[test]
