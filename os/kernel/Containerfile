@@ -239,6 +239,7 @@ RUN set -eux; \
         '# CONFIG_MODULE_FORCE_LOAD is not set' \
         '# CONFIG_MODULE_UNLOAD is not set' \
         '# CONFIG_LIVEPATCH is not set' \
+        '# CONFIG_DEBUG_FS is not set' \
         CONFIG_USER_NS=y \
         CONFIG_SECCOMP_FILTER=y \
         CONFIG_SECURITY_LANDLOCK=y \
