@@ -20,6 +20,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
+use crate::continuity::{Capability, ContinuityPrivacy};
 use crate::widgets::{
     caption, card, card_with_action, cards, choice_row_described, rows, setting_row_described,
     status_pill, value_row,
@@ -36,6 +37,7 @@ const APPROVE_ENROLLMENT_KEY: &str = "device_mesh.approve_enrollment.edit";
 const APPROVE_PERSONAL_DEVICE_KEY: &str = "device_mesh.approve_personal_device.edit";
 const CONFIRM_ROLE_KEY: &str = "device_mesh.confirm_role.edit";
 const CANCEL_ROLE_KEY: &str = "device_mesh.cancel_role.edit";
+const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const CONTROL_HELPER: &str = "/usr/libexec/qos-home-peer-control";
 const RELAY_ADMIN: &str = "/usr/bin/qos-relay-admin";
 
@@ -204,6 +206,9 @@ pub struct DeviceMeshPane {
     home_peer_last_seen: HashMap<String, u64>,
     personal_devices: Vec<crate::device_fleet::DeviceView>,
     personal_device_error: Option<String>,
+    continuity: ContinuityPrivacy,
+    continuity_path: Option<PathBuf>,
+    continuity_status: Option<String>,
     personal_remove_armed: std::collections::HashSet<[u8; 32]>,
     management_child: Option<Child>,
     management_device: Option<String>,
@@ -315,6 +320,16 @@ fn personal_device_key(action: &str, device: &[u8; 32]) -> String {
         let _ = write!(encoded, "{byte:02x}");
     }
     format!("device_mesh.personal_device.{action}.{encoded}.edit")
+}
+
+fn continuity_key(capability: Capability) -> String {
+    format!("device_mesh.continuity.{}", capability.key())
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn revocation_reason(label: &str) -> RevocationReason {
@@ -448,6 +463,10 @@ impl DeviceMeshPane {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
             Err(error) => (Vec::new(), Some(error.to_string())),
         };
+        let continuity_path = crate::continuity::settings_path();
+        let continuity = continuity_path
+            .as_deref()
+            .map_or_else(ContinuityPrivacy::default, ContinuityPrivacy::load_at);
         Self {
             config_path,
             config,
@@ -463,6 +482,9 @@ impl DeviceMeshPane {
             home_peer_last_seen: load_home_peer_last_seen(),
             personal_devices,
             personal_device_error,
+            continuity,
+            continuity_path,
+            continuity_status: None,
             personal_remove_armed: std::collections::HashSet::new(),
             management_child: None,
             management_device: None,
@@ -484,7 +506,18 @@ impl DeviceMeshPane {
 
     #[cfg(test)]
     fn with_path(path: &std::path::Path) -> Self {
-        Self::from_path(path.to_path_buf())
+        let mut pane = Self::from_path(path.to_path_buf());
+        let continuity_path = path.with_file_name("settings.json");
+        pane.continuity = ContinuityPrivacy::load_at(&continuity_path);
+        pane.continuity_path = Some(continuity_path);
+        pane
+    }
+
+    fn save_continuity(&mut self) {
+        self.continuity_status = match self.continuity.save_to(self.continuity_path.as_deref()) {
+            Ok(()) => None,
+            Err(error) => Some(format!("Continuity choices were not saved: {error}")),
+        };
     }
 
     fn common_replication(&self) -> ReplicationIntent {
@@ -801,6 +834,97 @@ impl DeviceMeshPane {
                 "This device appears here after identity setup completes.",
             ));
         }
+
+        let current_device = self
+            .personal_devices
+            .iter()
+            .find(|device| device.current && !device.revoked);
+        let current_target = self
+            .personal_devices
+            .iter()
+            .find(|device| !device.current && !device.revoked);
+        let target_name = current_target.map_or("No certified target", |device| &device.label);
+        let target_detail = current_target.map_or_else(
+            || "Add another personal device to make it an eligible Continuity target.".into(),
+            |device| {
+                format!(
+                    "Certified by your qOS identity · fingerprint {}. Private keys and pairing credentials never appear here.",
+                    device.fingerprint
+                )
+            },
+        );
+        let source_detail = current_device.map_or_else(
+            || "This source is not yet present in the certified-device fleet.".into(),
+            |device| {
+                format!(
+                    "{} · certified fingerprint {}",
+                    device.label, device.fingerprint
+                )
+            },
+        );
+        let mut privacy_rows = vec![setting_row_described(
+            "Allow Continuity from this device",
+            "Master device-local kill switch. Turning it off stops every facet immediately without forgetting individual choices.",
+            Box::new(
+                Toggle::new(
+                    "settings.device_mesh.continuity.enabled",
+                    &draft_key(CONTINUITY_ENABLED_KEY),
+                )
+                .with_id(CONTINUITY_ENABLED_KEY),
+            ),
+        )];
+        for capability in Capability::ALL {
+            let key = continuity_key(capability);
+            let status = if self.continuity.effective(capability) {
+                format!("{} Active for {target_name}.", capability.description())
+            } else if self.continuity.allowed(capability) {
+                format!(
+                    "{} Prepared, but stopped by the master switch.",
+                    capability.description()
+                )
+            } else {
+                format!("{} Off on this device.", capability.description())
+            };
+            privacy_rows.push(setting_row_described(
+                capability.label(),
+                &status,
+                Box::new(Toggle::new(&format!("settings.{key}"), &draft_key(&key)).with_id(&key)),
+            ));
+        }
+        privacy_rows.push(caption(
+            "These hardware and privacy choices stay on this device. They are not copied by settings sync.",
+        ));
+        if let Some(status) = &self.continuity_status {
+            privacy_rows.push(caption(status));
+        }
+
+        let mut provenance_rows = vec![
+            value_row("Current target", target_name),
+            caption(&target_detail),
+            value_row("Source", &source_detail),
+        ];
+        if current_target.is_none() {
+            provenance_rows.push(caption(
+                "No capability can become active until another non-revoked certified device is available.",
+            ));
+        }
+
+        let audit_rows = if self.continuity.audit.is_empty() {
+            vec![caption(
+                "No local Continuity control changes have been recorded yet.",
+            )]
+        } else {
+            self.continuity
+                .audit
+                .iter()
+                .rev()
+                .take(6)
+                .map(|entry| value_row("Local policy change", &entry.summary()))
+                .chain(std::iter::once(caption(
+                    "Only the latest 24 control changes stay on this device. Clipboard data, notification text, file names, session credentials, addresses, and input payloads are never logged.",
+                )))
+                .collect()
+        };
         let mut home_server_rows = vec![caption(
             "Choose Pair home server while your new qOS server is starting. It receives its identity and full-sync setup automatically.",
         )];
@@ -815,6 +939,9 @@ impl DeviceMeshPane {
         }
         let mut sections = vec![
             card("Continue across devices", rows(continuation_rows)),
+            card("Continuity privacy", rows(privacy_rows)),
+            card("Current Continuity route", rows(provenance_rows)),
+            card("Recent Continuity activity", rows(audit_rows)),
             card_with_action(
                 "Add a personal device",
                 approve_personal,
@@ -1458,6 +1585,18 @@ impl Widget for DeviceMeshPane {
                 let _ = state.put(root, key, value);
                 let _ = state.put(root, draft_key(key), value);
             }
+            let _ = state.put(root, CONTINUITY_ENABLED_KEY, self.continuity.enabled);
+            let _ = state.put(
+                root,
+                draft_key(CONTINUITY_ENABLED_KEY),
+                self.continuity.enabled,
+            );
+            for capability in Capability::ALL {
+                let key = continuity_key(capability);
+                let allowed = self.continuity.allowed(capability);
+                let _ = state.put(root, &key, allowed);
+                let _ = state.put(root, draft_key(&key), allowed);
+            }
             for workspace in &self.discovered_workspaces {
                 let selected = self
                     .config
@@ -1520,6 +1659,23 @@ impl Widget for DeviceMeshPane {
                 && draft != current
             {
                 self.dispatch(state, &set_bool_action(key, draft));
+            }
+        }
+        for (key, current) in
+            std::iter::once((CONTINUITY_ENABLED_KEY.to_string(), self.continuity.enabled)).chain(
+                Capability::ALL.map(|capability| {
+                    (
+                        continuity_key(capability),
+                        self.continuity.allowed(capability),
+                    )
+                }),
+            )
+        {
+            if Self::read_bool(state, root, &key) == Some(current)
+                && let Some(draft) = Self::read_bool(state, root, &draft_key(&key))
+                && draft != current
+            {
+                self.dispatch(state, &set_bool_action(&key, draft));
             }
         }
         for workspace in self.discovered_workspaces.clone() {
@@ -1704,6 +1860,29 @@ impl Widget for DeviceMeshPane {
                 }
             }
         }
+        let mut continuity_changed = false;
+        if let Some(enabled) = Self::read_bool(state, root, CONTINUITY_ENABLED_KEY)
+            && enabled != self.continuity.enabled
+        {
+            self.continuity.enabled = enabled;
+            self.continuity.record(None, enabled, unix_seconds());
+            continuity_changed = true;
+        }
+        for capability in Capability::ALL {
+            let key = continuity_key(capability);
+            if let Some(enabled) = Self::read_bool(state, root, &key)
+                && enabled != self.continuity.allowed(capability)
+            {
+                self.continuity.set_allowed(capability, enabled);
+                self.continuity
+                    .record(Some(capability), enabled, unix_seconds());
+                continuity_changed = true;
+            }
+        }
+        if continuity_changed {
+            self.save_continuity();
+            self.structure_dirty = true;
+        }
         if changed {
             self.persist();
             self.structure_dirty = true;
@@ -1872,6 +2051,58 @@ mod tests {
     use super::*;
     use qos_relay::WorkspaceBinding;
     use std::time::Instant;
+
+    fn test_ids(widget: &dyn Widget) -> Vec<String> {
+        fn walk(widget: &dyn Widget, ids: &mut Vec<String>) {
+            if let Some(id) = widget.test_id() {
+                ids.push(id.to_string());
+            }
+            for child in widget.children() {
+                walk(child, ids);
+            }
+        }
+        let mut ids = Vec::new();
+        walk(widget, &mut ids);
+        ids
+    }
+
+    #[test]
+    fn continuity_ui_exposes_master_and_every_typed_capability_control() {
+        let dir = tempfile::tempdir().unwrap();
+        let pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+        let composition = pane.build_composition();
+        let ids = test_ids(composition.as_ref());
+
+        assert!(ids.iter().any(|id| id == CONTINUITY_ENABLED_KEY));
+        for capability in Capability::ALL {
+            let key = continuity_key(capability);
+            assert!(ids.iter().any(|id| id == &key), "missing {key}");
+        }
+    }
+
+    #[test]
+    fn continuity_edits_persist_locally_and_append_redacted_audit_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+
+        doc.put(&automerge::ROOT, draft_key(CONTINUITY_ENABLED_KEY), true)
+            .unwrap();
+        let clipboard = continuity_key(Capability::Clipboard);
+        doc.put(&automerge::ROOT, draft_key(&clipboard), true)
+            .unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+
+        let saved = ContinuityPrivacy::load_at(&dir.path().join("settings.json"));
+        assert!(saved.enabled);
+        assert!(saved.effective(Capability::Clipboard));
+        assert_eq!(saved.audit.len(), 2);
+        let encoded = serde_json::to_string(&saved.audit).unwrap();
+        for forbidden in ["payload", "token", "address", "file_name"] {
+            assert!(!encoded.contains(forbidden));
+        }
+    }
 
     #[test]
     fn edits_write_the_real_relay_config_shape() {
