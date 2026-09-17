@@ -25,6 +25,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 
@@ -922,6 +923,11 @@ pub struct BooksApp {
     /// and cloned cheaply into each palette session rather than rebuilt per
     /// keystroke or provider request.
     search_provider: crate::search_provider::BookSearchProvider,
+    /// Small live action surface (current reader controls plus settings
+    /// resources) merged into the compact immutable action-label provider.
+    action_search_resources: Arc<Vec<tilo_actions::Resource>>,
+    action_search_epoch: Arc<AtomicU64>,
+    action_search_fingerprint: u64,
     /// A single off-UI builder. A newer snapshot supersedes its result before
     /// publication instead of mutating a live provider in place.
     search_worker: Option<SearchWorker>,
@@ -1155,6 +1161,9 @@ impl BooksApp {
             annotations: Vec::new(),
             all_annotations: Arc::new(Vec::new()),
             search_provider: crate::search_provider::BookSearchProvider::new(&[], &[]),
+            action_search_resources: Arc::new(Vec::new()),
+            action_search_epoch: Arc::new(AtomicU64::new(1)),
+            action_search_fingerprint: 0,
             search_worker: None,
             search_fingerprint: 0,
             search_revision: 0,
@@ -4667,7 +4676,15 @@ impl Widget for BooksApp {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![
             Box::new(self.search_provider.clone()),
-            Box::new(self.search_provider.action_search_provider()),
+            Box::new(
+                self.search_provider
+                    .action_search_provider()
+                    .with_live_resources(
+                        (*self.action_search_resources).clone(),
+                        Arc::clone(&self.action_search_epoch),
+                        self.action_search_epoch.load(Ordering::Acquire),
+                    ),
+            ),
         ]
     }
 
@@ -4781,6 +4798,60 @@ impl Widget for BooksApp {
         }
         self.refresh_from_doc(doc);
         self.persist_progress(doc);
+        let mut live_actions = vec![<Self as tilo_actions::ResourceProvider>::resource(
+            self,
+            doc,
+            "ebook.settings",
+        )];
+        if let Some(book) = self.open_book() {
+            live_actions.push(<Self as tilo_actions::ResourceProvider>::resource(
+                self,
+                doc,
+                &format!("ebook.book:{}", book.id),
+            ));
+        }
+        live_actions.extend(self.fonts.iter().map(|font| {
+            <Self as tilo_actions::ResourceProvider>::resource(
+                self,
+                doc,
+                &format!("ebook.font:{}", font.id),
+            )
+        }));
+        live_actions.extend(self.schemes.iter().map(|scheme| {
+            <Self as tilo_actions::ResourceProvider>::resource(
+                self,
+                doc,
+                &format!("ebook.scheme:{}", scheme.id),
+            )
+        }));
+        let live_actions = live_actions.into_iter().flatten().collect::<Vec<_>>();
+        let mut action_hasher = std::collections::hash_map::DefaultHasher::new();
+        self.book_id().hash(&mut action_hasher);
+        self.chapter.hash(&mut action_hasher);
+        self.page_top_block.hash(&mut action_hasher);
+        self.sel
+            .map(|selection| {
+                (
+                    selection.anchor.block,
+                    selection.anchor.ch,
+                    selection.head.block,
+                    selection.head.ch,
+                )
+            })
+            .hash(&mut action_hasher);
+        for resource in &live_actions {
+            resource.id.hash(&mut action_hasher);
+            for action in &resource.actions {
+                action.id.hash(&mut action_hasher);
+                action.label.hash(&mut action_hasher);
+            }
+        }
+        let action_fingerprint = action_hasher.finish();
+        if action_fingerprint != self.action_search_fingerprint {
+            self.action_search_fingerprint = action_fingerprint;
+            self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        self.action_search_resources = Arc::new(live_actions);
         let registry = BooksDoc::read_library_entries(doc);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for book in self.library.iter() {
