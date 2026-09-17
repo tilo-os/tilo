@@ -31,9 +31,14 @@ pub mod bluetooth_prompt;
 pub mod device_fleet;
 pub mod firstboot;
 pub mod identity_broker;
+pub mod runtime_host;
+
 pub mod identity_registry;
 pub mod onboarding;
 pub mod onboarding_view;
+#[cfg(test)]
+#[path = "../tests/runtime_host.rs"]
+mod runtime_host_tests;
 // Observability counters aggregated per peer surface — read by the OSD overlay and the flatpak-share e2e test.
 pub mod diagnostics;
 // End-to-end orchestration for "share a Flatpak app window to peers":

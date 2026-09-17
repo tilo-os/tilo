@@ -122,6 +122,7 @@ pub struct PlacesSidebar {
     system: Vec<(Icon, String, PathBuf)>,
     sink: CommandSink,
     rect: Rect,
+    text_scale: f64,
     last_cursor: Point,
     hover_fav: Option<usize>,
     hover_sys: Option<usize>,
@@ -141,6 +142,7 @@ impl PlacesSidebar {
             system,
             sink,
             rect: Rect::ZERO,
+            text_scale: 1.0,
             last_cursor: Point::ZERO,
             hover_fav: None,
             hover_sys: None,
@@ -241,7 +243,7 @@ impl PlacesSidebar {
     }
 
     fn fav_first_y(&self) -> f64 {
-        self.rect.y0 + TOP + HEADER_H
+        self.rect.y0 + TOP + (HEADER_H * self.text_scale)
     }
     fn sys_header_y(&self) -> f64 {
         // With no favourites there is no Favourites header to reserve room
@@ -250,11 +252,11 @@ impl PlacesSidebar {
         if self.fav_count() == 0 {
             self.rect.y0 + TOP
         } else {
-            self.fav_first_y() + self.fav_count() as f64 * ROW_H + SECTION_GAP
+            self.fav_first_y() + self.fav_count() as f64 * (ROW_H * self.text_scale) + SECTION_GAP
         }
     }
     fn sys_first_y(&self) -> f64 {
-        self.sys_header_y() + HEADER_H
+        self.sys_header_y() + (HEADER_H * self.text_scale)
     }
 
     fn row_x0(&self) -> f64 {
@@ -265,21 +267,36 @@ impl PlacesSidebar {
     }
 
     fn fav_row_rect(&self, i: usize) -> Rect {
-        let y0 = self.fav_first_y() + i as f64 * ROW_H;
-        Rect::new(self.row_x0(), y0, self.row_x1(), y0 + ROW_H)
+        let y0 = self.fav_first_y() + i as f64 * (ROW_H * self.text_scale);
+        Rect::new(
+            self.row_x0(),
+            y0,
+            self.row_x1(),
+            y0 + (ROW_H * self.text_scale),
+        )
     }
     fn sys_row_rect(&self, i: usize) -> Rect {
-        let y0 = self.sys_first_y() + i as f64 * ROW_H;
-        Rect::new(self.row_x0(), y0, self.row_x1(), y0 + ROW_H)
+        let y0 = self.sys_first_y() + i as f64 * (ROW_H * self.text_scale);
+        Rect::new(
+            self.row_x0(),
+            y0,
+            self.row_x1(),
+            y0 + (ROW_H * self.text_scale),
+        )
     }
 
     fn metrics(&self) -> ListMetrics {
-        ListMetrics::uniform(self.fav_first_y(), ROW_H, 0.0, self.fav_count())
+        ListMetrics::uniform(
+            self.fav_first_y(),
+            ROW_H * self.text_scale,
+            0.0,
+            self.fav_count(),
+        )
     }
     fn band(&self) -> FavBand {
         FavBand {
             origin_y: self.fav_first_y(),
-            row_h: ROW_H,
+            row_h: (ROW_H * self.text_scale),
             x0: self.row_x0(),
             x1: self.row_x1(),
             count: self.fav_count(),
@@ -298,7 +315,7 @@ impl PlacesSidebar {
         if rel < 0.0 {
             return None;
         }
-        let i = (rel / ROW_H) as usize;
+        let i = (rel / (ROW_H * self.text_scale)) as usize;
         (i < n).then_some(i)
     }
     fn system_at(&self, pt: Point) -> Option<usize> {
@@ -309,7 +326,7 @@ impl PlacesSidebar {
         if rel < 0.0 {
             return None;
         }
-        let i = (rel / ROW_H) as usize;
+        let i = (rel / (ROW_H * self.text_scale)) as usize;
         (i < self.system.len()).then_some(i)
     }
 
@@ -371,7 +388,7 @@ impl PlacesSidebar {
             tokens.colors.text_primary
         };
         let icon_x = rect.x0 + 10.0;
-        let icon_y = rect.y0 + (ROW_H - ICON_PX) / 2.0;
+        let icon_y = rect.y0 + (rect.height() - ICON_PX) / 2.0;
         draw_icon(
             scene,
             transform,
@@ -380,10 +397,11 @@ impl PlacesSidebar {
             icon_color,
             LUCIDE_DEFAULT_STROKE_PX,
         );
-        let size = theme.tokens.typography.scale.base;
+        let size = theme.tokens.typography.scale.base / tr.text_scale();
         // Optically center the label against the box-centered icon (shared with
         // the file list / drag ghost — see `crate::text_layout`).
-        let ty = crate::text_layout::centered_text_y(rect.y0, ROW_H, size);
+        let (_, height) = tr.measure(label, size, None);
+        let ty = rect.y0 + (rect.height() - f64::from(height)) / 2.0;
         tr.draw_text(
             scene,
             label,
@@ -403,14 +421,18 @@ impl PlacesSidebar {
         y: f64,
         label: &str,
     ) {
-        let size = theme.tokens.typography.scale.xs;
+        let size = theme.tokens.typography.scale.xs / tr.text_scale();
+        let (_, height) = tr.measure(label, size, None);
         tr.draw_text(
             scene,
             &label.to_uppercase(),
             size,
             theme.tokens.colors.text_dim,
             transform
-                * Affine::translate((self.row_x0() + 2.0, y + (HEADER_H - f64::from(size)) / 2.0)),
+                * Affine::translate((
+                    self.row_x0() + 2.0,
+                    y + (HEADER_H * self.text_scale - f64::from(height)) / 2.0,
+                )),
             None,
         );
         let _ = scene;
@@ -420,12 +442,19 @@ impl PlacesSidebar {
 impl Widget for PlacesSidebar {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
+    fn is_layout_dirty(&self) -> bool {
+        // This leaf fills its assigned pane on both axes. Favorite and hover
+        // changes affect painted rows, never the pane's intrinsic size.
+        false
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         // Fill the pane the responsive shell hands us: docked (wide) the shell
         // allocates the sidebar width, but as the full-screen master pane
         // (narrow) the list must span the whole width rather than leaving a
@@ -976,6 +1005,39 @@ mod tests {
 
     fn device() -> winit::event::DeviceId {
         unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn large_text_places_header_and_rows_fit_their_painted_glyphs() {
+        let sink = new_sink();
+        let mut sidebar = PlacesSidebar::new(new_store(vec![]), PathBuf::from("/"), sink);
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tree = TaffyTree::new();
+        sidebar.build_layout(&mut tree, &theme, &mut HashMap::new());
+        sidebar.rect = Rect::new(0.0, 0.0, 240.0, 600.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let (_, header_h) = tr.measure("SYSTEM", theme.tokens.typography.scale.xs / 2.0, None);
+        let (_, row_h) = tr.measure("Root", theme.tokens.typography.scale.base / 2.0, None);
+        assert!(sidebar.sys_first_y() - sidebar.sys_header_y() >= f64::from(header_h));
+        assert!(sidebar.sys_row_rect(0).height() >= f64::from(row_h));
+        let mut scene = Scene::new();
+        sidebar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(
+            runs.iter()
+                .all(|run| run.font_size <= theme.tokens.typography.scale.base)
+        );
+        assert!(
+            runs.iter()
+                .any(|run| (run.font_size - theme.tokens.typography.scale.base).abs() < 0.01)
+        );
     }
 
     #[test]

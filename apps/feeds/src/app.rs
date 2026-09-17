@@ -373,6 +373,11 @@ pub struct FeedsApp {
     filter: Filter,
     selected: Option<Id>,
 
+    sidebar_scroll: f64,
+    sidebar_content_h: f64,
+    sidebar_row_h: f64,
+    sidebar_section_h: f64,
+    list_row_h: f64,
     list_scroll: f64,
     reader_scroll: f64,
     reader_content_h: f64,
@@ -507,6 +512,11 @@ impl FeedsApp {
             store,
             filter: Filter::All,
             selected: None,
+            sidebar_scroll: 0.0,
+            sidebar_content_h: 0.0,
+            sidebar_row_h: SIDE_ROW_H,
+            sidebar_section_h: 24.0,
+            list_row_h: LIST_ROW_H,
             list_scroll: 0.0,
             reader_scroll: 0.0,
             reader_content_h: 0.0,
@@ -844,8 +854,8 @@ impl FeedsApp {
                 .iter()
                 .position(|a| a.id == sel)
         {
-            let row_top = pos as f64 * LIST_ROW_H;
-            let row_bot = row_top + LIST_ROW_H;
+            let row_top = pos as f64 * self.list_row_h;
+            let row_bot = row_top + self.list_row_h;
             let view_h = (self.list_rect.height() - HEADER_H).max(0.0);
             if row_top < self.list_scroll {
                 self.list_scroll = row_top;
@@ -1344,7 +1354,9 @@ impl FeedsApp {
     /// section headers have no per-feed menu).
     fn feed_at(&self, p: Point) -> Option<Id> {
         self.sidebar_rows.iter().find_map(|row| {
-            if row.rect.contains(p)
+            if self.sidebar_rect.contains(p)
+                && p.y >= self.sidebar_rect.y0 + HEADER_H
+                && row.rect.contains(p)
                 && let RowRole::Feed { id, .. } = row.role
             {
                 return Some(id);
@@ -1360,10 +1372,7 @@ impl FeedsApp {
         menu.push(MenuItem::action("Mark all as read", || {}));
         menu.push(MenuItem::action("Rename…", || {}));
         menu.push(MenuItem::action("Unsubscribe", || {}));
-        // Keep the menu inside the widget (rough size: 220 wide, ~96 tall).
-        let x = at.x.min((self.rect.x1 - 224.0).max(self.rect.x0));
-        let y = at.y.min((self.rect.y1 - 108.0).max(self.rect.y0));
-        menu.open_at([x as f32, y as f32]);
+        menu.open_anchored(Rect::new(at.x, at.y, at.x, at.y), self.rect);
         self.feed_menu = menu;
         self.feed_menu_target = Some(feed_id);
         self.feed_menu_actions = vec![
@@ -1685,6 +1694,9 @@ impl FeedsApp {
 
     fn recompute_geometry(&mut self) {
         let r = self.rect;
+        if self.feed_menu.is_open() {
+            self.feed_menu.constrain_to(r);
+        }
         let reveal = self.sidebar.reveal();
         // Sidebar can't be wider than the window (very narrow phones).
         let sw = SIDEBAR_W.min(r.width());
@@ -1843,7 +1855,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            24.0,
+            self.sidebar_section_h,
             14.0,
             "LIBRARY".into(),
             0,
@@ -1853,7 +1865,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            self.sidebar_row_h,
             14.0,
             "All Articles".into(),
             self.store.total_unread(),
@@ -1863,7 +1875,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            self.sidebar_row_h,
             14.0,
             "Unread".into(),
             self.store.total_unread(),
@@ -1873,7 +1885,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            self.sidebar_row_h,
             14.0,
             "Starred".into(),
             self.store.total_starred(),
@@ -1885,7 +1897,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            24.0,
+            self.sidebar_section_h,
             14.0,
             "FEEDS".into(),
             0,
@@ -1904,7 +1916,7 @@ impl FeedsApp {
             push(
                 &mut rows,
                 &mut y,
-                SIDE_ROW_H,
+                self.sidebar_row_h,
                 14.0,
                 name,
                 self.store.unread_for_folder(fid),
@@ -1923,7 +1935,7 @@ impl FeedsApp {
                     push(
                         &mut rows,
                         &mut y,
-                        SIDE_ROW_H - 2.0,
+                        self.sidebar_row_h - 2.0,
                         34.0,
                         title,
                         self.store.unread_for_feed(id),
@@ -1947,7 +1959,7 @@ impl FeedsApp {
                 push(
                     &mut rows,
                     &mut y,
-                    SIDE_ROW_H - 2.0,
+                    self.sidebar_row_h - 2.0,
                     18.0,
                     title,
                     self.store.unread_for_feed(id),
@@ -1963,7 +1975,7 @@ impl FeedsApp {
             push(
                 &mut rows,
                 &mut y,
-                24.0,
+                self.sidebar_section_h,
                 14.0,
                 "TAGS".into(),
                 0,
@@ -1975,7 +1987,7 @@ impl FeedsApp {
                 push(
                     &mut rows,
                     &mut y,
-                    SIDE_ROW_H - 2.0,
+                    self.sidebar_row_h - 2.0,
                     18.0,
                     format!("#{tag}"),
                     self.store.count_for(Filter::Tag(key)),
@@ -1985,6 +1997,14 @@ impl FeedsApp {
             }
         }
 
+        self.sidebar_content_h = y - self.sidebar_rect.y0 - HEADER_H;
+        let visible = (self.sidebar_rect.height() - HEADER_H).max(0.0);
+        self.sidebar_scroll = self
+            .sidebar_scroll
+            .clamp(0.0, (self.sidebar_content_h - visible).max(0.0));
+        for row in &mut rows {
+            row.rect = row.rect - vello::kurbo::Vec2::new(0.0, self.sidebar_scroll);
+        }
         self.sidebar_rows = rows;
     }
 
@@ -2009,15 +2029,19 @@ impl FeedsApp {
             .iter()
             .map(|a| a.id)
             .collect();
-        self.list_content_h = articles.len() as f64 * LIST_ROW_H;
+        self.list_content_h = articles.len() as f64 * self.list_row_h;
+        let viewport_h = (self.list_rect.y1 - content_top).max(0.0);
+        self.list_scroll = self
+            .list_scroll
+            .clamp(0.0, (self.list_content_h - viewport_h).max(0.0));
         for (i, id) in articles.iter().enumerate() {
-            let top = content_top + i as f64 * LIST_ROW_H - self.list_scroll;
-            let rect = Rect::new(x0, top, x1, top + LIST_ROW_H);
+            let top = content_top + i as f64 * self.list_row_h - self.list_scroll;
+            let rect = Rect::new(x0, top, x1, top + self.list_row_h);
             let star_rect = Rect::new(
                 x1 - 40.0,
-                top + LIST_ROW_H - 34.0,
+                top + self.list_row_h - 34.0,
                 x1 - 8.0,
-                top + LIST_ROW_H - 2.0,
+                top + self.list_row_h - 2.0,
             );
             rows.push(ListRow {
                 rect,
@@ -2067,6 +2091,25 @@ impl FeedsApp {
         // without the user having to move the mouse — and nothing on this path
         // ever calls the blocking network fetch.
         self.drain_fetches_live();
+        // Use the renderer's actual scaled line boxes for surrounding geometry.
+        self.sidebar_row_h = SIDE_ROW_H.max(
+            f64::from(
+                tr.measure_weighted("Ag", 14.0, None, TextWeight::Semibold)
+                    .1,
+            ) + 10.0,
+        );
+        self.sidebar_section_h = 24.0_f64.max(
+            f64::from(
+                tr.measure_weighted("Ag", 10.5, None, TextWeight::Semibold)
+                    .1,
+            ) + 8.0,
+        );
+        let title_line = f64::from(
+            tr.measure_weighted("Ag", 15.0, None, TextWeight::Semibold)
+                .1,
+        );
+        let meta_line = f64::from(tr.measure("Ag", 12.5, None).1);
+        self.list_row_h = LIST_ROW_H.max(12.0 + 2.0 * title_line + 8.0 + meta_line + 10.0);
 
         // Advance the sidebar flap transition with real elapsed time, then
         // recompute the eased geometry so the slide is reflected this frame.
@@ -2129,6 +2172,10 @@ impl FeedsApp {
             &self.filter_title(),
             self.store.count_for(self.filter),
             list_inset,
+            self.toolbar_buttons
+                .iter()
+                .map(|button| button.rect.x0 - 12.0)
+                .fold(self.list_rect.x1 - 12.0, f64::min),
             &self.refresh,
         );
         // The reader shifts right to clear the top-left Back button whenever it
@@ -2699,7 +2746,10 @@ impl FeedsApp {
         }
         // Sidebar rows.
         for row in self.sidebar_rows.clone() {
-            if !row.rect.contains(p) {
+            if !row.rect.contains(p)
+                || !self.sidebar_rect.contains(p)
+                || p.y < self.sidebar_rect.y0 + HEADER_H
+            {
                 continue;
             }
             // Whether this row navigates (vs. just toggling a folder's
@@ -2834,9 +2884,9 @@ fn badge(
     } else {
         n.to_string()
     };
-    let (tw, _) = tr.measure(&label, 11.0, None);
+    let (tw, th) = tr.measure(&label, 11.0, None);
     let w = (f64::from(tw) + 14.0).max(20.0);
-    let h = 18.0;
+    let h = 18.0_f64.max(f64::from(th) + 4.0);
     let rect = Rect::new(right_x - w, cy - h / 2.0, right_x, cy + h / 2.0);
     scene.fill(
         Fill::NonZero,
@@ -2850,7 +2900,10 @@ fn badge(
         &label,
         11.0,
         fg,
-        t * Affine::translate((rect.x0 + (w - f64::from(tw)) / 2.0, cy - 7.0)),
+        t * Affine::translate((
+            rect.x0 + (w - f64::from(tw)) / 2.0,
+            cy - f64::from(th) / 2.0,
+        )),
         None,
     );
     w
@@ -2885,15 +2938,30 @@ fn draw_sidebar(
         alpha(c.border_standard, 120),
     );
 
+    let content = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        t,
+        &content,
+    );
     for row in rows {
+        if row.rect.y1 <= content.y0 || row.rect.y0 >= content.y1 {
+            continue;
+        }
         let cy = row.rect.y0 + row.rect.height() / 2.0;
         if let RowRole::Section = &row.role {
+            let line_h = f64::from(
+                tr.measure_weighted(&row.label, 10.5, None, TextWeight::Semibold)
+                    .1,
+            );
             tr.draw_text_weighted(
                 scene,
                 &row.label,
                 10.5,
                 c.text_dim,
-                t * Affine::translate((row.rect.x0 + row.indent, cy - 6.0)),
+                t * Affine::translate((row.rect.x0 + row.indent, cy - line_h / 2.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -2996,7 +3064,7 @@ fn draw_sidebar(
         // background instead of hard-cutting — the requested fade-out.
         let full_w = tr.measure_weighted(&row.label, size, None, weight).0;
         let truncated = full_w > max_w;
-        let baseline = cy - f64::from(size) * 0.62;
+        let baseline = cy - f64::from(tr.measure_weighted(&row.label, size, None, weight).1) / 2.0;
         if truncated {
             // Reserve room for the fade so a glyph never ends mid-fade.
             let fade_w = 22.0_f32.min(max_w * 0.4);
@@ -3033,6 +3101,7 @@ fn draw_sidebar(
             );
         }
     }
+    scene.pop_layer();
 }
 
 /// First-run onboarding headline shown when there are no subscriptions yet.
@@ -3097,34 +3166,62 @@ fn draw_list(
     title: &str,
     count: usize,
     header_inset: f64,
+    header_text_right: f64,
     refresh: &RefreshState,
 ) {
     let c = &theme.tokens.colors;
     // Header. `header_inset` shifts the title right of the hamburger toggle
     // when the list is the narrow master pane.
     let title_x = rect.x0 + 18.0 + header_inset;
+    let count_label = format!("{count}");
+    let (count_w, count_h) = tr.measure(&count_label, 13.0, None);
+    let available = (header_text_right - title_x).max(0.0) as f32;
+    let show_count = available >= count_w + 18.0 + 70.0;
+    let title_limit = if show_count {
+        available - count_w - 18.0
+    } else {
+        available
+    };
+    let (full_w, title_h) = tr.measure_weighted(title, 17.0, None, TextWeight::Bold);
+    let title_label = if full_w <= title_limit {
+        title.to_string()
+    } else {
+        let ellipsis_w = tr.measure_weighted("…", 17.0, None, TextWeight::Bold).0;
+        if title_limit < ellipsis_w {
+            String::new()
+        } else {
+            format!(
+                "{}…",
+                elide_weighted(tr, title, 17.0, title_limit - ellipsis_w, TextWeight::Bold)
+            )
+        }
+    };
+    let title_w = tr
+        .measure_weighted(&title_label, 17.0, None, TextWeight::Bold)
+        .0;
+    let header_center = rect.y0 + HEADER_H / 2.0;
     tr.draw_text_weighted(
         scene,
-        title,
+        &title_label,
         17.0,
         c.text_primary,
-        t * Affine::translate((title_x, rect.y0 + 16.0)),
+        t * Affine::translate((title_x, header_center - f64::from(title_h) / 2.0)),
         None,
         TextWeight::Bold,
     );
-    let count_label = format!("{count}");
-    let title_w0 = measure_w(tr, title, 17.0);
-    tr.draw_text(
-        scene,
-        &count_label,
-        13.0,
-        c.text_dim,
-        // `measure_w` can be a little tighter than the painted glyph bounds
-        // at high text contrast / fallback-font settings. Keep a generous,
-        // stable gap so “All Articles” and its count never read as one word.
-        t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
-        None,
-    );
+    if show_count {
+        tr.draw_text(
+            scene,
+            &count_label,
+            13.0,
+            c.text_dim,
+            t * Affine::translate((
+                title_x + f64::from(title_w) + 18.0,
+                header_center - f64::from(count_h) / 2.0,
+            )),
+            None,
+        );
+    }
     let header_bottom = rect.y0 + HEADER_H;
     hline(
         scene,
@@ -3247,7 +3344,7 @@ fn draw_list(
         } else {
             TextWeight::Semibold
         };
-        let title_text = two_line_elide(tr, &a.title, 15.0, title_w);
+        let title_text = two_line_elide(tr, &a.title, 15.0, title_w, title_weight);
         tr.draw_text_weighted(
             scene,
             &title_text,
@@ -3269,13 +3366,14 @@ fn draw_list(
         // so the truncated source·summary never collides with it.
         let meta_w = (lr.star_rect.x0 - 8.0 - text_x).max(60.0) as f32;
         let meta_text = elide(tr, &meta, 12.5, meta_w);
+        let meta_height = f64::from(tr.measure("Ag", 12.5, None).1);
         tr.draw_text(
             scene,
             &meta_text,
             12.5,
             c.text_dim,
-            t * Affine::translate((text_x, lr.rect.y1 - 26.0)),
-            Some(meta_w),
+            t * Affine::translate((text_x, lr.rect.y1 - 10.0 - meta_height)),
+            None,
         );
 
         // Star, bottom-right.
@@ -3984,9 +4082,15 @@ fn elide_weighted(
 }
 
 /// Truncate to fit within two lines of width `max_w`.
-fn two_line_elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32) -> String {
-    let (_w, h) = tr.measure(s, size, Some(max_w));
-    let line_h = size * 1.25;
+fn two_line_elide(
+    tr: &mut TextRenderer,
+    s: &str,
+    size: f32,
+    max_w: f32,
+    weight: TextWeight,
+) -> String {
+    let (_w, h) = tr.measure_weighted(s, size, Some(max_w), weight);
+    let line_h = tr.measure_weighted("Ag", size, None, weight).1;
     if h <= line_h * 2.0 + 1.0 {
         return s.to_string();
     }
@@ -3996,7 +4100,7 @@ fn two_line_elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32) -> Stri
     while take > 1 {
         take -= 1;
         let candidate = format!("{}…", words.get(..take).unwrap_or(&[]).join(" "));
-        if tr.measure(&candidate, size, Some(max_w)).1 <= line_h * 2.0 + 1.0 {
+        if tr.measure_weighted(&candidate, size, Some(max_w), weight).1 <= line_h * 2.0 + 1.0 {
             return candidate;
         }
     }
@@ -4022,6 +4126,10 @@ fn chrono_date(published: i64, now: i64) -> String {
 // ---------------------------------------------------------------------
 
 impl Widget for FeedsApp {
+    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
+        self.feed_menu.is_open()
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::FEEDS_OPERATION_TYPE]
     }
@@ -4306,9 +4414,9 @@ impl Widget for FeedsApp {
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         // Persist anything the live drain queued since the last doc-holding
         // pass (keeps the CRDT current without waiting for `sync`).
@@ -4320,6 +4428,54 @@ impl Widget for FeedsApp {
         // An open dialog captures all input while it's up.
         if self.modal.is_some() {
             self.handle_modal_event(event, scale_factor, *modifiers, state, path, handled);
+            return;
+        }
+        // The popover owns input while open. Right-click still reaches the
+        // sidebar routing below so another feed can replace the current menu.
+        if self.feed_menu.is_open()
+            && !matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Right,
+                    ..
+                }
+            )
+        {
+            if matches!(event, WindowEvent::Focused(false)) {
+                self.close_feed_menu();
+                *handled = true;
+                return;
+            }
+            self.feed_menu.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if let Some(selection) = self.feed_menu.take_selection()
+                && let Some(action) = self.feed_menu_actions.get(selection).copied()
+                && let Some(feed_id) = self.feed_menu_target
+            {
+                self.apply_feed_menu_action(action, feed_id, state);
+            }
+            if !self.feed_menu.is_open() {
+                self.feed_menu_target = None;
+            }
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::CursorMoved { .. }
+            ) {
+                *handled = true;
+            }
             return;
         }
         match event {
@@ -4357,7 +4513,12 @@ impl Widget for FeedsApp {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
-                if self.reader_rect.contains(self.last_mouse) {
+                if self.sidebar_rect.contains(self.last_mouse) {
+                    let visible = (self.sidebar_rect.height() - HEADER_H).max(0.0);
+                    let max = (self.sidebar_content_h - visible).max(0.0);
+                    self.sidebar_scroll = (self.sidebar_scroll - dy).clamp(0.0, max);
+                    self.build_sidebar_rows();
+                } else if self.reader_rect.contains(self.last_mouse) {
                     let visible = (self.reader_rect.height() - HEADER_H).max(0.0);
                     let max = (self.reader_content_h - visible + 60.0).max(0.0);
                     self.reader_scroll = (self.reader_scroll - dy).clamp(0.0, max);
@@ -4864,15 +5025,6 @@ impl FeedsApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        // Esc closes an open feed context menu before anything else.
-        if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape))
-            && self.feed_menu.is_open()
-        {
-            self.close_feed_menu();
-            *handled = true;
-            return;
-        }
-
         // Esc dismisses the responsive overlay sidebar, then unwinds a pushed
         // detail back to the list (single-pane master→detail).
         if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
@@ -6359,6 +6511,258 @@ mod tests {
         assert!(
             !a.feed_menu.is_open(),
             "right-click off a feed closes the menu"
+        );
+    }
+
+    #[test]
+    fn feed_menu_keyboard_selects_actions_without_changing_articles() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+        let id = open_first_feed_menu(&mut a, &mut doc);
+        let selected = a.selected;
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::ArrowDown)));
+        assert_eq!(
+            a.selected, selected,
+            "menu navigation must not select articles"
+        );
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::ArrowDown)));
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
+        assert!(!a.feed_menu.is_open());
+        assert_eq!(a.feed_menu_target, None);
+        assert_eq!(
+            a.modal.as_ref().unwrap().intent,
+            ModalIntent::RenameFeed { feed_id: id }
+        );
+    }
+
+    #[test]
+    fn feed_menu_hover_focuses_action_and_captures_article_shortcuts() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+        open_first_feed_menu(&mut a, &mut doc);
+        let p = menu_point_for(&a, 1);
+        assert!(
+            dispatch(&mut a, &mut doc, &cursor_at(p)),
+            "menu hover must reach the host redraw path"
+        );
+        assert!(a.needs_redraw(), "menu hover must repaint");
+        assert!(
+            a.feed_menu.accessibility().unwrap().children[1]
+                .state
+                .focused
+        );
+        let before: Vec<_> = a
+            .store
+            .articles
+            .iter()
+            .map(|a| (a.id, a.read, a.starred))
+            .collect();
+        for key in ["m", "s", "j", "k", "a"] {
+            assert!(dispatch(&mut a, &mut doc, &char_key(key)));
+        }
+        let after: Vec<_> = a
+            .store
+            .articles
+            .iter()
+            .map(|a| (a.id, a.read, a.starred))
+            .collect();
+        assert_eq!(before, after, "menu captures article mutations");
+        assert!(a.modal.is_none(), "shortcuts cannot open other overlays");
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Escape)));
+        assert!(!a.feed_menu.is_open());
+        assert_eq!(a.feed_menu_target, None);
+    }
+
+    #[test]
+    fn feed_menu_wheel_does_not_scroll_panes_and_focus_loss_dismisses() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+        open_first_feed_menu(&mut a, &mut doc);
+        let p = a.list_rect.center();
+        dispatch(&mut a, &mut doc, &cursor_at(p));
+        a.list_content_h = 3000.0;
+        let wheel = WindowEvent::MouseWheel {
+            device_id: synth_device(),
+            delta: MouseScrollDelta::LineDelta(0.0, -2.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        assert!(dispatch(&mut a, &mut doc, &wheel));
+        assert_eq!(a.list_scroll, 0.0);
+        assert!(
+            dispatch(&mut a, &mut doc, &WindowEvent::Focused(false)),
+            "dismissal must reach the host redraw path"
+        );
+        assert!(!a.feed_menu.is_open());
+        assert_eq!(a.feed_menu_target, None);
+    }
+
+    #[test]
+    fn feed_menu_repositions_after_viewport_shrinks() {
+        let mut a = app();
+        lay_out(&mut a, 1280.0, 800.0);
+        a.open_feed_menu(a.store.feeds[0].id, Point::new(1100.0, 750.0));
+        lay_out_keep(&mut a, 320.0, 240.0);
+        let r = a.feed_menu.get_rect();
+        assert!(
+            r.x1 <= 320.0 && r.y1 <= 240.0,
+            "resized menu {r:?} is offscreen"
+        );
+    }
+
+    #[test]
+    fn sidebar_wheel_reaches_subscriptions_below_the_viewport() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        lay_out(&mut a, 640.0, 480.0);
+        let before = a.sidebar_rows.last().unwrap().rect.y1;
+        dispatch(&mut a, &mut doc, &cursor_at(Point::new(100.0, 300.0)));
+        dispatch(
+            &mut a,
+            &mut doc,
+            &WindowEvent::MouseWheel {
+                device_id: synth_device(),
+                delta: MouseScrollDelta::LineDelta(0.0, -100.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        a.recompute_geometry();
+        let after = a.sidebar_rows.last().unwrap().rect.y1;
+        assert!(
+            after < before && after <= 480.0,
+            "last sidebar row remains inaccessible at {after}"
+        );
+    }
+
+    #[test]
+    fn smaller_text_keeps_scrolled_article_rows_visible() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        lay_out(&mut a, 640.0, 480.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        a.paint(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark().with_text_scale(2.0),
+        );
+        let p = a.list_rect.center();
+        dispatch(&mut a, &mut doc, &cursor_at(p));
+        dispatch(
+            &mut a,
+            &mut doc,
+            &WindowEvent::MouseWheel {
+                device_id: synth_device(),
+                delta: MouseScrollDelta::LineDelta(0.0, -1000.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        text.set_text_scale(1.0);
+        a.paint(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+        );
+        assert!(
+            a.list_rows
+                .iter()
+                .any(|row| row.rect.y1 > a.list_rect.y0 + HEADER_H && row.rect.y0 < a.list_rect.y1),
+            "reducing text scale must not leave the article pane blank"
+        );
+        assert!(
+            (a.list_rows.last().unwrap().rect.y1 - a.list_rect.y1).abs() < 0.01,
+            "scroll offset must clamp to the new content end"
+        );
+    }
+
+    #[test]
+    fn large_text_rows_contain_their_measured_content() {
+        let mut a = app();
+        lay_out(&mut a, 640.0, 480.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        a.paint(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark().with_text_scale(2.0),
+        );
+        let sidebar_line = f64::from(
+            text.measure_weighted("Ag", 14.0, None, TextWeight::Semibold)
+                .1,
+        );
+        for row in &a.sidebar_rows {
+            if !matches!(row.role, RowRole::Section) {
+                assert!(
+                    row.rect.height() >= sidebar_line + 8.0,
+                    "sidebar row {:?} clips scaled text height {sidebar_line}",
+                    row.rect
+                );
+            }
+        }
+        let title_line = f64::from(
+            text.measure_weighted("Ag", 15.0, None, TextWeight::Semibold)
+                .1,
+        );
+        let meta_line = f64::from(text.measure("Ag", 12.5, None).1);
+        for row in &a.list_rows {
+            assert!(
+                row.rect.height() >= 12.0 + title_line * 2.0 + 8.0 + meta_line + 10.0,
+                "article row {:?} overlaps title and metadata",
+                row.rect
+            );
+        }
+    }
+
+    #[test]
+    fn article_title_elision_uses_both_scaled_lines() {
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let title = "The quick brown fox jumps over the lazy dog";
+        let rendered = two_line_elide(&mut text, title, 15.0, 200.0, TextWeight::Semibold);
+        assert!(
+            rendered.contains("brown"),
+            "scaled two-line title was shortened to {rendered:?}"
+        );
+        let line_height = text
+            .measure_weighted("Ag", 15.0, None, TextWeight::Semibold)
+            .1;
+        let height = text
+            .measure_weighted(&rendered, 15.0, Some(200.0), TextWeight::Semibold)
+            .1;
+        assert!(
+            height <= line_height * 2.0 + 1.0,
+            "title uses {height}px, exceeding two lines"
+        );
+    }
+
+    #[test]
+    fn feed_menu_captures_host_undo_before_document_history_changes() {
+        let mut a = app();
+        lay_out(&mut a, 640.0, 480.0);
+        a.open_feed_menu(a.store.feeds[0].id, Point::new(100.0, 200.0));
+        assert!(a.handle_local_undo_request(ui::undo::UndoRequest::Undo));
+        assert!(a.handle_local_undo_request(ui::undo::UndoRequest::Redo));
+    }
+
+    #[test]
+    fn feed_menu_stays_within_tiny_viewport() {
+        let mut a = app();
+        lay_out(&mut a, 160.0, 80.0);
+        a.open_feed_menu(a.store.feeds[0].id, Point::new(150.0, 75.0));
+        let r = a.feed_menu.get_rect();
+        assert!(r.x0 >= a.rect.x0 && r.y0 >= a.rect.y0);
+        assert!(
+            r.x1 <= a.rect.x1 && r.y1 <= a.rect.y1,
+            "{r:?} exceeds {:?}",
+            a.rect
         );
     }
 

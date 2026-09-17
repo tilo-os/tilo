@@ -80,6 +80,7 @@ impl ResourceRef {
 pub struct ExportedAction {
     pub resource: ResourceRef,
     pub kind: ResourceKind,
+    pub operation_kind: qos_actions::OperationKind,
     pub title: String,
     pub subtitle: Option<String>,
     /// Provider-supplied rank within its kind, higher first.
@@ -162,6 +163,46 @@ impl ActionCatalog {
         Self { results, visible }
     }
 
+    /// Resolve one exact address through its owning provider. Remote
+    /// providers use this path to retain the page that originally disclosed
+    /// an opaque id while rechecking its current route and authority at
+    /// invocation time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_for_resource(
+        registry: &SearchRegistry,
+        resource: &ResourceRef,
+        scope: SearchScope,
+        active_provider_id: Option<&str>,
+        chrome: &ChromeState,
+        doc: &AutoCommit,
+        doc_root: &ObjId,
+        visibility: &dyn ActionVisibility,
+    ) -> Self {
+        let results = registry
+            .resolve(
+                &resource.provider,
+                &resource.id,
+                &QueryArgs {
+                    needle: "",
+                    scope,
+                    active_provider_id,
+                    wanted_kinds: &[],
+                    chrome,
+                    doc,
+                    doc_root,
+                },
+            )
+            .into_iter()
+            .collect::<Vec<_>>();
+        let visible = results
+            .iter()
+            .enumerate()
+            .filter(|(_, result)| visibility.can_see(resource, &result.kind))
+            .map(|(index, _)| index)
+            .collect();
+        Self { results, visible }
+    }
+
     /// Enumerate the typed descriptors the caller may see. Render-free —
     /// no scene is built, no widget is touched.
     pub fn enumerate(&self) -> Vec<ExportedAction> {
@@ -171,6 +212,7 @@ impl ActionCatalog {
             .map(|r| ExportedAction {
                 resource: ResourceRef::new(&r.provider_id, &r.id),
                 kind: r.kind.clone(),
+                operation_kind: r.operation_kind,
                 title: r.title.clone(),
                 subtitle: r.subtitle.clone(),
                 score: r.score,
@@ -224,6 +266,53 @@ pub struct SelectedAction<'a> {
 }
 
 impl SelectedAction<'_> {
+    fn validate_contract(&self, args: &ActionArgs) -> Result<(), ActionError> {
+        let Some(contract) = self.result.contract.as_ref() else {
+            return Ok(());
+        };
+        if let qos_actions::Availability::Unavailable { code, reason } = &contract.availability {
+            return Err(ActionError::Refused(format!(
+                "action is unavailable ({code}): {reason}"
+            )));
+        }
+        match &contract.confirmation {
+            qos_actions::ConfirmationPolicy::None => Ok(()),
+            qos_actions::ConfirmationPolicy::Confirm if args.boolean("confirm") == Some(true) => {
+                Ok(())
+            }
+            qos_actions::ConfirmationPolicy::Confirm => Err(ActionError::Refused(
+                "explicit confirmation is required".into(),
+            )),
+            qos_actions::ConfirmationPolicy::Phrase { phrase }
+                if args.text("confirmation_phrase") == Some(phrase.as_str()) =>
+            {
+                Ok(())
+            }
+            qos_actions::ConfirmationPolicy::Phrase { .. } => Err(ActionError::Refused(
+                "the exact confirmation phrase is required".into(),
+            )),
+        }
+    }
+
+    fn invoke_bound(
+        &self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        chrome: &Chrome,
+        bound: &ActionArgs,
+    ) -> Result<InvocationDisposition, ActionError> {
+        self.validate_contract(bound)?;
+        if let Some(begin) = &self.result.on_begin_invoke {
+            return begin(doc, root, chrome, bound);
+        }
+        if let Some(invoke) = &self.result.on_invoke {
+            invoke(doc, root, chrome, bound).map(InvocationDisposition::Accepted)
+        } else {
+            (self.result.on_open)(doc, root, chrome, bound)?;
+            Ok(InvocationDisposition::Accepted(ActionReceipt::completed()))
+        }
+    }
+
     /// The stable address of the action this resolves to.
     pub fn resource(&self) -> ResourceRef {
         ResourceRef::new(&self.result.provider_id, &self.result.id)
@@ -263,13 +352,9 @@ impl SelectedAction<'_> {
         root: &ObjId,
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<ActionReceipt, ActionError> {
-        match self.invoke_disposition(doc, root, chrome, args)? {
-            InvocationDisposition::Accepted(receipt) => Ok(receipt),
-            InvocationDisposition::Pending(_) => Err(ActionError::Refused(
-                "action admission is pending; use invoke_disposition and poll its ticket".into(),
-            )),
-        }
+    ) -> Result<InvocationDisposition, ActionError> {
+        let bound = ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
+        self.invoke_bound(doc, root, chrome, &bound)
     }
 
     /// Begin an invocation without fabricating success for a remote action
@@ -287,16 +372,7 @@ impl SelectedAction<'_> {
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
     ) -> Result<InvocationDisposition, ActionError> {
-        let bound = ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
-        if let Some(begin) = &self.result.on_begin_invoke {
-            return begin(doc, root, chrome, &bound);
-        }
-        if let Some(invoke) = &self.result.on_invoke {
-            invoke(doc, root, chrome, &bound).map(InvocationDisposition::Accepted)
-        } else {
-            (self.result.on_open)(doc, root, chrome, &bound)?;
-            Ok(InvocationDisposition::Accepted(ActionReceipt::completed()))
-        }
+        self.invoke(doc, root, chrome, args)
     }
 
     /// Invoke from the canonical JSON object used by control sockets and MCP.
@@ -315,15 +391,28 @@ impl SelectedAction<'_> {
         root: &ObjId,
         chrome: &Chrome,
         args: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ActionReceipt, ActionError> {
+    ) -> Result<InvocationDisposition, ActionError> {
         let bound =
             ActionArgs::bind_json(&self.result.params, args).map_err(ActionError::Arguments)?;
-        if let Some(invoke) = &self.result.on_invoke {
-            invoke(doc, root, chrome, &bound)
-        } else {
-            (self.result.on_open)(doc, root, chrome, &bound)?;
-            Ok(ActionReceipt::completed())
-        }
+        self.invoke_bound(doc, root, chrome, &bound)
+    }
+
+    /// Begin a JSON invocation while preserving asynchronous admission.
+    /// Binding happens once and a pending ticket owns the in-flight request;
+    /// callers poll that ticket rather than re-resolving or restarting it.
+    ///
+    /// # Errors
+    ///
+    /// Returns argument, policy, provider, or admission failures without
+    /// falling back to a different invocation callback.
+    pub fn invoke_json_disposition(
+        &self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        chrome: &Chrome,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<InvocationDisposition, ActionError> {
+        self.invoke_json(doc, root, chrome, args)
     }
 
     /// Sugar over [`Self::invoke`] with an empty argument set — a shorter
@@ -339,7 +428,7 @@ impl SelectedAction<'_> {
         doc: &mut AutoCommit,
         root: &ObjId,
         chrome: &Chrome,
-    ) -> Result<ActionReceipt, ActionError> {
+    ) -> Result<InvocationDisposition, ActionError> {
         self.invoke(doc, root, chrome, Vec::new())
     }
 }
@@ -638,6 +727,7 @@ mod tests {
             let ran = std::rc::Rc::clone(&self.ran);
             vec![SearchResult {
                 kind: ResourceKind::Action,
+                operation_kind: qos_actions::OperationKind::Document,
                 provider_id: "params".to_string(),
                 id: "needs.text".to_string(),
                 title: "Needs text".to_string(),
@@ -678,6 +768,7 @@ mod tests {
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             vec![SearchResult {
                 kind: ResourceKind::Action,
+                operation_kind: qos_actions::OperationKind::Effect,
                 provider_id: "receipts".into(),
                 id: "broker.action".into(),
                 title: "Broker action".into(),
@@ -716,17 +807,167 @@ mod tests {
             &root,
             &AllVisible,
         );
-        let receipt = catalog
+        let disposition = catalog
             .select(&ResourceRef::new("receipts", "broker.action"))
             .expect("the broker action is addressable")
             .invoke_nullary(&mut doc, &root, &chrome)
             .expect("the provider admits the action");
+        let InvocationDisposition::Accepted(receipt) = disposition else {
+            panic!("the synchronous provider must return its receipt immediately");
+        };
 
         assert_eq!(receipt.broker_invocation_id, Some(73));
         assert!(matches!(
             receipt.update,
             qos_actions::InvocationUpdate::Accepted { .. }
         ));
+    }
+
+    struct AsyncJsonProvider {
+        begins: std::rc::Rc<std::cell::Cell<usize>>,
+        polls: std::rc::Rc<std::cell::Cell<usize>>,
+        refuse: bool,
+    }
+
+    impl super::super::SearchProvider for AsyncJsonProvider {
+        fn id(&self) -> &'static str {
+            "async-json"
+        }
+
+        fn name(&self) -> &'static str {
+            "Async JSON"
+        }
+
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::Action]
+        }
+
+        fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
+            let begins = std::rc::Rc::clone(&self.begins);
+            let polls = std::rc::Rc::clone(&self.polls);
+            let refuse = self.refuse;
+            vec![SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: qos_actions::OperationKind::Effect,
+                provider_id: self.id().into(),
+                id: "wait-for-admission".into(),
+                title: "Wait for admission".into(),
+                subtitle: None,
+                score: 0,
+                params: Vec::new(),
+                contract: None,
+                on_open: std::rc::Rc::new(|_, _, _, _| {
+                    panic!("legacy fallback must not run when async admission exists")
+                }),
+                on_invoke: Some(std::rc::Rc::new(|_, _, _, _| {
+                    panic!("legacy invoke must not run when async admission exists")
+                })),
+                on_begin_invoke: Some(std::rc::Rc::new(move |_, _, _, _| {
+                    begins.set(begins.get() + 1);
+                    if refuse {
+                        return Err(ActionError::Refused("authority rejected admission".into()));
+                    }
+                    let polls = std::rc::Rc::clone(&polls);
+                    Ok(InvocationDisposition::Pending(std::rc::Rc::new(
+                        move || {
+                            let attempt = polls.get() + 1;
+                            polls.set(attempt);
+                            if attempt < 3 {
+                                return Ok(None);
+                            }
+                            Ok(Some(ActionReceipt {
+                                broker_invocation_id: Some(91),
+                                update: qos_actions::InvocationUpdate::Accepted {
+                                    invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(
+                                        0x91,
+                                    )),
+                                },
+                            }))
+                        },
+                    )))
+                })),
+            }]
+        }
+    }
+
+    #[test]
+    fn json_invocation_begins_once_and_retains_pending_admission_ticket() {
+        let begins = std::rc::Rc::new(std::cell::Cell::new(0));
+        let polls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut registry = SearchRegistry::new();
+        registry.register(std::rc::Rc::new(AsyncJsonProvider {
+            begins: std::rc::Rc::clone(&begins),
+            polls: std::rc::Rc::clone(&polls),
+            refuse: false,
+        }));
+        let chrome = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let catalog = ActionCatalog::build(
+            &registry,
+            "",
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &root,
+            &AllVisible,
+        );
+        let selected = catalog
+            .select(&ResourceRef::new("async-json", "wait-for-admission"))
+            .expect("async action is addressable");
+        let InvocationDisposition::Pending(ticket) = selected
+            .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+            .expect("begin returns a pending ticket")
+        else {
+            panic!("admission must remain pending")
+        };
+
+        assert_eq!(begins.get(), 1, "the operation starts exactly once");
+        assert_eq!(ticket().expect("first poll succeeds"), None);
+        assert_eq!(ticket().expect("second poll succeeds"), None);
+        let receipt = ticket()
+            .expect("third poll succeeds")
+            .expect("third poll admits the invocation");
+        assert_eq!(begins.get(), 1, "polling must not restart the operation");
+        assert_eq!(receipt.broker_invocation_id, Some(91));
+        assert!(matches!(
+            receipt.update,
+            qos_actions::InvocationUpdate::Accepted { invocation }
+                if invocation == qos_actions::InvocationId(uuid::Uuid::from_u128(0x91))
+        ));
+    }
+
+    #[test]
+    fn json_invocation_exposes_rejected_admission() {
+        let begins = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut registry = SearchRegistry::new();
+        registry.register(std::rc::Rc::new(AsyncJsonProvider {
+            begins: std::rc::Rc::clone(&begins),
+            polls: std::rc::Rc::new(std::cell::Cell::new(0)),
+            refuse: true,
+        }));
+        let chrome = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let catalog = ActionCatalog::build(
+            &registry,
+            "",
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &root,
+            &AllVisible,
+        );
+        let error = catalog
+            .select(&ResourceRef::new("async-json", "wait-for-admission"))
+            .expect("async action is addressable")
+            .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+            .err()
+            .expect("rejected admission must be returned");
+        assert_eq!(begins.get(), 1);
+        assert!(matches!(error, ActionError::Refused(message) if message.contains("authority")));
     }
 
     /// The parameter machinery must not make an existing nullary caller

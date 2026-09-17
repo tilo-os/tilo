@@ -319,5 +319,9 @@ pub use permissions::{
 
 pub mod application;
 pub mod application_view;
+pub mod native_scenario;
+pub mod synthetic_input;
 
 pub mod bound_dispatch;
+
+mod presentation_feedback;

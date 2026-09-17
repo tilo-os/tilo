@@ -1542,6 +1542,9 @@ impl PhotosApp {
                     self.save_to(path.as_deref().unwrap_or(&Self::suggested_save_path(&open)));
                 }
             }
+            crate::actions::PhotosOperation::ExportEditedContent { .. } => {
+                return Err("edited content export requires lifecycle dispatch".into());
+            }
             crate::actions::PhotosOperation::View
             | crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
@@ -4001,6 +4004,16 @@ impl Widget for PhotosApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        if let crate::actions::PhotosOperation::ExportEditedContent {
+            resource_id,
+            source_content,
+            edits,
+        } = &operation
+        {
+            let output =
+                crate::actions::export_edited_content(resource_id, source_content, *edits, doc)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
+        }
         if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
             self.pending_resource_open = Some((invocation, file));
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
@@ -4945,6 +4958,148 @@ mod tests {
                 .children
                 .iter()
                 .any(|child| has_resource_id(child, id))
+    }
+
+    #[test]
+    fn edited_content_effect_stores_and_returns_the_exact_transformed_png() {
+        let original = pixels::Rgba::new(
+            3,
+            2,
+            vec![
+                1, 10, 0, 255, 2, 10, 0, 255, 3, 10, 0, 255, 1, 20, 0, 255, 2, 20, 0, 255, 3, 20,
+                0, 255,
+            ],
+        )
+        .expect("asymmetric source");
+        let source_png = pixels::encode_png(&original).expect("source PNG");
+        let source_hash = qdoc::blobstore::put(&source_png).expect("stage source content");
+        let open = OpenImage::from_path("fixture.png", 3, 2).with_content(source_hash.clone());
+        let edits = crate::model::Edits {
+            crop: crate::model::Rect01 {
+                x: 1.0 / 3.0,
+                y: 0.0,
+                w: 2.0 / 3.0,
+                h: 1.0,
+            },
+            rotate_quarters: 1,
+        };
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        PhotosDoc::set_image(&mut doc, Some(&open));
+        PhotosDoc::set_edits(&mut doc, &edits);
+        let resource_id = crate::actions::resource_id(&open);
+
+        let resources = PhotosResources.resources(&doc);
+        let exported = qos_actions::flatten(&resources)
+            .into_iter()
+            .find(|entry| {
+                entry.resource_id.as_str() == resource_id
+                    && entry.action.id == crate::actions::EXPORT_EDITED_CONTENT_ACTION_ID
+            })
+            .expect("addressed image exports edited content");
+        assert_eq!(exported.action.kind, qos_actions::OperationKind::Effect);
+        assert_eq!(
+            exported.action.contract.retry,
+            qos_actions::RetryPolicy::Idempotent
+        );
+        assert_eq!(
+            exported.action.contract.result,
+            qos_actions::ResultSpec::Resource {
+                resource_kind: qos_actions::CONTENT_RESOURCE_KIND.into(),
+            }
+        );
+
+        let payload = qos_actions::EncodedAction::encode_operation(
+            PHOTOS_OPERATION_TYPE,
+            &PhotosOperation::ExportEditedContent {
+                resource_id: resource_id.clone(),
+                source_content: source_hash.clone(),
+                edits,
+            },
+        )
+        .expect("export operation encodes");
+        let mut app = PhotosApp::new();
+        let started = Widget::start_resource_operation(
+            &mut app,
+            qos_actions::InvocationId::new(),
+            qos_actions::OperationKind::Effect,
+            PHOTOS_OPERATION_TYPE,
+            &payload.payload,
+            &doc,
+            &ROOT,
+        )
+        .expect("export succeeds")
+        .expect("Photos handles its operation");
+        let ui::widget::ResourceOperationStart::Completed(output) = started else {
+            panic!("bounded content production completes with its live output");
+        };
+        assert_eq!(output.resources.len(), 1);
+        let produced_hash =
+            qos_actions::content_hash(&output.resources[0]).expect("one canonical content result");
+        assert_ne!(
+            produced_hash, source_hash,
+            "edited bytes must not reuse the source hash"
+        );
+        let stored = qdoc::blobstore::get(produced_hash).expect("produced bytes are retrievable");
+        let decoded = pixels::decode(&stored).expect("produced PNG decodes");
+        assert_eq!(
+            decoded,
+            pixels::render(&original, edits.crop, edits.rotate_quarters)
+        );
+
+        PhotosDoc::set_edits(&mut doc, &crate::model::Edits::default());
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::Effect,
+                PHOTOS_OPERATION_TYPE,
+                &payload.payload,
+                &doc,
+                &ROOT,
+            )
+            .is_err(),
+            "a stale edit snapshot must not produce different content"
+        );
+    }
+
+    #[test]
+    fn edited_content_effect_rejects_missing_or_misdirected_source_bytes() {
+        let missing = "f".repeat(64);
+        let open = OpenImage::from_path("missing.png", 3, 2).with_content(missing.clone());
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        PhotosDoc::set_image(&mut doc, Some(&open));
+        let edits = PhotosDoc::edits(&doc);
+        let encoded = |resource_id: String| {
+            qos_actions::EncodedAction::encode_operation(
+                PHOTOS_OPERATION_TYPE,
+                &PhotosOperation::ExportEditedContent {
+                    resource_id,
+                    source_content: missing.clone(),
+                    edits,
+                },
+            )
+            .expect("export operation encodes")
+        };
+        let mut app = PhotosApp::new();
+        for payload in [
+            encoded(crate::actions::resource_id(&open)),
+            encoded("photos.image:wrong-target".into()),
+        ] {
+            assert!(
+                Widget::start_resource_operation(
+                    &mut app,
+                    qos_actions::InvocationId::new(),
+                    qos_actions::OperationKind::Effect,
+                    PHOTOS_OPERATION_TYPE,
+                    &payload.payload,
+                    &doc,
+                    &ROOT,
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

@@ -46,11 +46,11 @@
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -66,6 +66,9 @@ use zeroize::Zeroizing;
 mod backup;
 pub mod broker;
 mod secure_store;
+
+#[cfg(test)]
+mod service_connection_tests;
 
 pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
@@ -959,7 +962,7 @@ enum SigningSource {
     /// the identity lock is poisoned, or FROST round-one generation fails.
     LocalThreshold(Mutex<ThresholdIdentity>),
     Broker(Mutex<std::os::unix::net::UnixStream>),
-    ActionBroker(Mutex<UnixStream>),
+    ActionBroker(Arc<Mutex<UnixStream>>),
 }
 
 #[allow(
@@ -1324,8 +1327,10 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
 }
 
 fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
-    // The launcher gives this process exclusive ownership of the inherited fd.
-    let mut stream = unsafe { UnixStream::from_raw_fd(fd) };
+    let connection = shared_service_connection(fd)?;
+    let mut stream = connection.lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+    })?;
     write_frame(&mut stream, &wire::Request::Metadata)?;
     match read_frame::<wire::Response>(&mut stream)? {
         wire::Response::Metadata {
@@ -1346,7 +1351,7 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
             threshold,
             total_shares,
             share_index,
-            source: SigningSource::ActionBroker(Mutex::new(stream)),
+            source: SigningSource::ActionBroker(Arc::clone(&connection)),
             single_device: threshold == 1 && total_shares == 1,
         }),
         wire::Response::Denied(reason) | wire::Response::Error(reason) => Err(
@@ -1357,6 +1362,50 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
             "identity broker returned an invalid metadata response",
         ))),
     }
+}
+
+type SharedIdentityConnection = Arc<Mutex<UnixStream>>;
+type IdentityConnections =
+    Mutex<std::collections::HashMap<std::os::fd::RawFd, Weak<Mutex<UnixStream>>>>;
+
+fn shared_service_connection(
+    fd: std::os::fd::RawFd,
+) -> Result<SharedIdentityConnection, NotAvailable> {
+    // Multiple framework consumers (collaboration, history, local author) load
+    // metadata independently. They must neither take ownership of the same fd
+    // twice nor interleave request/reply frames on duplicate socket handles.
+    static CONNECTIONS: OnceLock<IdentityConnections> = OnceLock::new();
+    let mut connections = CONNECTIONS
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| {
+            NotAvailable::ConnectionFailed(io::Error::other(
+                "identity connection registry poisoned",
+            ))
+        })?;
+    connections.retain(|_, connection| connection.strong_count() > 0);
+    if let Some(connection) = connections.get(&fd).and_then(Weak::upgrade) {
+        return Ok(connection);
+    }
+    // The launcher cleared CLOEXEC for this app only. Retaining the original
+    // capability must not make it inheritable by processes this app launches.
+    // SAFETY: fcntl operates on the validated inherited descriptor and takes
+    // no memory pointers; errors are surfaced before the handle is borrowed.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
+            return Err(NotAvailable::ConnectionFailed(io::Error::last_os_error()));
+        }
+    }
+    // SAFETY: the process retains the launcher-inherited descriptor for its
+    // lifetime. Borrow only long enough to duplicate it; SDK handles own the
+    // duplicate and share one framing lock. Dropping metadata leaves the
+    // inherited capability available for later framework consumers.
+    let owned = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
+    let connection = Arc::new(Mutex::new(UnixStream::from(owned)));
+    connections.insert(fd, Arc::downgrade(&connection));
+    drop(connections);
+    Ok(connection)
 }
 
 fn sign_via_action_broker(

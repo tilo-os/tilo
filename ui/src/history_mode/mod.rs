@@ -4,11 +4,18 @@
 //! It therefore neither commits an app's open transaction nor gives a
 //! historical renderer access to a live record, persistence, or dispatch.
 
+pub mod checked_files;
+mod files_session;
 pub mod restore;
 pub mod preview;
+mod assets;
+pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};
 pub mod registration;
+pub(crate) mod owner;
+pub use owner::HistoryOwner;
 pub(crate) mod host;
 mod canvas;
+pub(crate) mod frame;
 pub use preview::*;
 pub use registration::*;
 
@@ -456,7 +463,7 @@ fn committed_clone(live: &AutoCommit) -> AutoCommit {
     projection
 }
 
-fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
+pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
     heads.sort_unstable();
     heads
 }
@@ -477,4 +484,18 @@ mod tests;
 mod host_tests;
 
 #[cfg(test)]
-mod isolation_tests;
+pub(crate) mod isolation_tests;
+
+#[cfg(test)]
+pub(crate) mod integration_tests;
+
+#[cfg(test)]
+pub(crate) use host_tests::preview as test_preview;
+
+pub(crate) mod routes;
+
+/// Opaque retained framework surface used only by owning runner traversal.
+/// No construction, document, review or write authority is public on this type.
+#[doc(hidden)]
+pub use host::HistoryHost as FrameworkHistorySurface;
+pub(crate) mod embedded;

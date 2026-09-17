@@ -13,6 +13,7 @@ autoexamples = false
 ignored = ["pkg-config"]
 
 [features]
+presentation-feedback = ["dep:wgpu-hal"]
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
@@ -102,6 +103,7 @@ cosmic-text = { version = "0.19.0", default-features = false, features = ["fontc
 # variation-axis order to translate CSS-like axis values for Vello.
 skrifa = "0.40.0"
 pollster.workspace = true
+rustc-hash.workspace = true
 
 # Raw-Vulkan interop for the WebView DMA-BUF zero-copy import (feature
 # `webview-wpe`). Version tracks what wgpu-hal 29 resolves so the `vk::*`
@@ -306,6 +308,14 @@ name = "ui-perf"
 path = "examples/ui_perf.rs"
 
 [[example]]
+name = "ui-managed-history-probe"
+path = "examples/managed_history_probe.rs"
+
+[[example]]
+name = "ui-native-input-probe"
+path = "examples/native_input_probe.rs"
+
+[[example]]
 name = "ui-wpe"
 path = "examples/ui_wpe.rs"
 required-features = ["webview-wpe"]
@@ -328,3 +338,6 @@ path = "examples/form_composition_shots.rs"
 [[example]]
 name = "manual-composition-shots"
 path = "examples/manual_composition_shots.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu-hal = { version = "29", default-features = false, features = ["metal", "qos-presentation-feedback"], optional = true }

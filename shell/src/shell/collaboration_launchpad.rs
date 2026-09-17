@@ -172,7 +172,7 @@ impl CollaborationLaunchpad {
         let panel_x = content_x0 + (content_width - panel_w) / 2.0;
         let columns: usize = if panel_w >= 760.0 {
             3
-        } else if panel_w >= 520.0 {
+        } else if panel_w >= 440.0 {
             2
         } else {
             1
@@ -624,6 +624,27 @@ mod tests {
                 .children
                 .iter()
                 .any(|node| node.name.as_deref() == Some("Open an app"))
+        );
+    }
+
+    #[test]
+    fn compact_large_text_heading_stays_below_top_chrome() {
+        let mut pad = CollaborationLaunchpad::new();
+        pad.rect = Rect::new(0.0, 48.0, 800.0, 700.0);
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        pad.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(
+            pad.card_rects[0].y0 - 90.0 >= pad.rect.y0 + 12.0,
+            "heading must clear chrome: {:?}",
+            pad.card_rects[0]
         );
     }
 

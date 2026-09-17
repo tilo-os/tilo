@@ -187,6 +187,8 @@ impl Highlighter {
         reason = "keeps the ergonomic hl.highlight_line(...) call site; the syntax reference is already baked into state.parse by fresh_state(), so self genuinely isn't needed in the body, but converting to an associated function would read worse at every call site for no benefit"
     )]
     pub fn highlight_line(&self, line: &str, state: &mut LineState) -> Vec<Span> {
+        #[cfg(test)]
+        PARSED_LINES.with(|count| count.set(count.get().saturating_add(1)));
         let set = syntax_set();
         // `parse_line` yields (byte_offset, ScopeStackOp) deltas. We replay
         // them against a running ScopeStack to know the active scope at each
@@ -246,11 +248,103 @@ fn scope_string(stack: &ScopeStack) -> String {
 }
 
 /// Carry-over parse state between consecutive lines.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LineState {
     parse: ParseState,
     scopes: ScopeStack,
 }
+
+/// Outgoing tokenizer state for each cached line. Cache admission includes both
+/// parse and scope stacks: identical text alone cannot close a multiline edit.
+#[derive(Default)]
+pub(crate) struct IncrementalHighlights {
+    language: Option<Language>,
+    states: Vec<LineState>,
+}
+
+impl IncrementalHighlights {
+    /// Update spans without changing the tokenizer or its newline convention.
+    /// Returns the number of lines actually tokenized (not scanned for equality).
+    pub(crate) fn update(
+        &mut self,
+        language: Language,
+        old_lines: &[String],
+        lines: &[String],
+        spans: &mut Vec<Vec<Span>>,
+    ) -> usize {
+        let reusable = self.language == Some(language)
+            && self.states.len() == old_lines.len()
+            && spans.len() == old_lines.len();
+        let prefix = if reusable {
+            old_lines
+                .iter()
+                .zip(lines)
+                .take_while(|(a, b)| a == b)
+                .count()
+        } else {
+            0
+        };
+        if reusable && prefix == old_lines.len() && prefix == lines.len() {
+            return 0;
+        }
+        let suffix = if reusable {
+            old_lines
+                .iter()
+                .skip(prefix)
+                .rev()
+                .zip(lines.iter().skip(prefix).rev())
+                .take_while(|(a, b)| a == b)
+                .count()
+        } else {
+            0
+        };
+        let old_suffix = old_lines.len().saturating_sub(suffix);
+        let new_suffix = lines.len().saturating_sub(suffix);
+        let highlighter = Highlighter::for_language(language);
+        let mut old_states = std::mem::take(&mut self.states);
+        let mut old_spans = std::mem::take(spans);
+        // Move cached prefix/suffix allocations rather than cloning every span
+        // or ParseState after an otherwise constant-work single-line edit.
+        self.states.extend(old_states.drain(..prefix));
+        spans.extend(old_spans.drain(..prefix));
+        let prefix_state = self
+            .states
+            .last()
+            .cloned()
+            .unwrap_or_else(|| highlighter.fresh_state());
+        let mut state = prefix_state.clone();
+        let mut parsed = 0;
+        for (index, line) in lines.iter().enumerate().skip(prefix) {
+            if suffix != 0 && index >= new_suffix {
+                let old_index = old_suffix + (index - new_suffix);
+                let offset = old_index - prefix;
+                let incoming = offset
+                    .checked_sub(1)
+                    .and_then(|previous| old_states.get(previous))
+                    .unwrap_or(&prefix_state);
+                if state == *incoming {
+                    self.states.extend(old_states.into_iter().skip(offset));
+                    spans.extend(old_spans.into_iter().skip(offset));
+                    self.language = Some(language);
+                    return parsed;
+                }
+            }
+            // Preserve existing full-highlight semantics for the final editable
+            // empty line as well as source lines ending in an actual newline.
+            let mut with_newline = line.clone();
+            with_newline.push('\n');
+            spans.push(highlighter.highlight_line(&with_newline, &mut state));
+            self.states.push(state.clone());
+            parsed += 1;
+        }
+        self.language = Some(language);
+        parsed
+    }
+}
+
+#[cfg(test)]
+#[path = "highlight_incremental_tests.rs"]
+mod incremental_tests;
 
 #[cfg(test)]
 mod tests {
@@ -297,4 +391,14 @@ mod tests {
         let spans = hl.highlight_line("just words here\n", &mut st);
         assert!(spans.iter().all(|s| s.role == TokenRole::Text));
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PARSED_LINES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_parsed_line_count() -> usize {
+    PARSED_LINES.with(|count| count.replace(0))
 }

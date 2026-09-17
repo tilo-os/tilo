@@ -52,10 +52,9 @@ use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
 use crate::style_menu::{StyleMenu, StyleMenuAction};
 use crate::template_picker::TemplatePicker;
+use crate::unsaved_changes::{UnsavedChanges, UnsavedChoice};
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
-#[cfg(test)]
-use crate::zoom_control::MAX as ZOOM_MAX;
-use crate::zoom_control::{MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
+use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
 use ui::portal;
 
 /// Convert the model's `(block, start, end)` ranges into serializable
@@ -79,6 +78,11 @@ enum PortalPurpose {
     /// Save the current document to the chosen path (Save As / first save of an
     /// untitled document).
     SaveAs,
+}
+
+enum PendingReplacement {
+    Template(crate::Template),
+    Open(PathBuf),
 }
 
 /// What a right-click context-menu row does. The shared [`ContextMenu`]'s
@@ -1039,6 +1043,38 @@ type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
 /// cell_height, block)`.
 type TableRow<'a> = (f64, Vec<(usize, f64, &'a BlockView)>);
 
+/// Mark-derived styles only change at character-index mark endpoints.
+/// Preserve the resolver's first-match precedence and coalesce equal neighbors.
+fn mark_style_segments<K: PartialEq>(
+    len: usize,
+    marks: &[MarkSpan],
+    mut key: impl FnMut(usize) -> K,
+) -> Vec<(usize, usize, K)> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let mut boundaries = vec![0, len];
+    for mark in marks {
+        boundaries.push(mark.start.min(len));
+        boundaries.push(mark.end.min(len));
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let mut segments: Vec<(usize, usize, K)> = Vec::new();
+    for pair in boundaries.windows(2) {
+        let [start, end] = pair else { continue };
+        let style = key(*start);
+        if let Some((_, previous_end, previous_style)) = segments.last_mut()
+            && *previous_style == style
+        {
+            *previous_end = *end;
+        } else {
+            segments.push((*start, *end, style));
+        }
+    }
+    segments
+}
+
 /// Split a block's text into styled runs (bold/italic/size/family) + underline
 /// and strikethrough byte ranges.
 fn block_runs(block: &BlockView) -> BlockRuns {
@@ -1058,13 +1094,7 @@ fn block_runs(block: &BlockView) -> BlockRuns {
         )
     };
     let mut runs = Vec::new();
-    let mut i = 0;
-    while i < len {
-        let k = key(i);
-        let mut j = i;
-        while j < len && key(j) == k {
-            j += 1;
-        }
+    for (i, j, k) in mark_style_segments(len, &block.marks, key) {
         let (bold, italic, size_bits, family, color, background, baseline) = k;
         runs.push(RichSpan {
             text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
@@ -1076,7 +1106,6 @@ fn block_runs(block: &BlockView) -> BlockRuns {
             background,
             baseline,
         });
-        i = j;
     }
     if runs.is_empty() {
         runs.push(RichSpan::new(""));
@@ -1143,13 +1172,7 @@ fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRuns {
         )
     };
     let mut runs = Vec::new();
-    let mut i = 0;
-    while i < len {
-        let k = key(i);
-        let mut j = i;
-        while j < len && key(j) == k {
-            j += 1;
-        }
+    for (i, j, k) in mark_style_segments(len, &block.marks, key) {
         let (bold, italic, size_bits, family, color, background, baseline) = k;
         runs.push(RichSpan {
             text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
@@ -1161,7 +1184,6 @@ fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRuns {
             background,
             baseline,
         });
-        i = j;
     }
     if runs.is_empty() {
         runs.push(RichSpan::new(""));
@@ -1680,6 +1702,10 @@ pub struct WordProcessorWidget {
     /// Heads for which the body order and non-body snapshot data were loaded.
     /// Avoids re-materializing on every paint of an unchanged document.
     materialized_heads: Vec<ChangeHash>,
+    /// Ruler previews can change cached attributes without changing CRDT heads.
+    block_views_have_preview: bool,
+    #[cfg(test)]
+    reference_text_rendering: bool,
     /// Page-header block sequence (drawn in every page's top-margin band). A
     /// `page-number` field marker is substituted with the page number per page.
     header: Vec<BlockView>,
@@ -1698,6 +1724,7 @@ pub struct WordProcessorWidget {
     /// Per-block shaped-text cache, keyed by shape key (text+marks+style+wrap
     /// width): only edited/resized blocks pay the shaping cost. Pruned each frame.
     layout_cache: HashMap<String, (u64, RichTextLayout)>,
+    recent_layout_cache: HashMap<String, (u64, RichTextLayout)>,
     /// Diagnostics for the layout cache, recomputed each `draw`: number of
     /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
     dbg_layout_hits: usize,
@@ -1731,6 +1758,10 @@ pub struct WordProcessorWidget {
     page_rect: Rect,
     /// The bottom layout bar's clickable chips: `(mode, rect)`.
     layout_chips: Vec<(LayoutMode, Rect)>,
+    layout_bar_height: f64,
+    toolbar_label_widths: HashMap<String, f64>,
+    toolbar_row_height: f64,
+    zoom_viewport: Rect,
     /// Whether the contextual styles panel is shown (dismissable via the toolbar
     /// "Styles" toggle).
     styles_panel_open: bool,
@@ -1809,6 +1840,9 @@ pub struct WordProcessorWidget {
     recovery: RecoveryBanner,
     /// The "New ▾" picker owns its shared menu, lifecycle, and typed outcomes.
     template_picker: TemplatePicker,
+    unsaved_changes: UnsavedChanges,
+    pending_replacement: Option<PendingReplacement>,
+    replace_after_save: bool,
     /// An in-flight host file request: `Some` means the XDG chooser is open on a
     /// worker thread; the path is drained each frame in [`Self::drain_portal`].
     /// [`WordProcessorWidget::drain_portal`]. `None` = idle.
@@ -1872,6 +1906,9 @@ impl WordProcessorWidget {
             body_order: Vec::new(),
             body_window_start: 0,
             materialized_heads: Vec::new(),
+            block_views_have_preview: false,
+            #[cfg(test)]
+            reference_text_rendering: false,
             header: Vec::new(),
             footer: Vec::new(),
             laid: Vec::new(),
@@ -1879,6 +1916,7 @@ impl WordProcessorWidget {
             head_band_rect: Rect::ZERO,
             foot_band_rect: Rect::ZERO,
             layout_cache: HashMap::new(),
+            recent_layout_cache: HashMap::new(),
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
             toolbar: Vec::new(),
@@ -1894,6 +1932,10 @@ impl WordProcessorWidget {
             ruler: Ruler::default(),
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
+            layout_bar_height: LAYOUT_BAR_H,
+            toolbar_label_widths: HashMap::new(),
+            toolbar_row_height: TOOLBAR_H,
+            zoom_viewport: Rect::ZERO,
             // Keep the writing surface primary on first launch. The complete
             // style inspector is one click away and becomes an overlay on a
             // narrow tile rather than permanently consuming half the canvas.
@@ -1932,6 +1974,9 @@ impl WordProcessorWidget {
             chrome: ChromeColors::for_theme(&Theme::dark()),
             recovery: RecoveryBanner::default(),
             template_picker: TemplatePicker::default(),
+            unsaved_changes: UnsavedChanges::default(),
+            pending_replacement: None,
+            replace_after_save: false,
             portal_rx: None,
             portal_purpose: None,
             resource_file_invocation: None,
@@ -2316,6 +2361,7 @@ impl WordProcessorWidget {
         // Shaping depends on review visibility because it changes per-run
         // colours, so force every block to reshape next frame.
         self.layout_cache.clear();
+        self.recent_layout_cache.clear();
         self.dirty = true;
     }
 
@@ -2532,12 +2578,15 @@ impl WordProcessorWidget {
                             Ok(())
                         }
                         Some(PortalPurpose::OpenDocument) => {
+                            if self.modified {
+                                self.stage_replacement(PendingReplacement::Open(path));
+                                return;
+                            }
                             self.try_open_document_in_place(state, &path)
                         }
                         Some(PortalPurpose::SaveAs) => {
                             let format = WpFormat::from_path(&path);
-                            self.set_file(path, format);
-                            self.try_write_to_current_path(state)
+                            self.try_write_to_path(state, &path, format)
                         }
                         None => Ok(()),
                     }
@@ -2548,6 +2597,16 @@ impl WordProcessorWidget {
                 } else {
                     Err("file picker was cancelled".into())
                 };
+                if self.replace_after_save {
+                    self.replace_after_save = false;
+                    if result.is_ok() {
+                        self.finish_replacement(state);
+                    } else {
+                        self.unsaved_changes.open();
+                        self.dirty = true;
+                    }
+                    return;
+                }
                 if let Some(invocation) = self.resource_file_invocation.take() {
                     self.resource_file_result = Some(match result {
                         Ok(()) => qos_actions::InvocationUpdate::Succeeded {
@@ -2578,6 +2637,13 @@ impl WordProcessorWidget {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
                 self.portal_purpose = None;
+                if self.replace_after_save {
+                    self.replace_after_save = false;
+                    self.unsaved_changes.open();
+                    self.toast = Some((t("toast-file-dialog-failed"), ToastKind::Error));
+                    self.dirty = true;
+                    return;
+                }
                 if let Some(invocation) = self.resource_file_invocation.take() {
                     self.resource_file_result = Some(qos_actions::InvocationUpdate::Failed {
                         invocation,
@@ -2604,17 +2670,22 @@ impl WordProcessorWidget {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
+                self.toast = Some((t("toast-open-failed"), ToastKind::Error));
+                self.dirty = true;
                 return Err(format!("could not open {}: {e}", path.display()));
             }
         };
         let format = WpFormat::from_path(path);
         if !self.inner.replace_with_format(state, &bytes, format) {
+            self.toast = Some((t("toast-open-failed"), ToastKind::Error));
+            self.dirty = true;
             return Err(format!("could not parse {}", path.display()));
         }
         self.set_file(path.to_path_buf(), format);
         self.refresh_blocks(state);
         // The whole body changed; per-block caches keyed by id/text are stale.
         self.layout_cache.clear();
+        self.recent_layout_cache.clear();
         self.spell_cache.clear();
         // A freshly-opened document is not "modified" — it matches its file.
         self.modified = false;
@@ -2644,11 +2715,22 @@ impl WordProcessorWidget {
     }
 
     fn try_write_to_current_path(&mut self, state: &AutoCommit) -> Result<(), String> {
-        if let (Some(path), Some(format), Some(c)) = (
-            self.path.as_ref(),
-            self.format,
-            self.inner.containers.as_ref(),
-        ) {
+        let (Some(path), Some(format)) = (self.path.clone(), self.format) else {
+            return Err("document has no writable path".into());
+        };
+        self.try_write_to_path(state, &path, format)
+    }
+
+    /// Adopt a Save As destination only after its export and write succeed.
+    /// A failed attempt must leave subsequent Save pointed at the original file.
+    fn try_write_to_path(
+        &mut self,
+        state: &AutoCommit,
+        path: &std::path::Path,
+        format: WpFormat,
+    ) -> Result<(), String> {
+        self.dirty = true;
+        if let Some(c) = self.inner.containers.as_ref() {
             let dr = qdoc::DocRef { doc: state, c };
             match format.export(dr) {
                 Ok(bytes) => {
@@ -2671,6 +2753,8 @@ impl WordProcessorWidget {
         }
         // A successful real save supersedes any recovery copy — drop it so a later
         // session doesn't re-offer stale unsaved changes.
+        self.clear_recovery();
+        self.set_file(path.to_path_buf(), format);
         self.clear_recovery();
         Ok(())
     }
@@ -2798,8 +2882,14 @@ impl WordProcessorWidget {
             // from the bounded render cache. Its stable canonical position gives
             // us a cheap initial scroll estimate; the next sync loads/shapes the
             // local window and refines the visual position.
-            self.scroll_y = (num::f64_of_usize(index) * ESTIMATED_BLOCK_EXTENT - 180.0)
-                .clamp(0.0, self.max_scroll);
+            let content_y = self.zoom.anchor().y
+                + PAGE_TOP
+                + flow_to_page_stack(
+                    num::f64_of_usize(index) * ESTIMATED_BLOCK_EXTENT,
+                    MAX_PAGE_W * LETTER_RATIO,
+                    self.margins,
+                );
+            self.scroll_y = (content_y - 180.0).clamp(0.0, self.max_scroll);
         }
     }
 
@@ -2862,22 +2952,21 @@ impl WordProcessorWidget {
         self.apply_find_effect_mut(state, FindEffect::ReplaceAll);
     }
 
-    /// The bounded slice to materialize from a large document. At the top of a
-    /// document the active caret wins (so opening an imported document preserves
-    /// its authored insertion point); after scrolling the scroll estimate wins.
+    /// The bounded slice to materialize around the viewport, including at the
+    /// top. The insertion point can stay far away while the user scrolls; caret
+    /// navigation explicitly moves the viewport through `scroll_to_block`.
     fn body_window_bounds(&self) -> (usize, usize) {
         let len = self.body_order.len();
         if len <= VIRTUALIZE_BODY_AFTER {
             return (0, len);
         }
-        let scrolled = num::usize_of_f64((self.scroll_y / ESTIMATED_BLOCK_EXTENT).floor());
-        let caret = self
-            .body_order
-            .iter()
-            .position(|id| id == &self.inner.caret.block)
-            .unwrap_or(0);
-        let focus = if self.scroll_y > 0.0 { scrolled } else { caret };
-        let start = focus.saturating_sub(VIEWPORT_BLOCK_WINDOW / 4);
+        let flow = page_stack_to_flow(
+            (self.scroll_y - PAGE_TOP).max(0.0),
+            MAX_PAGE_W * LETTER_RATIO,
+            self.margins,
+        );
+        let scrolled = num::usize_of_f64((flow / ESTIMATED_BLOCK_EXTENT).floor());
+        let start = scrolled.saturating_sub(VIEWPORT_BLOCK_WINDOW / 4);
         let end = start.saturating_add(VIEWPORT_BLOCK_WINDOW).min(len);
         (end.saturating_sub(VIEWPORT_BLOCK_WINDOW), end)
     }
@@ -2886,12 +2975,34 @@ impl WordProcessorWidget {
     /// moves a large document's bounded working set. qdoc's requested-block API
     /// preserves the canonical id order without doing a whole-region traversal.
     fn refresh_blocks(&mut self, state: &mut AutoCommit) {
+        self.refresh_blocks_after_text_edit(state, None);
+    }
+
+    /// A hint is issued only before a known single-block edit at the cached
+    /// revision. Metadata still refreshes; all uncertain changes use the full path.
+    fn refresh_blocks_after_text_edit(&mut self, state: &mut AutoCommit, text_block: Option<&str>) {
         let Some(c) = self.inner.containers.as_ref() else {
             return;
         };
         let heads = state.get_heads();
         let changed = self.materialized_heads != heads;
-        if changed {
+        let (old_start, old_end) = self.body_window_bounds();
+        let replacement = if changed
+            && !self.block_views_have_preview
+            && self.body_window_start == old_start
+            && self.blocks.len() == old_end.saturating_sub(old_start)
+        {
+            text_block.and_then(|id| {
+                let index = self.blocks.iter().position(|block| block.id == id)?;
+                let block = qdoc::model::materialize_blocks(state, c, &[id.to_owned()])
+                    .into_iter()
+                    .next()?;
+                (block.id == id).then_some((index, block))
+            })
+        } else {
+            None
+        };
+        if changed && replacement.is_none() {
             self.body_order = qdoc::model::blocks_in_order(state, c);
         }
         let (start, end) = self.body_window_bounds();
@@ -2910,10 +3021,37 @@ impl WordProcessorWidget {
                 qdoc::model::materialize_comments(state, c),
                 qdoc::model::materialize_changes(state, c),
             );
+        }
+        if let Some((index, block)) = replacement {
+            self.blocks[index] = block;
+        } else {
+            let ids = self.body_order.get(start..end).unwrap_or(&[]);
+            if !changed && !self.block_views_have_preview {
+                // Scrolling changes the retained window, not the document.
+                // Move overlapping views and read only newly entering blocks.
+                let mut retained: HashMap<String, BlockView> = std::mem::take(&mut self.blocks)
+                    .into_iter()
+                    .map(|block| (block.id.clone(), block))
+                    .collect();
+                let entering: Vec<String> = ids
+                    .iter()
+                    .filter(|id| !retained.contains_key(*id))
+                    .cloned()
+                    .collect();
+                retained.extend(
+                    qdoc::model::materialize_blocks(state, c, &entering)
+                        .into_iter()
+                        .map(|block| (block.id.clone(), block)),
+                );
+                self.blocks = ids.iter().filter_map(|id| retained.remove(id)).collect();
+            } else {
+                self.blocks = qdoc::model::materialize_blocks(state, c, ids);
+            }
+            self.block_views_have_preview = false;
+        }
+        if changed {
             self.materialized_heads = heads;
         }
-        let ids = self.body_order.get(start..end).unwrap_or(&[]);
-        self.blocks = qdoc::model::materialize_blocks(state, c, ids);
         self.body_window_start = start;
         // The spell cache deliberately follows the materialized render window:
         // no offscreen import can retain shaped/checker text indefinitely.
@@ -3022,20 +3160,30 @@ impl WordProcessorWidget {
             }
         }
         if hit.is_none() {
-            // above first / below last
-            if let Some(l) = self.laid.first()
-                && p.y < l.y_top
+            // Paragraph spacing and page gaps belong to the nearest visible
+            // text band, not the document's last block. Preserve x while clamping
+            // y into that slice so dragging through whitespace stays local.
+            let distance = |l: &Laid| {
+                let top = l.cell_box.map_or(l.y_top, |r| r.y0);
+                let bottom = l.cell_box.map_or(l.y_top + l.height, |r| r.y1);
+                let dy = (top - p.y).max(0.0).max(p.y - bottom);
+                let dx = l
+                    .cell_box
+                    .map_or(0.0, |r| (r.x0 - p.x).max(0.0).max(p.x - r.x1));
+                dx * dx + dy * dy
+            };
+            if let Some(l) = self
+                .laid
+                .iter()
+                .min_by(|a, b| distance(a).total_cmp(&distance(b)))
             {
-                hit = Some((l.id.clone(), 0));
-            }
-            if hit.is_none()
-                && let Some(l) = self.laid.last()
-            {
-                // Below the last slice → caret to the layout's final line. Hit at
-                // the layout's own bottom (not the slice band height, which for a
-                // split last slice covers only its carried-over lines).
+                let y =
+                    p.y.clamp(l.y_top, (l.y_top + l.height - 0.001).max(l.y_top));
                 let byte = self.layout_cache.get(&l.id).map_or(0, |(_, lay)| {
-                    lay.hit(num::f32_of_f64(p.x - l.text_x), lay.height() - 1.0)
+                    lay.hit(
+                        num::f32_of_f64(p.x - l.text_x),
+                        num::f32_of_f64(y - l.layout_y),
+                    )
                 });
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
             }
@@ -3595,6 +3743,7 @@ impl WordProcessorWidget {
     fn set_caret_block_indent_view(&mut self, v: f64) {
         let id = self.inner.caret.block.clone();
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
+            self.block_views_have_preview = true;
             b.attrs
                 .insert("indent".to_string(), AttrVal::Float(v.max(0.0)));
         }
@@ -3604,6 +3753,7 @@ impl WordProcessorWidget {
     fn set_caret_block_first_line_view(&mut self, v: f64) {
         let id = self.inner.caret.block.clone();
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
+            self.block_views_have_preview = true;
             b.attrs
                 .insert("first_line_indent".to_string(), AttrVal::Float(v));
         }
@@ -3622,6 +3772,7 @@ impl WordProcessorWidget {
             .collect::<Vec<_>>()
             .join(",");
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
+            self.block_views_have_preview = true;
             b.attrs
                 .insert("tab_stops".to_string(), AttrVal::Str(encoded));
         }
@@ -3736,7 +3887,8 @@ impl WordProcessorWidget {
             (LayoutMode::Margins, t("layout-margins")),
             (LayoutMode::Spacing, t("layout-spacing")),
         ] {
-            let w = 16.0 + num::f64_of_usize(label.chars().count()) * 7.6;
+            let (label_width, label_height) = tr.measure(&label, 13.0, None);
+            let w = 16.0 + f64::from(label_width);
             let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
             let active = self.layout_mode == mode;
             let bg = if active { cc.accent } else { cc.chip };
@@ -3753,7 +3905,7 @@ impl WordProcessorWidget {
                 &label,
                 13.0,
                 fg,
-                transform * Affine::translate((x + 8.0, cy - 8.0)),
+                transform * Affine::translate((x + 8.0, cy - f64::from(label_height) / 2.0)),
                 None,
             );
             self.layout_chips.push((mode, r));
@@ -3790,19 +3942,20 @@ impl WordProcessorWidget {
         // lets long translations paint through the status label. Keep status
         // persistent, but omit the redundant hint when those two would collide.
         let status = self.status_count_label();
-        let status_rect = Self::layout_bar_status_rect(bar, x + 12.0, &status);
+        let (status_width, status_height) = tr.measure(&status, 12.5, None);
+        let status_rect = Self::layout_bar_status_rect(bar, x + 12.0, f64::from(status_width));
         let readout_x = x + 12.0;
-        let readout_width = num::f64_of_usize(readout.chars().count()) * 7.0;
-        if status_rect
+        let (readout_width, readout_height) = tr.measure(&readout, 12.5, None);
+        let readout_end = status_rect
             .as_ref()
-            .is_none_or(|rect| readout_x + readout_width + 12.0 <= rect.x0)
-        {
+            .map_or(bar.x1 - 12.0, |rect| rect.x0 - 12.0);
+        if readout_x + f64::from(readout_width) <= readout_end {
             tr.draw_text(
                 scene,
                 &readout,
                 12.5,
                 cc.text_dim,
-                transform * Affine::translate((readout_x, cy - 8.0)),
+                transform * Affine::translate((readout_x, cy - f64::from(readout_height) / 2.0)),
                 None,
             );
         }
@@ -3814,7 +3967,8 @@ impl WordProcessorWidget {
                 &status,
                 12.5,
                 cc.text_dim,
-                transform * Affine::translate((status_rect.x0, cy - 8.0)),
+                transform
+                    * Affine::translate((status_rect.x0, cy - f64::from(status_height) / 2.0)),
                 None,
             );
         }
@@ -4742,7 +4896,7 @@ impl WordProcessorWidget {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y1 - LAYOUT_BAR_H,
+            self.rect.y1 - self.layout_bar_height,
         );
         paint_transient(
             scene,
@@ -5169,6 +5323,10 @@ impl WordProcessorWidget {
     pub fn accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        if let Some(dialog) = self.unsaved_changes.accessibility() {
+            return A11yTreeNode::leaf(dialog);
+        }
+
         let mut children: Vec<A11yTreeNode> = Vec::new();
         let mut i = 0usize;
         while let Some(b) = self.blocks.get(i) {
@@ -5229,6 +5387,8 @@ impl WordProcessorWidget {
 /// line-count limit.
 struct FrameGeometry {
     canvas: Rect,
+    /// Conservative bounds of the actual canvas clip in final scene space.
+    canvas_clip: Rect,
     canvas_left: f64,
     canvas_right: f64,
     tb_h: f64,
@@ -5320,6 +5480,23 @@ fn page_content_bottom(fg: &FrameGeometry, i: usize) -> f64 {
     fg.page_top + num::f64_of_usize(i) * fg.page_pitch + fg.letter_h - fg.m.bottom
 }
 
+/// Map estimated continuous body flow into the page stack, including margins
+/// and inter-page gaps. Window selection and initial pagination must use the
+/// same coordinate system or their error grows with every preceding page.
+fn flow_to_page_stack(flow: f64, letter_h: f64, margins: Edges) -> f64 {
+    let band_h = (letter_h - margins.top - margins.bottom).max(1.0);
+    let flow = flow.max(0.0);
+    (flow / band_h).floor() * (letter_h + PAGE_GAP) + margins.top + flow % band_h
+}
+
+/// Page margins and gaps map to the nearest body-flow boundary.
+fn page_stack_to_flow(stack: f64, letter_h: f64, margins: Edges) -> f64 {
+    let band_h = (letter_h - margins.top - margins.bottom).max(1.0);
+    let pitch = letter_h + PAGE_GAP;
+    let stack = stack.max(0.0);
+    (stack / pitch).floor() * band_h + (stack % pitch - margins.top).clamp(0.0, band_h)
+}
+
 /// Per-frame accumulators [`WordProcessorWidget::draw_page_content`] collects
 /// while painting `laid`, rendered by the caller once the pass completes.
 struct Pass2Markers {
@@ -5364,6 +5541,24 @@ impl WordProcessorWidget {
         // actual (possibly multi-row) height so the canvas top sits below it and
         // no control is clipped. `draw_toolbar` re-derives the same packing, so
         // the reserved band and the drawn rows always agree.
+        self.zoom.measure(text_renderer);
+        self.toolbar_label_widths.clear();
+        self.toolbar_row_height = TOOLBAR_H.max(self.zoom.height() + 12.0);
+        for (_, item) in self
+            .toolbar_button_specs(false)
+            .into_iter()
+            .chain(self.toolbar_button_specs(true))
+        {
+            let weight = if item.cue == LabelCue::Bold {
+                ui::text_render::TextWeight::Bold
+            } else {
+                ui::text_render::TextWeight::Regular
+            };
+            let (width, height) = text_renderer.measure_weighted(&item.label, 15.0, None, weight);
+            self.toolbar_label_widths
+                .insert(item.label, f64::from(width) + 12.0);
+            self.toolbar_row_height = self.toolbar_row_height.max(f64::from(height) + 16.0);
+        }
         let tb_h = self.toolbar_height(full.width());
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
@@ -5372,7 +5567,9 @@ impl WordProcessorWidget {
         // so the content spans down to the layout bar and
         // reclaims the strip's height. The layout bar now sits at the very bottom.
         let content_bottom = full.y1.max(full.y0 + tb_h);
-        let layout_bar_top = (content_bottom - LAYOUT_BAR_H).max(full.y0 + tb_h);
+        self.layout_bar_height =
+            LAYOUT_BAR_H.max(f64::from(text_renderer.measure("Mg", 13.0, None).1) + 10.0);
+        let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0 + tb_h);
         // Version-history strip: a band between the canvas and the layout bar,
         // so the page shrinks rather than the history painting over the text.
         let history_h = self.history.band_height();
@@ -5414,6 +5611,7 @@ impl WordProcessorWidget {
             canvas_right,
             history_top,
         );
+        self.zoom_viewport = canvas;
         scene.fill(Fill::NonZero, transform, self.chrome.canvas, None, &canvas);
 
         // Zoom anchor: the canvas top, horizontally centered. The page+content
@@ -5464,6 +5662,7 @@ impl WordProcessorWidget {
 
         FrameGeometry {
             canvas,
+            canvas_clip: transform.transform_rect_bbox(canvas),
             canvas_left,
             canvas_right,
             tb_h,
@@ -5559,13 +5758,21 @@ impl WordProcessorWidget {
         text_renderer: &mut TextRenderer,
         fg: &FrameGeometry,
     ) -> PaginationResult {
+        let virtualized = self.body_order.len() > VIRTUALIZE_BODY_AFTER;
         let blocks = std::mem::take(&mut self.blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
-        // Incremental layout cache: take last frame's shaped layouts so matching
-        // blocks can be reused, and build this frame's cache afresh. Any entry
-        // left in `old_cache` at the end (a block that no longer exists) is
-        // dropped — this is the per-frame prune that keeps memory bounded.
+        // Keep the current layouts separate from a bounded recently visited
+        // window. Returning to it can reuse shaping, while the canonical key
+        // below still checks text, marks, style and wrapping before reuse.
         let mut old_cache = std::mem::take(&mut self.layout_cache);
+        let previous_current: std::collections::HashSet<String> = if virtualized {
+            old_cache.keys().cloned().collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        for (id, layout) in std::mem::take(&mut self.recent_layout_cache) {
+            old_cache.entry(id).or_insert(layout);
+        }
         let mut new_cache: HashMap<String, (u64, RichTextLayout)> =
             HashMap::with_capacity(blocks.len());
         self.dbg_layout_hits = 0;
@@ -5577,7 +5784,6 @@ impl WordProcessorWidget {
         // content y, the currently-active floated image (subsequent paragraphs
         // on its page are narrowed to flow beside it — coarse wrap, see
         // `FloatReserve`), and the per-level ordered-list counters.
-        let virtualized = self.body_order.len() > VIRTUALIZE_BODY_AFTER;
         let band_h = (page_content_bottom(fg, 0) - page_content_top(fg, 0)).max(1.0);
         let estimated_before = if virtualized {
             num::f64_of_usize(self.body_window_start) * ESTIMATED_BLOCK_EXTENT
@@ -5585,7 +5791,7 @@ impl WordProcessorWidget {
             0.0
         };
         let initial_page = num::usize_of_f64((estimated_before / band_h).floor());
-        let initial_y = page_content_top(fg, initial_page) + estimated_before % band_h;
+        let initial_y = fg.page_top + flow_to_page_stack(estimated_before, fg.letter_h, fg.m);
         let mut cur = PageCursor {
             cur_page: initial_page,
             max_object_page: 0,
@@ -5649,6 +5855,15 @@ impl WordProcessorWidget {
         } else {
             0
         };
+        if virtualized {
+            let mut unused: Vec<_> = old_cache
+                .into_iter()
+                .filter(|(id, _)| !new_cache.contains_key(id))
+                .collect();
+            // Prefer the immediately previous viewport over older history.
+            unused.sort_by_key(|(id, _)| !previous_current.contains(id));
+            self.recent_layout_cache = unused.into_iter().take(VIEWPORT_BLOCK_WINDOW).collect();
+        }
         PaginationResult {
             laid,
             cache: new_cache,
@@ -6998,12 +7213,18 @@ impl WordProcessorWidget {
             }
         }
 
-        text_renderer.draw_rich(
-            scene,
-            layout,
-            fg.ctf * Affine::translate((l.text_x, ly)),
-            l.ink,
-        );
+        let text_transform = fg.ctf * Affine::translate((l.text_x, ly));
+        #[cfg(test)]
+        if self.reference_text_rendering {
+            text_renderer.draw_rich(scene, layout, text_transform, l.ink);
+            return;
+        }
+        // Keep the real canvas/slice layers and all paragraph bookkeeping.
+        // Only omit glyph encoding whose ink cannot reach either clip.
+        let clip = l.clip.map_or(fg.canvas_clip, |clip| {
+            fg.canvas_clip.intersect(fg.ctf.transform_rect_bbox(clip))
+        });
+        text_renderer.draw_rich_in_clip(scene, layout, text_transform, l.ink, clip);
     }
 
     /// Tracked-change decorations (green underline for `ins`, red strike for
@@ -7488,7 +7709,7 @@ impl WordProcessorWidget {
         if self.rect.contains(self.pointer) {
             let tb_h = self.toolbar_height(self.rect.width());
             let over_body = self.pointer.y >= self.rect.y0 + tb_h
-                && self.pointer.y <= self.rect.y1 - LAYOUT_BAR_H
+                && self.pointer.y <= self.rect.y1 - self.layout_bar_height
                 && !(self.styles_panel_open && self.panel_rect.contains(self.pointer))
                 && !self.outline.contains(self.pointer);
             if over_body {
@@ -7631,13 +7852,14 @@ impl WordProcessorWidget {
         if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
             if let Some(id) = self.style_chip_at(self.pointer) {
                 self.style_menu.open(&id, self.pointer);
+                self.style_menu.menu_mut().constrain_to(self.rect);
                 self.dirty = true;
                 *handled = true;
             }
             return;
         }
         let in_chrome = self.pointer.y < self.rect.y0 + tb_h
-            || self.pointer.y > self.rect.y1 - LAYOUT_BAR_H
+            || self.pointer.y > self.rect.y1 - self.layout_bar_height
             || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
             || self.outline.contains(self.pointer);
         if !in_chrome {
@@ -7710,7 +7932,7 @@ impl WordProcessorWidget {
         // Likewise route the press to the "New ▾" template picker when open.
         if self.template_picker.is_open() {
             if let Some(template) = self.template_picker.click(self.pointer) {
-                self.apply_template(state, template);
+                self.request_template(state, template);
             }
             self.dirty = true;
             *handled = true;
@@ -7745,6 +7967,7 @@ impl WordProcessorWidget {
             {
                 self.refresh_blocks(state);
                 self.layout_cache.clear();
+                self.recent_layout_cache.clear();
                 self.spell_cache.clear();
                 self.modified = true;
                 self.needs_commit = true;
@@ -7864,7 +8087,7 @@ impl WordProcessorWidget {
             return true;
         }
         // Bottom layout bar sits at the very bottom; document status floats above it.
-        let lbar_top = self.rect.y1 - LAYOUT_BAR_H;
+        let lbar_top = self.rect.y1 - self.layout_bar_height;
         if self.pointer.y >= lbar_top {
             if let Some(mode) = self
                 .layout_chips
@@ -8190,6 +8413,26 @@ impl WordProcessorWidget {
             self.handle_ctrl_shortcut(state, s, shift, handled);
             return;
         }
+        // Only these operations are known to preserve the body structure and
+        // all other blocks. A pending external mutation invalidates the hint.
+        let plain_text_edit = match logical_key {
+            Key::Character(_) => text
+                .is_some_and(|value| !value.is_empty() && value.chars().all(char::is_alphanumeric)),
+            Key::Named(NamedKey::Backspace) => {
+                self.inner.caret.offset > 0 && self.last_autocorrection.is_none()
+            }
+            _ => false,
+        };
+        let text_block = (!ctrl
+            && plain_text_edit
+            && self.inner.region() == Region::Body
+            && !self.inner.has_selection()
+            && self
+                .blocks
+                .iter()
+                .any(|block| block.id == self.inner.caret.block)
+            && self.materialized_heads == state.get_heads())
+        .then(|| self.inner.caret.block.clone());
         if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
             self.last_autocorrection = None;
         }
@@ -8293,13 +8536,87 @@ impl WordProcessorWidget {
                 // A real content edit (not caret motion) advances the
                 // autosave debounce — may write a recovery copy.
                 self.modified = true;
+            }
+            self.refresh_blocks_after_text_edit(state, text_block.as_deref());
+            if !motion {
                 self.note_edit_for_autosave(state);
             }
-            self.refresh_blocks(state);
             self.dirty = true;
             self.needs_commit = true;
             *handled = true;
         }
+    }
+
+    /// Native word and visual-line selection use the toolkit's existing
+    /// Unicode boundaries and shaped line geometry, preserving the anchor.
+    fn handle_modified_navigation(
+        &mut self,
+        state: &AutoCommit,
+        key: &Key,
+        modifiers: &Modifiers,
+    ) -> bool {
+        if !self.focused || self.editing_field.is_some() || self.find.is_open() {
+            return false;
+        }
+        let Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) = key else {
+            return false;
+        };
+        let mods = modifiers.state();
+        let line = mods.super_key();
+        let word = mods.alt_key() || mods.control_key();
+        if !line && !word {
+            return false;
+        }
+        let left = matches!(key, Key::Named(NamedKey::ArrowLeft));
+        let text = self.inner.current_text(state);
+        let offset = self.inner.caret.offset;
+        let byte = char_to_byte(&text, offset);
+        let destination = if line {
+            let layout = if self.inner.region() == Region::Body {
+                self.layout_cache
+                    .get(&self.inner.caret.block)
+                    .filter(|_| {
+                        self.laid
+                            .iter()
+                            .any(|block| block.id == self.inner.caret.block && block.text == text)
+                    })
+                    .map(|(_, layout)| layout)
+            } else {
+                self.region_laid
+                    .iter()
+                    .find(|block| block.id == self.inner.caret.block && block.text == text)
+                    .map(|block| &block.layout)
+            };
+            let edges = layout.map_or((0, text.len()), |layout| layout.visual_line_edges(byte));
+            byte_to_char(&text, if left { edges.0 } else { edges.1 })
+        } else if left {
+            ui::text_selection::prev_word_boundary_chars(&text, offset)
+        } else if mods.alt_key() {
+            // Option+Right follows macOS word-end semantics; Ctrl+Right
+            // retains the shared next-word-start convention on other hosts.
+            let (_, end) = ui::text_selection::word_boundaries(&text, byte);
+            let end = if end > byte {
+                end
+            } else {
+                let next = ui::text_selection::next_word_boundary(&text, byte);
+                ui::text_selection::word_boundaries(&text, next).1.max(next)
+            };
+            byte_to_char(&text, end)
+        } else {
+            ui::text_selection::next_word_boundary_chars(&text, offset)
+        };
+        self.extend_or_clear(mods.shift_key());
+        if !line && destination == offset {
+            if left {
+                self.inner.move_left(state);
+            } else {
+                self.inner.move_right(state);
+            }
+        } else {
+            self.inner.caret.offset = destination;
+        }
+        self.dirty = true;
+        true
     }
 
     /// Early exits before a key press reaches editing: an unfocused widget,
@@ -8529,6 +8846,35 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    fn native_input_snapshot(
+        &self,
+        state: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<serde_json::Value> {
+        let caret = self.inner.caret();
+        let region = self.inner.region();
+        // Body text reads only the caret block. Running-region text would
+        // materialize an entire region, so omit it from this diagnostic path.
+        let caret_text = matches!(region, Region::Body).then(|| self.inner.current_text(state));
+        Some(serde_json::json!({
+            "offset_y": self.scroll_y,
+            "max_scroll": self.max_scroll,
+            "body_window_start": self.body_window_start,
+            "body_window_len": self.blocks.len(),
+            "body_block_count": self.body_order.len(),
+            "focused": self.focused,
+            "caret_block": caret.block,
+            "caret_offset": caret.offset,
+            "caret_region": match region {
+                Region::Body => "body",
+                Region::Header => "header",
+                Region::Footer => "footer",
+            },
+            "has_selection": self.inner.has_selection(),
+            "caret_text": caret_text,
+        }))
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::WORD_PROCESSOR_OPERATION_TYPE]
     }
@@ -8603,7 +8949,10 @@ impl Widget for WordProcessorWidget {
         };
         let (destination, force_picker) = match operation {
             WordProcessorOperation::Open { path } => {
-                if self.portal_rx.is_some() || self.pending_resource_open.is_some() {
+                if self.portal_rx.is_some()
+                    || self.pending_resource_open.is_some()
+                    || self.pending_replacement.is_some()
+                {
                     return Err("another file operation is already running".into());
                 }
                 if let Some(path) = path {
@@ -8624,14 +8973,16 @@ impl Widget for WordProcessorWidget {
             }
         };
 
-        if self.portal_rx.is_some() || self.pending_resource_open.is_some() {
+        if self.portal_rx.is_some()
+            || self.pending_resource_open.is_some()
+            || self.pending_replacement.is_some()
+        {
             return Err("another file operation is already running".into());
         }
         if let Some(destination) = destination {
             let destination = std::path::PathBuf::from(destination);
             let format = WpFormat::from_path(&destination);
-            self.set_file(destination, format);
-            self.try_write_to_current_path(doc)?;
+            self.try_write_to_path(doc, &destination, format)?;
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
                 qos_actions::ActionOutput::default(),
             )))
@@ -8650,10 +9001,26 @@ impl Widget for WordProcessorWidget {
     fn poll_resource_operation(
         &mut self,
         invocation: qos_actions::InvocationId,
-        _cancellation_requested: bool,
+        cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested
+            && self.resource_file_invocation == Some(invocation)
+            && self.pending_replacement.is_some()
+        {
+            self.unsaved_changes.close();
+            self.pending_replacement = None;
+            self.replace_after_save = false;
+            self.portal_rx = None;
+            self.portal_purpose = None;
+            self.resource_file_invocation = None;
+            self.dirty = true;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(t("unsaved-cancel")),
+            });
+        }
         if self
             .resource_file_result
             .as_ref()
@@ -8680,22 +9047,27 @@ impl Widget for WordProcessorWidget {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
-            self.resource_file_result =
-                Some(match self.try_open_document_in_place(state, &open_path) {
-                    Ok(()) => qos_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: qos_actions::ActionOutput::default(),
-                    },
-                    Err(message) => qos_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: qos_actions::ActionFailure {
-                            code: "word_processor.open_failed".into(),
-                            message,
-                            details: None,
-                            retryable: false,
+            if self.modified {
+                self.resource_file_invocation = Some(invocation);
+                self.stage_replacement(PendingReplacement::Open(open_path));
+            } else {
+                self.resource_file_result =
+                    Some(match self.try_open_document_in_place(state, &open_path) {
+                        Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: qos_actions::ActionOutput::default(),
                         },
-                    },
-                });
+                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "word_processor.open_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                    });
+            }
         }
         // Fold in a completed host portal request (open / save / image insert),
         // if the portal worker finished.
@@ -8773,6 +9145,36 @@ impl Widget for WordProcessorWidget {
         // Status is persistent bottom chrome, so it has no independent fade
         // lifecycle to animate while the editor is otherwise idle.
         false
+    }
+
+    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
+        // The host resolves Undo before dispatching keyboard events to us.
+        // An open menu must capture that path as well as ordinary editing keys.
+        self.context_menu.is_open()
+            || self.style_menu.is_open()
+            || self.template_picker.is_open()
+            || self.pending_replacement.is_some()
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        self.unsaved_changes.is_open()
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        if self.pending_replacement.is_some() {
+            Some(self.unsaved_changes.rect().unwrap_or(self.rect))
+        } else if self.context_menu.is_open()
+            || self.style_menu.is_open()
+            || self.template_picker.is_open()
+        {
+            Some(self.rect)
+        } else {
+            None
+        }
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.modal_capture().is_some()
     }
 
     #[allow(
@@ -8942,7 +9344,73 @@ impl Widget for WordProcessorWidget {
         taffy: &TaffyTree<()>,
     ) {
         let shift = modifiers.state().shift_key();
-        let ctrl = modifiers.state().control_key();
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        if self.unsaved_changes.is_open() {
+            if let Some(choice) = self
+                .unsaved_changes
+                .handle_event(event, scale_factor, modifiers)
+            {
+                self.resolve_unsaved_choice(state, choice);
+            }
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        if self.replace_after_save {
+            *handled = true;
+            return;
+        }
+        // An open menu owns input until selection or dismissal. Forward
+        // movement as well as presses so the shared menu can paint its hover;
+        // keep navigation/typing from editing the document behind the popup.
+        if self.template_picker.is_open()
+            || self.context_menu.is_open()
+            || self.style_menu.is_open()
+        {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            }
+            let menu = if self.template_picker.is_open() {
+                self.template_picker.menu_mut()
+            } else if self.style_menu.is_open() {
+                self.style_menu.menu_mut()
+            } else {
+                &mut self.context_menu
+            };
+            menu.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if let Some(template) = self.template_picker.take_selection() {
+                self.request_template(state, template);
+            }
+            if let Some(action) = self.style_menu.take_selection() {
+                self.dispatch_style_menu(action, state);
+            }
+            if let Some(index) = self.context_menu.take_selection() {
+                self.dispatch_context_action(index, state);
+            }
+            if matches!(
+                event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::PinchGesture { .. }
+                    | WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+            ) {
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+        }
         if self.pump_compact_swatch_palette(event, scale_factor, *modifiers, state, path, handled) {
             return;
         }
@@ -9018,6 +9486,28 @@ impl Widget for WordProcessorWidget {
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(delta, scale_factor, ctrl, handled);
             }
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                if self.zoom_viewport.contains(self.pointer) {
+                    *handled = true;
+                    if delta.is_finite()
+                        && *delta != 0.0
+                        && *phase != winit::event::TouchPhase::Cancelled
+                        && !self.color_picker.is_open()
+                        && !self.compact_swatch_palette.is_open()
+                        && !(self.styles_panel_overlay() && self.panel_rect.contains(self.pointer))
+                    {
+                        let before = self.zoom.factor();
+                        let after = (before * (1.0 + delta).max(0.01)).clamp(ZOOM_MIN, ZOOM_MAX);
+                        if self.set_zoom(after) {
+                            // Keep the document row beneath the gesture steady.
+                            // Horizontal alignment remains the centered-page convention.
+                            let pointer_y = self.pointer.y - self.zoom.anchor().y;
+                            self.scroll_y =
+                                (self.scroll_y + pointer_y / before - pointer_y / after).max(0.0);
+                        }
+                    }
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position.x, position.y, scale_factor, tb_h, handled);
             }
@@ -9048,7 +9538,20 @@ impl Widget for WordProcessorWidget {
                         ..
                     },
                 ..
-            } => self.handle_key_press(state, logical_key, text.as_deref(), shift, ctrl, handled),
+            } => {
+                if self.handle_modified_navigation(state, logical_key, modifiers) {
+                    *handled = true;
+                } else {
+                    self.handle_key_press(
+                        state,
+                        logical_key,
+                        text.as_deref(),
+                        shift,
+                        ctrl,
+                        handled,
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -9065,6 +9568,15 @@ impl Widget for WordProcessorWidget {
     ) {
         // Toast first, so an open menu stacks above it.
         self.draw_toast(scene, transform, text_renderer, theme);
+        for menu in [
+            &mut self.context_menu,
+            self.template_picker.menu_mut(),
+            self.style_menu.menu_mut(),
+        ] {
+            if menu.is_open() {
+                menu.constrain_to(self.rect);
+            }
+        }
         if self.context_menu.is_open() {
             Widget::draw(
                 &mut self.context_menu,
@@ -9100,6 +9612,11 @@ impl Widget for WordProcessorWidget {
             cc.bar,
             cc.border,
         );
+        self.unsaved_changes
+            .draw(scene, transform, text_renderer, theme, self.rect);
+        if self.unsaved_changes.is_open() {
+            self.draw_toast(scene, transform, text_renderer, theme);
+        }
     }
 
     /// Outbound collaboration presence: while focused, broadcast the local caret
@@ -9166,6 +9683,21 @@ impl Widget for WordProcessorWidget {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if self.replace_after_save {
+            return true;
+        }
+        if self.unsaved_changes.is_open() {
+            if let Some(target) = key_path.last().copied() {
+                if matches!(action, ui::a11y::Action::Focus) {
+                    self.unsaved_changes.focus_accessible(target);
+                } else if let Some(choice) = self.unsaved_changes.accessible_action(target, action)
+                {
+                    self.resolve_unsaved_choice(state, choice);
+                }
+            }
+            self.dirty = true;
+            return true;
+        }
         if matches!(action, ui::a11y::Action::Focus) {
             if let Some(target) = key_path.last().copied() {
                 let palette_target = if ui::a11y::hash_key(&"compact-swatch:clear") == target {
@@ -9873,6 +10405,7 @@ impl WordProcessorWidget {
         menu.push(MenuItem::action(t("toolbar-highlight"), || {}));
         actions.push(Some(CtxAction::CompactPalette(PaletteKind::Highlight)));
         menu.open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
+        menu.constrain_to(self.rect);
         self.context_menu = menu;
         self.context_actions = actions;
         self.dirty = true;
@@ -10231,6 +10764,9 @@ impl WordProcessorWidget {
     /// *formatting effect* rather than forcing assistive technology users to
     /// infer it from a hexadecimal value alone.
     fn open_compact_swatch_palette(&mut self, kind: PaletteKind) {
+        self.context_menu.close();
+        self.style_menu.close();
+        self.template_picker.close();
         let (palette, labels, title, clear_label): (&[[u8; 3]], Vec<String>, String, String) =
             match kind {
                 PaletteKind::Text => (
@@ -10474,20 +11010,27 @@ impl WordProcessorWidget {
     fn open_context_menu(&mut self, state: &AutoCommit, content_pt: Point, pos: [f32; 2]) {
         // Place the caret under the click; select the word when there's no
         // selection so Cut/Copy act on something.
-        let had_selection = self.inner.has_selection();
+        let selected_ranges = self.inner.selection_blocks(state);
+        let previous_caret = self.inner.caret.clone();
+        let previous_anchor = self.inner.selection_anchor.clone();
         self.caret_from_pointer(content_pt, false);
         // Raw click char offset (before `select_word` snaps the caret to the word
         // end) — used to test which tracked-change / comment range was clicked.
         let raw_click_off = self.inner.caret.offset;
-        if !had_selection {
+        let block = self.inner.caret.block.clone();
+        let block_text = self.inner.current_text(state);
+        let inside_selection = selected_ranges.iter().any(|(id, start, end)| {
+            *id == block && *start <= raw_click_off && raw_click_off <= *end
+        });
+        if inside_selection {
+            self.inner.caret = previous_caret;
+            self.inner.selection_anchor = previous_anchor;
+        } else {
             self.inner.select_word(state);
         }
 
         // Identify the clicked word's block + char span for spell-check actions.
-        let block = self.inner.caret.block.clone();
-        let block_text = self.inner.current_text(state);
-        let click_off = self.inner.caret.offset; // post-select_word: end of the word
-        let (wstart, wend) = Self::word_span_at(&block_text, click_off);
+        let (wstart, wend) = Self::word_span_at(&block_text, raw_click_off);
         let word: String = block_text
             .chars()
             .skip(wstart)
@@ -10502,6 +11045,7 @@ impl WordProcessorWidget {
         self.push_clipboard_rows(&mut menu, &mut actions);
 
         menu.open_at(pos);
+        menu.constrain_to(self.rect);
         self.context_menu = menu;
         self.context_actions = actions;
         self.dirty = true;
@@ -10754,6 +11298,83 @@ impl WordProcessorWidget {
 
     // ---- new-from-template picker -----------------------------------------
 
+    fn stage_replacement(&mut self, replacement: PendingReplacement) {
+        self.pending_replacement = Some(replacement);
+        self.context_menu.close();
+        self.style_menu.close();
+        self.template_picker.close();
+        self.unsaved_changes.open();
+        self.dirty = true;
+    }
+
+    fn request_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
+        if self.modified {
+            self.stage_replacement(PendingReplacement::Template(template));
+        } else {
+            self.apply_template(state, template);
+        }
+    }
+
+    fn finish_replacement(&mut self, state: &mut AutoCommit) {
+        self.unsaved_changes.close();
+        let result = match self.pending_replacement.take() {
+            Some(PendingReplacement::Template(template)) => {
+                self.apply_template(state, template);
+                Ok(())
+            }
+            Some(PendingReplacement::Open(path)) => self.try_open_document_in_place(state, &path),
+            None => return,
+        };
+        if let Some(invocation) = self.resource_file_invocation.take() {
+            self.resource_file_result = Some(match result {
+                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "word_processor.open_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
+        self.dirty = true;
+    }
+
+    fn resolve_unsaved_choice(&mut self, state: &mut AutoCommit, choice: UnsavedChoice) {
+        match choice {
+            UnsavedChoice::Cancel => {
+                self.unsaved_changes.close();
+                self.pending_replacement = None;
+                if let Some(invocation) = self.resource_file_invocation.take() {
+                    self.resource_file_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some(t("unsaved-cancel")),
+                    });
+                }
+            }
+            UnsavedChoice::Discard => self.finish_replacement(state),
+            UnsavedChoice::Save => {
+                if self.path.is_some() {
+                    if self.try_write_to_current_path(state).is_ok() {
+                        self.finish_replacement(state);
+                    } else {
+                        self.unsaved_changes.open();
+                    }
+                } else {
+                    self.unsaved_changes.close();
+                    self.replace_after_save = true;
+                    self.request_save_as();
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
     /// Open the "New ▾" picker below the toolbar's leading edge.
     fn open_template_picker(&mut self) {
         // Anchor below the toolbar's left edge (where the "New ▾" button lives).
@@ -10763,12 +11384,13 @@ impl WordProcessorWidget {
             .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
         let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
         self.template_picker.open_at(Point::new(anchor_x, anchor_y));
+        self.template_picker.menu_mut().constrain_to(self.rect);
         self.dirty = true;
     }
 
     /// Replace the open document's content with `template`'s Markdown, **in place**
     /// on the live `state` (preserving the host `ui::State` and its undo history /
-    /// collaboration session). Re-seats the caret, refreshes the view, flags an
+    /// collaboration session), as a new untitled document. Re-seats the caret, refreshes the view, flags an
     /// undo point, and counts as a document-modifying edit (so autosave still
     /// protects the freshly-templated content).
     fn apply_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
@@ -10776,9 +11398,15 @@ impl WordProcessorWidget {
             .inner
             .replace_with_markdown(state, template.content().as_bytes())
         {
+            // New must never inherit the previously opened file's Save target.
+            // Retain its recovery copy; the new draft gets its own recovery path.
+            self.path = None;
+            self.format = Some(WpFormat::Markdown);
+            self.scroll_y = 0.0;
             self.refresh_blocks(state);
             // The whole body changed; per-block caches keyed by id/text are stale.
             self.layout_cache.clear();
+            self.recent_layout_cache.clear();
             self.spell_cache.clear();
             self.modified = true;
             self.needs_commit = true;
@@ -10803,14 +11431,40 @@ impl WordProcessorWidget {
 
     /// Export one Markdown snapshot and hand it to the recovery component when
     /// the edit debounce reaches its threshold.
-    fn note_edit_for_autosave(&mut self, state: &AutoCommit) {
+    fn note_edit_for_autosave(&mut self, state: &mut AutoCommit) {
         let inner = &self.inner;
         let document_path = self.path.clone();
+        let blocks = &self.blocks;
+        let notes = &self.notes;
+        let body_order = &self.body_order;
+        let heads = &self.materialized_heads;
+        let window_start = self.body_window_start;
+        let has_preview = self.block_views_have_preview;
         self.recovery.note_edit(document_path.as_deref(), || {
             inner.containers.as_ref().and_then(|c| {
-                WpFormat::Markdown
-                    .export(qdoc::DocRef { doc: state, c })
-                    .ok()
+                // Check only when a snapshot is due. Pending edits commit here,
+                // so stale views cannot hide unsaved changes. A virtual window
+                // must never be mistaken for the complete recovery document.
+                let current_heads = state.get_heads();
+                if *heads == current_heads
+                    && !has_preview
+                    && window_start == 0
+                    && blocks.len() == body_order.len()
+                    && blocks
+                        .iter()
+                        .zip(body_order)
+                        .all(|(block, id)| block.id == *id)
+                {
+                    Some(qdoc::codecs::markdown::export_views(
+                        &qdoc::model::doc_props(state, c),
+                        blocks,
+                        notes,
+                    ))
+                } else {
+                    WpFormat::Markdown
+                        .export(qdoc::DocRef { doc: state, c })
+                        .ok()
+                }
             })
         });
     }
@@ -11040,8 +11694,7 @@ impl WordProcessorWidget {
     /// Allocate the docked document-status label wholly inside `bar`, after the
     /// layout chips and hint. Returning `None` at extremely narrow widths is
     /// preferable to either overlapping a control or painting over the page.
-    fn layout_bar_status_rect(bar: Rect, after_x: f64, label: &str) -> Option<Rect> {
-        let width = num::f64_of_usize(label.chars().count()) * 7.0;
+    fn layout_bar_status_rect(bar: Rect, after_x: f64, width: f64) -> Option<Rect> {
         let x0 = bar.x1 - 12.0 - width;
         (x0 >= after_x).then_some(Rect::new(x0, bar.y0, x0 + width, bar.y1))
     }
@@ -11110,10 +11763,13 @@ impl WordProcessorWidget {
         let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
             specs.push((
                 a,
-                ToolbarItem::new(label, w)
-                    .active(active)
-                    .cue(cue(a))
-                    .group_start(group_start(a)),
+                ToolbarItem::new(
+                    label,
+                    w.max(self.toolbar_label_widths.get(label).copied().unwrap_or(0.0)),
+                )
+                .active(active)
+                .cue(cue(a))
+                .group_start(group_start(a)),
             ));
         };
         // New-from-template picker (leads the toolbar). Active while its menu is open.
@@ -11228,7 +11884,7 @@ impl WordProcessorWidget {
         // in the toolbar at every width; only the two dense swatch strips move
         // into More on a compact surface.
         widths.push(
-            ZoomControl::WIDTH
+            self.zoom.width()
                 + if compact {
                     0.0
                 } else {
@@ -11249,7 +11905,7 @@ impl WordProcessorWidget {
             &tb,
         );
 
-        let row_h = TOOLBAR_H;
+        let row_h = self.toolbar_row_height;
         let mut all_rects: Vec<Rect> = Vec::with_capacity(items.len());
         for (ri, (s, e)) in rows.iter().enumerate() {
             let ry0 = tb.y0 + num::f64_of_usize(ri) * row_h;
@@ -11294,7 +11950,7 @@ impl WordProcessorWidget {
         let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
         self.draw_zoom_control(scene, transform, tr, last_row);
         if !compact {
-            let swatch_x1 = (tb.x1 - ZoomControl::WIDTH - ZOOM_SWATCH_GAP).max(tb.x0);
+            let swatch_x1 = (tb.x1 - self.zoom.width() - ZOOM_SWATCH_GAP).max(tb.x0);
             let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
             let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
             // Highlight swatch strip, packed just left of the text-colour strip.
@@ -11332,7 +11988,7 @@ impl WordProcessorWidget {
         let mut widths: Vec<f64> = specs.iter().map(|(_, item)| item.width).collect();
         let mut starts: Vec<bool> = specs.iter().map(|(_, item)| item.group_start).collect();
         widths.push(
-            ZoomControl::WIDTH
+            self.zoom.width()
                 + if compact {
                     0.0
                 } else {
@@ -11341,7 +11997,7 @@ impl WordProcessorWidget {
         );
         starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, width);
-        num::f64_of_usize(rows.len()) * TOOLBAR_H
+        num::f64_of_usize(rows.len()) * self.toolbar_row_height
     }
 
     /// A medium canvas should never leave one low-frequency control stranded on
@@ -11355,7 +12011,7 @@ impl WordProcessorWidget {
         let full = self.toolbar_button_specs(false);
         let mut widths: Vec<f64> = full.iter().map(|(_, item)| item.width).collect();
         let mut starts: Vec<bool> = full.iter().map(|(_, item)| item.group_start).collect();
-        widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
+        widths.push(swatch_reserve_width() + self.zoom.width() + ZOOM_SWATCH_GAP);
         starts.push(true);
         pack_toolbar_rows(&widths, &starts, width).len() > 1
     }
@@ -11537,6 +12193,161 @@ mod tests {
     use ui::permissions::PermissionContext;
 
     #[test]
+    fn native_input_snapshot_reads_real_caret_text_without_mutation() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "fixture é");
+        wp.scroll_y = 144.0;
+        wp.max_scroll = 2000.0;
+        let heads = state.doc.get_heads();
+        let caret = wp.model().caret().clone();
+        let dirty = wp.dirty;
+        let snapshot = wp.native_input_snapshot(&state.doc, &state.root).unwrap();
+        assert_eq!(snapshot["offset_y"], 144.0);
+        assert_eq!(snapshot["max_scroll"], 2000.0);
+        assert_eq!(snapshot["caret_text"], "fixture é");
+        assert_eq!(snapshot["caret_offset"], 9);
+        assert_eq!(snapshot["caret_block"], caret.block);
+        assert_eq!(snapshot["caret_region"], "body");
+        assert_eq!(snapshot["has_selection"], false);
+        assert_eq!(state.doc.get_heads(), heads);
+        assert_eq!(wp.model().caret(), &caret);
+        assert_eq!(wp.dirty, dirty);
+        assert_eq!(wp.scroll_y, 144.0);
+        wp.inner.region = Region::Header;
+        let header = wp.native_input_snapshot(&state.doc, &state.root).unwrap();
+        assert_eq!(header["caret_region"], "header");
+        assert!(
+            header["caret_text"].is_null(),
+            "running regions must not materialize text for diagnostics"
+        );
+    }
+
+    #[test]
+    fn plain_body_edits_retain_untouched_views_and_fall_back_for_other_changes() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.inner.insert_str(&mut state.doc, "Untouched paragraph");
+        wp.inner.enter(&mut state.doc);
+        wp.inner.insert_str(&mut state.doc, "Edited paragraph");
+        wp.refresh_blocks(&mut state.doc);
+        let untouched = wp.blocks[0].text.as_ptr();
+        for (key, text) in [
+            (Key::Character("é".into()), Some("é")),
+            (Key::Named(NamedKey::Backspace), None),
+        ] {
+            let mut handled = false;
+            wp.handle_key_press(&mut state.doc, &key, text, false, false, &mut handled);
+            assert!(handled);
+            assert_eq!(
+                wp.blocks[0].text.as_ptr(),
+                untouched,
+                "text-only edits must retain unrelated block views"
+            );
+            let c = wp.inner.containers.as_ref().unwrap();
+            assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+        }
+        // A mutation outside the known local edit invalidates the optimization.
+        let first = wp.blocks[0].id.clone();
+        let caret = wp.inner.caret().clone();
+        wp.inner.set_caret(Caret {
+            block: first,
+            offset: 0,
+        });
+        wp.inner.insert_str(&mut state.doc, "External ");
+        wp.inner.set_caret(caret);
+        wp.handle_key_press(
+            &mut state.doc,
+            &Key::Character("x".into()),
+            Some("x"),
+            false,
+            false,
+            &mut false,
+        );
+        assert!(wp.blocks[0].text.starts_with("External "));
+        wp.handle_key_press(
+            &mut state.doc,
+            &Key::Named(NamedKey::Enter),
+            None,
+            false,
+            false,
+            &mut false,
+        );
+        let c = wp.inner.containers.as_ref().unwrap();
+        assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+        assert_eq!(wp.blocks.len(), 3);
+        wp.handle_key_press(
+            &mut state.doc,
+            &Key::Named(NamedKey::Backspace),
+            None,
+            false,
+            false,
+            &mut false,
+        );
+        assert_eq!(wp.blocks.len(), 2, "structural backspace merges blocks");
+        wp.inner.set_caret(Caret {
+            block: wp.blocks[0].id.clone(),
+            offset: 0,
+        });
+        wp.inner.set_anchor();
+        wp.inner.set_caret(Caret {
+            block: wp.blocks[1].id.clone(),
+            offset: 2,
+        });
+        wp.handle_key_press(
+            &mut state.doc,
+            &Key::Character("x".into()),
+            Some("x"),
+            false,
+            false,
+            &mut false,
+        );
+        let c = wp.inner.containers.as_ref().unwrap();
+        assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+        assert_eq!(
+            wp.blocks.len(),
+            1,
+            "cross-block replacement uses full refresh"
+        );
+    }
+
+    #[test]
+    fn plain_body_edit_refreshes_a_shifted_virtual_window() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let mut after = None;
+            for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+                let id = dm.insert_block(after.as_deref(), "paragraph");
+                dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+                after = Some(id);
+            }
+        });
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        let old_start = wp.body_window_start;
+        // The caret is still cached, but the requested scroll window has moved.
+        assert!(wp.blocks.iter().any(|b| b.id == wp.inner.caret.block));
+        wp.scroll_y = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 2) * ESTIMATED_BLOCK_EXTENT;
+        wp.handle_key_press(
+            &mut state.doc,
+            &Key::Character("x".into()),
+            Some("x"),
+            false,
+            false,
+            &mut false,
+        );
+        assert_ne!(wp.body_window_start, old_start);
+        let (start, end) = wp.body_window_bounds();
+        let c = wp.inner.containers.as_ref().unwrap();
+        assert_eq!(
+            wp.blocks,
+            qdoc::model::materialize_blocks(&state.doc, c, &wp.body_order[start..end])
+        );
+    }
+
+    #[test]
     fn native_document_edit_has_writer_provenance() {
         let mut wp = WordProcessorWidget::new();
         wp.needs_commit = true;
@@ -11629,6 +12440,7 @@ mod tests {
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -11814,6 +12626,204 @@ mod tests {
         assert!(wp.body_window_start > 0, "scrolling loads a later window");
         assert!(wp.blocks.len() <= VIEWPORT_BLOCK_WINDOW);
         assert!(wp.layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
+    }
+
+    #[test]
+    fn deep_scrolling_keeps_visible_text_loaded() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let mut after = None;
+            for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+                let id = dm.insert_block(after.as_deref(), "paragraph");
+                dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+                after = Some(id);
+            }
+        });
+        let mut wp = WordProcessorWidget::new();
+        wp.auto_fit_page = false;
+        for zoom in [0.5, 1.0, 2.0] {
+            wp.zoom.set(zoom);
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            for fraction in [0.75, 0.5, 0.25, 0.0] {
+                wp.scroll_y = wp.max_scroll * fraction;
+                pipeline_draw(&mut wp, &mut state, 1000, 700);
+                assert!(
+                    wp.laid.iter().any(|l| {
+                        let top =
+                            wp.zoom.anchor().y + (l.y_top - wp.zoom.anchor().y) * wp.zoom.factor();
+                        top + l.height * wp.zoom.factor() > wp.zoom_viewport.y0
+                            && top < wp.zoom_viewport.y1
+                    }),
+                    "zoom {zoom}, scroll fraction {fraction} must retain visible text (window {}, scroll {})",
+                    wp.body_window_start,
+                    wp.scroll_y
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let mut after = None;
+            for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+                let id = dm.insert_block(after.as_deref(), "paragraph");
+                dm.splice_text(&id, 0, 0, &format!("Paragraph {i} with words to render"));
+                after = Some(id);
+            }
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let first = wp.body_order[0].clone();
+        let cold_shapes = wp.dbg_layout_misses;
+        assert!(cold_shapes >= VIEWPORT_BLOCK_WINDOW);
+        let distant_scroll = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
+        wp.scroll_y = distant_scroll;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.scroll_y = 0.0;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(
+            wp.dbg_layout_misses, 0,
+            "returning to the previous viewport should reuse its text shaping"
+        );
+        assert!(wp.dbg_layout_hits >= cold_shapes);
+        assert!(wp.layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
+        assert!(wp.recent_layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
+        wp.scroll_y = distant_scroll;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        with_doc(&mut state, |dm| {
+            dm.splice_text(&first, 0, 0, "Updated ");
+        });
+        wp.scroll_y = 0.0;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(
+            wp.dbg_layout_misses, 1,
+            "changed offscreen text must be reshaped"
+        );
+        assert!(wp.blocks.first().unwrap().text.starts_with("Updated "));
+        assert!(
+            wp.laid
+                .iter()
+                .any(|l| l.id == first && l.text.starts_with("Updated "))
+        );
+        // A third distinct viewport must not evict the immediately previous one.
+        for position in [distant_scroll / 2.0, distant_scroll, distant_scroll / 2.0] {
+            wp.scroll_y = position;
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            assert!(
+                wp.layout_cache.len() + wp.recent_layout_cache.len() <= 2 * VIEWPORT_BLOCK_WINDOW
+            );
+        }
+        assert_eq!(wp.dbg_layout_misses, 0);
+    }
+
+    #[test]
+    fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let mut after = None;
+            for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+                let id = dm.insert_block(after.as_deref(), "paragraph");
+                dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+                after = Some(id);
+            }
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let first = wp.body_order[0].clone();
+        let deep = wp.body_order[VIEWPORT_BLOCK_WINDOW * 3].clone();
+        wp.inner.set_caret(Caret {
+            block: deep.clone(),
+            offset: 0,
+        });
+        wp.scroll_y = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut handled = false;
+        wp.handle_mouse_wheel(
+            &MouseScrollDelta::LineDelta(0.0, 100000.0),
+            1.0,
+            false,
+            &mut handled,
+        );
+        assert!(handled);
+        assert_eq!(wp.scroll_y, 0.0);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(
+            wp.inner.caret.block, deep,
+            "scrolling must not relocate the insertion point"
+        );
+        assert_eq!(
+            wp.body_window_start, 0,
+            "top viewport must load the beginning, not the distant caret"
+        );
+        assert_eq!(
+            wp.blocks.first().map(|b| b.id.as_str()),
+            Some(first.as_str())
+        );
+        assert!(
+            wp.laid
+                .iter()
+                .any(|l| l.id == first && l.y_top >= 0.0 && l.y_top < 700.0)
+        );
+    }
+
+    #[test]
+    fn scrolling_retains_overlap_but_discards_transient_block_previews() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let mut after = None;
+            for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+                let id = dm.insert_block(after.as_deref(), "paragraph");
+                dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+                after = Some(id);
+            }
+        });
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        let retained_id = wp.blocks[100].id.clone();
+        let retained_text = wp.blocks[100].text.as_ptr();
+        for focus in [60, 80, 70, 48] {
+            wp.scroll_y = num::f64_of_usize(focus) * ESTIMATED_BLOCK_EXTENT;
+            wp.refresh_blocks(&mut state.doc);
+            assert_eq!(
+                wp.blocks
+                    .iter()
+                    .find(|b| b.id == retained_id)
+                    .unwrap()
+                    .text
+                    .as_ptr(),
+                retained_text,
+                "overlapping unchanged views should be moved, not rebuilt"
+            );
+            let (start, end) = wp.body_window_bounds();
+            assert_eq!(
+                wp.blocks,
+                qdoc::model::materialize_blocks(
+                    &state.doc,
+                    wp.inner.containers.as_ref().unwrap(),
+                    &wp.body_order[start..end]
+                )
+            );
+        }
+        wp.inner.set_caret(Caret {
+            block: retained_id,
+            offset: 0,
+        });
+        wp.set_caret_block_indent_view(123.0);
+        wp.set_caret_block_first_line_view(42.0);
+        wp.scroll_y = 70.0 * ESTIMATED_BLOCK_EXTENT;
+        wp.refresh_blocks(&mut state.doc);
+        let (start, end) = wp.body_window_bounds();
+        assert_eq!(
+            wp.blocks,
+            qdoc::model::materialize_blocks(
+                &state.doc,
+                wp.inner.containers.as_ref().unwrap(),
+                &wp.body_order[start..end]
+            ),
+            "scrolling must discard uncommitted previews even without a live drag"
+        );
     }
 
     /// Select `[start, end)` chars of the (single) caret block.
@@ -12876,7 +13886,8 @@ mod tests {
         wp.sync(&mut state.doc, &state.root);
         // ONE paragraph with enough words to wrap to well over a page of lines.
         let mut para = String::new();
-        for i in 0..400 {
+        // 400 words can fit within the page with the host font metrics.
+        for i in 0..800 {
             write!(para, "word{i} ").unwrap();
         }
         let para = para.trim_end().to_string();
@@ -12894,8 +13905,10 @@ mod tests {
         let slices: Vec<&Laid> = wp.laid.iter().filter(|l| l.id == bid).collect();
         assert!(
             slices.len() >= 2,
-            "a too-tall paragraph splits into >=2 page slices (got {})",
-            slices.len()
+            "a too-tall paragraph splits into >=2 page slices (got {}, shaped height {}, page content height {})",
+            slices.len(),
+            wp.layout_cache[&bid].1.height(),
+            letter_h - 2.0 * mar
         );
         // One logical block, one layout cache entry — only the rendering is split.
         assert_eq!(
@@ -12955,7 +13968,8 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         let mut para = String::new();
-        for i in 0..400 {
+        // 400 words can fit within the page with the host font metrics.
+        for i in 0..800 {
             write!(para, "word{i} ").unwrap();
         }
         let para = para.trim_end().to_string();
@@ -13110,10 +14124,18 @@ mod tests {
 
     /// Drive a real named-key press (e.g. Escape) through `handle_event`.
     fn press_named(wp: &mut WordProcessorWidget, state: &mut ui::State, key: NamedKey) {
+        press_named_with_modifiers(wp, state, key, Modifiers::default());
+    }
+
+    fn press_named_with_modifiers(
+        wp: &mut WordProcessorWidget,
+        state: &mut ui::State,
+        key: NamedKey,
+        mods: Modifiers,
+    ) {
         use winit::keyboard::{NativeKeyCode, PhysicalKey};
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = NodeId::new(0);
-        let mods = Modifiers::default();
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
@@ -13138,6 +14160,263 @@ mod tests {
             node,
             &taffy,
         );
+    }
+
+    fn pinch(
+        wp: &mut WordProcessorWidget,
+        state: &mut ui::State,
+        delta: f64,
+        phase: winit::event::TouchPhase,
+    ) -> bool {
+        let mut handled = false;
+        wp.handle_event(
+            &WindowEvent::PinchGesture {
+                device_id: unsafe { std::mem::zeroed() },
+                delta,
+                phase,
+            },
+            1.0,
+            &Modifiers::default(),
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut None,
+            NodeId::new(0),
+            &TaffyTree::new(),
+        );
+        handled
+    }
+
+    #[test]
+    fn mouse_selection_across_wrapped_line_boundaries_keeps_its_column() {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(
+            &mut state.doc,
+            &"A paragraph with several words across visual lines. ".repeat(12),
+        );
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let laid = wp.laid[0].clone();
+        let bands = wp.layout_cache[&laid.id].1.logical_line_bands(0);
+        assert!(bands.len() > 2);
+        for (top, _) in bands.iter().skip(1).take(3) {
+            for delta in [-0.1, 0.1] {
+                wp.caret_from_pointer(
+                    Point::new(laid.text_x + 100.0, laid.layout_y + f64::from(*top) + delta),
+                    true,
+                );
+                assert_eq!(wp.inner.caret.block, laid.id);
+                let byte = char_to_byte(&laid.text, wp.inner.caret.offset);
+                let (x, _, _) = wp.layout_cache[&laid.id].1.caret_geometry(byte);
+                assert!(
+                    (f64::from(x) - 100.0).abs() < 15.0,
+                    "crossing a visual line boundary must retain the pointed column, got {x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_selection_between_paragraphs_stays_near_the_pointer() {
+        let (mut state, mut wp) = bound();
+        for i in 0..3 {
+            if i != 0 {
+                wp.inner.enter(&mut state.doc);
+            }
+            wp.inner.insert_str(&mut state.doc, "abcdefghijk");
+        }
+        for zoom in [0.5, 1.0, 2.0] {
+            wp.set_zoom(zoom);
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            let first = wp.laid[0].clone();
+            let second = wp.laid[1].clone();
+            let gap_start = first.y_top + first.height;
+            assert!(
+                second.y_top > gap_start,
+                "fixture needs real paragraph spacing"
+            );
+            let x = first.text_x + f64::from(wp.layout_cache[&first.id].1.caret_geometry(4).0);
+            for (fraction, block) in [(0.25, &first.id), (0.75, &second.id)] {
+                wp.inner.set_caret(Caret {
+                    block: first.id.clone(),
+                    offset: 1,
+                });
+                wp.inner.clear_anchor();
+                let point = Point::new(x, gap_start + (second.y_top - gap_start) * fraction);
+                // Exercise the same screen/content transform as mouse dragging.
+                let screen = wp.content_transform(Affine::IDENTITY) * point;
+                wp.drag.press(screen, false);
+                let mut handled = false;
+                wp.handle_cursor_moved(
+                    screen.x,
+                    screen.y,
+                    1.0,
+                    wp.toolbar_height(1000.0),
+                    &mut handled,
+                );
+                wp.drag.release();
+                assert!(handled);
+                assert_eq!(
+                    &wp.inner.caret.block, block,
+                    "gap hit must choose a neighbouring paragraph at {zoom}x"
+                );
+                assert_eq!(
+                    wp.inner.caret.offset, 4,
+                    "gap hit must preserve horizontal position"
+                );
+                assert_eq!(wp.inner.selection_anchor.as_ref().unwrap().offset, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position() {
+        use winit::event::TouchPhase;
+        let (mut state, mut wp) = populated();
+        wp.set_zoom(1.0);
+        wp.scroll_y = 100.0;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.pointer = Point::new(500.0, 300.0);
+        let before = wp.scroll_y + (wp.pointer.y - wp.zoom.anchor().y) / wp.zoom.factor();
+        let heads = state.doc.get_heads();
+        assert!(pinch(&mut wp, &mut state, 0.025, TouchPhase::Moved));
+        assert!((wp.zoom.factor() - 1.025).abs() < 1e-9);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let after = wp.scroll_y + (wp.pointer.y - wp.zoom.anchor().y) / wp.zoom.factor();
+        assert!((before - after).abs() < 1e-6);
+        assert!(!wp.auto_fit_page);
+        assert_eq!(state.doc.get_heads(), heads);
+        assert!(!wp.modified);
+        assert!(pinch(&mut wp, &mut state, -0.05, TouchPhase::Moved));
+        assert!(wp.zoom.factor() < 1.025);
+    }
+
+    #[test]
+    fn trackpad_pinch_respects_overlays_bounds_and_invalid_deltas() {
+        use winit::event::TouchPhase;
+        let (mut state, mut wp) = populated();
+        wp.set_zoom(1.0);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.pointer = Point::new(500.0, 300.0);
+        for delta in [f64::NAN, f64::INFINITY] {
+            pinch(&mut wp, &mut state, delta, TouchPhase::Moved);
+            assert_eq!(wp.zoom.factor(), 1.0);
+        }
+        pinch(&mut wp, &mut state, 0.5, TouchPhase::Cancelled);
+        assert_eq!(wp.zoom.factor(), 1.0);
+        wp.open_template_picker();
+        assert!(pinch(&mut wp, &mut state, 0.5, TouchPhase::Moved));
+        assert_eq!(wp.zoom.factor(), 1.0);
+        wp.template_picker.close();
+        wp.pointer = Point::new(20.0, 20.0);
+        assert!(!pinch(&mut wp, &mut state, 0.5, TouchPhase::Moved));
+        assert_eq!(wp.zoom.factor(), 1.0);
+        wp.pointer = Point::new(500.0, 300.0);
+        pinch(&mut wp, &mut state, 20.0, TouchPhase::Moved);
+        assert_eq!(wp.zoom.factor(), ZOOM_MAX);
+        pinch(&mut wp, &mut state, -2.0, TouchPhase::Moved);
+        assert_eq!(wp.zoom.factor(), ZOOM_MIN);
+    }
+
+    #[test]
+    fn native_text_shortcuts_select_words_and_lines_after_menu_dismissal() {
+        use winit::keyboard::ModifiersState;
+        for (mods, expected) in [
+            (ModifiersState::ALT | ModifiersState::SHIFT, "café"),
+            (ModifiersState::SUPER | ModifiersState::SHIFT, "Hello café"),
+            (ModifiersState::CONTROL | ModifiersState::SHIFT, "café"),
+        ] {
+            let (mut state, mut wp) = bound();
+            wp.inner.insert_str(&mut state.doc, "Hello café");
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            wp.focused = true;
+            wp.open_template_picker();
+            press_named(&mut wp, &mut state, NamedKey::Escape);
+            press_named_with_modifiers(&mut wp, &mut state, NamedKey::ArrowLeft, mods.into());
+            assert_eq!(wp.inner.selection_text(&state.doc), expected);
+            assert_eq!(wp.inner.current_text(&state.doc), "Hello café");
+            assert!(!wp.modified, "selection must not modify the document");
+        }
+    }
+
+    #[test]
+    fn native_text_shortcuts_option_right_crosses_trailing_spaces_forward() {
+        use winit::keyboard::ModifiersState;
+        for (text, selected) in [("hello   ", "  "), ("hello!!!", "!!")] {
+            let (mut state, mut wp) = bound();
+            wp.inner.insert_str(&mut state.doc, text);
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            wp.inner.caret.offset = 6;
+            wp.focused = true;
+            press_named_with_modifiers(
+                &mut wp,
+                &mut state,
+                NamedKey::ArrowRight,
+                (ModifiersState::ALT | ModifiersState::SHIFT).into(),
+            );
+            assert_eq!(wp.inner.caret.offset, 8);
+            assert_eq!(wp.inner.selection_text(&state.doc), selected);
+        }
+    }
+
+    #[test]
+    fn native_text_shortcuts_option_right_keeps_adjacent_unicode_words() {
+        use winit::keyboard::ModifiersState;
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "東京京都大阪");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.inner.caret.offset = 2;
+        wp.focused = true;
+        press_named_with_modifiers(
+            &mut wp,
+            &mut state,
+            NamedKey::ArrowRight,
+            (ModifiersState::ALT | ModifiersState::SHIFT).into(),
+        );
+        assert_eq!(wp.inner.selection_text(&state.doc), "京都");
+    }
+
+    #[test]
+    fn native_text_shortcuts_select_then_delete_through_the_host() {
+        for (modifier, expected) in [("alt", "Hello "), ("super", "")] {
+            let (mut state, mut wp) = bound();
+            wp.inner.insert_str(&mut state.doc, "Hello café");
+            let containers = wp.inner.containers.clone().unwrap();
+            wp.focused = true;
+            let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+            driver.set_modifiers(&[modifier.into(), "shift".into()]);
+            driver.key("ArrowLeft");
+            driver.set_modifiers(&[]);
+            driver.key("Backspace");
+            assert_eq!(
+                qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn native_text_shortcuts_command_right_stops_at_the_visual_line_in_every_region() {
+        use winit::keyboard::ModifiersState;
+        for region in [Region::Body, Region::Header, Region::Footer] {
+            let (mut state, mut wp) = bound();
+            wp.inner.focus_region(&mut state.doc, region);
+            let text = "A long line of text with several words. ".repeat(20);
+            wp.inner.insert_str(&mut state.doc, &text);
+            wp.inner.caret.offset = 2;
+            wp.focused = true;
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            press_named_with_modifiers(
+                &mut wp,
+                &mut state,
+                NamedKey::ArrowRight,
+                (ModifiersState::SUPER | ModifiersState::SHIFT).into(),
+            );
+            assert!(
+                wp.inner.caret.offset > 2 && wp.inner.caret.offset < text.chars().count(),
+                "Command+Right must stop at a wrapped visual line, not the entire paragraph: {region:?}"
+            );
+            assert!(wp.inner.has_selection());
+        }
     }
 
     /// End-to-end through the **production** event path: click into the header
@@ -13925,6 +15204,57 @@ mod tests {
     }
 
     #[test]
+    fn enlarged_toolbar_controls_fit_their_labels() {
+        let (mut state, mut wp) = populated();
+        let mut theme = Theme::dark();
+        theme.text_scale = 2.0;
+        pipeline_draw_themed(&mut wp, &mut state, 480, 600, &theme);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let specs = wp.toolbar_button_specs(true);
+        for ((_, rect), (_, item)) in wp.toolbar.iter().zip(specs) {
+            let (width, height) = tr.measure(&item.label, 15.0, None);
+            assert!(
+                rect.width() >= f64::from(width) + 12.0,
+                "{} needs {width}, got {rect:?}",
+                item.label
+            );
+            assert!(
+                rect.height() >= f64::from(height),
+                "{} needs {height}, got {rect:?}",
+                item.label
+            );
+            assert_eq!(rect.intersect(wp.rect), *rect);
+        }
+    }
+
+    #[test]
+    fn enlarged_layout_controls_fit_their_labels() {
+        let (mut state, mut wp) = populated();
+        let mut theme = Theme::dark();
+        theme.text_scale = 2.0;
+        pipeline_draw_themed(&mut wp, &mut state, 480, 600, &theme);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        for ((_, rect), label) in wp
+            .layout_chips
+            .iter()
+            .zip([t("layout-margins"), t("layout-spacing")])
+        {
+            let (width, height) = tr.measure(&label, 13.0, None);
+            assert!(
+                rect.width() >= f64::from(width) + 16.0,
+                "label needs {width}, got {rect:?}"
+            );
+            assert!(
+                rect.height() >= f64::from(height),
+                "label needs {height}, got {rect:?}"
+            );
+            assert_eq!(rect.intersect(wp.rect), *rect);
+        }
+    }
+
+    #[test]
     fn document_status_stays_in_bottom_chrome_at_narrow_and_wide_zoomed_widths() {
         let (mut state, mut wp) = populated();
         for (width, zoom) in [(700_u32, 0.81), (1100, 1.0)] {
@@ -13933,8 +15263,12 @@ mod tests {
             pipeline_draw(&mut wp, &mut state, width, 900);
             let bar = Rect::new(0.0, 868.0, f64::from(width), 900.0);
             let label = wp.status_count_label();
-            let rect = WordProcessorWidget::layout_bar_status_rect(bar, 210.0, &label)
-                .expect("the count fits after the layout controls");
+            let rect = WordProcessorWidget::layout_bar_status_rect(
+                bar,
+                210.0,
+                f64::from(TextRenderer::new().measure(&label, 12.5, None).0),
+            )
+            .expect("the count fits after the layout controls");
             assert!(
                 rect.y0 >= bar.y0 && rect.y1 <= bar.y1 && rect.x1 <= bar.x1,
                 "{width}px status is entirely inside the bottom chrome: {rect:?}"
@@ -14225,6 +15559,141 @@ mod tests {
     fn first_block_start_point(wp: &WordProcessorWidget) -> Point {
         let l = wp.laid.first().expect("at least one laid block");
         Point::new(l.text_x + 1.0, l.y_top + l.height / 2.0)
+    }
+
+    #[test]
+    fn menu_ux_right_click_preserves_selected_text_and_clipboard_actions() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "Hello world");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.inner.select_all(&state.doc);
+        let selected = wp.inner.selection_text(&state.doc);
+        let caret = wp.inner.caret.clone();
+        let anchor = wp.inner.selection_anchor.clone();
+        let point = first_block_start_point(&wp);
+        wp.open_context_menu(&state.doc, point, [300.0, 300.0]);
+        assert_eq!(wp.inner.selection_text(&state.doc), selected);
+        assert_eq!(wp.inner.caret, caret);
+        assert_eq!(wp.inner.selection_anchor, anchor);
+        assert!(wp.context_actions.contains(&Some(CtxAction::Copy)));
+        assert!(wp.context_actions.contains(&Some(CtxAction::Cut)));
+    }
+
+    #[test]
+    fn menu_ux_open_menus_capture_editing_keys_and_keyboard_activation() {
+        for style_menu in [false, true] {
+            let (mut state, mut wp) = bound();
+            wp.model_mut().insert_str(&mut state.doc, "Keep my draft");
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            wp.focused = true;
+            wp.inner.select_all(&state.doc);
+            let style_count = wp.sheet.order().len();
+            if style_menu {
+                wp.style_menu.open("body", Point::new(300.0, 300.0));
+            } else {
+                wp.open_toolbar_overflow();
+            }
+            press_named(&mut wp, &mut state, NamedKey::Backspace);
+            assert_eq!(
+                first_block(&wp, &state).map(|b| b.text),
+                Some("Keep my draft".into())
+            );
+            press_named(&mut wp, &mut state, NamedKey::ArrowDown);
+            press_named(&mut wp, &mut state, NamedKey::Enter);
+            assert!(!wp.context_menu.is_open());
+            assert!(!wp.style_menu.is_open());
+            if style_menu {
+                assert_eq!(
+                    wp.sheet.order().len(),
+                    style_count + 1,
+                    "Enter duplicates the style"
+                );
+            } else {
+                assert!(
+                    wp.mark_active_in_selection("strike"),
+                    "Enter applies the chosen formatting"
+                );
+            }
+            assert_eq!(
+                first_block(&wp, &state).map(|b| b.text),
+                Some("Keep my draft".into())
+            );
+        }
+    }
+
+    #[test]
+    fn menu_ux_context_actions_stay_in_the_viewport() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "Hello world");
+        pipeline_draw(&mut wp, &mut state, 600, 400);
+        let point = first_block_start_point(&wp);
+        wp.open_context_menu(&state.doc, point, [598.0, 398.0]);
+        let mut scene = Scene::new();
+        wp.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark().with_text_scale(2.0),
+            &PresenceCtx::empty(),
+        );
+        for (index, action) in wp.context_actions.iter().enumerate() {
+            if action.is_some() {
+                let row = wp
+                    .context_menu
+                    .item_rect(index)
+                    .expect("menu row remains reachable");
+                assert!(
+                    row.x0 >= 0.0 && row.y0 >= 0.0 && row.x1 <= 600.0 && row.y1 <= 400.0,
+                    "row outside viewport: {row:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn menu_ux_host_undo_cannot_edit_behind_an_open_menu() {
+        for menu_kind in 0..3 {
+            let (mut state, mut wp) = bound();
+            state.commit_action(None, None);
+            wp.inner.insert_str(&mut state.doc, "Keep this edit");
+            state.commit_action(None, None);
+            let containers = wp.inner.containers.clone().unwrap();
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            match menu_kind {
+                0 => wp.open_template_picker(),
+                1 => wp.open_toolbar_overflow(),
+                _ => wp.style_menu.open("body", Point::new(300.0, 300.0)),
+            }
+            let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+            driver.set_modifiers(&["ctrl".into()]);
+            driver.key("z");
+            assert_eq!(
+                qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+                "Keep this edit",
+                "host undo must be captured while a menu is open"
+            );
+            driver.set_modifiers(&[]);
+            driver.key("Escape");
+            driver.set_modifiers(&["ctrl".into()]);
+            driver.key("z");
+            assert_eq!(
+                qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+                "",
+                "ordinary undo resumes after dismissal"
+            );
+        }
+    }
+
+    #[test]
+    fn menu_ux_right_click_at_the_selection_end_keeps_the_selection() {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Hello world");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.inner.select_all(&state.doc);
+        let mut point = first_block_start_point(&wp);
+        point.x += 400.0; // hit testing clamps the text's right edge to its end offset
+        wp.open_context_menu(&state.doc, point, [500.0, 300.0]);
+        assert_eq!(wp.inner.selection_text(&state.doc), "Hello world");
     }
 
     #[test]
@@ -15308,6 +16777,155 @@ mod tests {
         );
     }
 
+    #[test]
+    fn template_menu_hover_paints_feedback_in_both_themes() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let (mut state, mut wp) = bound();
+            pipeline_draw_themed(&mut wp, &mut state, 1200, 700, &theme);
+            wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+            let mut tr = TextRenderer::new();
+            let mut before = Scene::new();
+            wp.draw_overlay(
+                &mut before,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let point = Point::new(
+                wp.toolbar.first().unwrap().1.x0 + 10.0,
+                wp.rect.y0 + wp.toolbar_height(wp.rect.width()) + 6.0 + 28.0 * 2.0 + 10.0,
+            );
+            let mut handled = false;
+            wp.dirty = false;
+            wp.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: (point.x * 2.0, point.y * 2.0).into(),
+                },
+                2.0,
+                &Modifiers::default(),
+                &mut state.doc,
+                &state.root,
+                &mut handled,
+                &mut None,
+                NodeId::new(0),
+                &TaffyTree::new(),
+            );
+            let mut after = Scene::new();
+            wp.draw_overlay(
+                &mut after,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert!(
+                after.encoding().path_tags.len() > before.encoding().path_tags.len(),
+                "hovering a template must paint a row highlight"
+            );
+            assert!(wp.dirty, "hover must request a repaint");
+            if let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") {
+                render_review_png(
+                    &mut wp,
+                    &mut state,
+                    1200,
+                    700,
+                    std::path::Path::new(&dir),
+                    "template-hover-dark",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn template_menu_keyboard_selects_without_editing_the_document() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "Draft");
+        wp.refresh_blocks(&mut state.doc);
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        wp.focused = true;
+        wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+        press_named(&mut wp, &mut state, NamedKey::Backspace);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Draft".into())
+        );
+        for _ in 0..3 {
+            press_named(&mut wp, &mut state, NamedKey::ArrowDown);
+        }
+        press_named(&mut wp, &mut state, NamedKey::Enter);
+        assert!(
+            !wp.template_picker.is_open(),
+            "Enter chooses and closes the menu"
+        );
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Report Title".into())
+        );
+    }
+
+    #[test]
+    fn template_menu_pointer_selection_and_dismissal_use_the_overlay() {
+        let (mut state, mut wp) = bound();
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+        let report = Point::new(
+            wp.toolbar.first().unwrap().1.x0 + 10.0,
+            wp.rect.y0 + wp.toolbar_height(wp.rect.width()) + 6.0 + 28.0 * 2.0 + 10.0,
+        );
+        left_click(&mut wp, &mut state, report);
+        assert!(!wp.template_picker.is_open());
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Report Title".into())
+        );
+
+        wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+        assert_eq!(
+            wp.template_picker.menu_mut().hovered(),
+            None,
+            "reopening clears the old highlight"
+        );
+        wp.focused = false;
+        press_named(&mut wp, &mut state, NamedKey::Escape);
+        assert!(
+            !wp.template_picker.is_open(),
+            "Escape works even without editor focus"
+        );
+
+        wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+        let caret = wp.inner.caret.clone();
+        left_click(&mut wp, &mut state, Point::new(900.0, 500.0));
+        assert!(!wp.template_picker.is_open());
+        assert_eq!(
+            wp.inner.caret, caret,
+            "dismissal must not click the document beneath"
+        );
+    }
+
+    #[test]
+    fn file_ux_new_template_starts_untitled_without_overwriting_the_old_file() {
+        let (mut state, mut wp) = bound();
+        let old_path =
+            std::env::temp_dir().join(format!("wp-template-original-{}.md", std::process::id()));
+        std::fs::write(&old_path, "Original document").unwrap();
+        wp.try_open_document_in_place(&mut state.doc, &old_path)
+            .unwrap();
+        wp.apply_template(&mut state.doc, crate::Template::Report);
+        assert!(
+            wp.path.is_none(),
+            "New must ask for a destination on its first Save"
+        );
+        assert_eq!(wp.format, Some(WpFormat::Markdown));
+        assert!(wp.modified);
+        assert_eq!(
+            std::fs::read_to_string(&old_path).unwrap(),
+            "Original document"
+        );
+        let _ = std::fs::remove_file(old_path);
+    }
+
     /// Selecting from the "New ▾" picker replaces the document content with that
     /// template's first heading through the production pointer-routing path.
     #[test]
@@ -15509,6 +17127,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn recovery_reuses_fresh_complete_views_and_falls_back_for_stale_or_partial_views() {
+        for case in ["fresh", "stale", "partial"] {
+            let dir = temp_dir(&format!("recovery-views-{case}"));
+            let (mut state, mut wp) = bound();
+            wp.set_recovery_dir(dir.clone());
+            wp.inner.insert_str(&mut state.doc, "Unicode café recovery");
+            wp.refresh_blocks(&mut state.doc);
+            if case == "stale" {
+                wp.inner.insert_str(&mut state.doc, " latest pending edit");
+            } else if case == "partial" {
+                with_doc(&mut state, |dm| {
+                    let mut after = None;
+                    for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+                        let id = dm.insert_block(after.as_deref(), "paragraph");
+                        dm.splice_text(&id, 0, 0, &format!("Recovery paragraph {i}"));
+                        after = Some(id);
+                    }
+                });
+                wp.refresh_blocks(&mut state.doc);
+                assert!(wp.blocks.len() < wp.body_order.len());
+            }
+            let c = wp.inner.containers.as_ref().unwrap();
+            let expected = WpFormat::Markdown
+                .export(qdoc::DocRef { doc: &state.doc, c })
+                .unwrap();
+            let scans = qdoc::model::ordered_keys_scan_count();
+            for _ in 0..AUTOSAVE_EDIT_THRESHOLD {
+                wp.note_edit_for_autosave(&mut state.doc);
+            }
+            assert_eq!(
+                std::fs::read(wp.recovery_path()).unwrap(),
+                expected,
+                "{case}"
+            );
+            if case == "fresh" {
+                assert_eq!(
+                    qdoc::model::ordered_keys_scan_count(),
+                    scans,
+                    "fresh complete views must avoid full document materialization"
+                );
+            }
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     /// Autosave: typing past the edit threshold (through the production keyboard
     /// path) writes a recovery copy to the widget's recovery dir. A real save then
     /// clears it. Asserts on file existence (the production path), not pixels.
@@ -15526,7 +17190,18 @@ mod tests {
         assert!(!recovery_path.exists(), "no recovery file before any edits");
 
         // Type more than AUTOSAVE_EDIT_THRESHOLD characters through `handle_event`.
-        for _ in 0..(AUTOSAVE_EDIT_THRESHOLD as usize + 2) {
+        for _ in 0..AUTOSAVE_EDIT_THRESHOLD {
+            type_char(&mut wp, &mut state, 'x');
+        }
+        let c = wp.inner.containers.as_ref().unwrap();
+        assert_eq!(
+            std::fs::read(&recovery_path).unwrap(),
+            WpFormat::Markdown
+                .export(qdoc::DocRef { doc: &state.doc, c })
+                .unwrap(),
+            "the snapshot includes the edit that reached the threshold"
+        );
+        for _ in 0..2 {
             type_char(&mut wp, &mut state, 'x');
         }
         assert!(
@@ -16763,6 +18438,217 @@ mod tests {
     }
 
     #[test]
+    fn file_ux_failed_save_as_keeps_the_original_destination() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "My draft");
+        let dir = std::env::temp_dir().join(format!("wp-save-as-failure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("original.md");
+        std::fs::write(&original, "Original on disk").unwrap();
+        wp.set_file(original.clone(), WpFormat::Markdown);
+        wp.modified = true;
+        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+            dir.join("missing-parent").join("new.docx"),
+        )));
+        wp.portal_purpose = Some(PortalPurpose::SaveAs);
+        wp.sync(&mut state.doc, &state.root);
+        assert_eq!(wp.path, Some(original.clone()));
+        assert_eq!(wp.format, Some(WpFormat::Markdown));
+        assert!(wp.modified);
+        assert_eq!(
+            std::fs::read_to_string(&original).unwrap(),
+            "Original on disk"
+        );
+        assert!(matches!(wp.toast, Some((_, ToastKind::Error))));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn file_ux_failed_open_reports_an_error_without_changing_the_draft() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "My draft");
+        let missing = std::env::temp_dir().join(format!("wp-missing-{}.docx", std::process::id()));
+        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+            missing,
+        )));
+        wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+        wp.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("My draft".into())
+        );
+        assert!(
+            matches!(wp.toast, Some((_, ToastKind::Error))),
+            "failed Open needs visible feedback"
+        );
+    }
+
+    #[test]
+    fn file_ux_new_does_not_replace_a_modified_draft_without_a_decision() {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Unsaved work");
+        wp.modified = true;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.open_template_picker();
+        press_named(&mut wp, &mut state, NamedKey::ArrowDown);
+        press_named(&mut wp, &mut state, NamedKey::Enter);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Unsaved work".into())
+        );
+        press_named(&mut wp, &mut state, NamedKey::Escape);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Unsaved work".into())
+        );
+        assert!(wp.modified);
+    }
+
+    #[test]
+    fn file_ux_open_does_not_replace_a_modified_draft_without_a_decision() {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Unsaved work");
+        wp.modified = true;
+        let picked = std::env::temp_dir().join(format!("wp-guard-open-{}.md", std::process::id()));
+        std::fs::write(&picked, "Other file").unwrap();
+        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+            picked.clone(),
+        )));
+        wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+        wp.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Unsaved work".into())
+        );
+        assert!(wp.path.is_none());
+        let _ = std::fs::remove_file(picked);
+    }
+
+    #[test]
+    fn file_ux_cancelled_or_failed_save_keeps_the_pending_open_and_draft() {
+        for failure in 0..3 {
+            let (mut state, mut wp) = bound();
+            wp.inner.insert_str(&mut state.doc, "Unsaved draft");
+            wp.modified = true;
+            let invocation = qos_actions::InvocationId::new();
+            wp.resource_file_invocation = Some(invocation);
+            wp.stage_replacement(PendingReplacement::Open(PathBuf::from(
+                "never-open-this.md",
+            )));
+            wp.portal_purpose = Some(PortalPurpose::SaveAs);
+            wp.portal_rx = Some(match failure {
+                0 => portal::inject_for_test(portal::PortalOutcome::Cancelled),
+                1 => portal::inject_for_test(portal::PortalOutcome::Failed("test failure".into())),
+                _ => {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    drop(sender);
+                    receiver
+                }
+            });
+            wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Save);
+            wp.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                first_block(&wp, &state).map(|b| b.text),
+                Some("Unsaved draft".into())
+            );
+            assert!(wp.modified && wp.path.is_none());
+            assert!(wp.unsaved_changes.is_open() && wp.pending_replacement.is_some());
+            assert!(
+                wp.poll_resource_operation(invocation, false, &state.doc, &state.root)
+                    .is_none()
+            );
+            wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Cancel);
+            assert!(matches!(
+                wp.poll_resource_operation(invocation, false, &state.doc, &state.root),
+                Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt() {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Keep this draft");
+        wp.modified = true;
+        let invocation = qos_actions::InvocationId::new();
+        wp.pending_resource_open = Some((invocation, PathBuf::from("never-open.md")));
+        wp.sync(&mut state.doc, &state.root);
+        assert!(wp.unsaved_changes.is_open());
+        assert!(matches!(
+            wp.poll_resource_operation(invocation, true, &state.doc, &state.root),
+            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(!wp.unsaved_changes.is_open() && wp.pending_replacement.is_none());
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Keep this draft".into())
+        );
+        assert!(wp.modified);
+    }
+
+    #[test]
+    fn file_ux_save_then_open_writes_the_draft_before_replacing_it() {
+        for corrupt in [false, true] {
+            let (mut state, mut wp) = bound();
+            wp.inner.insert_str(&mut state.doc, "Unsaved draft");
+            wp.modified = true;
+            let dir = std::env::temp_dir().join(format!(
+                "wp-save-before-open-{}-{corrupt}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = dir.join(if corrupt { "target.docx" } else { "target.md" });
+            std::fs::write(&target, "Other document").unwrap();
+            let saved = dir.join("saved-draft.md");
+            let invocation = qos_actions::InvocationId::new();
+            wp.resource_file_invocation = Some(invocation);
+            wp.stage_replacement(PendingReplacement::Open(target.clone()));
+            wp.portal_purpose = Some(PortalPurpose::SaveAs);
+            wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+                saved.clone(),
+            )));
+            wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Save);
+            wp.sync(&mut state.doc, &state.root);
+            assert!(
+                std::fs::read_to_string(&saved)
+                    .unwrap()
+                    .contains("Unsaved draft")
+            );
+            assert_eq!(wp.path, Some(if corrupt { saved } else { target }));
+            assert_eq!(
+                first_block(&wp, &state).map(|b| b.text),
+                Some(
+                    if corrupt {
+                        "Unsaved draft"
+                    } else {
+                        "Other document"
+                    }
+                    .into()
+                )
+            );
+            let result = wp.poll_resource_operation(invocation, false, &state.doc, &state.root);
+            if corrupt {
+                assert!(matches!(
+                    result,
+                    Some(qos_actions::InvocationUpdate::Failed { .. })
+                ));
+                assert!(matches!(wp.toast, Some((_, ToastKind::Error))));
+            } else {
+                assert!(matches!(
+                    result,
+                    Some(qos_actions::InvocationUpdate::Succeeded { .. })
+                ));
+            }
+            assert!(
+                wp.poll_resource_operation(invocation, false, &state.doc, &state.root)
+                    .is_none()
+            );
+            assert!(!wp.unsaved_changes.is_open() && wp.pending_replacement.is_none());
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
     fn failed_save_is_visible_and_keeps_the_document_modified() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "unsaved work");
@@ -17334,6 +19220,146 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "GPU pixel equivalence; run explicitly when changing text clipping"]
+    fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
+        let body = format!(
+            "Annotated text {}",
+            "wrapped words for pagination ".repeat(220)
+        );
+        let (mut wp, mut state, c, mut ids, first) = doc_with_paragraph(&body);
+        {
+            let mut dm = qdoc::DocMut {
+                doc: &mut state.doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            let note = dm.insert_footnote(&first, 10);
+            let note_block = dm.insert_note_block(&note, None, "paragraph").unwrap();
+            dm.splice_note_text(
+                &note,
+                &note_block,
+                0,
+                0,
+                "Footnote remains associated with its page.",
+            );
+            dm.add_comment(&first, 0, 9, "Reviewer", "Keep this comment.");
+            let change = dm.insert_change(qdoc::ChangeKind::Ins, "Reviewer", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &first, 12, 20, &change);
+            let mut after = first;
+            for i in 0..24 {
+                let id = dm.insert_block(Some(&after), "paragraph");
+                dm.splice_text(
+                    &id,
+                    0,
+                    0,
+                    &format!("Paragraph {i}. {}", "Café text with wrapping. ".repeat(30)),
+                );
+                after = id;
+            }
+        }
+        let (w, h) = (900, 1100);
+        pipeline_draw(&mut wp, &mut state, w, h);
+        wp.auto_fit_page = false;
+        let mut tr = TextRenderer::new();
+        let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let permission = PermissionContext::permissive();
+        for (scroll, zoom) in [(0.0, 1.0), (932.25, 0.87), (5000.5, 1.25)] {
+            wp.zoom.set(zoom);
+            wp.scroll_y = scroll;
+            let mut scenes = Vec::new();
+            let mut geometry = Vec::new();
+            for reference in [true, false] {
+                wp.reference_text_rendering = reference;
+                let mut scene = Scene::new();
+                wp.draw_with_presence(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &presence,
+                    &permission,
+                );
+                wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                geometry.push(
+                    wp.laid
+                        .iter()
+                        .map(|l| (l.id.clone(), l.y_top, l.height, l.page))
+                        .collect::<Vec<_>>(),
+                );
+                scenes.push(scene);
+            }
+            assert_eq!(
+                geometry[0], geometry[1],
+                "clipping must not change pagination or hit geometry"
+            );
+            assert_eq!(wp.notes.len(), 1);
+            assert_eq!(wp.review.comments().len(), 1);
+            assert_eq!(wp.review.changes().len(), 1);
+            let bg = Color::from_rgb8(0x20, 0x22, 0x28);
+            // Vello can vary a few quantized edge bytes even for an identical
+            // scene. Measure that reference-only envelope; all other bytes must
+            // match exactly, with no blanket pixel/AA tolerance.
+            let mut low = renderer.render(&scenes[0], bg);
+            let mut high = low.clone();
+            for _ in 0..63 {
+                for ((low, high), value) in low
+                    .iter_mut()
+                    .zip(&mut high)
+                    .zip(renderer.render(&scenes[0], bg))
+                {
+                    *low = (*low).min(value);
+                    *high = (*high).max(value);
+                }
+            }
+            let variable = low.iter().zip(&high).filter(|(a, b)| a != b).count();
+            assert!(
+                variable <= 256 && low.iter().zip(&high).all(|(a, b)| b - a <= 1),
+                "reference raster is not stable enough for this oracle: {variable} variable bytes"
+            );
+            for _ in 0..4 {
+                let clipped = renderer.render(&scenes[1], bg);
+                let mismatches = clipped
+                    .iter()
+                    .zip(low.iter().zip(&high))
+                    .filter(|(value, (low, high))| value < low || value > high)
+                    .count();
+                if mismatches > 0 {
+                    eprintln!(
+                        "outside envelope {:?}",
+                        clipped
+                            .iter()
+                            .zip(low.iter().zip(&high))
+                            .enumerate()
+                            .filter(|(_, (v, (a, b)))| v < a || v > b)
+                            .take(20)
+                            .map(|(i, (v, (a, b)))| (
+                                i / 4 % w as usize,
+                                i / 4 / w as usize,
+                                i % 4,
+                                v,
+                                a,
+                                b
+                            ))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                assert_eq!(
+                    mismatches, 0,
+                    "document raster exceeds reference-only envelope at scroll={scroll}, zoom={zoom}"
+                );
+            }
+            let full_glyphs = scenes[0].encoding().resources.glyphs.len();
+            let clipped_glyphs = scenes[1].encoding().resources.glyphs.len();
+            assert!(
+                clipped_glyphs * 3 < full_glyphs,
+                "offscreen glyphs must be omitted: {clipped_glyphs}/{full_glyphs}"
+            );
+        }
+    }
+
     // ---- visual review shots ----------------------------------------------
     // A guarded renderer that writes PNGs of the fixed surfaces for eyeballing.
     // Set `QOS_WP_REVIEW_SHOTS=<dir>` to emit them; a normal `cargo test` run
@@ -17348,11 +19374,23 @@ mod tests {
         dir: &std::path::Path,
         name: &str,
     ) {
+        render_review_png_themed(wp, state, w, h, dir, name, &Theme::dark());
+    }
+
+    fn render_review_png_themed(
+        wp: &mut WordProcessorWidget,
+        state: &mut ui::State,
+        w: u32,
+        h: u32,
+        dir: &std::path::Path,
+        name: &str,
+        theme: &Theme,
+    ) {
         use ui::offscreen::OffscreenRenderer;
-        let theme = Theme::dark();
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         wp.sync(&mut state.doc, &state.root);
@@ -17406,6 +19444,46 @@ mod tests {
             Color::from_rgb8(0x20, 0x22, 0x28),
             dir.join(format!("{name}.png")),
         );
+    }
+
+    #[test]
+    fn menu_ux_review_shots() {
+        let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") else {
+            return;
+        };
+        let dir = std::path::Path::new(&dir);
+        for (name, theme, width) in [
+            ("dark", Theme::dark(), 1000),
+            ("light", Theme::light(), 1000),
+            ("large", Theme::dark().with_text_scale(2.0), 480),
+        ] {
+            let (mut state, mut wp) = bound();
+            wp.inner.insert_str(&mut state.doc, "Keep my unsaved draft");
+            wp.modified = true;
+            wp.request_template(&mut state.doc, crate::Template::Report);
+            render_review_png_themed(
+                &mut wp,
+                &mut state,
+                width,
+                600,
+                dir,
+                &format!("unsaved-{name}"),
+                &theme,
+            );
+            wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Cancel);
+            let point = first_block_start_point(&wp);
+            wp.open_context_menu(&state.doc, point, [num::f32_of_u32(width) - 2.0, 598.0]);
+            wp.context_menu.focus_first_action();
+            render_review_png_themed(
+                &mut wp,
+                &mut state,
+                width,
+                600,
+                dir,
+                &format!("context-edge-{name}"),
+                &theme,
+            );
+        }
     }
 
     #[test]
@@ -17886,3 +19964,7 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
         .any(|dir| path.starts_with(dir))
         || path.starts_with(std::env::temp_dir())
 }
+
+#[cfg(test)]
+#[path = "widget/mark_boundary_tests.rs"]
+mod mark_boundary_tests;

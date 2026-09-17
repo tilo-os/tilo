@@ -1239,6 +1239,10 @@ impl Widget for Button {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
+    fn has_action_control_bindings(&self) -> bool {
+        self.action.is_some()
+    }
+
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         use crate::widget::{ControlBindingKind, ControlBindingMetadata};
         if let Some(action) = &self.action {

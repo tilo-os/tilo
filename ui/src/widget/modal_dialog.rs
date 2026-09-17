@@ -53,6 +53,7 @@ impl std::fmt::Debug for DialogAction {
 /// Generic over the content type so callers can pass any `Widget` without
 /// boxing — same pattern the file picker uses.
 pub struct ModalDialog<C: Widget> {
+    action_identity: uuid::Uuid,
     title: String,
     content: C,
     primary_action: Option<DialogAction>,
@@ -88,6 +89,7 @@ pub struct ModalDialog<C: Widget> {
 impl<C: Widget> ModalDialog<C> {
     pub fn new(title: impl Into<String>, content: C) -> Self {
         Self {
+            action_identity: uuid::Uuid::new_v4(),
             title: title.into(),
             content,
             primary_action: None,
@@ -732,15 +734,37 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // hidden from the tree.
         let title = crate::i18n!(&self.title);
         let name = (!title.is_empty()).then_some(title);
-        Some(
-            AccessNode::new(Role::Dialog)
+        let mut node = AccessNode::new(Role::Dialog)
                 .with_optional_name(name)
                 .with_state(AccessState {
                     modal: true,
                     hidden: !self.open,
                     ..Default::default()
-                }),
-        )
+                });
+        if self.open {
+            for (key, action, bounds) in [("primary", &self.primary_action, self.primary_rect), ("secondary", &self.secondary_action, self.secondary_rect)] {
+                if let Some(action) = action {
+                    node.children.push(AccessNode::new(Role::Button)
+                        .with_name(action.label.clone())
+                        .with_bounds(bounds)
+                        .with_action_target(format!("dialog:{}:{key}", self.action_identity)));
+                }
+            }
+        }
+        Some(node)
+    }
+
+    fn perform_semantic_action(&mut self, target: &str, action: &crate::a11y::Action, _: &mut AutoCommit, _: &ObjId) -> bool {
+        if !self.open || !matches!(action, crate::a11y::Action::Activate) { return false; }
+        let callback = if target == format!("dialog:{}:primary", self.action_identity) {
+            self.primary_action.as_mut()
+        } else if target == format!("dialog:{}:secondary", self.action_identity) {
+            self.secondary_action.as_mut()
+        } else { None };
+        if let Some(callback) = callback {
+            (callback.on_click)();
+            true
+        } else { false }
     }
 }
 
@@ -990,6 +1014,31 @@ mod tests {
             .unwrap();
         d.apply_layout(&taffy, node, Point::ZERO);
         (d, events)
+    }
+
+    #[test]
+    fn semantic_footer_uses_current_dialog_visibility_and_existing_actions() {
+        use automerge::transaction::Transactable;
+        let fired = Rc::new(Cell::new(0));
+        let callback = fired.clone();
+        let mut dialog = ModalDialog::new("Review", TestContent).open(true).primary_action("Restore", move || callback.set(callback.get()+1));
+        let target = dialog.accessibility().unwrap().children[0].action_target.clone().unwrap();
+        let mut doc = AutoCommit::new();
+        assert!(dialog.perform_semantic_action(&target, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        assert_eq!(fired.get(), 1);
+        dialog.set_open(false);
+        assert!(dialog.accessibility().unwrap().children.is_empty());
+        assert!(!dialog.perform_semantic_action(&target, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        dialog.set_open(true);
+        dialog.primary_action = None; // Unavailable footer action is absent in all input paths.
+        assert!(!dialog.perform_semantic_action(&target, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        let callback = fired.clone();
+        let mut replacement = ModalDialog::new("Review", TestContent).open(true).primary_action("Restore", move || callback.set(callback.get()+1));
+        assert!(!replacement.perform_semantic_action(&target, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        let fresh = replacement.accessibility().unwrap().children[0].action_target.clone().unwrap();
+        assert!(replacement.perform_semantic_action(&fresh, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        assert_eq!(fired.get(), 2);
+        assert_eq!(doc.pending_ops(), 0);
     }
 
     #[test]

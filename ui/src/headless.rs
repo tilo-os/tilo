@@ -39,6 +39,7 @@ use crate::accesskit_bridge::{build_presentation_tree_bound, build_tree_update_b
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
+use crate::synthetic_input::key_event;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};
@@ -395,20 +396,7 @@ impl ComponentRunnerWakeState {
     }
 }
 
-// The frame guard survives nested touch dispatch and unwinds on every exit.
-struct FrameworkInputFrame {
-    flag: std::rc::Rc<std::cell::Cell<bool>>,
-    previous: bool,
-}
-impl FrameworkInputFrame {
-    fn new(flag: &std::rc::Rc<std::cell::Cell<bool>>, framework: bool) -> Self {
-        let previous = flag.replace(flag.get() || framework);
-        Self { flag: flag.clone(), previous }
-    }
-}
-impl Drop for FrameworkInputFrame {
-    fn drop(&mut self) { self.flag.set(self.previous); }
-}
+use crate::history_mode::frame::FrameworkInputFrame;
 
 /// The canonical display-independent frame pipeline.
 ///
@@ -507,16 +495,26 @@ impl FrameHarness {
         }) {
             return Err(component.setup_error(error));
         }
-        let root = Box::new(crate::widget::BoundAppWidget { component });
-        Ok(Self::with_inputs(
-            State::new(),
-            root,
-            viewport,
-            inputs.theme,
-            inputs.text_renderer,
-            || binding.author,
-            Some(wake),
-        ))
+        let history = component.history.take();
+        let mut root = Box::new(crate::widget::BoundAppWidget { component });
+        if let Some(registration) = &history
+            && let Err(error) = registration.validate_root(root.as_ref()) {
+            return Err(root.component.setup_error(crate::launch::LaunchError::Operation(error.to_string())));
+        }
+        let mut harness = Self::with_inputs(
+            State::new(), root, viewport, inputs.theme, inputs.text_renderer,
+            || binding.author, Some(wake),
+        );
+        if let Some(registration) = history
+            && let Err(error) = harness.install_history(registration) {
+                harness.close_components();
+                return Err(crate::launch::LaunchError::ComponentSetup {
+                    source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
+                    record: binding.checkout, records: binding.records,
+                    reports: harness.take_component_close_reports(),
+                });
+        }
+        Ok(harness)
     }
 
     pub(crate) fn resize_component_capture(&mut self, viewport: (u32, u32)) {
@@ -595,6 +593,11 @@ impl FrameHarness {
             crate::bound_dispatch::mutate_bound_node(&self.bindings, &self.node_map, node, callback)
         }
     }
+    fn dispatch_semantic_node<R>(&mut self, node: NodeId, action: &crate::a11y::Action, callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R) -> Result<R, String> {
+        let author = self.author.clone();
+        // SAFETY: the runner exclusively owns the unchanged admitted tree.
+        unsafe { crate::bound_dispatch::invoke_bound_semantic_node(&self.bindings, &self.node_map, node, &mut self.state.doc, &self.state.root, action, &self.permissions, &author, callback) }
+    }
     fn dispatch_node<R>(
         &mut self,
         node: NodeId,
@@ -649,31 +652,46 @@ impl FrameHarness {
     /// Responsive structure discovered from the real viewport is settled
     /// before this returns, so tests can address compact/wide controls
     /// immediately without an app-specific warm-up frame.
+    /// # Errors
+    /// Refuses invalid scope metadata or unavailable mounted document custody.
     pub fn from_managed_root(
         state: State, root: crate::history_mode::ManagedRoot, viewport: (u32, u32),
     ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
         root.history.validate()?;
-        crate::history_mode::registration::validate_host_document_root(root.widget.as_ref())?;
+        root.history.validate_root(root.widget.as_ref())?;
         let mut harness = Self::new(state, root.widget, viewport);
-        // Initialization can mount owners during sync or responsive layout.
-        crate::history_mode::registration::validate_host_document_root(harness.root.as_ref())?;
-        let history = crate::history_mode::host::HistoryHost::new(root.history, &harness.state.doc)?;
-        harness.history = Some(Box::new(history));
-        harness.relayout();
-        harness.validate_history_registration()?;
+        harness.install_history(root.history)?;
         Ok(harness)
     }
+    pub(crate) fn install_history(&mut self, registration: crate::history_mode::HistoryRegistration) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        registration.validate_root(self.root.as_ref())?;
+        let history = crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)?;
+        self.history = Some(Box::new(history));
+        self.relayout();
+        self.validate_history_registration()
+    }
 
+    /// Install the runner's current authority, including revocations.
+    pub fn set_permission_ctx(&mut self, permissions: PermissionContext) {
+        self.permissions = permissions;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_history_clock(&mut self, clock: fn() -> Option<u64>) {
+        if let Some(history) = &mut self.history { history.set_clock(clock); }
+    }
+
+    /// # Errors
+    /// Refuses missing, stale or mismatched managed owner registrations.
     pub fn validate_history_registration(&self) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         self.history.as_ref().ok_or(crate::history_mode::HistoryRegistrationError::Missing)?.validate()?;
-        crate::history_mode::registration::validate_host_document_root(self.root.as_ref())
+        self.history.as_ref().ok_or(crate::history_mode::HistoryRegistrationError::Missing)?.validate_root(self.root.as_ref())
     }
 
     /// Invalidate only the managed History surface. The mounted live owner
     /// remains in place and continues its independent lifecycle.
     fn invalidate_unsupported_history_owner(&mut self) -> bool {
-        if self.history.is_some()
-            && crate::history_mode::registration::validate_host_document_root(self.root.as_ref()).is_err()
+        if self.history.as_ref().is_some_and(|history| history.validate_root(self.root.as_ref()).is_err())
         {
             return self.history.as_mut().is_some_and(|history| history.invalidate_owner());
         }
@@ -813,7 +831,7 @@ impl FrameHarness {
     /// scenario cannot pass against a path the user never takes.
     pub fn perform_undo(&mut self) -> bool {
         self.pump_component_wakes();
-        if self.history.as_ref().is_some_and(|history| history.captures_input()) { return false; }
+        if crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy) || self.history.as_ref().is_some_and(|history| history.captures_input()) { return false; }
         let author = self.author.clone();
         let done = if let Some(binding) = self
             .focused
@@ -824,6 +842,8 @@ impl FrameHarness {
                 .ok()
                 .flatten()
                 .is_some()
+        } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
+            crate::bound_dispatch::legacy_history_request(&owner, crate::undo::UndoRequest::Undo, &self.permissions, &author).ok().flatten().is_some()
         } else {
             self.state.undo_as(Some(&author), None, None).is_some()
         };
@@ -836,7 +856,7 @@ impl FrameHarness {
     /// Redo the last undone action. The mirror of [`Self::perform_undo`].
     pub fn perform_redo(&mut self) -> bool {
         self.pump_component_wakes();
-        if self.history.as_ref().is_some_and(|history| history.captures_input()) { return false; }
+        if crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy) || self.history.as_ref().is_some_and(|history| history.captures_input()) { return false; }
         let author = self.author.clone();
         let done = if let Some(binding) = self
             .focused
@@ -847,6 +867,8 @@ impl FrameHarness {
                 .ok()
                 .flatten()
                 .is_some()
+        } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
+            crate::bound_dispatch::legacy_history_request(&owner, crate::undo::UndoRequest::Redo, &self.permissions, &author).ok().flatten().is_some()
         } else {
             self.state.redo_as(Some(&author), None, None).is_some()
         };
@@ -865,6 +887,8 @@ impl FrameHarness {
             .and_then(|node| self.bindings.binding_for(node))
         {
             binding.undo_status(&mut self.state.doc).unwrap_or_default()
+        } else if let Some(status) = self.focused.and_then(|node| self.bindings.legacy_status(node, &self.author)) {
+            status
         } else {
             self.state.undo_status(Some(&self.author))
         }
@@ -889,17 +913,19 @@ impl FrameHarness {
                     |widget| widget.take_undo_request(),
                 )
             } {
-                requests.push((self.bindings.binding_for(node), req));
+                requests.push((self.bindings.binding_for(node), self.bindings.legacy_for(node), req));
             }
         }
         let mut acted = false;
-        for (binding, req) in requests {
+        for (binding, legacy, req) in requests {
             acted |= if let Some(binding) = binding {
                 binding
                     .history_request(&mut self.state.doc, req)
                     .ok()
                     .flatten()
                     .is_some()
+            } else if let Some(owner) = legacy {
+                crate::bound_dispatch::legacy_history_request(&owner, req, &self.permissions, &self.author).ok().flatten().is_some()
             } else {
                 match req {
                     crate::undo::UndoRequest::Undo => self.perform_undo(),
@@ -923,23 +949,38 @@ impl FrameHarness {
         )
         .unwrap_or_default();
         let _ = crate::bound_dispatch::refresh_bound_controls(self.root.as_mut(), &snapshots);
-        let status = self.state.undo_status(Some(&self.author));
+        let embedded = crate::history_mode::embedded::has_surfaces(self.root.as_ref());
+        // Preserve the legacy status boundary only outside managed History composition.
+        if !embedded && (self.state.can_undo_as(Some(&self.author)) || self.state.can_redo_as(Some(&self.author)))
+        {
+            self.state.doc.get_heads();
+        }
+        let mut outer_status = None;
         let mut visited = HashSet::new();
         for (&node, pointer) in &self.node_map {
             if !visited.insert(pointer.cast::<()>()) {
                 continue;
             }
-            let status = self.bindings.binding_for(node).map_or_else(
-                || status.clone(),
-                |binding| binding.undo_status(&mut self.state.doc).unwrap_or_default(),
-            );
+            let binding = self.bindings.binding_for(node);
+            // Preserve bound history label warming across pending edits.
+            let bound_status = binding
+                .as_ref()
+                .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
+                .or_else(|| self.bindings.legacy_status(node, &self.author));
+            let mut status = || {
+                bound_status.clone().unwrap_or_else(|| {
+                    outer_status
+                        .get_or_insert_with(|| if embedded { self.state.undo_status_snapshot(Some(&self.author)) } else { self.state.undo_status(Some(&self.author)) })
+                        .clone()
+                })
+            };
             // SAFETY: as in `drain_undo_requests`.
             let _ = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
                     &self.bindings,
                     &self.node_map,
                     node,
-                    |widget| widget.set_undo_status(&status),
+                    |widget| widget.set_undo_status(&mut status),
                 )
             };
         }
@@ -1145,6 +1186,7 @@ impl FrameHarness {
                     .extend(self.root.take_component_close_reports());
                 self.bindings.clear();
                 self.node_map.clear();
+                crate::history_mode::embedded::refresh(self.root.as_mut(), &self.state.doc, f64::from(self.viewport.0), None);
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(self.root.as_mut(), &mut self.taffy, &self.theme, &mut self.node_map)
                 } else {
@@ -1160,8 +1202,9 @@ impl FrameHarness {
                 }
                 // SAFETY: exclusive runner owns this exact fresh topology.
                 unsafe {
-                    self.bindings.rebuild(
-                        self.root.as_ref(),
+                    self.bindings.rebuild_with_retained_root(
+                        self.history.as_ref().map_or_else(|| self.root.as_ref(), |history| history.as_ref() as &dyn Widget),
+                        self.history.as_ref().map(|_| self.root.as_ref()),
                         &self.taffy,
                         self.child_node,
                         &self.node_map,
@@ -1223,6 +1266,19 @@ impl FrameHarness {
             Ok((Some(geometry), dirty))
         })?;
         self.last_layout_viewport = Some(self.viewport);
+        if self.history.as_ref().is_some_and(|history| history.has_review_request()) || crate::history_mode::embedded::has_review(self.root.as_ref()) {
+            // Admission follows complete composition settlement. Remove raw
+            // maps before replacing modal chrome, then build its fresh map.
+            self.bindings.clear();
+            self.node_map.clear();
+            self.focused = None;
+            if let Some(history) = &mut self.history {
+                let _ = history.service_restore(&mut self.state, self.root.as_ref(), &self.permissions, &self.author);
+            }
+            let _ = crate::history_mode::embedded::service_reviews(self.root.as_mut(), &mut self.state, &self.permissions, &self.author);
+            return self.try_relayout();
+        }
+        if let Some(focus) = unsafe { crate::history_mode::embedded::restore_focus(self.root.as_mut(), &self.node_map, &self.bindings) } { self.focused = Some(focus); }
 
         // After layout (so a control built this pass is in `node_map`) and
         // before draw and any accessibility read — a shot must show the
@@ -1256,6 +1312,7 @@ impl FrameHarness {
             self.focused = self.history.as_mut().and_then(|history| unsafe { history.restore_focus(&self.node_map, &self.bindings) });
         } else {
         self.focused = self.node_map.keys().find_map(|&n| {
+            if !crate::history_mode::embedded::allows_focus(self.root.as_ref(), n, &self.taffy) { return None; }
             if self.history.as_ref().is_some_and(|history| history.has_saved_focus() && !history.owns_node(n, &self.taffy)) { return None; }
             // SAFETY: same node_map contract the measure closure uses — the
             // pointers alias `self.root`, which is live and not otherwise
@@ -1339,10 +1396,10 @@ impl FrameHarness {
     pub fn focus_order(&self) -> Vec<NodeId> {
         self.drain_component_wakes();
         let mut order = Vec::new();
-        if self.history.is_some() {
+        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref()) {
             let mut pending = vec![self.child_node];
             while let Some(node) = pending.pop() {
-                if self.inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled()).unwrap_or(false) { order.push(node); }
+                if crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy) && self.inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled()).unwrap_or(false) { order.push(node); }
                 pending.extend(self.taffy.children(node).unwrap_or_default().into_iter().rev());
             }
         } else {
@@ -1370,6 +1427,7 @@ impl FrameHarness {
     /// the outgoing/incoming widgets exactly as
     /// [`crate::app::App::set_focused_node`] does.
     fn set_focused(&mut self, node: Option<NodeId>) {
+        if unsafe { crate::history_mode::embedded::move_focus(self.root.as_mut(), node, self.focused, &self.node_map, &self.bindings, &self.taffy) } { self.focused = None; }
         let resumed_live = self.history.as_ref().is_some_and(|history| {
             !history.captures_input() && history.has_saved_focus()
                 && node.is_some_and(|node| !history.owns_node(node, &self.taffy))
@@ -1377,7 +1435,7 @@ impl FrameHarness {
         if resumed_live {
             // Tabbing through unopened chrome is temporary suspension. Keep
             // the chosen editor's current caret; do not restore old view state.
-            self.history.as_mut().unwrap().discard_saved_focus();
+            if let Some(history) = &mut self.history { history.discard_saved_focus(); }
             let outgoing: Vec<_> = self.node_map.keys().copied().filter(|candidate| {
                 Some(*candidate) != node
                     && self.inspect_node(*candidate, |widget| widget.is_focused()).unwrap_or(false)
@@ -1444,7 +1502,7 @@ impl FrameHarness {
         };
         // `next` is constructed above from `0..order.len()` in every branch.
         let target = *order.get(next)?;
-        let framework = self.history.as_ref().is_some_and(|history| history.owns_node(target, &self.taffy));
+        let framework = crate::history_mode::embedded::owns_node(self.root.as_ref(), target, &self.taffy) || self.history.as_ref().is_some_and(|history| history.owns_node(target, &self.taffy));
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.set_focused(Some(target));
         self.relayout();
@@ -1482,8 +1540,9 @@ impl FrameHarness {
     /// Orca and the built-in screen reader, with the driver's focus marked.
     pub fn a11y_nodes(&self) -> Vec<(accesskit::NodeId, accesskit::Node)> {
         self.drain_component_wakes();
-        if self.history.is_none() { return build_tree_update_bound(self.root.as_ref(), &self.node_map, self.focused, 1.0).nodes; }
-        build_presentation_tree_bound(&self.presentation_roots(), &self.node_map, self.focused, 1.0).nodes
+        let exported = self.bindings.exported_nodes(&self.node_map);
+        if self.history.is_none() { return build_tree_update_bound(self.root.as_ref(), &exported.nodes, exported.focus(self.focused), 1.0).nodes; }
+        build_presentation_tree_bound(&self.presentation_roots(), &exported.nodes, exported.focus(self.focused), 1.0).nodes
     }
 
     /// The id of the exported accessibility node whose accessible name is
@@ -1507,7 +1566,8 @@ impl FrameHarness {
     /// actually is.
     pub fn a11y_focus(&self) -> Option<(accesskit::NodeId, accesskit::Node)> {
         self.drain_component_wakes();
-        let update = build_presentation_tree_bound(&self.presentation_roots(), &self.node_map, self.focused, 1.0);
+        let exported = self.bindings.exported_nodes(&self.node_map);
+        let update = build_presentation_tree_bound(&self.presentation_roots(), &exported.nodes, exported.focus(self.focused), 1.0);
         let focus = update.focus;
         update.nodes.into_iter().find(|(id, _)| *id == focus)
     }
@@ -1534,9 +1594,10 @@ impl FrameHarness {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
-        use crate::accesskit_bridge::{A11yTarget, resolve_node_id_bound};
+        use crate::accesskit_bridge::A11yTarget;
         self.pump_component_wakes();
-        let resolved = self.presentation_roots().into_iter().find_map(|root| resolve_node_id_bound(root, &self.node_map, target))
+        let exported = self.bindings.exported_nodes(&self.node_map);
+        let resolved = self.presentation_roots().into_iter().find_map(|root| exported.resolve(root, target))
             .ok_or_else(|| format!("no accessibility node {target:?} in the current frame"))?;
         let (taffy_id, key_path, ordinal_path, semantic_target) = match resolved {
             A11yTarget::Root => return Err("the window root cannot be operated".into()),
@@ -1550,8 +1611,8 @@ impl FrameHarness {
                 semantic_target,
             } => (owner, key_path, ordinal_path, semantic_target),
         };
-        let framework = self.history.as_ref().is_some_and(|history| history.owns_node(taffy_id, &self.taffy));
-        let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
+        let framework = crate::history_mode::embedded::owns_node(self.root.as_ref(), taffy_id, &self.taffy) || self.history.as_ref().is_some_and(|history| history.owns_node(taffy_id, &self.taffy));
+        let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework || self.bindings.owns_document(taffy_id));
         if framework { self.set_focused(Some(taffy_id)); }
         // Operating an element inside a widget also moves the keyboard to that
         // widget, matching the App: the widget moves its own cursor, the host
@@ -1561,7 +1622,7 @@ impl FrameHarness {
             self.set_focused(Some(taffy_id));
         }
         let handled = self
-            .dispatch_node(taffy_id, |widget, doc, root| {
+            .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
                     widget.perform_semantic_action(target, action, doc, root)
                 } else {
@@ -1634,7 +1695,7 @@ impl FrameHarness {
     fn presentation_roots(&self) -> Vec<&dyn Widget> {
         let mut roots = Vec::new();
         if let Some(history) = &self.history { roots.push(history.as_ref() as &dyn Widget); }
-        if self.history.as_ref().is_none_or(|history| history.live_visible()) { roots.push(self.root.as_ref()); }
+        if self.history.as_ref().is_none_or(|history| history.live_interactive()) { roots.push(self.root.as_ref()); }
         roots
     }
 
@@ -1678,6 +1739,7 @@ impl FrameHarness {
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
         use crate::a11y::Action as SemanticAction;
+        use automerge::transaction::Transactable;
         self.pump_component_wakes();
 
         let targets = self.named_target_nodes();
@@ -1685,7 +1747,7 @@ impl FrameHarness {
             .get(name)
             .copied()
             .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
-        if self.history.as_ref().is_some_and(|history| history.owns_node(node, &self.taffy)) {
+        if crate::history_mode::embedded::owns_node(self.root.as_ref(), node, &self.taffy) || self.history.as_ref().is_some_and(|history| history.owns_node(node, &self.taffy)) {
             let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
             if matches!(action, SemanticAction::Focus | SemanticAction::Activate) { self.set_focused(Some(node)); }
             let handled = self.dispatch_node(node, |widget, doc, root| {
@@ -1701,9 +1763,11 @@ impl FrameHarness {
         // document mutation it performs is one deterministic undo boundary.
         // Capture before dispatch: `get_heads` also flushes any earlier work,
         // keeping that work out of this action's bracket.
-        let before = self.state.doc.get_heads();
+        let owns_document = self.bindings.owns_document(node);
+        let _owned_frame = FrameworkInputFrame::new(&self.framework_input, owns_document);
+        let before = if owns_document || matches!(action, SemanticAction::Focus | SemanticAction::SetSelection { .. }) { self.state.doc.base_heads() } else { self.state.doc.get_heads() };
         let handled = self
-            .dispatch_node(node, |widget, doc, root| {
+            .dispatch_semantic_node(node, action, |widget, doc, root| {
                 if let Some(target) = semantic_target {
                     widget.perform_semantic_action(target, action, doc, root)
                 } else {
@@ -1715,10 +1779,10 @@ impl FrameHarness {
             if matches!(action, SemanticAction::Focus) {
                 self.set_focused(Some(node));
             }
-            if self.state.doc.get_heads() != before {
+            if !owns_document && self.state.doc.get_heads() != before {
                 self.state.record_committed_action(before, None, None);
                 self.root.on_commit();
-            } else if self.root.needs_commit() {
+            } else if !owns_document && self.root.needs_commit() {
                 self.state.commit_action(None, None);
                 self.root.on_commit();
             }
@@ -2092,7 +2156,8 @@ impl FrameHarness {
     pub fn send(&mut self, event: &WindowEvent) {
         // This guard includes modality-driven relayout before dispatch, and
         // remains set through the frame that closes History.
-        let history_input = self.framework_input.get() || self.history.as_ref().is_some_and(|history| history.controls_event(event, self.input_scale));
+        let embedded = crate::history_mode::embedded::observe_event(self.root.as_mut(), event, self.input_scale, self.focused, &self.taffy);
+        let history_input = self.framework_input.get() || embedded || self.history.as_ref().is_some_and(|history| history.controls_event(event, self.input_scale));
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, history_input);
         self.pump_component_wakes();
         let detected = if self.dispatching_touch_pointer {
@@ -2182,11 +2247,11 @@ impl FrameHarness {
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
         }
-        if !history_input || self.focused.is_some_and(|node| self.history.as_ref().is_some_and(|history| history.owns_node(node, &self.taffy))) {
+        if !history_input || self.focused.is_some_and(|node| crate::history_mode::embedded::owns_node(self.root.as_ref(), node, &self.taffy) || self.history.as_ref().is_some_and(|history| history.owns_node(node, &self.taffy))) {
             self.handle_unconsumed_activation_key(event, &mut handled);
         }
-        if !history_input { self.host_tick(); }
-        else { self.poll_control_invocations(); }
+        if history_input { self.poll_control_invocations(); }
+        else { self.host_tick(); }
         self.relayout();
     }
 
@@ -2221,6 +2286,7 @@ impl FrameHarness {
                 &self.node_map,
                 &self.bindings,
                 &author,
+                &self.permissions,
             );
         }
         if self.root.needs_commit() {
@@ -2589,7 +2655,7 @@ impl FrameHarness {
     pub fn key(&mut self, spec: &str) {
         // Press and release are one interaction even when the press returns
         // to live content and replaces the chrome before release arrives.
-        let framework = self.history.as_ref().is_some_and(|history| history.captures_input()
+        let framework = crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy) || self.history.as_ref().is_some_and(|history| history.captures_input()
             || self.focused.is_some_and(|node| history.owns_node(node, &self.taffy)));
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.pump_component_wakes();
@@ -2600,7 +2666,7 @@ impl FrameHarness {
         // History bindings are the host's, not the focused widget's — resolved
         // through `undo::shortcut`, the one table the live host reads.
         let mods = self.modifiers.state();
-        if self.history.as_ref().is_some_and(|history| history.captures_input())
+        if framework
             && crate::undo::shortcut(spec, mods.control_key(), mods.shift_key()).is_some() { return; }
         if let Some(req) = crate::undo::shortcut(spec, mods.control_key(), mods.shift_key()) {
             if self.root.handle_local_undo_request(req) {
@@ -3268,33 +3334,6 @@ fn next_widget_path(
     (name, path, current)
 }
 
-/// Build a deterministic `WindowEvent::KeyboardInput` for the headless driver.
-fn key_event(key: &Key, state: ElementState) -> WindowEvent {
-    let text = match (key, state) {
-        (Key::Character(value), ElementState::Pressed) => Some(value.clone()),
-        _ => None,
-    };
-    let event = winit::event::KeyEvent::synthetic(
-        winit::event::RawKeyEvent {
-            physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            ),
-            state,
-        },
-        key.clone(),
-        text.clone(),
-        winit::keyboard::KeyLocation::Standard,
-        false,
-        text,
-        key.clone(),
-    );
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
-}
-
 fn parse_key(spec: &str) -> Key {
     match spec {
         "Enter" | "Return" => Key::Named(NamedKey::Enter),
@@ -3575,7 +3614,12 @@ pub fn run_component(
 /// `3` when persistence itself was unavailable, which a sweep must not
 /// mistake for "nothing changed".
 pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
-    let (state, mut autosave) = crate::persist::open(manifest_id);
+    let (state, autosave) = crate::persist::open(manifest_id);
+    run_opened(spec, root, manifest_id, state, autosave, None)
+}
+
+pub(crate) fn run_opened(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str, state: State, mut autosave: crate::persist::Autosave,
+    history: Option<crate::history_mode::HistoryRegistration>) -> i32 {
     if !autosave.is_enabled() {
         eprintln!(
             "headless: persistence unavailable: {}",
@@ -3594,6 +3638,11 @@ pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
         );
     }
 
+    if let Some(history) = history
+        && let Err(error) = driver.install_history(history) {
+        eprintln!("headless: History setup failed: {error}");
+        return 3;
+    }
     let mut failure = drive_spec_actions(spec, &mut driver, |driver| {
         if !driver.persist_tick() {
             autosave.request(&mut driver.state_mut().doc);
@@ -5386,6 +5435,35 @@ mod dispatched_action_driver_tests {
         }
     }
 
+    #[test]
+    fn lazy_status_preserves_transaction_boundary_without_a_consumer() {
+        use automerge::transaction::Transactable;
+        let author = crate::permissions::UserId("lazy-status-author".into());
+        let mut state = State::new();
+        state.doc.put(automerge::ROOT, "value", "first").unwrap();
+        assert!(state.commit_action_authored(None, None, Some(author.clone())));
+        let mut driver = Driver::new_with_controlled_inputs(
+            state,
+            Box::new(crate::widget::Spacer::new()),
+            (100, 100),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            author,
+        );
+        driver
+            .state
+            .doc
+            .put(automerge::ROOT, "value", "pending")
+            .unwrap();
+        assert!(driver.state.doc.pending_ops() > 0);
+        driver.publish_undo_status();
+        assert_eq!(
+            driver.state.doc.pending_ops(),
+            0,
+            "lazy labels must preserve the eager status transaction boundary"
+        );
+    }
+
     /// The whole covenant on one interaction: a real edit dispatched as an
     /// action, the Undo control lighting because of it, pressing that control,
     /// and the edit going away.
@@ -5692,8 +5770,8 @@ mod prepared_driver_tests {
                 *handled = true;
             }
         }
-        fn set_undo_status(&mut self, status: &crate::undo::UndoStatus) {
-            *self.observed.published.borrow_mut() = status.clone();
+        fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+            *self.observed.published.borrow_mut() = status();
         }
         fn is_focusable(&self) -> bool {
             true

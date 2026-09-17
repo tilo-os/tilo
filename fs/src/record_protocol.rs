@@ -173,6 +173,7 @@ pub trait RecordMutationSink: Send + Sync {
     /// Returns an error when projection is rejected or unavailable.
     fn record_mutation(
         &self,
+        _repository: &RecordRepository,
         scope: RecordAccessBinding,
         envelope: &RecordEnvelopeV1,
         snapshot: &RecordSnapshot,
@@ -207,6 +208,7 @@ struct NoopRecordMutationSink;
 impl RecordMutationSink for NoopRecordMutationSink {
     fn record_mutation(
         &self,
+        _repository: &RecordRepository,
         _scope: RecordAccessBinding,
         _envelope: &RecordEnvelopeV1,
         _snapshot: &RecordSnapshot,
@@ -447,7 +449,7 @@ impl RecordProtocol {
                 );
                 match self
                     .mutation_sink
-                    .record_mutation(binding, &envelope, &snapshot)
+                    .record_mutation(&self.repository, binding, &envelope, &snapshot)
                 {
                     Ok(()) => {
                         if cross_record
@@ -1083,6 +1085,7 @@ mod tests {
     impl RecordMutationSink for RecordingMutationSink {
         fn record_mutation(
             &self,
+            _repository: &RecordRepository,
             scope: RecordAccessBinding,
             envelope: &RecordEnvelopeV1,
             _snapshot: &RecordSnapshot,
