@@ -53,6 +53,9 @@ for required in \
   CONFIG_BPF_UNPRIV_DEFAULT_OFF=y \
   CONFIG_PROC_KCORE=n \
   CONFIG_DEVKMEM=n \
+  CONFIG_DEVPORT=n \
+  CONFIG_X86_MSR=n \
+  CONFIG_X86_CPUID=n \
   CONFIG_COREDUMP=n \
   CONFIG_FW_LOADER_USER_HELPER=n \
   CONFIG_FW_LOADER_USER_HELPER_FALLBACK=n \
@@ -131,11 +134,17 @@ for required in \
 done
 [ "$fail" -ne 0 ] || ok 'required kernel self-protection options are pinned'
 
-grep -Fq 'RANDOMIZE_MEMORY|SCHED_MC_PRIO' "$repo/os/kernel/Containerfile" \
+grep -Fq 'DEVPORT|X86_CPUID|' "$repo/os/kernel/Containerfile" \
+  && grep -Fq 'X86_MSR|X86_USER_SHADOW_STACK' "$repo/os/kernel/Containerfile" \
+  && grep -Fq 'RANDOMIZE_MEMORY|SCHED_MC_PRIO' "$repo/os/kernel/Containerfile" \
   || bad 'ARM64 kernel preparation does not remove the x86-only memory randomizer'
 grep -Fq 'CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y' \
   "$repo/os/kernel/Containerfile" \
   || bad 'x86 kernel build does not verify both address-randomization layers'
+grep -Fq "'# CONFIG_DEVPORT is not set' '# CONFIG_X86_MSR is not set'" \
+  "$repo/os/kernel/Containerfile" \
+  && grep -Fq "'# CONFIG_X86_CPUID is not set'" "$repo/os/kernel/Containerfile" \
+  || bad 'x86 kernel build does not verify removal of raw CPU and I/O devices'
 
 for live_absence in DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
