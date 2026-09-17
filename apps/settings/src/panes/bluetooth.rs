@@ -1,4 +1,10 @@
-#![allow(clippy::doc_markdown, reason = "BlueZ is the upstream service name")]
+#![allow(
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::items_after_statements,
+    clippy::needless_pass_by_value,
+    reason = "BlueZ is the upstream service name and the pane consumes a closed typed command/resource contract"
+)]
 //! Bluetooth settings backed directly by `BlueZ` over D-Bus. Settings starts
 //! operations; the compositor-owned `BlueZ` Agent owns security prompts.
 

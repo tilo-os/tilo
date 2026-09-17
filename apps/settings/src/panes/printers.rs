@@ -1,3 +1,8 @@
+#![allow(
+    clippy::struct_excessive_bools,
+    reason = "loading, discovery, local-document isolation, and dirty states are independent"
+)]
+
 //! Daily printer/scanner control backed by the shared typed CUPS/SANE service.
 //!
 //! Settings owns discovery, adding a driverless queue, defaults, queue health
