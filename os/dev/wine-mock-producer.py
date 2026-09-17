@@ -104,7 +104,32 @@ def validate_lock(lock, target):
 def build_command(bundle, root, result, options, filename):
     return ['mock', '--hermetic-build', str(bundle / 'resolution/buildroot_lock.json'),
             str(bundle / 'repository'), '--rootdir', str(root), '--resultdir', str(result),
-            '--no-cleanup-after', *options, str(bundle / 'source' / filename)]
+            '--no-cleanup-after', *options, str(bundle / 'build-source' / filename)]
+
+
+def prepare_source(source, destination, pin, options):
+    """Retain authenticated input and the exact spec used for dependency resolution."""
+    destination.mkdir()
+    with tempfile.TemporaryDirectory(prefix='tilo-wine-source-') as temporary:
+        top = Path(temporary)
+        run(['rpm', '-i', '--define', f'_topdir {top}', str(source / pin['filename'])],
+            destination / 'extract.log')
+        spec = top / 'SPECS/wine.spec'
+        contract.verify_file(spec, pin['spec_sha256'])
+        shutil.copyfile(spec, destination / 'upstream.spec')
+        spec.unlink()
+        contract.prepare_spec(destination / 'upstream.spec', spec, pin)
+        shutil.copyfile(spec, destination / 'wine.spec')
+        run(['rpmbuild', '-bs', str(spec), '--define', f'_topdir {top}', *options],
+            destination / 'source-build.log')
+        filename = contract.build_identity(pin)['source_rpm']
+        shutil.copyfile(top / 'SRPMS' / filename, destination / filename)
+    write_json(destination / 'derivation.json', {
+        'schema': 1, 'correction': 'wine11-twain-32-i386-file-list',
+        'upstream_srpm_sha256': pin['sha256'], 'upstream_spec_sha256': pin['spec_sha256'],
+        'build_spec_sha256': pin['build_spec_sha256'], 'source_rpm': filename,
+        'source_rpm_sha256': digest(destination / filename)})
+    contract.verify_prepared_source(destination, pin)
 
 
 def offline_network(interfaces=Path('/sys/class/net')):
@@ -139,6 +164,7 @@ def resolve(args, pin):
     shutil.copytree(args.config_dir, destination / 'mock-config', symlinks=False)
     write_json(destination / 'wine-source.json', pin)
     options = flags(args.target, pin, args.jobs)
+    prepare_source(destination / 'source', destination / 'build-source', pin, options)
     result = destination / 'resolution'
     result.mkdir()
     os.chown(result, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
@@ -146,7 +172,8 @@ def resolve(args, pin):
                '--resultdir', str(result), *options]
     run([*command, '--debug-config-expanded'], destination / 'resolved-config.log')
     run([*command, '--calculate-build-dependencies',
-         str((args.source / pin['filename']).resolve())], destination / 'resolve.log')
+         str(destination / 'build-source' / contract.build_identity(pin)['source_rpm'])],
+        destination / 'resolve.log')
     lockfile = result / 'buildroot_lock.json'
     validate_lock(json.loads(lockfile.read_text()), args.target)
     run(['mock-hermetic-repo', '--lockfile', str(lockfile), '--output-repo',
@@ -182,6 +209,7 @@ def build(args, pin):
     bundle = args.bundle.resolve()
     record = verify_bundle(bundle, args.runtime_image, args.target, pin, args.jobs)
     contract.source(bundle / 'source', pin)
+    contract.verify_prepared_source(bundle / 'build-source', pin)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     root = args.root.resolve()
@@ -191,7 +219,8 @@ def build(args, pin):
     result.mkdir()
     os.chown(result, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
     lockfile = bundle / 'resolution/buildroot_lock.json'
-    command = build_command(bundle, root, result, record['options'], pin['filename'])
+    command = build_command(bundle, root, result, record['options'],
+                            contract.build_identity(pin)['source_rpm'])
     run(command, output / 'hermetic-build.log')
     # Direct read-only RPM queries avoid a second Mock --chroot invocation,
     # which initializes a root and cannot be combined with --hermetic-build.
@@ -217,7 +246,7 @@ def build(args, pin):
     specs = list(root.glob('builddir/build/SPECS/wine.spec'))
     if len(specs) != 1:
         raise ValueError('Mock did not retain the Wine spec for post-build verification')
-    contract.verify_file(specs[0], pin['spec_sha256'])
+    contract.verify_file(specs[0], pin['build_spec_sha256'])
     spec = '/' + specs[0].relative_to(root).as_posix()
     run(['chroot', str(root), 'rpmspec', '--target', args.target, '--without', 'new_wow64',
          '--define', 'dist ' + pin['build_dist'], '-q', '--buildrequires', spec],

@@ -16,8 +16,28 @@ Wine 11's [loader.c](https://raw.githubusercontent.com/wine-mirror/wine/wine-11.
 looks for the alternate Unix loader beneath the same Wine library directory.
 Its [configure.ac](https://raw.githubusercontent.com/wine-mirror/wine/wine-11.0/configure.ac)
 also supports paired `--enable-win64` / `--with-wine64` builds and requires
-the same library directory. For this contract we retain Fedora's spec and
-its existing traditional multilib packaging strategy.
+the same library directory. This contract retains Fedora's traditional
+multilib packaging strategy with one hash-pinned file-list correction.
+
+### Wine 11 TWAIN packaging correction
+
+Wine 11 `configure.ac` defaults `enable_twain_32` to `i386`; `twaindsm` and
+SANE build independently. Fedora's pinned spec nevertheless lists
+`twain_32.dll` for every PE architecture, which makes traditional x86-64 RPM
+packaging fail after compilation. `prepare_spec` changes only this file-list
+entry: i686 retains it, traditional x86-64 omits it, and new-WoW64 x86-64
+lists its actual i386 path. No module, source patch, BuildRequires or build
+option is removed.
+
+`wine-source.json` separately pins the authenticated upstream spec and the
+derived spec SHA-256. Resolution retains both specs, a derivation record and
+the derived source RPM; dependency resolution and the offline build consume
+that same derived RPM. The signed Fedora source remains intact and its
+signature does not extend to our derived RPM. The adapter verifies both spec
+hashes, the derivation binding, source RPM bytes and embedded derived spec,
+then checks the rebuilt output source RPM's spec again. Failed runs retain
+the preparation evidence. The derived SRPM hash is recorded per resolution;
+only the spec transformation is claimed deterministic.
 
 FEX commit `91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20` fixes decoder execution
 width within a process. The existing Fedora new-WoW64 runtime passed matching
