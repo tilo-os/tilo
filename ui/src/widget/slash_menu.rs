@@ -529,35 +529,50 @@ impl SlashMenu {
         );
 
         let font_size = tokens.typography.scale.sm;
+        // The armed row's ink is resolved against the accent it sits on, the
+        // same way `Popover` and `Dropdown` do; `text_primary` is only legible
+        // there on a dark theme.
+        let armed_ink = tokens
+            .colors
+            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, &row_idx) in self.visible.iter().enumerate() {
             let Some(row) = self.rows.get(row_idx) else {
                 continue;
             };
             let y0 = self.rows_top() + px(i) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
-            if i == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, 4.0);
+            let armed = i == self.cursor;
+            if armed {
+                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5],
+                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
                     &hl,
                 );
             }
-            let text_y = row_rect.y0 + (row_rect.height() - f64::from(font_size)) / 2.0;
+            // Centre on the measured line, not the font size — the two differ
+            // by the face's ascent/descent and the label drifted low.
+            let (_, label_h) = text_renderer.measure(row.label, font_size, None);
+            let text_y = row_rect.y0 + (row_rect.height() - f64::from(label_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 row.label,
                 font_size,
-                tokens.colors.text_primary,
+                if armed {
+                    armed_ink
+                } else {
+                    tokens.colors.text_primary
+                },
                 translated(transform, row_rect.x0 + PADDING_X, text_y),
                 None,
             );
         }
         // Empty-state hint when the filter matches nothing.
         if self.visible.is_empty() {
-            let y = self.rows_top() + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
+            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
+            let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",

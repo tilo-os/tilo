@@ -393,9 +393,11 @@ fn draw_action_button(
         theme.tokens.colors.text_primary
     };
     let text_size = theme.tokens.typography.scale.sm;
-    let (text_w, _) = text_renderer.measure(label, text_size, None);
+    // Centre on the measured line in both axes — the width was already
+    // measured; the height was the font size, which sat the label low.
+    let (text_w, text_h) = text_renderer.measure(label, text_size, None);
     let text_x = rect.center().x - (f64::from(text_w) / 2.0);
-    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+    let text_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,

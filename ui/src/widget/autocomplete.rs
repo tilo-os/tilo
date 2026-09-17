@@ -451,10 +451,13 @@ impl Autocomplete {
                 &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
             );
         } else if hovered {
+            // Pre-arm pointer hover (Enter still targets the keyboard row):
+            // the medium veneer, by its semantic name rather than the
+            // `surface_white_10` alias — same colour.
             scene.fill(
                 Fill::NonZero,
                 transform,
-                tokens.colors.surface_white_10,
+                tokens.colors.overlay_medium,
                 None,
                 &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
             );
@@ -498,21 +501,21 @@ impl Autocomplete {
             );
             x += ICON_PX + 10.0;
         }
-        let ty = row.y0 + (ROW_H - f64::from(text_size)) / 2.0;
+        // Centre label and detail on their measured lines, not their font
+        // sizes — the two columns otherwise sit on different baselines.
+        let (_, label_h) = text_renderer.measure(&s.label, text_size, None);
+        let ty = row.y0 + (ROW_H - f64::from(label_h)) / 2.0;
         // Right-aligned detail first, so we can bound the label width.
         let mut label_x1 = row.x1 - ROW_PAD_X;
         if let Some(detail) = &s.detail {
-            let (dw, _) = text_renderer.measure(detail, detail_size, None);
+            let (dw, dh) = text_renderer.measure(detail, detail_size, None);
             let dx = row.x1 - ROW_PAD_X - f64::from(dw);
             text_renderer.draw_text(
                 scene,
                 detail,
                 detail_size,
                 dim_color,
-                transform.pre_translate(Vec2::new(
-                    dx,
-                    row.y0 + (ROW_H - f64::from(detail_size)) / 2.0,
-                )),
+                transform.pre_translate(Vec2::new(dx, row.y0 + (ROW_H - f64::from(dh)) / 2.0)),
                 None,
             );
             label_x1 = dx - 8.0;
@@ -686,7 +689,8 @@ impl Widget for Autocomplete {
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {
             if let Some(status) = &self.status {
-                let ty = panel.y0 + (panel.height() - f64::from(text_size)) / 2.0;
+                let (_, status_h) = text_renderer.measure(status, text_size, None);
+                let ty = panel.y0 + (panel.height() - f64::from(status_h)) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     status,

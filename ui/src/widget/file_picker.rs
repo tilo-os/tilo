@@ -1344,6 +1344,9 @@ impl FilePicker {
                     fg,
                     LUCIDE_DEFAULT_STROKE_PX,
                 );
+                // Centre on the measured line, not the font size, so the
+                // name shares the icon's vertical centre.
+                let (_, name_h) = text_renderer.measure(&entry.name, row_size, None);
                 text_renderer.draw_text(
                     scene,
                     &entry.name,
@@ -1351,7 +1354,7 @@ impl FilePicker {
                     fg,
                     transform.pre_translate(Vec2::new(
                         rect.x0 + 8.0 + ROW_ICON_PX + 8.0,
-                        rect.y0 + (ROW_HEIGHT - f64::from(row_size)) / 2.0,
+                        rect.y0 + (ROW_HEIGHT - f64::from(name_h)) / 2.0,
                     )),
                     None,
                 );
@@ -1457,6 +1460,8 @@ impl FilePicker {
         } else {
             tokens.colors.text_primary
         };
+        // Centre on the measured line, not the font size.
+        let (_, shown_h) = text_renderer.measure(shown, row_size, None);
         text_renderer.draw_text(
             scene,
             shown,
@@ -1464,7 +1469,7 @@ impl FilePicker {
             color,
             transform.pre_translate(Vec2::new(
                 field.x0 + 8.0,
-                field.y0 + (field.height() - f64::from(row_size)) / 2.0,
+                field.y0 + (field.height() - f64::from(shown_h)) / 2.0,
             )),
             None,
         );
@@ -1511,6 +1516,8 @@ impl FilePicker {
                 &s,
             );
         }
+        // Centre on the measured line, not the font size.
+        let (_, filter_h) = text_renderer.measure(self.active_filter_label(), row_size, None);
         text_renderer.draw_text(
             scene,
             self.active_filter_label(),
@@ -1518,7 +1525,7 @@ impl FilePicker {
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(
                 self.filter_rect.x0 + 8.0,
-                self.filter_rect.y0 + (self.filter_rect.height() - f64::from(row_size)) / 2.0,
+                self.filter_rect.y0 + (self.filter_rect.height() - f64::from(filter_h)) / 2.0,
             )),
             None,
         );
