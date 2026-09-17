@@ -1,3 +1,4 @@
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
@@ -547,7 +548,7 @@ impl TabBar {
         } else {
             text_dim
         };
-        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
+        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
         let accent = self.accent_ids.get(&t.id).copied();
@@ -905,7 +906,7 @@ impl TabBar {
             &pill_appearance(theme, false, true, false),
             1.0,
         );
-        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
+        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
         let leading_shift = if let Some(kind) = c.desc.app_kind {
@@ -1190,7 +1191,7 @@ impl TabBar {
         if self.pinned_ids.contains(&t.id) {
             return None;
         }
-        let size = theme.tokens.typography.scale.sm / tr.text_scale();
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title = t.title.clone();
         let id = t.id;
         // Record the shaped advance here — `apply_layout` has no text renderer of

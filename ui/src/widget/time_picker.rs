@@ -17,6 +17,7 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -497,7 +498,7 @@ impl Widget for TimePicker {
     ) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.sm);
-        let text_size = theme.tokens.typography.scale.lg;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
 
         let mut cells: Vec<(Rect, u8)> = vec![
             (self.hour_rect, self.hours),
