@@ -60,6 +60,10 @@ case "${TILO_PUBLIC_TRUST_MODE:-production}" in
     ;;
   development)
     [ "${TILO_SKIP_BUILD:-0}" != 1 ] || die "development trust requires a fresh build"
+    _tilo_development_revision=$(git -C "$TILO_REPO" rev-parse --verify HEAD) \
+      || die "development builds require a committed source revision"
+    [ -z "$(git -C "$TILO_REPO" status --porcelain --untracked-files=all)" ] \
+      || die "commit development source changes before building a signed candidate"
     [[ "$TILO_IMAGE" =~ ^localhost/tilo-development:[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ ]] \
       || die "development trust requires TILO_IMAGE=localhost/tilo-development:<tag>"
     [ -n "${TILO_PUBLIC_TRUST_BUNDLE:-}" ] && [ -n "${TILO_PUBLIC_TRUST_MANIFEST_SHA256:-}" ] \
@@ -74,7 +78,8 @@ case "${TILO_PUBLIC_TRUST_MODE:-production}" in
     [ -z "${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}" ] || [ "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" = "$_tilo_dev_owner" ] \
       || die "registry owner differs from development public bundle"
     TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$_tilo_dev_owner
-    _tilo_trust_args=(--build-context "public-trust=$(realpath "$TILO_PUBLIC_TRUST_BUNDLE")"
+      _tilo_trust_args=(--build-context "public-trust=$(realpath "$TILO_PUBLIC_TRUST_BUNDLE")"
+        --label "org.opencontainers.image.revision=$_tilo_development_revision"
       --build-arg TILO_PUBLIC_TRUST_MODE=development
       --build-arg "TILO_PUBLIC_TRUST_MANIFEST_SHA256=$TILO_PUBLIC_TRUST_MANIFEST_SHA256")
     ;;
