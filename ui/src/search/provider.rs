@@ -1189,27 +1189,27 @@ impl OpenResourceSearch {
             collect(resource, &mut indexed);
         }
         let catalog = SearchCatalog::new("Open resources");
-        catalog
-            .replace_all(indexed.values().filter_map(|resource| {
-                let action = resource
-                    .actions
-                    .iter()
-                    .find(|action| action.kind == tilo_actions::OperationKind::View)
-                    .or_else(|| resource.actions.first())?;
-                let address = ActionAddress::new(resource.id.as_str(), &action.id);
-                Some((
-                    resource.id.as_str().to_string(),
-                    format!(
-                        "{} {} {}",
-                        resource.label,
-                        resource.kind,
-                        resource.id.as_str()
-                    ),
-                    SearchResult::for_action("Resources", resource.label.clone(), address)
-                        .with_subtitle(format!("{} · {}", action.label, resource.kind)),
-                ))
-            }))
-            .expect("open resources have unique ids and canonical action addresses");
+        if let Err(error) = catalog.replace_all(indexed.values().filter_map(|resource| {
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.kind == tilo_actions::OperationKind::View)
+                .or_else(|| resource.actions.first())?;
+            let address = ActionAddress::new(resource.id.as_str(), &action.id);
+            Some((
+                resource.id.as_str().to_string(),
+                format!(
+                    "{} {} {}",
+                    resource.label,
+                    resource.kind,
+                    resource.id.as_str()
+                ),
+                SearchResult::for_action("Resources", resource.label.clone(), address)
+                    .with_subtitle(format!("{} · {}", action.label, resource.kind)),
+            ))
+        })) {
+            tracing::error!(%error, "could not index open resources");
+        }
         Self {
             catalog,
             resources: Arc::new(indexed),
@@ -1223,7 +1223,7 @@ impl OpenResourceSearch {
 }
 
 impl SearchProvider for OpenResourceSearch {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Open resources"
     }
 

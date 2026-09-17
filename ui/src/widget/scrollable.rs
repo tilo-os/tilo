@@ -1420,8 +1420,8 @@ impl Widget for Scrollable {
         }
         let rect = child.get_rect();
         let viewport = self.content_viewport_rect();
-        let x = (rect.x0 - viewport.x0 + f64::from(self.offset_x)) as f32;
-        let y = (rect.y0 - viewport.y0 + f64::from(self.offset_y)) as f32;
+        let x = crate::num::f32_of_f64(rect.x0 - viewport.x0 + f64::from(self.offset_x));
+        let y = crate::num::f32_of_f64(rect.y0 - viewport.y0 + f64::from(self.offset_y));
         // Keep enough surrounding context to identify a form control after
         // keyboard traversal. Merely placing a focused field flush against
         // the viewport edge can hide its label and the adjacent action,
@@ -1432,8 +1432,8 @@ impl Widget for Scrollable {
         self.scroll_into_view(
             (x - context).max(0.0),
             (y - context).max(0.0),
-            rect.width() as f32 + context * 2.0,
-            rect.height() as f32 + context * 2.0,
+            crate::num::f32_of_f64(rect.width()) + context * 2.0,
+            crate::num::f32_of_f64(rect.height()) + context * 2.0,
         );
         true
     }
