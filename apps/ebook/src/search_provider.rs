@@ -679,7 +679,7 @@ impl BookSearchProvider {
                 tags: vec!["workspace".into(), "materialize".into(), "remote".into()],
                 ..ActionContract::default()
             });
-            let remove = ActionSpec::immediate(
+            let remove_from_library = ActionSpec::immediate(
                 "remove-from-library",
                 "Remove from library",
                 crate::actions::EBOOK_ACTION_TYPE,
@@ -697,7 +697,7 @@ impl BookSearchProvider {
             return Some(
                 Resource::new(&address.resource, "ebook.book", &entry.result.title)
                     .with_action(hydrate)
-                    .with_action(remove),
+                    .with_action(remove_from_library),
             );
         }
         let (kind, book_id, chapter, block) = match entry.target {
