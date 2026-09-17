@@ -101,24 +101,30 @@ pub fn spawn_filter_loader(engine: SharedEngine) {
     }
     let spawned = std::thread::Builder::new()
         .name("filter-loader".into())
-        .spawn(move || match load_and_compile() {
-            Ok((version, filter)) => {
-                tracing::info!(
-                    rules = filter.rule_count,
-                    chunks = filter.chunks.len(),
-                    skipped = filter.skipped,
-                    "content filter compiled"
-                );
-                // Installed as several filters — the full rule set exceeds
-                // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`). The
-                // `version` (hash of the source lists) lets the engine reuse
-                // previously compiled filters when the lists are unchanged.
-                engine.send(WebViewCommand::SetContentFilters {
-                    version,
-                    chunks: std::sync::Arc::new(filter.chunks),
-                });
+        .spawn(move || {
+            match load_and_compile() {
+                Ok((version, filter)) => {
+                    tracing::info!(
+                        rules = filter.rule_count,
+                        chunks = filter.chunks.len(),
+                        skipped = filter.skipped,
+                        "content filter compiled"
+                    );
+                    // Installed as several filters — the full rule set exceeds
+                    // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`). The
+                    // `version` (hash of the source lists) lets the engine reuse
+                    // previously compiled filters when the lists are unchanged.
+                    engine.send(WebViewCommand::SetContentFilters {
+                        version,
+                        chunks: std::sync::Arc::new(filter.chunks),
+                    });
+                }
+                Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
             }
-            Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
+            #[cfg(test)]
+            if let Some(path) = std::env::var_os("QOS_TEST_FILTER_LOADER_DONE") {
+                let _ = std::fs::write(path, b"done\n");
+            }
         });
     if let Err(err) = spawned {
         tracing::warn!("ad blocking unavailable: could not spawn filter-loader thread: {err}");
@@ -322,13 +328,19 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
         Ok(text) => {
             if let Some(p) = &path {
                 if let Some(dir) = p.parent() {
-                    std::fs::create_dir_all(dir).ok();
+                    match crate::storage::private_root_write_guard(dir) {
+                        Ok(_private_write) => {
+                            std::fs::create_dir_all(dir).ok();
+                            let temporary =
+                                p.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+                            if std::fs::write(&temporary, &text).is_ok() {
+                                let _ = std::fs::rename(&temporary, p);
+                            }
+                            let _ = std::fs::remove_file(temporary);
+                        }
+                        Err(error) => tracing::warn!(%error, "filter cache is unavailable"),
+                    }
                 }
-                let temporary = p.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-                if std::fs::write(&temporary, &text).is_ok() {
-                    let _ = std::fs::rename(&temporary, p);
-                }
-                let _ = std::fs::remove_file(temporary);
             }
             Some(text)
         }
@@ -340,7 +352,15 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
 }
 
 fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), String> {
-    let texts: Vec<String> = LISTS
+    #[cfg(test)]
+    let override_list = std::env::var("QOS_TEST_FILTER_LIST_URL").ok();
+    #[cfg(test)]
+    let lists: Vec<(&str, &str)> = override_list
+        .as_deref()
+        .map_or_else(|| LISTS.to_vec(), |url| vec![("fixture.txt", url)]);
+    #[cfg(not(test))]
+    let lists = LISTS;
+    let texts: Vec<String> = lists
         .iter()
         .filter_map(|(name, url)| load_list(name, url))
         .collect();

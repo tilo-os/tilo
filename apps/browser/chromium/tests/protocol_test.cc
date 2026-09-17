@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include "view_geometry.h"
 #include <cassert>
 #include <sstream>
 #include <iostream>
@@ -19,5 +20,18 @@ int main() {
   assert(FrameSize(2,3)==24);
   { std::string body; AppendU32(body,2); AppendU32(body,3); body.append(24,'x'); assert(ValidFrame(body)); body.pop_back(); assert(!ValidFrame(body)); }
   { std::istringstream in(EncodePacket(99,"x")); Packet p; assert(ReadPacket(in,p)==ReadResult::Error); }
+  {
+    ViewGeometry geometry;
+    assert(geometry.ResizePhysical(800,452,1.0)==ResizeEffect::Changed);
+    assert(geometry.PaintMatches(800,452));
+    assert(geometry.ResizePhysical(1600,904,2.0)==ResizeEffect::Changed);
+    assert(!geometry.PaintMatches(800,452));
+    assert(geometry.PaintMatches(1600,904));
+    assert(geometry.ResizePhysical(1600,904,2.0)==ResizeEffect::Repaint);
+    assert(geometry.ResizePhysical(801,451,2.0)==ResizeEffect::Changed);
+    assert(!geometry.PaintMatches(801,451));
+    assert(geometry.PaintMatches(802,452));
+    assert(geometry.ResizePhysical(801,451,2.0)==ResizeEffect::Repaint);
+  }
   std::cout << "protocol tests passed\n";
 }

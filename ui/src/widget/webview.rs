@@ -67,6 +67,10 @@ pub struct WebView {
     last_mouse: Point,
     /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
+    /// Last expected/observed mismatch for which we requested a repaint.
+    /// A matching frame clears it, so a stalled backend cannot cause a
+    /// redraw-command loop on every UI frame.
+    stale_resize_retry: Option<((u32, u32), (u32, u32))>,
     native_mounted: bool,
     /// Keyed by the frame buffer's allocation pointer + dimensions.
     cached_image: Option<PenikoImage>,
@@ -84,6 +88,7 @@ impl WebView {
             focused: false,
             last_mouse: Point::ZERO,
             last_sent_size: (0, 0),
+            stale_resize_retry: None,
             native_mounted: false,
             cached_image: None,
             cached_key: (0, 0, 0),
@@ -154,6 +159,37 @@ impl WebView {
             height: h,
             scale_factor: self.scale_factor,
         });
+    }
+
+    fn retry_resize_for_stale_frame(&mut self, observed: (u32, u32)) -> bool {
+        let expected = (
+            round_to_u32_px(self.rect.width() * f64::from(self.scale_factor)),
+            round_to_u32_px(self.rect.height() * f64::from(self.scale_factor)),
+        );
+        if expected.0 == 0 || expected.1 == 0 {
+            self.stale_resize_retry = None;
+            return true;
+        }
+        let cef_rounding = round_to_u32_px(f64::from(self.scale_factor.ceil())).saturating_sub(1);
+        let matches = observed.0 >= expected.0
+            && observed.0.saturating_sub(expected.0) <= cef_rounding
+            && observed.1 >= expected.1
+            && observed.1.saturating_sub(expected.1) <= cef_rounding;
+        if matches {
+            self.stale_resize_retry = None;
+            return true;
+        }
+        let retry = (expected, observed);
+        if self.stale_resize_retry != Some(retry) {
+            self.stale_resize_retry = Some(retry);
+            crate::webview::profile::record_resize(expected.0, expected.1, self.scale_factor);
+            self.engine.send(WebViewCommand::Resize {
+                width: expected.0,
+                height: expected.1,
+                scale_factor: self.scale_factor,
+            });
+        }
+        false
     }
 
     /// Map a winit logical key to the engine's key model. Pure so tests can
@@ -276,6 +312,16 @@ impl Widget for WebView {
         };
 
         if let Some(frame) = latest {
+            if !self.retry_resize_for_stale_frame((frame.width, frame.height)) {
+                self.cached_image = None;
+                self.cached_key = (0, 0, 0);
+                crate::webview::profile::record_draw(
+                    self.rect.width(),
+                    self.rect.height(),
+                    Some((frame.width, frame.height)),
+                );
+                return;
+            }
             let key = (Arc::as_ptr(&frame.rgba) as usize, frame.width, frame.height);
             if self.cached_image.is_none() || key != self.cached_key {
                 let expected = (frame.width as usize)
@@ -715,6 +761,53 @@ mod tests {
                 scale_factor: 2.0,
             })
         );
+    }
+
+    #[test]
+    fn stale_frame_dimensions_request_one_bounded_repaint_retry() {
+        let engine = TestEngine::new();
+        let (mut view, _, _) = laid_out(engine.clone());
+        let initial = engine.commands().len();
+        view.retry_resize_for_stale_frame((400, 292));
+        assert_eq!(engine.commands().len(), initial + 1);
+        assert_eq!(
+            engine.commands().last(),
+            Some(&WebViewCommand::Resize {
+                width: 400,
+                height: 300,
+                scale_factor: 1.0,
+            })
+        );
+        view.retry_resize_for_stale_frame((400, 292));
+        assert_eq!(
+            engine.commands().len(),
+            initial + 1,
+            "the same stale paint must not create an invalidation loop"
+        );
+        view.retry_resize_for_stale_frame((399, 300));
+        assert_eq!(
+            engine.commands().len(),
+            initial + 2,
+            "a distinct stale frame gets one retry"
+        );
+        view.retry_resize_for_stale_frame((400, 300));
+        view.retry_resize_for_stale_frame((400, 292));
+        assert_eq!(
+            engine.commands().len(),
+            initial + 3,
+            "a matching frame resets the bounded retry state"
+        );
+    }
+
+    #[test]
+    fn cef_outward_rounding_is_not_treated_as_a_stale_frame() {
+        let engine = TestEngine::new();
+        let (mut view, _, _) = laid_out(engine.clone());
+        view.rect = Rect::new(0.0, 0.0, 400.5, 225.5);
+        view.scale_factor = 2.0;
+        let initial = engine.commands().len();
+        assert!(view.retry_resize_for_stale_frame((802, 452)));
+        assert_eq!(engine.commands().len(), initial);
     }
 
     #[test]
