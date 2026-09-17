@@ -89,6 +89,13 @@ find-no-results = Keine Treffer
 find-count = { $cur } / { $total }
 find-replace = Ersetzen
 find-replace-all = Alle
+find-replace-all-long = Alle ersetzen
+find-match-case = Groß-/Kleinschreibung beachten
+find-whole-word = Nur ganze Wörter
+find-regular-expression = Regulären Ausdruck verwenden
+find-previous = Vorheriger Treffer
+find-next = Nächster Treffer
+find-toolbar = Suchen und Ersetzen
 
 ## Review — context-menu rows
 review-accept-insertion = Einfügung annehmen

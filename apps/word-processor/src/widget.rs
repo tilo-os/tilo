@@ -5722,6 +5722,35 @@ impl WordProcessorWidget {
         })
     }
 
+    fn find_access_node(&self) -> Option<A11yTreeNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        if !self.find.is_open() {
+            return None;
+        }
+        let children = self
+            .find
+            .semantic_controls()
+            .into_iter()
+            .map(|control| {
+                A11yTreeNode::leaf(
+                    AccessNode::new(control.role)
+                        .with_name(control.label)
+                        .with_bounds(control.rect)
+                        .with_action_target(format!("word-processor.find:{}", control.id))
+                        .with_state(AccessState {
+                            focusable: true,
+                            checked: control.checked,
+                            ..Default::default()
+                        }),
+                )
+            })
+            .collect();
+        Some(A11yTreeNode {
+            node: AccessNode::new(Role::Toolbar).with_name(t("find-toolbar")),
+            children,
+        })
+    }
+
     /// Expose the selected image's placement choices from the exact hit list
     /// painted by the inspector. The full names/descriptions avoid making the
     /// compact visual labels the only cue for screen-reader and tooltip users.
@@ -5807,6 +5836,9 @@ impl WordProcessorWidget {
 
         if let Some(toolbar) = self.toolbar_access_node() {
             children.push(toolbar);
+        }
+        if let Some(find) = self.find_access_node() {
+            children.push(find);
         }
         if let Some(review) = self.review_access_node() {
             children.push(review);
@@ -6188,12 +6220,8 @@ impl WordProcessorWidget {
                 &PresenceCtx::empty(),
                 FindPalette {
                     bar: cc.bar,
-                    chip: cc.chip,
                     border: cc.border,
-                    text: cc.text,
                     text_dim: cc.text_dim,
-                    accent: cc.accent,
-                    on_accent: cc.on_accent,
                     danger: theme.tokens.colors.semantic.danger,
                 },
                 fbar,
@@ -9540,6 +9568,7 @@ impl Widget for WordProcessorWidget {
         self.review.draw(
             scene,
             text_renderer,
+            theme,
             fg.canvas,
             fg.ctf,
             markers.comment_markers,
@@ -9890,6 +9919,10 @@ impl Widget for WordProcessorWidget {
     ) -> bool {
         if matches!(action, ui::a11y::Action::Focus) {
             if let Some(target) = key_path.last().copied() {
+                if self.find.focus_semantic(target) {
+                    self.dirty = true;
+                    return true;
+                }
                 let palette_target = if ui::a11y::hash_key(&"compact-swatch:clear") == target {
                     Some("compact-swatch:clear".to_string())
                 } else {
@@ -9916,6 +9949,11 @@ impl Widget for WordProcessorWidget {
         let Some(target) = key_path.last().copied() else {
             return false;
         };
+        if let Some(effect) = self.find.activate_semantic(target, &self.blocks) {
+            self.apply_find_effect_mut(state, effect);
+            self.dirty = true;
+            return true;
+        }
         let compact_palette_target = if ui::a11y::hash_key(&"compact-swatch:clear") == target {
             Some("compact-swatch:clear".to_string())
         } else {
@@ -16062,6 +16100,13 @@ mod tests {
         assert!(
             has(&|a| matches!(a, ReviewAction::RejectChange(id) if id == &ins_id)),
             "a Reject ✗ affordance for the change"
+        );
+        assert!(
+            wp.review
+                .hits()
+                .iter()
+                .all(|(rect, _)| rect.width() >= 32.0 && rect.height() >= 32.0),
+            "every review action meets the 32px minimum pointer target"
         );
 
         let tree = wp.accessibility_tree();

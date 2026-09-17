@@ -28,6 +28,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
@@ -36,7 +37,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{FlapState, ModalDialog, SplitLayout, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, FlapState, ModalDialog, SplitLayout, Widget};
 
 use crate::actions::{self, FeedsAction, FeedsResourceCtx};
 use crate::doc::FeedsDoc;
@@ -2206,6 +2207,7 @@ impl FeedsApp {
             theme,
             &self.toolbar_rect,
             &self.toolbar_buttons,
+            self.last_mouse,
         );
 
         // Reading-settings gear + popover (only when an article is showing).
@@ -2216,6 +2218,7 @@ impl FeedsApp {
             draw_chrome_button(
                 scene,
                 t,
+                tr,
                 theme,
                 &self.back_rect,
                 ChromeGlyph::Back,
@@ -2263,6 +2266,7 @@ impl FeedsApp {
             draw_chrome_button(
                 scene,
                 t,
+                tr,
                 theme,
                 &self.hamburger_rect,
                 glyph,
@@ -3852,10 +3856,11 @@ fn draw_block(
 fn draw_toolbar(
     scene: &mut Scene,
     t: Affine,
-    tr: &TextRenderer,
+    tr: &mut TextRenderer,
     theme: &Theme,
     rect: &Rect,
     buttons: &[ToolbarButton],
+    mouse: Point,
 ) {
     let c = &theme.tokens.colors;
     hline(
@@ -3867,31 +3872,26 @@ fn draw_toolbar(
         alpha(c.border_standard, 120),
     );
     for b in buttons {
-        let center = b.rect.center();
-        let bg = alpha(c.neutral[2], 160);
-        scene.fill(
-            Fill::NonZero,
+        let (icon, name, style) = match b.action {
+            ToolbarAction::AddSubscription => {
+                (Icon::Plus, "Add subscription", ButtonStyle::Primary)
+            }
+            ToolbarAction::Refresh => (Icon::Refresh, "Refresh feeds", ButtonStyle::Neutral),
+            ToolbarAction::MarkAllRead => (Icon::Check, "Mark all as read", ButtonStyle::Neutral),
+            ToolbarAction::ImportOpml => (Icon::Download, "Import OPML", ButtonStyle::Neutral),
+            ToolbarAction::ExportOpml => (Icon::ExternalLink, "Export OPML", ButtonStyle::Neutral),
+        };
+        Button::paint(
+            scene,
             t,
-            bg,
-            None,
-            &RoundedRect::from_rect(b.rect, 9.0),
+            tr,
+            theme,
+            &ButtonFace::new(b.rect, "")
+                .icon(icon)
+                .accessible_name(name)
+                .style(style)
+                .hovered(b.rect.contains(mouse)),
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            alpha(c.border_standard, 120),
-            None,
-            &RoundedRect::from_rect(b.rect, 9.0),
-        );
-        let col = c.text_primary;
-        match b.action {
-            ToolbarAction::AddSubscription => icons::plus(scene, t, center, 7.0, c.accent[6]),
-            ToolbarAction::Refresh => icons::refresh(scene, t, center, 8.0, col),
-            ToolbarAction::MarkAllRead => icons::check(scene, t, center, 7.0, col),
-            ToolbarAction::ImportOpml => icons::import_arrow(scene, t, center, 6.0, col),
-            ToolbarAction::ExportOpml => icons::external_link(scene, t, center, 6.0, col),
-        }
-        let _ = tr; // tooltips are not drawn statically
     }
 }
 
@@ -3912,56 +3912,28 @@ enum ChromeGlyph {
 fn draw_chrome_button(
     scene: &mut Scene,
     t: Affine,
+    tr: &mut TextRenderer,
     theme: &Theme,
     rect: &Rect,
     glyph: ChromeGlyph,
     mouse: Point,
 ) {
-    let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(*rect, 9.0);
     let hovered = rect.contains(mouse);
-    let bg = if hovered {
-        c.neutral[3]
-    } else {
-        c.surfaces.raised
+    let (icon, name) = match glyph {
+        ChromeGlyph::Menu => (Icon::Menu, "Open subscriptions"),
+        ChromeGlyph::Close => (Icon::X, "Close subscriptions"),
+        ChromeGlyph::Back => (Icon::ArrowLeft, "Back to articles"),
     };
-    scene.fill(Fill::NonZero, t, bg.with_alpha_factor(0.94), None, &shape);
-    scene.stroke(
-        &Stroke::new(1.0),
+    Button::paint(
+        scene,
         t,
-        alpha(c.border_standard, 150),
-        None,
-        &shape,
+        tr,
+        theme,
+        &ButtonFace::new(*rect, "")
+            .icon(icon)
+            .accessible_name(name)
+            .hovered(hovered),
     );
-    let center = rect.center();
-    match glyph {
-        ChromeGlyph::Menu => icons::hamburger(scene, t, center, 8.0, c.text_primary),
-        ChromeGlyph::Close => {
-            let r = 6.0;
-            let s = Stroke::new(1.8);
-            scene.stroke(
-                &s,
-                t,
-                c.text_primary,
-                None,
-                &Line::new(
-                    Point::new(center.x - r, center.y - r),
-                    Point::new(center.x + r, center.y + r),
-                ),
-            );
-            scene.stroke(
-                &s,
-                t,
-                c.text_primary,
-                None,
-                &Line::new(
-                    Point::new(center.x + r, center.y - r),
-                    Point::new(center.x - r, center.y + r),
-                ),
-            );
-        }
-        ChromeGlyph::Back => icons::back_arrow(scene, t, center, 6.0, c.text_primary),
-    }
 }
 
 // --- text helpers -----------------------------------------------------

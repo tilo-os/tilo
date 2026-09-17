@@ -5408,7 +5408,7 @@ impl Widget for ContactsApp {
     fn traps_focus(&self) -> bool {
         self.confirm_delete.is_some()
             || !self.import_conflicts.is_empty()
-            || self.export_dialog.is_open()
+            || self.export_dialog.traps_focus()
             || self.pending_switch.is_some()
     }
 
@@ -5421,13 +5421,7 @@ impl Widget for ContactsApp {
                     .as_ref()
                     .and_then(|confirm| confirm.dialog.modal_capture())
             })
-            .or_else(|| {
-                self.export_dialog.is_open().then(|| {
-                    self.export_dialog
-                        .geometry(self.rect, &self.store, self.sort)
-                        .panel
-                })
-            })
+            .or_else(|| self.export_dialog.modal_capture())
             .or_else(|| {
                 self.pending_switch
                     .is_some()

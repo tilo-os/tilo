@@ -11,6 +11,8 @@ use vello::peniko::{Color, Fill};
 
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace, ButtonStyle};
 
 use crate::i18n::t;
 use crate::num;
@@ -26,21 +28,11 @@ pub(super) const INSERTION_INK: Color =
 pub(super) const DELETION_INK: Color =
     Color::from_rgb8(DELETION_RGB[0], DELETION_RGB[1], DELETION_RGB[2]);
 
-const COMMENT_TAB: Color = Color::from_rgb8(0xe0, 0xa8, 0x10);
-const COMMENT_CARD_BG: Color = Color::from_rgb8(0xff, 0xf8, 0xdc);
-const COMMENT_CARD_EDGE: Color = Color::from_rgb8(0xe6, 0xcf, 0x7a);
-const COMMENT_AUTHOR_INK: Color = Color::from_rgb8(0x6a, 0x52, 0x00);
-const COMMENT_BODY_INK: Color = Color::from_rgb8(0x3a, 0x32, 0x14);
 const COMMENT_TAB_W: f64 = 4.0;
-const COMMENT_CARD_W: f64 = 150.0;
-const CHANGE_CARD_BG: Color = Color::from_rgb8(0xf3, 0xf4, 0xf7);
-const CHANGE_CARD_EDGE: Color = Color::from_rgb8(0xcf, 0xd2, 0xda);
-const CHANGE_LABEL_INK: Color = Color::from_rgb8(0x44, 0x46, 0x50);
-const REVIEW_ACCEPT_BG: Color = Color::from_rgb8(0xe2, 0xf3, 0xe6);
-const REVIEW_ACCEPT_INK: Color = Color::from_rgb8(0x18, 0x6a, 0x32);
-const REVIEW_REJECT_BG: Color = Color::from_rgb8(0xf7, 0xe4, 0xe4);
-const REVIEW_REJECT_INK: Color = Color::from_rgb8(0xa8, 0x24, 0x24);
-const REVIEW_BTN: f64 = 18.0;
+const COMMENT_CARD_W: f64 = 164.0;
+/// Review actions are compact margin controls, but still meet the toolkit's
+/// 32px minimum target and no longer require pixel-perfect pointing.
+const REVIEW_BTN: f64 = 36.0;
 const CHANGE_CARD_W: f64 = 132.0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,6 +106,7 @@ impl ReviewOverlay {
         &mut self,
         scene: &mut Scene,
         text_renderer: &mut TextRenderer,
+        theme: &Theme,
         canvas: Rect,
         transform: Affine,
         mut comment_markers: Vec<(String, f64, f64)>,
@@ -131,6 +124,7 @@ impl ReviewOverlay {
             next_comment_y = self.draw_comment(
                 scene,
                 text_renderer,
+                theme,
                 transform,
                 comment_x,
                 next_comment_y,
@@ -147,6 +141,7 @@ impl ReviewOverlay {
             next_change_y = self.draw_change(
                 scene,
                 text_renderer,
+                theme,
                 transform,
                 change_x,
                 next_change_y,
@@ -161,6 +156,7 @@ impl ReviewOverlay {
         &mut self,
         scene: &mut Scene,
         text_renderer: &mut TextRenderer,
+        theme: &Theme,
         transform: Affine,
         card_x: f64,
         next_card_y: f64,
@@ -181,7 +177,7 @@ impl ReviewOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            COMMENT_TAB,
+            theme.tokens.colors.semantic.warning,
             None,
             &vello::kurbo::RoundedRect::from_rect(tab, 1.5),
         );
@@ -247,18 +243,25 @@ impl ReviewOverlay {
         let card_h = 22.0 + f64::from(body_layout.height()) + reply_h + 8.0 + REVIEW_BTN + 6.0;
         let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
         let rounded = vello::kurbo::RoundedRect::from_rect(card, 5.0);
-        scene.fill(Fill::NonZero, transform, COMMENT_CARD_BG, None, &rounded);
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &rounded,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            COMMENT_CARD_EDGE,
+            colors.border_standard,
             None,
             &rounded,
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            COMMENT_TAB,
+            colors.semantic.warning,
             None,
             &Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h),
         );
@@ -266,7 +269,7 @@ impl ReviewOverlay {
             scene,
             author,
             11.5,
-            COMMENT_AUTHOR_INK,
+            colors.text_primary,
             transform * Affine::translate((card_x + 9.0, card_top + 5.0)),
             None,
         );
@@ -274,7 +277,7 @@ impl ReviewOverlay {
             scene,
             &body_layout,
             transform * Affine::translate((card_x + 9.0, card_top + 20.0)),
-            COMMENT_BODY_INK,
+            colors.text_primary,
         );
 
         if !replies.is_empty() {
@@ -286,13 +289,14 @@ impl ReviewOverlay {
                         card_x + 9.0,
                         card_top + 22.0 + f64::from(body_layout.height()) + 3.0,
                     )),
-                COMMENT_BODY_INK,
+                colors.text_dim,
             );
         }
 
         self.draw_comment_reply_button(
             scene,
             text_renderer,
+            theme,
             transform,
             card_x,
             card_top,
@@ -302,6 +306,7 @@ impl ReviewOverlay {
         self.draw_comment_resolve_button(
             scene,
             text_renderer,
+            theme,
             transform,
             card_x,
             card_top,
@@ -316,6 +321,7 @@ impl ReviewOverlay {
         &mut self,
         scene: &mut Scene,
         text_renderer: &mut TextRenderer,
+        theme: &Theme,
         transform: Affine,
         card_x: f64,
         card_top: f64,
@@ -323,28 +329,17 @@ impl ReviewOverlay {
         id: &str,
     ) {
         let button_y = card_top + card_h - REVIEW_BTN - 4.0;
-        let button = Rect::new(card_x + 8.0, button_y, card_x + 51.0, button_y + REVIEW_BTN);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            COMMENT_CARD_BG,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(button, 4.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            COMMENT_CARD_EDGE,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(button, 4.0),
-        );
-        text_renderer.draw_text(
+        let button = Rect::new(card_x + 8.0, button_y, card_x + 72.0, button_y + REVIEW_BTN);
+        let label = t("review-reply");
+        Button::paint(
             scene,
-            &t("review-reply"),
-            10.0,
-            COMMENT_AUTHOR_INK,
-            transform * Affine::translate((button.x0 + 5.0, button.y0 + 2.5)),
-            None,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(button, &label)
+                .style(ButtonStyle::Neutral)
+                .accessible_name(&label)
+                .text_size(11.0),
         );
         self.hits
             .push((button, ReviewAction::OpenCommentThread(id.to_string())));
@@ -362,6 +357,7 @@ impl ReviewOverlay {
         &mut self,
         scene: &mut Scene,
         text_renderer: &mut TextRenderer,
+        theme: &Theme,
         transform: Affine,
         card_x: f64,
         card_top: f64,
@@ -370,33 +366,21 @@ impl ReviewOverlay {
     ) {
         let button_y = card_top + card_h - REVIEW_BTN - 4.0;
         let button = Rect::new(
-            card_x + COMMENT_CARD_W - 64.0,
+            card_x + COMMENT_CARD_W - 80.0,
             button_y,
             card_x + COMMENT_CARD_W - 8.0,
             button_y + REVIEW_BTN,
         );
-        let rounded_button = vello::kurbo::RoundedRect::from_rect(button, 4.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            REVIEW_ACCEPT_BG,
-            None,
-            &rounded_button,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            COMMENT_CARD_EDGE,
-            None,
-            &rounded_button,
-        );
-        text_renderer.draw_text(
+        let label = t("review-resolve");
+        Button::paint(
             scene,
-            &t("review-resolve"),
-            10.5,
-            REVIEW_ACCEPT_INK,
-            transform * Affine::translate((button.x0 + 5.0, button.y0 + 2.5)),
-            None,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(button, &label)
+                .style(ButtonStyle::Primary)
+                .accessible_name(&label)
+                .text_size(11.0),
         );
         self.hits
             .push((button, ReviewAction::ResolveComment(id.to_string())));
@@ -407,6 +391,7 @@ impl ReviewOverlay {
         &mut self,
         scene: &mut Scene,
         text_renderer: &mut TextRenderer,
+        theme: &Theme,
         transform: Affine,
         card_x: f64,
         next_card_y: f64,
@@ -416,9 +401,19 @@ impl ReviewOverlay {
         let Some(change) = self.changes.iter().find(|change| change.id == id) else {
             return next_card_y;
         };
-        let (label, kind_color) = match change.kind {
-            ChangeKind::Ins => (t("review-insertion"), INSERTION_INK),
-            ChangeKind::Del => (t("review-deletion"), DELETION_INK),
+        let (label, accept_label, reject_label, kind_color) = match change.kind {
+            ChangeKind::Ins => (
+                t("review-insertion"),
+                t("review-accept-insertion"),
+                t("review-reject-insertion"),
+                theme.tokens.colors.semantic.success,
+            ),
+            ChangeKind::Del => (
+                t("review-deletion"),
+                t("review-accept-deletion"),
+                t("review-reject-deletion"),
+                theme.tokens.colors.semantic.danger,
+            ),
         };
         let author = if change.author.is_empty() {
             String::new()
@@ -429,11 +424,18 @@ impl ReviewOverlay {
         let card_h = 22.0 + REVIEW_BTN + 6.0;
         let card = Rect::new(card_x, card_top, card_x + CHANGE_CARD_W, card_top + card_h);
         let rounded = vello::kurbo::RoundedRect::from_rect(card, 5.0);
-        scene.fill(Fill::NonZero, transform, CHANGE_CARD_BG, None, &rounded);
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &rounded,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            CHANGE_CARD_EDGE,
+            colors.border_standard,
             None,
             &rounded,
         );
@@ -448,7 +450,7 @@ impl ReviewOverlay {
             scene,
             &format!("{label}{author}"),
             10.5,
-            CHANGE_LABEL_INK,
+            colors.text_primary,
             transform * Affine::translate((card_x + 9.0, card_top + 5.0)),
             None,
         );
@@ -466,35 +468,25 @@ impl ReviewOverlay {
             accept.x1 + 6.0 + REVIEW_BTN,
             button_y + REVIEW_BTN,
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            REVIEW_ACCEPT_BG,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(accept, 4.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            REVIEW_REJECT_BG,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(reject, 4.0),
-        );
-        text_renderer.draw_text(
+        Button::paint(
             scene,
-            "✓",
-            12.0,
-            REVIEW_ACCEPT_INK,
-            transform * Affine::translate((accept.x0 + 4.0, accept.y0 + 1.5)),
-            None,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(accept, "")
+                .style(ButtonStyle::Primary)
+                .accessible_name(&accept_label)
+                .icon(ui::icons::Icon::Check),
         );
-        text_renderer.draw_text(
+        Button::paint(
             scene,
-            "✗",
-            12.0,
-            REVIEW_REJECT_INK,
-            transform * Affine::translate((reject.x0 + 4.0, reject.y0 + 1.5)),
-            None,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(reject, "")
+                .style(ButtonStyle::Danger)
+                .accessible_name(&reject_label)
+                .icon(ui::icons::Icon::X),
         );
         self.hits
             .push((accept, ReviewAction::AcceptChange(id.to_string())));

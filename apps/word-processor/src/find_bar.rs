@@ -17,24 +17,20 @@ use winit::keyboard::{Key, NamedKey};
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, TextInputKind, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, TextInput, TextInputKind, Widget};
 
 use crate::i18n::{arg, t, t_args};
 use crate::num;
 
-pub(crate) const HEIGHT: f64 = 42.0;
+pub(crate) const HEIGHT: f64 = 52.0;
 
 pub(crate) type FindMatch = (String, usize, usize);
 
 #[derive(Clone, Copy)]
 pub(crate) struct FindPalette {
     pub bar: Color,
-    pub chip: Color,
     pub border: Color,
-    pub text: Color,
     pub text_dim: Color,
-    pub accent: Color,
-    pub on_accent: Color,
     pub danger: Color,
 }
 
@@ -58,6 +54,14 @@ enum Action {
     ToggleCase,
     ToggleWord,
     ToggleRegex,
+}
+
+pub(crate) struct FindSemanticControl {
+    pub id: &'static str,
+    pub label: String,
+    pub role: ui::a11y::Role,
+    pub rect: Rect,
+    pub checked: Option<bool>,
 }
 
 /// The three search-mode toggles, grouped so `FindBar` itself doesn't carry
@@ -112,10 +116,91 @@ struct DrawCtx<'a> {
     scene: &'a mut Scene,
     transform: Affine,
     tr: &'a mut TextRenderer,
+    theme: &'a Theme,
     palette: FindPalette,
 }
 
 impl FindBar {
+    fn action_id(action: Action) -> &'static str {
+        match action {
+            Action::FocusFind => "query",
+            Action::FocusReplace => "replacement",
+            Action::Prev => "previous",
+            Action::Next => "next",
+            Action::Replace => "replace",
+            Action::ReplaceAll => "replace-all",
+            Action::Close => "close",
+            Action::ToggleCase => "match-case",
+            Action::ToggleWord => "whole-word",
+            Action::ToggleRegex => "regular-expression",
+        }
+    }
+
+    fn action_label(action: Action) -> String {
+        match action {
+            Action::FocusFind => t("find-find"),
+            Action::FocusReplace => t("find-replace-with"),
+            Action::Prev => t("find-previous"),
+            Action::Next => t("find-next"),
+            Action::Replace => t("find-replace"),
+            Action::ReplaceAll => t("find-replace-all-long"),
+            Action::Close => t("panel-close"),
+            Action::ToggleCase => t("find-match-case"),
+            Action::ToggleWord => t("find-whole-word"),
+            Action::ToggleRegex => t("find-regular-expression"),
+        }
+    }
+
+    pub(crate) fn semantic_controls(&self) -> Vec<FindSemanticControl> {
+        self.buttons
+            .iter()
+            .map(|(action, rect)| {
+                let (role, checked) = match action {
+                    Action::FocusFind | Action::FocusReplace => (ui::a11y::Role::TextInput, None),
+                    Action::ToggleCase => (
+                        ui::a11y::Role::ToggleButton,
+                        Some(self.options.case_sensitive),
+                    ),
+                    Action::ToggleWord => {
+                        (ui::a11y::Role::ToggleButton, Some(self.options.whole_word))
+                    }
+                    Action::ToggleRegex => (ui::a11y::Role::ToggleButton, Some(self.options.regex)),
+                    _ => (ui::a11y::Role::Button, None),
+                };
+                FindSemanticControl {
+                    id: Self::action_id(*action),
+                    label: Self::action_label(*action),
+                    role,
+                    rect: *rect,
+                    checked,
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn focus_semantic(&mut self, target: u64) -> bool {
+        for action in [Action::FocusFind, Action::FocusReplace] {
+            let id = format!("word-processor.find:{}", Self::action_id(action));
+            if ui::a11y::hash_key(&id) == target {
+                self.focus_replace(action == Action::FocusReplace);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn activate_semantic(
+        &mut self,
+        target: u64,
+        blocks: &[BlockView],
+    ) -> Option<FindEffect> {
+        let action = self.buttons.iter().find_map(|(action, _)| {
+            let id = format!("word-processor.find:{}", Self::action_id(*action));
+            (ui::a11y::hash_key(&id) == target).then_some(*action)
+        })?;
+        Some(self.apply(action, blocks))
+    }
+
     pub(crate) fn is_open(&self) -> bool {
         self.open
     }
@@ -478,20 +563,23 @@ impl FindBar {
             None,
             &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
         );
-        let cy = f64::midpoint(bar.y0, bar.y1);
-        let field_y = cy - 13.0;
+        let compact = bar.width() < 900.0;
+        let control_h = 36.0;
+        let field_y = bar.y0 + (bar.height() - control_h) / 2.0;
         let mut ctx = DrawCtx {
             scene,
             transform,
             tr,
+            theme,
             palette,
         };
-        let mut x = bar.x0 + 12.0;
-        x = self.draw_find_field(&mut ctx, theme, presence, field_y, x);
-        x = self.draw_mode_toggles(&mut ctx, field_y, cy, x) + 8.0;
-        x = self.draw_replace_field(&mut ctx, theme, presence, field_y, x);
-        x = self.draw_match_count(&mut ctx, cy, x) + 78.0;
-        self.draw_action_buttons(&mut ctx, field_y, cy, x);
+        let field_w = if compact { 128.0 } else { 188.0 };
+        let mut x = bar.x0 + if compact { 8.0 } else { 12.0 };
+        x = self.draw_find_field(&mut ctx, theme, presence, field_y, x, field_w);
+        x = self.draw_mode_toggles(&mut ctx, field_y, x, compact) + 6.0;
+        x = self.draw_replace_field(&mut ctx, theme, presence, field_y, x, field_w);
+        x = self.draw_match_count(&mut ctx, field_y, x, compact);
+        self.draw_action_buttons(&mut ctx, field_y, x, compact);
     }
 
     /// The find field itself, plus its bad-pattern outline. Returns the `x`
@@ -503,8 +591,9 @@ impl FindBar {
         presence: &PresenceCtx,
         field_y: f64,
         x: f64,
+        width: f64,
     ) -> f64 {
-        let find_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
+        let find_rect = Rect::new(x, field_y, x + width, field_y + 36.0);
         self.query.set_placeholder(&t("find-find"));
         self.query.apply_layout_external(find_rect);
         Widget::draw(
@@ -525,41 +614,56 @@ impl FindBar {
             );
         }
         self.buttons.push((Action::FocusFind, find_rect));
-        x + 196.0
+        x + width + 6.0
     }
 
     /// The case/word/regex toggle chips. Returns the `x` past the last one.
-    fn draw_mode_toggles(&mut self, ctx: &mut DrawCtx, field_y: f64, cy: f64, mut x: f64) -> f64 {
-        for (action, label, width, active) in [
-            (Action::ToggleCase, "Aa", 30.0, self.options.case_sensitive),
-            (Action::ToggleWord, "W", 26.0, self.options.whole_word),
-            (Action::ToggleRegex, ".*", 30.0, self.options.regex),
+    fn draw_mode_toggles(
+        &mut self,
+        ctx: &mut DrawCtx,
+        field_y: f64,
+        mut x: f64,
+        compact: bool,
+    ) -> f64 {
+        let width = if compact { 34.0 } else { 36.0 };
+        for (action, label, spoken, active) in [
+            (
+                Action::ToggleCase,
+                "Aa",
+                t("find-match-case"),
+                self.options.case_sensitive,
+            ),
+            (
+                Action::ToggleWord,
+                "W",
+                t("find-whole-word"),
+                self.options.whole_word,
+            ),
+            (
+                Action::ToggleRegex,
+                ".*",
+                t("find-regular-expression"),
+                self.options.regex,
+            ),
         ] {
-            let rect = Rect::new(x, field_y, x + width, field_y + 26.0);
-            let (background, foreground) = if active {
-                (ctx.palette.accent, ctx.palette.on_accent)
-            } else {
-                (ctx.palette.chip, ctx.palette.text_dim)
-            };
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                background,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
-            );
-            let text_x =
-                rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.2).max(4.0) / 2.0;
-            ctx.tr.draw_text(
+            let rect = Rect::new(x, field_y, x + width, field_y + 36.0);
+            Button::paint(
                 ctx.scene,
-                label,
-                12.5,
-                foreground,
-                ctx.transform * Affine::translate((text_x, cy - 8.0)),
-                None,
+                ctx.transform,
+                ctx.tr,
+                ctx.theme,
+                &ButtonFace::new(rect, label)
+                    .style(if active {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Neutral
+                    })
+                    .accessible_name(&spoken)
+                    .text_size(12.5)
+                    .hovered(rect.contains(self.pointer)),
             );
             self.buttons.push((action, rect));
-            x += width + 5.0;
+            x += width + 4.0;
         }
         x
     }
@@ -572,8 +676,9 @@ impl FindBar {
         presence: &PresenceCtx,
         field_y: f64,
         x: f64,
+        width: f64,
     ) -> f64 {
-        let replace_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
+        let replace_rect = Rect::new(x, field_y, x + width, field_y + 36.0);
         self.replacement.set_placeholder(&t("find-replace-with"));
         self.replacement.apply_layout_external(replace_rect);
         Widget::draw(
@@ -585,11 +690,11 @@ impl FindBar {
             presence,
         );
         self.buttons.push((Action::FocusReplace, replace_rect));
-        x + 196.0
+        x + width + 6.0
     }
 
     /// The "N of M" (or error/empty) readout. Returns the `x` past it.
-    fn draw_match_count(&self, ctx: &mut DrawCtx, cy: f64, x: f64) -> f64 {
+    fn draw_match_count(&self, ctx: &mut DrawCtx, field_y: f64, x: f64, compact: bool) -> f64 {
         let (count, count_color) = if self.query.value().is_empty() {
             (String::new(), ctx.palette.text_dim)
         } else if self.options.regex && self.regex_error {
@@ -613,41 +718,64 @@ impl FindBar {
             &count,
             12.5,
             count_color,
-            ctx.transform * Affine::translate((x, cy - 7.0)),
-            None,
+            ctx.transform * Affine::translate((x, field_y + 10.0)),
+            Some(if compact { 38.0 } else { 70.0 }),
         );
-        x
+        x + if compact { 44.0 } else { 78.0 }
     }
 
     /// Prev/Next/Replace/Replace All/Close.
-    fn draw_action_buttons(&mut self, ctx: &mut DrawCtx, field_y: f64, cy: f64, mut x: f64) {
-        for (action, label, width) in [
-            (Action::Prev, "↑".to_string(), 28.0),
-            (Action::Next, "↓".to_string(), 28.0),
-            (Action::Replace, t("find-replace"), 72.0),
-            (Action::ReplaceAll, t("find-replace-all"), 40.0),
-            (Action::Close, "✕".to_string(), 28.0),
+    fn draw_action_buttons(&mut self, ctx: &mut DrawCtx, field_y: f64, mut x: f64, compact: bool) {
+        let icon_w = if compact { 34.0 } else { 36.0 };
+        for (action, label, spoken, width, icon) in [
+            (
+                Action::Prev,
+                String::new(),
+                t("find-previous"),
+                icon_w,
+                Some(ui::icons::Icon::ArrowUp),
+            ),
+            (
+                Action::Next,
+                String::new(),
+                t("find-next"),
+                icon_w,
+                Some(ui::icons::Icon::ArrowDown),
+            ),
+            (
+                Action::Replace,
+                t("find-replace"),
+                t("find-replace"),
+                if compact { 60.0 } else { 72.0 },
+                None,
+            ),
+            (
+                Action::ReplaceAll,
+                t("find-replace-all"),
+                t("find-replace-all-long"),
+                if compact { 38.0 } else { 44.0 },
+                None,
+            ),
+            (
+                Action::Close,
+                String::new(),
+                t("panel-close"),
+                icon_w,
+                Some(ui::icons::Icon::X),
+            ),
         ] {
-            let rect = Rect::new(x, field_y, x + width, field_y + 26.0);
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                ctx.palette.chip,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
-            );
-            let text_x =
-                rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.2).max(6.0) / 2.0;
-            ctx.tr.draw_text(
-                ctx.scene,
-                &label,
-                13.0,
-                ctx.palette.text,
-                ctx.transform * Affine::translate((text_x, cy - 8.0)),
-                None,
-            );
+            let rect = Rect::new(x, field_y, x + width, field_y + 36.0);
+            let mut face = ButtonFace::new(rect, &label)
+                .style(ButtonStyle::Neutral)
+                .accessible_name(&spoken)
+                .text_size(12.0)
+                .hovered(rect.contains(self.pointer));
+            if let Some(icon) = icon {
+                face = face.icon(icon);
+            }
+            Button::paint(ctx.scene, ctx.transform, ctx.tr, ctx.theme, &face);
             self.buttons.push((action, rect));
-            x += width + 6.0;
+            x += width + 4.0;
         }
     }
 
@@ -787,12 +915,8 @@ mod tests {
         let mut text = TextRenderer::new();
         let palette = FindPalette {
             bar: Color::BLACK,
-            chip: Color::BLACK,
             border: Color::WHITE,
-            text: Color::WHITE,
             text_dim: Color::WHITE,
-            accent: Color::WHITE,
-            on_accent: Color::BLACK,
             danger: Color::WHITE,
         };
         bar.draw(
@@ -812,6 +936,50 @@ mod tests {
             .expect("draw records a Next target");
         assert_eq!(bar.click(next, &blocks), FindEffect::SelectActive);
         assert_eq!(bar.index, 1);
+
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+            palette,
+            Rect::new(0.0, 0.0, 760.0, HEIGHT),
+        );
+        assert!(
+            bar.buttons
+                .iter()
+                .all(|(_, rect)| rect.width() >= 32.0 && rect.height() >= 32.0),
+            "every compact Find/Replace control meets the 32px target minimum"
+        );
+        assert!(
+            bar.buttons
+                .windows(2)
+                .all(|pair| pair[0].1.x1 <= pair[1].1.x0),
+            "responsive Find/Replace targets never overlap"
+        );
+        assert!(
+            bar.buttons.iter().all(|(_, rect)| rect.x1 <= 760.0),
+            "responsive Find/Replace controls stay inside the narrow bar"
+        );
+        let semantics = bar.semantic_controls();
+        assert_eq!(semantics.len(), 10);
+        assert_eq!(
+            semantics
+                .iter()
+                .filter(|control| control.role == ui::a11y::Role::TextInput)
+                .count(),
+            2,
+            "both real text fields remain visible to assistive technology"
+        );
+        assert_eq!(
+            semantics
+                .iter()
+                .filter(|control| control.role == ui::a11y::Role::ToggleButton)
+                .count(),
+            3,
+            "all search modes expose checked toggle semantics"
+        );
     }
 
     #[test]

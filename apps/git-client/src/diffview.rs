@@ -199,8 +199,13 @@ impl DiffView {
                 // on the worktree (unstaged) side.
                 if Some(line.hunk) != *last_hunk {
                     let hovered = ctx.interaction.hovered == Some(line.hunk);
-                    let toggle_label = if ctx.interaction.staged_side {
+                    let compact = ctx.viewport.width() < 560.0;
+                    let toggle_label = if ctx.interaction.staged_side && compact {
+                        "Unstage"
+                    } else if ctx.interaction.staged_side {
                         "Unstage hunk"
+                    } else if compact {
+                        "Stage"
                     } else {
                         "Stage hunk"
                     };
@@ -491,12 +496,13 @@ impl DiffView {
         let t = ctx.transform;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let size = 12.5f32;
+        let compact = ctx.viewport.width() < 560.0;
+        let size = if compact { 11.0 } else { 12.5 };
         let tw = f64::from(
             tr.measure_weighted(spec.label, size, None, TextWeight::Medium)
                 .0,
         );
-        let bw = tw + 20.0;
+        let bw = tw + if compact { 12.0 } else { 20.0 };
         let bx = spec.right_x - bw;
         let by = spec.row.y0 + 2.0;
         let brect = Rect::new(bx, by, bx + bw, spec.row.y1 - 2.0);

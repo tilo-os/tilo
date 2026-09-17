@@ -93,6 +93,8 @@ const TABS: [(Screen, &str); 3] = [
 ];
 
 const APPBAR_H: f64 = 56.0;
+const COMPACT_APPBAR_H: f64 = 104.0;
+const PHONE_BREAKPOINT: f64 = 560.0;
 // The rail includes the commit composer, not just a file list. A narrower rail
 // made the primary authoring control feel like a cramped sidebar utility.
 const CHANGES_COL_W: f64 = 360.0;
@@ -217,6 +219,14 @@ impl Default for GitClientApp {
 }
 
 impl GitClientApp {
+    fn appbar_height(&self) -> f64 {
+        if self.rect.width() < PHONE_BREAKPOINT {
+            COMPACT_APPBAR_H
+        } else {
+            APPBAR_H
+        }
+    }
+
     /// Build the app, loading the repository discovered from the current
     /// directory (or `GIT_CLIENT_REPO`). Falls back to the bundled sample
     /// when no repository is reachable.
@@ -855,11 +865,13 @@ impl GitClientApp {
 
     fn draw_appbar(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme) {
         let c = &theme.tokens.colors;
+        let compact = self.rect.width() < PHONE_BREAKPOINT;
+        let appbar_h = self.appbar_height();
         let bar = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + APPBAR_H,
+            self.rect.y0 + appbar_h,
         );
         draw::fill_rect(scene, t, bar, c.surfaces.raised);
         draw::hline(scene, t, bar.y1, bar.x0, bar.x1, c.border_standard);
@@ -868,8 +880,9 @@ impl GitClientApp {
         // collapsed into an overlay flap (narrow window, master-detail
         // screen). It summons/dismisses the flap. The title block shifts
         // right to make room. Outside overlay mode there's no flap to toggle.
+        let top_row = Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + APPBAR_H);
         let left_pad = if self.layout_mode() == SplitLayout::Overlay {
-            self.draw_hamburger(scene, t, theme, bar);
+            self.draw_hamburger(scene, t, theme, top_row);
             44.0
         } else {
             self.hamburger_rect = Rect::ZERO;
@@ -885,29 +898,51 @@ impl GitClientApp {
         // shipped shot, which made a presentation preference look like a
         // truncated status label.
         let settings_w = 230.0;
-        let (widths, total) = Self::measure_appbar_tabs(tr);
-        let tx_start = bar.x1 - settings_w - total - 20.0;
+        let (widths, total) = Self::measure_appbar_tabs(tr, compact);
+        let tx_start = if compact {
+            bar.x0 + 12.0 + left_pad
+        } else {
+            bar.x1 - settings_w - total - 20.0
+        };
         let tab_group_left = tx_start - 6.0;
 
         // Repo name + branch. Clamp the title so it ellipsises before the tab
         // group rather than colliding with it when the bar is tight.
-        let title_x = bar.x0 + 20.0 + left_pad;
-        self.draw_appbar_title(scene, tr, t, theme, bar, title_x, tab_group_left);
+        if !compact {
+            let title_x = bar.x0 + 20.0 + left_pad;
+            self.draw_appbar_title(scene, tr, t, theme, bar, title_x, tab_group_left);
+        }
 
-        self.draw_appbar_tab_group(scene, tr, t, theme, bar, &widths, total, tx_start);
+        self.draw_appbar_tab_group(
+            scene,
+            tr,
+            t,
+            theme,
+            &widths,
+            total,
+            tx_start,
+            top_row.y0 + 12.0,
+        );
 
         // Settings cluster on the far right: diff layout toggle + flags.
-        self.draw_settings_cluster(scene, tr, t, theme, bar, settings_w);
+        let settings_x = bar.x1 - settings_w - if compact { 12.0 } else { 0.0 };
+        let settings_y = if compact {
+            bar.y0 + 64.0
+        } else {
+            bar.y0 + 12.0
+        };
+        self.draw_settings_cluster(scene, tr, t, theme, settings_x, settings_y);
     }
 
     /// Each tab's pixel width and their combined width (including the 6px
     /// gaps between them) — needed both to clamp the title and to lay out
     /// the tab group's pill background.
-    fn measure_appbar_tabs(tr: &mut TextRenderer) -> (Vec<f64>, f64) {
+    fn measure_appbar_tabs(tr: &mut TextRenderer, compact: bool) -> (Vec<f64>, f64) {
+        let padding = if compact { 12.0 } else { 28.0 };
         let widths: Vec<f64> = TABS
             .iter()
             .map(|(_, label)| {
-                f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0) + 28.0
+                f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0) + padding
             })
             .collect();
         let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
@@ -1006,14 +1041,13 @@ impl GitClientApp {
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
-        bar: Rect,
         widths: &[f64],
         total: f64,
         tx_start: f64,
+        tab_y: f64,
     ) {
         let c = &theme.tokens.colors;
         let tab_h = 32.0;
-        let tab_y = bar.y0 + (APPBAR_H - tab_h) / 2.0;
         let group_bg = Rect::new(tx_start - 6.0, tab_y, tx_start + total + 6.0, tab_y + tab_h);
         draw::fill_round(scene, t, group_bg, 9.0, c.surfaces.base);
         let mut tx = tx_start;
@@ -1051,12 +1085,10 @@ impl GitClientApp {
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
-        bar: Rect,
-        cluster_w: f64,
+        x: f64,
+        y: f64,
     ) {
         let c = &theme.tokens.colors;
-        let x = bar.x1 - cluster_w;
-        let y = bar.y0 + (APPBAR_H - 32.0) / 2.0;
         // Diff-layout segmented control.
         let seg_w = 150.0;
         let seg = Rect::new(x, y, x + seg_w, y + 32.0);
@@ -1868,7 +1900,7 @@ impl GitClientApp {
                 Screen::History => FLAP_W,
                 _ => CHANGES_COL_W,
             };
-            if pos.y < self.rect.y0 + APPBAR_H {
+            if pos.y < self.rect.y0 + self.appbar_height() {
                 return;
             }
             if pos.x > self.rect.x0 + col_w {
@@ -2083,7 +2115,7 @@ impl GitClientApp {
                     self.changes_scroll = (self.changes_scroll - dy).max(0.0);
                 } else {
                     let max = self.current_diff().map_or(0.0, DiffView::content_height)
-                        - (self.rect.height() - APPBAR_H - 36.0);
+                        - (self.rect.height() - self.appbar_height() - 36.0);
                     self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max.max(0.0));
                 }
             }
@@ -2095,8 +2127,8 @@ impl GitClientApp {
                 };
                 let over_list = pos.x < self.rect.x0 + list_w && self.flap_open();
                 if over_list {
-                    let max =
-                        HistoryView::content_height(&self.model) - (self.rect.height() - APPBAR_H);
+                    let max = HistoryView::content_height(&self.model)
+                        - (self.rect.height() - self.appbar_height());
                     self.history_scroll = (self.history_scroll - dy).clamp(0.0, max.max(0.0));
                 } else {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
@@ -2498,9 +2530,10 @@ impl Widget for GitClientApp {
 
         self.draw_appbar(scene, tr, transform, theme);
 
+        let appbar_h = self.appbar_height();
         let body = Rect::new(
             self.rect.x0,
-            self.rect.y0 + APPBAR_H,
+            self.rect.y0 + appbar_h,
             self.rect.x1,
             self.rect.y1,
         );
@@ -3284,6 +3317,12 @@ mod tests {
         // on a narrow window — no flap, scrim or hamburger.
         let app = app_at(400.0, Screen::Panels);
         assert_eq!(app.layout_mode(), SplitLayout::Docked);
+    }
+
+    #[test]
+    fn phone_header_uses_two_rows_while_wide_header_stays_compact() {
+        assert_eq!(app_at(390.0, Screen::Changes).appbar_height(), 104.0);
+        assert_eq!(app_at(1280.0, Screen::Changes).appbar_height(), 56.0);
     }
 
     #[test]

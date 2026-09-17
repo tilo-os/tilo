@@ -87,7 +87,9 @@ impl PanelsView {
             &mut regions,
         );
 
-        // Two-column grid below the toolbar.
+        // Card grid below the toolbar. Phone widths use one column: squeezing
+        // these information-dense cards into ~170 px columns made branch
+        // names, tag descriptions and stash actions overlap one another.
         let gap = 16.0;
         let body = Rect::new(
             area.x0 + gap,
@@ -95,45 +97,63 @@ impl PanelsView {
             area.x1 - gap,
             area.y1 - gap,
         );
-        let col_w = (body.width() - gap) / 2.0;
-        let col1_x = body.x0;
-        let col2_x = body.x0 + col_w + gap;
-        let row_h = (body.height() - gap) / 2.0;
+        if area.width() < 560.0 {
+            let remaining = (body.height() - 3.0 * gap).max(0.0);
+            let branches_h = 184.0_f64.min(remaining * 0.31);
+            let other_h = ((remaining - branches_h) / 3.0).max(0.0);
+            let mut y = body.y0;
+            let branches = Rect::new(body.x0, y, body.x1, y + branches_h);
+            y = branches.y1 + gap;
+            let tags = Rect::new(body.x0, y, body.x1, y + other_h);
+            y = tags.y1 + gap;
+            let stashes = Rect::new(body.x0, y, body.x1, y + other_h);
+            y = stashes.y1 + gap;
+            let remotes = Rect::new(body.x0, y, body.x1, body.y1);
+            Self::branches_card(scene, tr, t, theme, branches, model, &mut regions);
+            Self::tags_card(scene, tr, t, theme, tags, model);
+            Self::stashes_card(scene, tr, t, theme, stashes, model, &mut regions);
+            Self::remotes_card(scene, tr, t, theme, remotes, model);
+        } else {
+            let col_w = (body.width() - gap) / 2.0;
+            let col1_x = body.x0;
+            let col2_x = body.x0 + col_w + gap;
+            let row_h = (body.height() - gap) / 2.0;
 
-        Self::branches_card(
-            scene,
-            tr,
-            t,
-            theme,
-            Rect::new(col1_x, body.y0, col1_x + col_w, body.y0 + row_h),
-            model,
-            &mut regions,
-        );
-        Self::tags_card(
-            scene,
-            tr,
-            t,
-            theme,
-            Rect::new(col2_x, body.y0, col2_x + col_w, body.y0 + row_h),
-            model,
-        );
-        Self::stashes_card(
-            scene,
-            tr,
-            t,
-            theme,
-            Rect::new(col1_x, body.y0 + row_h + gap, col1_x + col_w, body.y1),
-            model,
-            &mut regions,
-        );
-        Self::remotes_card(
-            scene,
-            tr,
-            t,
-            theme,
-            Rect::new(col2_x, body.y0 + row_h + gap, col2_x + col_w, body.y1),
-            model,
-        );
+            Self::branches_card(
+                scene,
+                tr,
+                t,
+                theme,
+                Rect::new(col1_x, body.y0, col1_x + col_w, body.y0 + row_h),
+                model,
+                &mut regions,
+            );
+            Self::tags_card(
+                scene,
+                tr,
+                t,
+                theme,
+                Rect::new(col2_x, body.y0, col2_x + col_w, body.y0 + row_h),
+                model,
+            );
+            Self::stashes_card(
+                scene,
+                tr,
+                t,
+                theme,
+                Rect::new(col1_x, body.y0 + row_h + gap, col1_x + col_w, body.y1),
+                model,
+                &mut regions,
+            );
+            Self::remotes_card(
+                scene,
+                tr,
+                t,
+                theme,
+                Rect::new(col2_x, body.y0 + row_h + gap, col2_x + col_w, body.y1),
+                model,
+            );
+        }
 
         let semantic_hits = regions
             .iter()
@@ -197,17 +217,19 @@ impl PanelsView {
             rect.y0 + 12.0,
             None,
         );
-        draw::text(
-            scene,
-            tr,
-            t,
-            &status,
-            11.5,
-            c.text_dim,
-            rect.x0 + 16.0,
-            rect.y0 + 32.0,
-            None,
-        );
+        if rect.width() >= 560.0 {
+            draw::text(
+                scene,
+                tr,
+                t,
+                &status,
+                11.5,
+                c.text_dim,
+                rect.x0 + 16.0,
+                rect.y0 + 32.0,
+                None,
+            );
+        }
 
         // Three action buttons on the right.
         let actions = [

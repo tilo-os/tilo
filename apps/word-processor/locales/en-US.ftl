@@ -93,6 +93,13 @@ find-no-results = No results
 find-count = { $cur } / { $total }
 find-replace = Replace
 find-replace-all = All
+find-replace-all-long = Replace all
+find-match-case = Match case
+find-whole-word = Match whole word
+find-regular-expression = Use regular expression
+find-previous = Previous match
+find-next = Next match
+find-toolbar = Find and replace
 
 ## Review — context-menu rows
 review-accept-insertion = Accept insertion

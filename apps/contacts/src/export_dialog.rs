@@ -13,12 +13,14 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action, Role};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-use crate::app::{chip, draw_checkbox, menu_panel, toolbar_button};
+use crate::app::draw_checkbox;
 use crate::model::{ContactId, ContactStore, SortKey};
 use crate::vcard::VCardVersion;
+use ui::presence::PresenceCtx;
+use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, Text, Widget};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ExportRequest {
@@ -31,6 +33,10 @@ pub(crate) struct ExportDialog {
     scroll: f64,
     open: bool,
     focused: ExportFocus,
+    /// Shared modal chrome owns the scrim, surface and focus-capture contract.
+    /// The virtualized contact list remains an immediate-mode body because it
+    /// intentionally materializes only the visible address-book rows.
+    dialog: ModalDialog<Text>,
 }
 
 /// Hand-drawn modal focus is kept by durable contact ID, never an incidental
@@ -47,7 +53,9 @@ enum ExportFocus {
 
 const EXPORT_OVERSCAN_ROWS: usize = 4;
 const EXPORT_ROW_H: f64 = 40.0;
-const EXPORT_HEADER_H: f64 = 64.0;
+/// Shared `ModalDialog` owns the first 48 px title bar; selection controls sit
+/// on their own row below it so narrow dialogs never collide with the title.
+const EXPORT_HEADER_H: f64 = 120.0;
 const EXPORT_FOOTER_H: f64 = 64.0;
 const EXPORT_MIN_H: f64 = 320.0;
 const EXPORT_MAX_H: f64 = 560.0;
@@ -74,6 +82,7 @@ impl ExportDialog {
             scroll: 0.0,
             open: false,
             focused: ExportFocus::ExportV4,
+            dialog: ModalDialog::new("Export contacts", Text::new("")),
         }
     }
 
@@ -82,14 +91,24 @@ impl ExportDialog {
         self.scroll = 0.0;
         self.open = true;
         self.focused = ExportFocus::ExportV4;
+        self.dialog.set_open(true);
     }
 
     pub(crate) fn close(&mut self) {
         self.open = false;
+        self.dialog.set_open(false);
     }
 
     pub(crate) fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub(crate) fn modal_capture(&self) -> Option<Rect> {
+        self.dialog.modal_capture()
+    }
+
+    pub(crate) fn traps_focus(&self) -> bool {
+        self.dialog.traps_focus()
     }
 
     #[cfg(test)]
@@ -111,7 +130,7 @@ impl ExportDialog {
         let content_height = EXPORT_HEADER_H + ids.len() as f64 * EXPORT_ROW_H + EXPORT_FOOTER_H;
         let height = content_height.clamp(EXPORT_MIN_H.min(max_height), max_height);
         let panel = Rect::from_center_size(window.center(), (width, height));
-        let head_y = panel.y0 + 18.0;
+        let head_y = panel.y0 + 84.0;
         let select_none = Rect::new(panel.x1 - 112.0, head_y, panel.x1 - 16.0, head_y + 28.0);
         let select_all = Rect::new(
             select_none.x0 - 104.0,
@@ -173,7 +192,7 @@ impl ExportDialog {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -183,16 +202,12 @@ impl ExportDialog {
         sort: SortKey,
         pointer: Point,
     ) {
-        let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &window,
-        );
         let geometry = self.geometry(window, store, sort);
-        menu_panel(scene, transform, theme, geometry.panel);
+        self.dialog
+            .set_max_size(geometry.panel.width(), geometry.panel.height());
+        self.dialog.layout_in(window, theme, text);
+        self.dialog
+            .draw(scene, transform, text, theme, &PresenceCtx::empty());
         self.draw_header(scene, transform, text, theme, &geometry);
         self.draw_rows(scene, transform, text, theme, store, pointer, &geometry);
         self.draw_footer_buttons(scene, transform, text, theme, &geometry, pointer);
@@ -209,52 +224,31 @@ impl ExportDialog {
         geometry: &Geometry,
     ) {
         let colors = &theme.tokens.colors;
-        text.draw_text_weighted(
-            scene,
-            "Export contacts",
-            16.0,
-            colors.text_primary,
-            transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 18.0)),
-            None,
-            TextWeight::Bold,
-        );
         text.draw_text(
             scene,
             &format!("{} selected", self.selection.len()),
             12.0,
             colors.text_dim,
-            transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 40.0)),
+            transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 58.0)),
             None,
         );
-        chip(
+        Button::paint(
             scene,
             transform,
             text,
             theme,
-            geometry.select_all,
-            "Select all",
-            false,
+            &ButtonFace::new(geometry.select_all, "Select all")
+                .ghost()
+                .focused(self.focused == ExportFocus::SelectAll),
         );
-        chip(
+        Button::paint(
             scene,
             transform,
             text,
             theme,
-            geometry.select_none,
-            "Select none",
-            false,
-        );
-        let focused = match self.focused {
-            ExportFocus::SelectAll => geometry.select_all,
-            ExportFocus::SelectNone => geometry.select_none,
-            _ => return,
-        };
-        scene.stroke(
-            &vello::kurbo::Stroke::new(2.0),
-            transform,
-            colors.border_focus,
-            None,
-            &RoundedRect::from_rect(focused.inflate(2.0, 2.0), f64::from(theme.tokens.radii.md)),
+            &ButtonFace::new(geometry.select_none, "Select none")
+                .ghost()
+                .focused(self.focused == ExportFocus::SelectNone),
         );
     }
 
@@ -338,52 +332,22 @@ impl ExportDialog {
         geometry: &Geometry,
         pointer: Point,
     ) {
-        toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
-            geometry.cancel,
-            "Cancel",
-            false,
-            geometry.cancel.contains(pointer),
-            false,
-        );
-        toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
-            geometry.export_v3,
-            "Export 3.0",
-            false,
-            geometry.export_v3.contains(pointer),
-            false,
-        );
-        toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
-            geometry.export_v4,
-            "Export 4.0",
-            true,
-            geometry.export_v4.contains(pointer),
-            false,
-        );
-        let focused = match self.focused {
-            ExportFocus::Cancel => geometry.cancel,
-            ExportFocus::ExportV3 => geometry.export_v3,
-            ExportFocus::ExportV4 => geometry.export_v4,
-            _ => return,
-        };
-        scene.stroke(
-            &vello::kurbo::Stroke::new(2.0),
-            transform,
-            theme.tokens.colors.border_focus,
-            None,
-            &RoundedRect::from_rect(focused.inflate(2.0, 2.0), f64::from(theme.tokens.radii.md)),
-        );
+        for face in [
+            ButtonFace::new(geometry.cancel, "Cancel")
+                .style(ButtonStyle::Neutral)
+                .hovered(geometry.cancel.contains(pointer))
+                .focused(self.focused == ExportFocus::Cancel),
+            ButtonFace::new(geometry.export_v3, "Export 3.0")
+                .style(ButtonStyle::Neutral)
+                .hovered(geometry.export_v3.contains(pointer))
+                .focused(self.focused == ExportFocus::ExportV3),
+            ButtonFace::new(geometry.export_v4, "Export 4.0")
+                .primary()
+                .hovered(geometry.export_v4.contains(pointer))
+                .focused(self.focused == ExportFocus::ExportV4),
+        ] {
+            Button::paint(scene, transform, text, theme, &face);
+        }
     }
 
     pub(crate) fn handle_event(
@@ -780,6 +744,21 @@ mod tests {
         assert_eq!(dialog.selection().len(), 2);
         dialog.close();
         assert!(!dialog.is_open());
+    }
+
+    #[test]
+    fn shared_modal_owns_focus_capture_for_the_export_surface() {
+        let mut dialog = ExportDialog::new();
+        assert!(!dialog.traps_focus());
+        assert!(dialog.modal_capture().is_none());
+
+        dialog.open([]);
+        assert!(dialog.traps_focus());
+        assert!(dialog.modal_capture().is_some());
+
+        dialog.close();
+        assert!(!dialog.traps_focus());
+        assert!(dialog.modal_capture().is_none());
     }
 
     #[test]
