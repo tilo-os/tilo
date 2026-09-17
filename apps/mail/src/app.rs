@@ -3238,6 +3238,81 @@ impl MailApp {
         }
         Ok(true)
     }
+
+    /// Route app-owned modal surfaces in front-to-back order. Returning true
+    /// stops propagation to the navigation shell and global shortcuts.
+    fn handle_app_modal_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
+        if self.compose.open && self.handle_compose_modal(event, ctx) {
+            *ctx.handled = true;
+            self.dirty = true;
+            return true;
+        }
+
+        if self.is_first_run() {
+            if let Some(first_run_node) = self.first_run_node {
+                self.first_run.handle_event(
+                    event,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    first_run_node,
+                    ctx.taffy,
+                );
+            }
+            if self.first_run.take_action() {
+                self.open_setup_edit(None);
+            }
+            self.dirty = true;
+            return true;
+        }
+
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            if self.context_menu.is_some() {
+                self.context_menu = None;
+                *ctx.handled = true;
+                return true;
+            }
+            if self.setup_open {
+                self.close_setup();
+                *ctx.handled = true;
+                return true;
+            }
+        }
+
+        if self.context_menu.is_some()
+            && let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+        {
+            let point = self.shared.borrow().last_mouse;
+            self.handle_context_menu_click(point, ctx.state);
+            *ctx.handled = true;
+            return true;
+        }
+
+        if self.setup_open {
+            self.handle_setup_event(event, ctx);
+            if *ctx.handled {
+                self.dirty = true;
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl Widget for MailApp {
@@ -3607,10 +3682,6 @@ impl Widget for MailApp {
         self.draw_status(scene, t, tr, theme);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "this is the widget's ordered modal event-routing lifecycle; splitting it would obscure the precedence between compose, onboarding, overlays, navigation, and global shortcuts"
-    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -3624,114 +3695,28 @@ impl Widget for MailApp {
         taffy: &TaffyTree<()>,
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-            self.shared.borrow_mut().last_mouse = p;
+            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
         }
 
-        // 1) Compose window is modal while open.
-        if self.compose.open
-            && self.handle_compose_modal(
-                event,
-                &mut EventContext {
-                    scale_factor,
-                    modifiers: *modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                },
-            )
-        {
-            *handled = true;
-            self.dirty = true;
+        let modal_consumed = {
+            let mut context = EventContext {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            };
+            self.handle_app_modal_event(event, &mut context)
+        };
+        if modal_consumed {
             return;
         }
 
-        // 1.5) First-run onboarding is modal until an account exists. Its
-        // shared empty-state child owns pointer, keyboard and AT activation.
-        if self.is_first_run() {
-            if let Some(first_run_node) = self.first_run_node {
-                self.first_run.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    first_run_node,
-                    taffy,
-                );
-            }
-            if self.first_run.take_action() {
-                self.open_setup_edit(None);
-            }
-            self.dirty = true;
-            return;
-        }
-
-        // 2) Esc dismisses app-owned overlays first.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            if self.context_menu.is_some() {
-                self.context_menu = None;
-                *handled = true;
-                return;
-            }
-            if self.setup_open {
-                self.close_setup();
-                *handled = true;
-                return;
-            }
-        }
-
-        // 3) Context menu is modal: a click hits an item or dismisses.
-        if self.context_menu.is_some()
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-        {
-            let pt = self.shared.borrow().last_mouse;
-            self.handle_context_menu_click(pt, state);
-            *handled = true;
-            return;
-        }
-
-        // 4) Setup sheet is modal while open.
-        if self.setup_open {
-            self.handle_setup_event(
-                event,
-                &mut EventContext {
-                    scale_factor,
-                    modifiers: *modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                },
-            );
-            if *handled {
-                self.dirty = true;
-                return;
-            }
-        }
-
-        // 5) Route to the navigation shell (affordance/scrim/Esc + the panes).
         self.nav.handle_event(
             event,
             scale_factor,
@@ -3743,10 +3728,8 @@ impl Widget for MailApp {
             node_id,
             taffy,
         );
-        // Panes raised intents; apply the cross-pane effects.
         self.process_intents();
 
-        // 6) If nothing consumed it, apply global mailbox shortcuts.
         if !*handled {
             self.global_shortcuts(event, *modifiers, state, handled);
         }
