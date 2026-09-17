@@ -41,6 +41,20 @@ use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_
 use crate::region::{RegionSettings, TimeStyle};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, value_row};
 
+fn time_bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
+    match crate::actions::time_date_bool_binding(id) {
+        Some(binding) => binding,
+        None => unreachable!("Time & Date action must be published"),
+    }
+}
+
+fn time_text_action(id: &str) -> tilo_actions::ActionBinding<String> {
+    match crate::actions::time_date_text_binding(id) {
+        Some(binding) => binding,
+        None => unreachable!("Time & Date action must be published"),
+    }
+}
+
 pub const AUTO_TIME_KEY: &str = "time.auto";
 pub const H24_KEY: &str = "time.h24";
 pub const TIMEZONE_KEY: &str = "time.timezone";
@@ -172,6 +186,7 @@ struct TimeZoneMap {
     last_cursor: Point,
     focused: bool,
     needs_commit: bool,
+    action: Option<ui::widget::ActionEmitter<String>>,
     rect: Rect,
 }
 
@@ -187,8 +202,14 @@ impl TimeZoneMap {
             last_cursor: Point::ZERO,
             focused: false,
             needs_commit: false,
+            action: None,
             rect: Rect::ZERO,
         }
+    }
+
+    fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.action = Some(ui::widget::ActionEmitter::new(binding));
+        self
     }
 
     fn plot_rect(&self) -> Rect {
@@ -276,10 +297,12 @@ impl TimeZoneMap {
             }
             self.selected.clone_from(&point.id);
             self.cursor = Some(index);
-            // The parent pane validates this against the timedated-derived
-            // list before dispatching it to the privileged authority.
-            let _ = state.put(root, draft_key(TIMEZONE_KEY), point.id.as_str());
-            self.needs_commit = true;
+            if let Some(action) = &mut self.action {
+                let _ = action.emit(point.id.clone());
+            } else {
+                let _ = state.put(root, draft_key(TIMEZONE_KEY), point.id.as_str());
+                self.needs_commit = true;
+            }
         }
     }
 
@@ -294,6 +317,9 @@ impl TimeZoneMap {
 
 impl Widget for TimeZoneMap {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if self.action.is_some() {
+            return;
+        }
         if let Some(value) = read_text_setting(state, root, TIMEZONE_KEY) {
             self.selected = value;
             if self.cursor.is_none() {
@@ -328,6 +354,12 @@ impl Widget for TimeZoneMap {
 
     fn needs_commit(&self) -> bool {
         self.needs_commit
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(ui::widget::ActionEmitter::take)
     }
 
     fn on_commit(&mut self) {
@@ -698,6 +730,10 @@ fn read_bool_setting(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool
               would ripple through every read/write site for no behavioural \
               gain"
 )]
+#[allow(
+    dead_code,
+    reason = "legacy CRDT replay helpers are retained only for migration-focused tests"
+)]
 pub struct TimeDatePane {
     ntp: Arc<dyn NtpControl>,
     persist_format: FormatSink,
@@ -813,22 +849,29 @@ impl TimeDatePane {
                 setting_row(
                     "Set time automatically",
                     Box::new(
-                        Toggle::new("settings.time.auto", &draft_key(AUTO_TIME_KEY))
+                        Toggle::from_state(&ui::LocalState::new(self.last_auto))
+                            .on_action(time_bool_action("automatic-time"))
                             .with_id("time.auto"),
                     ),
                 ),
                 setting_row(
                     "24-hour clock",
                     Box::new(
-                        Toggle::new("settings.time.h24", &draft_key(H24_KEY)).with_id("time.h24"),
+                        Toggle::from_state(&ui::LocalState::new(self.last_h24))
+                            .on_action(time_bool_action("24-hour"))
+                            .with_id("time.h24"),
                     ),
                 ),
                 choice_row(
                     "Time zone",
                     Box::new(
-                        Dropdown::new(self.timezones.clone(), &draft_key(TIMEZONE_KEY))
-                            .with_id("time.timezone")
-                            .with_placeholder(&self.timezone),
+                        Dropdown::from_state(
+                            self.timezones.clone(),
+                            &ui::LocalState::new(self.last_timezone.clone()),
+                        )
+                        .on_action(time_text_action("timezone"))
+                        .with_id("time.timezone")
+                        .with_placeholder(&self.timezone),
                     ),
                 ),
                 value_row("Current time", &now),
@@ -859,10 +902,10 @@ impl TimeDatePane {
         let map = card(
             "Time-zone map",
             rows(vec![
-                Box::new(TimeZoneMap::new(
-                    self.timezone_points.clone(),
-                    self.timezone.clone(),
-                )),
+                Box::new(
+                    TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
+                        .on_action(time_text_action("timezone")),
+                ),
                 caption(&map_note),
             ]),
         );
@@ -915,117 +958,128 @@ pub fn build() -> Box<dyn Widget> {
 
 impl Widget for TimeDatePane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.needs_seed {
-            if state.get(root, AUTO_TIME_KEY).ok().flatten().is_none() {
-                let _ = state.put(
-                    root,
-                    AUTO_TIME_KEY,
-                    automerge::ScalarValue::Boolean(self.initial_auto),
-                );
-            }
-            let _ = state.put(root, draft_key(AUTO_TIME_KEY), self.initial_auto);
-            if state.get(root, H24_KEY).ok().flatten().is_none() {
-                let _ = state.put(root, H24_KEY, automerge::ScalarValue::Boolean(self.h24));
-            }
-            let _ = state.put(root, draft_key(H24_KEY), self.h24);
-            if state.get(root, TIMEZONE_KEY).ok().flatten().is_none() {
-                let _ = state.put(root, TIMEZONE_KEY, self.timezone.as_str());
-            }
-            let _ = state.put(root, draft_key(TIMEZONE_KEY), self.timezone.as_str());
-            self.needs_seed = false;
-        }
-
-        // Widgets only edit local `.edit` drafts.  The canonical keys are
-        // changed exclusively through SettingsAction, which gives direct
-        // controls the same replay, permission and undo path as Ctrl+K.
-        let timezone_value = read_text_setting(state, root, TIMEZONE_KEY)
-            .unwrap_or_else(|| self.last_timezone.clone());
-        let timezone_draft = read_text_setting(state, root, &draft_key(TIMEZONE_KEY))
-            .unwrap_or_else(|| timezone_value.clone());
-        if timezone_value == self.last_timezone
-            && timezone_draft != timezone_value
-            && self.timezones.iter().any(|zone| zone == &timezone_draft)
-        {
-            self.dispatch(state, &set_text_action(TIMEZONE_KEY, timezone_draft));
-        }
-        let auto_value = read_bool_setting(state, root, AUTO_TIME_KEY).unwrap_or(self.last_auto);
-        let auto_draft =
-            read_bool_setting(state, root, &draft_key(AUTO_TIME_KEY)).unwrap_or(auto_value);
-        if auto_value == self.last_auto && auto_draft != auto_value {
-            self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, auto_draft));
-        }
-        let h24_value = read_bool_setting(state, root, H24_KEY).unwrap_or(self.last_h24);
-        let h24_draft = read_bool_setting(state, root, &draft_key(H24_KEY)).unwrap_or(h24_value);
-        if h24_value == self.last_h24 && h24_draft != h24_value {
-            self.dispatch(state, &set_bool_action(H24_KEY, h24_draft));
-        }
-
-        if let Some(value) = read_text_setting(state, root, TIMEZONE_KEY)
-            && value != self.last_timezone
-            && self.timezones.iter().any(|zone| zone == &value)
-        {
-            match self.ntp.set_timezone(&value) {
-                Ok(()) => {
-                    self.timezone.clone_from(&value);
-                    self.last_timezone.clone_from(&value);
-                    self.sync_status.timezone = Some(value.clone());
-                    self.notice = None;
-                    let _ = state.put(root, draft_key(TIMEZONE_KEY), value.as_str());
-                    self.structure_dirty = true;
-                }
-                Err(error) => {
-                    warn!(target: "tilo::settings", op = "set_timezone", error = %error, "time-zone change failed");
-                    self.dispatch(
-                        state,
-                        &set_text_action(TIMEZONE_KEY, self.last_timezone.clone()),
-                    );
-                    let _ = state.put(root, draft_key(TIMEZONE_KEY), self.last_timezone.as_str());
-                    self.notice = Some(format!("The time zone could not be changed: {error}"));
-                    self.structure_dirty = true;
-                }
-            }
-        }
-
-        // Automatic-time toggle → timedatectl set-ntp.
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, AUTO_TIME_KEY)
-            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
-            && *b != self.last_auto
-        {
-            let previous = self.last_auto;
-            match self.ntp.set_ntp(*b) {
-                Ok(()) => {
-                    self.last_auto = *b;
-                    self.initial_auto = *b;
-                    self.sync_status.ntp_enabled = Some(*b);
-                    self.notice = None;
-                    let _ = state.put(root, draft_key(AUTO_TIME_KEY), *b);
-                }
-                Err(e) => {
-                    warn!(target: "tilo::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
-                    self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, previous));
-                    let _ = state.put(root, draft_key(AUTO_TIME_KEY), previous);
-                    self.notice = Some(format!("Automatic time could not be changed: {e}"));
-                }
-            }
-            self.structure_dirty = true;
-        }
-
-        // 24-hour preference → re-render the live clock AND persist to the
-        // shared locale so Region & Formats and every consumer stay in sync
-        // and the choice survives a restart.
-        if let Some(h24) = read_bool_setting(state, root, H24_KEY)
-            && h24 != self.last_h24
-        {
-            self.last_h24 = h24;
-            self.h24 = h24;
-            let _ = state.put(root, draft_key(H24_KEY), h24);
-            self.structure_dirty = true;
-            (self.persist_format)(h24);
-        }
-
+        // Time service and locale values are device-local effects. Do not
+        // seed, observe, or compensate them through Automerge: a remote
+        // replay must never change this machine's clock configuration.
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
+        /* Legacy document replay path removed: time controls are local effects.
+            if self.needs_seed {
+                if state.get(root, AUTO_TIME_KEY).ok().flatten().is_none() {
+                    let _ = state.put(
+                        root,
+                        AUTO_TIME_KEY,
+                        automerge::ScalarValue::Boolean(self.initial_auto),
+                    );
+                }
+                let _ = state.put(root, draft_key(AUTO_TIME_KEY), self.initial_auto);
+                if state.get(root, H24_KEY).ok().flatten().is_none() {
+                    let _ = state.put(root, H24_KEY, automerge::ScalarValue::Boolean(self.h24));
+                }
+                let _ = state.put(root, draft_key(H24_KEY), self.h24);
+                if state.get(root, TIMEZONE_KEY).ok().flatten().is_none() {
+                    let _ = state.put(root, TIMEZONE_KEY, self.timezone.as_str());
+                }
+                let _ = state.put(root, draft_key(TIMEZONE_KEY), self.timezone.as_str());
+                self.needs_seed = false;
+            }
+
+            // Widgets only edit local `.edit` drafts.  The canonical keys are
+            // changed exclusively through SettingsAction, which gives direct
+            // controls the same replay, permission and undo path as Ctrl+K.
+            let timezone_value = read_text_setting(state, root, TIMEZONE_KEY)
+                .unwrap_or_else(|| self.last_timezone.clone());
+            let timezone_draft = read_text_setting(state, root, &draft_key(TIMEZONE_KEY))
+                .unwrap_or_else(|| timezone_value.clone());
+            if timezone_value == self.last_timezone
+                && timezone_draft != timezone_value
+                && self.timezones.iter().any(|zone| zone == &timezone_draft)
+            {
+                self.dispatch(state, &set_text_action(TIMEZONE_KEY, timezone_draft));
+            }
+            let auto_value =
+                read_bool_setting(state, root, AUTO_TIME_KEY).unwrap_or(self.last_auto);
+            let auto_draft =
+                read_bool_setting(state, root, &draft_key(AUTO_TIME_KEY)).unwrap_or(auto_value);
+            if auto_value == self.last_auto && auto_draft != auto_value {
+                self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, auto_draft));
+            }
+            let h24_value = read_bool_setting(state, root, H24_KEY).unwrap_or(self.last_h24);
+            let h24_draft =
+                read_bool_setting(state, root, &draft_key(H24_KEY)).unwrap_or(h24_value);
+            if h24_value == self.last_h24 && h24_draft != h24_value {
+                self.dispatch(state, &set_bool_action(H24_KEY, h24_draft));
+            }
+
+            if let Some(value) = read_text_setting(state, root, TIMEZONE_KEY)
+                && value != self.last_timezone
+                && self.timezones.iter().any(|zone| zone == &value)
+            {
+                match self.ntp.set_timezone(&value) {
+                    Ok(()) => {
+                        self.timezone.clone_from(&value);
+                        self.last_timezone.clone_from(&value);
+                        self.sync_status.timezone = Some(value.clone());
+                        self.notice = None;
+                        let _ = state.put(root, draft_key(TIMEZONE_KEY), value.as_str());
+                        self.structure_dirty = true;
+                    }
+                    Err(error) => {
+                        warn!(target: "tilo::settings", op = "set_timezone", error = %error, "time-zone change failed");
+                        self.dispatch(
+                            state,
+                            &set_text_action(TIMEZONE_KEY, self.last_timezone.clone()),
+                        );
+                        let _ =
+                            state.put(root, draft_key(TIMEZONE_KEY), self.last_timezone.as_str());
+                        self.notice = Some(format!("The time zone could not be changed: {error}"));
+                        self.structure_dirty = true;
+                    }
+                }
+            }
+
+            // Automatic-time toggle → timedatectl set-ntp.
+            if let Ok(Some((Value::Scalar(s), _))) = state.get(root, AUTO_TIME_KEY)
+                && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+                && *b != self.last_auto
+            {
+                let previous = self.last_auto;
+                match self.ntp.set_ntp(*b) {
+                    Ok(()) => {
+                        self.last_auto = *b;
+                        self.initial_auto = *b;
+                        self.sync_status.ntp_enabled = Some(*b);
+                        self.notice = None;
+                        let _ = state.put(root, draft_key(AUTO_TIME_KEY), *b);
+                    }
+                    Err(e) => {
+                        warn!(target: "tilo::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
+                        self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, previous));
+                        let _ = state.put(root, draft_key(AUTO_TIME_KEY), previous);
+                        self.notice = Some(format!("Automatic time could not be changed: {e}"));
+                    }
+                }
+                self.structure_dirty = true;
+            }
+
+            // 24-hour preference → re-render the live clock AND persist to the
+            // shared locale so Region & Formats and every consumer stay in sync
+            // and the choice survives a restart.
+            if let Some(h24) = read_bool_setting(state, root, H24_KEY)
+                && h24 != self.last_h24
+            {
+                self.last_h24 = h24;
+                self.h24 = h24;
+                let _ = state.put(root, draft_key(H24_KEY), h24);
+                self.structure_dirty = true;
+                (self.persist_format)(h24);
+            }
+
+            if let Some(c) = &mut self.composed {
+                c.sync(state, root);
+            }
+        */
     }
 
     fn build_layout(
@@ -1289,7 +1343,7 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_text_object_reaches_timezone_authority_once() {
+    fn document_timezone_edits_do_not_reach_the_local_authority() {
         let ntp = Arc::new(RecordingNtp::default());
         let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
         pane.timezones.push("Etc/UTC".to_string());
@@ -1302,13 +1356,13 @@ mod tests {
         doc.splice_text(&text, 0, 0, "Etc/UTC").unwrap();
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root);
-        assert_eq!(ntp.zones.lock().unwrap().as_slice(), ["Etc/UTC"]);
+        assert!(ntp.zones.lock().unwrap().is_empty());
     }
 
     /// Toggling "Set time automatically" forwards to `set_ntp` exactly once
     /// per change, with the new value — the real dispatch path.
     #[test]
-    fn auto_time_toggle_invokes_set_ntp() {
+    fn document_auto_time_toggle_does_not_invoke_set_ntp() {
         let ntp = Arc::new(RecordingNtp::default());
         // Start with auto=true (the seed), then flip off.
         let mut pane = TimeDatePane::with_ntp(ntp.clone(), true);
@@ -1322,11 +1376,11 @@ mod tests {
         let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(false));
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root); // idempotent at rest
-        assert_eq!(ntp.calls.lock().unwrap().as_slice(), [false]);
+        assert!(ntp.calls.lock().unwrap().is_empty());
         // Flip back on.
         let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
-        assert_eq!(ntp.calls.lock().unwrap().as_slice(), [false, true]);
+        assert!(ntp.calls.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1348,7 +1402,7 @@ mod tests {
     /// proof the toggle is live and drives the persistence path (asserted
     /// against disk in the `prefs_persistence` integration test).
     #[test]
-    fn h24_toggle_reformats_clock_and_persists_format() {
+    fn document_h24_toggle_does_not_persist_or_reformat_clock() {
         let sunk: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
         let sink_calls = sunk.clone();
         // Build the hermetic test pane (24h start, no disk) but swap in a
@@ -1362,15 +1416,8 @@ mod tests {
         // Seed wrote h24=true; flip to false.
         let _ = doc.put(&root, H24_KEY, automerge::ScalarValue::Boolean(false));
         pane.sync(&mut doc, &root);
-        assert!(!pane.h24, "pane adopts the new 24-hour preference");
-        assert!(
-            pane.take_structure_dirty(),
-            "changing the clock format requests a re-render"
-        );
-        assert_eq!(
-            sunk.lock().unwrap().as_slice(),
-            [false],
-            "the new clock format is forwarded to the persistence sink once"
-        );
+        assert!(pane.h24, "the pane ignores a collaborative clock value");
+        assert!(!pane.take_structure_dirty());
+        assert!(sunk.lock().unwrap().is_empty());
     }
 }
