@@ -12,8 +12,9 @@
 )]
 
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -110,7 +111,7 @@ impl ComputeJobSpec {
         }
         if self.limits.cpu_time_ms == 0
             || self.limits.cpu_time_ms > MAX_COMPUTE_CPU_TIME_MS
-            || self.limits.memory_bytes == 0
+            || self.limits.memory_bytes < 16 * 1024 * 1024
             || self.limits.memory_bytes > MAX_COMPUTE_MEMORY_BYTES
             || self.limits.output_bytes == 0
             || self.limits.output_bytes > MAX_COMPUTE_OUTPUT_BYTES
@@ -259,6 +260,11 @@ fn valid_identifier(value: &str, max: usize) -> bool {
 /// Trusted local catalogue lookup. Implementations return only package rows
 /// produced by the signed-package installer; requesters never supply paths.
 pub trait ComputePackageCatalogue: Send + Sync {
+    /// Resolve an installed package by its signed manifest identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the trusted local catalogue cannot be read.
     fn resolve(&self, app_id: &str) -> Result<Option<InstalledPackage>, String>;
 }
 
@@ -276,7 +282,17 @@ impl ComputePackageCatalogue for InstalledComputeCatalogue {
 /// digest on both ingress and egress, so a faulty store cannot substitute
 /// bytes under a caller-chosen name.
 pub trait ComputeContentStore: Send + Sync {
+    /// Read bytes addressed by their digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the local content store cannot be read.
     fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String>;
+    /// Store bytes under their independently verified digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the local content store cannot persist the bytes.
     fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String>;
 }
 
@@ -296,6 +312,11 @@ pub struct ComputeSandboxInvocation<'a> {
 /// can model termination without creating a nested user namespace.
 pub trait ComputeSandbox: Send + Sync {
     fn gpu_available(&self) -> bool;
+    /// Launch one worker invocation through the trusted package sandbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sandbox cannot launch or supervise the worker.
     fn launch(&self, invocation: ComputeSandboxInvocation<'_>)
     -> Result<CapturedRunOutput, String>;
 }
@@ -458,6 +479,15 @@ where
     /// The two authenticated values are derived from the certified transport
     /// route rather than from the serialized job. A mismatch is rejected
     /// before package lookup, staging, or durable job-id claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid or ineligible request, package or
+    /// content-integrity failure, replay, sandbox failure, or invalid output.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the security-critical execution sequence auditable"
+    )]
     pub fn execute(
         &self,
         authenticated_requester: DeviceKey,
@@ -543,6 +573,8 @@ where
         prepare_private_dir(&input_dir)
             .and_then(|()| prepare_private_dir(&output_dir))
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
+        let output_dir_handle = File::open(&output_dir)
+            .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
         self.stage_inputs(spec, &input_dir)
             .map_err(|error| self.fail_existing(spec.job_id, "input", error))?;
         write_request(spec, &io_root)
@@ -569,10 +601,24 @@ where
                 plan,
                 cancellation,
             })
-            .map_err(|error| self.fail(spec.job_id, "launch", error))?;
-        self.finish(spec, &output_dir, captured)
+            .map_err(|error| {
+                let _ = self.advance(
+                    spec.job_id,
+                    2,
+                    ComputeJobPhase::Failed {
+                        code: "launch".into(),
+                    },
+                );
+                ComputeExecutionError::Launch(error)
+            })?;
+        self.finish(spec, &output_dir_handle, captured)
     }
 
+    /// Read the current monotonic lifecycle for a claimed job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registry is unavailable or the job is unknown.
     pub fn lifecycle(
         &self,
         job_id: [u8; 16],
@@ -627,6 +673,7 @@ where
             .sync_all()
             .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
         jobs.insert(spec.job_id, ComputeJobLifecycle::new(spec.job_id)?);
+        drop(jobs);
         Ok(())
     }
 
@@ -682,7 +729,7 @@ where
     fn finish(
         &self,
         spec: &ComputeJobSpec,
-        output_dir: &Path,
+        output_dir: &File,
         captured: CapturedRunOutput,
     ) -> Result<ComputeJobResult, ComputeExecutionError> {
         let captured_bytes = captured.stdout.len().saturating_add(captured.stderr.len());
@@ -729,10 +776,11 @@ where
 
     fn collect_outputs(
         &self,
-        output_dir: &Path,
+        output_dir: &File,
         mut remaining: usize,
     ) -> Result<Vec<[u8; 32]>, ComputeExecutionError> {
-        let mut paths = fs::read_dir(output_dir)
+        let pinned_dir = PathBuf::from(format!("/proc/self/fd/{}", output_dir.as_raw_fd()));
+        let mut paths = fs::read_dir(&pinned_dir)
             .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
@@ -766,7 +814,7 @@ where
             if bytes.len() > remaining {
                 return Err(ComputeExecutionError::InvalidOutput);
             }
-            remaining -= bytes.len();
+            remaining = remaining.saturating_sub(bytes.len());
             let digest = *blake3::hash(&bytes).as_bytes();
             self.content
                 .put(digest, &bytes)
@@ -1047,6 +1095,7 @@ mod tests {
         gpu: bool,
         termination: FakeTermination,
         output: Option<Vec<u8>>,
+        replace_output_with_symlink: bool,
         launches: Arc<AtomicUsize>,
     }
 
@@ -1056,6 +1105,7 @@ mod tests {
                 gpu,
                 termination: FakeTermination::Success,
                 output: Some(b"rendered".to_vec()),
+                replace_output_with_symlink: false,
                 launches: Arc::new(AtomicUsize::new(0)),
             }
         }
@@ -1078,6 +1128,12 @@ mod tests {
             assert!(value.get("inputs").is_some());
             assert!(value.get("arguments").is_none());
             assert!(value.get("environment").is_none());
+            if self.replace_output_with_symlink {
+                let output_dir = invocation.host_job_dir.join(".tilo-compute/outputs");
+                fs::remove_dir(&output_dir).map_err(|error| error.to_string())?;
+                std::os::unix::fs::symlink("inputs", output_dir)
+                    .map_err(|error| error.to_string())?;
+            }
             if let Some(output) = &self.output {
                 fs::write(
                     invocation.host_job_dir.join(".tilo-compute/outputs/result"),
@@ -1354,6 +1410,7 @@ mod tests {
                 gpu: false,
                 termination: FakeTermination::Timeout,
                 output: None,
+                replace_output_with_symlink: false,
                 launches: Arc::new(AtomicUsize::new(0)),
             },
         );
@@ -1398,5 +1455,38 @@ mod tests {
             Err(ComputeExecutionError::PackageDigestMismatch)
         );
         assert_eq!(launches.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn replaced_output_directory_cannot_traverse_staged_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let content = MemoryContent::default();
+        let bytes = b"private input".to_vec();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        content.insert(digest, bytes);
+        let mut job = spec();
+        job.inputs = vec![digest];
+        job.limits.gpu = false;
+        let executor = make_executor(
+            root.path(),
+            &mut job,
+            content,
+            FakeSandbox {
+                gpu: false,
+                termination: FakeTermination::Success,
+                output: None,
+                replace_output_with_symlink: true,
+                launches: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let result = executor
+            .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
+            .unwrap();
+        assert_eq!(
+            result.lifecycle.phase,
+            ComputeJobPhase::Completed {
+                outputs: Vec::new()
+            }
+        );
     }
 }
