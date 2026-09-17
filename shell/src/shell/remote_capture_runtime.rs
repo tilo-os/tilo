@@ -20,9 +20,9 @@ use crate::shell::remote_capture_adapter::{
     RemoteCaptureAvailability, RemoteCaptureEndpoint, RemoteCaptureTargetBridge,
 };
 use crate::shell::remote_capture_device::{
-    MAX_REMOTE_CAPTURE_SESSIONS, REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteCaptureChunk,
-    RemoteCaptureGrant, RemoteCaptureKind, RemoteCapturePhase, RemoteCaptureProfile,
-    RemoteCaptureRegistry, RemoteCaptureRequest, RemoteCaptureSignal,
+    MAX_REMOTE_CAPTURE_SESSIONS, REMOTE_CAPTURE_GRANT_TTL, REMOTE_CAPTURE_PROTOCOL_VERSION,
+    RemoteCaptureChunk, RemoteCaptureGrant, RemoteCaptureKind, RemoteCapturePhase,
+    RemoteCaptureProfile, RemoteCaptureRegistry, RemoteCaptureRequest, RemoteCaptureSignal,
 };
 use crate::shell::remote_capture_source::{
     CapturedRemoteChunk, ProductionRemoteCaptureSource, RemoteCaptureSource,
@@ -210,12 +210,14 @@ struct OutboundRequest {
     request: RemoteCaptureRequest,
     source: DeviceId,
     target: DeviceId,
+    expires_at: Instant,
 }
 
 struct InboundRequest {
     request: RemoteCaptureRequest,
     source: DeviceId,
     target: DeviceId,
+    expires_at: Instant,
 }
 
 struct TargetSession {
@@ -224,6 +226,7 @@ struct TargetSession {
     source: DeviceId,
     target: DeviceId,
     grant: RemoteCaptureGrant,
+    expires_at: Instant,
 }
 
 struct SourceSession {
@@ -232,6 +235,7 @@ struct SourceSession {
     target: DeviceId,
     grant: RemoteCaptureGrant,
     next_sequence: u64,
+    expires_at: Instant,
 }
 
 struct ProvisionResult {
@@ -328,6 +332,7 @@ impl RemoteCaptureFabricRuntime {
                 request: request.clone(),
                 source,
                 target,
+                expires_at: Instant::now() + REMOTE_CAPTURE_GRANT_TTL,
             },
         );
         Ok(PersonalFabricAction::RemoteCaptureSignal {
@@ -442,6 +447,7 @@ impl RemoteCaptureFabricRuntime {
     /// Advance worker-owned endpoint provisioning and source capture without
     /// waiting on PipeWire/V4L2 discovery from the compositor frame.
     pub(crate) fn pump(&mut self, now: Instant) {
+        self.expire_idle(now);
         for result in self.provision_rx.try_iter() {
             self.completed_provisioning
                 .insert(result.session_id, result.endpoint);
@@ -467,7 +473,7 @@ impl RemoteCaptureFabricRuntime {
                         self.completed_provisioning.insert(session_id, Ok(endpoint));
                         continue;
                     };
-                    if self
+                    let prepared = self
                         .bridge
                         .prepare_endpoint(
                             &session.app,
@@ -479,8 +485,9 @@ impl RemoteCaptureFabricRuntime {
                             endpoint,
                             adapter.as_mut(),
                         )
-                        .is_ok()
-                    {
+                        .is_ok();
+                    drop(adapter);
+                    if prepared {
                         self.target_sessions.insert(session_id, session);
                     } else {
                         self.registry.revoke(session_id, session.grant);
@@ -625,6 +632,7 @@ impl RemoteCaptureFabricRuntime {
             session.target.clone(),
             PersonalFabricAction::RemoteCaptureChunk { chunk },
         ));
+        session.expires_at = now + REMOTE_CAPTURE_GRANT_TTL;
     }
 
     fn handle_signal(
@@ -646,6 +654,7 @@ impl RemoteCaptureFabricRuntime {
                         request: request.clone(),
                         source: envelope.target.clone(),
                         target: envelope.source.clone(),
+                        expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
                     },
                 );
             }
@@ -688,6 +697,7 @@ impl RemoteCaptureFabricRuntime {
                     source: pending.source,
                     target: pending.target,
                     grant,
+                    expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
                 };
                 self.provisioning.insert(session_id, target_session);
                 let adapter = Arc::clone(&self.adapter);
@@ -813,6 +823,9 @@ impl RemoteCaptureFabricRuntime {
                 }
             }
         }
+        if let Some(session) = self.target_sessions.get_mut(&chunk.session_id) {
+            session.expires_at = now + REMOTE_CAPTURE_GRANT_TTL;
+        }
     }
 
     pub(crate) fn consents(&self) -> Vec<RemoteCaptureConsentView> {
@@ -889,6 +902,7 @@ impl RemoteCaptureFabricRuntime {
                 target: pending.target.clone(),
                 grant,
                 next_sequence: 1,
+                expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
             },
         );
         Ok((
@@ -982,7 +996,7 @@ impl RemoteCaptureFabricRuntime {
     ) -> Result<(DeviceId, PersonalFabricAction), String> {
         let session = self
             .source_sessions
-            .get(&chunk.session_id)
+            .get_mut(&chunk.session_id)
             .ok_or_else(|| "unknown remote capture source session".to_string())?;
         if !self.registry.accept_chunk(
             &session.source,
@@ -994,6 +1008,7 @@ impl RemoteCaptureFabricRuntime {
         ) {
             return Err("remote capture chunk failed its exact session binding".into());
         }
+        session.expires_at = now + REMOTE_CAPTURE_GRANT_TTL;
         Ok((
             session.target.clone(),
             PersonalFabricAction::RemoteCaptureChunk { chunk },
@@ -1059,6 +1074,64 @@ impl RemoteCaptureFabricRuntime {
             self.bridge.revoke_all(adapter.as_mut());
         } else {
             self.pending_bridge_revoke_all = true;
+        }
+    }
+
+    fn expire_idle(&mut self, now: Instant) {
+        self.outbound.retain(|_, pending| pending.expires_at > now);
+        self.inbound.retain(|_, pending| pending.expires_at > now);
+
+        let provisioning = self
+            .provisioning
+            .iter()
+            .filter_map(|(id, session)| (session.expires_at <= now).then_some(*id))
+            .collect::<Vec<_>>();
+        for session_id in provisioning {
+            if let Some(session) = self.provisioning.remove(&session_id) {
+                self.registry.revoke(session_id, session.grant);
+                self.pending_revoke.insert(session_id);
+                self.note_degraded(
+                    session.source,
+                    session.request.profile.kind(),
+                    RemoteCaptureDegradedReason::TransferInterrupted,
+                );
+            }
+        }
+
+        let targets = self
+            .target_sessions
+            .iter()
+            .filter_map(|(id, session)| (session.expires_at <= now).then_some(*id))
+            .collect::<Vec<_>>();
+        for session_id in targets {
+            if let Some(session) = self.target_sessions.remove(&session_id) {
+                self.registry.revoke(session_id, session.grant);
+                if let Ok(mut adapter) = self.adapter.try_lock() {
+                    let _ = self.bridge.revoke(
+                        &session.app,
+                        &session.source,
+                        &session.target,
+                        session_id,
+                        session.grant,
+                        adapter.as_mut(),
+                    );
+                } else {
+                    self.pending_revoke.insert(session_id);
+                    self.pending_target_revoke.insert(session_id, session);
+                }
+            }
+        }
+
+        let sources = self
+            .source_sessions
+            .iter()
+            .filter_map(|(id, session)| (session.expires_at <= now).then_some(*id))
+            .collect::<Vec<_>>();
+        for session_id in sources {
+            if let Some(session) = self.source_sessions.remove(&session_id) {
+                self.source.stop(session_id);
+                self.registry.revoke(session_id, session.grant);
+            }
         }
     }
 
@@ -1338,6 +1411,24 @@ mod tests {
         runtime.teardown_all();
         assert!(runtime.consents().is_empty());
         assert_eq!(RemoteCaptureKind::Camera, profile().kind());
+    }
+
+    #[test]
+    fn unanswered_requests_expire_without_leaving_authority() {
+        let phone = DeviceId::new("phone").unwrap();
+        let laptop = DeviceId::new("laptop").unwrap();
+        let now = Instant::now();
+        let mut runtime = runtime();
+        runtime
+            .request(app(), phone, laptop, "Camera".into(), profile())
+            .unwrap();
+        assert_eq!(runtime.outbound.len(), 1);
+
+        runtime.pump(now + REMOTE_CAPTURE_GRANT_TTL + std::time::Duration::from_millis(1));
+
+        assert!(runtime.outbound.is_empty());
+        assert!(runtime.source_sessions.is_empty());
+        assert!(runtime.target_sessions.is_empty());
     }
 
     #[test]
