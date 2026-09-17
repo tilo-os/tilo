@@ -166,7 +166,7 @@ jobs:
     # Keep those system headers in the versioned CI builder image instead of
     # resolving distro packages independently in every release job.
     container:
-      image: code.podesta.ai/qos/qos-builder:latest
+      image: code.podesta.ai/tilo/tilo-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

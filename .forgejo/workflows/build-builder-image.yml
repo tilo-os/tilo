@@ -1,6 +1,6 @@
 name: Snapshot / CI builder
 
-# Publishes code.podesta.ai/qos/qos-builder, which check.yml runs in. Weekly so
+# Publishes code.podesta.ai/tilo/tilo-builder, which check.yml runs in. Weekly so
 # the base and the package set stay current; on dispatch, and whenever the
 # inputs that define the environment change.
 
@@ -86,11 +86,11 @@ jobs:
           build-args: |
             RUST_CHANNEL=${{ env.RUST_CHANNEL }}
           tags: |
-            code.podesta.ai/qos/qos-builder:${{ env.RUST_CHANNEL }}
-            code.podesta.ai/qos/qos-builder:${{ github.sha }}
-            code.podesta.ai/qos/qos-builder:latest
-          cache-from: type=registry,ref=code.podesta.ai/qos/qos-builder-buildcache:latest
-          cache-to: type=registry,ref=code.podesta.ai/qos/qos-builder-buildcache:latest,mode=max
+            code.podesta.ai/tilo/tilo-builder:${{ env.RUST_CHANNEL }}
+            code.podesta.ai/tilo/tilo-builder:${{ github.sha }}
+            code.podesta.ai/tilo/tilo-builder:latest
+          cache-from: type=registry,ref=code.podesta.ai/tilo/tilo-builder-buildcache:latest
+          cache-to: type=registry,ref=code.podesta.ai/tilo/tilo-builder-buildcache:latest,mode=max
 
   # Two separate, fresh job containers prove that an object written by the
   # first compiler process is read back from the remote S3 cache by another.
@@ -105,7 +105,7 @@ jobs:
       # Use the immutable image produced by this run. A mutable `latest` tag
       # can resolve to a runner's stale local image even after the build job
       # has pushed a replacement.
-      image: code.podesta.ai/qos/qos-builder:${{ github.sha }}
+      image: code.podesta.ai/tilo/tilo-builder:${{ github.sha }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -144,7 +144,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 240
     container:
-      image: code.podesta.ai/qos/qos-builder:${{ github.sha }}
+      image: code.podesta.ai/tilo/tilo-builder:${{ github.sha }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
