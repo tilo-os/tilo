@@ -27,6 +27,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::text_metrics::renderer_type_size;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
@@ -1211,7 +1212,7 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let title_size = tokens.typography.scale.base;
+        let title_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
         text_renderer.draw_text(
             scene,
             &self.title,
@@ -1248,7 +1249,7 @@ impl FilePicker {
                 LUCIDE_DEFAULT_STROKE_PX,
             );
         }
-        let crumb_size = tokens.typography.scale.sm;
+        let crumb_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let crumb_count = self.crumb_rects.len();
         for (idx, (_target, r)) in self.crumb_rects.iter().enumerate() {
             let label = self.crumb_label_for(idx).unwrap_or_default();
@@ -1290,7 +1291,7 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = tokens.typography.scale.sm;
+        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         for (i, rect) in &self.entry_rows {
             let i = *i;
             let is_selected = self.selection.is_selected(i);
@@ -1372,7 +1373,7 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = tokens.typography.scale.sm;
+        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if self.mode == FilePickerMode::Save {
             self.draw_filename_field(scene, transform, text_renderer, theme, row_size);
         }
@@ -1772,7 +1773,7 @@ fn draw_button(
     // stays visually locked to the retained widget and every converted app.
     let face = crate::widget::ButtonFace::new(rect, label)
         .radius(f64::from(theme.tokens.radii.md))
-        .text_size(theme.tokens.typography.scale.sm)
+        .text_size(renderer_type_size(text_renderer, theme.tokens.typography.scale.sm))
         .weight(crate::text_render::TextWeight::Regular)
         .hovered(is_hover)
         .focused(is_focused)

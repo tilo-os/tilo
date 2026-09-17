@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
 use openh264::formats::YUVSource;
@@ -1078,7 +1079,7 @@ impl VideoPlayer {
             format_ms(self.position_ms),
             format_ms(self.duration_ms)
         );
-        let time_size = theme.tokens.typography.scale.sm;
+        let time_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (tw, th) = text_renderer.measure(&time_text, time_size, None);
 
         let mut layout = ControlsLayout {
@@ -1587,7 +1588,7 @@ impl VideoPlayer {
 
         let mut y = y0 + pad * 0.5;
         if let Some(t) = &panel.title {
-            let title_size = theme.tokens.typography.scale.sm;
+            let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
             let (_, th) = text_renderer.measure(t, title_size, None);
             text_renderer.draw_text(
                 scene,
@@ -1674,7 +1675,7 @@ impl VideoPlayer {
         s.icon.draw(scene, transform, icon_r, colors.text_primary);
         // Control label and value are both `scale.sm` (HIG §9.6), centred on
         // the row from their measured line box.
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (_, lh) = text_renderer.measure(&s.name, label_size, None);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
         text_renderer.draw_text(
@@ -1776,7 +1777,7 @@ impl VideoPlayer {
         } else {
             colors.text_primary
         };
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (_, lh) = text_renderer.measure(&label, label_size, None);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
         text_renderer.draw_text(

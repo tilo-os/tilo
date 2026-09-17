@@ -26,6 +26,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -1610,7 +1611,7 @@ fn draw_chip(
         None,
         &shape,
     );
-    let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+    let size = renderer_type_size(tr, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
     let shown = fit_text(tr, label, size, rect.width() - 8.0);
     let (lw, lh) = tr.measure(&shown, size, None);
     tr.draw_text(
@@ -1666,7 +1667,7 @@ impl ActivityTimeline {
         let cy = f64::midpoint(row.y0, row.y1);
         let dot_x = Self::draw_row_avatar(scene, transform, row, cy, entry);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         // The indent comes out of the author cluster, not the summary — the
         // summary is what the reader is here for.
         let author_slot_w = (self.author_slot_w() - px(depth) * INDENT).max(72.0);
@@ -2059,7 +2060,7 @@ impl ActivityTimeline {
             scene, transform, theme, full_row, row, rg, is_hovered, is_focused,
         );
 
-        let title_size = theme.tokens.typography.scale.sm;
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title_x = row.x0 + 26.0;
         let chips = self.group_chip_rects_local(row, rg);
         Self::draw_group_row_title(
@@ -2067,8 +2068,14 @@ impl ActivityTimeline {
             if self.preview_selection { row.x1 + 8.0 } else { chips.0.x0 },
         );
 
-        // Line two: who and how much, plus — right-aligned — when.
-        let meta_y = row.y0 + 27.0;
+        // Line two: who and how much, plus — right-aligned — when. Stacked
+        // under the title's *measured* line box (top pad + line + gap; 27 px
+        // at 1×, the literal this replaces) so a larger text scale keeps the
+        // two lines apart. The group row itself is still a fixed
+        // `GROUP_ROW_HEIGHT`, so at 2× line two overhangs the row's bottom —
+        // the row height has to follow the text scale for that (F5).
+        let (_, title_h) = tr.measure("Ag", title_size, None);
+        let meta_y = row.y0 + 6.0 + f64::from(title_h) + 6.0;
         Self::draw_group_row_meta(
             scene, transform, tr, theme, row, rg, now, title_x, meta_y, title_size,
         );
@@ -2358,7 +2365,7 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let chip_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
 
         let active_fill = theme.tokens.colors.accent[5];
         let idle_fill = theme.tokens.colors.surface_white_5;
@@ -2571,7 +2578,7 @@ impl ActivityTimeline {
             &shape,
         );
 
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         // `selection` is normalised so `b >= a` (see `set_selection`).
         let n = b.saturating_sub(a).saturating_add(1);
         let naming = matches!(
@@ -3010,7 +3017,7 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let (title, detail) = self.empty_state_lines();
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let small = (size - 1.0).max(10.0);
         let rows_top = self.rows_top();
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);

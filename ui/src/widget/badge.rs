@@ -9,6 +9,7 @@
 //! Positioning is the caller's responsibility — `Badge` does not anchor
 //! itself to another widget.
 
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -131,7 +132,7 @@ impl Badge {
         }
         let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
         scene.fill(vello::peniko::Fill::NonZero, transform, tint, None, &shape);
-        let size = theme.tokens.typography.scale.xs;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
         let (tw, th) = text_renderer.measure(label, size, None);
         text_renderer.draw_text(
             scene,
@@ -271,7 +272,7 @@ impl Widget for Badge {
                 cached.fill(vello::peniko::Fill::NonZero, transform, bg, None, &pill);
 
                 if let Some(label) = self.display_text() {
-                    let text_size = theme.tokens.typography.scale.xs;
+                    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
                     let (tw, th) = text_renderer.measure(&label, text_size, None);
                     let tx = self.rect.center().x - f64::from(tw) / 2.0;
                     let ty = self.rect.center().y - f64::from(th) / 2.0;

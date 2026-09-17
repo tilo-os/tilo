@@ -30,6 +30,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -482,8 +483,8 @@ impl Autocomplete {
         } else {
             tokens.colors.text_dim
         };
-        let text_size = tokens.typography.scale.base;
-        let detail_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
+        let detail_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let mut x = row.x0 + ROW_PAD_X;
         if let Some(icon) = s.icon {
             let iy = row.y0 + (ROW_H - ICON_PX) / 2.0;
@@ -684,7 +685,7 @@ impl Widget for Autocomplete {
             &shape,
         );
 
-        let text_size = tokens.typography.scale.base;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
 
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {

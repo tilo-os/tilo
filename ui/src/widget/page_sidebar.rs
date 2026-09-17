@@ -20,6 +20,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
@@ -116,9 +117,10 @@ const MENU_ROW_INSET: f64 = 4.0;
 
 /// Renderer-relative size of every label the rail paints (header, page
 /// numbers, add button, menu rows): `scale.sm`, with the theme's text scale
-/// divided back out because the renderer applies it again.
-fn label_size(theme: &Theme) -> f32 {
-    theme.tokens.typography.scale.sm / theme.text_scale
+/// divided once by the renderer's text scale because the renderer applies
+/// it again.
+fn label_size(theme: &Theme, tr: &TextRenderer) -> f32 {
+    renderer_type_size(tr, theme.tokens.typography.scale.sm)
 }
 
 /// Widens a row/action count to `f64` for layout math, through `u32` (exact
@@ -556,7 +558,7 @@ impl PageSidebar {
             // The header is a section label: `scale.sm`, semibold, on the
             // rail's padding and centred on its own measured line in the
             // header band rather than nine pixels down.
-            let size = label_size(theme);
+            let size = label_size(theme, tr);
             let (_, lh) = tr.measure_weighted(&self.header, size, None, TextWeight::Semibold);
             let hy = self.rect.y0 + (HEADER_H - f64::from(lh)) / 2.0;
             tr.draw_text_weighted(
@@ -711,7 +713,7 @@ impl PageSidebar {
         // Right-aligned in the left gutter, one `s2` short of the
         // thumbnail, vertically centred on the measured line.
         let label = format!("{}", i.saturating_add(1));
-        let size = label_size(theme);
+        let size = label_size(theme, tr);
         let weight = if is_current {
             TextWeight::Semibold
         } else {
@@ -755,7 +757,7 @@ impl PageSidebar {
         scene.fill(Fill::NonZero, base, bg, None, &rr);
         scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
         let label = format!("+  {}", self.add_label);
-        let size = label_size(theme);
+        let size = label_size(theme, tr);
         let (tw, th) = tr.measure_weighted(&label, size, None, TextWeight::Semibold);
         let tx = r.x0 + (r.width() - f64::from(tw)) / 2.0;
         let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
@@ -787,7 +789,7 @@ impl PageSidebar {
         crate::surface::shadow(scene, base, menu.rect, radius, &theme.tokens.elevation.e4);
         scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &rr);
         scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
-        let size = label_size(theme);
+        let size = label_size(theme, tr);
         for (idx, (act, row)) in menu.items.iter().enumerate() {
             if menu.hover == Some(idx) {
                 scene.fill(

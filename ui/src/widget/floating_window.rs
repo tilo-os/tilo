@@ -25,6 +25,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -875,11 +876,14 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 self.rect,
                 theme.tokens.colors.text_dim,
             );
-            let title_size = if self.overlay_chrome {
-                theme.tokens.typography.scale.sm
-            } else {
-                theme.tokens.typography.scale.base
-            };
+            let title_size = renderer_type_size(
+                text_renderer,
+                if self.overlay_chrome {
+                    theme.tokens.typography.scale.sm
+                } else {
+                    theme.tokens.typography.scale.base
+                },
+            );
             let tx = self.rect.x0
                 + if self.overlay_chrome {
                     18.0
