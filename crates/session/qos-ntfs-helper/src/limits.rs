@@ -26,12 +26,26 @@ unsafe extern "C" {
         expected_parent: i32,
     ) -> i32;
 }
+fn retry_interrupted<T>(mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    loop {
+        match operation() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            result => return result,
+        }
+    }
+}
 struct Child(libc::pid_t);
 impl Drop for Child {
     fn drop(&mut self) {
         unsafe {
             libc::kill(self.0, libc::SIGKILL);
-            libc::waitpid(self.0, std::ptr::null_mut(), 0);
+            let _ = retry_interrupted(|| {
+                if libc::waitpid(self.0, std::ptr::null_mut(), 0) < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
         }
     }
 }
@@ -401,6 +415,28 @@ pub fn decode_chunk(report: &Report, length: u32) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancellation_signal_cannot_interrupt_child_reaping() {
+        let mut attempts = 0;
+        let result = retry_interrupted(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(io::Error::from(io::ErrorKind::Interrupted))
+            } else {
+                Ok("reaped")
+            }
+        });
+        assert_eq!(result.unwrap(), "reaped");
+        assert_eq!(attempts, 3);
+        let mut attempts = 0;
+        let error = retry_interrupted(|| {
+            attempts += 1;
+            Err::<(), _>(io::Error::from_raw_os_error(libc::ECHILD))
+        })
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+        assert_eq!(attempts, 1);
+    }
     #[test]
     fn parent_peer_monitor_refuses_cancel_and_disconnect() {
         use std::os::unix::net::UnixStream;
