@@ -21,6 +21,13 @@ apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
 
+if grep -Fq '[[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]]' "$os" \
+   && grep -Fq '[[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh"; then
+  ok 'CI and local OS builds accept the published digest-pinned RPM namespace'
+else
+  bad 'an OS build rejects the RPM namespace published by snapshot-rpms'
+fi
+
 cache_driver_ok=1
 for workflow in build-builder-image.yml build-image.yml build-kernel.yml tilo-relay.yaml snapshot-rpms.yml; do
   file="$workflows/$workflow"
