@@ -374,3 +374,32 @@ No Windows VM is currently listed by Parallels. The bundled Imager release
 catalog is `unreleased` with no payload entries. These are current verification
 and distribution gaps, not reasons to replace the requested native app with a
 mock or to claim completion from model tests.
+
+
+## Guided Desktop installation UI
+
+Commits `6ab541720` and `1e2c78e35` connect the guided setup to live host
+readiness, verified downloads and the native installation helper. The review
+shows the exact host and package version before installation. Selected folders
+retain their modes and estimated sizes while destinations remain unresolved;
+that intent cannot authorize a copy. Completion explains how to select qOS at
+login and leaves the existing session default unchanged.
+
+Independent review found and verified fixes for two reachable failures:
+accepted cancellation now prevents authorization even when download success
+was already queued, and the first screen displays live readiness failures and
+a non-installing recheck. A same-app recovery test retains folder intent and
+its explicit Later override while restoring navigation.
+
+The initial native setup suite passed 188 tests with four explicit fixture
+ignores. After the review fixes, native Fedora ARM64 flow tests passed 7/7 and
+view tests 20/20 without warnings. macOS focused tests matched those results.
+Compact checking, blocked and failed screenshots were visually inspected;
+status and recheck remain visible above the fold. The scoped re-review found
+both issues addressed and no new breakage.
+
+This establishes the installation UI boundary. Durable first-login continuation,
+packaged import delivery and the actual graphical lifecycle remain outstanding.
+The production catalog stays empty. Narrow Windows compilation is not evidence
+of a complete Windows application or retained-Windows boot support. Previously
+recorded strict-Clippy findings remain for the final component review.
