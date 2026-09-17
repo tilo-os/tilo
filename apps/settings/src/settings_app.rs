@@ -471,6 +471,36 @@ impl SettingsApp {
         if self.local_operation.is_some() {
             return Err("another device-local Settings operation is still running".into());
         }
+        if type_id == crate::actions::INPUT_OPERATION_TYPE {
+            let operation: crate::actions::InputOperation =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            self.select(Category::MouseKeyboard);
+            return self.complete_immediate_local_operation(
+                type_id,
+                payload,
+                Self::apply_input_operation(operation),
+            );
+        }
+        if type_id == crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE {
+            let operation: crate::actions::KeyboardSourceOperation =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            self.select(Category::MouseKeyboard);
+            return self.complete_immediate_local_operation(
+                type_id,
+                payload,
+                Self::apply_keyboard_source_operation(operation),
+            );
+        }
+        if type_id == crate::actions::TIME_DATE_OPERATION_TYPE {
+            let operation: crate::actions::TimeDateOperation =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            self.select(Category::TimeDate);
+            return self.complete_immediate_local_operation(
+                type_id,
+                payload,
+                Self::apply_time_date_operation(operation),
+            );
+        }
         let accepted = match type_id {
             crate::actions::UPDATE_OPERATION_TYPE => {
                 let operation: crate::actions::UpdateOperation =
@@ -1295,6 +1325,234 @@ impl SettingsApp {
         // actual terminal result through `poll_resource_operation`.
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
+
+    /// Report a synchronously applied local setting through the same
+    /// accepted/polled lifecycle used by longer device commands. The action is
+    /// never written to the CRDT: completion proves the local backend save or
+    /// system-service call actually succeeded.
+    fn complete_immediate_local_operation(
+        &mut self,
+        type_id: &str,
+        payload: &[u8],
+        result: Result<String, String>,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let token = crate::actions::local_operation_token(type_id, payload)?;
+        self.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Running {
+                token: token.clone(),
+            });
+        self.local_operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded {
+                token: token.clone(),
+                message,
+            },
+            Err(message) => crate::actions::LocalOperationStatus::Failed {
+                token: token.clone(),
+                message,
+            },
+        });
+        self.local_operation_token = Some(token);
+        self.structure_dirty = true;
+        self.refresh_shell_children();
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn apply_input_operation(operation: crate::actions::InputOperation) -> Result<String, String> {
+        let mut prefs = crate::prefs::SystemPrefs::load();
+        let message = match operation {
+            crate::actions::InputOperation::SetTouchpadNaturalScroll { enabled } => {
+                prefs.input.touchpad_natural_scroll = Some(enabled);
+                "touchpad natural scrolling updated"
+            }
+            crate::actions::InputOperation::SetMouseNaturalScroll { enabled } => {
+                prefs.input.mouse_natural_scroll = Some(enabled);
+                "mouse natural scrolling updated"
+            }
+            crate::actions::InputOperation::SetTapToClick { enabled } => {
+                prefs.input.tap_to_click = enabled;
+                "tap to click updated"
+            }
+            crate::actions::InputOperation::SetTouchpadPointerSpeed { value } => {
+                prefs.input.touchpad_pointer_speed = Some(valid_input_fraction(value)?);
+                "touchpad speed updated"
+            }
+            crate::actions::InputOperation::SetMousePointerSpeed { value } => {
+                prefs.input.mouse_pointer_speed = Some(valid_input_fraction(value)?);
+                "mouse speed updated"
+            }
+            crate::actions::InputOperation::SetKeyRepeat { value } => {
+                prefs.input.key_repeat = valid_input_fraction(value)?;
+                prefs.input.key_repeat_delay_ms = None;
+                prefs.input.key_repeat_rate_hz = None;
+                "key repeat updated"
+            }
+            crate::actions::InputOperation::SetTapDrag { enabled } => {
+                prefs.input.tap_drag = enabled;
+                "tap and drag updated"
+            }
+            crate::actions::InputOperation::SetDisableWhileTyping { enabled } => {
+                prefs.input.disable_while_typing = enabled;
+                "disable while typing updated"
+            }
+            crate::actions::InputOperation::SetMiddleEmulation { enabled } => {
+                prefs.input.middle_emulation = enabled;
+                "middle-button emulation updated"
+            }
+            crate::actions::InputOperation::SetLeftHanded { enabled } => {
+                prefs.input.left_handed = enabled;
+                "pointer handedness updated"
+            }
+            crate::actions::InputOperation::SetTouchpadGestures { enabled } => {
+                prefs.input.touchpad_gestures = enabled;
+                "touchpad gestures updated"
+            }
+            crate::actions::InputOperation::SetAccelerationProfile { profile } => {
+                if !["Adaptive", "Flat"].contains(&profile.as_str()) {
+                    return Err("unsupported acceleration profile".into());
+                }
+                prefs.input.accel_profile = if profile == "Flat" {
+                    "flat".into()
+                } else {
+                    "adaptive".into()
+                };
+                "pointer acceleration updated"
+            }
+            crate::actions::InputOperation::SetComposeKey { key } => {
+                prefs.input.compose_key = match key.as_str() {
+                    "Disabled" => None,
+                    "Right Alt" => Some("ralt".into()),
+                    "Menu" => Some("menu".into()),
+                    "Caps Lock" => Some("caps".into()),
+                    "Right Super" => Some("rwin".into()),
+                    "Left Super" => Some("lwin".into()),
+                    _ => return Err("unsupported compose key".into()),
+                };
+                "compose key updated"
+            }
+            crate::actions::InputOperation::SetActiveSource { label } => {
+                let id = crate::input_sources::installed_catalog()
+                    .into_iter()
+                    .find(|entry| entry.label == label)
+                    .map(|entry| entry.id)
+                    .ok_or_else(|| "keyboard input source is no longer installed".to_string())?;
+                if !prefs.input.keyboard_layouts.contains(&id) {
+                    return Err("keyboard input source is not active on this device".into());
+                }
+                prefs.input.keyboard_layout = id;
+                "active keyboard source updated"
+            }
+        };
+        prefs.input.normalise_keyboard_sources();
+        prefs
+            .save()
+            .map_err(|error| format!("could not persist input preferences: {error}"))?;
+        Ok(message.into())
+    }
+
+    fn apply_keyboard_source_operation(
+        operation: crate::actions::KeyboardSourceOperation,
+    ) -> Result<String, String> {
+        let mut prefs = crate::prefs::SystemPrefs::load();
+        prefs.input.normalise_keyboard_sources();
+        let message = match operation {
+            crate::actions::KeyboardSourceOperation::Add { label } => {
+                let source = crate::input_sources::installed_catalog()
+                    .into_iter()
+                    .find(|entry| entry.label == label)
+                    .ok_or_else(|| "keyboard input source is no longer installed".to_string())?;
+                if prefs.input.keyboard_layouts.contains(&source.id) {
+                    return Err("keyboard input source is already active".into());
+                }
+                if prefs.input.keyboard_layouts.len()
+                    >= settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+                {
+                    return Err(
+                        "the maximum number of keyboard input sources is already active".into(),
+                    );
+                }
+                prefs.input.keyboard_layout = source.id.clone();
+                prefs.input.keyboard_layouts.push(source.id);
+                "keyboard input source added"
+            }
+            crate::actions::KeyboardSourceOperation::MoveUp { index } => {
+                if index == 0 || index >= prefs.input.keyboard_layouts.len() {
+                    return Err("keyboard input source can no longer move up".into());
+                }
+                prefs.input.keyboard_layouts.swap(index - 1, index);
+                "keyboard input source moved up"
+            }
+            crate::actions::KeyboardSourceOperation::MoveDown { index } => {
+                if index + 1 >= prefs.input.keyboard_layouts.len() {
+                    return Err("keyboard input source can no longer move down".into());
+                }
+                prefs.input.keyboard_layouts.swap(index, index + 1);
+                "keyboard input source moved down"
+            }
+            crate::actions::KeyboardSourceOperation::Remove { index } => {
+                if prefs.input.keyboard_layouts.len() <= 1
+                    || index >= prefs.input.keyboard_layouts.len()
+                {
+                    return Err("keyboard input source can no longer be removed".into());
+                }
+                let removed = prefs.input.keyboard_layouts.remove(index);
+                if removed == prefs.input.keyboard_layout {
+                    prefs.input.keyboard_layout = prefs.input.keyboard_layouts
+                        [index.min(prefs.input.keyboard_layouts.len() - 1)]
+                    .clone();
+                }
+                "keyboard input source removed"
+            }
+        };
+        prefs.input.normalise_keyboard_sources();
+        prefs
+            .save()
+            .map_err(|error| format!("could not persist keyboard input sources: {error}"))?;
+        Ok(message.into())
+    }
+
+    fn apply_time_date_operation(
+        operation: crate::actions::TimeDateOperation,
+    ) -> Result<String, String> {
+        match operation {
+            crate::actions::TimeDateOperation::SetAutomaticTime { enabled } => {
+                os_actions::set_ntp(enabled)
+                    .map_err(|error| format!("automatic time could not be changed: {error}"))?;
+                Ok("automatic time updated".into())
+            }
+            crate::actions::TimeDateOperation::SetTimezone { timezone } => {
+                if !os_actions::list_timezones()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|zone| zone == &timezone)
+                {
+                    return Err("time zone is not available on this device".into());
+                }
+                os_actions::set_timezone(&timezone)
+                    .map_err(|error| format!("time zone could not be changed: {error}"))?;
+                Ok("time zone updated".into())
+            }
+            crate::actions::TimeDateOperation::SetHourCycle { h24 } => {
+                let mut region = crate::region::RegionSettings::load();
+                region.locale.time_format = if h24 {
+                    crate::region::TimeStyle::H24
+                } else {
+                    crate::region::TimeStyle::H12
+                };
+                region
+                    .save()
+                    .map_err(|error| format!("could not persist clock format: {error}"))?;
+                Ok("clock format updated".into())
+            }
+        }
+    }
+}
+
+fn valid_input_fraction(value: f64) -> Result<f64, String> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err("input value must be between 0.0 and 1.0".into())
+    }
 }
 
 impl Widget for SettingsApp {
@@ -1304,6 +1562,8 @@ impl Widget for SettingsApp {
             crate::actions::ACCOUNT_OPERATION_TYPE,
             crate::actions::UPDATE_OPERATION_TYPE,
             crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE,
+            crate::actions::INPUT_OPERATION_TYPE,
+            crate::actions::TIME_DATE_OPERATION_TYPE,
             crate::actions::POWER_OPERATION_TYPE,
             crate::actions::NETWORK_OPERATION_TYPE,
             crate::actions::BLUETOOTH_OPERATION_TYPE,
@@ -1768,6 +2028,8 @@ impl Widget for SettingsApp {
             type_id,
             crate::actions::UPDATE_OPERATION_TYPE
                 | crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE
+                | crate::actions::INPUT_OPERATION_TYPE
+                | crate::actions::TIME_DATE_OPERATION_TYPE
                 | crate::actions::POWER_OPERATION_TYPE
                 | crate::actions::NETWORK_OPERATION_TYPE
                 | crate::actions::BLUETOOTH_OPERATION_TYPE
@@ -2191,6 +2453,44 @@ mod tests {
                 ),
                 message: "refreshed".into(),
             });
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &root),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn input_effect_persists_locally_and_never_latches_a_crdt_value() {
+        use automerge::ReadDoc;
+
+        let _config = crate::prefs::test_env::ConfigGuard::new("input-effect");
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let operation = crate::actions::InputOperation::SetTapToClick { enabled: false };
+        let payload = serde_json::to_vec(&operation).expect("operation serializes");
+        let invocation = tilo_actions::InvocationId::new();
+        let start = app
+            .start_resource_operation_with_document(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::INPUT_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .expect("input effect is admitted");
+        assert!(matches!(
+            start,
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        assert_eq!(app.selected(), Category::MouseKeyboard);
+        assert!(
+            doc.get(&root, panes::mouse_keyboard::TAP_CLICK_KEY)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!crate::prefs::SystemPrefs::load().input.tap_to_click);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &root),
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })

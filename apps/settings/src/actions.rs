@@ -64,6 +64,13 @@ pub const UPDATE_OPERATION_TYPE: &str = "settings.update-operation";
 /// Typed commands for the per-user keyboard-source roster.  The compositor
 /// owns application of this local durable preference.
 pub const KEYBOARD_SOURCE_OPERATION_TYPE: &str = "settings.keyboard-source-operation";
+/// Input and pointer configuration belongs to the machine running Settings.
+/// It is applied by the local compositor from `settings.json`, so it must not
+/// be represented by a replayable `SettingsAction`.
+pub const INPUT_OPERATION_TYPE: &str = "settings.input-operation";
+/// Clock service and clock-display commands are likewise local effects: a
+/// peer must never change this machine's timedated service or locale file.
+pub const TIME_DATE_OPERATION_TYPE: &str = "settings.time-date-operation";
 /// Hardware capability command, intentionally separate from portable Power
 /// preferences because a charge cap only exists on some devices.
 pub const POWER_OPERATION_TYPE: &str = "settings.power-operation";
@@ -135,6 +142,37 @@ pub enum KeyboardSourceOperation {
     MoveUp { index: usize },
     MoveDown { index: usize },
     Remove { index: usize },
+}
+
+/// Every hardware-backed Mouse & Keyboard preference exposed by Settings.
+/// The enum is intentionally closed: agents cannot smuggle arbitrary input
+/// keys or compositor options through the local-operation boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum InputOperation {
+    SetTouchpadNaturalScroll { enabled: bool },
+    SetMouseNaturalScroll { enabled: bool },
+    SetTapToClick { enabled: bool },
+    SetTouchpadPointerSpeed { value: f64 },
+    SetMousePointerSpeed { value: f64 },
+    SetKeyRepeat { value: f64 },
+    SetTapDrag { enabled: bool },
+    SetDisableWhileTyping { enabled: bool },
+    SetMiddleEmulation { enabled: bool },
+    SetLeftHanded { enabled: bool },
+    SetTouchpadGestures { enabled: bool },
+    SetAccelerationProfile { profile: String },
+    SetComposeKey { key: String },
+    SetActiveSource { label: String },
+}
+
+/// Time & Date controls which reach a system service or durable local locale
+/// configuration. They deliberately use the same bounded effect protocol as
+/// their visible controls and resource actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TimeDateOperation {
+    SetAutomaticTime { enabled: bool },
+    SetTimezone { timezone: String },
+    SetHourCycle { h24: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,6 +418,16 @@ pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, St
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             Ok(local_operation_token_for(type_id, &operation))
         }
+        INPUT_OPERATION_TYPE => {
+            let operation: InputOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        TIME_DATE_OPERATION_TYPE => {
+            let operation: TimeDateOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
         POWER_OPERATION_TYPE => {
             let operation: PowerOperation =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -561,6 +609,72 @@ impl Action for SettingsAction {
 /// obsolete UI could silently create an unrelated value.  Draft (`.edit`),
 /// confirmation, and navigation keys are intentionally absent: they are local
 /// presentation state, not collaborative resources.
+fn input_bool_operation(template: &InputOperation, enabled: bool) -> InputOperation {
+    match template {
+        InputOperation::SetTouchpadNaturalScroll { .. } => {
+            InputOperation::SetTouchpadNaturalScroll { enabled }
+        }
+        InputOperation::SetMouseNaturalScroll { .. } => {
+            InputOperation::SetMouseNaturalScroll { enabled }
+        }
+        InputOperation::SetTapToClick { .. } => InputOperation::SetTapToClick { enabled },
+        InputOperation::SetTapDrag { .. } => InputOperation::SetTapDrag { enabled },
+        InputOperation::SetDisableWhileTyping { .. } => {
+            InputOperation::SetDisableWhileTyping { enabled }
+        }
+        InputOperation::SetMiddleEmulation { .. } => InputOperation::SetMiddleEmulation { enabled },
+        InputOperation::SetLeftHanded { .. } => InputOperation::SetLeftHanded { enabled },
+        InputOperation::SetTouchpadGestures { .. } => {
+            InputOperation::SetTouchpadGestures { enabled }
+        }
+        _ => unreachable!("input bool resources only contain boolean operations"),
+    }
+}
+
+fn input_number_operation(template: &InputOperation, value: f64) -> InputOperation {
+    match template {
+        InputOperation::SetTouchpadPointerSpeed { .. } => {
+            InputOperation::SetTouchpadPointerSpeed { value }
+        }
+        InputOperation::SetMousePointerSpeed { .. } => {
+            InputOperation::SetMousePointerSpeed { value }
+        }
+        InputOperation::SetKeyRepeat { .. } => InputOperation::SetKeyRepeat { value },
+        _ => unreachable!("input number resources only contain numeric operations"),
+    }
+}
+
+fn input_choice_spec(
+    id: &str,
+    label: &str,
+    choices: &[String],
+    operation: fn(String) -> InputOperation,
+) -> ActionSpec {
+    let choices = choices.to_vec();
+    let fallback = choices.first().cloned().unwrap_or_default();
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "Choose an input preference",
+        OperationKind::Effect,
+        INPUT_OPERATION_TYPE,
+        vec![
+            ActionParam::required_owned("choice", ParamType::Text, "Device-local input value")
+                .with_choices(choices),
+        ],
+        move |args| {
+            encode_local_operation(
+                INPUT_OPERATION_TYPE,
+                &operation(
+                    args.text("choice")
+                        .map_or_else(|| fallback.clone(), str::to_string),
+                ),
+            )
+        },
+    )
+    .with_contract(local_operation_contract(&["device-local", "input"]))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the allow-list is a deliberately auditable stale-action boundary"
@@ -604,11 +718,7 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.switch_keys"
         | "a11y.switch_scan"
         | "a11y.reader_rate"
-        | "a11y.reader_voice"
-        | "time.timezone"
-        | "input.accel_profile"
-        | "input.compose_key"
-        | "input.keyboard_layout" => text(),
+        | "a11y.reader_voice" => text(),
         "appearance.high_contrast"
         | "appearance.reduce_motion"
         | "a11y.high_contrast"
@@ -622,8 +732,6 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.cursor_crosshair"
         | "a11y.thick_text_caret"
         | "a11y.switch_control"
-        | "time.auto"
-        | "time.h24"
         | "shortcuts.vim_mode"
         | "notifications.do_not_disturb"
         | "notifications.show_banners"
@@ -633,21 +741,8 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "notifications.show_badges"
         | "notifications.focus.enabled"
         | "display.night_light"
-        | "input.natural_scroll"
-        | "input.tap_to_click"
-        | "input.tap_drag"
-        | "input.disable_while_typing"
-        | "input.middle_emulation"
-        | "input.left_handed"
-        | "input.touchpad_gestures"
-        | "input.touchpad_natural_scroll"
-        | "input.mouse_natural_scroll"
         | "text.check_spelling"
         | "text.auto_correct" => boolean(),
-        "input.pointer_speed"
-        | "input.touchpad_pointer_speed"
-        | "input.mouse_pointer_speed"
-        | "input.key_repeat" => finite_float(),
         "notifications.focus.start" | "notifications.focus.end" | "notifications.focus.days" => {
             text()
         }
@@ -2424,90 +2519,140 @@ pub fn display_output_choice_binding(
 )]
 fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
     let mut sec = Resource::new(
         pane_resource_id(Category::MouseKeyboard),
         "settings.section",
         "Mouse & Keyboard",
     );
-    sec = sec.with_action(bool_flip_spec(
-        "touchpad_natural_scroll",
-        panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
-        b(
-            panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
-            d.input
-                .touchpad_natural_scroll
-                .unwrap_or(d.input.natural_scroll),
+    for (id, label, operation) in [
+        (
+            "touchpad-natural-scroll",
+            "Set touchpad natural scrolling",
+            InputOperation::SetTouchpadNaturalScroll { enabled: false },
         ),
-        "touchpad natural scrolling",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "mouse_natural_scroll",
-        panes::mouse_keyboard::MOUSE_NATURAL_SCROLL_KEY,
-        b(
-            panes::mouse_keyboard::MOUSE_NATURAL_SCROLL_KEY,
-            d.input
-                .mouse_natural_scroll
-                .unwrap_or(d.input.natural_scroll),
+        (
+            "mouse-natural-scroll",
+            "Set mouse natural scrolling",
+            InputOperation::SetMouseNaturalScroll { enabled: false },
         ),
-        "mouse natural scrolling",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "tap_to_click",
-        panes::mouse_keyboard::TAP_CLICK_KEY,
-        b(panes::mouse_keyboard::TAP_CLICK_KEY, d.input.tap_to_click),
-        "tap to click",
-    ));
-    sec = sec.with_action(float_prompt_spec(
-        "touchpad_pointer_speed",
-        "Set touchpad speed",
-        panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
-        "0.0 – 1.0",
-        0.0,
-        1.0,
-    ));
-    sec = sec.with_action(float_prompt_spec(
-        "mouse_pointer_speed",
-        "Set mouse speed",
-        panes::mouse_keyboard::MOUSE_POINTER_SPEED_KEY,
-        "0.0 – 1.0",
-        0.0,
-        1.0,
-    ));
-    sec = sec.with_action(float_prompt_spec(
-        "key_repeat",
-        "Set key-repeat rate",
-        panes::mouse_keyboard::KEY_REPEAT_KEY,
-        "0.0 – 1.0",
-        0.0,
-        1.0,
-    ));
-    for (id, key, label) in [
+        (
+            "tap-to-click",
+            "Set tap to click",
+            InputOperation::SetTapToClick { enabled: false },
+        ),
         (
             "tap-drag",
-            panes::mouse_keyboard::TAP_DRAG_KEY,
-            "tap and drag",
+            "Set tap and drag",
+            InputOperation::SetTapDrag { enabled: false },
         ),
         (
             "disable-while-typing",
-            panes::mouse_keyboard::DWT_KEY,
-            "disable touchpad while typing",
+            "Set disable while typing",
+            InputOperation::SetDisableWhileTyping { enabled: false },
         ),
         (
             "middle-emulation",
-            panes::mouse_keyboard::MIDDLE_EMULATION_KEY,
-            "middle-button emulation",
+            "Set middle-button emulation",
+            InputOperation::SetMiddleEmulation { enabled: false },
         ),
         (
             "left-handed",
-            panes::mouse_keyboard::LEFT_HANDED_KEY,
-            "left-handed pointer buttons",
+            "Set left-handed pointer buttons",
+            InputOperation::SetLeftHanded { enabled: false },
         ),
         (
             "touchpad-gestures",
-            panes::mouse_keyboard::GESTURES_KEY,
-            "touchpad gestures",
+            "Set touchpad gestures",
+            InputOperation::SetTouchpadGestures { enabled: false },
         ),
+    ] {
+        let operation = operation;
+        sec = sec.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "On or off on this device",
+                OperationKind::Effect,
+                INPUT_OPERATION_TYPE,
+                vec![ActionParam::required(
+                    "value",
+                    ParamType::Boolean,
+                    "Whether this local preference is enabled",
+                )],
+                move |args| {
+                    encode_local_operation(
+                        INPUT_OPERATION_TYPE,
+                        &input_bool_operation(&operation, args.boolean("value").unwrap_or(false)),
+                    )
+                },
+            )
+            .with_contract(local_operation_contract(&["device-local", "input"])),
+        );
+    }
+    for (id, label, operation) in [
+        (
+            "touchpad-speed",
+            "Set touchpad speed",
+            InputOperation::SetTouchpadPointerSpeed { value: 0.0 },
+        ),
+        (
+            "mouse-speed",
+            "Set mouse speed",
+            InputOperation::SetMousePointerSpeed { value: 0.0 },
+        ),
+        (
+            "key-repeat",
+            "Set key-repeat rate",
+            InputOperation::SetKeyRepeat { value: 0.0 },
+        ),
+    ] {
+        let operation = operation;
+        sec = sec.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "0.0 – 1.0",
+                OperationKind::Effect,
+                INPUT_OPERATION_TYPE,
+                vec![
+                    ActionParam::required("value", ParamType::Number, "New local input value")
+                        .with_schema(serde_json::json!({"minimum": 0.0, "maximum": 1.0})),
+                ],
+                move |args| {
+                    encode_local_operation(
+                        INPUT_OPERATION_TYPE,
+                        &input_number_operation(
+                            &operation,
+                            args.number("value").unwrap_or(0.0).clamp(0.0, 1.0),
+                        ),
+                    )
+                },
+            )
+            .with_contract(local_operation_contract(&["device-local", "input"])),
+        );
+    }
+    sec = sec.with_action(input_choice_spec(
+        "acceleration-profile",
+        "Set pointer acceleration profile",
+        &["Adaptive".into(), "Flat".into()],
+        |choice| InputOperation::SetAccelerationProfile { profile: choice },
+    ));
+    sec = sec.with_action(input_choice_spec(
+        "compose-key",
+        "Set compose key",
+        &[
+            "Disabled".into(),
+            "Right Alt".into(),
+            "Menu".into(),
+            "Caps Lock".into(),
+            "Right Super".into(),
+            "Left Super".into(),
+        ],
+        |choice| InputOperation::SetComposeKey { key: choice },
+    ));
+    // Text assistance is portable user text preference rather than a hardware
+    // command, and therefore intentionally remains in SettingsAction.
+    for (id, key, label) in [
         (
             "spell-checking",
             panes::mouse_keyboard::CHECK_SPELLING_KEY,
@@ -2519,38 +2664,11 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "automatic spelling correction",
         ),
     ] {
-        sec = sec.with_action(bool_flip_spec(id, key, b(key, false), label));
-    }
-    for (id, label, key, options, fallback) in [
-        (
-            "acceleration-profile",
-            "Set pointer acceleration profile",
-            panes::mouse_keyboard::ACCEL_PROFILE_KEY,
-            &["Adaptive", "Flat"][..],
-            "Adaptive",
-        ),
-        (
-            "compose-key",
-            "Set compose key",
-            panes::mouse_keyboard::COMPOSE_KEY,
-            &[
-                "Disabled",
-                "Right Alt",
-                "Menu",
-                "Caps Lock",
-                "Right Super",
-                "Left Super",
-            ][..],
-            "Disabled",
-        ),
-    ] {
-        sec = sec.with_action(choice_prompt_spec(
+        sec = sec.with_action(bool_flip_spec(
             id,
-            label,
             key,
-            "Choose an input preference",
-            options,
-            doc_str(doc, key).unwrap_or_else(|| fallback.into()),
+            doc_bool(doc, key).unwrap_or(true),
+            label,
         ));
     }
     // Input-source edits are device-local commands: they mutate the local
@@ -2561,6 +2679,23 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         sources.push(d.input.keyboard_layout.clone());
     }
     let catalog = crate::input_sources::installed_catalog();
+    let active_choices: Vec<String> = sources
+        .iter()
+        .filter_map(|source| {
+            catalog
+                .iter()
+                .find(|entry| entry.id == *source)
+                .map(|entry| entry.label.clone())
+        })
+        .collect();
+    if !active_choices.is_empty() {
+        sec = sec.with_action(input_choice_spec(
+            "active-source",
+            "Set active keyboard input source",
+            &active_choices,
+            |label| InputOperation::SetActiveSource { label },
+        ));
+    }
     let mut add_choices: Vec<String> = catalog
         .iter()
         .filter(|entry| !sources.contains(&entry.id))
@@ -3993,46 +4128,148 @@ fn region_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     section
 }
 
-fn time_date_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+fn time_date_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     use crate::panes;
-    let b = |key: &str, fallback| doc_bool(doc, key).unwrap_or(fallback);
     let mut section = Resource::new(
         pane_resource_id(Category::TimeDate),
         "settings.section",
         "Time & Date",
     );
-    section = section.with_action(bool_flip_spec(
-        "automatic-time",
-        panes::time_date::AUTO_TIME_KEY,
-        b(panes::time_date::AUTO_TIME_KEY, true),
-        "automatic time",
-    ));
-    section = section.with_action(bool_flip_spec(
-        "24-hour",
-        panes::time_date::H24_KEY,
-        b(panes::time_date::H24_KEY, true),
-        "24-hour time",
-    ));
+    for (id, label, operation) in [
+        (
+            "automatic-time",
+            "Set automatic time",
+            TimeDateOperation::SetAutomaticTime { enabled: false },
+        ),
+        (
+            "24-hour",
+            "Set 24-hour time",
+            TimeDateOperation::SetHourCycle { h24: false },
+        ),
+    ] {
+        section = section.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "On or off on this device",
+                OperationKind::Effect,
+                TIME_DATE_OPERATION_TYPE,
+                vec![ActionParam::required(
+                    "value",
+                    ParamType::Boolean,
+                    "Whether this local time control is enabled",
+                )],
+                move |args| {
+                    encode_local_operation(
+                        TIME_DATE_OPERATION_TYPE,
+                        &time_bool_operation(&operation, args.boolean("value").unwrap_or(false)),
+                    )
+                },
+            )
+            .with_contract(local_operation_contract(&["device-local", "time-date"])),
+        );
+    }
     section.with_action(
-        ActionSpec::typed(
+        ActionSpec::typed_operation(
             "timezone",
             "Set time zone",
             "IANA time-zone identifier",
-            ExecutionLocus::ClientLocal,
+            OperationKind::Effect,
+            TIME_DATE_OPERATION_TYPE,
             vec![ActionParam::required(
                 "choice",
                 ParamType::Text,
                 "Time zone",
             )],
             |args| {
-                encode(&set_text_action(
-                    panes::time_date::TIMEZONE_KEY,
-                    args.text("choice").unwrap_or("UTC"),
-                ))
+                encode_local_operation(
+                    TIME_DATE_OPERATION_TYPE,
+                    &TimeDateOperation::SetTimezone {
+                        timezone: args.text("choice").unwrap_or("UTC").to_string(),
+                    },
+                )
             },
         )
-        .with_contract(setting_contract()),
+        .with_contract(local_operation_contract(&["device-local", "time-date"])),
     )
+}
+
+fn time_bool_operation(template: &TimeDateOperation, value: bool) -> TimeDateOperation {
+    match template {
+        TimeDateOperation::SetAutomaticTime { .. } => {
+            TimeDateOperation::SetAutomaticTime { enabled: value }
+        }
+        TimeDateOperation::SetHourCycle { .. } => TimeDateOperation::SetHourCycle { h24: value },
+        TimeDateOperation::SetTimezone { .. } => {
+            unreachable!("time boolean resource must be boolean")
+        }
+    }
+}
+
+/// Bind a Mouse & Keyboard boolean control to the exact action published in
+/// the local resource tree. This keeps pointer, keyboard and a11y activation
+/// on the same typed door as palette and agent requests.
+pub fn input_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = input_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::Value::Bool(value))])
+    })
+    .ok()
+}
+
+pub fn input_number_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<f64>> {
+    let resource = input_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::json!(value))])
+    })
+    .ok()
+}
+
+pub fn input_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = input_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    let parameter = if spec.params().iter().any(|param| param.name == "choice") {
+        "choice"
+    } else if spec.params().iter().any(|param| param.name == "label") {
+        "label"
+    } else {
+        "value"
+    };
+    tilo_actions::ActionBinding::new(&resource, spec, move |value| {
+        serde_json::Map::from_iter([(parameter.into(), serde_json::Value::String(value))])
+    })
+    .ok()
+}
+
+pub fn keyboard_source_binding(
+    source: &str,
+    action_id: &str,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    let resource = input_section(&AutoCommit::new(), &SystemPrefs::load())
+        .children
+        .into_iter()
+        .find(|resource| resource.id.as_str() == format!("settings.input-source:{source}"))?;
+    tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
+}
+
+pub fn time_date_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = time_date_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::Value::Bool(value))])
+    })
+    .ok()
+}
+
+pub fn time_date_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = time_date_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(value))])
+    })
+    .ok()
 }
 
 fn shortcuts_section(doc: &AutoCommit) -> Resource {
@@ -4619,8 +4856,12 @@ mod tests {
             .map(|action| action.id.as_str())
             .collect();
         for id in [
-            "touchpad_natural_scroll",
-            "mouse_natural_scroll",
+            "touchpad-natural-scroll",
+            "mouse-natural-scroll",
+            "tap-to-click",
+            "touchpad-speed",
+            "mouse-speed",
+            "key-repeat",
             "tap-drag",
             "disable-while-typing",
             "middle-emulation",
@@ -4806,6 +5047,100 @@ mod tests {
     }
 
     #[test]
+    fn input_and_time_controls_cannot_enter_settings_action_replay() {
+        let mut doc = AutoCommit::new();
+        for (key, value) in [
+            (
+                panes::mouse_keyboard::TAP_CLICK_KEY,
+                SettingValue::Bool(true),
+            ),
+            (
+                panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
+                SettingValue::Float(0.8),
+            ),
+            (
+                panes::mouse_keyboard::ACCEL_PROFILE_KEY,
+                SettingValue::Text("Flat".into()),
+            ),
+            (
+                panes::mouse_keyboard::LAYOUT_KEY,
+                SettingValue::Text("English (US)".into()),
+            ),
+            (panes::time_date::AUTO_TIME_KEY, SettingValue::Bool(false)),
+            (panes::time_date::H24_KEY, SettingValue::Bool(false)),
+            (
+                panes::time_date::TIMEZONE_KEY,
+                SettingValue::Text("Europe/Amsterdam".into()),
+            ),
+        ] {
+            assert!(
+                SettingsAction::SetSetting {
+                    key: key.into(),
+                    value
+                }
+                .apply(&mut doc)
+                .is_err()
+            );
+        }
+        assert!(
+            doc.get(&ROOT, panes::mouse_keyboard::TAP_CLICK_KEY)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            doc.get(&ROOT, panes::time_date::TIMEZONE_KEY)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn input_and_time_resources_and_controls_share_local_effect_protocols() {
+        let resources = provide_resources(&AutoCommit::new());
+        let input = find(&resources, &pane_resource_id(Category::MouseKeyboard));
+        let time = find(&resources, &pane_resource_id(Category::TimeDate));
+        for (resource, ids, operation_type) in [
+            (
+                &input,
+                &[
+                    "tap-to-click",
+                    "touchpad-speed",
+                    "active-source",
+                    "compose-key",
+                ][..],
+                INPUT_OPERATION_TYPE,
+            ),
+            (
+                &time,
+                &["automatic-time", "24-hour", "timezone"][..],
+                TIME_DATE_OPERATION_TYPE,
+            ),
+        ] {
+            for id in ids {
+                let action = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == *id)
+                    .unwrap_or_else(|| panic!("missing local action {id}"));
+                assert_eq!(action.kind, OperationKind::Effect);
+                assert_eq!(action.operation_type.as_deref(), Some(operation_type));
+                assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
+            }
+        }
+        let input = input_bool_binding("tap-to-click").expect("visible toggle binding");
+        let invocation = input.invoke(true).expect("boolean input is valid");
+        assert_eq!(
+            invocation.address,
+            ActionAddress::new(pane_resource_id(Category::MouseKeyboard), "tap-to-click")
+        );
+        let time = time_date_bool_binding("automatic-time").expect("visible time binding");
+        assert_eq!(
+            time.invoke(false).unwrap().arguments.get("value"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
     fn accepted_local_operations_advertise_background_string_results() {
         fn walk(resource: &Resource, out: &mut Vec<ActionSpec>) {
             out.extend(
@@ -4818,6 +5153,8 @@ mod tests {
                             Some(
                                 UPDATE_OPERATION_TYPE
                                     | KEYBOARD_SOURCE_OPERATION_TYPE
+                                    | INPUT_OPERATION_TYPE
+                                    | TIME_DATE_OPERATION_TYPE
                                     | POWER_OPERATION_TYPE
                                     | NETWORK_OPERATION_TYPE
                                     | BLUETOOTH_OPERATION_TYPE
@@ -5081,7 +5418,7 @@ mod tests {
     }
 
     #[test]
-    fn per_device_natural_scroll_actions_are_accepted_and_convergent() {
+    fn per_device_natural_scroll_actions_are_refused_from_replay() {
         let mut a = AutoCommit::new();
         a.put(
             &ROOT,
@@ -5090,21 +5427,13 @@ mod tests {
         )
         .expect("seed touchpad preference");
         a.commit();
-        let mut b = AutoCommit::load(&a.save()).expect("clone the same base document");
-
         let action = set_bool_action(panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY, true);
-        let encoded = encode(&action);
-        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("apply locally");
-        tilo_actions::replay(&mut b, &envelope, &registry()).expect("replay on peer");
+        assert!(action.apply(&mut a).is_err());
 
         assert_eq!(
             doc_bool(&a, panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY),
-            Some(true)
-        );
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "the preference converges exactly"
+            Some(false),
+            "the prior document value is not overwritten by a local hardware action"
         );
     }
 
