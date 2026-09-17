@@ -295,11 +295,11 @@ jobs:
         with:
           name: tilo-installer-catalog
           path: release-catalog
-      - run: cp release-catalog/tilo-installer-catalog-v1.json apps/imager/release-catalog.json
+      - run: python3 apps/imager/packaging/release-catalog.py release-catalog --copy-to apps/imager/release-catalog.json
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         if: startsWith(github.ref, 'refs/tags/imager-v')
         with:
-          name: tilo-installer-medium-${{ matrix.arch }}
+          # All media are needed: each native lane signs its catalogued boards.
           path: release-medium
       - name: Install native schema compiler
         run: |
@@ -371,14 +371,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/imager-v')
         run: |
           set -euo pipefail
-          medium="release-medium/tilo-installer-linux-${{ matrix.arch }}.img.zst"
-          apps/imager/packaging/sign-linux-release-file.sh \
-            "$medium" "dist/tilo-imager/$(basename "$medium").asc"
-          if [ "${{ matrix.arch }}" = x86_64 ]; then
-            catalog=release-catalog/tilo-installer-catalog-v1.json
-            apps/imager/packaging/sign-linux-release-file.sh \
-              "$catalog" "dist/tilo-imager/$(basename "$catalog").asc"
-          fi
+          bash apps/imager/packaging/sign-installer-release.sh \
+            release-catalog release-medium '${{ matrix.arch }}' dist/tilo-imager
           flatpak="dist/tilo-imager/tilo-imager-linux-${{ matrix.arch }}.flatpak"
           apps/imager/packaging/sign-linux-release-file.sh \
             "$flatpak" "$flatpak.asc"
@@ -450,7 +444,9 @@ jobs:
           name: tilo-installer-catalog
           path: release-catalog
       - shell: powershell
-        run: Copy-Item release-catalog/tilo-installer-catalog-v1.json apps/imager/release-catalog.json
+        run: |
+          python apps/imager/packaging/release-catalog.py release-catalog --copy-to apps/imager/release-catalog.json
+          if ($LASTEXITCODE -ne 0) { throw "Installer catalog selection failed" }
       - name: Require native Windows architecture
         shell: powershell
         run: |
@@ -579,7 +575,7 @@ jobs:
         with:
           name: tilo-installer-catalog
           path: release-catalog
-      - run: cp release-catalog/tilo-installer-catalog-v1.json apps/imager/release-catalog.json
+      - run: python3 apps/imager/packaging/release-catalog.py release-catalog --copy-to apps/imager/release-catalog.json
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_MACOS_CREDENTIAL_BROKER }}
