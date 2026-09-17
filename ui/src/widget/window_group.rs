@@ -232,6 +232,26 @@ pub struct WindowGroup {
     closing_at: Option<Instant>,
 }
 
+/// Height of the floating maximized-chrome chips. Off the 4 px grid, and
+/// short of HIG §9.6's 28 px Selector: the row overlays app content, so it
+/// is kept as slim as its `scale.xs` label allows. Recorded rather than
+/// rounded — the row's geometry is what the maximize tests pin.
+const MAXIMIZED_CHIP_H: f64 = 22.0;
+/// Narrowest the `[app title]` chip is drawn, so a one-letter title still
+/// reads as a chip rather than a dot.
+const MAXIMIZED_TITLE_CHIP_MIN_W: f64 = 80.0;
+/// Width of the `[Restore]` chip: icon slot, gap, label, end pads.
+const MAXIMIZED_RESTORE_CHIP_W: f64 = 76.0;
+/// Side of the lucide glyph slot inside the maximized chips — the same
+/// 14 px the tab pills' app glyphs and action chips use.
+const MAXIMIZED_ICON_PX: f64 = 14.0;
+/// The per-group right-edge resize grip: two bars, each this wide, filling
+/// the `RESIZE_HANDLE_PX` band between them.
+const GRIP_BAR_PX: f64 = 2.0;
+/// The grip runs a quarter of the group's height, clamped to
+/// `spacing.s6 ..= spacing.s16 + spacing.s4`.
+const GRIP_HEIGHT_SHARE: f64 = 0.25;
+
 /// Shared layout numbers for the maximized-chrome pill row, computed once in
 /// [`WindowGroup::draw_maximized_chrome`] and threaded through its two child
 /// painters — keeps both well under clippy's argument-count limit.
@@ -1148,33 +1168,41 @@ impl WindowGroup {
             theme.tokens.colors.text_dim.with_alpha_factor(0.55)
         };
         let total_h = self.rect.height();
-        let grip_h = (total_h * 0.25).clamp(24.0, 80.0);
-        let grip_cx = self.rect.x1 - 3.0;
+        let grip_h = (total_h * GRIP_HEIGHT_SHARE).clamp(
+            f64::from(theme.tokens.spacing.s6),
+            f64::from(theme.tokens.spacing.s16) + f64::from(theme.tokens.spacing.s4),
+        );
+        // Two bars, each `GRIP_BAR_PX` wide, that together fill the
+        // `RESIZE_HANDLE_PX` band exactly: centred on the band's own centre,
+        // one on either side of it, so the painted grip and the pointer
+        // zone are the same thing.
+        let grip_cx = self.rect.x1 - RESIZE_HANDLE_PX / 2.0;
         let grip_cy = self.rect.center().y;
         let bar = |dx: f64| {
             vello::kurbo::RoundedRect::from_rect(
                 Rect::new(
-                    grip_cx + dx - 1.0,
+                    grip_cx + dx - GRIP_BAR_PX / 2.0,
                     grip_cy - grip_h / 2.0,
-                    grip_cx + dx + 1.0,
+                    grip_cx + dx + GRIP_BAR_PX / 2.0,
                     grip_cy + grip_h / 2.0,
                 ),
-                1.0,
+                GRIP_BAR_PX / 2.0,
             )
         };
+        let offset = RESIZE_HANDLE_PX / 2.0 - GRIP_BAR_PX / 2.0;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             grip_col,
             None,
-            &bar(-2.0),
+            &bar(-offset),
         );
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             grip_col,
             None,
-            &bar(2.0),
+            &bar(offset),
         );
     }
 
@@ -1193,11 +1221,13 @@ impl WindowGroup {
         if !self.should_show_maximized_chrome(Some(self.last_cursor.y)) {
             return;
         }
-        // `[app title]  …  [Restore][×]`, matching the concept layout.
-        let pad = 6.0_f64;
+        // `[app title]  …  [Restore][×]`, matching the concept layout. The
+        // row floats `TAB_PILL_INSET_Y` in from the card's top and sides —
+        // the same inset the tab pills it stands in for keep from the bar.
+        let pad = crate::widget::tabs::TAB_PILL_INSET_Y;
         let layout = ChromePillLayout {
             pad,
-            pill_h: 22.0_f64,
+            pill_h: MAXIMIZED_CHIP_H,
             y0: self.rect.y0 + pad,
         };
         self.draw_maximized_title_chip(scene, transform, tr, theme, layout);
@@ -1223,7 +1253,9 @@ impl WindowGroup {
             .unwrap_or_default();
         let title_size = theme.tokens.typography.scale.xs;
         let (tw, th) = tr.measure(&active_title, title_size, None);
-        let title_pill_w = (f64::from(tw) + 24.0).max(80.0);
+        // The label sits `spacing.s3` in from either end of its chip.
+        let chip_pad = f64::from(theme.tokens.spacing.s3);
+        let title_pill_w = (f64::from(tw) + 2.0 * chip_pad).max(MAXIMIZED_TITLE_CHIP_MIN_W);
         let title_pill = Rect::new(
             self.rect.x0 + pad,
             y0,
@@ -1274,11 +1306,13 @@ impl WindowGroup {
     ) {
         let ChromePillLayout { pad, pill_h, y0 } = layout;
         let title_size = theme.tokens.typography.scale.xs;
-        let close_w = 22.0_f64;
+        // The close chip is a square of the row's height, so its × sits on
+        // the same centre the title chip's text does.
+        let close_w = pill_h;
         let close_x0 = self.rect.x1 - close_w - pad;
         self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
-        let restore_w = 76.0_f64;
-        let restore_x0 = close_x0 - restore_w - 4.0;
+        let restore_w = MAXIMIZED_RESTORE_CHIP_W;
+        let restore_x0 = close_x0 - restore_w - f64::from(theme.tokens.spacing.s1);
         self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
 
         crate::surface::shadow(
@@ -1297,13 +1331,18 @@ impl WindowGroup {
             restore_border,
             None,
         );
-        // Text label kept (for screen readers/i18n) and offset past
-        // a 14px icon slot for the lucide `Minimize2` glyph.
+        // Text label kept (for screen readers/i18n), after a square icon
+        // slot for the lucide `Minimize2` glyph: `spacing.s2` in from the
+        // chip's edge, `MAXIMIZED_ICON_PX` a side and centred on the chip's
+        // centre line, with the label one `spacing.s2` after it — the same
+        // icon → gap → label rhythm a tab pill uses.
+        let icon_inset = f64::from(theme.tokens.spacing.s2);
+        let icon_x0 = self.restore_rect.x0 + icon_inset;
         let icon_slot = Rect::new(
-            self.restore_rect.x0 + 8.0,
-            self.restore_rect.y0 + 4.0,
-            self.restore_rect.x0 + 22.0,
-            self.restore_rect.y1 - 4.0,
+            icon_x0,
+            self.restore_rect.center().y - MAXIMIZED_ICON_PX / 2.0,
+            icon_x0 + MAXIMIZED_ICON_PX,
+            self.restore_rect.center().y + MAXIMIZED_ICON_PX / 2.0,
         );
         icons::draw_icon(
             scene,
@@ -1311,11 +1350,11 @@ impl WindowGroup {
             icon_slot,
             icons::Icon::Minimize2,
             theme.tokens.colors.text_primary,
-            1.5,
+            icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let label = "Restore";
         let (_lw, lh) = tr.measure(label, title_size, None);
-        let lx = self.restore_rect.x0 + 28.0;
+        let lx = icon_slot.x1 + f64::from(theme.tokens.spacing.s2);
         let ly = self.restore_rect.center().y - f64::from(lh) / 2.0;
         // Affine composition is floating-point matrix multiply — it
         // cannot overflow or panic the way integer arithmetic can.
@@ -3541,6 +3580,35 @@ mod tests {
         assert!(!g.should_show_maximized_chrome(Some(20.0)));
         assert!(!g.should_show_maximized_chrome(Some(80.0)));
         assert!(!g.should_show_maximized_chrome(None));
+    }
+
+    /// The floating `[Restore][×]` row: both chips one row tall, the close
+    /// chip square, the pair one `spacing.s1` apart, and the row inset from
+    /// the card by the same `TAB_PILL_INSET_Y` the tab pills keep.
+    #[test]
+    fn maximized_chrome_chips_share_one_row_and_a_token_gap() {
+        let mut g = make_group();
+        g.maximized = true;
+        g.rect = Rect::new(0.0, 0.0, 1200.0, 700.0);
+        g.last_cursor = Point::new(600.0, 10.0);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        let inset = crate::widget::tabs::TAB_PILL_INSET_Y;
+        assert_eq!(g.close_rect.height(), MAXIMIZED_CHIP_H);
+        assert_eq!(g.restore_rect.height(), MAXIMIZED_CHIP_H);
+        assert_eq!(g.close_rect.width(), g.close_rect.height(), "the × chip is square");
+        assert_eq!(g.close_rect.y0, g.rect.y0 + inset);
+        assert_eq!(g.restore_rect.y0, g.close_rect.y0, "one row");
+        assert!((g.rect.x1 - g.close_rect.x1 - inset).abs() < 1e-9);
+        assert!(
+            (g.close_rect.x0 - g.restore_rect.x1 - f64::from(theme.tokens.spacing.s1)).abs()
+                < 1e-9,
+            "restore and close sit one s1 apart"
+        );
+        assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
     }
 
     /// Parallel-vec invariant: drift between `bar.tabs()` and `hosts`
