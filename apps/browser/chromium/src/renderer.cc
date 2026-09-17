@@ -2,6 +2,7 @@
 #include "host.h"
 #include "credential_forms.h"
 #include "credential_document.h"
+#include "renderer_media_lifetime.h"
 #include "cosmetics.h"
 #include "include/cef_browser.h"
 #include "include/cef_frame.h"
@@ -41,7 +42,7 @@ class MediaStateHandler final : public CefV8Handler {
   }
  private: CefRefPtr<CefFrame> frame_;uint64_t token_; IMPLEMENT_REFCOUNTING(MediaStateHandler);
 };
-struct MediaContext { CefRefPtr<CefV8Context> context;CefRefPtr<CefFrame> frame;uint64_t token;bool main; };
+struct MediaContext { CefRefPtr<CefBrowser> browser;CefRefPtr<CefV8Context> context;CefRefPtr<CefFrame> frame;uint64_t token;bool main; };
 std::map<int,std::map<std::string,MediaContext>> media_contexts;
 }
 
@@ -81,7 +82,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
         if(frame->IsMain() && browser_media.size()>=kMaxMediaFrames) {auto victim=std::find_if(browser_media.begin(),browser_media.end(),[](const auto& entry){return !entry.second.main;});if(victim==browser_media.end())return;auto closed=CefProcessMessage::Create("qos.media_context_closed");closed->GetArgumentList()->SetDouble(0,static_cast<double>(victim->second.token));victim->second.frame->SendProcessMessage(PID_BROWSER,closed);browser_media.erase(victim);}
       }
       const uint64_t token=++media_context_counter_;
-      browser_media[key]={context,frame,token,frame->IsMain()};
+      browser_media[key]={browser,context,frame,token,frame->IsMain()};
       auto media_context=CefProcessMessage::Create("qos.media_context");media_context->GetArgumentList()->SetDouble(0,static_cast<double>(token));frame->SendProcessMessage(PID_BROWSER,media_context);
       context->Enter();context->GetGlobal()->SetValue("__qosMediaState",CefV8Value::CreateFunction("__qosMediaState",new MediaStateHandler(frame,token)),V8_PROPERTY_ATTRIBUTE_DONTDELETE);
       CefRefPtr<CefV8Value> result;CefRefPtr<CefV8Exception> exception;
@@ -95,7 +96,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     auto credential=credential_contexts_.find(browser->GetIdentifier());
     if(credential!=credential_contexts_.end() && credential->second.browser->IsSame(browser))
       credential_contexts_.erase(credential);
-    media_contexts.erase(browser->GetIdentifier());configs_.erase(browser->GetIdentifier());
+    qos::EraseMediaBrowserContexts(media_contexts,browser);configs_.erase(browser->GetIdentifier());
   }
   void OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
                          CefRefPtr<CefV8Context> context) override {

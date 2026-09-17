@@ -73,6 +73,15 @@ impl SourceEditor {
         editor
     }
 
+    /// Prepare immutable source geometry using the widget's normal cached
+    /// measurement, including its renderer font/locale epoch invalidation.
+    pub(crate) fn prepare_snapshot_layout(&mut self, tr: &mut TextRenderer) {
+        Widget::measure(&mut self.code,
+            taffy::Size { width: Some(self.rect.width() as f32), height: Some(self.rect.height() as f32) },
+            taffy::Size { width: taffy::AvailableSpace::Definite(self.rect.width() as f32), height: taffy::AvailableSpace::Definite(self.rect.height() as f32) },
+            tr);
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -145,6 +154,11 @@ impl SourceEditor {
     }
 
     // ----- scrolling -------------------------------------------------------
+
+    /// Effective bounded offset for immutable History view persistence.
+    pub(crate) fn snapshot_scroll_y(&self) -> f64 {
+        self.code.inner().scroll_y()
+    }
 
     /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
     /// only scrolls vertically.

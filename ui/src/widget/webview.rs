@@ -965,6 +965,38 @@ mod tests {
     }
 
     #[test]
+    fn scene_trace_follows_nested_layout_on_repeated_and_new_frames() {
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone());
+        view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
+        *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+            trace_id: Some(201), rgba: Arc::new(vec![255; 16 * 16 * 4]), width: 16, height: 16,
+        });
+        let mut root = crate::widget::Column::new().push(Box::new(
+            crate::widget::Row::new().push(Box::new(view)),
+        ));
+        crate::webview::frame_trace::take_for_test();
+        for pass in 0..3 {
+            if pass == 1 {
+                *engine.frames().lock().unwrap() = None;
+            } else if pass == 2 {
+                *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                    trace_id: Some(202), rgba: Arc::new(vec![128; 16 * 16 * 4]), width: 16, height: 16,
+                });
+            }
+            let mut scene = Scene::new();
+            root.draw_with_presence(
+                &mut scene, Affine::IDENTITY, &mut TextRenderer::new(),
+                &Theme::dark(), &PresenceCtx::default(),
+                &crate::permissions::PermissionContext::permissive(),
+            );
+            assert!(scene.encoding().draw_tags.contains(&vello_encoding::DrawTag::IMAGE));
+            let expected = if pass == 2 { vec![202] } else { vec![201] };
+            assert_eq!(crate::webview::frame_trace::take_for_test(), (expected, false), "pass {pass}");
+        }
+    }
+
+    #[test]
     fn old_density_frames_are_not_drawn_and_recovery_is_bounded() {
         let engine = TestEngine::new();
         let mut view = WebView::new(engine.clone());

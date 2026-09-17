@@ -157,3 +157,43 @@ impl HistoryPreview for LibraryPreview {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn token_catalog_scroll_reaches_last_painted_label_at_both_widths() {
+        let spec = crate::model::seed_custom();
+        let mut preview = LibraryPreview {
+            specs: vec![spec.clone()],
+            view: PreviewView {
+                page: Some(spec.id),
+                ..Default::default()
+            },
+            bounds: Rect::ZERO,
+            specimen: crate::preview::PreviewPane::new(),
+        };
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        for width in [360., 1000.] {
+            preview.view.scroll = (0., 0.);
+            let clip = Rect::new(0., 0., width, 240.);
+            preview.layout(clip, &mut tr, &theme).unwrap();
+            let mut before = Scene::new();
+            preview.draw(&mut before, Affine::IDENTITY, &mut tr, &theme);
+            let last = before.encoding().resources.glyph_runs.last().unwrap();
+            let y = f64::from(last.transform.translation[1]);
+            assert!(y > clip.y1);
+            preview.navigate(PreviewNavigation::Scroll {
+                dx: 0.,
+                dy: -(y - 100.),
+            });
+            let mut after = Scene::new();
+            preview.draw(&mut after, Affine::IDENTITY, &mut tr, &theme);
+            let last = after.encoding().resources.glyph_runs.last().unwrap();
+            let reached = f64::from(last.transform.translation[1]);
+            assert!(reached >= clip.y0 && reached < clip.y1);
+            assert!((reached - 100.).abs() < 0.01);
+        }
+    }
+}

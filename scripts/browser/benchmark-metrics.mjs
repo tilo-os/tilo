@@ -104,12 +104,15 @@ export class FrameParser {
             this.length !== base + 8 + width * height * 4
           )
             throw Error("Invalid frame dimensions/size");
+          const tab = kind === 2 ? 1 : this.prefix.readUInt32LE(1);
+          if (tab < 1 || tab > 0x7fffffff)
+            throw Error("Invalid native tab ID");
           this.onPacket({
             kind: "frame",
             at,
             width,
             height,
-            tab: kind === 2 ? 1 : this.prefix.readUInt32LE(1),
+            tab,
           });
         }
         this.length = 0;

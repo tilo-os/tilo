@@ -461,15 +461,38 @@ impl TileHost {
     /// store/checkout/lifetime. No outer State or invented component is used.
     /// # Errors
     /// Refuses missing, stale or foreign document custody and invalid scope metadata.
-    pub fn register_document_history(&mut self, definition: &'static crate::history_mode::HistoryDefinition) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        use crate::history_mode::{HistoryPresentation, HistoryRegistration, HistoryRegistrationError, HistorySourceRegistration};
-        self.resolve_record().map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
-        let owner = self.history_owner().ok_or(HistoryRegistrationError::UnsupportedOwner)?;
-        let sources = definition.scopes.iter().map(|scope| match scope.presentation {
-            HistoryPresentation::Domain { .. } => HistorySourceRegistration::owned(scope.key, definition.app_id, owner.clone()),
-            HistoryPresentation::External { reason } => Ok(HistorySourceRegistration::Unversioned { scope: scope.key, reason }),
-            HistoryPresentation::CheckedFiles { .. } => Err(HistoryRegistrationError::UnsupportedOwner),
-        }).collect::<Result<Vec<_>, _>>()?;
+    pub fn register_document_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        use crate::history_mode::{
+            HistoryPresentation, HistoryRegistration, HistoryRegistrationError,
+            HistorySourceRegistration,
+        };
+        self.resolve_record()
+            .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
+        let owner = self
+            .history_owner()
+            .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
+        let sources = definition
+            .scopes
+            .iter()
+            .map(|scope| match scope.presentation {
+                HistoryPresentation::Domain { .. }
+                | HistoryPresentation::DomainWithAssets { .. } => {
+                    HistorySourceRegistration::owned(scope.key, definition.app_id, owner.clone())
+                }
+                HistoryPresentation::External { reason } => {
+                    Ok(HistorySourceRegistration::Unversioned {
+                        scope: scope.key,
+                        reason,
+                    })
+                }
+                HistoryPresentation::CheckedFiles { .. } => {
+                    Err(HistoryRegistrationError::UnsupportedOwner)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.install_history_registration(HistoryRegistration::new(definition, sources)?);
         if self.record_error.is_some() { return Err(HistoryRegistrationError::UnsupportedOwner); }
         Ok(())

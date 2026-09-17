@@ -48,11 +48,32 @@ enum ExitState {
     Ready,
 }
 
+struct RetainedEvent<'a> {
+    event: &'a WindowEvent,
+    scale: f64,
+    modifiers: &'a winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus: &'a mut Option<NodeId>,
+    node: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
+struct Recovery {
+    snapshot: crate::session::Snapshot,
+    panel: Box<dyn Widget>,
+}
+
 /// A bounded collection of retained documents in one shared browser runtime.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "layout invalidation, address focus, session initialization and native fullscreen observations are independent flags; exit admission already uses ExitState"
+)]
 pub struct BrowserTabs {
     tabs: Vec<Tab>,
     // Host node bindings remain alive until the next structure rebuild.
-    retired: Vec<Box<BrowserWidget>>,
+    retired: Vec<Box<dyn Widget>>,
     active_id: u64,
     next_id: u64,
     bar: Box<BrowserTabStrip>,
@@ -71,9 +92,8 @@ pub struct BrowserTabs {
     session: Option<crate::session::SessionStore>,
     saved_session: Option<crate::session::Snapshot>,
     session_initialized: bool,
-    recovery: Option<crate::session::Snapshot>,
+    recovery: Option<Recovery>,
     recovery_choice: ui::LocalState<Option<bool>>,
-    recovery_panel: Option<Box<dyn Widget>>,
     exit_state: ExitState,
     exit_choice: ui::LocalState<Option<bool>>,
     exit_panel: Option<Box<dyn Widget>>,
@@ -114,7 +134,6 @@ impl BrowserTabs {
             session_initialized: false,
             recovery: None,
             recovery_choice: ui::LocalState::new(None),
-            recovery_panel: None,
             exit_state: ExitState::Normal,
             exit_choice: ui::LocalState::new(None),
             exit_panel: None,
@@ -212,6 +231,10 @@ impl BrowserTabs {
         }
         Box::new(Container::new().with_background().with_child(Box::new(column)))
     }
+    /// Attach the normal-session store and prepare startup recovery.
+    ///
+    /// # Errors
+    /// Returns an error if session loading, restoration or startup persistence fails.
     pub fn with_session(mut self, store: crate::session::SessionStore) -> Result<Self, String> {
         let saved = match store.load() {
             Ok(saved) => saved,
@@ -225,8 +248,10 @@ impl BrowserTabs {
             Some(snapshot) if !snapshot.clean_exit => {
                 self.active_mut()
                     .prepare_session_uri("about:blank".into(), true);
-                self.recovery = Some(snapshot);
-                self.recovery_panel = Some(self.make_recovery_panel());
+                self.recovery = Some(Recovery {
+                    snapshot,
+                    panel: self.make_recovery_panel(),
+                });
             }
             Some(snapshot) => {
                 self.restore_snapshot(&snapshot)?;
@@ -292,8 +317,10 @@ impl BrowserTabs {
         // Reuse the already-created engine for the active page. Other endpoints
         // start at about:blank and defer their URL until selected.
         let active = snapshot.active;
+        let active_tab = snapshot.tabs.get(active)
+            .ok_or_else(|| "Saved browser session has no active tab".to_string())?;
         self.active_mut()
-            .prepare_session_uri(snapshot.tabs[active].url.clone(), false);
+            .prepare_session_uri(active_tab.url.clone(), false);
         for (index, saved) in snapshot.tabs.iter().enumerate() {
             if index == active {
                 continue;
@@ -328,7 +355,7 @@ impl BrowserTabs {
             .iter()
             .map(|tab| TabDescriptor::new(tab.id, tab.widget.tab_title()))
             .collect();
-        self.bar = Box::new(BrowserTabStrip::new(descriptors, self.active_id));
+        *self.bar = BrowserTabStrip::new(descriptors, self.active_id);
         for (tab, saved) in self.tabs.iter().zip(&snapshot.tabs) {
             self.bar.set_pinned(tab.id, saved.pinned);
         }
@@ -336,11 +363,11 @@ impl BrowserTabs {
         Ok(())
     }
     fn choose_recovery(&mut self, restore: bool) -> Result<(), String> {
-        let Some(snapshot) = self.recovery.as_ref() else {
+        let Some(recovery) = self.recovery.as_ref() else {
             return Ok(());
         };
         let mut chosen = if restore {
-            snapshot.clone()
+            recovery.snapshot.clone()
         } else {
             crate::session::Snapshot {
                 version: 1,
@@ -357,10 +384,113 @@ impl BrowserTabs {
             store.save(&chosen)?;
         }
         self.restore_snapshot(&chosen)?;
-        self.recovery = None;
+        if let Some(recovery) = self.recovery.take() {
+            // Retained layout nodes can still refer to this panel until rebuild.
+            self.retired.push(recovery.panel);
+        }
         self.saved_session = Some(chosen);
         self.dirty = true;
         Ok(())
+    }
+    fn hold_input_until_layout(&mut self, event: &WindowEvent, modifiers: winit::keyboard::ModifiersState) -> bool {
+        // A switch can be followed by another input before the host rebuilds.
+        // Retained compositions still contain NodeIds from their previous tree.
+        if self.layout_active_id != Some(self.active_id)
+            || self.layout_immersive != Some(self.immersive())
+        {
+            if self.layout_active_id != Some(self.active_id) && self.focus_new_address
+                && let WindowEvent::KeyboardInput { event: key, .. } = event
+                    && key.state == ElementState::Pressed
+                        && !modifiers.control_key()
+                        && !modifiers.super_key()
+                    {
+                        let replace = !self.buffered_address;
+                        if self
+                            .active_mut()
+                            .buffer_tab_address(&key.logical_key, replace)
+                        {
+                            self.buffered_address = true;
+                        }
+                    }
+            return true;
+        }
+        false
+    }
+    fn handle_retained_event(&mut self, context: RetainedEvent<'_>) {
+        let RetainedEvent {
+            event, scale, modifiers, state, path, handled, focus, node, taffy,
+        } = context;
+        let Ok(children) = taffy.children(node) else {
+            return;
+        };
+        if self.layout_immersive == Some(true) {
+            if let Some(page) = children.first() {
+                self.active_mut().handle_event(
+                    event, scale, modifiers, state, path, handled, focus, *page, taffy,
+                );
+            }
+            return;
+        }
+        if let Some(panel) = self.exit_panel.as_mut() {
+            if let Some(panel_node) = children.get(1) {
+                panel.handle_event(
+                    event, scale, modifiers, state, path, handled, focus, *panel_node, taffy,
+                );
+            }
+            return;
+        }
+        if let Some(bar) = children.first() {
+            self.bar.handle_event(
+                event, scale, modifiers, state, path, handled, focus, *bar, taffy,
+            );
+        }
+        if let Some(id) = self.bar.take_close() {
+            self.close(id);
+            *handled = true;
+            return;
+        }
+        if self.bar.take_new_tab().is_some() {
+            if let Err(error) = self.open(None, false) {
+                tracing::warn!(%error, "Cannot open tab");
+            }
+            *handled = true;
+            return;
+        }
+        if let Some((from, to)) = self.bar.take_reorder() {
+            self.reorder(from, to);
+        }
+        if let Some((id, point)) = self.bar.take_context_menu() {
+            self.open_tab_menu(id, point);
+            *handled = true;
+            return;
+        }
+        let selected = self.bar.active_id();
+        if selected != self.active_id {
+            self.activate(selected);
+            *handled = true;
+            return;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Middle,
+            ..
+        } = event
+            && let Some(index) = self
+                .bar
+                .tab_rects()
+                .iter()
+                .position(|rect| rect.contains(self.cursor))
+                && let Some(id) = self.bar.visible_tab_id(index) {
+                    self.close(id);
+                    *handled = true;
+                    return;
+                }
+        if !*handled
+            && let Some(page) = children.get(1) {
+                self.active_mut().handle_event(
+                    event, scale, modifiers, state, path, handled, focus, *page, taffy,
+                );
+            }
     }
     #[cfg(feature = "wpe")]
     pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
@@ -388,6 +518,10 @@ impl BrowserTabs {
     pub fn engine_handle(&self) -> ui::webview::SharedEngine {
         self.active().engine_handle()
     }
+    /// Open another tab, optionally without activating it.
+    ///
+    /// # Errors
+    /// Returns an error if the tab limit is reached or the engine cannot create a tab.
     pub fn open(&mut self, url: Option<String>, background: bool) -> Result<(), String> {
         if self.tabs.len() >= 32 {
             return Err("At most 32 tabs can be open".into());
@@ -468,15 +602,14 @@ impl BrowserTabs {
         if self.tabs.len() == 1 && self.open(None, false).is_err() {
             return;
         }
-        if self.active_id == id {
-            if let Some(next) = self
+        if self.active_id == id
+            && let Some(next) = self
                 .tabs
                 .get(index + 1)
                 .or_else(|| self.tabs.iter().find(|tab| tab.id != id))
             {
                 self.activate(next.id);
             }
-        }
         let tab = self.tabs.remove(index);
         if self.closed.len() == 20 {
             self.closed.remove(0);
@@ -606,7 +739,7 @@ impl BrowserTabs {
                     .iter()
                     .find(|t| t.id == id)
                     .is_some_and(|t| t.widget.tab_muted());
-                self.set_muted(id, !muted)
+                self.set_muted(id, !muted);
             }
             TabMenuAction::Close => self.close(id),
             TabMenuAction::CloseOthers => self.close_others(id),
@@ -617,8 +750,10 @@ impl BrowserTabs {
         }
     }
     fn reorder(&mut self, from: usize, to: usize) {
-        if from < self.tabs.len() && to < self.tabs.len() && from != to {
-            let pinned = self.bar.is_pinned(self.tabs[from].id);
+        if to < self.tabs.len() && from != to
+            && let Some(source) = self.tabs.get(from)
+        {
+            let pinned = self.bar.is_pinned(source.id);
             let pinned_count = self
                 .tabs
                 .iter()
@@ -671,13 +806,13 @@ impl BrowserTabs {
                 }
             }
             Key::Character(c) if platform && c.eq_ignore_ascii_case("w") => {
-                self.close(self.active_id)
+                self.close(self.active_id);
             }
             Key::Named(NamedKey::Tab) if modifiers.control_key() => self.cycle(shift),
             Key::Character(c)
                 if platform && shift && matches!(c.as_str(), "[" | "]" | "{" | "}") =>
             {
-                self.cycle(matches!(c.as_str(), "[" | "{"))
+                self.cycle(matches!(c.as_str(), "[" | "{"));
             }
             Key::Character(c)
                 if platform
@@ -736,11 +871,10 @@ impl Widget for BrowserTabs {
         if let Some(id) = self.bar.take_close() {
             self.close(id);
         }
-        if self.bar.take_new_tab().is_some() {
-            if let Err(error) = self.open(None, false) {
+        if self.bar.take_new_tab().is_some()
+            && let Err(error) = self.open(None, false) {
                 tracing::warn!(%error, "Cannot open tab");
             }
-        }
         if self.bar.active_id() != self.active_id {
             self.activate(self.bar.active_id());
         }
@@ -767,12 +901,10 @@ impl Widget for BrowserTabs {
                 .tabs_mut()
                 .iter_mut()
                 .find(|desc| desc.id == tab.id)
-            {
-                if desc.title != title {
+                && desc.title != title {
                     desc.title = title;
                     self.dirty = true;
                 }
-            }
         }
         for id in closed {
             self.finish_close(id);
@@ -781,6 +913,11 @@ impl Widget for BrowserTabs {
             if let Err(error) = self.open(Some(url), background) {
                 tracing::warn!(%error, "Cannot open link tab");
             }
+        }
+        // A late native entry notification must not hide the window-close
+        // choices or cancellation progress while the exit flow owns the UI.
+        if self.exit_state != ExitState::Normal {
+            self.active_mut().exit_content_fullscreen();
         }
         self.reconcile_active_content_fullscreen();
         if self.exit_state == ExitState::Cancelling {
@@ -804,14 +941,10 @@ impl Widget for BrowserTabs {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.retired.clear();
-        if self.recovery.is_some() {
+        if let Some(recovery) = self.recovery.as_mut() {
             self.layout_active_id = None;
             self.layout_immersive = None;
-            let panel = self
-                .recovery_panel
-                .as_mut()
-                .unwrap()
-                .build_layout(taffy, theme, nodes);
+            let panel = recovery.panel.build_layout(taffy, theme, nodes);
             let root = taffy.parent_node(
                 Style {
                     size: Size {
@@ -907,9 +1040,9 @@ impl Widget for BrowserTabs {
             (f64::from(layout.size.width), f64::from(layout.size.height)),
         );
         if let Ok(children) = taffy.children(node) {
-            if self.recovery.is_some() {
+            if let Some(recovery) = self.recovery.as_mut() {
                 if let Some(panel) = children.first() {
-                    self.recovery_panel.as_mut().unwrap().apply_layout(
+                    recovery.panel.apply_layout(
                         taffy,
                         *panel,
                         self.rect.origin(),
@@ -952,11 +1085,8 @@ impl Widget for BrowserTabs {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.recovery.is_some() {
-            self.recovery_panel
-                .as_mut()
-                .unwrap()
-                .draw(scene, transform, tr, theme, presence);
+        if let Some(recovery) = self.recovery.as_mut() {
+            recovery.panel.draw(scene, transform, tr, theme, presence);
             return;
         }
         if self.layout_immersive == Some(true) {
@@ -989,14 +1119,13 @@ impl Widget for BrowserTabs {
         if *handled {
             return;
         }
-        if self.recovery.is_some() {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(panel) = children.first() {
-                    self.recovery_panel.as_mut().unwrap().handle_event(
+        if let Some(recovery) = self.recovery.as_mut() {
+            if let Ok(children) = taffy.children(node)
+                && let Some(panel) = children.first() {
+                    recovery.panel.handle_event(
                         event, scale, modifiers, state, path, handled, focus, *panel, taffy,
                     );
                 }
-            }
             return;
         }
         if matches!(
@@ -1025,27 +1154,7 @@ impl Widget for BrowserTabs {
                 return;
             }
         }
-        // A switch can be followed by another input before the host rebuilds.
-        // Retained compositions still contain NodeIds from their previous tree.
-        if self.layout_active_id != Some(self.active_id)
-            || self.layout_immersive != Some(self.immersive())
-        {
-            if self.layout_active_id != Some(self.active_id) && self.focus_new_address {
-                if let WindowEvent::KeyboardInput { event: key, .. } = event {
-                    if key.state == ElementState::Pressed
-                        && !modifiers.state().control_key()
-                        && !modifiers.state().super_key()
-                    {
-                        let replace = !self.buffered_address;
-                        if self
-                            .active_mut()
-                            .buffer_tab_address(&key.logical_key, replace)
-                        {
-                            self.buffered_address = true;
-                        }
-                    }
-                }
-            }
+        if self.hold_input_until_layout(event, modifiers.state()) {
             *handled = true;
             return;
         }
@@ -1090,82 +1199,9 @@ impl Widget for BrowserTabs {
                 return;
             }
         }
-        let Ok(children) = taffy.children(node) else {
-            return;
-        };
-        if self.layout_immersive == Some(true) {
-            if let Some(page) = children.first() {
-                self.active_mut().handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *page, taffy,
-                );
-            }
-            return;
-        }
-        if let Some(panel) = self.exit_panel.as_mut() {
-            if let Some(panel_node) = children.get(1) {
-                panel.handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *panel_node, taffy,
-                );
-            }
-            return;
-        }
-        if let Some(bar) = children.first() {
-            self.bar.handle_event(
-                event, scale, modifiers, state, path, handled, focus, *bar, taffy,
-            );
-        }
-        if let Some(id) = self.bar.take_close() {
-            self.close(id);
-            *handled = true;
-            return;
-        }
-        if self.bar.take_new_tab().is_some() {
-            if let Err(error) = self.open(None, false) {
-                tracing::warn!(%error, "Cannot open tab");
-            }
-            *handled = true;
-            return;
-        }
-        if let Some((from, to)) = self.bar.take_reorder() {
-            self.reorder(from, to);
-        }
-        if let Some((id, point)) = self.bar.take_context_menu() {
-            self.open_tab_menu(id, point);
-            *handled = true;
-            return;
-        }
-        let selected = self.bar.active_id();
-        if selected != self.active_id {
-            self.activate(selected);
-            *handled = true;
-            return;
-        }
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Middle,
-            ..
-        } = event
-        {
-            if let Some(index) = self
-                .bar
-                .tab_rects()
-                .iter()
-                .position(|rect| rect.contains(self.cursor))
-            {
-                if let Some(id) = self.bar.visible_tab_id(index) {
-                    self.close(id);
-                    *handled = true;
-                    return;
-                }
-            }
-        }
-        if !*handled {
-            if let Some(page) = children.get(1) {
-                self.active_mut().handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *page, taffy,
-                );
-            }
-        }
+        self.handle_retained_event(RetainedEvent {
+            event, scale, modifiers, state, path, handled, focus, node, taffy,
+        });
     }
     fn perform_semantic_action(
         &mut self,
@@ -1174,12 +1210,8 @@ impl Widget for BrowserTabs {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
-        if self.recovery.is_some() {
-            return self
-                .recovery_panel
-                .as_mut()
-                .unwrap()
-                .perform_semantic_action(target, action, state, path);
+        if let Some(recovery) = self.recovery.as_mut() {
+            return recovery.panel.perform_semantic_action(target, action, state, path);
         }
         if matches!(action, ui::a11y::Action::Activate)
             && let Some(index) = target
@@ -1239,8 +1271,8 @@ impl Widget for BrowserTabs {
         self.active().search_providers()
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        if self.recovery.is_some() {
-            return vec![self.recovery_panel.as_ref().unwrap().as_ref()];
+        if let Some(recovery) = self.recovery.as_ref() {
+            return vec![recovery.panel.as_ref()];
         }
         if self.immersive() {
             return std::iter::once(self.active() as &dyn Widget)
@@ -1256,7 +1288,11 @@ impl Widget for BrowserTabs {
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.recovery.is_some() {
-            return vec![self.recovery_panel.as_mut().unwrap().as_mut()];
+            let mut children: Vec<&mut dyn Widget> = Vec::new();
+            if let Some(recovery) = self.recovery.as_mut() {
+                children.push(recovery.panel.as_mut());
+            }
+            return children;
         }
         if self.immersive() {
             let active_id = self.active_id;
@@ -1392,11 +1428,8 @@ impl Widget for BrowserTabs {
         self.dirty = true;
     }
     fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
-        if self.recovery.is_some() {
-            return self
-                .recovery_panel
-                .as_mut()
-                .and_then(|panel| panel.take_control_invocation());
+        if let Some(recovery) = self.recovery.as_mut() {
+            return recovery.panel.take_control_invocation();
         }
         if let Some(invocation) = self
             .exit_panel
@@ -1476,15 +1509,19 @@ impl Widget for BrowserTabs {
     }
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
         match self.exit_state {
-            ExitState::Ready => WindowCloseAdmission::Allow,
             ExitState::Choice | ExitState::Cancelling => WindowCloseAdmission::Defer,
             ExitState::Normal if self.active().download_exit_requires_choice() => {
+                // The immersive layout omits window-level dialogs. Leave page
+                // fullscreen before asking what to do with active downloads.
+                self.active_mut().exit_content_fullscreen();
+                self.observed_active_content_fullscreen = false;
+                self.clear_fullscreen_hint();
                 self.exit_state = ExitState::Choice;
                 self.exit_panel = Some(self.make_exit_panel(false));
                 self.dirty = true;
                 WindowCloseAdmission::Defer
             }
-            ExitState::Normal => WindowCloseAdmission::Allow,
+            ExitState::Normal | ExitState::Ready => WindowCloseAdmission::Allow,
         }
     }
     fn take_window_close_intent(&mut self) -> bool {
@@ -1493,11 +1530,10 @@ impl Widget for BrowserTabs {
 }
 impl Drop for BrowserTabs {
     fn drop(&mut self) {
-        if self.session_initialized && !std::thread::panicking() {
-            if let Err(error) = self.persist_session(true) {
+        if self.session_initialized && !std::thread::panicking()
+            && let Err(error) = self.persist_session(true) {
                 tracing::error!(%error, "Cannot mark browser session clean");
             }
-        }
         self.active_mut().clear_history_on_workspace_exit();
     }
 }
@@ -1534,9 +1570,9 @@ mod tests {
     impl FullscreenEngine {
         fn new() -> Arc<Self> {
             Arc::new(Self {
-                events: Default::default(),
-                commands: Default::default(),
-                children: Default::default(),
+                events: std::sync::Mutex::default(),
+                commands: std::sync::Mutex::default(),
+                children: std::sync::Mutex::default(),
                 frames: Arc::new(std::sync::Mutex::new(None)),
             })
         }
@@ -1631,7 +1667,7 @@ mod tests {
         tabs.handle_event(
             &key_event_with_state(named, state),
             1.0,
-            &Default::default(),
+            &winit::event::Modifiers::default(),
             &mut AutoCommit::new(),
             &automerge::ROOT,
             &mut handled,
@@ -1692,7 +1728,7 @@ mod tests {
         tabs.handle_event(
             &key_event(NamedKey::Escape),
             1.0,
-            &Default::default(),
+            &winit::event::Modifiers::default(),
             &mut AutoCommit::new(),
             &automerge::ROOT,
             &mut handled,
@@ -1832,7 +1868,7 @@ mod tests {
         assert!(fullscreen_hint_visible(Some(deadline), entered));
         assert!(fullscreen_hint_visible(
             Some(deadline),
-            deadline - std::time::Duration::from_nanos(1)
+            deadline.checked_sub(std::time::Duration::from_nanos(1)).unwrap()
         ));
         assert!(!fullscreen_hint_visible(Some(deadline), deadline));
         assert!(!fullscreen_hint_visible(None, entered));
@@ -1862,7 +1898,7 @@ mod tests {
         let store = SessionStore::open(dir.path(), SessionMode::Normal)
             .unwrap()
             .unwrap();
-        assert_eq!(store.load().unwrap(), Some(dirty.clone()));
+        assert_eq!(store.load().unwrap(), Some(dirty));
         let mut tabs = workspace().with_session(store).unwrap();
         // Exercise the exact action-bound button operation used by the host.
         let result = tabs
@@ -1937,6 +1973,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "keeps the four pointer/keyboard and Restore/Fresh routes in one shared scenario")]
     fn recovery_choices_accept_pointer_and_keyboard_through_workspace() {
         for keyboard in [false, true] {
             for restore in [false, true] {
@@ -1995,7 +2032,7 @@ mod tests {
                     tabs.handle_event(
                         &event,
                         1.0,
-                        &Default::default(),
+                        &winit::event::Modifiers::default(),
                         &mut doc,
                         &automerge::ROOT,
                         &mut handled,
@@ -2114,7 +2151,7 @@ mod tests {
         }
         let engine = Arc::new(ClosingEngine {
             page: TestEngine::new(),
-            events: Default::default(),
+            events: std::sync::Mutex::default(),
         });
         let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
         let mut doc = AutoCommit::new();
@@ -2139,37 +2176,101 @@ mod tests {
         assert_ne!(tabs.active_id, 1);
     }
 
+    fn invoke_exit_choice(tabs: &mut BrowserTabs, id: &str, doc: &mut AutoCommit) {
+        let (_tree, _root, nodes) = recovery_layout(tabs);
+        let &button = nodes
+            .values()
+            .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
+            .expect("exit choice button");
+        assert!(unsafe {
+            (&mut *button).perform_action(
+                &ui::a11y::Action::Activate,
+                doc,
+                &automerge::ROOT,
+            )
+        });
+        let invocation = tabs
+            .take_control_invocation()
+            .expect("exit choice must reach the root action broker");
+        assert_eq!(invocation.address.resource, format!("qos.control:{id}"));
+        assert!(tabs
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                ui::qos_actions::OperationKind::Effect,
+                "qos.ui.control.invoke",
+                &serde_json::to_vec(id).unwrap(),
+                doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+            .is_some());
+    }
     #[test]
-    fn window_close_requires_an_explicit_choice_and_waits_for_native_owner_cleanup() {
-        fn invoke_exit_choice(tabs: &mut BrowserTabs, id: &str, doc: &mut AutoCommit) {
-            let (_tree, _root, nodes) = recovery_layout(tabs);
-            let &button = nodes
-                .values()
-                .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
-                .expect("exit choice button");
-            assert!(unsafe {
-                (&mut *button).perform_action(
-                    &ui::a11y::Action::Activate,
-                    doc,
-                    &automerge::ROOT,
-                )
-            });
-            let invocation = tabs
-                .take_control_invocation()
-                .expect("exit choice must reach the root action broker");
-            assert_eq!(invocation.address.resource, format!("qos.control:{id}"));
-            assert!(tabs
-                .start_resource_operation(
-                    ui::qos_actions::InvocationId::new(),
-                    ui::qos_actions::OperationKind::Effect,
-                    "qos.ui.control.invoke",
-                    &serde_json::to_vec(id).unwrap(),
-                    doc,
-                    &automerge::ROOT,
-                )
-                .unwrap()
-                .is_some());
+    fn fullscreen_download_close_exposes_both_exit_choices() {
+        let (mut tabs, engine) = fullscreen_workspace();
+        let mut doc = AutoCommit::new();
+        engine.emit(WebViewEvent::FullscreenChanged(true));
+        engine.emit(WebViewEvent::DownloadRuntime {
+            admitted: 1, detached: 0, accepting: true, error: String::new(),
+        });
+        tabs.sync(&mut doc, &automerge::ROOT);
+        tabs.on_fullscreen_changed(true);
+        let _immersive_layout = retained_layout(&mut tabs);
+        assert_eq!(tabs.fullscreen_intent(), Some(true));
+
+        assert_eq!(tabs.on_window_close_requested(), WindowCloseAdmission::Defer);
+        assert_eq!(tabs.fullscreen_intent(), Some(false));
+        assert!(tabs.fullscreen_hint.is_none());
+        assert!(tabs.take_structure_dirty());
+        let rects = layout_rects(&mut tabs);
+        for id in ["browser.download-exit.keep", "browser.download-exit.cancel"] {
+            let rect = rects.get(id).expect("visible fullscreen exit choice");
+            assert!(rect.width() > 0.0 && rect.height() > 0.0);
         }
+        let commands = engine.commands.lock().unwrap();
+        assert!(commands.contains(&WebViewCommand::ExitFullscreen));
+        assert!(!commands.contains(&WebViewCommand::CancelAllDownloads));
+        drop(commands);
+        assert!(!tabs.take_window_close_intent());
+        invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert!(tabs.exit_panel.is_none());
+        assert!(!tabs.take_window_close_intent());
+        assert!(!engine.commands.lock().unwrap().contains(&WebViewCommand::CancelAllDownloads));
+    }
+
+    #[test]
+    fn download_exit_flow_rejects_late_fullscreen_entry() {
+        for cancelling in [false, true] {
+            let (mut tabs, engine) = fullscreen_workspace();
+            let mut doc = AutoCommit::new();
+            engine.emit(WebViewEvent::FullscreenChanged(true));
+            engine.emit(WebViewEvent::DownloadRuntime {
+                admitted: 1, detached: 0, accepting: true, error: String::new(),
+            });
+            tabs.sync(&mut doc, &automerge::ROOT);
+            tabs.on_fullscreen_changed(true);
+            assert_eq!(tabs.on_window_close_requested(), WindowCloseAdmission::Defer);
+            if cancelling {
+                invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
+                tabs.sync(&mut doc, &automerge::ROOT);
+            }
+            engine.emit(WebViewEvent::FullscreenChanged(true));
+            tabs.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(tabs.fullscreen_intent(), Some(false), "cancelling={cancelling}");
+            let rects = layout_rects(&mut tabs);
+            assert!(tabs.exit_panel.as_ref().unwrap().get_rect().height() > 0.0);
+            if !cancelling {
+                assert!(rects.contains_key("browser.download-exit.keep"));
+                assert!(rects.contains_key("browser.download-exit.cancel"));
+            }
+            assert!(!tabs.take_window_close_intent());
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "keeps the local engine fixture and complete download-exit lifecycle together")]
+    fn window_close_requires_an_explicit_choice_and_waits_for_native_owner_cleanup() {
         struct ExitEngine {
             commands: std::sync::Mutex<Vec<WebViewCommand>>,
             events: std::sync::Mutex<Vec<WebViewEvent>>,
@@ -2190,7 +2291,7 @@ mod tests {
             }
         }
         let engine = Arc::new(ExitEngine {
-            commands: Default::default(),
+            commands: std::sync::Mutex::default(),
             events: std::sync::Mutex::new(vec![WebViewEvent::DownloadUpdated {
                 id: 11,
                 state: "progress".into(),
@@ -2488,6 +2589,7 @@ mod tests {
         assert_eq!(tabs.tabs.len(), 32);
     }
     #[test]
+    #[allow(clippy::too_many_lines, reason = "checks interactions between pinning, tab actions and overflow in one retained workspace")]
     fn pin_partition_duplicate_close_others_mute_and_overflow() {
         let mut tabs = workspace();
         tabs.open(Some("https://one.test".into()), false).unwrap();
@@ -2627,6 +2729,15 @@ mod tests {
 
     #[test]
     fn immediate_new_tab_typing_and_enter_survive_before_first_layout() {
+        fn address(widget: &dyn Widget) -> Option<(String, String)> {
+            if widget.test_id() == Some("browser.url_input") {
+                return widget
+                    .text_review()
+                    .map(|(_, text)| (text, widget.get_state().unwrap()));
+            }
+            widget.children().iter().find_map(|child| address(*child))
+        }
+
         let mut tabs = workspace();
         let mut tree = TaffyTree::new();
         let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
@@ -2652,7 +2763,7 @@ mod tests {
                     is_synthetic: false,
                 },
                 1.0,
-                &Default::default(),
+                &winit::event::Modifiers::default(),
                 &mut doc,
                 &automerge::ROOT,
                 &mut false,
@@ -2667,14 +2778,6 @@ mod tests {
         );
         let mut new_tree = TaffyTree::new();
         tabs.build_layout(&mut new_tree, &Theme::dark(), &mut HashMap::new());
-        fn address(widget: &dyn Widget) -> Option<(String, String)> {
-            if widget.test_id() == Some("browser.url_input") {
-                return widget
-                    .text_review()
-                    .map(|(_, text)| (text, widget.get_state().unwrap()));
-            }
-            widget.children().iter().find_map(|child| address(*child))
-        }
         let (text, caret) = address(&tabs).unwrap();
         assert_eq!(text, url);
         assert_eq!(
@@ -2686,16 +2789,17 @@ mod tests {
 
     #[test]
     fn new_tab_address_is_focused_after_layout() {
+        fn focused(widget: &dyn Widget) -> bool {
+            (widget.test_id() == Some("browser.url_input") && widget.is_focused())
+                || widget.children().iter().any(|child| focused(*child))
+        }
+
         let mut tabs = workspace();
         tabs.open(None, false).unwrap();
         let mut doc = AutoCommit::new();
         tabs.sync(&mut doc, &automerge::ROOT);
         let mut tree = TaffyTree::new();
         tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
-        fn focused(widget: &dyn Widget) -> bool {
-            (widget.test_id() == Some("browser.url_input") && widget.is_focused())
-                || widget.children().iter().any(|child| focused(*child))
-        }
         assert!(focused(&tabs));
     }
 
@@ -2714,7 +2818,7 @@ mod tests {
         tabs.handle_event(
             &WindowEvent::Focused(true),
             1.0,
-            &Default::default(),
+            &winit::event::Modifiers::default(),
             &mut AutoCommit::new(),
             &automerge::ROOT,
             &mut false,

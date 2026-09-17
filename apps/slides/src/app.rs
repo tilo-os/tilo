@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -132,8 +132,8 @@ enum DocOutcome {
 }
 
 /// The archive parser and ZIP writer never run on a compositor/sync frame.
-/// Generation tags make an old open/save result inert after cancellation or a
-/// subsequent request has taken ownership of the document lifecycle.
+/// Generation tags fence stale imports. Dispatched exports retain separate
+/// settlement custody because the worker cannot cancel an external file write.
 enum DocumentJob {
     Open {
         generation: u64,
@@ -155,6 +155,11 @@ enum DocumentJobResult {
         generation: u64,
         result: Result<(), String>,
     },
+}
+
+struct DispatchedSave {
+    generation: u64,
+    invocation: Option<qos_actions::InvocationId>,
 }
 
 struct DocumentWorker {
@@ -727,6 +732,7 @@ pub struct SlidesApp {
     bootstrapped: bool,
 
     mode: Mode,
+    canonical_deck: Option<(ObjId, Deck)>,
     cur_slide: usize,
     sel: Option<Id>,
     editing_text: bool,
@@ -857,6 +863,7 @@ pub struct SlidesApp {
     document_worker_error: Option<String>,
     next_document_generation: u64,
     active_document_generation: Option<u64>,
+    dispatched_save: Option<DispatchedSave>,
     resource_file: Option<(bool, std::path::PathBuf)>,
     resource_invocation: Option<qos_actions::InvocationId>,
     completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
@@ -953,6 +960,7 @@ impl SlidesApp {
             seeded: false,
             bootstrapped: false,
             mode: Mode::Edit,
+            canonical_deck: None,
             cur_slide: 1,
             sel: None,
             editing_text: false,
@@ -993,6 +1001,7 @@ impl SlidesApp {
             document_worker_error,
             next_document_generation: 0,
             active_document_generation: None,
+            dispatched_save: None,
             resource_file: None,
             resource_invocation: None,
             completed_resource_invocation: None,
@@ -1368,27 +1377,89 @@ impl SlidesApp {
 
     // --- CRDT mirror --------------------------------------------------------
 
+    fn canonical_matches(&self, doc: &AutoCommit) -> bool {
+        self.canonical_deck
+            == doc
+                .get(automerge::ROOT, "deck")
+                .ok()
+                .flatten()
+                .and_then(|(_, id)| SlidesDoc::load(doc).map(|deck| (id, deck)))
+    }
+
+    /// Reconcile before any cached interaction or delayed file result gets authority.
+    /// Local edits acknowledge their own projection through reload/dispatch.
+    fn reconcile_canonical(&mut self, doc: &AutoCommit) {
+        let incoming = doc
+            .get(automerge::ROOT, "deck")
+            .ok()
+            .flatten()
+            .and_then(|(_, id)| SlidesDoc::load(doc).map(|deck| (id, deck)));
+        if self.canonical_deck.is_some() && incoming != self.canonical_deck {
+            let selected_slide = self.slide().map(|s| s.id.clone());
+            let draft = self.title_input.take_dirty();
+            self.drag = Drag::None;
+            self.page_sidebar.on_escape();
+            self.active_guides.clear();
+            self.text_drag = false;
+            self.caret_click = None;
+            self.select_word_click = None;
+            self.ctx_menu.close();
+            self.ctx_hits.clear();
+            self.fill_picker_open = false;
+            self.editing_text = false;
+            self.editing_title = false;
+            self.active_document_generation = None;
+            self.portal_rx = None;
+            self.doc_portal_rx = None;
+            self.resource_file = None;
+            if self.resource_invocation.is_some() {
+                self.finish_resource_file(
+                    false,
+                    Some("Presentation changed while file operation was pending".into()),
+                );
+            }
+            self.reload(doc);
+            if let Some(index) = selected_slide.and_then(|id| self.deck.index_of(&id)) {
+                self.cur_slide = index;
+            } else {
+                self.editing_notes = false;
+            }
+            self.title_input.set_text(&self.deck.title);
+            if let Some(draft) = draft.filter(|draft| draft != &self.deck.title) {
+                self.io_toast = Some((
+                    format!("Presentation changed. Unapplied title draft: {draft}"),
+                    ToastKind::Error,
+                ));
+            }
+        }
+        self.reload(doc);
+    }
+
     fn reload(&mut self, doc: &AutoCommit) {
         if self.drag.active() {
             return; // cache is authoritative mid-drag
         }
-        if let Some(deck) = SlidesDoc::load(doc)
-            && deck != self.deck
-        {
-            if !actions::deck_within_aggregate_limits(&deck) {
-                self.io_toast = Some((
-                    "Shared presentation exceeds safe limits; update was not materialized".into(),
-                    ToastKind::Error,
-                ));
-                return;
+        if let Some(deck) = SlidesDoc::load(doc) {
+            if let Ok(Some((_, id))) = doc.get(automerge::ROOT, "deck") {
+                self.canonical_deck = Some((id, deck.clone()));
             }
-            self.deck = deck;
-            self.search_provider.refresh(&self.deck);
-            // Bump only for an actual local/remote/undo deck change. `sync`
-            // runs per frame, so equality here keeps both the settled-slide
-            // cache and the complete search catalogue cold while a talk is
-            // simply being presented.
-            self.bump_deck_revision();
+            if deck != self.deck {
+                if !actions::deck_within_aggregate_limits(&deck) {
+                    self.io_toast = Some((
+                        "Shared presentation exceeds safe limits; update was not materialized"
+                            .into(),
+                        ToastKind::Error,
+                    ));
+                    return;
+                }
+                self.deck = deck;
+                self.search_provider.refresh(&self.deck);
+                // Bump only for an actual local/remote/undo deck change. `sync`
+                // runs per frame, so equality here keeps both the settled-slide
+                // cache and the complete search catalogue cold while a talk is
+                // simply being presented.
+                self.bump_deck_revision();
+            }
         }
         if self.deck.slides.is_empty() {
             self.cur_slide = 0;
@@ -1446,6 +1517,11 @@ impl SlidesApp {
             action,
             qos_actions::ActionContext::for_action("org.qos.Slides", "Slides", action),
         );
+        self.canonical_deck = doc
+            .get(automerge::ROOT, "deck")
+            .ok()
+            .flatten()
+            .and_then(|(_, id)| SlidesDoc::load(doc).map(|deck| (id, deck)));
     }
 
     /// The context Ctrl+K needs to build the deck's resource tree: the deck
@@ -3016,6 +3092,15 @@ impl SlidesApp {
         let Some(invocation) = self.resource_invocation.take() else {
             return;
         };
+        self.finish_file_invocation(invocation, success, error);
+    }
+
+    fn finish_file_invocation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        success: bool,
+        error: Option<String>,
+    ) {
         self.completed_resource_invocation = Some(if success {
             qos_actions::InvocationUpdate::Succeeded {
                 invocation,
@@ -3046,6 +3131,9 @@ impl SlidesApp {
     }
 
     fn queue_document_open(&mut self, path: PathBuf) -> bool {
+        if self.dispatched_save.is_some() {
+            return false;
+        }
         let Some(generation) = self.next_document_generation() else {
             return false;
         };
@@ -3075,6 +3163,9 @@ impl SlidesApp {
     }
 
     fn queue_document_save(&mut self, path: PathBuf) -> bool {
+        if self.dispatched_save.is_some() {
+            return false;
+        }
         if !actions::deck_within_aggregate_limits(&self.deck) {
             self.io_toast = Some((
                 "Presentation exceeds the safe export limit".into(),
@@ -3102,6 +3193,10 @@ impl SlidesApp {
         match queued {
             Ok(()) => {
                 self.active_document_generation = Some(generation);
+                self.dispatched_save = Some(DispatchedSave {
+                    generation,
+                    invocation: self.resource_invocation.take(),
+                });
                 true
             }
             Err(TrySendError::Full(_)) => false,
@@ -3144,36 +3239,53 @@ impl SlidesApp {
                 self.document_worker_error = Some(error.clone());
                 self.active_document_generation = None;
                 self.io_toast = Some((error.clone(), ToastKind::Error));
-                self.finish_resource_file(false, Some(error));
+                if let Some(save) = self.dispatched_save.take()
+                    && let Some(invocation) = save.invocation
+                {
+                    self.finish_file_invocation(invocation, false, Some(error));
+                } else {
+                    self.finish_resource_file(false, Some(error));
+                }
                 return;
             }
         };
-        let generation = match &result {
-            DocumentJobResult::Open { generation, .. }
-            | DocumentJobResult::Save { generation, .. } => *generation,
+        if let DocumentJobResult::Save { generation, result } = result {
+            let Some(save) = self
+                .dispatched_save
+                .take_if(|save| save.generation == generation)
+            else {
+                return;
+            };
+            if self.active_document_generation == Some(generation) {
+                self.active_document_generation = None;
+            }
+            self.io_toast = Some(if result.is_ok() {
+                ("Presentation saved".into(), ToastKind::Success)
+            } else {
+                (
+                    "Could not process the presentation".into(),
+                    ToastKind::Error,
+                )
+            });
+            if let Some(invocation) = save.invocation {
+                self.finish_file_invocation(invocation, result.is_ok(), result.err());
+            }
+            return;
+        }
+        let DocumentJobResult::Open { generation, result } = result else {
+            return;
         };
         if self.active_document_generation != Some(generation) {
             return;
         }
         self.active_document_generation = None;
         match result {
-            DocumentJobResult::Open {
-                result: Ok(deck), ..
-            } => {
+            Ok(deck) => {
                 self.apply_loaded_deck(doc, deck);
                 self.io_toast = Some(("Presentation opened".into(), ToastKind::Success));
                 self.finish_resource_file(true, None);
             }
-            DocumentJobResult::Save { result: Ok(()), .. } => {
-                self.io_toast = Some(("Presentation saved".into(), ToastKind::Success));
-                self.finish_resource_file(true, None);
-            }
-            DocumentJobResult::Open {
-                result: Err(error), ..
-            }
-            | DocumentJobResult::Save {
-                result: Err(error), ..
-            } => {
+            Err(error) => {
                 self.io_toast = Some((
                     "Could not process the presentation".into(),
                     ToastKind::Error,
@@ -3684,6 +3796,7 @@ impl SlidesApp {
         if let Some(t) = self.title_input.take_dirty() {
             SlidesDoc::set_title(state, &t);
             self.mark();
+            self.reload(state);
         }
         true
     }
@@ -5610,6 +5723,31 @@ impl SlidesApp {
 }
 
 impl Widget for SlidesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
+    fn document_action_applied(
+        &mut self,
+        action: &qos_actions::EncodedAction,
+        before: &[automerge::ChangeHash],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) {
+        let prior = doc.clone().fork_at(before).ok().and_then(|prior| {
+            prior
+                .get(automerge::ROOT, "deck")
+                .ok()
+                .flatten()
+                .and_then(|(_, id)| SlidesDoc::load(&prior).map(|deck| (id, deck)))
+        });
+        if action.type_id == crate::actions::SLIDES_ACTION_TYPE && prior == self.canonical_deck {
+            self.reload(doc);
+        } else {
+            self.reconcile_canonical(doc);
+        }
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SLIDES_OPERATION_TYPE]
     }
@@ -5619,10 +5757,11 @@ impl Widget for SlidesApp {
         kind: qos_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         use crate::actions::SlidesOperation;
+        self.reconcile_canonical(doc);
 
         if kind == qos_actions::OperationKind::Document {
             return Ok(false);
@@ -5723,6 +5862,7 @@ impl Widget for SlidesApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        self.reconcile_canonical(doc);
         if type_id != crate::actions::SLIDES_OPERATION_TYPE {
             return Ok(None);
         }
@@ -5733,7 +5873,7 @@ impl Widget for SlidesApp {
         match operation {
             crate::actions::SlidesOperation::Open { path: file }
             | crate::actions::SlidesOperation::SaveAs { path: file } => {
-                if self.resource_invocation.is_some() {
+                if self.resource_invocation.is_some() || self.dispatched_save.is_some() {
                     return Err("another presentation file operation is running".into());
                 }
                 let save = save_operation;
@@ -5775,8 +5915,9 @@ impl Widget for SlidesApp {
             self.resource_invocation = None;
             self.resource_file = None;
             self.doc_portal_rx = None;
-            // A worker may still finish after cancellation. Its generation is
-            // no longer authoritative, so `drain_document_worker` drops it.
+            // Imports can still finish after cancellation; their stale result
+            // is inert. Dispatched saves have separate invocation custody and
+            // settle only with the worker's actual outcome.
             self.active_document_generation = None;
             return Some(qos_actions::InvocationUpdate::Cancelled {
                 invocation,
@@ -5794,6 +5935,7 @@ impl Widget for SlidesApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        self.reconcile_canonical(state);
         if let Some((save, file)) = self.resource_file.take() {
             let queued = if save {
                 self.queue_document_save(file)
@@ -5808,7 +5950,7 @@ impl Widget for SlidesApp {
             }
         }
         if !self.seeded {
-            if SlidesDoc::is_empty(state) {
+            if SlidesDoc::is_uninitialized(state) {
                 SlidesDoc::seed(state, &self.deck);
             }
             self.seeded = true;
@@ -6122,6 +6264,11 @@ impl Widget for SlidesApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.reconcile_canonical(state);
+        // Restore replaces Text object identities; the first event may precede sync.
+        if self.editing_notes {
+            self.sync_notes_input(state, false);
+        }
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -6430,6 +6577,7 @@ impl Widget for SlidesApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        self.reconcile_canonical(state);
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -6541,10 +6689,16 @@ impl Widget for SlidesApp {
     /// document-mutating affordance exported as the same action it dispatches on
     /// screen. See [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        if !self.canonical_matches(doc) {
+            return Vec::new();
+        }
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        if !self.canonical_matches(doc) {
+            return None;
+        }
         <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
@@ -11072,5 +11226,330 @@ mod tests {
             }
         );
         assert_eq!(app.mode, Mode::Edit);
+    }
+    #[test]
+    fn history_restore_rebinds_notes_before_first_input_without_intervening_sync() {
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280., 800.);
+        SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "Selected notes");
+        let selected = doc.get_heads();
+        SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "LIVE ");
+        app.reload(&doc);
+        app.begin_notes_edit(&mut doc);
+        let old_obj = app.notes_input.bound_obj().unwrap().clone();
+        let heads = doc.get_heads();
+        let plan = ui::history_mode::restore::prepare_content_restore(
+            &doc,
+            &crate::framework_history::SCHEMA,
+            &heads,
+            &selected,
+        )
+        .unwrap();
+        ui::history_mode::restore::apply_prepared_content_restore(&mut doc, &plan).unwrap();
+        app_dispatch(&mut app, &mut doc, &char_ev("!"));
+        assert_eq!(
+            SlidesDoc::load(&doc).unwrap().slides[0].notes,
+            "Selected notes!"
+        );
+        assert_eq!(doc.text(old_obj).unwrap(), "LIVE Selected notes");
+    }
+}
+
+#[cfg(test)]
+mod history_reconcile_tests {
+    use super::*;
+    #[test]
+    fn canonical_update_interrupts_drag_before_sync_can_write_stale_cache() {
+        let mut app = SlidesApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        doc.get_heads();
+        let id = app.deck.slides[0].elements[0].id.clone();
+        app.drag = Drag::Move {
+            id,
+            start: Point::ZERO,
+            orig_x: 0.,
+            orig_y: 0.,
+        };
+        SlidesDoc::set_title(&mut doc, "Restored canonical deck");
+        let heads = doc.get_heads();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.deck.title, "Restored canonical deck");
+        assert!(!app.drag.active());
+        assert_eq!(doc.get_heads(), heads);
+    }
+}
+
+#[cfg(test)]
+mod history_interruption_tests {
+    use super::*;
+    fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
+        let heads = doc.get_heads();
+        let plan = ui::history_mode::restore::prepare_content_restore(
+            doc,
+            &crate::framework_history::SCHEMA,
+            &heads,
+            selected,
+        )
+        .unwrap();
+        ui::history_mode::restore::apply_prepared_content_restore(doc, &plan).unwrap();
+    }
+    fn assert_save_settlement(
+        app: &mut SlidesApp,
+        doc: &AutoCommit,
+        invocation: qos_actions::InvocationId,
+        succeeds: bool,
+        actual_error: Option<&str>,
+    ) {
+        let update = app
+            .poll_resource_operation(invocation, false, doc, &automerge::ROOT)
+            .unwrap();
+        match update {
+            qos_actions::InvocationUpdate::Succeeded {
+                invocation: settled,
+                ..
+            } if succeeds => {
+                assert_eq!(settled, invocation);
+            }
+            qos_actions::InvocationUpdate::Failed {
+                invocation: settled,
+                error,
+            } if !succeeds => {
+                assert_eq!(settled, invocation);
+                assert_eq!(Some(error.message.as_str()), actual_error);
+            }
+            other => panic!("unexpected export settlement: {other:?}"),
+        }
+        assert!(
+            app.poll_resource_operation(invocation, false, doc, &automerge::ROOT)
+                .is_none()
+        );
+    }
+
+    fn assert_export_snapshot(path: &std::path::Path, succeeds: bool) -> Option<Vec<u8>> {
+        if succeeds {
+            let bytes = std::fs::read(path).unwrap();
+            assert_eq!(
+                crate::odp::read_odp(&bytes).unwrap().title,
+                "Authorized export snapshot"
+            );
+            Some(bytes)
+        } else {
+            assert!(!path.exists());
+            None
+        }
+    }
+
+    fn dispatched_save_after_restore(succeeds: bool) {
+        let directory =
+            std::env::temp_dir().join(format!("slides-save-restore-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = if succeeds {
+            directory.join("export.odp")
+        } else {
+            directory.join("missing-parent/export.odp")
+        };
+        let mut deck = seed_deck();
+        deck.title = "Selected restored deck".into();
+        let mut doc = AutoCommit::new();
+        SlidesDoc::seed(&mut doc, &deck);
+        let selected = doc.get_heads();
+        SlidesDoc::set_title(&mut doc, "Authorized export snapshot");
+        let mut app = SlidesApp::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::SlidesOperation::SaveAs {
+            path: Some(path.to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        assert!(matches!(
+            app.start_resource_operation(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::SLIDES_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        // Dispatch the accepted operation without draining its completion in the same sync.
+        let (save, export_path) = app.resource_file.take().unwrap();
+        assert!(save);
+        assert!(app.queue_document_save(export_path));
+        // The actual worker performs the real export. Hold only its result at the
+        // channel boundary so restoration deterministically precedes settlement.
+        let completed = app
+            .document_worker
+            .as_ref()
+            .unwrap()
+            .rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let DocumentJobResult::Save { result, .. } = &completed else {
+            panic!("expected a save completion");
+        };
+        assert_eq!(result.is_ok(), succeeds);
+        let actual_error = result.as_ref().err().cloned();
+        let exported_bytes = assert_export_snapshot(&path, succeeds);
+        restore(&mut doc, &selected);
+        let restored_heads = doc.get_heads();
+        app.reconcile_canonical(&doc);
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none(),
+            "canonical invalidation must not fabricate export settlement"
+        );
+        // Cancellation cannot undo a dispatched write or truthfully settle it
+        // before the worker outcome. A later invocation cannot take its slot.
+        assert!(
+            app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT)
+                .is_none()
+        );
+        let other_invocation = qos_actions::InvocationId::new();
+        assert!(
+            app.start_resource_operation(
+                other_invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::SLIDES_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        let (results, rx) = std::sync::mpsc::sync_channel(1);
+        results.send(completed).unwrap();
+        app.document_worker.as_mut().unwrap().rx = rx;
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            app.poll_resource_operation(other_invocation, false, &doc, &automerge::ROOT)
+                .is_none()
+        );
+        assert_save_settlement(
+            &mut app,
+            &doc,
+            invocation,
+            succeeds,
+            actual_error.as_deref(),
+        );
+        assert_eq!(app.deck.title, "Selected restored deck");
+        assert_eq!(doc.get_heads(), restored_heads);
+        if let Some(bytes) = exported_bytes {
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "restore must not rerun the export"
+            );
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn successful_dispatched_save_settles_after_history_restore() {
+        dispatched_save_after_restore(true);
+    }
+
+    #[test]
+    fn failed_dispatched_save_reports_actual_error_after_history_restore() {
+        dispatched_save_after_restore(false);
+    }
+
+    #[test]
+    fn restore_rebinds_notes_by_slide_identity_and_cancels_stale_file_and_title_work() {
+        let mut deck = seed_deck();
+        deck.slides[0].notes = "Selected notes".into();
+        let mut doc = AutoCommit::new();
+        SlidesDoc::seed(&mut doc, &deck);
+        let selected = doc.get_heads();
+        SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "LIVE ");
+        doc.get_heads();
+        let mut app = SlidesApp::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.cur_slide = 0;
+        app.begin_notes_edit(&mut doc);
+        let old_obj = app.notes_input.bound_obj().unwrap().clone();
+        app.active_document_generation = Some(77);
+        let (jobs, _job_receiver) = std::sync::mpsc::sync_channel(1);
+        let (results, result_receiver) = std::sync::mpsc::sync_channel(1);
+        let mut obsolete = seed_deck();
+        obsolete.title = "Obsolete worker completion".into();
+        results
+            .send(DocumentJobResult::Open {
+                generation: 77,
+                result: Ok(obsolete),
+            })
+            .unwrap();
+        app.document_worker = Some(DocumentWorker {
+            tx: jobs,
+            rx: result_receiver,
+        });
+        app.resource_file = Some((false, "/never/open/stale.odp".into()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.portal_rx = Some(rx);
+        drop(tx);
+        restore(&mut doc, &selected);
+        let heads = doc.get_heads();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.notes_input.value(), "Selected notes");
+        assert_ne!(app.notes_input.bound_obj(), Some(&old_obj));
+        assert!(app.editing_notes);
+        assert!(app.active_document_generation.is_none());
+        assert!(app.resource_file.is_none());
+        assert!(app.portal_rx.is_none());
+        assert_eq!(doc.get_heads(), heads);
+        // Ordinary subsequent native notes/title edits stay usable across sync.
+        SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "ONE ");
+        app.reload(&doc);
+        doc.get_heads();
+        app.sync(&mut doc, &automerge::ROOT);
+        SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "TWO ");
+        app.reload(&doc);
+        doc.get_heads();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.notes_input.value(), "TWO ONE Selected notes");
+        app.begin_title_edit();
+        app.insert_text(&mut doc, " one");
+        doc.get_heads();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.insert_text(&mut doc, " two");
+        doc.get_heads();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.editing_title);
+        assert!(app.deck.title.ends_with(" one two"));
+    }
+    #[test]
+    fn deleted_edit_target_and_stale_resource_descriptors_are_fenced_before_sync() {
+        let mut doc = AutoCommit::new();
+        let mut deck = seed_deck();
+        deck.slides.truncate(1);
+        SlidesDoc::seed(&mut doc, &deck);
+        let selected = doc.get_heads();
+        let extra = seed_deck().slides.remove(0);
+        let id = extra.id.clone();
+        deck.slides.push(extra);
+        SlidesDoc::seed(&mut doc, &deck);
+        doc.get_heads();
+        let mut app = SlidesApp::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.cur_slide = 1;
+        app.begin_notes_edit(&mut doc);
+        assert!(
+            Widget::resources(&app, &doc)
+                .iter()
+                .any(|r| r.id.as_str().contains("slides"))
+        );
+        restore(&mut doc, &selected);
+        let heads = doc.get_heads();
+        assert!(
+            Widget::resources(&app, &doc).is_empty(),
+            "unreconciled resources cannot retain old action payloads"
+        );
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.editing_notes);
+        assert!(app.deck.index_of(&id).is_none());
+        assert_eq!(doc.get_heads(), heads);
+        assert!(!Widget::resources(&app, &doc).is_empty());
     }
 }

@@ -13666,6 +13666,7 @@ dependencies = [
  "taffy",
  "uuid",
  "vello",
+ "vello_encoding",
  "winit",
  "zip 4.6.1",
 ]
@@ -15772,6 +15773,8 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base32",
+ "base64 0.22.1",
+ "blake3",
  "capnp",
  "capnp-rpc",
  "chacha20poly1305",

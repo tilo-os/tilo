@@ -69,6 +69,7 @@ extern crate runtime_dylib;
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.slides", slides::app_root)
+            .history(&slides::framework_history::HISTORY)
             .shot_handler(render_shot)
             .scenarios(&[
                 "overview",

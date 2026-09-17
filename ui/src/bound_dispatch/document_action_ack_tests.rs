@@ -56,7 +56,16 @@ impl Widget for Owner {
                 .into(),
         ));
     }
-    fn invoke_resource_operation(&mut self, _: qos_actions::OperationKind, _: &str, _: &[u8], _: &AutoCommit, _: &ObjId) -> Result<bool, String> { Ok(true) }
+    fn invoke_resource_operation(
+        &mut self,
+        _: qos_actions::OperationKind,
+        _: &str,
+        _: &[u8],
+        _: &AutoCommit,
+        _: &ObjId,
+    ) -> Result<bool, String> {
+        Ok(true)
+    }
     fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
@@ -185,12 +194,40 @@ fn locally_applied_document_acknowledges_exact_owner_frontier_and_noop_only() {
 
 #[test]
 fn view_and_effect_operations_do_not_acknowledge_document_actions() {
-    let mut owner=Owner::default();let mut doc=AutoCommit::new();
-    let action=Write{value:"must not write".into(),server:false,refuse:false};
-    let registry=qos_actions::ActionRegistry::new();let resource=qos_actions::Resource::new("owner","owner","Owner");
-    for kind in [qos_actions::OperationKind::View,qos_actions::OperationKind::Effect] {
-        let spec=qos_actions::ActionSpec::operation("run","Run",kind,"operation",&action).unwrap();
-        execute_resource_operation(&mut owner,&mut doc,&ROOT,&registry,&mut Host,&qos_actions::ActionAddress::new("owner","run"),&resource,&spec,qos_actions::EncodedAction::encode_operation("operation",&action).unwrap(),"local","local",false,qos_actions::InvocationId::new(),None).unwrap();
+    let mut owner = Owner::default();
+    let mut doc = AutoCommit::new();
+    let action = Write {
+        value: "must not write".into(),
+        server: false,
+        refuse: false,
+    };
+    let registry = qos_actions::ActionRegistry::new();
+    let resource = qos_actions::Resource::new("owner", "owner", "Owner");
+    for kind in [
+        qos_actions::OperationKind::View,
+        qos_actions::OperationKind::Effect,
+    ] {
+        let spec =
+            qos_actions::ActionSpec::operation("run", "Run", kind, "operation", &action).unwrap();
+        execute_resource_operation(
+            &mut owner,
+            &mut doc,
+            &ROOT,
+            &registry,
+            &mut Host,
+            &qos_actions::ActionAddress::new("owner", "run"),
+            &resource,
+            &spec,
+            qos_actions::EncodedAction::encode_operation("operation", &action).unwrap(),
+            "local",
+            "local",
+            false,
+            qos_actions::InvocationId::new(),
+            None,
+        )
+        .unwrap();
     }
-    assert!(owner.receipts.is_empty());assert!(doc.get(ROOT,"body").unwrap().is_none());assert_eq!(doc.pending_ops(),0);
+    assert!(owner.receipts.is_empty());
+    assert!(doc.get(ROOT, "body").unwrap().is_none());
+    assert_eq!(doc.pending_ops(), 0);
 }

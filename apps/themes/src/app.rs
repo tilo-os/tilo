@@ -2737,29 +2737,123 @@ mod tests {
 mod history_reconcile_tests {
     use super::*;
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one live cache fixture covers restore, retained rename commit/cancel, and deletion")]
     fn historical_library_change_reloads_controls_and_preserves_active() {
         let mut d = AutoCommit::new();
         let mut spec = crate::model::seed_custom();
         doc::save_catalog(&mut d, &automerge::ROOT, &[spec.clone()]);
-        doc::put_str(&mut d, &automerge::ROOT, doc::KEY_ACTIVE, "saved-applied-identity");
+        doc::put_str(
+            &mut d,
+            &automerge::ROOT,
+            doc::KEY_ACTIVE,
+            "saved-applied-identity",
+        );
         let mut app = ThemesApp::new();
         app.sync(&mut d, &automerge::ROOT);
-        assert_eq!(doc::get_str(&d, &automerge::ROOT, doc::KEY_ACTIVE).as_deref(), Some("saved-applied-identity"));
+        assert_eq!(
+            doc::get_str(&d, &automerge::ROOT, doc::KEY_ACTIVE).as_deref(),
+            Some("saved-applied-identity")
+        );
         app.selected = spec.id.clone();
         app.sync(&mut d, &automerge::ROOT);
-        spec.accent = [1,2,3];
+        app.gallery.stage_edited_name("Queued stale name");
+        spec.name = "Restored name".into();
+        doc::set_name(&mut d, &automerge::ROOT, &spec.id, &spec.name);
+        spec.accent = [1, 2, 3];
         spec.radius_norm = 0.13;
         spec.spacing_norm = 0.91;
         spec.font = "Source Serif".into();
-        doc::set_token(&mut d, &automerge::ROOT, &spec.id, TokenId::Accent, spec.accent);
+        doc::set_token(
+            &mut d,
+            &automerge::ROOT,
+            &spec.id,
+            TokenId::Accent,
+            spec.accent,
+        );
         doc::set_radius(&mut d, &automerge::ROOT, &spec.id, spec.radius_norm);
         doc::set_spacing(&mut d, &automerge::ROOT, &spec.id, spec.spacing_norm);
         doc::set_font(&mut d, &automerge::ROOT, &spec.id, &spec.font);
         let heads = d.get_heads();
         app.sync(&mut d, &automerge::ROOT);
         app.sync(&mut d, &automerge::ROOT);
-        assert_eq!(d.get_heads(), heads, "stale controls must never rewrite restored content");
-        assert_eq!(app.customizer.picker_color(), [1,2,3]);
+        assert_eq!(
+            d.get_heads(),
+            heads,
+            "stale controls must never rewrite restored content"
+        );
+        assert_eq!(app.customizer.picker_color(), [1, 2, 3]);
         assert!((app.customizer.radius() - 0.13).abs() < 0.001);
+        assert_eq!(app.gallery.displayed_name(), "Queued stale name");
+        assert!(format!("{:?}", app.gallery.accessibility()).contains("Enter: apply draft"));
+        assert!(
+            app.gallery
+                .resolve_name_conflict(&Key::Named(NamedKey::Escape))
+        );
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(app.gallery.displayed_name(), "Restored name");
+        doc::set_name(&mut d, &automerge::ROOT, &spec.id, "Clean replacement");
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(app.gallery.displayed_name(), "Clean replacement");
+        app.gallery.stage_edited_name("Retained draft");
+        doc::set_name(&mut d, &automerge::ROOT, &spec.id, "Second restoration");
+        let before = d.get_heads();
+        app.sync(&mut d, &automerge::ROOT);
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(d.get_heads(), before);
+        assert_eq!(app.gallery.displayed_name(), "Retained draft");
+        assert!(
+            app.gallery
+                .resolve_name_conflict(&Key::Named(NamedKey::Enter))
+        );
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(
+            doc::load_catalog(&d, &automerge::ROOT)
+                .unwrap()
+                .iter()
+                .find(|s| s.id == spec.id)
+                .unwrap()
+                .name,
+            "Retained draft"
+        );
+        let target = d.get_heads();
+        doc::set_name(&mut d, &automerge::ROOT, &spec.id, "Before history");
+        app.sync(&mut d, &automerge::ROOT);
+        app.gallery.stage_edited_name("Draft across restore");
+        let heads = d.get_heads();
+        let plan = ui::history_mode::restore::prepare_content_restore(
+            &d,
+            &crate::framework_history::SCHEMA,
+            &heads,
+            &target,
+        )
+        .unwrap();
+        ui::history_mode::restore::apply_prepared_content_restore(&mut d, &plan).unwrap();
+        let restored = d.get_heads();
+        app.sync(&mut d, &automerge::ROOT);
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(d.get_heads(), restored);
+        assert_eq!(app.gallery.displayed_name(), "Draft across restore");
+        assert!(
+            app.gallery
+                .resolve_name_conflict(&Key::Named(NamedKey::Escape))
+        );
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(app.gallery.displayed_name(), "Retained draft");
+        app.gallery.stage_edited_name("Never recreate");
+        doc::delete_custom_theme(&mut d, &automerge::ROOT, &spec.id);
+        let heads = d.get_heads();
+        app.sync(&mut d, &automerge::ROOT);
+        assert!(
+            !app.gallery
+                .resolve_name_conflict(&Key::Named(NamedKey::Enter))
+        );
+        app.sync(&mut d, &automerge::ROOT);
+        assert_eq!(d.get_heads(), heads);
+        assert!(
+            !doc::load_catalog(&d, &automerge::ROOT)
+                .unwrap()
+                .iter()
+                .any(|s| s.id == spec.id)
+        );
     }
 }

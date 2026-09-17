@@ -98,7 +98,10 @@ impl ui::widget::Widget for ResourceHarness {
     ) {
         self.app.draw(s, t, tr, th, p);
     }
-    #[allow(clippy::many_single_char_names, reason = "test adapter forwards the existing Widget event signature")]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "test adapter forwards the existing Widget event signature"
+    )]
     fn handle_event(
         &mut self,
         e: &winit::event::WindowEvent,

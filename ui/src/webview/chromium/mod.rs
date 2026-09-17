@@ -231,15 +231,15 @@ fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEve
     events.push_back(event);
 }
 
-fn fail_routes(routes: &Routes, message: String) {
+fn fail_routes(routes: &Routes, message: &str) {
     let endpoints: Vec<_> = routes
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values()
         .filter_map(Weak::upgrade)
         .collect();
     for shared in endpoints {
-        shared.fail(message.clone());
+        shared.fail(message.to_owned());
     }
 }
 fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
@@ -260,6 +260,10 @@ impl UnavailableEngine {
         Self::build(message, None)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the private root is not an owned Browser directory.
     pub fn new_with_private_root(message: String, root: &Path) -> Result<Arc<Self>, String> {
         if !owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
@@ -339,12 +343,223 @@ fn host_path() -> Result<PathBuf, String> {
     Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set QOS_CHROMIUM_HOST to its executable.".into())
 }
 
+fn spawn_command_writer(
+    stdin: std::process::ChildStdin,
+    rx: Arc<CommandQueue>,
+    writer_shared: Arc<Shared>,
+    writer_routes: Routes,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("chromium-commands".into())
+        .spawn(move || {
+            let mut writer = stdin;
+            while let Some(command) = rx.pop() {
+                if let Err(error) = protocol::write_json(&mut writer, &command) {
+                    writer_shared.fail(format!("Chromium command channel closed: {error}"));
+                    fail_routes(
+                        &writer_routes,
+                        &format!("Chromium command channel closed: {error}"),
+                    );
+                    break;
+                }
+            }
+        })
+}
+
+fn spawn_frame_reader(
+    stdout: std::process::ChildStdout,
+    reader_shared: Arc<Shared>,
+    reader_routes: Routes,
+    download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
+    ready_tx: std::sync::mpsc::SyncSender<()>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("chromium-frames".into())
+        .spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                match protocol::read_packet(&mut reader) {
+                    Ok(Some(protocol::Packet::Frame(frame))) => {
+                        if let Some(shared) = route(&reader_routes, 1) {
+                            if let Ok(mut slot) = shared.frames.lock() {
+                                *slot = Some(frame);
+                            }
+                            shared.wake();
+                        }
+                    }
+                    Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
+                        if let Some(shared) = route(&reader_routes, tab) {
+                            if let Ok(mut slot) = shared.frames.lock() {
+                                *slot = Some(frame);
+                            }
+                            shared.wake();
+                        }
+                    }
+                    Ok(Some(protocol::Packet::Json(value))) => {
+                        if let Err(error) =
+                            route_native_event(&value, &reader_routes, &download_events, &ready_tx)
+                        {
+                            reader_shared.fail(format!("Invalid Chromium event: {error}"));
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        reader_shared.fail("Chromium engine disconnected".into());
+                        break;
+                    }
+                    Err(error) => {
+                        reader_shared.fail(format!("Invalid Chromium output: {error}"));
+                        break;
+                    }
+                }
+            }
+            queue_download_event(
+                &download_events,
+                WebViewEvent::DownloadRuntime {
+                    admitted: 0,
+                    detached: 0,
+                    accepting: false,
+                    error: "Chromium engine disconnected".into(),
+                },
+            );
+            fail_routes(&reader_routes, "Chromium engine disconnected");
+        })
+}
+
+fn take_supervisor_child(slot: &Mutex<Option<std::process::Child>>) -> Option<std::process::Child> {
+    slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+}
+
+fn supervise_child(
+    mut child: std::process::Child,
+    supervisor_shared: &Shared,
+    supervisor_queue: &CommandQueue,
+    supervisor_private_root: Option<&Path>,
+) {
+    let mut shutdown_started = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                supervisor_shared.fail("Chromium engine exited".into());
+                break;
+            }
+            Err(error) => {
+                supervisor_shared.fail(format!("Chromium process status: {error}"));
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            Ok(None) => {}
+        }
+        if supervisor_shared.failed.load(Ordering::Acquire) {
+            supervisor_queue.close();
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+        if supervisor_shared.stopping.load(Ordering::Acquire) {
+            let began = shutdown_started.get_or_insert_with(std::time::Instant::now);
+            if began.elapsed() >= Duration::from_secs(35) {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    supervisor_queue.close();
+    if let Some(root) = supervisor_private_root {
+        cleanup_private_root(root);
+    }
+}
+
+fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, String> {
+    if extensions.len() > 100 {
+        return Err("Too many approved extensions".into());
+    }
+    extensions
+        .iter()
+        .map(|path| {
+            let path = path.canonicalize().map_err(|error| error.to_string())?;
+            let value = path.to_str().ok_or("Invalid extension path")?;
+            if value.contains(',') || value.len() > 4096 {
+                return Err("Unsupported extension path".into());
+            }
+            Ok(value.to_owned())
+        })
+        .collect::<Result<Vec<String>, String>>()
+}
+
+fn launch_host(
+    host: &Path,
+    profile: &Path,
+    extensions: &[String],
+    private_root: Option<&Path>,
+) -> Result<std::process::Child, String> {
+    std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
+    let profile = profile.canonicalize().map_err(|error| error.to_string())?;
+    let mut command = Command::new(host);
+    if private_root.is_some() {
+        command.arg("--private");
+    }
+    if !extensions.is_empty() {
+        command.arg(format!("--load-extension={}", extensions.join(",")));
+    }
+    let mut child = command
+        .arg(format!("--profile={}", profile.display()))
+        .arg(format!(
+            "--downloads={}",
+            dirs::download_dir()
+                .unwrap_or_else(|| profile.join("downloads"))
+                .display()
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| format!("Could not start Chromium at {}: {error}", host.display()))?;
+    if let Some(root) = private_root
+        && let Err(error) = record_private_helper(root, child.id())
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!(
+            "Could not record private Chromium process: {error}"
+        ));
+    }
+    Ok(child)
+}
+
+fn valid_context_menu(value: &Value) -> bool {
+    valid_id(value)
+        && value["link"].as_str().is_some_and(|s| s.len() <= 8192)
+        && ["x", "y"].iter().all(|k| {
+            value[*k]
+                .as_f64()
+                .is_some_and(|v| v.is_finite() && v.abs() < 100_000.0)
+        })
+        && value["items"].as_array().is_some_and(|items| {
+            items.len() <= 24
+                && items.iter().all(|item| {
+                    valid_id(item) && item["label"].as_str().is_some_and(|s| s.len() <= 4096)
+                })
+        })
+}
+
 impl ChromiumEngine {
     /// Start the packaged runtime and persistent local profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime/profile cannot be located, prepared, or initialized.
     pub fn new() -> Result<Arc<Self>, String> {
         Self::new_with_extensions(&[])
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid extensions, unavailable runtime/profile, or helper initialization failure.
     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
         let profile = std::env::var_os("QOS_CHROMIUM_PROFILE")
             .map(PathBuf::from)
@@ -353,6 +568,10 @@ impl ChromiumEngine {
         Self::with_host_extensions(&host_path()?, &profile, extensions, None)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the private root is not owned, the runtime is missing, or initialization fails.
     pub fn new_private(root: &Path) -> Result<Arc<Self>, String> {
         match host_path() {
             Ok(host) => Self::with_private_host(&host, root),
@@ -364,6 +583,10 @@ impl ChromiumEngine {
     }
 
     /// Explicit profile with the packaged helper and approved extensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid extensions, profile preparation failure, or helper startup/initialization failure.
     pub fn with_profile_extensions(
         profile: &Path,
         extensions: &[PathBuf],
@@ -372,12 +595,20 @@ impl ChromiumEngine {
     }
 
     /// Explicit runtime/profile paths for packaging and isolated live tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile cannot be prepared or the helper cannot start and initialize.
     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
         Self::with_host_extensions(host, profile, &[], None)
     }
 
     /// Start an incognito helper whose complete installation root is removed
     /// by the process supervisor only after the native child has exited.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot initialize.
     pub fn with_private_host(host: &Path, root: &Path) -> Result<Arc<Self>, String> {
         if !owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
@@ -391,52 +622,9 @@ impl ChromiumEngine {
         extensions: &[PathBuf],
         private_root: Option<PathBuf>,
     ) -> Result<Arc<Self>, String> {
-        if extensions.len() > 100 {
-            return Err("Too many approved extensions".into());
-        }
-        let extensions = extensions
-            .iter()
-            .map(|path| {
-                let path = path.canonicalize().map_err(|error| error.to_string())?;
-                let value = path.to_str().ok_or("Invalid extension path")?;
-                if value.contains(',') || value.len() > 4096 {
-                    return Err("Unsupported extension path".into());
-                }
-                Ok(value.to_owned())
-            })
-            .collect::<Result<Vec<String>, String>>()?;
+        let extensions = validated_extension_paths(extensions)?;
         let mut cleanup_on_error = PrivateRootCleanup(private_root.clone());
-        std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
-        let profile = profile.canonicalize().map_err(|error| error.to_string())?;
-        let mut command = Command::new(host);
-        if private_root.is_some() {
-            command.arg("--private");
-        }
-        if !extensions.is_empty() {
-            command.arg(format!("--load-extension={}", extensions.join(",")));
-        }
-        let mut child = command
-            .arg(format!("--profile={}", profile.display()))
-            .arg(format!(
-                "--downloads={}",
-                dirs::download_dir()
-                    .unwrap_or_else(|| profile.join("downloads"))
-                    .display()
-            ))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|error| format!("Could not start Chromium at {}: {error}", host.display()))?;
-        if let Some(root) = private_root.as_deref()
-            && let Err(error) = record_private_helper(root, child.id())
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "Could not record private Chromium process: {error}"
-            ));
-        }
+        let mut child = launch_host(host, profile, &extensions, private_root.as_deref())?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -471,21 +659,7 @@ impl ChromiumEngine {
         let (ready_tx, ready_rx) = sync_channel(1);
         let writer_shared = shared.clone();
         let writer_routes = routes.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("chromium-commands".into())
-            .spawn(move || {
-                let mut writer = stdin;
-                while let Some(command) = rx.pop() {
-                    if let Err(error) = protocol::write_json(&mut writer, &command) {
-                        writer_shared.fail(format!("Chromium command channel closed: {error}"));
-                        fail_routes(
-                            &writer_routes,
-                            format!("Chromium command channel closed: {error}"),
-                        );
-                        break;
-                    }
-                }
-            })
+        if let Err(error) = spawn_command_writer(stdin, rx, writer_shared, writer_routes)
         {
             tx.close();
             let _ = child.kill();
@@ -493,80 +667,8 @@ impl ChromiumEngine {
             return Err(error.to_string());
         }
         let reader_shared = shared.clone();
-        let reader_routes = routes.clone();
-        if let Err(error) = std::thread::Builder::new().name("chromium-frames".into()).spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                match protocol::read_packet(&mut reader) {
-                    Ok(Some(protocol::Packet::Frame(frame))) => {
-                        if let Some(shared) = route(&reader_routes, 1) {
-                            if let Ok(mut slot) = shared.frames.lock() { *slot = Some(frame); }
-                            shared.wake();
-                        }
-                    }
-                    Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
-                        if let Some(shared) = route(&reader_routes, tab) {
-                            if let Ok(mut slot) = shared.frames.lock() { *slot = Some(frame); }
-                            shared.wake();
-                        }
-                    }
-                    Ok(Some(protocol::Packet::Json(value))) => {
-                        if let Err(error) = validate_event(&value) {
-                            reader_shared.fail(format!("Invalid Chromium event: {error}"));
-                            break;
-                        }
-                        if value["event"] == "ready" {
-                            tracing::info!(cef = ?value["cef_version"], chromium = ?value["chromium_version"], "Chromium engine ready (CPU frame transport)");
-                            let _ = ready_tx.try_send(());
-                        }
-                        if matches!(
-                            value["event"].as_str(),
-                            Some("download_prompt" | "download" | "download_runtime")
-                        ) {
-                            if let Some(event) = decode_event(&value) {
-                                queue_download_event(&download_events, event);
-                                let endpoints: Vec<_> = reader_routes.lock().unwrap().values().filter_map(Weak::upgrade).collect();
-                                for endpoint in endpoints { endpoint.wake(); }
-                            }
-                            continue;
-                        }
-                        let tab = value["tab"].as_u64().unwrap_or(1) as u32;
-                        let retires_route = matches!(
-                            value["event"].as_str(),
-                            Some("closed" | "tab_detached" | "tab_create_failed")
-                        );
-                        let endpoint = if retires_route {
-                            reader_routes
-                                .lock()
-                                .unwrap()
-                                .remove(&tab)
-                                .and_then(|route| route.upgrade())
-                        } else {
-                            route(&reader_routes, tab)
-                        };
-                        if let Some(shared) = endpoint {
-                            if value["event"] == "open_tab" {
-                                if let Some(url) = value["url"].as_str() {
-                                    let mut requests = shared.open_tabs.lock().unwrap();
-                                    if requests.len() < 32 { requests.push_back((url.into(), value["background"].as_bool().unwrap_or(false))); }
-                                    drop(requests); shared.wake();
-                                }
-                            }
-                            if let Some(event) = decode_event(&value) { shared.event(event); }
-                        }
-                    }
-                    Ok(None) => { reader_shared.fail("Chromium engine disconnected".into()); break; }
-                    Err(error) => { reader_shared.fail(format!("Invalid Chromium output: {error}")); break; }
-                }
-            }
-            queue_download_event(&download_events, WebViewEvent::DownloadRuntime {
-                admitted: 0,
-                detached: 0,
-                accepting: false,
-                error: "Chromium engine disconnected".into(),
-            });
-            fail_routes(&reader_routes, "Chromium engine disconnected".into());
-        }) {
+        let reader_routes = routes;
+        if let Err(error) = spawn_frame_reader(stdout, reader_shared, reader_routes, download_events, ready_tx) {
             tx.close();
             let _ = child.kill(); let _ = child.wait();
             return Err(error.to_string());
@@ -587,47 +689,17 @@ impl ChromiumEngine {
         let supervisor = std::thread::Builder::new()
             .name("chromium-supervisor".into())
             .spawn(move || {
-                let mut child = supervisor_child.lock().unwrap().take().unwrap();
-                let mut shutdown_started = None;
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(_)) => {
-                            supervisor_shared.fail("Chromium engine exited".into());
-                            break;
-                        }
-                        Err(error) => {
-                            supervisor_shared.fail(format!("Chromium process status: {error}"));
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                        Ok(None) => {}
-                    }
-                    if supervisor_shared.failed.load(Ordering::Acquire) {
-                        supervisor_queue.close();
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break;
-                    }
-                    if supervisor_shared.stopping.load(Ordering::Acquire) {
-                        let began = shutdown_started.get_or_insert_with(std::time::Instant::now);
-                        if began.elapsed() >= Duration::from_secs(35) {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                supervisor_queue.close();
-                if let Some(root) = supervisor_private_root {
-                    cleanup_private_root(&root);
-                }
+                let Some(child) = take_supervisor_child(&supervisor_child) else {
+                    supervisor_shared.fail("Chromium supervisor lost process ownership".into());
+                    supervisor_queue.close();
+                    return;
+                };
+                supervise_child(child, &supervisor_shared, &supervisor_queue, supervisor_private_root.as_deref());
             });
         let supervisor = match supervisor {
             Ok(supervisor) => supervisor,
             Err(error) => {
-                if let Some(mut child) = child.lock().unwrap().take() {
+                if let Some(mut child) = take_supervisor_child(&child) {
                     let _ = child.kill();
                     let _ = child.wait();
                 }
@@ -653,6 +725,8 @@ impl ChromiumEngine {
 
 impl WebViewEngine for ChromiumEngine {
     fn create_tab(&self) -> Result<super::SharedEngine, String> {
+        let waker = self.shared.waker.lock()
+            .map_err(|_| "Tab wake callback unavailable")?.clone();
         let mut routes = self
             .runtime
             .routes
@@ -665,13 +739,16 @@ impl WebViewEngine for ChromiumEngine {
         if tab > i32::MAX as u32 {
             return Err("Tab identity exhausted".into());
         }
-        let shared = Arc::new(Shared::default());
-        *shared.waker.lock().unwrap() = self.shared.waker.lock().unwrap().clone();
+        let shared = Arc::new(Shared {
+            waker: Mutex::new(waker),
+            ..Shared::default()
+        });
         routes.insert(tab, Arc::downgrade(&shared));
         if let Err(error) = self.tx.push(json!({"op":"create_tab","tab":tab})) {
             routes.remove(&tab);
             return Err(error.into());
         }
+        drop(routes);
         Ok(Arc::new(Self {
             tx: self.tx.clone(),
             shared,
@@ -691,7 +768,7 @@ impl WebViewEngine for ChromiumEngine {
         // The old composition already retained the same Arc-backed pixels.
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
-        self.shared.open_tabs.lock().unwrap().drain(..).collect()
+        self.shared.open_tabs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain(..).collect()
     }
 
     fn supports_native_filtering(&self) -> bool {
@@ -721,7 +798,11 @@ impl WebViewEngine for ChromiumEngine {
             return;
         }
         if let Some(mut command) = encode_command(command) {
-            command["tab"] = json!(self.tab);
+            let Some(fields) = command.as_object_mut() else {
+                self.shared.fail("Invalid internal Chromium command".into());
+                return;
+            };
+            fields.insert("tab".into(), json!(self.tab));
             if let Err(error) = self.tx.push(command) {
                 // A prior helper error describes its previous URL. Each new
                 // rejected navigation still needs an error for the requested URL.
@@ -786,24 +867,223 @@ impl Drop for ChromiumEngine {
     fn drop(&mut self) {
         // Reserve native capacity until OnBeforeClose acknowledges destruction.
         // A dead route cannot receive events, but still counts against the bound.
-        let mut routes = self.runtime.routes.lock().unwrap();
-        if let Some(route) = routes.get_mut(&self.tab) {
-            *route = Weak::new();
+        let retire = {
+            let mut routes = self.runtime.routes.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(route) = routes.get_mut(&self.tab) {
+                *route = Weak::new();
+                true
+            } else {
+                false
+            }
+        };
+        if retire {
             let _ = self.tx.push(json!({"op":"close_tab","tab":self.tab}));
         }
     }
 }
 
+fn route_native_event(
+    value: &Value,
+    routes: &Routes,
+    download_events: &Mutex<VecDeque<WebViewEvent>>,
+    ready_tx: &std::sync::mpsc::SyncSender<()>,
+) -> Result<(), &'static str> {
+    validate_event(value)?;
+    let event_name = value
+        .get("event")
+        .and_then(Value::as_str)
+        .ok_or("missing event name")?;
+    if event_name == "ready" {
+        tracing::info!(cef = ?value.get("cef_version"), chromium = ?value.get("chromium_version"), "Chromium engine ready (CPU frame transport)");
+        let _ = ready_tx.try_send(());
+    }
+    if matches!(
+        event_name,
+        "download_prompt" | "download" | "download_runtime"
+    ) {
+        if let Some(event) = decode_event(value) {
+            let endpoints: Vec<_> = routes
+                .lock()
+                .map_err(|_| "Tab routes unavailable")?
+                .values()
+                .filter_map(Weak::upgrade)
+                .collect();
+            queue_download_event(download_events, event);
+            for endpoint in endpoints {
+                endpoint.wake();
+            }
+        }
+        return Ok(());
+    }
+    let tab = u32::try_from(value.get("tab").and_then(Value::as_u64).unwrap_or(1))
+        .map_err(|_| "Invalid tab ID")?;
+    let retires_route = matches!(event_name, "closed" | "tab_detached" | "tab_create_failed");
+    let endpoint = {
+        let mut routes = routes.lock().map_err(|_| "Tab routes unavailable")?;
+        if retires_route {
+            routes.remove(&tab).and_then(|route| route.upgrade())
+        } else {
+            routes.get(&tab).and_then(Weak::upgrade)
+        }
+    };
+    if let Some(shared) = endpoint {
+        if event_name == "open_tab" {
+            if let Some(url) = value.get("url").and_then(Value::as_str) {
+                let mut requests = shared
+                    .open_tabs
+                    .lock()
+                    .map_err(|_| "New tab requests unavailable")?;
+                if requests.len() < 32 {
+                    requests.push_back((
+                        url.into(),
+                        value
+                            .get("background")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    ));
+                }
+                drop(requests);
+                shared.wake();
+            }
+        }
+        if let Some(event) = decode_event(value) {
+            shared.event(event);
+        }
+    }
+
+    Ok(())
+}
+
+// CEF emits byte counts and document counters as JSON doubles. Accept only
+// whole, nonnegative values that fit, while preserving exact integer JSON.
+fn wire_u64(value: &Value) -> Option<u64> {
+    if let Some(integer) = value.as_u64() {
+        return Some(integer);
+    }
+    let number = value.as_f64()?;
+    // u64::MAX rounds up to 2^64 in f64; the upper bound must be exclusive.
+    if !number.is_finite()
+        || !(0.0..18_446_744_073_709_551_616.0).contains(&number)
+        || number.fract() != 0.0
+    {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss,
+        reason = "finite integral value is checked in the exclusive u64 range above")]
+    let integer = number as u64;
+    Some(integer)
+}
+
 fn valid_id(value: &Value) -> bool {
     value["id"]
         .as_u64()
-        .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+        .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+}
+
+fn valid_site_event(value: &Value, event: &str) -> bool {
+    let header = value["request_id"]
+        .as_u64()
+        .is_some_and(|n| n > 0 && i32::try_from(n).is_ok())
+        && value["origin"].as_str().is_some_and(|s| s.len() <= 8192)
+        && value["generation"].as_f64().is_some_and(|n| {
+            n.is_finite() && (0.0..=9_007_199_254_740_991.0).contains(&n) && n.fract() == 0.0
+        });
+    header
+        && if event == "site_result" {
+            value["success"].is_boolean()
+                && value["action"].as_str().is_some_and(|s| {
+                    matches!(s, "status" | "clear" | "revoke" | "enable" | "disable")
+                })
+                && value["message"].as_str().is_some_and(|s| s.len() <= 1024)
+        } else {
+            ["global_enabled", "excepted", "effective"]
+                .iter()
+                .all(|k| value[*k].is_boolean())
+                && value["blocked"].as_f64().is_some_and(|n| {
+                    n.is_finite()
+                        && (0.0..=9_007_199_254_740_991.0).contains(&n)
+                        && n.fract() == 0.0
+                })
+                && matches!(
+                    value["security"].as_str(),
+                    Some("insecure" | "secure" | "unverified")
+                )
+                && ["subject", "issuer"]
+                    .iter()
+                    .all(|k| value[*k].as_str().is_some_and(|s| s.len() <= 512))
+                && ["certificate_status", "tls_version", "content_status"]
+                    .iter()
+                    .all(|k| value[*k].as_u64().is_some_and(|n| u32::try_from(n).is_ok()))
+                && value["expires"].as_f64().is_some_and(f64::is_finite)
+                && value["permissions"].as_object().is_some_and(|p| {
+                    p.len() == 4
+                        && ["camera", "microphone", "location", "notifications"]
+                            .iter()
+                            .all(|k| {
+                                matches!(
+                                    p.get(*k).and_then(Value::as_str),
+                                    Some("allowed" | "blocked" | "ask")
+                                )
+                            })
+                })
+        }
+}
+
+fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEvent> {
+    Some(match event {
+        "site_status" => WebViewEvent::SiteStatus(super::SiteStatus {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            origin: value["origin"].as_str()?.into(),
+            generation: wire_u64(&value["generation"])?,
+            blocked: wire_u64(&value["blocked"])?,
+            global_enabled: value["global_enabled"].as_bool()?,
+            excepted: value["excepted"].as_bool()?,
+            effective: value["effective"].as_bool()?,
+            security: value["security"].as_str()?.into(),
+            certificate_status: u32::try_from(value["certificate_status"].as_u64()?).ok()?,
+            tls_version: u32::try_from(value["tls_version"].as_u64()?).ok()?,
+            content_status: u32::try_from(value["content_status"].as_u64()?).ok()?,
+            subject: value["subject"].as_str()?.into(),
+            issuer: value["issuer"].as_str()?.into(),
+            expires: value["expires"].as_f64()?,
+            permissions: value["permissions"]
+                .as_object()?
+                .iter()
+                .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
+                .collect::<Option<Vec<_>>>()?,
+        }),
+        "site_result" => WebViewEvent::SiteResult {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            origin: value["origin"].as_str()?.into(),
+            generation: wire_u64(&value["generation"])?,
+            action: value["action"].as_str()?.into(),
+            success: value["success"].as_bool()?,
+            message: value["message"].as_str()?.into(),
+        },
+        _ => return None,
+    })
+}
+
+fn decode_favicon(value: &Value) -> Option<WebViewEvent> {
+    let width = u32::try_from(value["width"].as_u64()?).ok()?;
+    let height = u32::try_from(value["height"].as_u64()?).ok()?;
+    let png = decode_base64_bounded(value["png"].as_str()?, 256 * 1024)?;
+    if width == 0 || height == 0 || width > 64 || height > 64 || png.len() > 256 * 1024 {
+        return None;
+    }
+    Some(WebViewEvent::FaviconChanged {
+        page_url: value["page_url"].as_str()?.into(),
+        width,
+        height,
+        png: Arc::new(png),
+    })
 }
 
 fn validate_event(value: &Value) -> Result<(), &'static str> {
     if value.get("tab").is_some_and(|tab| {
         !tab.as_u64()
-            .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+            .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
     }) {
         return Err("Invalid tab ID");
     }
@@ -814,77 +1094,15 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
     let text = |key: &str| value.get(key).is_some_and(Value::is_string);
     let valid = match event {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
-        "site_status" | "site_result" => {
-            let header = value["request_id"]
-                .as_u64()
-                .is_some_and(|n| n > 0 && n <= i32::MAX as u64)
-                && value["origin"].as_str().is_some_and(|s| s.len() <= 8192)
-                && value["generation"].as_f64().is_some_and(|n| {
-                    n.is_finite() && (0.0..=9007199254740991.0).contains(&n) && n.fract() == 0.0
-                });
-            header
-                && if event == "site_result" {
-                    value["success"].is_boolean()
-                        && value["action"].as_str().is_some_and(|s| {
-                            matches!(s, "status" | "clear" | "revoke" | "enable" | "disable")
-                        })
-                        && value["message"].as_str().is_some_and(|s| s.len() <= 1024)
-                } else {
-                    ["global_enabled", "excepted", "effective"]
-                        .iter()
-                        .all(|k| value[*k].is_boolean())
-                        && value["blocked"].as_f64().is_some_and(|n| {
-                            n.is_finite()
-                                && (0.0..=9007199254740991.0).contains(&n)
-                                && n.fract() == 0.0
-                        })
-                        && matches!(
-                            value["security"].as_str(),
-                            Some("insecure" | "secure" | "unverified")
-                        )
-                        && ["subject", "issuer"]
-                            .iter()
-                            .all(|k| value[*k].as_str().is_some_and(|s| s.len() <= 512))
-                        && ["certificate_status", "tls_version", "content_status"]
-                            .iter()
-                            .all(|k| value[*k].as_u64().is_some_and(|n| n <= u32::MAX as u64))
-                        && value["expires"].as_f64().is_some_and(f64::is_finite)
-                        && value["permissions"].as_object().is_some_and(|p| {
-                            p.len() == 4
-                                && ["camera", "microphone", "location", "notifications"]
-                                    .iter()
-                                    .all(|k| {
-                                        matches!(
-                                            p.get(*k).and_then(Value::as_str),
-                                            Some("allowed" | "blocked" | "ask")
-                                        )
-                                    })
-                        })
-                }
-        }
-        "context_closed" => valid_id(value),
-        "context_menu" => {
-            valid_id(value)
-                && value["link"].as_str().is_some_and(|s| s.len() <= 8192)
-                && ["x", "y"].iter().all(|k| {
-                    value[*k]
-                        .as_f64()
-                        .is_some_and(|v| v.is_finite() && v.abs() < 100000.0)
-                })
-                && value["items"].as_array().is_some_and(|items| {
-                    items.len() <= 24
-                        && items.iter().all(|item| {
-                            valid_id(item)
-                                && item["label"].as_str().is_some_and(|s| s.len() <= 4096)
-                        })
-                })
-        }
+        "site_status" | "site_result" => valid_site_event(value, event),
+        "context_closed" | "permission_closed" => valid_id(value),
+        "context_menu" => valid_context_menu(value),
         "find_result" => {
             valid_id(value)
                 && ["count", "active"].iter().all(|key| {
                     value[*key]
                         .as_i64()
-                        .is_some_and(|n| (-1..=i32::MAX as i64).contains(&n))
+                        .is_some_and(|n| (-1..=i64::from(i32::MAX)).contains(&n))
                 })
                 && value["final"].is_boolean()
         }
@@ -896,7 +1114,6 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             .as_object()
             .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
         "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
-        "permission_closed" => valid_id(value),
         "download_prompt" => valid_id(value) && text("url") && text("name"),
         "download" => {
             valid_id(value)
@@ -909,12 +1126,8 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     value["state"].as_str(),
                     Some("progress" | "complete" | "cancelled" | "failed")
                 )
-                && value["received"]
-                    .as_f64()
-                    .is_some_and(|n| n.is_finite() && n >= 0.0)
-                && value["total"]
-                    .as_f64()
-                    .is_some_and(|n| n.is_finite() && n >= 0.0)
+                && wire_u64(&value["received"]).is_some()
+                && wire_u64(&value["total"]).is_some()
         }
         "download_runtime" => {
             ["admitted", "detached"].iter().all(|key| {
@@ -936,7 +1149,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "navigation_history" => {
             value["request_id"]
                 .as_u64()
-                .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
                 && super::NavigationDirection::from_wire(value["direction"].as_str()).is_some()
                 && value["entries"].as_array().is_some_and(|entries| {
                     entries.len() <= 12
@@ -966,7 +1179,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             *request_id > 0
-                && *request_id <= i32::MAX as u32
+                && i32::try_from(*request_id).is_ok()
                 && !origin.is_empty()
                 && origin.len() <= 8192
         }
@@ -977,31 +1190,31 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             action,
         } => {
             *request_id > 0
-                && *request_id <= i32::MAX as u32
+                && i32::try_from(*request_id).is_ok()
                 && !origin.is_empty()
                 && origin.len() <= 8192
                 && *generation > 0
-                && *generation <= 9007199254740991
+                && *generation <= 9_007_199_254_740_991
                 && matches!(action.as_str(), "clear" | "revoke" | "enable" | "disable")
         }
         WebViewCommand::ContextMenuAction { id, command } => {
-            *id > 0 && *id <= i32::MAX as u32 && *command <= i32::MAX as u32
+            *id > 0 && i32::try_from(*id).is_ok() && i32::try_from(*command).is_ok()
         }
         WebViewCommand::Find { id, text, .. } => {
-            *id > 0 && *id <= i32::MAX as u32 && text.len() <= 4096
+            *id > 0 && i32::try_from(*id).is_ok() && text.len() <= 4096
         }
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
         WebViewCommand::RequestNavigationHistory { request_id, .. } => {
-            *request_id > 0 && *request_id <= i32::MAX as u32
+            *request_id > 0 && i32::try_from(*request_id).is_ok()
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
-            *request_id > 0 && *request_id <= i32::MAX as u32 && *id > 0 && *id <= i32::MAX as u32
+            *request_id > 0 && i32::try_from(*request_id).is_ok() && *id > 0 && i32::try_from(*id).is_ok()
         }
         WebViewCommand::RequestMediaElementById { element_id, .. } => element_id.len() <= 256,
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelDownload { id }
-        | WebViewCommand::RetryDownload { id } => *id > 0 && *id <= i32::MAX as u32,
+        | WebViewCommand::RetryDownload { id } => *id > 0 && i32::try_from(*id).is_ok(),
         WebViewCommand::Navigate(url) => url.len() <= 65536,
         WebViewCommand::Key {
             key: KeyInput::Character(text),
@@ -1030,7 +1243,10 @@ impl CommandQueue {
         struct Counter(usize);
         impl std::io::Write for Counter {
             fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                self.0 += data.len();
+                self.0 = self
+                    .0
+                    .checked_add(data.len())
+                    .ok_or_else(|| std::io::Error::other("command byte count overflow"))?;
                 Ok(data.len())
             }
             fn flush(&mut self) -> std::io::Result<()> {
@@ -1042,21 +1258,27 @@ impl CommandQueue {
         if count.0 >= protocol::MAX_PACKET as usize {
             return Err("command too large");
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().map_err(|_| {
+            self.ready.notify_all();
+            "command channel poisoned"
+        })?;
         if state.2 {
             return Err("command channel closed");
         }
-        let op = value["op"].as_str().unwrap_or("");
+        let op = value.get("op").and_then(Value::as_str).unwrap_or("");
         // These operations are explicitly replaceable. Keep ordering barriers:
         // mouse motion before a click and resize before navigation stay ordered.
         if matches!(op, "mouse_move" | "resize" | "focus") {
-            if state
-                .0
-                .back()
-                .is_some_and(|(last, _)| last["op"] == op && last["tab"] == value["tab"])
-            {
-                let (_, bytes) = state.0.pop_back().unwrap();
-                state.1 -= bytes;
+            if state.0.back().is_some_and(|(last, _)| {
+                last.get("op").and_then(Value::as_str) == Some(op)
+                    && last.get("tab") == value.get("tab")
+            }) {
+                if let Some((_, bytes)) = state.0.pop_back() {
+                    state.1 = state
+                        .1
+                        .checked_sub(bytes)
+                        .ok_or("invalid command byte count")?;
+                }
             }
         }
         let input = matches!(
@@ -1073,26 +1295,34 @@ impl CommandQueue {
             // rejected operation; protocol/lifecycle errors have their own path.
             return Err("command queue capacity reached");
         }
-        state.1 += count.0;
+        state.1 = state
+            .1
+            .checked_add(count.0)
+            .ok_or("command byte count overflow")?;
         state.0.push_back((value, count.0));
+        drop(state);
         self.ready.notify_one();
         Ok(())
     }
     fn pop(&self) -> Option<Value> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().ok()?;
         loop {
             if let Some((value, bytes)) = state.0.pop_front() {
-                state.1 -= bytes;
+                state.1 = state.1.checked_sub(bytes)?;
+                drop(state);
                 return Some(value);
             }
             if state.2 {
                 return None;
             }
-            state = self.ready.wait(state).unwrap();
+            state = self.ready.wait(state).ok()?;
         }
     }
     fn close(&self) {
-        self.state.lock().unwrap().2 = true;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .2 = true;
         self.ready.notify_all();
     }
 }
@@ -1103,53 +1333,25 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "closed" => WebViewEvent::TabClosed,
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
-        "site_status" => WebViewEvent::SiteStatus(super::SiteStatus {
-            request_id: value["request_id"].as_u64()? as u32,
-            origin: value["origin"].as_str()?.into(),
-            generation: value["generation"].as_f64()? as u64,
-            blocked: value["blocked"].as_f64()? as u64,
-            global_enabled: value["global_enabled"].as_bool()?,
-            excepted: value["excepted"].as_bool()?,
-            effective: value["effective"].as_bool()?,
-            security: value["security"].as_str()?.into(),
-            certificate_status: value["certificate_status"].as_u64()? as u32,
-            tls_version: value["tls_version"].as_u64()? as u32,
-            content_status: value["content_status"].as_u64()? as u32,
-            subject: value["subject"].as_str()?.into(),
-            issuer: value["issuer"].as_str()?.into(),
-            expires: value["expires"].as_f64()?,
-            permissions: value["permissions"]
-                .as_object()?
-                .iter()
-                .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
-                .collect::<Option<Vec<_>>>()?,
-        }),
-        "site_result" => WebViewEvent::SiteResult {
-            request_id: value["request_id"].as_u64()? as u32,
-            origin: value["origin"].as_str()?.into(),
-            generation: value["generation"].as_f64()? as u64,
-            action: value["action"].as_str()?.into(),
-            success: value["success"].as_bool()?,
-            message: value["message"].as_str()?.into(),
-        },
+        "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
         "context_closed" => WebViewEvent::ContextMenuClosed {
-            id: value["id"].as_u64()? as u32,
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
         "context_menu" => WebViewEvent::ContextMenu {
-            id: value["id"].as_u64()? as u32,
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
             x: value["x"].as_f64()?,
             y: value["y"].as_f64()?,
             link: value["link"].as_str()?.into(),
             items: value["items"]
                 .as_array()?
                 .iter()
-                .map(|item| Some((item["id"].as_u64()? as u32, item["label"].as_str()?.into())))
+                .map(|item| Some((u32::try_from(item["id"].as_u64()?).ok()?, item["label"].as_str()?.into())))
                 .collect::<Option<Vec<_>>>()?,
         },
         "find_result" => WebViewEvent::FindResult {
-            id: value["id"].as_u64()? as u32,
-            count: value["count"].as_i64()? as i32,
-            active: value["active"].as_i64()? as i32,
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            count: i32::try_from(value["count"].as_i64()?).ok()?,
+            active: i32::try_from(value["active"].as_i64()?).ok()?,
             final_update: value["final"].as_bool()?,
         },
         "zoom" => WebViewEvent::ZoomChanged(value["level"].as_f64()?),
@@ -1157,20 +1359,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "renderer_terminated" => WebViewEvent::RendererTerminated,
         "uri" => WebViewEvent::UriChanged(value["url"].as_str()?.into()),
         "title" => WebViewEvent::TitleChanged(value["title"].as_str()?.into()),
-        "favicon" => {
-            let width = value["width"].as_u64()? as u32;
-            let height = value["height"].as_u64()? as u32;
-            let png = decode_base64_bounded(value["png"].as_str()?, 256 * 1024)?;
-            if width == 0 || height == 0 || width > 64 || height > 64 || png.len() > 256 * 1024 {
-                return None;
-            }
-            WebViewEvent::FaviconChanged {
-                page_url: value["page_url"].as_str()?.into(),
-                width,
-                height,
-                png: Arc::new(png),
-            }
-        }
+        "favicon" => decode_favicon(value)?,
         "audio_muted" => WebViewEvent::AudioMutedChanged(value["muted"].as_bool()?),
         "media_state" => WebViewEvent::MediaPlayingChanged {
             page_url: value["page_url"].as_str()?.into(),
@@ -1179,44 +1368,44 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         },
         "progress" => WebViewEvent::LoadProgress(value["progress"].as_f64()?.clamp(0.0, 1.0)),
         "permission_prompt" => WebViewEvent::PermissionRequested {
-            id: value["id"].as_u64()? as u32,
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
             origin: value["origin"].as_str()?.into(),
             permissions: value["permissions"].as_str()?.into(),
         },
         "permission_closed" => WebViewEvent::PermissionClosed {
-            id: value["id"].as_u64()? as u32,
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
         "download_prompt" => WebViewEvent::DownloadRequested {
-            id: value["id"].as_u64()? as u32,
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
             url: value["url"].as_str()?.into(),
             name: value["name"].as_str()?.into(),
         },
         "download" => WebViewEvent::DownloadUpdated {
-            id: value["id"].as_u64()? as u32,
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
             state: value["state"].as_str()?.into(),
             path: value["path"].as_str()?.into(),
             name: value["name"].as_str()?.into(),
             url: value["url"].as_str()?.into(),
             retryable: value["retryable"].as_bool()?,
-            received: value["received"].as_f64()? as u64,
-            total: value["total"].as_f64()? as u64,
+            received: wire_u64(&value["received"])?,
+            total: wire_u64(&value["total"])?,
             error: value["error"].as_str()?.into(),
         },
         "download_runtime" => WebViewEvent::DownloadRuntime {
-            admitted: value["admitted"].as_u64()? as u32,
-            detached: value["detached"].as_u64()? as u32,
+            admitted: u32::try_from(value["admitted"].as_u64()?).ok()?,
+            detached: u32::try_from(value["detached"].as_u64()?).ok()?,
             accepting: value["accepting"].as_bool()?,
             error: value["error"].as_str()?.into(),
         },
         "navigation_history" => WebViewEvent::NavigationHistory {
-            request_id: value["request_id"].as_u64()? as u32,
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             direction: super::NavigationDirection::from_wire(value["direction"].as_str())?,
             entries: value["entries"]
                 .as_array()?
                 .iter()
                 .map(|entry| {
                     Some(super::NavigationEntry {
-                        id: entry["id"].as_u64()? as u32,
+                        id: u32::try_from(entry["id"].as_u64()?).ok()?,
                         url: entry["url"].as_str()?.into(),
                         title: entry["title"].as_str()?.into(),
                     })
@@ -1239,35 +1428,14 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
 }
 
 fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
-    if input.len() > (limit + 2) / 3 * 4 + 4 {
+    use base64::Engine as _;
+    // Bound allocation before decoding; retain the exact decoded byte cap too.
+    let encoded_limit = limit.div_ceil(3).checked_mul(4)?;
+    if input.len() > encoded_limit {
         return None;
     }
-    let mut out = Vec::with_capacity(input.len() / 4 * 3);
-    let (mut acc, mut bits) = (0u32, 0u8);
-    for byte in input.bytes() {
-        if byte == b'=' {
-            break;
-        }
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        };
-        acc = (acc << 6) | u32::from(value);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            if out.len() > limit {
-                return None;
-            }
-            acc &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
+    let output = base64::engine::general_purpose::STANDARD.decode(input).ok()?;
+    (output.len() <= limit).then_some(output)
 }
 
 fn encode_command(command: WebViewCommand) -> Option<Value> {

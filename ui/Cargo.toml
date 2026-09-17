@@ -137,6 +137,7 @@ icu_segmenter = "1.5"
 hypher = "0.1.7"
 serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
 uuid.workspace = true
 png.workspace = true
 # Multi-format decode (JPEG/PNG/WebP) for the async remote-image cache
@@ -218,6 +219,7 @@ base32.workspace = true
 # pre-shared long-term key. SHA-512 is already a transitive via
 # `qos-threshold-identity`, so direct pin keeps the lock single-copy.
 sha2.workspace = true
+blake3.workspace = true
 toml.workspace = true
 unicode-script = "=0.5.8"
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to

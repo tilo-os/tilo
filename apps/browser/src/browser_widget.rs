@@ -88,7 +88,7 @@ const COMPACT_CHROME_MAX_WIDTH: f64 = 600.0;
 /// would make site information click-only through the protection panel.
 const ROOMY_CHROME_MIN_WIDTH: f64 = 1000.0;
 /// The height of every control on the toolbar row — navigation buttons, site
-/// launchers, DevTools, Find and zoom, Private, Settings — and of the address
+/// launchers, `DevTools`, Find and zoom, Private, Settings — and of the address
 /// field they sit beside, so the row has one top and one bottom edge. Also the
 /// find bar's controls, which sit beside a field of the same height.
 pub(crate) const TOOLBAR_CONTROL_HEIGHT: f32 = 40.0;
@@ -346,6 +346,8 @@ pub struct BrowserWidget {
     /// An address draft belongs to this window. Only an explicit Navigate
     /// resource operation crosses the browser/engine boundary.
     address: ui::LocalState<String>,
+    /// Draft value at an explicit navigation; newer edits remain local.
+    address_navigation_value: Option<String>,
     daily: crate::daily_controls::DailyControls,
     page_menu: crate::page_menu::PageMenu,
     site: crate::site_controls::SiteControls,
@@ -495,14 +497,14 @@ impl BrowserWidget {
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
     pub fn with_initial_uri(mut self, uri: String) -> Self {
-        self.session_url = uri.clone();
+        self.session_url.clone_from(&uri);
         self.initial_url = uri;
         self
     }
 
     pub(crate) fn prepare_session_uri(&mut self, uri: String, deferred: bool) {
-        self.initial_url = uri.clone();
-        self.session_url = uri.clone();
+        self.initial_url.clone_from(&uri);
+        self.session_url.clone_from(&uri);
         self.address.set(uri);
         self.current_uri.clear();
         self.session_first_commit = false;
@@ -612,11 +614,10 @@ impl BrowserWidget {
         let focused = self.focus_address_input();
         if buffered {
             fn caret(widget: &mut dyn Widget) {
-                if widget.test_id() == Some(URL_INPUT_ID) {
-                    if let Some((_, text)) = widget.text_review() {
+                if widget.test_id() == Some(URL_INPUT_ID)
+                    && let Some((_, text)) = widget.text_review() {
                         widget.set_state(&text.len().to_string());
                     }
-                }
                 for child in widget.children_mut() {
                     caret(child);
                 }
@@ -665,7 +666,7 @@ impl BrowserWidget {
         self.capabilities.toolbar_status()
     }
     pub(crate) fn cancel_downloads_for_exit(&self) {
-        self.capabilities.cancel_all(&self.engine);
+        crate::capabilities::Capabilities::cancel_all(&self.engine);
     }
     pub(crate) fn inherit_workspace_state(&mut self, other: &Self) {
         self.window_scale = other.window_scale;
@@ -682,6 +683,7 @@ impl BrowserWidget {
         Self::with_engine_mode(engine, headless, BrowsingMode::Normal)
     }
 
+    #[allow(clippy::too_many_lines, reason = "one explicit initializer keeps all browser state defaults visible together")]
     pub fn with_engine_mode(
         engine: SharedEngine,
         headless: bool,
@@ -690,20 +692,20 @@ impl BrowserWidget {
         // Persisted state; `load()` returns defaults/empty when absent, so
         // `--shots` runs are unaffected by (and don't write) real files.
         let persistent = !headless && browsing_mode.persists_personal_state();
-        let settings = if !persistent {
-            Settings::default()
-        } else {
+        let settings = if persistent {
             Settings::load()
-        };
-        let history = if !persistent {
-            History::default()
         } else {
+            Settings::default()
+        };
+        let history = if persistent {
             History::load()
-        };
-        let bookmarks = if !persistent {
-            Bookmarks::default()
         } else {
+            History::default()
+        };
+        let bookmarks = if persistent {
             Bookmarks::load()
+        } else {
+            Bookmarks::default()
         };
         let initial_url = if is_supported_web_url(&settings.homepage) {
             settings.homepage.clone()
@@ -721,8 +723,9 @@ impl BrowserWidget {
             bootstrap_done: false,
             headless,
             address: ui::LocalState::new(initial_url.clone()),
-            daily: Default::default(),
-            page_menu: Default::default(),
+            address_navigation_value: None,
+            daily: crate::daily_controls::DailyControls::default(),
+            page_menu: crate::page_menu::PageMenu::default(),
             site: crate::site_controls::SiteControls::default(),
             credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
             site_panel: None,
@@ -752,15 +755,15 @@ impl BrowserWidget {
             forced_loading: false,
             settings,
             capabilities: crate::capabilities::Capabilities::default(),
-            startup_extensions: if !persistent {
-                Vec::new()
-            } else {
+            startup_extensions: if persistent {
                 crate::extensions::approved_paths()
+            } else {
+                Vec::new()
             },
             extension_notice: None,
-            extension_feedback: Default::default(),
+            extension_feedback: std::sync::Arc::default(),
             settings_presentation,
-            history_paused: Default::default(),
+            history_paused: std::sync::Arc::default(),
             observed_history_paused: false,
             history_clear_error: None,
             history_save: History::save,
@@ -967,11 +970,13 @@ impl BrowserWidget {
         }
         match operation {
             BrowserOperation::Back => {
+                self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
                 self.engine.send(WebViewCommand::GoBack);
             }
             BrowserOperation::Forward => {
+                self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
                 self.engine.send(WebViewCommand::GoForward);
@@ -1001,6 +1006,7 @@ impl BrowserWidget {
             }
             BrowserOperation::Navigate { url } => {
                 let target = self.navigation_target(url.trim())?;
+                self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.show_library = false;
                 self.show_settings = false;
@@ -1695,9 +1701,11 @@ impl BrowserWidget {
         let mut toolbar = Row::new()
             .no_wrap()
             .push(Box::new(back))
+            .push(Box::new(forward))
             .push(Box::new(reload));
-        if !self.compact_chrome {
-            toolbar = toolbar.push(Box::new(forward));
+        if self.compact_chrome {
+            // Keep both history controls without sacrificing the address field.
+            toolbar = toolbar.with_gap(4.0);
         }
         // Site information has no action route yet, so it stays on every
         // non-compact tier — see `ROOMY_CHROME_MIN_WIDTH`.
@@ -2219,7 +2227,7 @@ impl BrowserWidget {
                 } else {
                     let mut rows = Column::new().with_no_padding().with_intrinsic_height();
                     if let Some(message) = &self.extension_notice {
-                        rows = rows.push(Box::new(Text::new(&message)));
+                        rows = rows.push(Box::new(Text::new(message)));
                     }
                     for extension in installed.into_iter().take(100) {
                         let approved = crate::extensions::is_approved(&extension);
@@ -2273,8 +2281,8 @@ impl BrowserWidget {
                                 }
                             }),
                         ));
-                        if loaded && approved {
-                            if let Some(url) = crate::extensions::action_url(&extension) {
+                        if loaded && approved
+                            && let Some(url) = crate::extensions::action_url(&extension) {
                                 let engine = self.engine.clone();
                                 row = row.push(Box::new(
                                     Button::new(
@@ -2284,11 +2292,10 @@ impl BrowserWidget {
                                     )
                                     .with_size(180.0, 36.0)
                                     .on_effect(move || {
-                                        engine.send(WebViewCommand::Navigate(url.clone()))
+                                        engine.send(WebViewCommand::Navigate(url.clone()));
                                     }),
                                 ));
                             }
-                        }
                         rows = rows.push(Box::new(
                             Container::new().with_background().with_child(Box::new(row)),
                         ));
@@ -2428,7 +2435,7 @@ impl BrowserWidget {
     }
 
     /// Whether the address input currently holds keyboard focus (the
-    /// user is editing — engine URI updates must not stomp their text).
+    /// user may be editing; focus alone does not imply an unsent draft).
     fn url_input_focused(&self) -> bool {
         self.control_focused(URL_INPUT_ID)
     }
@@ -2480,14 +2487,10 @@ impl BrowserWidget {
                     crate::credentials::Credentials::send(&self.engine, requests);
                     self.structure_dirty = true;
                 }
-                WebViewEvent::LoadFinishedAt { .. } => {}
                 event @ (WebViewEvent::SiteStatus(_) | WebViewEvent::SiteResult { .. }) => {
                     self.structure_dirty |= self.site.apply(event);
                 }
-                WebViewEvent::TabClosed => {
-                    self.native_closed = true;
-                }
-                WebViewEvent::TabDetached => {
+                WebViewEvent::TabClosed | WebViewEvent::TabDetached => {
                     self.native_closed = true;
                 }
                 WebViewEvent::TabCloseBlocked => {
@@ -2511,7 +2514,7 @@ impl BrowserWidget {
                 }
                 WebViewEvent::ContextMenuClosed { id } => self.page_menu.dismiss(id),
                 event @ (WebViewEvent::FindResult { .. } | WebViewEvent::ZoomChanged(_)) => {
-                    self.structure_dirty |= self.daily.apply(event);
+                    self.structure_dirty |= self.daily.apply(&event);
                 }
                 WebViewEvent::NavigationHistory {
                     request_id,
@@ -2548,7 +2551,7 @@ impl BrowserWidget {
                             || self.initial_url == "about:blank"
                             || self.session_first_commit)
                     {
-                        self.session_url = uri.clone();
+                        self.session_url.clone_from(&uri);
                         self.session_first_commit = true;
                     }
                     self.document_revision = self.document_revision.wrapping_add(1);
@@ -2573,7 +2576,12 @@ impl BrowserWidget {
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
                     }
-                    if !editing {
+                    let follows_navigation = self.address.with(|value| {
+                        value == &self.current_uri
+                            || self.address_navigation_value.as_ref() == Some(value)
+                    });
+                    self.address_navigation_value = None;
+                    if !editing || follows_navigation {
                         self.address.set(uri.clone());
                     }
                     if uri.starts_with("chrome-extension://") {
@@ -2601,7 +2609,6 @@ impl BrowserWidget {
                         self.structure_dirty = true;
                     }
                 }
-                WebViewEvent::FaviconChanged { .. } => {}
                 WebViewEvent::AudioMutedChanged(muted) => {
                     self.audio_muted = muted;
                     self.structure_dirty = true;
@@ -2637,7 +2644,10 @@ impl BrowserWidget {
                 WebViewEvent::LoadProgress(p) if !self.forced_loading && !self.loading_stopped => {
                     self.set_loading_progress(p);
                 }
-                WebViewEvent::TitleChanged(_) | WebViewEvent::LoadProgress(_) => {}
+                WebViewEvent::LoadFinishedAt { .. }
+                | WebViewEvent::FaviconChanged { .. }
+                | WebViewEvent::TitleChanged(_)
+                | WebViewEvent::LoadProgress(_) => {}
                 WebViewEvent::LoadFinished => {
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
@@ -2671,6 +2681,7 @@ impl BrowserWidget {
                     }
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
+                    self.address_navigation_value = None;
                     self.set_loading_progress(1.0);
                     tracing::warn!("load failed for {uri}: {error}");
                     self.title = format!("Failed to load {uri}");
@@ -2888,6 +2899,7 @@ impl BrowserWidget {
     fn choose_navigation_entry(&mut self, index: usize) {
         if let Some(entry) = self.back_entries.get(index) {
             let id = entry.id;
+            self.address_navigation_value = Some(self.address.with(Clone::clone));
             self.clear_address_error();
             self.set_loading_progress(0.0);
             self.engine.send(WebViewCommand::NavigateToHistoryEntry {
@@ -3051,6 +3063,7 @@ impl BrowserWidget {
             }
             widget.children().iter().find_map(|child| state(*child, id))
         }
+
         fn restore(widget: &mut dyn Widget, id: &str, value: &str) {
             if widget.test_id() == Some(id) {
                 widget.set_state(value);
@@ -3909,7 +3922,7 @@ impl Widget for BrowserWidget {
         fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
             if matches!(
                 widget.test_id(),
-                Some(URL_INPUT_ID) | Some(crate::daily_controls::FIND_INPUT)
+                Some(URL_INPUT_ID | crate::daily_controls::FIND_INPUT)
             ) && widget.is_focused()
             {
                 return widget
@@ -3946,13 +3959,11 @@ impl Widget for BrowserWidget {
         self.composed = Some(composed);
         if let Some(id) = self.daily.focus_pending.take() {
             self.focus_control(id);
-            if id == crate::daily_controls::FIND_INPUT {
-                if let Some(cursor) = self.daily.take_buffered_cursor() {
-                    if let Some(composed) = self.composed.as_mut() {
+            if id == crate::daily_controls::FIND_INPUT
+                && let Some(cursor) = self.daily.take_buffered_cursor()
+                    && let Some(composed) = self.composed.as_mut() {
                         restore_address(composed.as_mut(), id, &cursor.to_string());
                     }
-                }
-            }
             self.pending_chrome_focus = node_map.iter().find_map(|(node, widget)| {
                 (unsafe { &**widget }.test_id() == Some(id)).then_some((*node, id))
             });
@@ -4394,7 +4405,9 @@ impl Widget for BrowserWidget {
                 button: MouseButton::Right,
                 ..
             } if navigation_hit.is_some() => {
-                self.request_navigation_history(navigation_hit.unwrap());
+                if let Some(direction) = navigation_hit {
+                    self.request_navigation_history(direction);
+                }
                 *handled = true;
                 return;
             }
@@ -4403,7 +4416,7 @@ impl Widget for BrowserWidget {
                 button: MouseButton::Left,
                 ..
             } if navigation_hit.is_some() && !self.back_menu.is_open() => {
-                let direction = navigation_hit.unwrap();
+                let Some(direction) = navigation_hit else { return; };
                 self.navigation_pointer_down = Some(direction);
                 self.navigation_hold
                     .press(std::time::Instant::now(), direction);
@@ -4515,9 +4528,9 @@ impl Widget for BrowserWidget {
 
         // Cmd/Ctrl+F can be followed by text before the host rebuilds the bar.
         // Retain those characters and place the caret after them on first layout.
-        if self.daily.focus_pending == Some(crate::daily_controls::FIND_INPUT) {
-            if let WindowEvent::KeyboardInput { event: key, .. } = event {
-                if key.state == ElementState::Pressed
+        if self.daily.focus_pending == Some(crate::daily_controls::FIND_INPUT)
+            && let WindowEvent::KeyboardInput { event: key, .. } = event
+                && key.state == ElementState::Pressed
                     && !modifiers.state().super_key()
                     && !modifiers.state().control_key()
                 {
@@ -4531,8 +4544,6 @@ impl Widget for BrowserWidget {
                         return;
                     }
                 }
-            }
-        }
 
         // The suggestion dropdown gets first crack at input while it's up
         // (address bar focused): arrow keys move the selection, Enter/click
@@ -4855,15 +4866,15 @@ mod architecture_tests {
         );
     }
 
-    fn dispatch_back_event(widget: &mut BrowserWidget, event: WindowEvent) -> bool {
+    fn dispatch_back_event(widget: &mut BrowserWidget, event: &WindowEvent) -> bool {
         let mut tree = TaffyTree::new();
         let node = tree.new_leaf(Style::default()).unwrap();
         let mut doc = AutoCommit::new();
         let mut handled = false;
         widget.handle_event(
-            &event,
+            event,
             1.0,
-            &Default::default(),
+            &winit::event::Modifiers::default(),
             &mut doc,
             &automerge::ROOT,
             &mut handled,
@@ -4925,7 +4936,7 @@ mod architecture_tests {
         widget.handle_event(
             &WindowEvent::Focused(true),
             2.0,
-            &Default::default(),
+            &winit::event::Modifiers::default(),
             &mut AutoCommit::new(),
             &automerge::ROOT,
             &mut false,
@@ -4958,7 +4969,7 @@ mod architecture_tests {
         assert!(
             sizes
                 .iter()
-                .all(|&(width, _, scale)| width > 1000 && scale == 2.0),
+                .all(|&(width, _, scale)| width > 1000 && (scale - 2.0).abs() < f32::EPSILON),
             "{sizes:?}"
         );
         assert!(
@@ -4993,7 +5004,7 @@ mod architecture_tests {
             widget.handle_event(
                 &event,
                 1.0,
-                &Default::default(),
+                &winit::event::Modifiers::default(),
                 &mut doc,
                 &automerge::ROOT,
                 &mut false,
@@ -5075,7 +5086,7 @@ mod architecture_tests {
             .unwrap()
             .push(WebViewEvent::LoadProgress(0.4));
         widget.apply_engine_events();
-        assert_eq!(widget.progress, 1.0);
+        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
         assert!(capture.commands().contains(&WebViewCommand::StopLoading));
         widget
             .perform_browser_operation(BrowserOperation::Reload)
@@ -5086,7 +5097,7 @@ mod architecture_tests {
             .unwrap()
             .push(WebViewEvent::LoadProgress(0.6));
         widget.apply_engine_events();
-        assert_eq!(widget.progress, 0.6);
+        assert!((widget.progress - 0.6).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -5125,7 +5136,7 @@ mod architecture_tests {
             if let WindowEvent::KeyboardInput { event, .. } = &mut event {
                 event.logical_key = WKey::Character(letter.into());
             }
-            assert!(!widget.handle_browser_shortcut(&event, Default::default()));
+            assert!(!widget.handle_browser_shortcut(&event, winit::event::Modifiers::default()));
             assert!(
                 widget.handle_browser_shortcut(
                     &event,
@@ -5152,7 +5163,7 @@ mod architecture_tests {
         widget.cursor = widget.find_rect("browser.back").unwrap().center();
         assert!(dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Left, ElementState::Pressed)
+            &mouse(MouseButton::Left, ElementState::Pressed)
         ));
         assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
         widget.tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(451));
@@ -5168,15 +5179,15 @@ mod architecture_tests {
         );
         assert!(dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Left, ElementState::Released)
+            &mouse(MouseButton::Left, ElementState::Released)
         ));
         assert!(widget.pending_controls.is_empty());
         assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
         let accessible = widget.back_menu.accessibility().unwrap();
         assert_eq!(accessible.children.len(), 2);
-        assert!(dispatch_back_event(&mut widget, key(WNamedKey::ArrowDown)));
-        assert!(dispatch_back_event(&mut widget, key(WNamedKey::ArrowDown)));
-        assert!(dispatch_back_event(&mut widget, key(WNamedKey::Enter)));
+        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::ArrowDown)));
+        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::ArrowDown)));
+        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Enter)));
         assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
         engine.send(WebViewCommand::GoForward);
         assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
@@ -5189,14 +5200,14 @@ mod architecture_tests {
             engine.send(WebViewCommand::Navigate(url.into()));
         }
         engine.send(WebViewCommand::GoBack);
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        let mut widget = BrowserWidget::with_engine(engine, true);
         widget.debug_set_viewport_width(360);
         super::tests::layout_at(&mut widget, 360.0, 700.0);
         widget.apply_engine_events();
         let forward = widget.find_rect("browser.forward").expect("compact Forward must remain visible");
         assert!(forward.width() >= 30.0 && forward.x0 >= 0.0 && forward.x1 <= 360.0);
         widget.cursor = forward.center();
-        assert!(dispatch_back_event(&mut widget, mouse(MouseButton::Right, ElementState::Pressed)));
+        assert!(dispatch_back_event(&mut widget, &mouse(MouseButton::Right, ElementState::Pressed)));
         widget.apply_engine_events();
         assert!(widget.back_menu.is_open());
         assert_eq!(widget.back_entries.iter().map(|entry| entry.url.as_str()).collect::<Vec<_>>(), ["https://b.test"]);
@@ -5215,7 +5226,7 @@ mod architecture_tests {
         widget.cursor = widget.find_rect("browser.back").unwrap().center();
         assert!(dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Right, ElementState::Pressed)
+            &mouse(MouseButton::Right, ElementState::Pressed)
         ));
         widget.apply_engine_events();
         assert_eq!(
@@ -5226,12 +5237,12 @@ mod architecture_tests {
                 .collect::<Vec<_>>(),
             [(1, "https://a.test")]
         );
-        assert!(dispatch_back_event(&mut widget, key(WNamedKey::Escape)));
+        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Escape)));
         widget.cursor = widget.find_rect("browser.forward").unwrap().center();
 
         assert!(dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Left, ElementState::Pressed)
+            &mouse(MouseButton::Left, ElementState::Pressed)
         ));
         widget.tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(451));
         widget.apply_engine_events();
@@ -5264,7 +5275,7 @@ mod architecture_tests {
         );
         assert!(dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Left, ElementState::Released)
+            &mouse(MouseButton::Left, ElementState::Released)
         ));
         assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
     }
@@ -5393,7 +5404,7 @@ mod architecture_tests {
         let capture = TestEngine::new();
         let engine = std::sync::Arc::new(FullscreenEngine {
             events: std::sync::Mutex::new(vec![WebViewEvent::FullscreenChanged(true)]),
-            capture: capture.clone(),
+            capture: capture,
         });
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
 
@@ -5445,46 +5456,46 @@ mod architecture_tests {
         let mut widget = BrowserWidget::with_engine(engine, true);
         super::tests::layout_at(&mut widget, 900.0, 700.0);
         widget.cursor = widget.find_rect("browser.back").unwrap().center();
-        dispatch_back_event(&mut widget, mouse(MouseButton::Left, ElementState::Pressed));
+        dispatch_back_event(&mut widget, &mouse(MouseButton::Left, ElementState::Pressed));
         dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Left, ElementState::Released),
+            &mouse(MouseButton::Left, ElementState::Released),
         );
         assert_eq!(widget.pending_controls.len(), 1);
         widget.pending_controls.clear();
-        dispatch_back_event(&mut widget, mouse(MouseButton::Left, ElementState::Pressed));
-        dispatch_back_event(&mut widget, WindowEvent::Focused(false));
+        dispatch_back_event(&mut widget, &mouse(MouseButton::Left, ElementState::Pressed));
+        dispatch_back_event(&mut widget, &WindowEvent::Focused(false));
         dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Left, ElementState::Released),
+            &mouse(MouseButton::Left, ElementState::Released),
         );
         assert!(widget.pending_controls.is_empty());
         assert!(!widget.navigation_hold.waiting());
         dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Right, ElementState::Pressed),
+            &mouse(MouseButton::Right, ElementState::Pressed),
         );
         widget.apply_engine_events();
         assert!(widget.back_menu.is_open());
-        assert!(dispatch_back_event(&mut widget, key(WNamedKey::Escape)));
+        assert!(dispatch_back_event(&mut widget, &key(WNamedKey::Escape)));
         assert!(!widget.back_menu.is_open());
         dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Right, ElementState::Pressed),
+            &mouse(MouseButton::Right, ElementState::Pressed),
         );
         widget.apply_engine_events();
         assert!(widget.back_menu.is_open());
         widget.cursor = Point::new(850.0, 650.0);
         dispatch_back_event(
             &mut widget,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
             },
         );
         assert!(dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Left, ElementState::Pressed)
+            &mouse(MouseButton::Left, ElementState::Pressed)
         ));
         assert!(!widget.back_menu.is_open());
     }
@@ -5505,7 +5516,7 @@ mod architecture_tests {
         focus_back(&mut widget);
         assert!(dispatch_back_event(
             &mut widget,
-            key(WNamedKey::ContextMenu)
+            &key(WNamedKey::ContextMenu)
         ));
         widget.apply_engine_events();
         assert!(widget.back_menu.is_open());
@@ -5546,7 +5557,7 @@ mod architecture_tests {
 
         assert!(dispatch_back_event(
             &mut widget,
-            key(WNamedKey::ContextMenu)
+            &key(WNamedKey::ContextMenu)
         ));
         widget.apply_engine_events();
         let node = widget.accessibility().unwrap();
@@ -5569,12 +5580,12 @@ mod architecture_tests {
         let mut widget = BrowserWidget::with_engine(engine, true);
         super::tests::layout_at(&mut widget, 900.0, 700.0);
         widget.cursor = widget.find_rect("browser.back").unwrap().center();
-        dispatch_back_event(&mut widget, mouse(MouseButton::Left, ElementState::Pressed));
-        dispatch_back_event(&mut widget, WindowEvent::Focused(false));
+        dispatch_back_event(&mut widget, &mouse(MouseButton::Left, ElementState::Pressed));
+        dispatch_back_event(&mut widget, &WindowEvent::Focused(false));
         widget.cursor = Point::new(800.0, 600.0);
         assert!(!dispatch_back_event(
             &mut widget,
-            mouse(MouseButton::Left, ElementState::Released)
+            &mouse(MouseButton::Left, ElementState::Released)
         ));
     }
 
@@ -5602,7 +5613,7 @@ mod architecture_tests {
         widget
             .perform_browser_operation(BrowserOperation::Stop)
             .unwrap();
-        assert_eq!(widget.progress, 1.0);
+        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
         assert!(engine.commands().contains(&WebViewCommand::StopLoading));
         assert!(widget.take_structure_dirty());
     }
@@ -5649,7 +5660,7 @@ mod architecture_tests {
             "loading indicator animates immediately"
         );
         widget.apply_engine_events();
-        assert_eq!(widget.progress, 1.0);
+        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
         // Paint the new engine frame once before checking idle scheduling.
         let mut composed = widget.build_composition();
         composed.draw(
@@ -5674,7 +5685,7 @@ mod architecture_tests {
             .engine
             .send(WebViewCommand::Navigate("https://a.test".into()));
         widget.apply_engine_events();
-        assert_eq!(widget.progress, 1.0);
+        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
         assert!(!widget.build_composition().needs_animation_frame());
     }
 
@@ -5960,12 +5971,26 @@ mod tests {
     }
 
     #[test]
+    fn focused_address_history_menu_selection_replaces_older_draft() {
+        let engine = TestEngine::new();
+        for url in ["https://a.test", "https://b.test"] {
+            engine.send(WebViewCommand::Navigate(url.into()));
+        }
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        layout_at(&mut widget, 900.0, 700.0);
+        widget.apply_engine_events();
+        assert!(widget.focus_address_input());
+        widget.address.set("older unsent draft".into());
+        widget.request_navigation_history(NavigationDirection::Back);
+        widget.apply_engine_events();
+        assert_eq!(widget.back_entries.len(), 1);
+        widget.choose_navigation_entry(0);
+        widget.apply_engine_events();
+        assert_eq!(widget.address.with(Clone::clone), "https://a.test");
+    }
+
+    #[test]
     fn address_focus_selects_all_and_survives_chrome_rebuild() {
-        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        let _ = synced(&mut w);
-        let mut tree = TaffyTree::new();
-        w.build_layout(&mut tree, &Theme::dark(), &mut Default::default());
-        assert!(w.focus_address_input());
         fn state(widget: &dyn Widget) -> Option<String> {
             if widget.test_id() == Some(URL_INPUT_ID) {
                 assert!(widget.is_focused());
@@ -5973,10 +5998,16 @@ mod tests {
             }
             widget.children().iter().find_map(|child| state(*child))
         }
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        let _ = synced(&mut w);
+        let mut tree = TaffyTree::new();
+        w.build_layout(&mut tree, &Theme::dark(), &mut std::collections::HashMap::default());
+        assert!(w.focus_address_input());
+
         let selected = format!("{}:b:0", DEFAULT_URL.len());
         assert_eq!(state(&w).as_deref(), Some(selected.as_str()));
         let mut tree = TaffyTree::new();
-        w.build_layout(&mut tree, &Theme::dark(), &mut Default::default());
+        w.build_layout(&mut tree, &Theme::dark(), &mut std::collections::HashMap::default());
         assert_eq!(state(&w).as_deref(), Some(selected.as_str()));
     }
 
@@ -6114,7 +6145,7 @@ mod tests {
                     ui::offscreen::OffscreenRenderer::new(390, 700).render_png(
                         &scene,
                         theme.bg_app,
-                        &directory.join("address-editor-narrow.png"),
+                        directory.join("address-editor-narrow.png"),
                     );
                 }
             }
@@ -6207,7 +6238,7 @@ mod tests {
                 renderer.render_png(
                     &scene,
                     theme.bg_app,
-                    &path.join(format!("panel-pass-{pass}.png")),
+                    path.join(format!("panel-pass-{pass}.png")),
                 );
             }
         }
@@ -6285,7 +6316,7 @@ mod tests {
                 } else {
                     "narrow-protection.png"
                 };
-                renderer.render_png(&scene, theme.bg_app, &path.join(name));
+                renderer.render_png(&scene, theme.bg_app, path.join(name));
             }
         }
     }
@@ -7433,12 +7464,12 @@ mod tests {
             widget.title.is_empty(),
             "a new document must not inherit the blank page title"
         );
-        assert_eq!(widget.progress, 0.3);
+        assert!((widget.progress - 0.3).abs() < f64::EPSILON);
         engine.0.lock().unwrap().push(WebViewEvent::LoadFinishedAt {
             uri: "https://example.test/saved".into(),
         });
         widget.apply_engine_events();
-        assert_eq!(widget.progress, 1.0);
+        assert!((widget.progress - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

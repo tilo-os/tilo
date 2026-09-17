@@ -23,9 +23,30 @@ pub struct HistoryScopeDefinition {
     pub content_schema: Option<&'static HistoryRestoreSchema>,
 }
 pub enum HistoryPresentation {
-    Domain { create: PreviewFactory },
-    CheckedFiles { create: super::checked_files::FilePreviewFactory },
-    External { reason: &'static str },
+    Domain {
+        create: PreviewFactory,
+    },
+    /// Stateless source factory installed only after scope/custody validation.
+    DomainWithAssets {
+        create: PreviewFactory,
+        assets: fn() -> std::rc::Rc<dyn super::HistoricalAssetSource>,
+    },
+    CheckedFiles {
+        create: super::checked_files::FilePreviewFactory,
+    },
+    External {
+        reason: &'static str,
+    },
+}
+
+impl HistoryPresentation {
+    /// Presentation factory only; does not construct or invoke an asset source.
+    pub fn preview_factory(&self) -> Option<PreviewFactory> {
+        match self {
+            Self::Domain { create } | Self::DomainWithAssets { create, .. } => Some(*create),
+            Self::CheckedFiles { .. } | Self::External { .. } => None,
+        }
+    }
 }
 
 /// Immutable identity supplied by the owning runner. This carries no document.
@@ -104,11 +125,28 @@ impl HistoryRegistration {
             HistoryResource::new(format!("memory:{lifetime}"), format!("host:{lifetime}"), definition.app_id,
                 crate::RecordId::derived("app-state", &crate::RecordId::for_tab(0)))
         };
-        let sources = definition.scopes.iter().map(|scope| match scope.presentation {
-            HistoryPresentation::Domain { .. } => Ok(HistorySourceRegistration::HostDocument { scope: scope.key, resource: resource.clone() }),
-            HistoryPresentation::External { reason } => Ok(HistorySourceRegistration::Unversioned { scope: scope.key, reason }),
-            HistoryPresentation::CheckedFiles { .. } => Err(HistoryRegistrationError::UnsupportedOwner),
-        }).collect::<Result<Vec<_>,_>>()?;
+        let sources = definition
+            .scopes
+            .iter()
+            .map(|scope| match scope.presentation {
+                HistoryPresentation::Domain { .. }
+                | HistoryPresentation::DomainWithAssets { .. } => {
+                    Ok(HistorySourceRegistration::HostDocument {
+                        scope: scope.key,
+                        resource: resource.clone(),
+                    })
+                }
+                HistoryPresentation::External { reason } => {
+                    Ok(HistorySourceRegistration::Unversioned {
+                        scope: scope.key,
+                        reason,
+                    })
+                }
+                HistoryPresentation::CheckedFiles { .. } => {
+                    Err(HistoryRegistrationError::UnsupportedOwner)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Self::new(definition, sources)
     }
 
@@ -120,12 +158,17 @@ impl HistoryRegistration {
         definition: &'static HistoryDefinition,
         sources: Vec<HistorySourceRegistration>,
     ) -> Result<Self, HistoryRegistrationError> {
-        let registration = Self {
+        let mut registration = Self {
             definition,
             sources,
             assets: std::collections::HashMap::new(),
         };
         registration.validate()?;
+        for scope in definition.scopes {
+            if let HistoryPresentation::DomainWithAssets { assets, .. } = scope.presentation {
+                registration.assets.insert(scope.key, assets());
+            }
+        }
         Ok(registration)
     }
     /// Attach the trusted source owner, never a service available to a preview.
@@ -165,10 +208,15 @@ impl HistoryRegistration {
                 return Err(HistoryRegistrationError::InvalidScopes);
             }
             match (&scope.presentation, source) {
-                (HistoryPresentation::CheckedFiles { .. }, HistorySourceRegistration::CheckedFiles { .. }) if scope.content_schema.is_none() => {},
                 (
-                    HistoryPresentation::Domain { .. },
-                    HistorySourceRegistration::HostDocument { resource, .. } | HistorySourceRegistration::OwnedDocument { resource, .. },
+                    HistoryPresentation::CheckedFiles { .. },
+                    HistorySourceRegistration::CheckedFiles { .. },
+                ) if scope.content_schema.is_none() => {}
+                (
+                    HistoryPresentation::Domain { .. }
+                    | HistoryPresentation::DomainWithAssets { .. },
+                    HistorySourceRegistration::HostDocument { resource, .. }
+                    | HistorySourceRegistration::OwnedDocument { resource, .. },
                 ) if resource.app_id == self.definition.app_id => {
                     if resource.profile_id.trim().is_empty()
                         || resource.workspace_id.trim().is_empty()
@@ -242,3 +290,36 @@ impl HistoryRegistration {
     }
 }
 
+#[cfg(test)]
+mod asset_factory_tests {
+    use super::*;
+    struct EmptySource;
+    impl crate::history_mode::HistoricalAssetSource for EmptySource {
+        fn request(
+            &self,
+            _: crate::history_mode::HistoricalAssetRequest,
+            r: crate::history_mode::HistoricalAssetResponse,
+        ) {
+            r.complete(Ok(Default::default()));
+        }
+    }
+    static DEFINITION: HistoryDefinition = HistoryDefinition {
+        app_id: "dev.qos.asset-factory",
+        scopes: &[HistoryScopeDefinition {
+            key: "deck",
+            title: "Deck",
+            content_schema: None,
+            presentation: HistoryPresentation::DomainWithAssets {
+                create: crate::history_mode::test_preview,
+                assets: || std::rc::Rc::new(EmptySource),
+            },
+        }],
+    };
+    #[test]
+    fn installed_app_registration_automatically_attaches_declared_asset_source() {
+        let registration =
+            HistoryRegistration::installed_app_state(&DEFINITION, None, uuid::Uuid::new_v4())
+                .unwrap();
+        assert!(registration.assets.contains_key("deck"));
+    }
+}

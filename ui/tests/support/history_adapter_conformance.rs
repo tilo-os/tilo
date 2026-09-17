@@ -41,7 +41,7 @@ fn preview(
         )
         .unwrap();
     controller.select_compare_side(side).unwrap();
-    let HistoryPresentation::Domain { create } = def.scopes[0].presentation else {
+    let Some(create) = def.scopes[0].presentation.preview_factory() else {
         panic!("domain presentation required")
     };
     create(PreviewInput {

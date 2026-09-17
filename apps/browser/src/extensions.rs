@@ -573,6 +573,10 @@ pub fn is_approved(extension: &ExtensionInfo) -> bool {
             .zip(manifest_digest(extension).ok())
             .is_some_and(|(approved, current)| approved == current)
 }
+/// Update startup approval for this installed extension.
+///
+/// # Errors
+/// Returns an error for an invalid extension path, unsupported manifest version or filesystem failure.
 pub fn set_approved(extension: &ExtensionInfo, approved: bool) -> Result<(), ExtensionError> {
     let path = approval_path(extension)
         .ok_or_else(|| ExtensionError::Manifest("Extension path is invalid".into()))?;
@@ -595,6 +599,10 @@ pub fn approved_paths() -> Vec<PathBuf> {
         .filter_map(|extension| extension.path.canonicalize().ok())
         .collect()
 }
+/// Summarize permissions declared by an installed extension.
+///
+/// # Errors
+/// Returns an error if the manifest cannot be read or parsed.
 pub fn permission_summary(extension: &ExtensionInfo) -> Result<String, ExtensionError> {
     let value: serde_json::Value =
         serde_json::from_str(&read_manifest(&extension.path.join("manifest.json"))?)
@@ -606,7 +614,7 @@ pub fn permission_summary(extension: &ExtensionInfo) -> Result<String, Extension
         "optional_permissions",
         "optional_host_permissions",
     ] {
-        if let Some(items) = value[key].as_array() {
+        if let Some(items) = value.get(key).and_then(serde_json::Value::as_array) {
             for item in items {
                 if let Some(item) = item.as_str() {
                     permissions.push(format!("{key}: {item}"));
@@ -614,9 +622,9 @@ pub fn permission_summary(extension: &ExtensionInfo) -> Result<String, Extension
             }
         }
     }
-    if let Some(scripts) = value["content_scripts"].as_array() {
+    if let Some(scripts) = value.get("content_scripts").and_then(serde_json::Value::as_array) {
         for script in scripts {
-            if let Some(matches) = script["matches"].as_array() {
+            if let Some(matches) = script.get("matches").and_then(serde_json::Value::as_array) {
                 for pattern in matches {
                     if let Some(pattern) = pattern.as_str() {
                         permissions.push(format!("content scripts: {pattern}"));
@@ -637,14 +645,14 @@ pub fn action_url(extension: &ExtensionInfo) -> Option<String> {
     use sha2::{Digest, Sha256};
     let manifest: serde_json::Value =
         serde_json::from_str(&read_manifest(&extension.path.join("manifest.json")).ok()?).ok()?;
-    let popup = manifest["action"]["default_popup"].as_str()?;
+    let popup = manifest.get("action")?.get("default_popup")?.as_str()?;
     if popup.starts_with('/')
         || popup.split('/').any(|part| part == "..")
         || popup.contains(['\\', ':', '#', '?'])
     {
         return None;
     }
-    let bytes = if let Some(key) = manifest["key"].as_str() {
+    let bytes = if let Some(key) = manifest.get("key").and_then(serde_json::Value::as_str) {
         base64::engine::general_purpose::STANDARD.decode(key).ok()?
     } else {
         extension
@@ -656,8 +664,8 @@ pub fn action_url(extension: &ExtensionInfo) -> Option<String> {
             .to_vec()
     };
     let hash = Sha256::digest(bytes);
-    let id: String = hash[..16]
-        .iter()
+    let id: String = hash.iter()
+        .take(16)
         .flat_map(|byte| {
             [
                 char::from(b'a' + (byte >> 4)),

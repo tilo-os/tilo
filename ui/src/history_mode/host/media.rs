@@ -46,8 +46,10 @@ impl AssetSession {
 }
 impl HistoryHost {
     pub(super) fn refresh_media(&mut self) {
-        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else { return; };
-        let HistoryPresentation::Domain { create } = scope.presentation else {
+        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
+            return;
+        };
+        let Some(create) = scope.presentation.preview_factory() else {
             return;
         };
         let provider = self.registration.assets.get(scope.key).cloned();
