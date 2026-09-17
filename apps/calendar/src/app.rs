@@ -63,7 +63,7 @@ use crate::event_popovers::{
 };
 use crate::ics;
 use crate::input_context::InputContext;
-use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
+use crate::mini_month::{MiniMonth, MiniMonthModel, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 use crate::sidebar::{Action as SidebarAction, ChromeModel, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
@@ -4141,16 +4141,15 @@ impl CalendarApp {
         let event_dates = self.mini_month_event_dates();
         hits.extend(
             MiniMonth::draw(
-                paint.scene,
-                paint.transform,
-                paint.text,
-                paint.theme,
-                r,
-                y,
-                self.anchor,
-                self.today,
-                &event_dates,
-                self.last_mouse,
+                paint,
+                &MiniMonthModel {
+                    sidebar: r,
+                    occupied_until: y,
+                    anchor: self.anchor,
+                    today: self.today,
+                    event_dates: &event_dates,
+                    pointer: self.last_mouse,
+                },
             )
             .into_iter()
             .map(|(rect, outcome)| (rect, Action::MiniMonth(outcome))),
