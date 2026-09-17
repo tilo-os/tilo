@@ -149,7 +149,9 @@ fn parse_range(v: &Value) -> LspRange {
 /// or a bare `params` object.
 pub fn parse_publish_diagnostics(msg: &Value) -> Option<(String, Vec<LspDiagnostic>)> {
     let params = msg.get("params").unwrap_or(msg);
-    let uri = clip_display_text(params.get("uri").and_then(Value::as_str)?);
+    let uri = normalize_document_uri(&clip_display_text(
+        params.get("uri").and_then(Value::as_str)?,
+    ));
     let diags = params
         .get("diagnostics")
         .and_then(Value::as_array)
@@ -313,7 +315,7 @@ fn parse_location(v: &Value) -> Option<Location> {
     // Plain Location.
     if let (Some(uri), Some(range)) = (v.get("uri").and_then(Value::as_str), v.get("range")) {
         return Some(Location {
-            uri: clip_display_text(uri),
+            uri: normalize_document_uri(&clip_display_text(uri)),
             range: parse_range(range),
         });
     }
@@ -324,7 +326,7 @@ fn parse_location(v: &Value) -> Option<Location> {
             .or_else(|| v.get("targetRange")),
     ) {
         return Some(Location {
-            uri: clip_display_text(uri),
+            uri: normalize_document_uri(&clip_display_text(uri)),
             range: parse_range(range),
         });
     }
@@ -495,12 +497,30 @@ pub struct LspClient {
 /// files we never show.
 pub fn path_to_uri(path: &Path) -> String {
     match url::Url::from_file_path(path) {
-        Ok(u) => u.to_string(),
+        Ok(u) => normalize_document_uri(u.as_str()),
         // `from_file_path` only fails on a non-absolute path, which cannot
         // reach here from a canonicalised project root — but a lossy fallback
         // beats a panic in an editor.
         Err(()) => format!("file://{}", path.display()),
     }
+}
+
+/// Windows drive letters identify the same volume regardless of case.
+/// rust-analyzer lowercases them; normalize both directions so diagnostics
+/// and definition locations use the same keys as the editor's documents.
+fn normalize_document_uri(uri: &str) -> String {
+    #[cfg(windows)]
+    if let Some(path) = uri.strip_prefix("file:///") {
+        let bytes = path.as_bytes();
+        if let (Some(drive), Some(b':'), Some(b'/')) = (bytes.first(), bytes.get(1), bytes.get(2))
+            && drive.is_ascii_alphabetic()
+        {
+            let mut normalized = uri.to_owned();
+            normalized.replace_range(8..9, &char::from(drive.to_ascii_lowercase()).to_string());
+            return normalized;
+        }
+    }
+    uri.to_owned()
 }
 
 impl LspClient {
@@ -551,7 +571,14 @@ impl LspClient {
         }
         let root_uri = path_to_uri(root);
 
-        let mut child = Command::new(&prog)
+        let mut command = Command::new(&prog);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Language servers communicate over pipes, not a console window.
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = command
             .args(&args)
             // Run the server *in* the project, so anything it resolves
             // relatively (rustfmt.toml, .cargo/config.toml) resolves the way
@@ -806,6 +833,7 @@ fn spawn_reader_thread(
     reader_pending: Arc<Mutex<HashMap<i64, Pending>>>,
 ) -> Result<Receiver<LspEvent>, String> {
     let (tx, rx) = mpsc::sync_channel(LSP_EVENT_QUEUE_CAPACITY);
+    let wake = ui::wake::WakeHandle::new();
     std::thread::Builder::new()
         .name("code-editor-lsp".into())
         .spawn(move || {
@@ -820,13 +848,15 @@ fn spawn_reader_thread(
                             let _ = w.flush();
                         }
                     }
-                    if let Some(ev) = routed.event
-                        && !try_send_event(&tx, ev)
-                    {
-                        break;
+                    if let Some(ev) = routed.event {
+                        if !try_send_event(&tx, ev) {
+                            break;
+                        }
+                        wake.wake();
                     }
                 } else {
                     let _ = try_send_event(&tx, LspEvent::Exited);
+                    wake.wake();
                     break;
                 }
             }
@@ -1119,18 +1149,29 @@ mod tests {
 
     #[test]
     fn a_project_path_becomes_a_correctly_encoded_uri() {
+        #[cfg(windows)]
+        let (prefix, uri_prefix) = ("C:", "file:///c:");
+        #[cfg(not(windows))]
+        let (prefix, uri_prefix) = ("", "file://");
         // A space in a directory name must be encoded, or the server resolves a
         // different workspace than the one we opened.
         assert_eq!(
-            path_to_uri(Path::new("/home/me/my project")),
-            "file:///home/me/my%20project"
+            path_to_uri(Path::new(&format!("{prefix}/home/me/my project"))),
+            format!("{uri_prefix}/home/me/my%20project")
         );
-        assert_eq!(path_to_uri(Path::new("/a/b")), "file:///a/b");
+        assert_eq!(
+            path_to_uri(Path::new(&format!("{prefix}/a/b"))),
+            format!("{uri_prefix}/a/b")
+        );
+        let path = PathBuf::from(format!("{prefix}/home/me/my project/src/main.rs"));
         // And it round-trips back through the portal's own parser.
-        let uri = path_to_uri(Path::new("/home/me/my project/src/main.rs"));
+        let uri = path_to_uri(&path);
         assert_eq!(
             ui::portal::to_local_path(&url::Url::parse(&uri).unwrap()),
-            Some(PathBuf::from("/home/me/my project/src/main.rs"))
+            Some(PathBuf::from(format!(
+                "{}/home/me/my project/src/main.rs",
+                prefix.to_ascii_lowercase()
+            )))
         );
     }
 
@@ -1150,14 +1191,15 @@ mod tests {
         );
     }
 
-    /// An `LspClient` with no child process, for exercising the pure
+    /// An `LspClient` with an inert child process, for exercising the pure
     /// progress-table logic. Every field the tests touch is real.
     fn fake_client() -> LspClient {
-        let child = Command::new("true")
+        let child = Command::new(std::env::current_exe().expect("test executable"))
+            .arg("--list")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()
-            .expect("spawn /bin/true");
+            .expect("spawn inert test executable");
         let mut child = child;
         let stdin = child.stdin.take().expect("piped stdin");
         let (_tx, rx) = mpsc::channel();

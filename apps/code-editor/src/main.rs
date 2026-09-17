@@ -5,6 +5,7 @@
 //! * `--shots PATH` — render one offscreen frame to a PNG and exit (headless
 //!   screenshot; identical passes to the live app).
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
 // overflow is a tax a third-party app author would pay too. The lints that
@@ -306,10 +307,12 @@ fn stage_scenario(
             // One draw settles the terminal's cell metrics + placement, then we
             // drive the real shell and pump `sync` to collect its output.
             let _ = draw_frame(app, text_renderer, theme, presence, permission);
-            app.shots_terminal_input(
-                "echo 'Tilo embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
-                 echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n",
-            );
+            #[cfg(windows)]
+            let command = "echo Tilo embedded terminal (live PTY)\recho shell: %COMSPEC%\recho demo output:\recho primes below 20: 2 3 5 7 11 13 17 19\recho done\r";
+            #[cfg(not(windows))]
+            let command = "echo 'Tilo embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
+                           echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n";
+            app.shots_terminal_input(command);
             for _ in 0..24 {
                 app.sync(&mut state.doc, &state.root);
                 std::thread::sleep(std::time::Duration::from_millis(60));

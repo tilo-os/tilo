@@ -24,7 +24,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use code_editor::lsp::{LspClient, LspEvent};
@@ -47,7 +46,7 @@ fn project_with_a_deliberate_error() -> Result<tempfile::TempDir, Box<dyn std::e
     std::fs::create_dir_all(root.join("src"))?;
     std::fs::write(
         root.join("Cargo.toml"),
-        "[package]\nname = \"tilo-lsp-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+        "[package]\nname = \"tilo-lsp-probe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
          [dependencies]\n",
     )?;
     // `parse_limitt` does not exist. rustc's message for this is stable and
@@ -87,8 +86,9 @@ fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Ve
 }
 
 fn require_binary(name: &str) {
+    let executable = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let found = std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join(name).is_file()));
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join(&executable).is_file()));
     assert!(
         found,
         "{name} is not on PATH. This test proves the editor's language server \
@@ -99,6 +99,14 @@ fn require_binary(name: &str) {
 
 #[test]
 fn rust_analyzer_reports_a_real_error_in_a_real_project() {
+    let mut wake_scope = ui::wake::WakeScope::new();
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    wake_scope
+        .bind(move |event| {
+            let _ = wake_tx.send(event);
+        })
+        .unwrap();
+    let _wake_guard = wake_scope.enter();
     require_binary("rust-analyzer");
     require_binary("cargo");
 
@@ -133,6 +141,10 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
         "no diagnostics arrived within {BUDGET:?}. Events seen: {}",
         summarise(&events)
     );
+    let wake = wake_rx
+        .try_recv()
+        .expect("the server must wake an idle editor when events arrive");
+    assert!(wake_scope.accepts(&wake));
 
     // The diagnostic must be the real one, for the real file, at the real spot.
     let (diag_uri, diags) = events
@@ -240,6 +252,9 @@ fn the_editor_roots_its_server_at_a_real_directory() {
     assert!(err.contains("not a directory"), "got: {err}");
 
     // And a real one produces a real `file://` URI for its workspace root.
-    let uri = code_editor::lsp::path_to_uri(Path::new("/home/me/tilo"));
-    assert_eq!(uri, "file:///home/me/tilo");
+    let uri = code_editor::lsp::path_to_uri(d.path());
+    assert_eq!(
+        std::fs::canonicalize(url::Url::parse(&uri).unwrap().to_file_path().unwrap()).unwrap(),
+        std::fs::canonicalize(d.path()).unwrap()
+    );
 }
