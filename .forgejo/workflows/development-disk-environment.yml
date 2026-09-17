@@ -1,0 +1,58 @@
+name: Development / inspect ARM disk environment
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: development-disk-environment-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: startsWith(github.ref, 'refs/heads/codex/')
+    runs-on: runner-disk-100g-arm64
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Observe disposable ARM guest without disk operations
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash os/dev/assert-native-arch.sh aarch64
+          image=code.sandbox.example/qos/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06
+          name="tilo-disk-environment-${GITHUB_RUN_ID}"
+          evidence="$PWD/disk-environment-evidence"
+          mkdir -p "$evidence"
+          cleanup() {
+            docker cp "$name:/receipt.json" "$evidence/receipt.json" >/dev/null 2>&1 || true
+            docker rm --force "$name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker pull --platform linux/arm64 "$image"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = linux/arm64
+          docker image inspect --format '{{.Id}}' "$image" > "$evidence/tools-image-id.txt"
+          printf '%s\n' "$image" > "$evidence/tools-image-reference.txt"
+          # Privilege applies inside the operator-provisioned Kata guest. No
+          # host path, Docker socket, credential, TPM or physical disk is bound.
+          # This observation cannot certify the provisioner's passthrough policy.
+          docker create --name "$name" --platform linux/arm64 --pull=never \
+            --privileged --network=none --memory=512m --memory-swap=512m \
+            --entrypoint /usr/bin/python3 "$image" /preflight.py
+          docker cp os/dev/inspect-disk-environment.py "$name:/preflight.py"
+          docker start --attach "$name"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" = 0
+      - name: Retain bounded public observations
+        if: always()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: disk-environment-arm64-${{ github.run_id }}
+          path: disk-environment-evidence/
+          if-no-files-found: warn
