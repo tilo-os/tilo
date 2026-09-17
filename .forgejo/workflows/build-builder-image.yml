@@ -19,6 +19,11 @@ on:
       - "tools/check-build-env.sh"
       - ".forgejo/workflows/build-builder-image.yml"
   workflow_dispatch:
+    inputs:
+      cache_revision:
+        description: 'Optional full commit SHA whose candidate buildcache may accelerate this build; all acceptance gates still run'
+        required: false
+        type: string
 
 concurrency:
   group: build-builder-image-${{ github.ref }}
@@ -46,6 +51,18 @@ jobs:
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+
+      - name: Select an optional candidate buildcache
+        env:
+          REQUESTED_CACHE_REVISION: ${{ github.event.inputs.cache_revision }}
+        run: |
+          set -euo pipefail
+          revision="${REQUESTED_CACHE_REVISION:-$GITHUB_SHA}"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
+            echo '::error::cache_revision must be a full lowercase Git SHA'
+            exit 1
+          }
+          printf 'BUILDER_CACHE_REVISION=%s\n' "$revision" >> "$GITHUB_ENV"
 
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
@@ -105,7 +122,9 @@ jobs:
           build-args: |
             RUST_CHANNEL=${{ env.RUST_CHANNEL }}
           tags: code.sandbox.example/qos/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
-          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ matrix.arch }}
+          cache-from: |
+            type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ matrix.arch }}
+            type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
           cache-to: type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}', github.sha, matrix.arch) }},mode=max
 
       - name: Install checksum-pinned Cosign
@@ -270,6 +289,14 @@ jobs:
           BUILDER_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          # Index assembly needs manifest metadata, not mounted image layers.
+          # Use an isolated VFS store inside the containerized runner; its
+          # overlay root cannot host another unconfigured overlay store.
+          storage="$(mktemp -d "$RUNNER_TEMP/tilo-builder-manifests.XXXXXX")"
+          trap 'rm -rf -- "$storage"' EXIT
+          export CONTAINERS_STORAGE_CONF="$storage/storage.conf"
+          printf '[storage]\ndriver = "vfs"\ngraphroot = "%s/graph"\nrunroot = "%s/run"\n' \
+            "$storage" "$storage" > "$CONTAINERS_STORAGE_CONF"
           channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
           # Feature builds are reviewable candidates. Only main may advance
           # shared builder aliases after the native/cache acceptance gates.
