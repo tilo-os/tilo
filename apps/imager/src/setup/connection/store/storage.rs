@@ -347,27 +347,80 @@ impl Storage {
         sync_directory(&parent.file)?;
         Ok(())
     }
-    pub fn publish_current(&self, current: &Current) -> Result<(), StoreError> {
+    pub(super) fn validate_current(
+        &self,
+        expected: &Current,
+        identity: &Metadata,
+    ) -> Result<(), StoreError> {
+        let pointer = open_file(&self.root, "CURRENT", false)?;
+        validate_file(&self.root, "CURRENT", &pointer, identity)?;
+        if self.read_bytes(&self.root, "CURRENT", 4096)? != format::encode(expected)? {
+            return Err(StoreError::IdentityChanged);
+        }
+        Ok(())
+    }
+}
+
+impl super::ConnectionStore {
+    // Kept on the locked store so callers cannot supply substitute evidence for
+    // its retained CURRENT and committed active-log snapshot.
+    pub(super) fn publish_current(
+        &self,
+        next: &Current,
+        next_log: &File,
+        next_log_identity: &Metadata,
+    ) -> Result<Metadata, StoreError> {
         self.validate()?;
-        let mut temporary = OwnedTemporary::create(&self.root, OsStr::new("CURRENT"))?;
-        temporary.file.write_all(&format::encode(current)?)?;
+        let mut temporary = OwnedTemporary::create(&self.storage.root, OsStr::new("CURRENT"))?;
+        temporary.file.write_all(&format::encode(next)?)?;
+        let identity = regular(&temporary.file)?;
         sync_file(&temporary.file)?;
-        temporary.validate()?;
-        self.validate()?;
-        // CURRENT is the sole replaceable pointer; its target dependencies already exist.
-        let existing = open_file(&self.root, "CURRENT", false)?;
-        regular(&existing)?;
         #[cfg(test)]
-        super::tests::fault()?;
+        {
+            super::tests::fault()?;
+            super::tests::checkpoint_boundary(super::tests::CheckpointBoundary::Prepared)?;
+        }
+        temporary.validate()?;
+        if !super::super::super::migration::same_snapshot(&identity, &regular(&temporary.file)?) {
+            return Err(StoreError::IdentityChanged);
+        }
+        self.validate_next_log(next, next_log, next_log_identity)?;
+        // This must follow every potentially blocking preparation stage. The
+        // old pointer and old log still define the only committed generation.
+        self.validate()?;
         cap_primitives::fs::rename(
-            &self.root.file,
+            &self.storage.root.file,
             Path::new(&temporary.name),
-            &self.root.file,
+            &self.storage.root.file,
             Path::new("CURRENT"),
         )?;
         #[cfg(test)]
         super::tests::fault()?;
-        sync_directory(&self.root.file)?;
+        sync_directory(&self.storage.root.file)?;
+        #[cfg(test)]
+        super::tests::checkpoint_boundary(super::tests::CheckpointBoundary::Published)?;
+        // Keep old dependencies and poison on uncertainty after replacement too.
+        self.storage.validate()?;
+        self.storage.validate_current(next, &identity)?;
+        self.validate_next_log(next, next_log, next_log_identity)?;
+        self.validate_log()?;
+        Ok(identity)
+    }
+    fn validate_next_log(
+        &self,
+        next: &Current,
+        log: &File,
+        identity: &Metadata,
+    ) -> Result<(), StoreError> {
+        validate_file(
+            &self.storage.root,
+            &format!("log-{}", next.log),
+            log,
+            identity,
+        )?;
+        if !super::super::super::migration::same_snapshot(identity, &regular(log)?) {
+            return Err(StoreError::IdentityChanged);
+        }
         Ok(())
     }
 }
