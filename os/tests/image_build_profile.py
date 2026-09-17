@@ -3,6 +3,7 @@
 
 import os
 import json
+import platform
 import subprocess
 import tempfile
 import unittest
@@ -30,6 +31,7 @@ class ImageBuildProfileTests(unittest.TestCase):
         # line endings only. All profile/ref decisions remain production code.
         self.write("os/dev/build-image.sh", (REPO / "os/dev/build-image.sh").read_text())
         self.write("os/dev/hardware_profile.py", (REPO / "os/dev/hardware_profile.py").read_text())
+        self.write("os/dev/raw-rootfs-receipt.py", (REPO / "os/dev/raw-rootfs-receipt.py").read_text())
         self.write("os/dev/windows_provider.py", (REPO / "os/dev/windows_provider.py").read_text())
         self.write("os/hardware/profiles/lenovo-83ed.json", (REPO / "os/hardware/profiles/lenovo-83ed.json").read_text())
         self.write("os/dev/_common.sh", """\
@@ -157,6 +159,30 @@ print(json.dumps({'signed_rootfs_id': identity}))
         self.assertIn('rootfs=container-image://sha256:' + '2' * 64, arguments)
         self.assertIn('--pull=never', arguments)
         self.assertEqual(arguments.count('-t'), 1)
+
+    def test_raw_rootfs_handoff_is_explicit_exclusive_and_precedes_signing(self):
+        inputs = self.development_pipeline_inputs()
+        with tempfile.TemporaryDirectory() as external:
+            output = Path(external) / 'raw-rootfs.json'
+            inputs.update(TILO_RAW_ROOTFS_RECEIPT=str(output), TILO_TEST_ARCH=platform.machine(),
+                          TILO_TEST_SIGNER_FAIL='exit')
+            result = self.run_builder(**inputs)
+            self.assertEqual(result.returncode, 81, result.stderr)
+            receipt = json.loads(output.read_text())
+            self.assertEqual(receipt['raw_rootfs_id'], 'sha256:' + '1' * 64)
+            self.assertEqual(receipt['source_date_epoch'], 1700000000)
+            self.assertEqual(receipt['generation'], 42)
+            self.assertEqual(receipt['target_update_ref'], inputs['TILO_TARGET_IMGREF'])
+            self.assertEqual(receipt['public_manifest_sha256'], 'b' * 64)
+            self.assertFalse(receipt['installable'])
+            original = output.read_bytes()
+            result = self.run_builder(**inputs)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(output.read_bytes(), original)
+
+    def test_raw_handoff_is_rejected_in_production(self):
+        result = self.run_builder(TILO_RAW_ROOTFS_RECEIPT='/evidence/raw-rootfs.json')
+        self.assert_rejected_before_build(result, 'raw rootfs handoff is development-only')
 
     def test_development_wpe_cache_overrides_only_immutable_dependency_stage(self):
         inputs = self.development_pipeline_inputs()
