@@ -20,6 +20,9 @@ sys.path.insert(0, str(DEV))
 spec = importlib.util.spec_from_file_location('retention', DEV / 'retain-development-rootfs.py')
 retention = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(retention)
+spec = importlib.util.spec_from_file_location('retained_importer', DEV / 'import-development-rootfs.py')
+importer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(importer)
 
 
 def rejects(call, label):
@@ -72,6 +75,7 @@ def main():
                 modules.mkdir(parents=True)
                 (modules / 'vmlinuz').write_bytes(b'synthetic, non-executable kernel fixture\n')
                 (modules / 'initramfs.img').write_bytes(b'synthetic, non-bootable initramfs fixture\n')
+                (image_root / 'usr/lib/systemd/boot/efi').mkdir(parents=True)
                 (context / 'Containerfile').write_text('FROM scratch\nCOPY --chown=0:0 rootfs/ /\n'
                     f'LABEL org.opencontainers.image.revision={revision}\n'
                     'ENTRYPOINT ["/image-code-must-never-execute"]\n')
@@ -120,14 +124,30 @@ def main():
                 rejects(lambda: retention.verify_signature(verified, reference, '0' * 64), 'different receipt annotation')
                 rejects(lambda: retention.verify_signature(verified, repository + '@sha256:' + '0' * 64,
                                                            expected_handoff), 'different manifest identity')
+                retained_path = root / 'retained.json'
+                retained_path.write_text(json.dumps(receipt))
+                import_args = SimpleNamespace(**(vars(args) | {'receipt': retained_path}))
+                run('podman', '--remote=false', 'image', 'rm', '--no-prune', image_id)
+                absent = subprocess.run(['podman', '--remote=false', 'image', 'exists', image_id],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if absent.returncode != 1:
+                    raise ValueError('fixture failed to remove retained local image before import')
+                with patch.object(importer.retention, 'REPOSITORY', repository):
+                    with importer.verified_rootfs(import_args) as imported:
+                        if imported.image_id != image_id or imported.receipt['installable']:
+                            raise ValueError('cold retained import identity differs')
+                        if (imported.root / 'usr/lib/modules/fixture-1/vmlinuz').read_bytes() != (modules / 'vmlinuz').read_bytes():
+                            raise ValueError('cold imported kernel bytes differ')
                 print(json.dumps({'result': 'pass', 'architecture': native,
-                    'proof': 'TLS registry manifest/config and signed handoff linkage only',
+                    'proof': 'TLS registry signed handoff and verified cold raw-rootfs import only',
                     'manifest_digest': digest, 'config_digest': image_id, 'handoff_sha256': expected_handoff,
                     'tls_verification_disabled': False, 'synthetic_rootfs': True,
                     'image_code_executed': False, 'boot_proven': False, 'installable': False,
+                    'local_source_removed_before_import': True, 'cold_import_verified': True,
                     'checks': ['independent epoch', 'manifest content hash', 'config ID matches original image',
                                'native architecture and revision', 'real Cosign receipt annotation',
-                               'wrong annotation rejected', 'wrong manifest rejected']}))
+                               'wrong annotation rejected', 'wrong manifest rejected',
+                               'cold import without image execution']}))
             finally:
                 if image_id:
                     subprocess.run(['podman', '--remote=false', 'rmi', '--force', image_id],
