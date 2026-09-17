@@ -1444,21 +1444,26 @@ impl ImportApp {
 
     fn continued_review_controls(&self, row: Column, index: usize) -> Column {
         let enabled = self.identity_ready && self.worker.is_none() && self.review_request.is_none();
+        // Both destination commands belong to one action row (wrapping when
+        // the card is narrow) instead of two single-button lines.
         row.push(Box::new(
-            self.button(
-                &format!("import.continued.{index}.review"),
-                "Review destination",
-                ImportCommand::ResolveContinued(index),
-            )
-            .with_enabled(enabled),
-        ))
-        .push(Box::new(
-            self.button(
-                &format!("import.continued.{index}.destination"),
-                "Choose another destination…",
-                ImportCommand::PickContinuedDestination(index),
-            )
-            .with_enabled(enabled),
+            Row::new()
+                .push(Box::new(
+                    self.button(
+                        &format!("import.continued.{index}.review"),
+                        "Review destination",
+                        ImportCommand::ResolveContinued(index),
+                    )
+                    .with_enabled(enabled),
+                ))
+                .push(Box::new(
+                    self.button(
+                        &format!("import.continued.{index}.destination"),
+                        "Choose another destination…",
+                        ImportCommand::PickContinuedDestination(index),
+                    )
+                    .with_enabled(enabled),
+                )),
         ))
     }
 
@@ -1530,24 +1535,27 @@ impl ImportApp {
             }
             body = body.push(Box::new(Card::new(Box::new(row))));
         }
-        body = body
-            .push(Box::new(
-                self.button(
-                    "import.continued.start",
-                    "Copy reviewed folders",
-                    ImportCommand::StartBatch,
-                )
-                .primary()
-                .with_enabled(self.can_start_continued_batch()),
-            ))
-            .push(Box::new(
-                self.button(
-                    "import.continued.later",
-                    "Decide later for all",
-                    ImportCommand::LaterAll,
-                )
-                .with_enabled(self.worker.is_none()),
-            ));
+        // The card's two closing commands share one action row.
+        body = body.push(Box::new(
+            Row::new()
+                .push(Box::new(
+                    self.button(
+                        "import.continued.start",
+                        "Copy reviewed folders",
+                        ImportCommand::StartBatch,
+                    )
+                    .primary()
+                    .with_enabled(self.can_start_continued_batch()),
+                ))
+                .push(Box::new(
+                    self.button(
+                        "import.continued.later",
+                        "Decide later for all",
+                        ImportCommand::LaterAll,
+                    )
+                    .with_enabled(self.worker.is_none()),
+                )),
+        ));
         Card::titled("Continue your Desktop setup", Box::new(body))
     }
 
