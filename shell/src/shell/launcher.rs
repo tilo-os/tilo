@@ -12,14 +12,24 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
-use std::collections::{HashMap, VecDeque};
+#[cfg(any(test, target_os = "linux"))]
+use std::collections::VecDeque;
+#[cfg(any(test, target_os = "linux"))]
+use std::process::Command;
+#[cfg(any(test, target_os = "linux"))]
+use std::process::Stdio;
+
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+#[cfg(any(test, target_os = "linux"))]
 use std::io::{self, Read, Write};
+#[cfg(any(test, target_os = "linux"))]
 use std::os::fd::AsRawFd;
+#[cfg(any(test, target_os = "linux"))]
 use std::os::unix::net::UnixStream;
+#[cfg(any(test, target_os = "linux"))]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -35,10 +45,12 @@ const APP_CACHE_TTL: Duration = Duration::from_secs(2);
 /// Stderr tail kept for a failed launch — enough to carry `bwrap`'s or
 /// the dynamic loader's complaint, small enough a chatty app can't grow
 /// the shell's memory.
+#[cfg(any(test, target_os = "linux"))]
 const STDERR_TAIL_LINES: usize = 12;
 /// Maximum bytes retained for one stdout/stderr line from an untrusted app.
 /// Reading with `BufRead::lines` grows until a newline and lets a package
 /// exhaust compositor memory with one unterminated write.
+#[cfg(any(test, target_os = "linux"))]
 const APP_LOG_LINE_BYTES: usize = 8 * 1024;
 const SERVICE_LAUNCH_TTL: Duration = Duration::from_secs(30);
 /// The signed headless package the desktop is allowed to manage for Task
@@ -46,6 +58,7 @@ const SERVICE_LAUNCH_TTL: Duration = Duration::from_secs(30);
 /// becoming an executable/package selector.
 pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "dev.tilo.agent";
 
+#[cfg(any(test, target_os = "linux"))]
 fn relay_capped_lines<R: Read>(mut reader: R, mut on_line: impl FnMut(String)) {
     let mut chunk = [0_u8; 4096];
     let mut line = Vec::with_capacity(APP_LOG_LINE_BYTES.min(chunk.len()));
@@ -123,6 +136,7 @@ static WINDOWS_COMPAT_ENTRY_IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+#[cfg(target_os = "linux")]
 fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm is parenthesised and may contain spaces/parentheses; the final ')'
@@ -133,6 +147,14 @@ fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
 }
 
+// Linux process ancestry is the authority for sandbox launch attribution.
+// Other hosts must not infer equivalent authority from numeric PIDs.
+#[cfg(not(target_os = "linux"))]
+fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
+    None
+}
+
+#[cfg(any(test, target_os = "linux"))]
 fn register_launched_process(
     pid: u32,
     package_id: &str,
@@ -155,12 +177,14 @@ fn register_launched_process(
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
 /// Hand the launcher a private inherited descriptor that its process entry
 /// waits on before doing any launch work. `Command::spawn` can therefore
 /// return after exec, the compositor registers the real pid, and only then
 /// releases the launcher without a fork/exec race.
+#[cfg(any(test, target_os = "linux"))]
 fn install_launch_registration_gate(command: &mut Command) -> io::Result<UnixStream> {
     let (release, wait) = UnixStream::pair()?;
     let wait_fd = wait.as_raw_fd();
@@ -209,6 +233,7 @@ pub(crate) fn verified_workspaces_for_app(package_id: &str) -> Vec<String> {
 /// Package ids with a launcher-verified live process. Background portal state
 /// is derived from this host-owned registry rather than an application's own
 /// claims. Stale PID/start-time pairs are removed as part of the snapshot.
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn verified_running_packages() -> Vec<String> {
     let Ok(mut map) = LAUNCHED_PROCESSES.lock() else {
         return Vec::new();
@@ -226,6 +251,7 @@ pub(crate) fn verified_running_packages() -> Vec<String> {
     packages
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
@@ -337,6 +363,7 @@ pub fn windows_compat_entry_generation() -> u64 {
     WINDOWS_COMPAT_ENTRY_GENERATION.load(std::sync::atomic::Ordering::Acquire)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn unregister_launched_process(pid: u32) {
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.remove(&pid);
@@ -450,6 +477,8 @@ impl InstalledApp {
 /// the fork arrive asynchronously as a [`LaunchEvent`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchError {
+    /// The selected host has no authority to execute this package.
+    ProviderUnavailable { provider: &'static str },
     /// No package with this id in the registry.
     NotInstalled { package_id: String },
     /// The package is installed but declares no GUI entrypoint.
@@ -484,6 +513,9 @@ impl LaunchError {
     /// One-line summary for a notification body.
     pub fn user_message(&self) -> String {
         match self {
+            LaunchError::ProviderUnavailable { provider } => {
+                format!("required {provider} provider is unavailable on this host")
+            }
             LaunchError::NotInstalled { package_id } => {
                 format!("this desktop has no app with the id {package_id}")
             }
@@ -530,6 +562,9 @@ impl LaunchError {
     /// fallible caller's error, not in top-right chrome.
     pub(crate) fn notification_message(&self) -> &'static str {
         match self {
+            Self::ProviderUnavailable { .. } => {
+                "The required app execution service is unavailable. Try again when it is available."
+            }
             Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => {
                 "This app is no longer installed. Refresh the app list and try again."
             }
@@ -679,6 +714,7 @@ pub(crate) fn launch_failure_title(display_name: &str) -> String {
 
 /// Who a running launch is, for the event stream — a package id for a
 /// `.qpkg`, a desktop-file id for a host app.
+#[cfg(any(test, target_os = "linux"))]
 struct LaunchIdentity {
     package_id: String,
     display_name: String,
@@ -752,7 +788,7 @@ struct PendingPlacement {
     /// trailing component, or a host app's `.desktop` identities) —
     /// matched by any of them.
     identities: Vec<String>,
-    placement: crate::compositor::tab_binding::Placement,
+    placement: crate::shell::tab_binding::Placement,
     /// Generated when the process is actually launched, then carried to the
     /// app in `TILO_CONTINUITY_INSTANCE` until its first toplevel claims this
     /// note. It is not generated by the pure command builder.
@@ -1021,9 +1057,17 @@ pub fn runtime_dir() -> PathBuf {
     {
         return PathBuf::from(dir);
     }
-    // SAFETY: getuid always succeeds.
-    let uid = unsafe { libc::getuid() };
-    PathBuf::from(format!("/run/user/{uid}"))
+    #[cfg(target_os = "macos")]
+    {
+        // Darwin supplies a per-user temporary directory through TMPDIR.
+        std::env::temp_dir()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // SAFETY: getuid always succeeds.
+        let uid = unsafe { libc::getuid() };
+        PathBuf::from(format!("/run/user/{uid}"))
+    }
 }
 
 /// Every installed package, GUI or not, freshly read from the registry.
@@ -1258,7 +1302,7 @@ pub fn display_name_for_package_id(package_id: &str) -> String {
 fn launcher_bin_candidates() -> Vec<PathBuf> {
     let current_exe = std::env::current_exe().ok();
     launcher_bin_candidates_from(
-        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        cfg!(debug_assertions),
         std::env::var_os("TILO_LAUNCHER_BIN"),
         current_exe.as_deref(),
     )
@@ -1587,7 +1631,27 @@ pub fn launch_workspace_agent(
             package_id: app.package_id,
         });
     }
-    let launcher_bin = resolve_launcher_bin()?;
+    execute_workspace_agent(app, agent_id, workspace)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn execute_workspace_agent(
+    _app: InstalledApp,
+    _agent_id: &str,
+    _workspace: &Workspace,
+) -> Result<InstalledApp, LaunchError> {
+    Err(LaunchError::ProviderUnavailable {
+        provider: "workspace process service",
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn execute_workspace_agent(
+    app: InstalledApp,
+    agent_id: &str,
+    workspace: &Workspace,
+) -> Result<InstalledApp, LaunchError> {
+    let launcher_bin = selected_execution_program()?;
     let identity_path = crate::identity_registry::selected_identity_path(
         &workspace.room.to_string(),
     )
@@ -1767,8 +1831,45 @@ fn launch_with_context(
             package_id: package_id.to_string(),
         });
     }
+    execute_installed(app, room, document, uri, tool_intent)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_EXECUTION_PROGRAM: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_execution_program(program: Option<PathBuf>) {
+    TEST_EXECUTION_PROGRAM.with(|slot| *slot.borrow_mut() = program);
+}
+
+fn selected_execution_program() -> Result<PathBuf, LaunchError> {
+    #[cfg(test)]
+    if let Some(program) = TEST_EXECUTION_PROGRAM.with(|slot| slot.borrow().clone()) {
+        return Ok(program);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        resolve_launcher_bin()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(LaunchError::ProviderUnavailable {
+            provider: "Linux package execution",
+        })
+    }
+}
+
+fn execute_installed(
+    app: InstalledApp,
+    room: RoomId,
+    document: Option<&Path>,
+    uri: Option<&str>,
+    tool_intent: Option<&ToolIntent>,
+) -> Result<InstalledApp, LaunchError> {
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
-    let launcher_bin = resolve_launcher_bin()?;
+    let launcher_bin = selected_execution_program()?;
 
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
@@ -1945,11 +2046,16 @@ fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), Strin
 ///
 /// Returns the operating system's thread-spawn error when the launcher
 /// cannot create the worker responsible for supervising `command`.
+#[cfg(any(test, target_os = "linux"))]
 pub fn spawn_launch(
     package_id: String,
     display_name: String,
     command: LaunchCommand,
 ) -> Result<(), String> {
+    #[cfg(all(test, not(target_os = "linux")))]
+    if !TEST_EXECUTION_PROGRAM.with(|slot| slot.borrow().as_ref() == Some(&command.program)) {
+        return Err("Linux package execution provider is unavailable".into());
+    }
     let app = LaunchIdentity {
         package_id,
         display_name,
@@ -2181,10 +2287,7 @@ pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
 /// Record where the window of the launch about to start should land.
 /// Multiple launches of the same package remain FIFO: each arriving surface
 /// consumes the destination chosen by its own user action.
-pub fn set_pending_placement(
-    package_id: &str,
-    placement: crate::compositor::tab_binding::Placement,
-) {
+pub fn set_pending_placement(package_id: &str, placement: crate::shell::tab_binding::Placement) {
     set_pending_placement_for_identities(
         package_id,
         &identities_for_package(package_id),
@@ -2199,7 +2302,7 @@ pub fn set_pending_placement(
 pub fn set_pending_placement_for_identities(
     key: &str,
     identities: &[String],
-    placement: crate::compositor::tab_binding::Placement,
+    placement: crate::shell::tab_binding::Placement,
 ) {
     let mut pending = lock(&PENDING_PLACEMENT);
     pending.push(PendingPlacement {
@@ -2218,7 +2321,7 @@ pub fn set_pending_placement_for_identities(
 pub fn placement_for_toplevel(
     app_id: &str,
     surface_id: u64,
-) -> Option<crate::compositor::tab_binding::Placement> {
+) -> Option<crate::shell::tab_binding::Placement> {
     placement_and_instance_for_toplevel(app_id, surface_id).map(|(placement, _)| placement)
 }
 
@@ -2227,7 +2330,7 @@ pub fn placement_for_toplevel(
 pub fn placement_and_instance_for_toplevel(
     app_id: &str,
     surface_id: u64,
-) -> Option<(crate::compositor::tab_binding::Placement, Option<u64>)> {
+) -> Option<(crate::shell::tab_binding::Placement, Option<u64>)> {
     let mut pending = lock(&PENDING_PLACEMENT);
     loop {
         let idx = pending.iter().position(|p| p.matches(app_id))?;
@@ -2282,7 +2385,7 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
         pending.push(PendingPlacement {
             key: package_id.to_string(),
             identities: identities_for_package(package_id),
-            placement: crate::compositor::tab_binding::Placement::NewGroup,
+            placement: crate::shell::tab_binding::Placement::NewGroup,
             continuity_instance: Some(instance),
             claimed_by: None,
             retire_after: None,
@@ -2311,10 +2414,10 @@ pub fn stage_continuation_record(room: RoomId, tab: u64, record_instance: u64) {
 }
 
 fn take_staged_resume(
-    placement: crate::compositor::tab_binding::Placement,
+    placement: crate::shell::tab_binding::Placement,
     room: RoomId,
 ) -> Option<StagedContinuationResume> {
-    let crate::compositor::tab_binding::Placement::IntoTab(tab) = placement else {
+    let crate::shell::tab_binding::Placement::IntoTab(tab) = placement else {
         return None;
     };
     lock(&PENDING_CONTINUATION_RESUME).remove(&(room, tab))
@@ -2516,7 +2619,7 @@ mod tests {
         lock(&PENDING_CONTINUATION_RESUME).clear();
         set_pending_placement(
             "dev.tilo.browser",
-            crate::compositor::tab_binding::Placement::IntoTab(77),
+            crate::shell::tab_binding::Placement::IntoTab(77),
         );
         stage_continuation_record(room, 77, 0xdead_beef);
         assert_eq!(
@@ -2532,20 +2635,20 @@ mod tests {
         clear_pending_placements();
         set_pending_placement(
             "dev.tilo.same-app",
-            crate::compositor::tab_binding::Placement::IntoTab(11),
+            crate::shell::tab_binding::Placement::IntoTab(11),
         );
         set_pending_placement(
             "dev.tilo.same-app",
-            crate::compositor::tab_binding::Placement::IntoTab(22),
+            crate::shell::tab_binding::Placement::IntoTab(22),
         );
 
         assert_eq!(
             placement_for_toplevel("same-app", 101),
-            Some(crate::compositor::tab_binding::Placement::IntoTab(11))
+            Some(crate::shell::tab_binding::Placement::IntoTab(11))
         );
         assert_eq!(
             placement_for_toplevel("same-app", 202),
-            Some(crate::compositor::tab_binding::Placement::IntoTab(22))
+            Some(crate::shell::tab_binding::Placement::IntoTab(22))
         );
         clear_pending_placements();
     }
@@ -2556,17 +2659,17 @@ mod tests {
         clear_pending_placements();
         set_pending_placement(
             "dev.tilo.same-app",
-            crate::compositor::tab_binding::Placement::IntoTab(11),
+            crate::shell::tab_binding::Placement::IntoTab(11),
         );
         set_pending_placement(
             "dev.tilo.same-app",
-            crate::compositor::tab_binding::Placement::IntoTab(22),
+            crate::shell::tab_binding::Placement::IntoTab(22),
         );
         clear_pending_placement("dev.tilo.same-app");
 
         assert_eq!(
             placement_for_toplevel("same-app", 101),
-            Some(crate::compositor::tab_binding::Placement::IntoTab(11)),
+            Some(crate::shell::tab_binding::Placement::IntoTab(11)),
             "clearing the failed second launch must not erase the first launch's placement"
         );
         assert_eq!(placement_for_toplevel("same-app", 202), None);
@@ -2578,7 +2681,7 @@ mod tests {
     fn clean_parent_exit_keeps_delayed_window_placement_until_deadline() {
         clear_pending_placements();
         let package = "dev.tilo.daemonised";
-        let wanted = crate::compositor::tab_binding::Placement::IntoTab(44);
+        let wanted = crate::shell::tab_binding::Placement::IntoTab(44);
         set_pending_placement(package, wanted);
 
         retire_pending_placement_at(package, Instant::now() + Duration::from_secs(1));
@@ -2595,10 +2698,7 @@ mod tests {
     fn windowless_clean_launch_expires_without_sleeping() {
         clear_pending_placements();
         let package = "dev.tilo.windowless";
-        set_pending_placement(
-            package,
-            crate::compositor::tab_binding::Placement::IntoTab(55),
-        );
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(55));
 
         let now = Instant::now();
         retire_pending_placement_at(package, now);
@@ -2612,7 +2712,7 @@ mod tests {
     fn claimed_placement_expires_without_a_second_surface() {
         clear_pending_placements();
         let package = "dev.tilo.claimed-once";
-        let wanted = crate::compositor::tab_binding::Placement::IntoTab(56);
+        let wanted = crate::shell::tab_binding::Placement::IntoTab(56);
         set_pending_placement(package, wanted);
 
         assert_eq!(placement_for_toplevel("claimed-once", 703), Some(wanted));
@@ -2637,6 +2737,7 @@ mod tests {
             lines[0].len()
         );
     }
+    #[cfg(target_os = "linux")]
     use std::io::Write;
 
     #[test]
@@ -3021,6 +3122,7 @@ mod tests {
     /// `LaunchEvent`.
     #[test]
     #[serial_test::serial(process_env)]
+    #[cfg(target_os = "linux")]
     fn launch_execs_the_launcher_binary_with_the_compositor_socket() {
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "dev.tilo.hello", "gui");
@@ -3381,6 +3483,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn dbus_proxy_descendant_resolves_only_while_launcher_identity_is_live() {
         let parent = std::process::id();
         register_launched_process(parent, "dev.tilo.mail", Some("room-mail"), true);
@@ -3408,6 +3511,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
+    #[cfg(target_os = "linux")]
     fn an_unconfined_launch_is_portal_attributed_without_service_authority() {
         let _ = drain_events();
         let command = LaunchCommand {
@@ -3456,6 +3560,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn stale_start_time_is_never_accepted_as_pid_identity() {
         let pid = std::process::id();
         LAUNCHED_PROCESSES.lock().unwrap().insert(
@@ -3472,6 +3577,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn compatibility_service_authority_is_exact_and_consumed_once() {
         let pid = std::process::id();
         lock(&TRUSTED_SERVICE_LAUNCHES).clear();
@@ -3502,6 +3608,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn direct_launcher_pid_has_no_service_authority_to_redeem() {
         let pid = std::process::id();
         lock(&TRUSTED_SERVICE_LAUNCHES).clear();
@@ -3646,4 +3753,20 @@ mod tests {
             }
         }
     }
+}
+
+/// Package processes require the Linux execution authority.
+///
+/// # Errors
+/// Always fails on hosts without that authority, before spawning any worker.
+#[cfg(all(not(test), not(target_os = "linux")))]
+pub fn spawn_launch(
+    _package_id: String,
+    _display_name: String,
+    _command: LaunchCommand,
+) -> Result<(), String> {
+    Err(LaunchError::ProviderUnavailable {
+        provider: "Linux package execution",
+    }
+    .to_string())
 }

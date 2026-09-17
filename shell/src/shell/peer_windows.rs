@@ -10,11 +10,11 @@
 //! into the existing tab. `PeerWindow::note` labels the card and marks
 //! the decision made, so a refusal or launch is not re-run on every sync.
 
-use crate::compositor::tab_binding::Placement;
 use crate::shell::launcher;
 use crate::shell::state::{
     GroupId, ResourceRef, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
 };
+use crate::shell::tab_binding::Placement;
 
 /// Shown while the local instance is starting.
 const OPENING: &str = "Opening here…";

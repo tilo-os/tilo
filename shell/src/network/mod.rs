@@ -10,6 +10,7 @@ pub mod protocol;
 pub mod replica;
 pub mod streaming;
 pub mod surface_stream;
+#[cfg(target_os = "linux")]
 pub mod wayland;
 pub mod workspace_control;
 
@@ -30,3 +31,5 @@ pub use workspace_control::{
     WorkspaceControlCloseReason, WorkspaceControlSession, WorkspaceControlStatus,
     WorkspaceControlUpdate,
 };
+
+pub mod surface_tracker;

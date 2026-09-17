@@ -61,6 +61,23 @@ pub mod fs_capnp {
 
 use capnp_rpc::rpc_twoparty_capnp;
 
+#[cfg(unix)]
+pub mod grants;
+#[cfg(unix)]
+mod native;
+#[cfg(unix)]
+pub use grants::{
+    DirectoryGrant, DirectoryPage, EntryName, FileGrant, FsEntry, FsError, FsOwner, FsRight,
+    GrantedEntry, PageCursor,
+};
+#[cfg(unix)]
+pub use native::{FsSession, NativeGrantAuthority};
+
+#[cfg(unix)]
+pub mod operations;
+#[cfg(unix)]
+pub mod recovery;
+
 pub mod storage;
 
 pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;

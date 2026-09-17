@@ -74,20 +74,7 @@ fn notes_editor() -> BlockEditor {
     BlockEditor::new().with_wrap_lines(true)
 }
 
-fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
-    use ui::widget::BlockKind;
-    match kind {
-        BlockKind::Paragraph => "paragraph".into(),
-        BlockKind::Heading(level) => format!("heading{}", level.clamp(&1, &3)),
-        BlockKind::Bullet { indent } => format!("bullet:{}", (*indent).min(5)),
-        BlockKind::Numbered { indent } => format!("numbered:{}", (*indent).min(5)),
-        BlockKind::Checklist { indent, done } => {
-            format!("checklist:{}:{}", (*indent).min(5), i32::from(*done))
-        }
-        BlockKind::CodeBlock { lang } => format!("code:{}", lang.as_deref().unwrap_or_default()),
-        BlockKind::Divider => "divider".into(),
-    }
-}
+use crate::markdown::block_kind_wire;
 
 pub struct MainPanel {
     /// Currently displayed page (None until a selection lands). Also the
@@ -330,6 +317,82 @@ impl MainPanel {
         self.dirty = true;
     }
 
+    /// Bind an existing canonical page without creating schema, blocks or marks.
+    ///
+    /// # Errors
+    /// Rejects a list that is absent or does not belong to the requested page.
+    pub fn bind_canonical_page(
+        &mut self,
+        doc: &AutoCommit,
+        page: PageId,
+        title: &str,
+        blocks: ObjId,
+    ) -> Result<(), String> {
+        if crate::doc::NotesDoc::page_blocks_list(doc, page).as_ref() != Some(&blocks) {
+            return Err("block list does not belong to the requested page".into());
+        }
+        let mut editor = BlockEditor::new();
+        editor.set_local_author(self.local_author.clone());
+        editor
+            .bind_existing_blocks(doc, blocks)
+            .map_err(|error| error.to_string())?;
+        editor.set_focus(true);
+        editor.focus_block(0, ui::widget::CursorPlacement::Start);
+        self.editor = editor;
+        self.page_id = Some(page);
+        self.empty_action_focused = false;
+        self.set_title_value(title);
+        self.body.clear();
+        self.scroll_y = 0.0;
+        self.dirty = true;
+        self.set_inline_marks(
+            &crate::doc::NotesDoc::page_block_marks(doc, page)
+                .into_iter()
+                .collect(),
+        );
+        Ok(())
+    }
+
+    pub(crate) fn project_canonical(
+        &self,
+        doc: &AutoCommit,
+        workspace: &crate::Workspace,
+    ) -> Result<Self, String> {
+        let mut panel = Self::new();
+        panel.set_local_author(self.local_author.clone());
+        if let Some(page) = workspace.selected() {
+            let title = &workspace.get(page).ok_or("selected page missing")?.title;
+            let blocks =
+                crate::doc::NotesDoc::page_blocks_list(doc, page).ok_or("page blocks missing")?;
+            panel.bind_canonical_page(doc, page, title, blocks)?;
+        }
+        Ok(panel)
+    }
+
+    pub(crate) fn local_scroll(&self) -> f64 {
+        self.scroll_y
+    }
+    pub(crate) fn restore_scroll(&mut self, scroll: f64) {
+        self.scroll_y = scroll;
+    }
+    pub(crate) fn title_focused(&self) -> bool {
+        self.title_label.is_editing()
+    }
+    pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
+        self.title_label.cancel();
+        let _ = self.title_label.take_outcome();
+        self.pending_rename = None;
+        self.empty_action_focused = false;
+        self.editor.set_focus(false);
+        if self.page_id.is_some() {
+            match focus {
+                crate::local_view::NotesFocus::Title => self.title_label.begin_edit(),
+                crate::local_view::NotesFocus::Editor => self.editor.set_focus(true),
+                _ => {}
+            }
+        }
+    }
+
     /// Set the local user's id for authorship attribution. Re-applied to
     /// the editor on every `bind_page`.
     pub fn set_local_author(&mut self, author: Option<String>) {
@@ -507,7 +570,7 @@ impl MainPanel {
     ) {
         let mut changed = false;
         for block in self.editor.blocks_mut() {
-            let next = marks
+            let mut next = marks
                 .get(&block.id)
                 .into_iter()
                 .flatten()
@@ -519,6 +582,7 @@ impl MainPanel {
                         && block.text().is_char_boundary(span.range.end)
                 })
                 .collect::<Vec<_>>();
+            next.sort_by_key(|span| span.range.start);
             if block.line.marks() != next {
                 block.line.set_marks(next);
                 changed = true;
@@ -611,6 +675,22 @@ impl Default for MainPanel {
 }
 
 impl Widget for MainPanel {
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.page_id.is_some() {
+            vec![&self.title_label, &self.editor]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        if self.page_id.is_some() {
+            vec![&mut self.title_label, &mut self.editor]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.editor.sync(state, path);
     }
@@ -663,8 +743,24 @@ impl Widget for MainPanel {
             );
         }
         self.editor_node = Some(editor_node);
-        // Title is drawn directly in `draw`; no taffy node needed.
-        self.title_node = None;
+        // Retained child order must agree with the layout tree for bound
+        // accessibility dispatch. Geometry and painting remain panel-owned.
+        let title_node = self.title_label.build_layout(taffy, theme, node_map);
+        if let Ok(existing) = taffy.style(title_node).cloned() {
+            let _ = taffy.set_style(
+                title_node,
+                Style {
+                    position: taffy::Position::Absolute,
+                    ..existing
+                },
+            );
+        }
+        self.title_node = Some(title_node);
+        let children = if self.page_id.is_some() {
+            vec![title_node, editor_node]
+        } else {
+            Vec::new()
+        };
 
         // `new_with_children` only errors for a corrupted tree; `Widget::
         // build_layout` returns a bare `NodeId` across every implementor, so
@@ -690,7 +786,7 @@ impl Widget for MainPanel {
                     flex_basis: Dimension::length(0.0),
                     ..Default::default()
                 },
-                &[editor_node],
+                &children,
             )
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));

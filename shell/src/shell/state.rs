@@ -963,6 +963,14 @@ pub struct Tab {
     pub tile: TileContent,
 }
 
+/// Device-local identity needed to reconstruct a hosted document tab.
+/// It is persisted in the local profile but never projected into a room doc.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeDocumentReference {
+    pub provider_id: String,
+    pub path: std::path::PathBuf,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WindowGroup {
     pub id: GroupId,
@@ -1487,6 +1495,8 @@ pub fn role_label(role: CapRole) -> &'static str {
 /// identity when provisioned, falling back to the OS account name —
 /// stable across restarts, or an owner would lose their own workspaces.
 pub fn local_user_id() -> UserId {
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("session identity");
     if let Ok(v) = std::env::var("TILO_USER_ID")
         && !v.is_empty()
     {
@@ -1512,6 +1522,8 @@ pub fn local_user_id() -> UserId {
 /// a valid explicit binding always wins. Callers that launch an app use the
 /// stricter path resolver and fail closed if its private record is unavailable.
 pub fn local_user_id_for_room(room: &RoomId) -> UserId {
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("room identity");
     crate::identity_registry::selected_principal_id(&room.to_string())
         .ok()
         .flatten()
@@ -2445,6 +2457,10 @@ pub struct WorkspaceTree {
     #[serde(default)]
     pub continuation_file_references:
         HashMap<TabId, crate::shell::personal_continuity::LaunchIntent>,
+    /// Native hosted documents on this device. Paths stay in local `state.json`;
+    /// room projection deliberately has no corresponding field.
+    #[serde(default)]
+    pub native_document_tabs: HashMap<TabId, NativeDocumentReference>,
     /// This tree's own peer salt, overriding the process-wide one — the
     /// static is wrong when one process holds **two** trees (e.g. two
     /// simulated peers). [`Self::local_salt`] prefers this field;
@@ -2487,6 +2503,7 @@ impl Default for WorkspaceTree {
             continuation_owned_tabs: HashMap::new(),
             continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
+            native_document_tabs: HashMap::new(),
             peer_salt_override: None,
             persist_path: None,
             fs_acl_path: None,
@@ -7842,6 +7859,13 @@ fn public_key_user_id(key: collab_types::Ed25519PublicKey) -> UserId {
 /// local user is included in the settled set (never the avatar stack) so
 /// every host computes the same one.
 pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
+    roster_colors_with_local_user(roster, &local_user_id())
+}
+
+pub(crate) fn roster_colors_with_local_user(
+    roster: &[Collaborator],
+    local: &str,
+) -> HashMap<String, (u8, u8, u8)> {
     let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
     for c in roster {
         if let Some(rgb) = c
@@ -7852,14 +7876,13 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
             explicit.insert(c.id.clone(), rgb);
         }
     }
-    let local = local_user_id();
     let mut ids: Vec<&str> = roster
         .iter()
         .filter(|c| !explicit.contains_key(&c.id))
         .map(|c| c.id.as_str())
         .collect();
-    if !explicit.contains_key(&local) {
-        ids.push(local.as_str());
+    if !explicit.contains_key(local) {
+        ids.push(local);
     }
     let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
     let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
@@ -10647,8 +10670,8 @@ mod active_group_tests {
     #[test]
     #[serial_test::serial(next_id_statics)]
     fn mixed_layout_edits_survive_every_restart_boundary() {
-        use crate::compositor::tab_binding::{Placement, adopt_toplevel_at, remove_tab};
         use crate::shell::persist::load_tree_from;
+        use crate::shell::tab_binding::{Placement, adopt_toplevel_at, remove_tab};
 
         let state_dir = tempfile::tempdir().expect("state dir");
         let state_path = state_dir.path().join("state.json");

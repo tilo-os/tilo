@@ -16,26 +16,36 @@
 )]
 
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
 
 use crate::shell::state::{Capability, GRANT_ONCE};
 
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
-use super::{
-    CapabilityKind, PortalContext, PromptOutcome, auth::authenticate_call, flow, lockdown,
-};
+use super::{CapabilityKind, PromptOutcome};
+#[cfg(target_os = "linux")]
+use super::{PortalContext, auth::authenticate_call, flow, lockdown};
 
+#[cfg(target_os = "linux")]
 pub struct AccessBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
 }
 
+#[cfg(target_os = "linux")]
 impl AccessBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -46,6 +56,7 @@ impl AccessBackend {
 }
 
 #[interface(name = "org.freedesktop.impl.portal.Access")]
+#[cfg(target_os = "linux")]
 impl AccessBackend {
     /// `AccessDialog` — generic consent prompt the host portal uses for Camera, Background, and similar capability gates.
     #[allow(

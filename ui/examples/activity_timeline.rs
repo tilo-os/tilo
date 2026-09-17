@@ -115,12 +115,19 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     Ok(alice)
 }
 
+#[allow(
+    clippy::unreachable,
+    reason = "live activity timeline construction always allocates a wake scope"
+)]
 pub fn run(args: &[String]) {
+    let _detached = ui::wake::WakeScope::enter_detached();
     let shot = args
         .iter()
         .position(|a| a == "--shots")
         .and_then(|i| args.get(i.saturating_add(1)))
         .cloned();
+    let wake_scope = shot.is_none().then(ui::wake::WakeScope::new);
+    let _wake_entry = wake_scope.as_ref().map(ui::wake::WakeScope::enter);
 
     let mut doc = match collaborated_document() {
         Ok(doc) => doc,
@@ -166,9 +173,10 @@ pub fn run(args: &[String]) {
             .push(Box::new(timeline)),
     );
 
-    match shot {
-        Some(out) => render_shot(root_widget, (860, 660), Path::new(&out)),
-        None => App::new(State::new(), root_widget).run(),
+    match (shot, wake_scope) {
+        (Some(out), _) => render_shot(root_widget, (860, 660), Path::new(&out)),
+        (None, Some(scope)) => App::from_scoped_parts(scope, State::new(), root_widget).run(),
+        (None, None) => unreachable!("live activity timeline always allocates its scope"),
     }
 }
 

@@ -43,9 +43,10 @@ use tilo_actions::ActionAddress;
 /// ownership of their domain records and use the returned stable snapshot
 /// offsets to materialise typed [`SearchResult`]s.
 ///
-/// Each suffix is represented by a record id and UTF-8 boundary, so storage is
-/// linear in the amount of normalised searchable text. Embedded NULs and all
-/// Unicode scalar values retain their ordinary string semantics.
+/// Posting lists narrow the candidates; complete-text verification rejects false
+/// gram combinations. Each page bounds verification work and supplies a cursor
+/// when candidates remain. Embedded NULs and all Unicode scalar values retain
+/// their ordinary string semantics.
 #[derive(Clone, Debug, Default)]
 pub struct SearchTextIndex {
     texts: Vec<String>,
@@ -1192,6 +1193,12 @@ impl SearchProvider for OpenResourceSearch {
 /// the registry floats the strongest title matches without discarding
 /// your field-aware hits.
 pub trait SearchProvider {
+    /// Toolkit provenance for a component-owned proxy. Applications cannot
+    /// construct a CallbackBinding; its payload remains owned by AppComponent.
+    #[doc(hidden)]
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        None
+    }
     /// The kind label this provider produces, used for diagnostics and as the
     /// default group header. Individual results may still carry a different
     /// [`SearchResult::kind`].

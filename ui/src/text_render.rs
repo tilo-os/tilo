@@ -4,7 +4,6 @@ use cosmic_text::{
     Style as FontStyle, SwashCache, Wrap,
 };
 use std::collections::HashMap;
-use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 use vello::Scene;
@@ -626,6 +625,9 @@ impl TextStyle {
         self.size * self.line_height
     }
 
+    /// Resolve the integer weight accepted by cosmic-text: the last explicit
+    /// `wght` overrides the named tier, rounds to nearest, then clamps to 1..1000.
+    /// Painting uses each shaped glyph's resulting weight, including span bold.
     pub(crate) fn effective_weight(&self) -> Weight {
         let value = self
             .font_variations
@@ -750,7 +752,11 @@ pub struct TextLayoutConstraints {
 
 /// Replaceable measurement/painting boundary used by [`crate::widget::Text`].
 /// Implementations keep localization, accessibility, Taffy integration, scene
-/// caching, and inspection supplied by the standard widget.
+/// caching, and inspection supplied by the standard widget. `style` is always
+/// renderer-relative: implementations which delegate to [`TextRenderer`] pass
+/// it through unchanged. For theme-resolved or fixed-size widgets, `Text`
+/// compensates the font size for the renderer's current multiplier before this
+/// boundary; renderer-relative letter spacing keeps its established behavior.
 pub trait TextLayoutEngine {
     fn measure(
         &mut self,
@@ -1204,6 +1210,7 @@ struct ShapeKey {
 #[derive(Clone)]
 struct GlyphRun {
     face_id: cosmic_text::fontdb::ID,
+    font_weight: Weight,
     glyphs: Vec<vello::Glyph>,
     normalized_coords: Vec<vello::NormalizedCoord>,
 }
@@ -1216,7 +1223,6 @@ const SHAPE_CACHE_LIMIT: usize = 4096;
 pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
-    font_cache: HashMap<cosmic_text::fontdb::ID, Font>,
     /// `(text, size, max_width, weight)` → measured `(width, height)`.
     /// Uncached cosmic-text re-shape per frame measured ~7.5ms in debug
     /// across a 50-widget tree; most widgets re-measure the same static
@@ -1231,7 +1237,7 @@ pub struct TextRenderer {
     /// `(text, size, max_width, weight, style)` → shaped + positioned glyph
     /// runs. An `Arc` value lets a lookup hand the runs back to the paint
     /// loop without cloning the glyph vecs or holding a borrow on the cache
-    /// while `font_cache` is touched.
+    /// while the font system is accessed.
     shape_cache: HashMap<ShapeKey, Arc<Vec<GlyphRun>>>,
     /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
     /// (`QUICK_UI_PERF`) can attribute draw-phase time between cosmic-text
@@ -1304,10 +1310,26 @@ fn draw_rich_strikes(
 
 impl TextRenderer {
     pub fn new() -> Self {
+        Self::with_font_system(configured_font_system())
+    }
+
+    ///
+    /// # Errors
+    ///
+    /// Returns the catalog's packaging error if its manifest or fonts cannot
+    /// be loaded and validated.
+    pub fn with_font_catalog(
+        catalog: &crate::font_catalog::FontCatalog,
+    ) -> Result<Self, crate::font_catalog::FontCatalogError> {
+        Ok(Self::with_font_system(
+            crate::font_catalog::configured_font_system_with_catalog(catalog)?,
+        ))
+    }
+
+    fn with_font_system(font_system: FontSystem) -> Self {
         Self {
-            font_system: configured_font_system(),
+            font_system,
             swash_cache: SwashCache::new(),
-            font_cache: HashMap::new(),
             measure_cache: HashMap::with_capacity(256),
             generation: 0,
             hits: 0,
@@ -1888,43 +1910,49 @@ impl TextRenderer {
     /// arithmetic.
     fn flatten_glyph_runs(&mut self, buffer: &Buffer, style: &TextStyle) -> Vec<GlyphRun> {
         let variations = style.resolved_variations();
-        let mut runs: Vec<GlyphRun> = Vec::new();
+        let mut runs = Vec::new();
         for run in buffer.layout_runs() {
             let exercised_hyphen = run
                 .glyphs
                 .last()
                 .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
-            let mut current_face: Option<cosmic_text::fontdb::ID> = None;
+            let mut current: Option<(cosmic_text::fontdb::ID, Weight)> = None;
             let mut glyphs: Vec<vello::Glyph> = Vec::new();
             for g in run.glyphs {
                 if run.text.get(g.start..g.end) == Some("\u{ad}") {
                     continue;
                 }
-                if let Some(face_id) = current_face
-                    && face_id != g.font_id
+                let key = (g.font_id, g.font_weight);
+                if let Some((face_id, font_weight)) = current
+                    && current != Some(key)
                     && !glyphs.is_empty()
                 {
                     runs.push(GlyphRun {
                         face_id,
+                        font_weight,
                         glyphs: std::mem::take(&mut glyphs),
-                        normalized_coords: self.normalized_coords(face_id, &variations),
+                        normalized_coords: self.normalized_coords(
+                            face_id,
+                            &variations,
+                            font_weight,
+                        ),
                     });
                 }
-                current_face = Some(g.font_id);
-                let x = hanging_glyph_x(&run, g, style.hanging_punctuation);
+                current = Some(key);
                 glyphs.push(vello::Glyph {
                     id: u32::from(g.glyph_id),
-                    x,
+                    x: hanging_glyph_x(&run, g, style.hanging_punctuation),
                     y: run.line_y + g.y,
                 });
             }
-            if let Some(face_id) = current_face
+            if let Some((face_id, font_weight)) = current
                 && !glyphs.is_empty()
             {
                 runs.push(GlyphRun {
                     face_id,
+                    font_weight,
                     glyphs,
-                    normalized_coords: self.normalized_coords(face_id, &variations),
+                    normalized_coords: self.normalized_coords(face_id, &variations, font_weight),
                 });
             }
             if let Some(marker) = exercised_hyphen
@@ -1932,12 +1960,17 @@ impl TextRenderer {
             {
                 runs.push(GlyphRun {
                     face_id: hyphen.font_id,
+                    font_weight: hyphen.font_weight,
                     glyphs: vec![vello::Glyph {
                         id: u32::from(hyphen.glyph_id),
                         x: hyphen.x,
                         y: run.line_y + hyphen.y,
                     }],
-                    normalized_coords: self.normalized_coords(hyphen.font_id, &variations),
+                    normalized_coords: self.normalized_coords(
+                        hyphen.font_id,
+                        &variations,
+                        hyphen.font_weight,
+                    ),
                 });
             }
         }
@@ -1974,8 +2007,7 @@ impl TextRenderer {
         arc
     }
 
-    /// The per-face Vello font handle is resolved from `font_cache`
-    /// (loaded lazily, once per face for the process).
+    /// Resolve font handles through cosmic-text's existing face-and-weight cache.
     fn paint_runs(
         &mut self,
         scene: &mut Scene,
@@ -1985,7 +2017,9 @@ impl TextRenderer {
         transform: Affine,
     ) {
         for run in runs {
-            let font = self.vello_font(run.face_id);
+            let Some(font) = self.vello_font(run.face_id, run.font_weight) else {
+                continue;
+            };
             scene
                 .draw_glyphs(&font)
                 .font_size(size)
@@ -1999,51 +2033,34 @@ impl TextRenderer {
         }
     }
 
-    /// Returns a clone — `FontData` is a cheap `Arc`-backed handle, so this
-    /// doesn't copy glyph outlines.
-    fn vello_font(&mut self, face_id: cosmic_text::fontdb::ID) -> Font {
-        self.font_cache
-            .entry(face_id)
-            .or_insert_with(|| {
-                let font_data = self
-                    .font_system
-                    .db()
-                    .face(face_id)
-                    .and_then(|f| match &f.source {
-                        cosmic_text::fontdb::Source::Binary(data)
-                        | cosmic_text::fontdb::Source::SharedFile(_, data) => {
-                            Some(data.as_ref().as_ref().to_vec())
-                        }
-                        cosmic_text::fontdb::Source::File(path) => fs::read(path).ok(),
-                    });
-                if let Some(data) = font_data {
-                    Font::new(data.into(), 0)
-                } else {
-                    Font::new(vec![].into(), 0)
-                }
-            })
-            .clone()
+    /// Retain the exact face and shared bytes already used by shaping.
+    fn vello_font(&mut self, face_id: cosmic_text::fontdb::ID, weight: Weight) -> Option<Font> {
+        self.font_system
+            .get_font(face_id, weight)
+            .map(|font| font.as_peniko())
     }
 
     fn normalized_coords(
         &self,
         face_id: cosmic_text::fontdb::ID,
         variations: &[FontVariation],
+        font_weight: Weight,
     ) -> Vec<vello::NormalizedCoord> {
         use skrifa::{FontRef, MetadataProvider, Tag};
 
-        if variations.is_empty() {
-            return Vec::new();
-        }
         self.font_system
             .db()
             .with_face_data(face_id, |data, index| {
                 let font = FontRef::from_index(data, index).ok()?;
-                let location = font.axes().location(
-                    variations
-                        .iter()
-                        .map(|axis| (Tag::new(&axis.tag.0), axis.value)),
-                );
+                let settings = variations
+                    .iter()
+                    .filter(|axis| axis.tag != OpenTypeTag::WEIGHT)
+                    .map(|axis| (Tag::new(&axis.tag.0), axis.value))
+                    .chain(std::iter::once((
+                        Tag::new(b"wght"),
+                        f32::from(font_weight.0),
+                    )));
+                let location = font.axes().location(settings);
                 Some(
                     location
                         .coords()
@@ -2067,8 +2084,7 @@ impl TextRenderer {
     ) {
         draw_rich_backgrounds(scene, layout, transform);
 
-        // Glyphs batch by (face, colour, size, baseline-shift) so a
-        // super/subscript run flushes as its own batch with the right size & y.
+        // Glyphs batch by face, shaped weight, color, size and baseline shift.
         for run in layout.buffer.layout_runs() {
             self.draw_rich_run(scene, &run, layout, transform, color);
         }
@@ -2094,6 +2110,7 @@ impl TextRenderer {
             .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
         let mut face: Option<cosmic_text::fontdb::ID> = None;
         let mut cur_color: Option<cosmic_text::Color> = None;
+        let mut cur_weight: Option<Weight> = None;
         let mut cur_shift = BaselineShift::None;
         let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
         let mut size = 16.0f32;
@@ -2104,8 +2121,9 @@ impl TextRenderer {
             }
             let global_byte = layout.glyph_global_byte(run.line_i, g.start);
             let g_shift = layout.baseline_at(global_byte);
-            // Flush when face, colour, glyph size, or baseline-shift change.
+            // Glyphs batch by face, shaped weight, color, size and baseline shift.
             let changed = face != Some(g.font_id)
+                || cur_weight != Some(g.font_weight)
                 || cur_color != g.color_opt
                 || (g.font_size - batch_size).abs() > f32::EPSILON
                 || cur_shift != g_shift;
@@ -2127,6 +2145,7 @@ impl TextRenderer {
                 batch.clear();
             }
             face = Some(g.font_id);
+            cur_weight = Some(g.font_weight);
             cur_color = g.color_opt;
             cur_shift = g_shift;
             size = g.font_size;
@@ -2183,7 +2202,18 @@ impl TextRenderer {
         line_y: f32,
         variations: &[FontVariation],
     ) {
-        let vello_font = self.vello_font(face_id);
+        let Some(first) = glyphs.first() else {
+            return;
+        };
+        let Some(vello_font) = self.vello_font(face_id, first.font_weight) else {
+            return;
+        };
+        debug_assert!(
+            glyphs
+                .iter()
+                .all(|glyph| glyph.font_weight == first.font_weight)
+        );
+        let normalized_coords = self.normalized_coords(face_id, variations, first.font_weight);
 
         let vello_glyphs = glyphs.iter().map(|g| vello::Glyph {
             id: u32::from(g.glyph_id),
@@ -2191,7 +2221,6 @@ impl TextRenderer {
             y: line_y + g.y,
         });
 
-        let normalized_coords = self.normalized_coords(face_id, variations);
         scene
             .draw_glyphs(&vello_font)
             .font_size(size)
@@ -2225,6 +2254,21 @@ impl TextRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_catalog_constructs_the_production_renderer_and_caches() {
+        let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            "en-US",
+        );
+        let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+        let first = renderer.measure("Reading", 16.0, None);
+        let second = renderer.measure("Reading", 16.0, None);
+        assert_eq!(first, second);
+        assert!(first.0 > 0.0 && first.1 > 0.0);
+        assert_eq!(renderer.hits, 1);
+        assert_eq!(renderer.misses, 1);
+    }
 
     struct EveryThirdByte;
 
@@ -2283,7 +2327,7 @@ mod tests {
             [0.0..80.0, 120.0..200.0]
         );
 
-        let mut renderer = TextRenderer::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
         let style = TextStyle::new(16.0).with_line_height(1.25);
         let text = "one two three four five six seven eight nine ten eleven twelve thirteen";
         let engine = PolygonTextLayout::new(region);
@@ -2330,7 +2374,7 @@ mod tests {
 
     #[test]
     fn product_font_system_pins_every_generic_family() {
-        let font_system = configured_font_system();
+        let font_system = crate::font_catalog::fixture_font_system();
         let database = font_system.db();
         assert_eq!(database.family_name(&Family::SansSerif), UI_SANS_FAMILY);
         assert_eq!(database.family_name(&Family::Serif), UI_SERIF_FAMILY);
@@ -2342,7 +2386,7 @@ mod tests {
 
     #[test]
     fn shipped_fallback_policy_shapes_representative_scripts() {
-        let mut renderer = TextRenderer::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
         let style = TextStyle::new(18.0);
         let samples = [
             ("Arabic", "مرحبا"),
@@ -2385,7 +2429,7 @@ mod tests {
     /// — without this, every widget's `draw` pays a full cosmic-text shape.
     #[test]
     fn measure_cache_returns_hit_on_second_call() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let label = "Hello, gallery!";
         let (w1, h1) = tr.measure(label, 16.0, None);
         let (hits1, misses1) = tr.cache_stats();
@@ -2401,7 +2445,7 @@ mod tests {
 
     #[test]
     fn measure_cache_keys_on_size() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let _ = tr.measure("abc", 12.0, None);
         let _ = tr.measure("abc", 16.0, None);
         let _ = tr.measure("abc", 12.0, None); // hit
@@ -2412,7 +2456,7 @@ mod tests {
 
     #[test]
     fn style_line_height_controls_layout_and_cache_identity() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let compact = TextStyle::new(20.0).with_line_height(1.2);
         let relaxed = TextStyle::new(20.0).with_line_height(1.6);
 
@@ -2432,7 +2476,7 @@ mod tests {
 
     #[test]
     fn style_is_shared_by_measurement_and_drawing() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let style = TextStyle::new(18.0)
             .with_line_height(1.4)
             .with_weight(TextWeight::Semibold)
@@ -2462,7 +2506,7 @@ mod tests {
     #[test]
     fn background_span_emits_an_extra_fill_in_the_scene() {
         use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
 
         let plain_spans = [RichSpan::new("highlighted")];
         let plain = RichTextLayout::shape(
@@ -2517,7 +2561,7 @@ mod tests {
 
     #[test]
     fn elide_returns_text_unchanged_when_it_fits() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let s = "short";
         let (w, _) = tr.measure(s, 14.0, None);
         let out = tr.elide_to_width(s, 14.0, w + 50.0);
@@ -2527,7 +2571,7 @@ mod tests {
 
     #[test]
     fn elide_truncates_and_appends_ellipsis() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let s = "the quick brown fox jumps over the lazy dog";
         let (full_w, _) = tr.measure(s, 14.0, None);
         let budget = full_w / 3.0; // force truncation
@@ -2550,14 +2594,14 @@ mod tests {
     /// A zero/empty budget yields empty output; so does empty input.
     #[test]
     fn elide_edge_cases() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
         assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
     }
 
     #[test]
     fn clamp_to_lines_caps_line_count_and_elides_last() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
              incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
         // Narrow width forces several wrapped lines; cap to 2.
@@ -2577,7 +2621,7 @@ mod tests {
 
     #[test]
     fn clamp_to_lines_degenerate_cases() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         assert!(tr.clamp_to_lines("anything", 14.0, 80.0, 0).is_empty());
         let one = tr.clamp_to_lines("a fairly long single line of text here", 14.0, 60.0, 1);
         assert_eq!(one.len(), 1);
@@ -2586,7 +2630,7 @@ mod tests {
 
     #[test]
     fn clamp_to_lines_no_overflow_keeps_all() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let lines = tr.clamp_to_lines("two words", 14.0, 1000.0, 3);
         assert_eq!(lines, vec!["two words".to_string()]);
         assert!(!lines[0].ends_with('\u{2026}'));
@@ -2594,7 +2638,7 @@ mod tests {
 
     #[test]
     fn wrap_lines_uses_cjk_opportunities_without_spaces() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "東京京都大阪名古屋";
         let two_glyphs = tr.measure("東京", 14.0, None).0 + 0.5;
         let lines = tr.wrap_lines(text, 14.0, two_glyphs);
@@ -2605,7 +2649,7 @@ mod tests {
 
     #[test]
     fn wrap_lines_respects_non_breaking_space() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "10\u{a0}km away";
         let narrow = tr.measure("10", 14.0, None).0 + 1.0;
         let lines = tr.wrap_lines(text, 14.0, narrow);
@@ -2615,7 +2659,7 @@ mod tests {
 
     #[test]
     fn wrap_lines_uses_dictionary_breaks_for_thai() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "ทุกสองสัปดาห์";
         let first_word = &text[..9];
         let budget = tr.measure(first_word, 14.0, None).0 + 0.5;
@@ -2630,7 +2674,7 @@ mod tests {
         reason = "buckets glyph y-positions into small row indices for a three-line test layout; round() already yields an integer-valued f32 far below i32::MAX"
     )]
     fn measure_and_draw_use_dictionary_breaks_for_thai() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let style = TextStyle::new(18.0);
         let text = "ทุกสองสัปดาห์";
         let width = [&text[..9], &text[9..18], &text[18..]]
@@ -2658,7 +2702,7 @@ mod tests {
 
     #[test]
     fn automatic_hyphenation_wraps_and_paints_only_exercised_breaks() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "extensive";
         let plain = TextStyle::new(20.0);
         let hyphenated = plain.clone().with_auto_hyphenation("en-US");
@@ -2692,7 +2736,7 @@ mod tests {
 
     #[test]
     fn hyphenation_policy_participates_in_measurement_cache_identity() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "extensive";
         let width = 70.0;
         let plain = TextStyle::new(20.0);
@@ -2707,7 +2751,7 @@ mod tests {
     /// twice shapes it once.
     #[test]
     fn shape_cache_reshapes_once_for_repeated_draw() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         let c = Color::WHITE;
@@ -2729,7 +2773,7 @@ mod tests {
     /// label reuses the cached glyph geometry, making theme switches free.
     #[test]
     fn shape_cache_reuses_geometry_across_recolor() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         tr.draw_text_weighted(
@@ -2761,7 +2805,7 @@ mod tests {
     /// glyph positions, so it must miss and reshape.
     #[test]
     fn shape_cache_keys_on_width() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         let s = "the quick brown fox";
@@ -2801,7 +2845,7 @@ mod tests {
     /// geometry too, so the next draw reshapes.
     #[test]
     fn bump_generation_invalidates_shape_cache() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         tr.draw_text_weighted(
@@ -2843,7 +2887,7 @@ mod tests {
     /// serif doesn't collide with sans).
     #[test]
     fn font_choice_families_resolve_and_shape() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let fams = tr.system_families();
         assert!(!fams.is_empty(), "the system font db exposes some families");
 
@@ -2912,7 +2956,7 @@ mod tests {
 
     #[test]
     fn advanced_features_are_part_of_shaping_and_measurement() {
-        let mut renderer = TextRenderer::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
         let base = TextStyle::new(32.0).with_family(FontChoice::Serif);
         let kerned = renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(true));
         let unkerned = renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(false));
@@ -2993,7 +3037,7 @@ mod tests {
 
     #[test]
     fn variable_axes_are_normalized_in_the_faces_native_axis_order() {
-        let renderer = TextRenderer::new();
+        let renderer = crate::font_catalog::fixture_renderer();
         let face = renderer
             .font_system
             .db()
@@ -3001,7 +3045,7 @@ mod tests {
                 families: &[Family::Name("Adwaita Sans")],
                 ..cosmic_text::fontdb::Query::default()
             })
-            .expect("the product image ships the Adwaita Sans variable face");
+            .expect("the controlled fixture ships Adwaita Sans");
         let coords = renderer.normalized_coords(
             face,
             &[
@@ -3014,6 +3058,7 @@ mod tests {
                     value: 32.0,
                 },
             ],
+            Weight(700),
         );
         assert_eq!(coords.len(), 2, "Adwaita exposes opsz and wght");
         assert!(
@@ -3026,7 +3071,7 @@ mod tests {
     /// measure of a previously-seen string registers as a miss.
     #[test]
     fn bump_generation_invalidates_cache() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let _ = tr.measure("abc", 12.0, None);
         let _ = tr.measure("abc", 12.0, None); // hit
         tr.bump_generation();
@@ -3038,7 +3083,7 @@ mod tests {
 
     #[test]
     fn text_scale_one_is_metric_identity_and_invalid_values_are_safe() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let base = tr.measure("Accessible calendar", 18.0, None);
         tr.set_text_scale(1.0);
         assert_eq!(tr.measure("Accessible calendar", 18.0, None), base);
@@ -3053,7 +3098,7 @@ mod tests {
 
     #[test]
     fn text_scale_changes_measure_and_shape_cache_together() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let base = tr.measure("Calendar", 20.0, None);
         tr.set_text_scale(2.0);
         let doubled = tr.measure("Calendar", 20.0, None);
@@ -3087,4 +3132,40 @@ mod tests {
             "each scaled style owns a distinct shape-cache entry"
         );
     }
+
+    #[test]
+    fn custom_canvas_styles_remain_renderer_relative_at_supported_scales() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(scale);
+            let style = TextStyle::new(14.0).with_letter_spacing(2.0);
+            let (_, height) = renderer.measure_style("Canvas", None, &style);
+            assert!(
+                (height - 14.0 * 1.25 * scale).abs() < 0.001,
+                "custom canvas measure at {scale}x: {height}"
+            );
+
+            let mut scene = Scene::new();
+            renderer.draw_style(
+                &mut scene,
+                "Canvas",
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+                &style,
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty(), "custom canvas draw emitted no glyphs");
+            for run in runs {
+                assert!(
+                    (run.font_size - 14.0 * scale).abs() < 0.001,
+                    "custom canvas draw at {scale}x: {}",
+                    run.font_size
+                );
+            }
+        }
+    }
 }
+
+#[cfg(test)]
+mod renderer_regressions;
