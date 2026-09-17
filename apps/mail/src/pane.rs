@@ -175,6 +175,14 @@ struct ListRowArgs<'a> {
     now_min: i64,
 }
 
+/// Shared immediate-mode paint resources for focused pane helpers.
+struct DrawContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
 pub struct Pane {
     role: Role,
     shared: Shared,
@@ -540,13 +548,35 @@ impl Pane {
         for (rect, hit) in &self.hits {
             match hit {
                 Hit::Account(ai) => {
-                    Self::draw_sidebar_account_row(scene, t, tr, theme, &st, *rect, *ai, sb);
+                    Self::draw_sidebar_account_row(
+                        &mut DrawContext {
+                            scene,
+                            transform: t,
+                            text: tr,
+                            theme,
+                        },
+                        &st,
+                        *rect,
+                        *ai,
+                        sb,
+                    );
                 }
                 Hit::AddAccount => {
                     self.draw_sidebar_add_account_row(scene, t, tr, theme, *rect);
                 }
                 Hit::Folder(ai, f) => {
-                    Self::draw_sidebar_folder_row(scene, t, tr, theme, &st, *rect, *ai, *f);
+                    Self::draw_sidebar_folder_row(
+                        &mut DrawContext {
+                            scene,
+                            transform: t,
+                            text: tr,
+                            theme,
+                        },
+                        &st,
+                        *rect,
+                        *ai,
+                        *f,
+                    );
                 }
                 _ => {}
             }
@@ -556,20 +586,17 @@ impl Pane {
     /// One account header row: expand chevron, avatar, name/email, and the
     /// per-account settings gear. A no-op if `ai` is out of range. Part of
     /// [`Self::draw_sidebar`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_sidebar_account_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         st: &MailState,
         rect: Rect,
         ai: usize,
         sb: Rect,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let Some(account) = st.accounts.accounts.get(ai) else {
             return;
@@ -691,20 +718,17 @@ impl Pane {
     /// One folder row within an expanded account: icon, title, unread badge
     /// (active account only), and the selected-state highlight. Part of
     /// [`Self::draw_sidebar`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_sidebar_folder_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         st: &MailState,
         rect: Rect,
         ai: usize,
         f: Folder,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let active_account = ai == st.accounts.active;
         let selected = active_account && f == st.folder;
@@ -936,10 +960,12 @@ impl Pane {
             let hov = rect.contains(st.last_mouse);
             let swipe_dx = self.swipe.filter(|s| s.id == id).map_or(0.0, |s| s.dx);
             self.draw_list_row(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
                 &ListRowArgs {
                     msg,
                     rect: *rect,
@@ -957,14 +983,7 @@ impl Pane {
     /// selection/hover background, unread dot, avatar, name/date, subject
     /// (+ thread-size badge), snippet, and star/attachment glyphs. Part of
     /// [`Self::draw_list`].
-    fn draw_list_row(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        args: &ListRowArgs<'_>,
-    ) {
+    fn draw_list_row(&self, ctx: &mut DrawContext<'_>, args: &ListRowArgs<'_>) {
         let ListRowArgs {
             msg,
             rect,
@@ -974,28 +993,25 @@ impl Pane {
             swipe_dx,
             now_min,
         } = *args;
-        let row = Self::draw_list_row_frame(scene, t, tr, theme, rect, swipe_dx, selected, hov);
-        self.draw_list_row_content(scene, t, tr, theme, row, msg, len, now_min);
+        let row = Self::draw_list_row_frame(ctx, rect, swipe_dx, selected, hov);
+        self.draw_list_row_content(ctx, row, msg, len, now_min);
     }
 
     /// Draw the swipe-action overlay (if dragged past the threshold) and the
     /// row's selection/hover background + bottom divider, returning the
     /// (possibly swipe-shifted) row rect the rest of the row draws into.
     /// Part of [`Self::draw_list_row`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_frame(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         rect: Rect,
         swipe_dx: f64,
         selected: bool,
         hov: bool,
     ) -> Rect {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         if swipe_dx.abs() > 1.0 {
             let (col, icon, label, on_left) = if swipe_dx < 0.0 {
@@ -1050,40 +1066,33 @@ impl Pane {
     /// Draw one row's content within its (already framed) `row` rect: unread
     /// dot, avatar, name/date, subject (+ thread-size badge), snippet, and
     /// star/attachment glyphs. Part of [`Self::draw_list_row`].
-    #[allow(clippy::too_many_arguments)]
     fn draw_list_row_content(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         len: usize,
         now_min: i64,
     ) {
         let unread = !msg.read;
-        self.draw_list_row_identity(scene, t, tr, theme, row, msg, unread, now_min);
-        self.draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread);
+        self.draw_list_row_identity(ctx, row, msg, unread, now_min);
+        self.draw_list_row_subject(ctx, row, msg, len, unread);
     }
 
     /// The unread dot, avatar, sender name, and relative date of a list row.
     /// Part of [`Self::draw_list_row_content`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_identity(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         unread: bool,
         now_min: i64,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         if unread {
             scene.fill(
@@ -1149,21 +1158,18 @@ impl Pane {
 
     /// The subject line (+ thread-size badge), snippet, and star/attachment
     /// glyphs of a list row. Part of [`Self::draw_list_row_content`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_subject(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         len: usize,
         unread: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let s = self.scale();
         let text_x = row.x0 + 70.0 * s;
