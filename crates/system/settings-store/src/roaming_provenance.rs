@@ -110,6 +110,11 @@ struct LegacySettingResolution {
 impl RoamingProvenance {
     /// Decode the current projection or migrate the read-only v1 shape.
     /// Future versions fail closed rather than being partially displayed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProvenanceError::Invalid`] for malformed or out-of-policy
+    /// data, or [`ProvenanceError::UnsupportedSchema`] for a future schema.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ProvenanceError> {
         let value: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|_| ProvenanceError::Invalid)?;
@@ -154,22 +159,46 @@ impl RoamingProvenance {
         Ok(projection)
     }
 
+    /// Load and validate provenance from the configured settings directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when no configuration directory is available or
+    /// the sidecar cannot be read, and forwards decoding and validation errors.
     pub fn load() -> Result<Self, ProvenanceError> {
         let path = path().ok_or_else(|| ProvenanceError::Io("no config directory".into()))?;
         Self::load_at(&path)
     }
 
+    /// Load and validate provenance from an explicit sidecar path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when `path` cannot be read, and forwards decoding
+    /// and validation errors from [`Self::from_slice`].
     pub fn load_at(path: &Path) -> Result<Self, ProvenanceError> {
         let bytes = std::fs::read(path).map_err(|error| ProvenanceError::Io(error.to_string()))?;
         Self::from_slice(&bytes)
     }
 
     /// Validate, deterministically order, and atomically replace the sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when no configuration directory is available or
+    /// the sidecar cannot be replaced, and returns an invalid-data error when
+    /// the projection cannot be normalized or serialized.
     pub fn save(&mut self) -> Result<(), ProvenanceError> {
         let path = path().ok_or_else(|| ProvenanceError::Io("no config directory".into()))?;
         self.save_at(&path)
     }
 
+    /// Validate and atomically replace an explicit sidecar path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when `path` cannot be replaced, and returns an
+    /// invalid-data error when the projection cannot be normalized or serialized.
     pub fn save_at(&mut self, path: &Path) -> Result<(), ProvenanceError> {
         self.schema_version = SCHEMA_VERSION;
         self.normalise()?;
