@@ -2,6 +2,11 @@
 # Prove that Linux promotion accepts one pinned key and rejects tampering.
 set -euo pipefail
 
+# The signed catalog below names this public fixture origin. CI's checkout
+# server can be an internal HTTP endpoint, and its repository is unrelated.
+export GITHUB_SERVER_URL=https://code.sandbox.example
+export TILO_RELEASE_REPOSITORY=tilo/releases
+
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 verify="$repo/apps/imager/packaging/verify-linux-release.sh"
 sign="$repo/apps/imager/packaging/sign-linux-release-file.sh"
