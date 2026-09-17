@@ -587,7 +587,16 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         "device_mesh.inbound_relay"
         | "device_mesh.remote_control_relay"
         | "device_mesh.app_serving"
-        | "device_mesh.compute" => boolean(),
+        | "device_mesh.compute"
+        | "device_mesh.continuity.enabled"
+        | "device_mesh.continuity.clipboard"
+        | "device_mesh.continuity.notifications"
+        | "device_mesh.continuity.wifi_settings"
+        | "device_mesh.continuity.media"
+        | "device_mesh.continuity.display_input"
+        | "device_mesh.continuity.file_transfer"
+        | "device_mesh.continuity.realtime_sessions"
+        | "device_mesh.continuity.typed_gamepad" => boolean(),
         key if key.starts_with("device_mesh.workspace.") && !presentation_key => boolean(),
         _ => false,
     };
@@ -3087,6 +3096,55 @@ fn device_mesh_section(doc: &AutoCommit) -> Resource {
     ] {
         section = section.with_action(bool_flip_spec(id, key, b(key, false), label));
     }
+    for (id, key, label) in [
+        (
+            "continuity-enabled",
+            "device_mesh.continuity.enabled",
+            "Continuity on this device",
+        ),
+        (
+            "continuity-clipboard",
+            "device_mesh.continuity.clipboard",
+            "Continuity clipboard",
+        ),
+        (
+            "continuity-notifications",
+            "device_mesh.continuity.notifications",
+            "Continuity notifications",
+        ),
+        (
+            "continuity-wifi-settings",
+            "device_mesh.continuity.wifi_settings",
+            "Continuity Wi-Fi and settings",
+        ),
+        (
+            "continuity-media",
+            "device_mesh.continuity.media",
+            "Continuity media",
+        ),
+        (
+            "continuity-display-input",
+            "device_mesh.continuity.display_input",
+            "Continuity display and input",
+        ),
+        (
+            "continuity-file-transfer",
+            "device_mesh.continuity.file_transfer",
+            "Continuity file transfer",
+        ),
+        (
+            "continuity-realtime-sessions",
+            "device_mesh.continuity.realtime_sessions",
+            "Continuity realtime sessions",
+        ),
+        (
+            "continuity-typed-gamepad",
+            "device_mesh.continuity.typed_gamepad",
+            "Continuity typed gamepad forwarding",
+        ),
+    ] {
+        section = section.with_action(bool_flip_spec(id, key, b(key, false), label));
+    }
     section
 }
 
@@ -3688,6 +3746,56 @@ mod tests {
                 action.apply(&mut doc),
                 Err(ActionError::Refused(_))
             ));
+        }
+    }
+
+    #[test]
+    fn continuity_actions_are_discoverable_and_target_the_closed_boolean_catalogue() {
+        let resources = provide_resources(&AutoCommit::new());
+        let devices = find(&resources, &pane_resource_id(Category::DeviceMesh));
+        let targets = [
+            ("continuity-enabled", "device_mesh.continuity.enabled"),
+            ("continuity-clipboard", "device_mesh.continuity.clipboard"),
+            (
+                "continuity-notifications",
+                "device_mesh.continuity.notifications",
+            ),
+            (
+                "continuity-wifi-settings",
+                "device_mesh.continuity.wifi_settings",
+            ),
+            ("continuity-media", "device_mesh.continuity.media"),
+            (
+                "continuity-display-input",
+                "device_mesh.continuity.display_input",
+            ),
+            (
+                "continuity-file-transfer",
+                "device_mesh.continuity.file_transfer",
+            ),
+            (
+                "continuity-realtime-sessions",
+                "device_mesh.continuity.realtime_sessions",
+            ),
+            (
+                "continuity-typed-gamepad",
+                "device_mesh.continuity.typed_gamepad",
+            ),
+        ];
+
+        for (id, key) in targets {
+            let spec = devices
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("missing Continuity action {id}"));
+            let encoded = immediate_encode(spec);
+            let decoded = registry().decode(&encoded).expect("registered action");
+            let mut doc = AutoCommit::new();
+            let mut transport = LocalTransport::new();
+            qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+                .expect("catalogued boolean target is valid");
+            assert_eq!(doc_bool(&doc, key), Some(true));
         }
     }
 
