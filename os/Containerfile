@@ -54,8 +54,9 @@ ARG WINDOWS_GUEST_REF=scratch
 # TILO_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
 # stage, no `browser` binary. Default 1 — a normal build is unchanged.
 #
-# The engine stage compiles libwpe + wpebackend-fdo + wpewebkit from source and
-# takes ~45 of the ~60 minutes a cold build costs. Nothing about the boot chain
+# The engine stage compiles libwpe + wpebackend-fdo + wpewebkit from source.
+# Measure cold and warm durations on the selected native runner; no universal
+# build-time estimate applies across hardware. Nothing about the boot chain
 # (kernel, initramfs, LUKS/TPM unlock, greeter, installer, rollback) depends on
 # it, so an engine failure should not be able to block boot verification. Opting
 # out is how you get an image to boot-test in minutes while the browser's own
