@@ -3446,6 +3446,43 @@ fn install_device_fabric_bridge(
                         session_id,
                     )?;
                 }
+                DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
+                    let binding = active_physical_gamepad_binding(&tree_handle.read())
+                        .ok_or_else(|| "focus an app before using a remote input".to_string())?;
+                    let app =
+                        crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+                            binding.app_id,
+                            binding.workspace_id,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    crate::shell::remote_capture_runtime::request_remote_capture(
+                        &fabric_net,
+                        app,
+                        peer,
+                        kind,
+                    )?;
+                }
+                DeviceFabricUiAction::AuthorizeRemoteCapture {
+                    request_id,
+                    approved,
+                } => {
+                    crate::shell::remote_capture_runtime::decide_remote_capture(
+                        &fabric_net,
+                        request_id,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::ApproveRemoteCaptureTarget { session_id } => {
+                    crate::shell::remote_capture_runtime::approve_remote_capture_target(
+                        session_id,
+                    )?;
+                }
+                DeviceFabricUiAction::StopRemoteCapture { session_id } => {
+                    crate::shell::remote_capture_runtime::stop_remote_capture(
+                        &fabric_net,
+                        session_id,
+                    )?;
+                }
                 DeviceFabricUiAction::RequestPhoneTethering { phone } => {
                     let _ = crate::shell::personal_tethering_runtime::request_phone_tethering(
                         &fabric_net,
