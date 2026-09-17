@@ -129,7 +129,11 @@ struct ThumbnailResult {
     preview: Option<Rgba>,
 }
 
-fn thumbnail_worker(rx: &Receiver<ThumbnailJob>, tx: &SyncSender<ThumbnailResult>) {
+fn thumbnail_worker(
+    rx: &Receiver<ThumbnailJob>,
+    tx: &SyncSender<ThumbnailResult>,
+    wake: &ui::wake::WakeHandle,
+) {
     while let Ok(job) = rx.recv() {
         let preview = crate::doc::bytes_of(&job.image)
             .and_then(|bytes| pixels::decode(&bytes))
@@ -144,6 +148,7 @@ fn thumbnail_worker(rx: &Receiver<ThumbnailJob>, tx: &SyncSender<ThumbnailResult
         {
             return;
         }
+        wake.wake();
     }
 }
 
@@ -573,9 +578,12 @@ impl PhotosApp {
             std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
         let (thumbnail_result_tx, thumbnail_result_rx) =
             std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
+        let thumbnail_wake = ui::wake::WakeHandle::new();
         let thumbnail_tx = std::thread::Builder::new()
             .name("photos-thumbnail".to_owned())
-            .spawn(move || thumbnail_worker(&thumbnail_job_rx, &thumbnail_result_tx))
+            .spawn(move || {
+                thumbnail_worker(&thumbnail_job_rx, &thumbnail_result_tx, &thumbnail_wake);
+            })
             .ok()
             .map(|_| thumbnail_job_tx);
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
@@ -6357,6 +6365,39 @@ mod tests {
         });
         assert!(app.library_thumbnails.contains_key("photos.photo:current"));
         assert!(!app.thumbnail_queued.contains("photos.photo:current"));
+    }
+
+    #[test]
+    fn completed_thumbnail_wakes_its_idle_host_for_success_and_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("thumbnail.png");
+        std::fs::write(&path, pixels::encode_png(&shots_pattern(16, 8)).unwrap()).unwrap();
+        let mut scope = ui::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        scope
+            .bind(move |event| {
+                let _ = sender.send(event);
+            })
+            .unwrap();
+        let app = PhotosApp::new();
+        for (source, succeeds) in [(path, true), (directory.path().join("missing.png"), false)] {
+            app.thumbnail_tx
+                .as_ref()
+                .unwrap()
+                .send(ThumbnailJob {
+                    generation: 1,
+                    id: "photos.photo:wake".into(),
+                    image: OpenImage::from_path(&source.to_string_lossy(), 16, 8),
+                })
+                .unwrap();
+            let event = receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("thumbnail completion must wake the idle host without user input");
+            assert!(scope.accepts(&event));
+            let result = app.thumbnail_rx.try_recv().unwrap();
+            assert_eq!(result.preview.is_some(), succeeds);
+        }
     }
 
     #[test]
