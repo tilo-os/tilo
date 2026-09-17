@@ -99,7 +99,7 @@ def promote(repository, tags, revision, descriptors, public_key, signing_key):
         if metadata.get("Digest") != digest:
             raise ValueError("registry returned unexpected child content")
 
-    name = "qos-native-index-" + uuid.uuid4().hex
+    name = "tilo-native-index-" + uuid.uuid4().hex
     candidate = f"{repository}:{name}"
     created = False
     try:
@@ -107,7 +107,7 @@ def promote(repository, tags, revision, descriptors, public_key, signing_key):
         created = True
         for digest in children.values():
             run("podman", "manifest", "add", name, f"docker://{repository}@{digest}")
-        with tempfile.TemporaryDirectory(prefix="qos-native-index-") as work:
+        with tempfile.TemporaryDirectory(prefix="tilo-native-index-") as work:
             digest_file = Path(work) / "digest"
             run("podman", "manifest", "push", "--all", "--digestfile", str(digest_file), name, f"docker://{candidate}")
             digest = digest_file.read_text().strip()

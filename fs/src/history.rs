@@ -19,8 +19,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const HISTORY_SCHEMA_VERSION: u16 = 1;
-pub const HISTORY_XATTR: &str = "user.qos.history";
-pub const HISTORY_CONTROL_XATTR: &str = "user.qos.history-control";
+pub const HISTORY_XATTR: &str = "user.tilo.history";
+pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
 pub const HISTORY_PROJECTION_VERSION: u16 = 1;
 pub const MAX_HISTORY_PROJECTION_BYTES: usize = 16 * 1024;
 const MAX_PROJECTED_VERSIONS: usize = 12;

@@ -93,6 +93,10 @@ pub struct Image {
     /// the accessible name in [`Widget::accessibility`]; `None` leaves the
     /// image unnamed (decorative).
     alt: Option<String>,
+    /// Fill the rectangle offered by the parent instead of remaining an
+    /// intrinsic/auto-sized leaf. This is the right mode for previews inside
+    /// an explicitly sized viewport or card.
+    fill_parent: bool,
 }
 
 impl Image {
@@ -107,6 +111,7 @@ impl Image {
             rect: Rect::ZERO,
             cached: None,
             alt: None,
+            fill_parent: false,
         }
     }
 
@@ -125,6 +130,7 @@ impl Image {
             rect: Rect::ZERO,
             cached: None,
             alt: None,
+            fill_parent: false,
         }
     }
 
@@ -154,6 +160,15 @@ impl Image {
     #[must_use]
     pub fn with_alt(mut self, alt: impl Into<String>) -> Self {
         self.alt = Some(alt.into());
+        self
+    }
+
+    /// Stretch the widget's layout box to its parent's available width and
+    /// height; [`ImageFit`] still controls whether pixels contain, cover, or
+    /// fill that box.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.fill_parent = true;
         self
     }
 
@@ -458,11 +473,19 @@ impl Widget for Image {
     ) -> NodeId {
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: taffy::Dimension::auto(),
-                height: taffy::Dimension::auto(),
+                width: if self.fill_parent {
+                    taffy::Dimension::percent(1.0)
+                } else {
+                    taffy::Dimension::auto()
+                },
+                height: if self.fill_parent {
+                    taffy::Dimension::percent(1.0)
+                } else {
+                    taffy::Dimension::auto()
+                },
             },
-            flex_shrink: 1.0,
-            flex_grow: 0.0,
+            flex_shrink: if self.fill_parent { 0.0 } else { 1.0 },
+            flex_grow: if self.fill_parent { 1.0 } else { 0.0 },
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));

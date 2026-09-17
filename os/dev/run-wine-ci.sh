@@ -14,7 +14,7 @@ test ! -e "$evidence"
 test -s "$source_dir/wine-11.0-3.fc44.src.rpm"
 mkdir -p "$evidence"
 nonce=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
-name="qos-wine-${GITHUB_RUN_ID}-${target}-${nonce}"
+name="tilo-wine-${GITHUB_RUN_ID}-${target}-${nonce}"
 inputs="$name-inputs"
 outputs="$name-outputs"
 resolver="$name-resolve"
@@ -65,8 +65,8 @@ resolver_owned=true
 docker start "$resolver" >/dev/null
 docker exec "$resolver" sh -c 'test "$(df -Pk /work | awk "NR==2 {print \$4}")" -ge 26214400'
 docker cp "$source_dir" "$resolver:/work/source"
-docker exec "$resolver" runuser -u qos-build -- sudo -n /usr/bin/python3 /qos/wine-mock-producer.py \
-    resolve --target "$target" --runtime-image "$runtime" --pin /qos/wine-source.json \
+docker exec "$resolver" runuser -u tilo-build -- sudo -n /usr/bin/python3 /tilo/wine-mock-producer.py \
+    resolve --target "$target" --runtime-image "$runtime" --pin /tilo/wine-source.json \
     --source /work/source --config "$config" --output /work/bundle --jobs 2
 snapshot_tag="code.podesta.ai/qos/wine-resolution:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${target}"
 docker exec "$resolver" tar -C /work/bundle -cf - . | docker import --platform linux/amd64 - "$snapshot_tag"
@@ -84,10 +84,10 @@ docker create --name "$builder" --privileged --network none \
 owned_containers+=("$builder")
 builder_owned=true
 docker start "$builder" >/dev/null
-docker exec "$builder" runuser -u qos-build -- sudo -n /usr/bin/python3 /qos/wine-mock-producer.py \
-    build --target "$target" --runtime-image "$runtime" --pin /qos/wine-source.json \
+docker exec "$builder" runuser -u tilo-build -- sudo -n /usr/bin/python3 /tilo/wine-mock-producer.py \
+    build --target "$target" --runtime-image "$runtime" --pin /tilo/wine-source.json \
     --bundle /inputs/bundle --output /work/output --jobs 2
-docker exec "$builder" python3 /qos/wine_rpm_contract.py import-mock "$target" /qos/wine-source.json \
+docker exec "$builder" python3 /tilo/wine_rpm_contract.py import-mock "$target" /tilo/wine-source.json \
     /work/output /inputs/bundle /work/wine-output "$snapshot_ref"
 artifact_tag="code.podesta.ai/qos/wine-rpms:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${target}"
 docker exec "$builder" tar -C /work -cf - wine-output | docker import --platform linux/amd64 - "$artifact_tag"

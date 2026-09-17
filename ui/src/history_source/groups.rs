@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ROOT
-//!   "qos:group:<hex of the range's first change>"   <- the key IS the range
+//!   "tilo:group:<hex of the range's first change>"   <- the key IS the range
 //!      label : "Intro rewrite"
 //!      end   : "<hex of the range's last change>"   (absent while open)
 //!      by    : "<actor hex of whoever wrote the name>"
@@ -39,7 +39,7 @@ use crate::widget::history_group::{NamedRange, from_hex16, hex16};
 /// Namespaced so it cannot collide with an app's own schema: `qdoc` uses
 /// `content` / `comments` / `props`, and the shell's room document uses
 /// `workspaces` / `active`.
-pub const GROUPS_KEY: &str = "qos:group:";
+pub const GROUPS_KEY: &str = "tilo:group:";
 
 /// A version name is a label, not a paragraph; past this it stops fitting
 /// anywhere it is rendered and starts being a way to make another user's
@@ -206,6 +206,47 @@ pub fn move_named_boundary(
     Some((new_left, new_right))
 }
 
+/// Correct a seam even when one or both work sessions are still automatic
+/// projections. Missing records are materialized with the titles and bounds
+/// the person saw, then the bordering action is moved in the same document
+/// transaction. The atomic history entries themselves are never rewritten.
+#[allow(clippy::too_many_arguments)]
+pub fn materialize_and_move_boundary(
+    doc: &mut AutoCommit,
+    left_record: Option<&str>,
+    left_start: &HistoryEntryId,
+    left_end: &HistoryEntryId,
+    left_label: &str,
+    right_record: Option<&str>,
+    right_start: &HistoryEntryId,
+    right_end: &HistoryEntryId,
+    right_label: &str,
+    new_left_end: &HistoryEntryId,
+    new_right_start: &HistoryEntryId,
+) -> Option<(String, String)> {
+    if left_record.is_some_and(|record| named_range_record(doc, record).is_none())
+        || right_record.is_some_and(|record| named_range_record(doc, record).is_none())
+        || matches!((left_record, right_record), (Some(left), Some(right)) if left == right)
+    {
+        return None;
+    }
+    let left_record = match left_record {
+        Some(record) => record.to_string(),
+        None => name_range(doc, left_start, Some(left_end), left_label),
+    };
+    let right_record = match right_record {
+        Some(record) => record.to_string(),
+        None => name_range(doc, right_start, Some(right_end), right_label),
+    };
+    move_named_boundary(
+        doc,
+        &left_record,
+        &right_record,
+        new_left_end,
+        new_right_start,
+    )
+}
+
 fn named_range_record(
     doc: &AutoCommit,
     record_id: &str,
@@ -362,11 +403,46 @@ mod tests {
     }
 
     #[test]
+    fn correcting_an_automatic_seam_materializes_both_sessions_then_moves_it() {
+        let mut doc = AutoCommit::new();
+        let (left, right) = materialize_and_move_boundary(
+            &mut doc,
+            None,
+            &id(1),
+            &id(2),
+            "Write Q3 financial report",
+            None,
+            &id(3),
+            &id(4),
+            "Onboard Sarah",
+            &id(1),
+            &id(2),
+        )
+        .expect("automatic sessions become correctable shared ranges");
+        doc.commit();
+
+        let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 2);
+        assert!(ranges.iter().any(|range| {
+            range.id == left
+                && range.label == "Write Q3 financial report"
+                && range.start == id(1)
+                && range.end == Some(id(1))
+        }));
+        assert!(ranges.iter().any(|range| {
+            range.id == right
+                && range.label == "Onboard Sarah"
+                && range.start == id(2)
+                && range.end == Some(id(4))
+        }));
+    }
+
+    #[test]
     fn stale_group_edits_write_nothing() {
         let mut doc = AutoCommit::new();
         let before = doc.get_heads();
         assert!(
-            split_named_range(&mut doc, "qos:group:missing", &id(1), &id(2), "A", "B").is_none()
+            split_named_range(&mut doc, "tilo:group:missing", &id(1), &id(2), "A", "B").is_none()
         );
         assert!(
             merge_named_ranges(

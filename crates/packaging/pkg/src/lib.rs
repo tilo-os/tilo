@@ -1,7 +1,7 @@
-//! `qos-pkg` — the foundation library for qOS packages
+//! `tilo-pkg` — the foundation library for Tilo packages
 //! (`.qpkg`).
 //!
-//! qOS distributes everything (apps, services, format providers,
+//! Tilo distributes everything (apps, services, format providers,
 //! plugins, runtimes) as content-addressed signed bundles. The
 //! same packaging machinery handles all kinds; the `Kind`
 //! discriminates *what* the package is, not *how* it is packed.

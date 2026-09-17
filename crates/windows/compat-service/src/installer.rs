@@ -1,6 +1,6 @@
 //! Trusted Windows installer intake and bounded format validation.
 //!
-//! The manager selects a file through the qOS file portal and transfers the
+//! The manager selects a file through the Tilo file portal and transfers the
 //! already-open descriptor. No client path crosses the compatibility protocol.
 
 use std::fs::File;

@@ -8,8 +8,6 @@
 
 The security boundary is the **workspace**. Every workspace runs apps inside its own Bubblewrap sandbox with its own user namespace, mount namespace, seccomp-bpf filter, and a per-workspace Wayland bridge socket. Capabilities (filesystem, hardware, network) require explicit grants surfaced as inline prompts; grants persist in the workspace's CRDT and replicate to peers.
 
-Implementation tracked in `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` (sandbox phases 1-6 + portal 4.3 landed). Where this design diverges from earlier "global host" framings, the current code wins.
-
 ## Threat model
 
 The scenarios we defend against:
@@ -21,7 +19,7 @@ The scenarios we defend against:
 
 ## Identity
 
-- One ed25519 device key per machine at `/var/lib/qos/device/keypair.bin`, auto-created on first boot. Every network and document identity derives from it — no subsystem mints its own. The file is 0640 in a setgid `qos-identity` directory because both the root-run filesystem daemon and the session-run compositor must present that one identity; a key that exists but cannot be read is an error, never a reason to re-key.
+- One ed25519 device key per machine at `/var/lib/tilo/device/keypair.bin`, auto-created on first boot. Every network and document identity derives from it — no subsystem mints its own. The file is 0640 in a setgid `tilo-identity` directory because both the root-run filesystem daemon and the session-run compositor must present that one identity; a key that exists but cannot be read is an error, never a reason to re-key.
 - The certified device public key is the Iroh `EndpointId` used by the shell, filesystem, and workspace-host client. It is the stable peer identity everywhere.
 - Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - The personal signing identity is the user root. It certifies each device key; workspace hosts accept only device certificates chaining to the configured user root and permitted by the workspace membership/revocation state.
@@ -30,7 +28,7 @@ Invite tokens are signed ed25519 blobs scoped to a workspace; see `plan/collabor
 
 ## Sandbox: Bubblewrap profile
 
-Every app launched into a workspace runs through `bwrap`, whose argv is built by `qos-launcher` (`crates/packaging/launcher`) from the package manifest and the capability grants the shell hands it. `SandboxProfile` (`shell/src/sandbox/profile.rs`) is the compositor-side *model* of that sandbox — the bind/env/uid shape and the seccomp + Landlock plumbing points. It is a value type, and nothing spawns an app through it:
+Every app launched into a workspace runs through `bwrap`, whose argv is built by `tilo-launcher` (`crates/packaging/launcher`) from the package manifest and the capability grants the shell hands it. `SandboxProfile` (`shell/src/sandbox/profile.rs`) is the compositor-side *model* of that sandbox — the bind/env/uid shape and the seccomp + Landlock plumbing points. It is a value type, and nothing spawns an app through it:
 
 ```rust
 pub struct SandboxProfile {
@@ -48,9 +46,9 @@ pub struct SandboxProfile {
 
 What a sandboxed app is actually presented with. It names none of this; the launcher decides all of it, and the read side is identical for every package:
 
-- Read-only: the system read profile (`launcher::profile`) — loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data — plus the package payload at `/var/qos-apps/<pkg-id>` and its runtime bundle. `/etc/resolv.conf` and `/etc/hosts` only when the launch shares the host network.
-- Read-write: exactly one directory, `<data home>/qos-rooms/<room>/<pkg-id>` → `/run/qos/app`, with `HOME` and every `XDG_*` pointed inside it. Two rooms are two directories, so an app opened in one room cannot read what it wrote in another. Plus the bridge socket → `/run/user/1000/wayland-0`.
-- `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, and `QOS_APP_DIR`, `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` all under `/run/qos/app`.
+- Read-only: the system read profile (`launcher::profile`) — loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data — plus the package payload at `/var/tilo-apps/<pkg-id>` and its runtime bundle. `/etc/resolv.conf` and `/etc/hosts` only when the launch shares the host network.
+- Read-write: exactly one directory, `<data home>/tilo-rooms/<room>/<pkg-id>` → `/run/tilo/app`, with `HOME` and every `XDG_*` pointed inside it. Two rooms are two directories, so an app opened in one room cannot read what it wrote in another. Plus the bridge socket → `/run/user/1000/wayland-0`.
+- `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, and `TILO_APP_DIR`, `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` all under `/run/tilo/app`.
 - Private DBus session bus per workspace.
 - `unshare(CLONE_NEWNET)` if `net_isolated`. Default: invited peers run isolated; the owner's session runs without isolation unless overridden.
 
@@ -58,7 +56,7 @@ Anything outside that set is a capability the user grants at runtime, which beco
 
 ## Seccomp-bpf blocklist
 
-A per-workspace BPF blob is compiled via the `seccompiler` crate and cached at `/var/cache/qos-fs/<ws_id>/seccomp.bpf`. v1 blocks:
+A per-workspace BPF blob is compiled via the `seccompiler` crate and cached at `/var/cache/tilo-fs/<ws_id>/seccomp.bpf`. v1 blocks:
 
 ```
 ptrace, mount, umount2, pivot_root, chroot,
@@ -70,7 +68,7 @@ The blocklist is conservative and expands as we learn. It is applied via `bwrap 
 
 ## Per-workspace Wayland bridge socket
 
-The compositor's main wayland socket lives at `$XDG_RUNTIME_DIR/wayland-1` (or whatever the listener registered). For each workspace, the bridge (`shell/src/compositor/bridge.rs`) binds an additional listening socket `$XDG_RUNTIME_DIR/nirios-ws-<ws_id>` and proxies its connections to the main socket.
+The compositor's main wayland socket lives at `$XDG_RUNTIME_DIR/wayland-1` (or whatever the listener registered). For each workspace, the bridge (`shell/src/compositor/bridge.rs`) binds an additional listening socket `$XDG_RUNTIME_DIR/tilo-ws-<ws_id>` and proxies its connections to the main socket.
 
 The bridge:
 
@@ -131,7 +129,7 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 
 **The portal is served by the compositor**, in-process, in both native and hosted mode (`compositor::native::start_portal_backend`). It is not a separate daemon: the questions the portal answers are all about the live session — which workspace the caller is in, what it has been granted, what the person here decides now — and all of them live in the `WorkspaceTree` the compositor owns. The former `shell --portal-server-only` unit built its context on an empty tree and had no output to draw a dialog on, so it could answer none of them; it is removed, and D-Bus permits one owner per name, so leaving it in place would have been a race whose loser served nobody while looking healthy. `ServerHandle::owns_name` reports whether the name was actually acquired, and the compositor logs at error level when it was not.
 
-`xdg-desktop-portal`'s config (`os/usr/share/xdg-desktop-portal/portals/qos.portal`) registers `org.freedesktop.impl.portal.desktop.qos` as the backend for these interfaces. ScreenCast output streams use PipeWire (`shell/src/portal/screencast_pipewire.rs`); the provisioner is a seam (`MockScreenCastProvisioner` for headless/tests, a real libpipewire connection in the production OS build). RemoteDesktop seat injection reuses the same `RemoteInputSink`/seat path as peer-sync remote input.
+`xdg-desktop-portal`'s config (`os/usr/share/xdg-desktop-portal/portals/tilo.portal`) registers `org.freedesktop.impl.portal.desktop.tilo` as the backend for these interfaces. ScreenCast output streams use PipeWire (`shell/src/portal/screencast_pipewire.rs`); the provisioner is a seam (`MockScreenCastProvisioner` for headless/tests, a real libpipewire connection in the production OS build). RemoteDesktop seat injection reuses the same `RemoteInputSink`/seat path as peer-sync remote input.
 
 `tests/portal_test.rs` exercises one round-trip per interface plus prompt-resolution branches. A `PromptResolver::AutoAllow` mode is used in tests so the round-trip doesn't need a human.
 
@@ -139,9 +137,9 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 
 ### Filesystem
 
-- An app names no path. `crates/packaging/launcher` binds a fixed system read profile (`launcher::profile`: loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data) plus one read-write directory per room per package at `/run/qos/app` (`launcher::appdir`), and nothing else. The `[sandbox.fs]` manifest block is retired; a package that still declares one is refused at install and at launch.
-- `FileChooser` returns a `file://` URI. It does **not** return a file descriptor: `org.freedesktop.impl.portal.FileChooser` has no fd in its signature — `OpenFile`/`SaveFile`/`SaveFiles` answer `(u32, a{sv})` with a `uris` key, and an app calling through `ashpd` gets URIs. This line previously claimed an fd wrapped by `cap-std`; nothing ever implemented that, and the interface gives it nowhere to live.
-- **The dialog is the prompt.** `FileChooser` does not raise a separate permission prompt before showing the picker. It used to, on a `Capability::Filesystem` carrying a `"/"` sentinel — and because `Scope::FsPath` covers its subtree, answering *Always* once granted that app the whole filesystem, permanently, after which every later request took the fast path and never showed a dialog again. Choosing a file in a compositor-owned dialog is the act of authorisation, and the grant names exactly the path chosen: read-only for `OpenFile`, read-write for `SaveFile`, session-scoped.
+- An app names no path. `crates/packaging/launcher` binds a fixed system read profile (`launcher::profile`: loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data) plus one read-write directory per room per package at `/run/tilo/app` (`launcher::appdir`), and nothing else. The `[sandbox.fs]` manifest block is retired; a package that still declares one is refused at install and at launch.
+- `FileChooser` returns `file://` URIs because `org.freedesktop.impl.portal.FileChooser` answers `OpenFile`/`SaveFile`/`SaveFiles` with a `uris` key rather than file descriptors.
+- **The dialog is the prompt.** Choosing a file in the compositor-owned dialog is the act of authorisation, and the grant names exactly the path chosen: read-only for `OpenFile`, read-write for `SaveFile`, session-scoped. A separate prompt must not grant a broad path before the user chooses one.
 - A path outside the profile is reachable only through a capability the user grants, which becomes a bind at the next launch of that app (`launcher::capabilities`). `SandboxProfile::apply_grants` mirrors the same rules compositor-side; the launcher is the enforcement point and a disagreement between the two is a bug in the mirror.
 
   **Next launch is the operative phrase.** A confined app's mount namespace is fixed when `bwrap` creates it, so a grant made mid-session cannot add anything to the namespace the app is already living in. `shell/tests/portal_grant_reaches_sandbox.rs` asserts the grant→bind chain end to end; what it asserts is the *next* launch. For a running app the portal additionally publishes the pick through `shell::portal::doc_store`, which is where the three candidate mechanisms — a launch-time grant, a live re-bind, and a document store — are compared and one is chosen. The shipped store is `HostPathStore`, which is correct for callers sharing the compositor's namespace and reports `reaches_confined_apps() == false` rather than pretending otherwise; the compositor logs that at startup.
@@ -151,7 +149,7 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 Two properties this rests on:
 
 - **The list is re-read while the mount is up** (`fs/src/caps_file.rs`). `/var/workspace` is mounted at boot and lives as long as the session, so a list read only at mount time could not express a grant — or a revocation — made afterwards. A deleted list denies everything (its absence is the producer saying nothing is granted); an unreadable or malformed one keeps the last good list, because the file is rewritten in place and a reader can catch it truncated.
-- **The shipped image enforces.** `os/usr/lib/systemd/system/fs.service` passes `--acl /var/lib/qos/fs-capabilities.json`, seeded by `tmpfiles.d` from `/usr/share/qos/fs-capabilities.json`. Be plain about what that default is: it grants the local session read+write on the whole workspace — exactly what an unenforced mount already gave. It narrows nothing on a single-user desktop. What it buys is that the enforcement point is *live*, so a restriction added to that list bites without a remount, and a mount joined from a peer's ticket has somewhere to put a narrower policy. The shipped default uses a human-readable principal (`person:local`); the mount itself presents the same durable, certified device key as the shell, so remote policies may name a stable cryptographic subject.
+- **The shipped image enforces.** `os/usr/lib/systemd/system/fs.service` passes `--acl /var/lib/tilo/fs-capabilities.json`, seeded by `tmpfiles.d` from `/usr/share/tilo/fs-capabilities.json`. Be plain about what that default is: it grants the local session read+write on the whole workspace — exactly what an unenforced mount already gave. It narrows nothing on a single-user desktop. What it buys is that the enforcement point is *live*, so a restriction added to that list bites without a remount, and a mount joined from a peer's ticket has somewhere to put a narrower policy. The shipped default uses a human-readable principal (`person:local`); the mount itself presents the same durable, certified device key as the shell, so remote policies may name a stable cryptographic subject.
 
 ### Network
 
@@ -168,7 +166,7 @@ Three properties make that a boundary rather than a convention:
 
 DNS is treated as egress. An app with no grant reaches no resolver; an app with an allowlist needs none, because the gate resolves on its behalf after the name has passed the policy. So an app cannot make the gate resolve a name it was not allowed to reach, and cannot signal through query contents because it emits no query.
 
-This needs no privilege and no kernel feature `bwrap` does not already require. Earlier drafts of this document described per-workspace `nftables` rules; that was never implemented, and it would not have worked as described — a rule set is written against addresses and cannot express a hostname, and installing one needs `CAP_NET_ADMIN` the launcher does not have.
+This needs no privilege and no kernel feature `bwrap` does not already require. Address-based `nftables` rules would not preserve hostname-scoped policy and would require `CAP_NET_ADMIN`, which the launcher does not have.
 
 Not constrained: **ports** (a `NetHost` scope names a host and carries no port) and **content** (the gate relays TCP and deliberately does not terminate TLS).
 
@@ -179,7 +177,7 @@ Not constrained: **ports** (a `NetHost` scope names a host and carries no port) 
 - An app whose manifest enumerates endpoints is still filtered to them, because a `*` grant narrows to a declared allowlist rather than widening past it. This is the common case and it works.
 - An app whose manifest says `net.mode = "host"` is unrestricted once the user clicks the one network choice, and the UI offers no way to say "only `mail.example.com`". Closing this needs the composer to offer the package's declared endpoints as individual choices (the manifest is already parsed into `InstalledApp`), or a hostname text field. Until then, a host-scoped grant is reachable through the capability file and the manifest, not through the panel.
 
-If the gate cannot start, the launch is **refused** rather than downgraded — sharing the network would apply "this host" as "every host". `QOS_LAUNCHER_NET_GATE=off` takes the unfiltered path deliberately and logs it.
+If the gate cannot start, the launch is **refused** rather than downgraded — sharing the network would apply "this host" as "every host". `TILO_LAUNCHER_NET_GATE=off` takes the unfiltered path deliberately and logs it.
 
 ### Hardware
 
@@ -242,4 +240,3 @@ Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **
 - `shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
 - `shell/src/network/invite.rs` — invite tokens.
 - `shell/src/network/input_firewall.rs` — the remote-input checks, with each denial proven through `State::review_remote_input` in its `production_path` tests.
-- `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` — phase log.

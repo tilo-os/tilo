@@ -371,13 +371,13 @@ pub mod recovery {
     /// Environment override for the recovery base directory. Set by tests (and
     /// available to callers that want to relocate the store) so recovery never
     /// touches the real `$HOME` / `$XDG_STATE_HOME` during a test run.
-    pub const RECOVERY_BASE_ENV: &str = "QOS_WP_RECOVERY_DIR";
+    pub const RECOVERY_BASE_ENV: &str = "TILO_WP_RECOVERY_DIR";
 
     /// The directory recovery copies live in. Resolution order:
-    /// 1. `$QOS_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
-    /// 2. `$XDG_STATE_HOME/qos/word-processor/recovery`;
-    /// 3. `$HOME/.local/state/qos/word-processor/recovery`;
-    /// 4. `./.qos-wp-recovery` as a last resort (no HOME at all).
+    /// 1. `$TILO_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
+    /// 2. `$XDG_STATE_HOME/tilo/word-processor/recovery`;
+    /// 3. `$HOME/.local/state/tilo/word-processor/recovery`;
+    /// 4. `./.tilo-wp-recovery` as a last resort (no HOME at all).
     pub fn base_dir() -> PathBuf {
         if let Some(dir) = std::env::var_os(RECOVERY_BASE_ENV) {
             return PathBuf::from(dir);
@@ -389,8 +389,8 @@ pub mod recovery {
                 std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
             });
         match state_home {
-            Some(p) => p.join("qos").join("word-processor").join("recovery"),
-            None => PathBuf::from(".qos-wp-recovery"),
+            Some(p) => p.join("tilo").join("word-processor").join("recovery"),
+            None => PathBuf::from(".tilo-wp-recovery"),
         }
     }
 

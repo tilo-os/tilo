@@ -1,4 +1,4 @@
-//! The qOS UI toolkit: retained-mode, CRDT-native widgets.
+//! The Tilo UI toolkit: retained-mode, CRDT-native widgets.
 //!
 //! # Reach for the toolkit's stack through the toolkit
 //!
@@ -70,6 +70,7 @@ pub mod gpu;
 /// output and converting YUV to RGB in a shader.
 #[cfg(feature = "gpu-video")]
 pub mod gpu_video;
+pub mod graph_editor;
 pub mod headless;
 pub mod history_source;
 pub mod i18n;
@@ -78,6 +79,7 @@ pub mod image_store;
 pub mod input;
 pub mod interaction;
 pub mod launch;
+pub mod live_collaboration;
 pub mod local_state;
 pub mod math;
 pub mod mpris;
@@ -93,6 +95,7 @@ pub mod portal;
 pub mod presence;
 pub mod profiling;
 pub mod query_text;
+pub mod realtime_continuity;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
 pub mod text_assistance;
 pub mod text_break;
@@ -137,7 +140,7 @@ pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
-pub use app::{App, local_surface_id};
+pub use app::{ActionUiRoute, App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
@@ -151,8 +154,8 @@ pub use input::{
     KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,
 };
 pub use interaction::{
-    ControllerFamily, InputAvailability, InputModality, InteractionEnvironment, KeyboardFamily,
-    PointerPrecision,
+    ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
+    KeyboardFamily, PointerPrecision,
 };
 pub use local_state::{
     LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
@@ -176,7 +179,8 @@ pub use search::{
 };
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{
-    Revision, RevisionHistory, RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
+    DocumentDiagnostics, DocumentFrontier, FrontierDiagnostics, Revision, RevisionHistory,
+    RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
 };
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
@@ -208,14 +212,14 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
-pub use qos_actions;
+pub use tilo_actions;
 pub use widget::ModelView;
 pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
 };
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{AppShell, NarrowScreen, ShellLayout};
-pub use widget::{Card, CardGrid, card_column_width, card_columns};
+pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
 pub use widget::{EditOutcome, EditableLabel};
 pub use widget::{Element, Widget};
 pub use widget::{
@@ -228,6 +232,7 @@ pub use widget::{RouteError, RouteHandle, Router};
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
+pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
     HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
     RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
@@ -247,6 +252,10 @@ pub use history_source::{
     HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource,
     compare_entries, deterministic_narrative, heads_for_entry, participant_display_label,
     validate_narrative, version_index_for_entry,
+};
+pub use live_collaboration::{
+    CollaborationExperience, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PersonPresence,
+    SemanticActivity, StatusOrigin, StatusSharing,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.

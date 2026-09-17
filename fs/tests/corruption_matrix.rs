@@ -12,8 +12,8 @@ use fs::{
     AvailabilityRegistry, FileHistoryStore, Namespace, RecordRepository, RecordTransactionJournal,
     load_mount_identity,
 };
-use qos_user_identity::IdentityPaths;
 use tempfile::tempdir;
+use tilo_user_identity::IdentityPaths;
 use uuid::Uuid;
 
 fn truncated(bytes: &[u8]) -> Vec<u8> {

@@ -46,7 +46,7 @@ use super::{CapabilityKind, PortalCaller, PortalContext, flow};
 
 const MAX_LIVE_SESSIONS: usize = 64;
 const MAX_RESTORE_TOKENS: usize = 256;
-const RESTORE_VENDOR: &str = "qos";
+const RESTORE_VENDOR: &str = "tilo";
 const RESTORE_DATA_VERSION: u32 = 1;
 
 /// Source-type bitmask (`ScreenCast.AvailableSourceTypes`).
@@ -216,7 +216,7 @@ fn restore_path() -> Option<PathBuf> {
     let root = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| dirs::state_dir())?;
-    Some(root.join("qos/portal/screencast-restore.json"))
+    Some(root.join("tilo/portal/screencast-restore.json"))
 }
 
 fn valid_restore_map(records: &HashMap<String, RestoreData>) -> bool {
@@ -304,7 +304,7 @@ impl ScreenCastBackend {
     }
 
     /// Remove durable and session restore records when an app is uninstalled,
-    /// its capture permission is revoked, or qOS privacy controls disable
+    /// its capture permission is revoked, or Tilo privacy controls disable
     /// screen sharing.  Tokens remain app-bound even before this is called.
     pub fn revoke_restore_tokens_for_app(&self, app_id: &str) -> Result<(), String> {
         self.restore
@@ -483,7 +483,7 @@ impl ScreenCastBackend {
         let mut persist_mode = opt_u32(&options, "persist_mode").unwrap_or(0);
 
         // `restore_data` is a standard `(suv)` tuple. Its payload is opaque
-        // to xdg-desktop-portal; qOS uses a random private-store key so an
+        // to xdg-desktop-portal; Tilo uses a random private-store key so an
         // application cannot forge a durable grant by manufacturing fields.
         // A matching record pre-approves the session and
         // restores its previous selection (source types, cursor mode, multiple, persist mode).
@@ -782,7 +782,7 @@ fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     bool::try_from(v).ok()
 }
 
-/// Decode qOS's opaque key from standard `restore_data` `(suv)`. Unknown
+/// Decode Tilo's opaque key from standard `restore_data` `(suv)`. Unknown
 /// vendors, versions, malformed variants, and non-UUID payloads are not an
 /// error: the portal spec says a backend may simply prompt normally when it
 /// cannot restore a record.
@@ -929,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn standard_restore_data_round_trips_only_qos_uuid_payloads() {
+    fn standard_restore_data_round_trips_only_tilo_uuid_payloads() {
         let key = uuid::Uuid::new_v4().to_string();
         let mut options = HashMap::new();
         options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
@@ -995,7 +995,7 @@ mod tests {
 
     #[test]
     fn durable_restore_survives_a_store_restart_and_stays_app_bound() {
-        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
         let path = root.join("restore.json");
         let token = uuid::Uuid::new_v4().to_string();
         let mut store = RestoreStore::load_at(Some(path.clone()));
@@ -1013,7 +1013,7 @@ mod tests {
 
     #[test]
     fn corrupt_durable_restore_is_quarantined_and_never_restored() {
-        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("root");
         let path = root.join("restore.json");
         std::fs::write(&path, b"not json").expect("corrupt fixture");
@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn revocation_removes_durable_restore_authority() {
-        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
         let path = root.join("restore.json");
         let token = uuid::Uuid::new_v4().to_string();
         let mut store = RestoreStore::load_at(Some(path.clone()));

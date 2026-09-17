@@ -15,10 +15,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 
-const PREFIX: &str = "/run/qos/capsule/prefix";
-const PAYLOAD: &str = "/opt/qos/x86/usr/share/qos/dxvk";
-const BUILD_METADATA: &str = "/opt/qos/x86/usr/lib/qos/windows-guest/installed-packages.tsv";
-const GENERATION_FILE: &str = ".qos-dxvk-generation";
+const PREFIX: &str = "/run/tilo/capsule/prefix";
+const PAYLOAD: &str = "/opt/tilo/x86/usr/share/tilo/dxvk";
+const BUILD_METADATA: &str = "/opt/tilo/x86/usr/lib/tilo/windows-guest/installed-packages.tsv";
+const GENERATION_FILE: &str = ".tilo-dxvk-generation";
 const DLLS: [&str; 5] = [
     "d3d8.dll",
     "d3d9.dll",
@@ -190,7 +190,7 @@ impl Payload {
     fn load(mode: WineMode, path: &Path, build_metadata: &Path) -> io::Result<Self> {
         let root = open_directory(path)?;
         let mut generation = Sha256::new();
-        generation.update(b"qos-dxvk-prefix-v1\0");
+        generation.update(b"tilo-dxvk-prefix-v1\0");
         generation.update(mode.architecture().as_bytes());
         generation.update(hash_file(
             &mut open_regular_at(&root, "provenance.json")?,
@@ -502,7 +502,7 @@ fn replace_from(parent: &File, name: &str, source: &mut impl Read) -> io::Result
 fn create_temporary(parent: &File, counter: &AtomicU64) -> io::Result<(File, CString)> {
     for _ in 0..128 {
         let temporary = format!(
-            ".qos-dxvk-{}-{}",
+            ".tilo-dxvk-{}-{}",
             std::process::id(),
             counter.fetch_add(1, Ordering::Relaxed)
         );
@@ -605,7 +605,7 @@ mod tests {
         for value in [
             None,
             Some(OsStr::new("/tmp/prefix")),
-            Some(OsStr::new("/run/qos/capsule/prefix/../home")),
+            Some(OsStr::new("/run/tilo/capsule/prefix/../home")),
         ] {
             assert!(validate_prefix(value).is_err());
         }
@@ -909,14 +909,14 @@ mod tests {
         let fixture = Fixture::new();
         let stale = fixture
             .prefix
-            .join(format!(".qos-dxvk-{}-0", std::process::id()));
+            .join(format!(".tilo-dxvk-{}-0", std::process::id()));
         fs::write(&stale, b"left by an interrupted prior invocation").unwrap();
         let directory = open_directory(&fixture.prefix).unwrap();
         let (mut file, name) = create_temporary(&directory, &AtomicU64::new(0)).unwrap();
         file.write_all(b"new private data").unwrap();
         assert_eq!(
             name.to_str().unwrap(),
-            format!(".qos-dxvk-{}-1", std::process::id())
+            format!(".tilo-dxvk-{}-1", std::process::id())
         );
         assert_eq!(
             fs::read(&stale).unwrap(),
@@ -935,7 +935,7 @@ mod tests {
             fs::write(
                 fixture
                     .prefix
-                    .join(format!(".qos-dxvk-{}-{index}", std::process::id())),
+                    .join(format!(".tilo-dxvk-{}-{index}", std::process::id())),
                 b"retained",
             )
             .unwrap();

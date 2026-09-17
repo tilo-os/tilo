@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
@@ -154,7 +154,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
 
     // The host captures per-strip GroupRow pointers internally and wires
     // them into its `harvest_pending_maximize_changes` hook.
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
     // If this fires the builder lost the seed — fix that before chasing the
     // harvest.
@@ -255,7 +255,7 @@ fn shell_tick_leaves_persisted_maximize_alone_when_no_click_fired() {
     // false.
     tree.workspaces[0].strips[0].window_groups[0].maximized = true;
 
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
     {
         let g = host

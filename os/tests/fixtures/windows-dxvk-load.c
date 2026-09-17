@@ -36,7 +36,7 @@ static void failure(const char *dll, const char *operation) {
     for (unsigned int i = 0; i != 8; ++i)
         hex[i] = digits[(error >> ((7 - i) * 4)) & 15];
     hex[8] = 0;
-    write_text("QOS_DXVK_LOAD_FAIL_" BITS " ");
+    write_text("TILO_DXVK_LOAD_FAIL_" BITS " ");
     write_text(dll);
     write_text(" ");
     write_text(operation);
@@ -81,18 +81,18 @@ void mainCRTStartup(void) {
             FreeLibrary(module);
             continue;
         }
-        write_text("QOS_DXVK_MODULE_" BITS " ");
+        write_text("TILO_DXVK_MODULE_" BITS " ");
         write_text(probes[i].dll);
         write_text(" ");
         write_text(path);
         write_text("\n");
-        write_text("QOS_DXVK_EXPORT_" BITS " ");
+        write_text("TILO_DXVK_EXPORT_" BITS " ");
         write_text(probes[i].dll);
         write_text(" ");
         write_text(probes[i].symbol);
         write_text("\n");
         FreeLibrary(module);
     }
-    if (!failures) write_text("QOS_DXVK_LOAD_PASS_" BITS "\n");
+    if (!failures) write_text("TILO_DXVK_LOAD_PASS_" BITS "\n");
     ExitProcess(failures ? 1 : 0);
 }

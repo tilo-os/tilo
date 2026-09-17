@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the WPE WebKit stack (libwpe + wpebackend-fdo + wpewebkit) from
-# release tarballs. qOS uses WPE WebKit as the engine behind the ui
+# release tarballs. Tilo uses WPE WebKit as the engine behind the ui
 # toolkit's WebView widget; Fedora does not package WPE, so we build it —
 # with this script for development, and inside the OS image's
 # `wpe-builder` Containerfile stage.
@@ -11,25 +11,25 @@
 #   build-wpe.sh build   download + compile + install into the prefix
 #
 # Locations (override via env):
-#   QOS_WPE_CACHE    tarballs + build trees   (default ~/.cache/qos-wpe)
-#   QOS_WPE_PREFIX   configured install prefix (default $QOS_WPE_CACHE/prefix;
+#   TILO_WPE_CACHE    tarballs + build trees   (default ~/.cache/tilo-wpe)
+#   TILO_WPE_PREFIX   configured install prefix (default $TILO_WPE_CACHE/prefix;
 #                    the OS image build uses /usr)
-#   QOS_WPE_DESTDIR  staging root prepended at install time (default empty;
+#   TILO_WPE_DESTDIR  staging root prepended at install time (default empty;
 #                    the OS image build stages into /wpe for COPY --from)
 #   JOBS             ninja parallelism for the wpewebkit build (default 8;
 #                    WebKit compile jobs are memory-hungry, ~2 GB each)
 set -euo pipefail
 
-CACHE=${QOS_WPE_CACHE:-$HOME/.cache/qos-wpe}
-PREFIX=${QOS_WPE_PREFIX:-$CACHE/prefix}
-DESTDIR_ROOT=${QOS_WPE_DESTDIR:-}
+CACHE=${TILO_WPE_CACHE:-$HOME/.cache/tilo-wpe}
+PREFIX=${TILO_WPE_PREFIX:-$CACHE/prefix}
+DESTDIR_ROOT=${TILO_WPE_DESTDIR:-}
 REL=https://wpewebkit.org/releases
 JOBS=${JOBS:-8}
 case "$JOBS" in
     ''|*[!0-9]*|0*) echo "JOBS must be a positive integer without leading zeros" >&2; exit 2 ;;
 esac
-SOURCE_DIR=${QOS_WPE_SOURCE_DIR:-}
-OFFLINE=${QOS_WPE_OFFLINE:-0}
+SOURCE_DIR=${TILO_WPE_SOURCE_DIR:-}
+OFFLINE=${TILO_WPE_OFFLINE:-0}
 MODE=${1:-build}
 
 LIBWPE=libwpe-1.16.3.tar.xz

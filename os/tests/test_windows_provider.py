@@ -28,36 +28,36 @@ class ProviderTests(unittest.TestCase):
         self.guest = guest_fixture.GuestTests()
         self.guest.setUp()
         self.addCleanup(self.guest.doCleanups)
-        self.fex.write("usr/lib/qos/fex/source.txt", b"FEX source revision: 91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20\nsubmodules\n")
-        self.fex.write("usr/lib/qos/fex/cmake-cache.txt", b"TUNE_CPU:STRING=none\nTUNE_ARCH:STRING=generic\n")
-        self.fex.write("usr/lib/qos/fex/inputs.env", f"FEX_BUILDROOT_REF={REF}\nFEX_X86_SDK_REF={REF}\n".encode())
-        self.fex.write("usr/lib/qos/fex/buildroot-packages.txt", b"fixture\n")
+        self.fex.write("usr/lib/tilo/fex/source.txt", b"FEX source revision: 91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20\nsubmodules\n")
+        self.fex.write("usr/lib/tilo/fex/cmake-cache.txt", b"TUNE_CPU:STRING=none\nTUNE_ARCH:STRING=generic\n")
+        self.fex.write("usr/lib/tilo/fex/inputs.env", f"FEX_BUILDROOT_REF={REF}\nFEX_X86_SDK_REF={REF}\n".encode())
+        self.fex.write("usr/lib/tilo/fex/buildroot-packages.txt", b"fixture\n")
         patches = PROVIDER.load("apply-fex-patches").patch_record(DEV.parent / "external-assets/fex-patches")
-        self.fex.write("usr/lib/qos/fex/downstream-patches.json", json.dumps(patches).encode())
-        self.fex.write("usr/share/qos/fex/patches/series.json", json.dumps(patches).encode())
+        self.fex.write("usr/lib/tilo/fex/downstream-patches.json", json.dumps(patches).encode())
+        self.fex.write("usr/share/tilo/fex/patches/series.json", json.dumps(patches).encode())
         for patch in patches["patches"]:
-            self.fex.write("usr/share/qos/fex/patches/" + patch["file"],
+            self.fex.write("usr/share/tilo/fex/patches/" + patch["file"],
                 (DEV.parent / "external-assets/fex-patches" / patch["file"]).read_bytes())
         self.guest.write("usr/lib/wine/i386-unix/wine", elf(32, 3)).chmod(0o755)
         self.guest.write("usr/lib64/wine/x86_64-unix/wine", elf(64, 62)).chmod(0o755)
         (self.guest.root / "usr/lib64/wine/i386-unix").symlink_to("/usr/lib/wine/i386-unix")
         (self.guest.root / "usr/lib/wine/x86_64-unix").symlink_to("/usr/lib64/wine/x86_64-unix")
-        self.guest.write("usr/lib/qos/windows-guest/installed-packages.tsv",
-            b"wine-core\t0\t11.0\t3.fc44.qos_traditional1\ti686\tLGPL\n"
-            b"wine-core\t0\t11.0\t3.fc44.qos_traditional1\tx86_64\tLGPL\n")
-        self.guest.write("usr/lib/qos/windows-guest/windows-guest-contract.json", json.dumps({
+        self.guest.write("usr/lib/tilo/windows-guest/installed-packages.tsv",
+            b"wine-core\t0\t11.0\t3.fc44.tilo_traditional1\ti686\tLGPL\n"
+            b"wine-core\t0\t11.0\t3.fc44.tilo_traditional1\tx86_64\tLGPL\n")
+        self.guest.write("usr/lib/tilo/windows-guest/windows-guest-contract.json", json.dumps({
             "transaction_base": "empty-installroot", "architecture": "x86_64", "releasever": "44",
             "install_weak_deps": True, "buildroot_ref": REF}).encode())
-        self.guest.write("usr/lib/qos/windows-guest/windows-guest-roots.txt", b"wine.x86_64\nwine.i686\n")
-        self.guest.write("usr/lib/qos/windows-guest/rpms-ref.txt", REF.encode())
-        license_path = self.guest.write("usr/share/licenses/qos-dxvk/LICENSE", b"fixture license")
-        self.guest.write("usr/share/qos/dxvk/provenance.json", json.dumps({
+        self.guest.write("usr/lib/tilo/windows-guest/windows-guest-roots.txt", b"wine.x86_64\nwine.i686\n")
+        self.guest.write("usr/lib/tilo/windows-guest/rpms-ref.txt", REF.encode())
+        license_path = self.guest.write("usr/share/licenses/tilo-dxvk/LICENSE", b"fixture license")
+        self.guest.write("usr/share/tilo/dxvk/provenance.json", json.dumps({
             "license": {"sha256": PROVIDER.file_hash(license_path)}}).encode())
         self.refresh()
 
     def refresh(self):
-        self.fex.write("usr/lib/qos/fex/payload-inventory.json", json.dumps(PAYLOAD.validate(self.fex.root)).encode())
-        self.guest.write("usr/lib/qos/windows-guest/payload.json", json.dumps(GUEST.validate(self.guest.root)).encode())
+        self.fex.write("usr/lib/tilo/fex/payload-inventory.json", json.dumps(PAYLOAD.validate(self.fex.root)).encode())
+        self.guest.write("usr/lib/tilo/windows-guest/payload.json", json.dumps(GUEST.validate(self.guest.root)).encode())
 
     def validate(self):
         return PROVIDER.validate(self.fex.root, self.guest.root, REF, REF,
@@ -85,8 +85,8 @@ class ProviderTests(unittest.TestCase):
             self.validate()
 
     def test_distribution_wine_nevra_cannot_impersonate_traditional(self):
-        path = self.guest.root / "usr/lib/qos/windows-guest/installed-packages.tsv"
-        path.write_text(path.read_text().replace(".qos_traditional1", ""))
+        path = self.guest.root / "usr/lib/tilo/windows-guest/installed-packages.tsv"
+        path.write_text(path.read_text().replace(".tilo_traditional1", ""))
         with self.assertRaisesRegex(ValueError, "traditional Wine pair"):
             self.validate()
 
@@ -97,28 +97,28 @@ class ProviderTests(unittest.TestCase):
             self.validate()
 
     def test_nonportable_fex_is_rejected(self):
-        self.fex.write("usr/lib/qos/fex/cmake-cache.txt", b"TUNE_CPU:STRING=native\nTUNE_ARCH:STRING=generic\n")
+        self.fex.write("usr/lib/tilo/fex/cmake-cache.txt", b"TUNE_CPU:STRING=native\nTUNE_ARCH:STRING=generic\n")
         with self.assertRaisesRegex(ValueError, "portable"):
             self.validate()
 
     def test_unpatched_fex_is_rejected(self):
-        (self.fex.root / "usr/lib/qos/fex/downstream-patches.json").unlink()
+        (self.fex.root / "usr/lib/tilo/fex/downstream-patches.json").unlink()
         with self.assertRaises(ValueError):
             self.validate()
 
     def test_other_patch_series_is_rejected(self):
-        self.fex.write("usr/lib/qos/fex/downstream-patches.json", b'{"patches": []}')
+        self.fex.write("usr/lib/tilo/fex/downstream-patches.json", b'{"patches": []}')
         with self.assertRaisesRegex(ValueError, "downstream patches"):
             self.validate()
 
     def test_changed_shipped_patch_is_rejected(self):
         patches = PROVIDER.load("apply-fex-patches").patch_record(DEV.parent / "external-assets/fex-patches")
-        self.fex.write("usr/share/qos/fex/patches/" + patches["patches"][0]["file"], b"changed")
+        self.fex.write("usr/share/tilo/fex/patches/" + patches["patches"][0]["file"], b"changed")
         with self.assertRaisesRegex(ValueError, "checksum"):
             self.validate()
 
     def test_os_delta_cannot_impersonate_complete_guest(self):
-        self.guest.write("usr/lib/qos/windows-guest/windows-guest-contract.json", b'{"transaction_base":"fedora-bootc"}')
+        self.guest.write("usr/lib/tilo/windows-guest/windows-guest-contract.json", b'{"transaction_base":"fedora-bootc"}')
         with self.assertRaisesRegex(ValueError, "complete"):
             self.validate()
 
@@ -128,7 +128,7 @@ class ProviderTests(unittest.TestCase):
             self.validate()
 
     def test_dxvk_license_is_preserved_and_verified(self):
-        self.guest.write("usr/share/licenses/qos-dxvk/LICENSE", b"changed")
+        self.guest.write("usr/share/licenses/tilo-dxvk/LICENSE", b"changed")
         with self.assertRaisesRegex(ValueError, "license"):
             self.validate()
 

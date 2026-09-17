@@ -1,17 +1,10 @@
 //! `SidebarDrawer` — a reusable collapsible sidebar / drawer primitive.
 //!
-//! Apps hand-rolled the same "dock-vs-overlay sidebar + scrim + collapse
-//! toggle + `user_toggled`" pattern repeatedly (the calculator alone three
-//! times), so this promotes it into one theme-driven, retained-mode
-//! controller.
-//!
 //! Unlike [`crate::widget::NavSplit`] (a full [`Widget`](crate::widget::Widget)
 //! with its own inner Taffy tree), `SidebarDrawer` is a *headless* geometry +
 //! state controller: it owns the responsive docked-vs-overlay decision, the
 //! eased reveal, the scrim, and the user-toggle memory, and hands back the
-//! resolved rects — usable from both widget-tree hosts and the immediate-mode
-//! Vello painters the calculator's panels are built from (which can't embed a
-//! `Widget`).
+//! resolved rects for widget-tree hosts and immediate-mode Vello painters.
 //!
 //! Behaviour (the Adwaita `OverlaySplitView` "flap" idiom): **docked** (wide)
 //! sits beside the content, inset by the eased sidebar width, and collapsing
@@ -22,16 +15,16 @@
 //! width; an explicit user toggle is remembered until the layout crosses the
 //! breakpoint, whereupon it reverts to the width-driven default.
 //!
-//! The eased reveal reuses the [`FlapState`] kernel from weather / chat /
-//! `NavSplit`, so the slide feels identical across the OS.
+//! The eased reveal uses the shared [`FlapState`] kernel.
 
 use std::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::color_compat::ColorCompat;
+use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::nav_split::{FlapState, SplitLayout};
 
@@ -79,6 +72,277 @@ pub enum SidebarSide {
     /// Anchored to the right edge; content sits to its left (calculator
     /// history).
     Right,
+}
+
+/// One destination in a [`SidebarNav`]. IDs are stable interaction targets;
+/// labels and badges are presentation and may be localized or updated every
+/// frame without changing routing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidebarNavItem {
+    pub id: String,
+    pub label: String,
+    pub badge: Option<String>,
+    pub selected: bool,
+}
+
+impl SidebarNavItem {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            badge: None,
+            selected: false,
+        }
+    }
+
+    #[must_use]
+    pub fn badge(mut self, badge: impl Into<String>) -> Self {
+        self.badge = Some(badge.into());
+        self
+    }
+
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+}
+
+/// A labelled group of destinations in a [`SidebarNav`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidebarNavSection {
+    pub label: String,
+    pub items: Vec<SidebarNavItem>,
+}
+
+impl SidebarNavSection {
+    pub fn new(label: impl Into<String>, items: Vec<SidebarNavItem>) -> Self {
+        Self {
+            label: label.into(),
+            items,
+        }
+    }
+}
+
+/// Shared rendered navigation content for [`SidebarDrawer`].
+///
+/// Besides painting consistent section headings, selected rows, badges and
+/// panel chrome, this owns the exact same row geometry used for hit testing.
+/// Apps therefore never duplicate magic y-ranges that drift away from what is
+/// visible. Every row is at least 44px high for touch and switch access.
+#[derive(Clone, Debug)]
+pub struct SidebarNav {
+    rect: Rect,
+    sections: Vec<SidebarNavSection>,
+    row_height: f64,
+    scroll_offset: f64,
+}
+
+impl SidebarNav {
+    pub fn new(rect: Rect, sections: Vec<SidebarNavSection>) -> Self {
+        Self {
+            rect,
+            sections,
+            row_height: 46.0,
+            scroll_offset: 0.0,
+        }
+    }
+
+    /// Apply a caller-retained vertical scroll position. The value is clamped
+    /// to the actual content range, so resize and dynamic section changes
+    /// cannot leave the navigation stranded beyond its final row.
+    #[must_use]
+    pub fn with_scroll_offset(mut self, offset: f64) -> Self {
+        self.scroll_offset = offset.clamp(0.0, self.max_scroll_offset());
+        self
+    }
+
+    /// Total laid-out height of all headings and rows.
+    pub fn content_height(&self) -> f64 {
+        self.sections
+            .iter()
+            .map(|section| 54.0 + self.row_height * count_f64(section.items.len()))
+            .sum()
+    }
+
+    /// Largest meaningful scroll position for this viewport.
+    pub fn max_scroll_offset(&self) -> f64 {
+        (self.content_height() - self.rect.height()).max(0.0)
+    }
+
+    /// The effective, range-clamped position used for paint and hit testing.
+    pub fn scroll_offset(&self) -> f64 {
+        self.scroll_offset.min(self.max_scroll_offset())
+    }
+
+    /// Build the semantic navigation tree from the same sections and selected
+    /// state that are painted on screen. Immediate-mode hosts can therefore
+    /// expose a complete sidebar without rebuilding a parallel, drift-prone
+    /// list of accessibility-only buttons.
+    pub fn accessibility(
+        &self,
+        name: impl Into<String>,
+        action_target: impl Fn(&str) -> String,
+    ) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+
+        let children = self
+            .sections
+            .iter()
+            .flat_map(|section| {
+                section.items.iter().map(|item| {
+                    let description = item.badge.as_ref().map_or_else(
+                        || section.label.clone(),
+                        |badge| format!("{}, {badge}", section.label),
+                    );
+                    AccessNode::new(Role::ListItem)
+                        .with_name(&item.label)
+                        .with_description(description)
+                        .with_action_target(action_target(&item.id))
+                        .with_state(AccessState::new().focusable(true).selected(item.selected))
+                        .with_hashed_key(("sidebar-nav", &item.id))
+                })
+            })
+            .collect();
+
+        AccessNode::new(Role::List)
+            .with_name(name.into())
+            .with_children(children)
+    }
+
+    /// Stable destination under a mouse, pen, or touch point.
+    pub fn hit_test(&self, point: Point) -> Option<&str> {
+        // A short mobile viewport may show only part of a long navigation
+        // list. Never let an off-screen row remain an invisible target below
+        // the drawer (or through content beside it).
+        if !self.rect.contains(point) {
+            return None;
+        }
+        for (section_index, section) in self.sections.iter().enumerate() {
+            for (item_index, item) in section.items.iter().enumerate() {
+                let row = self.row_rect(section_index, item_index);
+                if row.y0 < self.rect.y1 && row.y1 > self.rect.y0 && row.contains(point) {
+                    return Some(item.id.as_str());
+                }
+            }
+        }
+        None
+    }
+
+    fn row_rect(&self, section_index: usize, item_index: usize) -> Rect {
+        let prior_height: f64 = self
+            .sections
+            .iter()
+            .take(section_index)
+            .map(|section| 54.0 + self.row_height * count_f64(section.items.len()))
+            .sum();
+        let y = self.rect.y0 + 54.0 + prior_height + self.row_height * count_f64(item_index)
+            - self.scroll_offset();
+        Rect::new(
+            self.rect.x0 + 8.0,
+            y,
+            self.rect.x1 - 8.0,
+            y + self.row_height,
+        )
+    }
+
+    pub fn render(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let panel = RoundedRect::from_rect(self.rect, 18.0);
+        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &panel);
+
+        // Clip section content to the same rounded panel that is visible.
+        // This matters on phones in landscape and with large text, where the
+        // navigation can be taller than the available drawer.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &panel);
+
+        let mut heading_y = self.rect.y0 + 20.0 - self.scroll_offset();
+        for (section_index, section) in self.sections.iter().enumerate() {
+            draw_nav_text(
+                tr,
+                scene,
+                &section.label,
+                (11.0, c.text_dim, TextWeight::Bold),
+                transform,
+                self.rect.x0 + 18.0,
+                heading_y,
+            );
+            for (item_index, item) in section.items.iter().enumerate() {
+                let row = self.row_rect(section_index, item_index);
+                if item.selected {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        c.surfaces.base,
+                        None,
+                        &RoundedRect::from_rect(row, 10.0),
+                    );
+                }
+                draw_nav_text(
+                    tr,
+                    scene,
+                    &item.label,
+                    (
+                        14.0,
+                        c.text_primary,
+                        if item.selected {
+                            TextWeight::Bold
+                        } else {
+                            TextWeight::Medium
+                        },
+                    ),
+                    transform,
+                    row.x0 + 12.0,
+                    row.y0 + 12.0,
+                );
+                if let Some(badge) = &item.badge {
+                    let (width, _) = tr.measure_weighted(badge, 12.0, None, TextWeight::Regular);
+                    draw_nav_text(
+                        tr,
+                        scene,
+                        badge,
+                        (12.0, c.text_dim, TextWeight::Regular),
+                        transform,
+                        row.x1 - f64::from(width) - 12.0,
+                        row.y0 + 13.0,
+                    );
+                }
+            }
+            heading_y += 54.0 + self.row_height * count_f64(section.items.len());
+        }
+        scene.pop_layer();
+    }
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is bounded floating-point screen geometry"
+)]
+fn draw_nav_text(
+    tr: &mut TextRenderer,
+    scene: &mut Scene,
+    text: &str,
+    style: (f32, Color, TextWeight),
+    transform: Affine,
+    x: f64,
+    y: f64,
+) {
+    let (size, color, weight) = style;
+    tr.draw_text_weighted(
+        scene,
+        text,
+        size,
+        color,
+        transform * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }
 
 /// A reusable collapsible sidebar / drawer. See the module docs.
@@ -744,5 +1008,102 @@ mod tests {
             scene.encoding().draw_tags.len() >= 3,
             "toggle + scrim must paint"
         );
+    }
+
+    #[test]
+    fn navigation_uses_painted_rows_for_mouse_pen_and_touch_hit_testing() {
+        let nav = SidebarNav::new(
+            Rect::new(20.0, 10.0, 260.0, 700.0),
+            vec![
+                SidebarNavSection::new(
+                    "LIBRARY",
+                    vec![
+                        SidebarNavItem::new("all", "All items").selected(true),
+                        SidebarNavItem::new("favourites", "Favourites"),
+                    ],
+                ),
+                SidebarNavSection::new("TOOLS", vec![SidebarNavItem::new("import", "Import")]),
+            ],
+        );
+        let all = nav.row_rect(0, 0);
+        let favourites = nav.row_rect(0, 1);
+        let import = nav.row_rect(1, 0);
+        assert!(all.height() >= 44.0);
+        assert_eq!(nav.hit_test(all.center()), Some("all"));
+        assert_eq!(nav.hit_test(favourites.center()), Some("favourites"));
+        assert_eq!(nav.hit_test(import.center()), Some("import"));
+        assert_eq!(nav.hit_test(Point::new(21.0, 11.0)), None);
+    }
+
+    #[test]
+    fn navigation_never_hits_rows_below_a_short_mobile_drawer() {
+        let nav = SidebarNav::new(
+            Rect::new(0.0, 0.0, 280.0, 118.0),
+            vec![SidebarNavSection::new(
+                "VAULT",
+                vec![
+                    SidebarNavItem::new("visible", "Visible"),
+                    SidebarNavItem::new("clipped", "Clipped"),
+                    SidebarNavItem::new("offscreen", "Off screen"),
+                ],
+            )],
+        );
+
+        assert_eq!(nav.hit_test(Point::new(40.0, 76.0)), Some("visible"));
+        assert_eq!(nav.hit_test(Point::new(40.0, 122.0)), None);
+        assert_eq!(nav.hit_test(Point::new(40.0, 168.0)), None);
+    }
+
+    #[test]
+    fn navigation_scroll_reaches_clipped_mobile_rows_and_clamps_after_resize() {
+        let sections = vec![SidebarNavSection::new(
+            "VAULT",
+            vec![
+                SidebarNavItem::new("one", "One"),
+                SidebarNavItem::new("two", "Two"),
+                SidebarNavItem::new("three", "Three"),
+                SidebarNavItem::new("four", "Four"),
+            ],
+        )];
+        let nav = SidebarNav::new(Rect::new(0.0, 0.0, 280.0, 118.0), sections.clone())
+            .with_scroll_offset(f64::MAX);
+        assert_eq!(nav.scroll_offset(), nav.max_scroll_offset());
+        assert_eq!(nav.hit_test(Point::new(40.0, 96.0)), Some("four"));
+
+        let resized = SidebarNav::new(Rect::new(0.0, 0.0, 280.0, 400.0), sections)
+            .with_scroll_offset(nav.scroll_offset());
+        assert_eq!(resized.scroll_offset(), 0.0);
+    }
+
+    #[test]
+    fn navigation_semantics_share_labels_selection_and_actions_with_paint_model() {
+        use crate::a11y::Role;
+
+        let nav = SidebarNav::new(
+            Rect::new(0.0, 0.0, 280.0, 300.0),
+            vec![SidebarNavSection::new(
+                "VAULT",
+                vec![
+                    SidebarNavItem::new("all", "All items")
+                        .badge("12")
+                        .selected(true),
+                    SidebarNavItem::new("favorites", "Favorites").badge("3"),
+                ],
+            )],
+        );
+        let node = nav.accessibility("Vault navigation", |id| format!("filter:{id}"));
+
+        assert_eq!(node.role, Role::List);
+        assert_eq!(node.name.as_deref(), Some("Vault navigation"));
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(node.children[0].name.as_deref(), Some("All items"));
+        assert_eq!(node.children[0].description.as_deref(), Some("VAULT, 12"));
+        assert_eq!(
+            node.children[0].action_target.as_deref(),
+            Some("filter:all")
+        );
+        assert!(node.children[0].state.selected);
+        assert!(!node.children[1].state.selected);
+        assert!(node.children.iter().all(|child| child.state.focusable));
     }
 }

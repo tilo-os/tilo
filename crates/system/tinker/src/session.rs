@@ -171,7 +171,7 @@ impl SessionSpec {
         // layer and which one. Being able to see where you are is the difference
         // between confinement and disorientation.
         push!("--setenv");
-        push!("QOS_LAYER");
+        push!("TILO_LAYER");
         a.push(OsString::from(&self.layer_name));
         push!("--chdir");
         push!("/root");
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn the_layer_name_is_visible_inside() {
         let v = strs(&spec());
-        let i = pos(&v, "QOS_LAYER");
+        let i = pos(&v, "TILO_LAYER");
         assert_eq!(v[i + 1], "a");
         let h = pos(&v, "--hostname");
         assert_eq!(v[h + 1], "a");

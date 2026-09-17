@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
@@ -97,7 +97,7 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
 fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
     let (tree, (s0_id, [a0, a1]), (s1_id, [b0, _b1])) = two_strip_two_group_tree();
 
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
     // If this fires, the builder reset the active_group map — fix that before
     // chasing the wire-up.
@@ -148,7 +148,7 @@ fn shell_tick_clears_pointer_when_every_group_in_strip_is_closing() {
     // With both groups in a strip closing, the pointer must be *removed* from
     // the map rather than clamped to a corpse.
     let (tree, (s0_id, [a0, a1]), (s1_id, [b0, _])) = two_strip_two_group_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
     host.group_at_for_tests(s0_id, 0)
         .expect("strip-0 group-0")

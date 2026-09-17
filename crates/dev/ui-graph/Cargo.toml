@@ -1,10 +1,10 @@
 [package]
-name = "qos-ui-graph"
+name = "tilo-ui-graph"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Pure schema and structural editor for qOS serialized UI graphs"
+description = "Pure schema and structural editor for Tilo serialized UI graphs"
 
 [dependencies]
 serde.workspace = true

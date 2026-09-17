@@ -142,10 +142,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // lifecycle. Probe/relay/benchmark remain explicit command modes above:
     // they do not construct a GUI and therefore are not launch lifecycle.
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.music", music::app_root)
+        &LaunchSpec::new_with_args("dev.tilo.music", music::app_root_with_args)
             .shot_handler(render_shot)
             .allowed_flags(&["--live"])
             .allowed_options(&["--theme", "--play"])
+            .max_positionals(1)
             .scenarios(SHOT_SCENARIOS)
             .configure_app(configure_app),
     )?;
@@ -164,12 +165,12 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let scenario = args.scenario.as_deref().unwrap_or_default();
     let theme = pick_shot_theme(args);
     let live =
-        args.has("--live") || std::env::var("QOS_MUSIC_LIVE").is_ok_and(|value| !value.is_empty());
+        args.has("--live") || std::env::var("TILO_MUSIC_LIVE").is_ok_and(|value| !value.is_empty());
     if live {
         let play = args
             .value("--play")
             .map(str::to_owned)
-            .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
+            .or_else(|| std::env::var("TILO_MUSIC_PLAY").ok())
             .filter(|value| !value.is_empty());
         render_live_shot_to_png(viewport, out, play.as_deref(), &theme);
     } else {
@@ -281,7 +282,7 @@ fn probe_home(backend: &impl music::backend::MusicBackend) {
 }
 
 /// Real artist page for the top hit's artist (proves the artist endpoint +
-/// yields a channel id usable for `QOS_MUSIC_VIEW=artist:<id>`).
+/// yields a channel id usable for `TILO_MUSIC_VIEW=artist:<id>`).
 #[cfg(feature = "live")]
 fn probe_artist(backend: &impl music::backend::MusicBackend, top: &music::backend::TrackHit) {
     let Some(aid) = top.artist_id.clone() else {
@@ -472,7 +473,7 @@ fn probe_decode(_url: &str) {
 fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
         "music --probe needs the `live` feature (real YouTube-Music backend).\n\
-         Rebuild with:  qos-build run -p music --features live -- --probe \"aurora runaway\""
+         Rebuild with:  tilo-build run -p music --features live -- --probe \"aurora runaway\""
     );
     std::process::exit(2);
 }
@@ -499,15 +500,15 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 }
 
 /// The OS theme a `--shots` frame renders in: `--theme light|dark|high-contrast`
-/// (or the `QOS_MUSIC_THEME` env), defaulting to dark. `QOS_REDUCE_MOTION`,
-/// `QOS_A11Y_REDUCE_MOTION`, or the app-scoped `QOS_MUSIC_REDUCE_MOTION` also
+/// (or the `TILO_MUSIC_THEME` env), defaulting to dark. `TILO_REDUCE_MOTION`,
+/// `TILO_A11Y_REDUCE_MOTION`, or the app-scoped `TILO_MUSIC_REDUCE_MOTION` also
 /// makes a deterministic no-motion shot. This mirrors the live app's
 /// accessibility setting without altering live state.
 fn pick_shot_theme(args: &LaunchArgs) -> Theme {
     let sel = args
         .value("--theme")
         .map(str::to_owned)
-        .or_else(|| std::env::var("QOS_MUSIC_THEME").ok())
+        .or_else(|| std::env::var("TILO_MUSIC_THEME").ok())
         .unwrap_or_default();
     let theme = match sel.to_lowercase().as_str() {
         "light" => Theme::light(),
@@ -515,14 +516,14 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
         _ => Theme::dark(),
     };
     let reduce_motion = [
-        "QOS_MUSIC_REDUCE_MOTION",
-        "QOS_A11Y_REDUCE_MOTION",
-        "QOS_REDUCE_MOTION",
+        "TILO_MUSIC_REDUCE_MOTION",
+        "TILO_A11Y_REDUCE_MOTION",
+        "TILO_REDUCE_MOTION",
     ]
     .iter()
     .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty() && value != "0"));
     let text_scale = args.text_scale.unwrap_or_else(|| {
-        std::env::var("QOS_SHOTS_TEXT_SCALE")
+        std::env::var("TILO_SHOTS_TEXT_SCALE")
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|scale| scale.is_finite())
@@ -533,7 +534,7 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
         .with_text_scale(text_scale)
 }
 
-/// Headless benchmark: render the current view (`QOS_MUSIC_VIEW`) `n` times
+/// Headless benchmark: render the current view (`TILO_MUSIC_VIEW`) `n` times
 /// offscreen, timing the full per-frame CPU path (sync → layout → draw) that
 /// `QUICK_UI_PERF` reports live. No GPU submit, no display — reproducible.
 fn run_bench(n: usize, viewport: (u32, u32)) {
@@ -580,8 +581,8 @@ fn run_bench(n: usize, viewport: (u32, u32)) {
         .copied()
         .unwrap_or(0.0);
     let max = samples.last().copied().unwrap_or(0.0);
-    let view = std::env::var("QOS_MUSIC_VIEW").unwrap_or_else(|_| "home".into());
-    let nocache = std::env::var("QOS_MUSIC_NOCACHE").is_ok();
+    let view = std::env::var("TILO_MUSIC_VIEW").unwrap_or_else(|_| "home".into());
+    let nocache = std::env::var("TILO_MUSIC_NOCACHE").is_ok();
     println!(
         "bench view={view} nocache={nocache} frames={n} @ {}x{} :  avg={avg:.3}ms  p50={p50:.3}ms  p95={p95:.3}ms  max={max:.3}ms",
         viewport.0, viewport.1

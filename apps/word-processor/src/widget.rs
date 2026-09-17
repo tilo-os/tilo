@@ -320,6 +320,9 @@ enum ToolAction {
     Super,
     /// Toggle subscript (`sub` run mark) over the selection; clears `super`.
     Sub,
+    /// Open the shared action argument surface for a hyperlink over the current
+    /// non-empty selection.
+    Hyperlink,
     // NB: paragraph-level controls (alignment, line spacing) are NOT toolbar
     // actions — they live in the side panel's "This paragraph" section, so the
     // toolbar carries only direct character formatting + structural actions.
@@ -348,6 +351,39 @@ enum ToolAction {
     /// keep lower-frequency tools reachable without turning a narrow editor
     /// into a multi-row ribbon.
     More,
+}
+
+fn toolbar_item(
+    action: ToolAction,
+    label: impl Into<String>,
+    width: f64,
+    active: bool,
+) -> (ToolAction, ToolbarItem) {
+    let cue = match action {
+        ToolAction::Bold => LabelCue::Bold,
+        ToolAction::Underline => LabelCue::Underline,
+        ToolAction::Strike => LabelCue::Strike,
+        _ => LabelCue::None,
+    };
+    let group_start = matches!(
+        action,
+        ToolAction::NewMenu
+            | ToolAction::Bold
+            | ToolAction::FontCycle
+            | ToolAction::InsertTable
+            | ToolAction::InsertImage
+            | ToolAction::TableRowAdd
+            | ToolAction::ToggleStyles
+            | ToolAction::ToggleOutline
+            | ToolAction::More
+    );
+    (
+        action,
+        ToolbarItem::new(label, width)
+            .active(active)
+            .cue(cue)
+            .group_start(group_start),
+    )
 }
 
 /// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
@@ -1757,6 +1793,10 @@ pub struct WordProcessorWidget {
     /// Follow the available canvas width until the user explicitly operates a
     /// zoom control. This makes a narrow/tiled editor readable on first open.
     auto_fit_page: bool,
+    /// One-shot headless staging, deferred until toolbar geometry is laid out.
+    stage_template_picker: bool,
+    /// One-shot headless staging for the compact-toolbar overflow menu.
+    stage_toolbar_overflow: bool,
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
     /// the canvas top offset so no control is ever clipped.
     toolbar_rows: usize,
@@ -1789,6 +1829,7 @@ pub struct WordProcessorWidget {
     /// The compact toolbar's labeled, keyboard/semantic shared swatch grid.
     /// It is local view state; selecting a colour routes through `ToolAction`.
     compact_swatch_palette: CompactSwatchPalette,
+    action_palette_request: Option<tilo_actions::ActionAddress>,
     /// Comment/tracked-change visibility, materialized items, card drawing, and
     /// frame-local action hit targets. Document mutation remains editor policy.
     review: ReviewOverlay,
@@ -1824,9 +1865,9 @@ pub struct WordProcessorWidget {
     /// What the in-flight [`Self::portal_rx`] request is for (open a document,
     /// save the current one, or insert an image). Set alongside `portal_rx`.
     portal_purpose: Option<PortalPurpose>,
-    resource_file_invocation: Option<qos_actions::InvocationId>,
-    resource_file_result: Option<qos_actions::InvocationUpdate>,
-    pending_resource_open: Option<(qos_actions::InvocationId, std::path::PathBuf)>,
+    resource_file_invocation: Option<tilo_actions::InvocationId>,
+    resource_file_result: Option<tilo_actions::InvocationUpdate>,
+    pending_resource_open: Option<(tilo_actions::InvocationId, std::path::PathBuf)>,
     /// A resource-invoked revision to focus after the next mutable sync has
     /// refreshed the history model. `invoke_resource_operation` only receives
     /// an immutable document, so deferring avoids a second, stale timeline.
@@ -1926,6 +1967,8 @@ impl WordProcessorWidget {
             scrub: None,
             zoom: ZoomControl::new(),
             auto_fit_page: true,
+            stage_template_picker: false,
+            stage_toolbar_overflow: false,
             toolbar_rows: 1,
             notes: Vec::new(),
             dict: None,
@@ -1936,6 +1979,7 @@ impl WordProcessorWidget {
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
             compact_swatch_palette: CompactSwatchPalette::default(),
+            action_palette_request: None,
             review: ReviewOverlay::default(),
             thread_comment: None,
             thread_snapshot: None,
@@ -1965,11 +2009,11 @@ impl WordProcessorWidget {
         }
     }
 
-    // ---- qOS action dispatch ------------------------------------------------
+    // ---- Tilo action dispatch ------------------------------------------------
 
     /// Dispatch one [`WordProcessorAction`](crate::actions::WordProcessorAction) —
     /// the single CRDT-mutation path shared with the Ctrl+K palette — through the
-    /// qOS action executor. Document heads before the event's first action are
+    /// Tilo action executor. Document heads before the event's first action are
     /// stashed so the host records **one** undo boundary bracketing the whole event.
     fn perform_action(
         &mut self,
@@ -1980,7 +2024,7 @@ impl WordProcessorWidget {
             state,
             crate::actions::WORD_PROCESSOR_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Writer", "Writer", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action),
         );
     }
 
@@ -2415,7 +2459,7 @@ impl WordProcessorWidget {
     /// Test hook: the last action an affordance dispatched through
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[cfg(test)]
-    pub(crate) fn last_dispatched_for_test(&self) -> Option<&qos_actions::EncodedAction> {
+    pub(crate) fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -2781,6 +2825,17 @@ impl WordProcessorWidget {
         self.dirty = true;
     }
 
+    /// Stage the template picker for the next headless overlay pass.
+    pub fn stage_template_picker_for_shot(&mut self) {
+        self.stage_template_picker = true;
+    }
+
+    /// Stage the compact-toolbar overflow menu for the next headless overlay
+    /// pass.
+    pub fn stage_toolbar_overflow_for_shot(&mut self) {
+        self.stage_toolbar_overflow = true;
+    }
+
     /// Put the production Find bar into a deterministic populated state for
     /// visual review. The query still runs through the complete-document search
     /// path, so this catches virtualized/offscreen result regressions rather
@@ -2876,7 +2931,7 @@ impl WordProcessorWidget {
     }
 
     /// Toolbar "Insert image" affordance. Opens the host **XDG file-chooser
-    /// portal** (per the qOS HIG the app never draws its own picker): the D-Bus
+    /// portal** (per the Tilo HIG the app never draws its own picker): the D-Bus
     /// round-trip + host dialog run on a worker thread ([`portal::PickRequest`]);
     /// the chosen path comes back over a channel drained each frame in
     /// [`Self::drain_portal`], which inserts the image at the caret. A second
@@ -3002,19 +3057,19 @@ impl WordProcessorWidget {
                 };
                 if let Some(invocation) = self.resource_file_invocation.take() {
                     self.resource_file_result = Some(match result {
-                        Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         },
                         Err(message) if message == "file picker was cancelled" => {
-                            qos_actions::InvocationUpdate::Cancelled {
+                            tilo_actions::InvocationUpdate::Cancelled {
                                 invocation,
                                 message: Some(message),
                             }
                         }
-                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "word_processor.file_operation_failed".into(),
                                 message,
                                 details: None,
@@ -3031,9 +3086,9 @@ impl WordProcessorWidget {
                 self.portal_rx = None;
                 self.portal_purpose = None;
                 if let Some(invocation) = self.resource_file_invocation.take() {
-                    self.resource_file_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_file_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "word_processor.portal_worker_lost".into(),
                             message: "file picker stopped without returning a result".into(),
                             details: None,
@@ -5407,6 +5462,7 @@ fn tool_action_id(action: ToolAction) -> String {
         ToolAction::Strike => "strike".into(),
         ToolAction::Super => "superscript".into(),
         ToolAction::Sub => "subscript".into(),
+        ToolAction::Hyperlink => "hyperlink".into(),
         ToolAction::FontCycle => "font-family".into(),
         ToolAction::FontSizeDec => "font-size-decrease".into(),
         ToolAction::FontSizeInc => "font-size-increase".into(),
@@ -5446,6 +5502,7 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::Strike => "a11y-strikethrough",
         ToolAction::Super => "a11y-superscript",
         ToolAction::Sub => "a11y-subscript",
+        ToolAction::Hyperlink => "a11y-hyperlink",
         ToolAction::FontCycle => "a11y-font",
         ToolAction::FontSizeDec => "a11y-size-down",
         ToolAction::FontSizeInc => "a11y-size-up",
@@ -7947,7 +8004,7 @@ impl WordProcessorWidget {
         let now = std::time::Instant::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
-                qos_actions::InteractionAnchor::Text { ranges, .. } => ranges
+                tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
                     .iter()
                     .map(|range| {
                         (
@@ -7957,7 +8014,7 @@ impl WordProcessorWidget {
                         )
                     })
                     .collect::<Vec<_>>(),
-                qos_actions::InteractionAnchor::Objects { ids } => ids
+                tilo_actions::InteractionAnchor::Objects { ids } => ids
                     .iter()
                     .filter_map(|id| {
                         self.blocks
@@ -9184,7 +9241,7 @@ impl Widget for WordProcessorWidget {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -9192,7 +9249,7 @@ impl Widget for WordProcessorWidget {
     ) -> Result<bool, String> {
         use crate::actions::WordProcessorOperation;
 
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -9235,8 +9292,8 @@ impl Widget for WordProcessorWidget {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -9244,7 +9301,7 @@ impl Widget for WordProcessorWidget {
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         use crate::actions::WordProcessorOperation;
 
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -9282,12 +9339,12 @@ impl Widget for WordProcessorWidget {
             self.set_file(destination, format);
             self.try_write_to_current_path(doc)?;
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         } else if self.path.is_some() && !force_picker {
             self.try_write_to_current_path(doc)?;
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         } else {
             self.request_save_as();
@@ -9298,11 +9355,11 @@ impl Widget for WordProcessorWidget {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .resource_file_result
             .as_ref()
@@ -9331,13 +9388,13 @@ impl Widget for WordProcessorWidget {
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
             self.resource_file_result =
                 Some(match self.try_open_document_in_place(state, &open_path) {
-                    Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     },
-                    Err(message) => qos_actions::InvocationUpdate::Failed {
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "word_processor.open_failed".into(),
                             message,
                             details: None,
@@ -9713,6 +9770,14 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.stage_template_picker {
+            self.stage_template_picker = false;
+            self.open_template_picker();
+        }
+        if self.stage_toolbar_overflow {
+            self.stage_toolbar_overflow = false;
+            self.open_toolbar_overflow();
+        }
         // Toast first, so an open menu stacks above it.
         self.draw_toast(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
@@ -9951,7 +10016,7 @@ impl Widget for WordProcessorWidget {
     fn needs_commit(&self) -> bool {
         self.needs_commit
     }
-    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
         self.needs_commit.then(|| {
             let resource_id = self.path.as_ref().map_or_else(
                 || "word-processor.document:untitled".to_string(),
@@ -9963,13 +10028,13 @@ impl Widget for WordProcessorWidget {
                 .and_then(|path| path.file_name())
                 .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or("Untitled document");
-            qos_actions::ActionContext::for_resource(
+            tilo_actions::ActionContext::for_resource(
                 "Edit document",
                 resource_id,
                 "word_processor.document",
                 resource_label,
             )
-            .with_app("org.qos.Writer", "Writer")
+            .with_app("org.tilo.Writer", "Writer")
         })
     }
     fn on_commit(&mut self) {
@@ -9984,11 +10049,14 @@ impl Widget for WordProcessorWidget {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
+    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
+        self.action_palette_request.take()
+    }
     /// Publish the resource tree Ctrl+K walks (delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`]).
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
     fn needs_redraw(&self) -> bool {
         self.dirty
@@ -10440,6 +10508,14 @@ impl WordProcessorWidget {
             ToolAction::Highlight(None) => self.dispatch_clear_mark(state, "highlight"),
             ToolAction::Super => self.dispatch_exclusive_mark(state, "super", "sub"),
             ToolAction::Sub => self.dispatch_exclusive_mark(state, "sub", "super"),
+            ToolAction::Hyperlink => {
+                if !self.selection_blocks_cached().is_empty() {
+                    self.action_palette_request = Some(tilo_actions::ActionAddress::new(
+                        "word-processor.document",
+                        "set-hyperlink",
+                    ));
+                }
+            }
             ToolAction::FontSizeInc => {
                 let next =
                     num::i64_of_f32((self.current_font_size() + 1.0).round().clamp(6.0, 200.0));
@@ -10530,6 +10606,8 @@ impl WordProcessorWidget {
                 |(_, rect)| Point::new(rect.x0, rect.y1),
             );
         let mut menu = ContextMenu::new();
+        menu.set_text_scale(crate::num::f32_of_f64(self.text_scale));
+        menu.set_viewport(Some(self.rect));
         let mut actions = Vec::new();
         let minimal = self.rect.width() / self.text_scale < 260.0;
         let mut overflow = Vec::new();
@@ -11202,6 +11280,8 @@ impl WordProcessorWidget {
             .collect();
 
         let mut menu = ContextMenu::new();
+        menu.set_text_scale(crate::num::f32_of_f64(self.text_scale));
+        menu.set_viewport(Some(self.rect));
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
 
         self.push_review_rows(&mut menu, &mut actions, &block, wstart, wend, raw_click_off);
@@ -11472,6 +11552,9 @@ impl WordProcessorWidget {
             .first()
             .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
         let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
+        self.template_picker
+            .set_text_scale(crate::num::f32_of_f64(self.text_scale));
+        self.template_picker.set_viewport(self.rect);
         self.template_picker.open_at(Point::new(anchor_x, anchor_y));
         self.dirty = true;
     }
@@ -11780,136 +11863,169 @@ impl WordProcessorWidget {
     /// section (editing controls inside a cell, else "Insert table"), and the
     /// panel/pane toggles. Paragraph-style presets/controls live in the side
     /// panel, not here — see [`ToolAction`].
-    #[allow(clippy::too_many_lines)]
     fn toolbar_button_specs(&self, compact: bool) -> Vec<(ToolAction, ToolbarItem)> {
-        let bold_a = self.mark_active_in_selection("strong");
-        let italic_a = self.mark_active_in_selection("em");
-        let under_a = self.mark_active_in_selection("underline");
-        let strike_a = self.mark_active_in_selection("strike");
-        let super_a = self.mark_active_in_selection("super");
-        let sub_a = self.mark_active_in_selection("sub");
-        // Only the caret block *kind* is needed now (to switch in the contextual
-        // table controls). Paragraph-style choices (Body / Heading / List) live in
-        // the side panel's style picker, not the toolbar — see `draw_styles_panel`.
-        let (kind, _level) = self.current_block_style();
-        let font_label = self.current_font().label();
-
-        // Build the toolbar spec; the ui::chrome toolbar component owns the look
-        // and hands back each button's clickable rect (zipped to its action).
-        let cue = |a: ToolAction| match a {
-            ToolAction::Bold => LabelCue::Bold,
-            ToolAction::Underline => LabelCue::Underline,
-            ToolAction::Strike => LabelCue::Strike,
-            _ => LabelCue::None,
-        };
-        let group_start = |a: ToolAction| {
-            matches!(
-                a,
-                ToolAction::NewMenu
-                    | ToolAction::Bold
-                    | ToolAction::FontCycle
-                    | ToolAction::InsertTable
-                    | ToolAction::InsertImage
-                    | ToolAction::TableRowAdd
-                    | ToolAction::ToggleStyles
-                    | ToolAction::ToggleOutline
-                    | ToolAction::More
-            )
-        };
-        let panel_open = self.styles_panel_open;
-        let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
-        let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
-            specs.push((
-                a,
-                ToolbarItem::new(label, w)
-                    .active(active)
-                    .cue(cue(a))
-                    .group_start(group_start(a)),
-            ));
-        };
+        let mut specs = self.primary_toolbar_specs();
         // New-from-template picker (leads the toolbar). Active while its menu is open.
         // Single-glyph faces (B/I/U/S, x²/x₂, H1/H2, A−/A+, ✕) are symbols, not
         // words, and stay as literals; the spelled-out names live in the a11y
         // labels (see `tool_action_a11y_label`).
-        add(
-            ToolAction::NewMenu,
-            &t("toolbar-new"),
-            64.0,
-            self.template_picker.is_open(),
-        );
-        add(ToolAction::Bold, "B", 34.0, bold_a);
-        add(ToolAction::Italic, "I", 30.0, italic_a);
-        add(ToolAction::Underline, "U", 32.0, under_a);
         // A compact tile keeps the writing surface primary: the common writing
         // trio, font choice, and style inspector remain one coherent row;
         // every lower-frequency command is reachable from an explicit More
         // menu instead of wrapping into orphaned ribbon rows.
         if compact {
-            add(ToolAction::FontCycle, font_label, 58.0, false);
-            add(
-                ToolAction::ToggleStyles,
-                &t("toolbar-styles"),
-                64.0,
-                panel_open,
-            );
-            add(
-                ToolAction::More,
-                &t("toolbar-more"),
-                62.0,
-                self.context_menu.is_open(),
-            );
-            return specs;
+            specs.extend([
+                toolbar_item(
+                    ToolAction::FontCycle,
+                    self.current_font().label(),
+                    58.0,
+                    false,
+                ),
+                toolbar_item(
+                    ToolAction::ToggleStyles,
+                    t("toolbar-styles"),
+                    64.0,
+                    self.styles_panel_open,
+                ),
+                toolbar_item(
+                    ToolAction::More,
+                    t("toolbar-more"),
+                    62.0,
+                    self.context_menu.is_open(),
+                ),
+            ]);
+        } else {
+            specs.extend(self.desktop_toolbar_specs());
         }
-        add(ToolAction::Strike, "S", 30.0, strike_a);
-        add(ToolAction::Super, "x²", 34.0, super_a);
-        add(ToolAction::Sub, "x₂", 34.0, sub_a);
+        specs
+    }
+
+    /// Controls shared by both responsive toolbar compositions.
+    fn primary_toolbar_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
+        let mut specs = vec![
+            toolbar_item(
+                ToolAction::NewMenu,
+                t("toolbar-new"),
+                64.0,
+                self.template_picker.is_open(),
+            ),
+            toolbar_item(
+                ToolAction::Bold,
+                "B",
+                34.0,
+                self.mark_active_in_selection("strong"),
+            ),
+            toolbar_item(
+                ToolAction::Italic,
+                "I",
+                30.0,
+                self.mark_active_in_selection("em"),
+            ),
+            toolbar_item(
+                ToolAction::Underline,
+                "U",
+                32.0,
+                self.mark_active_in_selection("underline"),
+            ),
+        ];
+        if !self.selection_blocks_cached().is_empty() {
+            specs.push(toolbar_item(
+                ToolAction::Hyperlink,
+                t("toolbar-link"),
+                52.0,
+                false,
+            ));
+        }
+        specs
+    }
+
+    /// Desktop-only direct formatting, contextual table, and view controls.
+    fn desktop_toolbar_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
+        let mut specs = vec![
+            toolbar_item(
+                ToolAction::Strike,
+                "S",
+                30.0,
+                self.mark_active_in_selection("strike"),
+            ),
+            toolbar_item(
+                ToolAction::Super,
+                "x²",
+                34.0,
+                self.mark_active_in_selection("super"),
+            ),
+            toolbar_item(
+                ToolAction::Sub,
+                "x₂",
+                34.0,
+                self.mark_active_in_selection("sub"),
+            ),
+        ];
         // Paragraph-style presets (H1/H2/Body/List) and paragraph controls
         // (alignment, line spacing) are the side panel's job, not the toolbar —
         // see `ToolAction`. Quick headings remain on Ctrl+1/2/3.
-        add(ToolAction::FontCycle, font_label, 58.0, false);
-        add(ToolAction::FontSizeDec, "A−", 34.0, false);
-        add(ToolAction::FontSizeInc, "A+", 34.0, false);
+        specs.extend([
+            toolbar_item(
+                ToolAction::FontCycle,
+                self.current_font().label(),
+                58.0,
+                false,
+            ),
+            toolbar_item(ToolAction::FontSizeDec, "A−", 34.0, false),
+            toolbar_item(ToolAction::FontSizeInc, "A+", 34.0, false),
+        ]);
         // Contextual table section: editing controls inside a cell, else insert.
-        if kind == "cell" {
-            add(ToolAction::TableRowAdd, &t("toolbar-row-add"), 54.0, false);
-            add(ToolAction::TableRowDel, &t("toolbar-row-del"), 54.0, false);
-            add(ToolAction::TableColAdd, &t("toolbar-col-add"), 52.0, false);
-            add(ToolAction::TableColDel, &t("toolbar-col-del"), 52.0, false);
-            add(ToolAction::TableDelete, "✕", 30.0, false);
+        if self.current_block_style().0 == "cell" {
+            specs.extend([
+                toolbar_item(ToolAction::TableRowAdd, t("toolbar-row-add"), 54.0, false),
+                toolbar_item(ToolAction::TableRowDel, t("toolbar-row-del"), 54.0, false),
+                toolbar_item(ToolAction::TableColAdd, t("toolbar-col-add"), 52.0, false),
+                toolbar_item(ToolAction::TableColDel, t("toolbar-col-del"), 52.0, false),
+                toolbar_item(ToolAction::TableDelete, "✕", 30.0, false),
+            ]);
         } else {
-            add(ToolAction::InsertTable, &t("toolbar-table"), 78.0, false);
+            specs.push(toolbar_item(
+                ToolAction::InsertTable,
+                t("toolbar-table"),
+                78.0,
+                false,
+            ));
         }
         // The Image button is drawn as a vector glyph (a lucide `Image` icon,
         // overlaid below after the chrome lays the toolbar out) with no text
         // label — replacing the old emoji-prefixed "🖼 Image" caption. The empty
         // label keeps the chrome button blank so only the icon shows.
-        add(ToolAction::InsertImage, "", 40.0, false);
-        add(
-            ToolAction::ToggleStyles,
-            &t("toolbar-styles"),
-            64.0,
-            panel_open,
-        );
-        add(
-            ToolAction::ToggleRuler,
-            &t("toolbar-ruler"),
-            60.0,
-            self.ruler_on,
-        );
+        specs.extend([
+            toolbar_item(ToolAction::InsertImage, "", 40.0, false),
+            toolbar_item(
+                ToolAction::ToggleStyles,
+                t("toolbar-styles"),
+                64.0,
+                self.styles_panel_open,
+            ),
+            toolbar_item(
+                ToolAction::ToggleRuler,
+                t("toolbar-ruler"),
+                60.0,
+                self.ruler_on,
+            ),
+        ]);
         // Navigation: outline pane toggle + table-of-contents generator.
-        add(
-            ToolAction::ToggleOutline,
-            &t("toolbar-outline"),
-            72.0,
-            self.outline.is_open(),
-        );
-        add(
-            ToolAction::ToggleHistory,
-            &t("toolbar-history"),
-            68.0,
-            self.history.is_open(),
-        );
-        add(ToolAction::InsertToc, &t("toolbar-toc"), 48.0, false);
+        specs.extend([
+            toolbar_item(
+                ToolAction::ToggleOutline,
+                t("toolbar-outline"),
+                72.0,
+                self.outline.is_open(),
+            ),
+            toolbar_item(
+                ToolAction::ToggleHistory,
+                t("toolbar-history"),
+                68.0,
+                self.history.is_open(),
+            ),
+            toolbar_item(ToolAction::InsertToc, t("toolbar-toc"), 48.0, false),
+        ]);
         specs
     }
 
@@ -12280,7 +12396,7 @@ mod tests {
         assert_eq!(context.action_label, "Edit document");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
-            Some("org.qos.Writer")
+            Some("org.tilo.Writer")
         );
         assert_eq!(
             context
@@ -12564,15 +12680,15 @@ mod tests {
     }
 
     /// The `EncodedAction` a resource's immediate `ActionSpec` carries.
-    fn spec_encoded(res: &qos_actions::Resource, id: &str) -> qos_actions::EncodedAction {
+    fn spec_encoded(res: &tilo_actions::Resource, id: &str) -> tilo_actions::EncodedAction {
         let spec = res
             .actions
             .iter()
             .find(|a| a.id == id)
             .unwrap_or_else(|| panic!("spec {id}"));
         match &spec.input {
-            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
+            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
         }
     }
 
@@ -13029,6 +13145,7 @@ mod tests {
                     | ToolAction::Strike
                     | ToolAction::Super
                     | ToolAction::Sub
+                    | ToolAction::Hyperlink
                     | ToolAction::FontCycle
                     | ToolAction::FontSizeInc
                     | ToolAction::FontSizeDec
@@ -13056,6 +13173,42 @@ mod tests {
                 "unexpected paragraph-level control on the toolbar: {a:?}"
             );
         }
+    }
+
+    #[test]
+    fn selected_text_link_button_requests_the_canonical_argument_flow() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Read this");
+        wp.sync(&mut state.doc, &state.root);
+
+        assert!(
+            wp.primary_toolbar_specs()
+                .iter()
+                .all(|(action, _)| *action != ToolAction::Hyperlink),
+            "an empty selection cannot author a link"
+        );
+        select_range(&mut wp, 0, 4);
+        assert!(
+            wp.primary_toolbar_specs()
+                .iter()
+                .any(|(action, _)| *action == ToolAction::Hyperlink),
+            "a non-empty selection exposes the Link affordance"
+        );
+
+        wp.apply_tool(&mut state.doc, ToolAction::Hyperlink);
+        assert_eq!(
+            Widget::take_action_palette_request(&mut wp),
+            Some(tilo_actions::ActionAddress::new(
+                "word-processor.document",
+                "set-hyperlink"
+            ))
+        );
+        assert!(
+            Widget::take_action_palette_request(&mut wp).is_none(),
+            "the host request is edge-triggered"
+        );
     }
 
     /// Compact mode keeps More concise: two labelled entries open the shared
@@ -13091,6 +13244,41 @@ mod tests {
         left_click(&mut wp, &mut state, swatch);
         wp.refresh_blocks(&mut state.doc);
         assert_eq!(wp.current_text_color(), Some(STYLE_PALETTE[3]));
+    }
+
+    /// Responsive composition may move commands, but it must never remove one:
+    /// the visible compact row plus its More menu covers every action exposed by
+    /// the full desktop toolbar.
+    #[test]
+    fn compact_toolbar_and_more_cover_the_full_toolbar() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "coverage");
+
+        let full = wp
+            .toolbar_button_specs(false)
+            .into_iter()
+            .map(|(action, _)| action)
+            .collect::<Vec<_>>();
+        let mut compact = wp
+            .toolbar_button_specs(true)
+            .into_iter()
+            .map(|(action, _)| action)
+            .filter(|action| *action != ToolAction::More)
+            .collect::<Vec<_>>();
+        wp.open_toolbar_overflow();
+        compact.extend(wp.context_actions.iter().filter_map(|entry| match entry {
+            Some(CtxAction::Tool(action)) => Some(*action),
+            _ => None,
+        }));
+
+        for action in full {
+            assert!(
+                compact.contains(&action),
+                "compact toolbar and More menu lost {action:?}"
+            );
+        }
     }
 
     fn assert_compact_clear_footer(
@@ -13972,7 +14160,7 @@ mod tests {
     /// PNG (so the header-edit affordance — band wash + dashed outline + caret —
     /// can be eyeballed). Renders through the real five-pass draw; asserts a
     /// non-trivial image was produced. Output path is overridable via
-    /// `$QOS_WP_HEADER_SHOT` for manual inspection.
+    /// `$TILO_WP_HEADER_SHOT` for manual inspection.
     #[test]
     fn header_edit_mode_renders_a_frame() {
         let (mut state, mut wp) = bound();
@@ -14043,7 +14231,7 @@ mod tests {
             "header band laid for the active context"
         );
 
-        let out = std::env::var("QOS_WP_HEADER_SHOT")
+        let out = std::env::var("TILO_WP_HEADER_SHOT")
             .unwrap_or_else(|_| format!("{}/header-edit-mode.png", std::env::temp_dir().display()));
         ui::offscreen::OffscreenRenderer::new(w, h).render_png(
             &scene,
@@ -15017,9 +15205,9 @@ mod tests {
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
         // Redirect the persisted user-dict to a throwaway dir so the test never
-        // writes the real `~/.config/qos/userdict.txt`. (The in-memory add is
+        // writes the real `~/.config/tilo/userdict.txt`. (The in-memory add is
         // what the assertions below check; persistence is best-effort.)
-        let tmp = std::env::temp_dir().join(format!("qos-userdict-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tilo-userdict-test-{}", std::process::id()));
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &tmp);
         }
@@ -16112,18 +16300,12 @@ mod tests {
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
         assert!(wp.template_picker.is_open(), "the New ▾ picker opens");
 
-        // Select "Report" (its first heading is a known, stable string). Shared
-        // ContextMenu rows start after 6 px padding and are 28 px tall.
-        let report_idx = crate::Template::all()
-            .iter()
-            .position(|t| *t == crate::Template::Report)
-            .unwrap();
-        let anchor_x = wp.toolbar.first().map(|(_, rect)| rect.x0).unwrap();
-        let anchor_y = wp.rect.y0 + wp.toolbar_height(wp.rect.width());
-        wp.pointer = Point::new(
-            anchor_x + 10.0,
-            anchor_y + 6.0 + num::f64_of_usize(report_idx) * 28.0 + 1.0,
-        );
+        // Select "Report" (its first heading is a known, stable string) using
+        // the shared menu's current layout rather than copied row metrics.
+        wp.pointer = wp
+            .template_picker
+            .item_center(crate::Template::Report)
+            .expect("Report row is laid out while the picker is open");
         let mut handled = false;
         assert!(wp.handle_left_press_menu_routing(&mut state.doc, &mut handled));
         assert!(handled);
@@ -18119,7 +18301,7 @@ mod tests {
 
     // ---- visual review shots ----------------------------------------------
     // A guarded renderer that writes PNGs of the fixed surfaces for eyeballing.
-    // Set `QOS_WP_REVIEW_SHOTS=<dir>` to emit them; a normal `cargo test` run
+    // Set `TILO_WP_REVIEW_SHOTS=<dir>` to emit them; a normal `cargo test` run
     // leaves it a no-op (no GPU work, no files).
 
     /// Run the full five-pass + overlay draw and write a PNG to `dir/name.png`.
@@ -18193,7 +18375,7 @@ mod tests {
 
     #[test]
     fn render_review_shots() {
-        let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") else {
+        let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") else {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
@@ -18296,7 +18478,7 @@ mod tests {
     /// compact, and compact-overflow states from one rendering pass.
     #[test]
     fn render_responsive_review_shots() {
-        let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") else {
+        let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") else {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
@@ -18474,7 +18656,7 @@ mod history_strip_tests {
         state.doc.merge(&mut bob).expect("peers merge");
 
         // Keep the fixture's authored labels independent of the developer's
-        // local qOS identity, which production history otherwise registers for
+        // local Tilo identity, which production history otherwise registers for
         // the local Automerge actor on refresh.
         for (handle, hue) in [("alice", 210.0_f32), ("bob", 25.0_f32)] {
             let actor = automerge::ActorId::from(handle.as_bytes()).to_hex_string();

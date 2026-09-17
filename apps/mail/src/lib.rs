@@ -1,4 +1,4 @@
-//! Mail — qOS native email client, built on the CRDT-native `ui` toolkit.
+//! Mail — Tilo native email client, built on the CRDT-native `ui` toolkit.
 //!
 //! ## Layout
 //! Three panes: a folder/account **sidebar** (Inbox/Starred/Sent/Drafts/
@@ -20,7 +20,7 @@
 //! Per-message flags (read/starred/folder), selected folder/view state, and
 //! the active draft live in the Automerge document via `doc::MailDoc`, so they
 //! sync and undo. Account identities, connection endpoints, and credentials
-//! are device-local in the shared qOS account store + encrypted vault. The
+//! are device-local in the shared Tilo account store + encrypted vault. The
 //! immutable message corpus is hydrated into `model::Mailbox`.
 //!
 //! ## Offline / `--shots`
@@ -61,6 +61,7 @@
 pub mod account;
 pub mod actions;
 pub mod app;
+pub mod attachment_store;
 pub mod autoconfig;
 pub mod compose;
 pub mod doc;

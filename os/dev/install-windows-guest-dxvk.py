@@ -57,8 +57,8 @@ def install(root, assets, manifest):
     spec = importlib.util.spec_from_file_location("guest_pe_validator", Path(__file__).with_name("validate-windows-guest.py"))
     validator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(validator)
-    destination = root / "usr/share/qos/dxvk"
-    licenses = root / "usr/share/licenses/qos-dxvk"
+    destination = root / "usr/share/tilo/dxvk"
+    licenses = root / "usr/share/licenses/tilo-dxvk"
     for directory in (destination, licenses):
         parent = root
         for part in directory.parent.relative_to(root).parts:

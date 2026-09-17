@@ -550,7 +550,7 @@ mod tests {
             RecipientControlRequestV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 operation: RecipientControlOperationV1::AdmitV2 {
-                    uri: "qos-file://v2/not-a-link#redacted".into(),
+                    uri: "tilo-file://v2/not-a-link#redacted".into(),
                 },
             },
         )

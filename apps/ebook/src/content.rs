@@ -12,13 +12,13 @@
 //! The bundled EPUB + the multi-book sample library are reserved for the
 //! hermetic `--shots`/test path.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::BuildHasher;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
-use qos_actions::Action;
+use tilo_actions::Action;
 
 use crate::doc::BooksDoc;
 use crate::epub::{MAX_EPUB_BYTES, content_id, parse_epub};
@@ -36,8 +36,8 @@ pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 const LIBRARY_DIR_ENV: &str = "EBOOK_LIBRARY_DIR";
 
 /// Override for the collaborative-workspace mount root (tests point it at a temp
-/// directory); production is the real qOS FUSE mount.
-const WORKSPACE_DIR_ENV: &str = "QOS_WORKSPACE_DIR";
+/// directory); production is the real Tilo FUSE mount.
+const WORKSPACE_DIR_ENV: &str = "TILO_WORKSPACE_DIR";
 const DEFAULT_WORKSPACE: &str = "/var/workspace";
 
 /// Upper bound on library size, so a pathological watched directory can't stall
@@ -65,9 +65,29 @@ pub fn workspace_books_dir() -> PathBuf {
 
 /// Whether a path lives on the collaborative workspace (shared with peers).
 pub fn is_shared(path: &Path) -> bool {
-    let root = workspace_root();
+    let root = normalise_lexically(&workspace_root());
+    let path = normalise_lexically(path);
     // An empty/degenerate root must never make every path look "shared".
     !root.as_os_str().is_empty() && path.starts_with(&root)
+}
+
+/// Resolve `.` and `..` without consulting the filesystem. This keeps the
+/// capability check useful for not-yet-created workspace paths while ensuring
+/// `/workspace/../private.epub` is never classified as shared.
+fn normalise_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// A stable, pleasant cover tint derived from the content id, so a book without
@@ -156,7 +176,17 @@ pub fn parse_shared_path_detailed(path: &Path) -> Result<(Book, PathBuf), String
 
 /// Commit a previously parsed book to the library CRDT. Call this only on the
 /// UI/document owner after [`parse_path_detailed`] has completed.
-pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, mut book: Book) -> Book {
+pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, book: Book) -> Book {
+    let (book, entry) = prepare_imported_book(path, book);
+    let _ = crate::actions::restore_library_book_action(&entry).apply(doc);
+    book
+}
+
+/// Build the canonical shelf action input while keeping the actual durable
+/// commit with the app's [`ui::ActionHost`]. Startup migration uses
+/// [`record_imported_book`]; interactive import/share paths use this helper so
+/// their history boundary is observable by the shell and agents.
+pub fn prepare_imported_book(path: &Path, mut book: Book) -> (Book, LibraryEntry) {
     book.cover_tint = tint_for(&book.id);
     let entry = LibraryEntry {
         id: book.id.clone(),
@@ -166,11 +196,7 @@ pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, mut book: Book) -
         subject: book.subject.clone(),
         added: now_ms(),
     };
-    // Imports are parsed/materialised outside the action, while the durable
-    // shelf admission itself follows the same typed replay path as agents and
-    // the command palette. File paths remain local capabilities.
-    let _ = crate::actions::restore_library_book_action(&entry).apply(doc);
-    book
+    (book, entry)
 }
 
 /// Copy a local book into the workspace so the reader's peers get it, record the
@@ -200,19 +226,39 @@ fn write_shared_copy(bytes: &[u8], id: &str) -> Result<PathBuf, String> {
         .map_err(|_| "the shared Books folder could not be created".to_string())?;
     let file_id = id.strip_prefix("book:").unwrap_or(id);
     let dest = dir.join(format!("book-{file_id}.epub"));
-    // The content address makes independent imports converge on one filename;
-    // create_new makes the collision check non-destructive.
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&dest)
-    {
-        Ok(mut file) => {
-            if file.write_all(bytes).is_err() {
-                let _ = std::fs::remove_file(&dest);
-                return Err("the book could not be copied to the shared library".into());
+    // Publish only a complete, flushed object. A direct write to `dest` lets a
+    // peer observe a valid name containing partial bytes while an import is in
+    // flight. A same-directory hard link is an atomic no-overwrite publish.
+    let mut temporary = None;
+    for attempt in 0..32 {
+        let candidate = dir.join(format!(
+            ".book-{file_id}-{}-{attempt}.part",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                file.write_all(bytes)
+                    .and_then(|()| file.sync_all())
+                    .map_err(|_| {
+                        "the book could not be copied to the shared library".to_string()
+                    })?;
+                temporary = Some(candidate);
+                break;
             }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err("the book could not be copied to the shared library".into()),
         }
+    }
+    let temporary = temporary
+        .ok_or_else(|| "the book could not reserve a shared-library upload".to_string())?;
+    let publish = std::fs::hard_link(&temporary, &dest);
+    let _ = std::fs::remove_file(&temporary);
+    match publish {
+        Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             // A peer may have uploaded the same content first. Reuse that
             // exact object, but never replace a different/corrupt file.
@@ -223,7 +269,7 @@ fn write_shared_copy(bytes: &[u8], id: &str) -> Result<PathBuf, String> {
                 return Err("a different book already occupies this shared address".into());
             }
         }
-        Err(_) => return Err("the book could not be copied to the shared library".into()),
+        Err(_) => return Err("the book could not be published to the shared library".into()),
     }
     Ok(dest)
 }
@@ -280,6 +326,15 @@ pub fn load_library<S: BuildHasher>(
         let Some(mut book) = open_epub_path(&path) else {
             continue;
         };
+        if book.id != entry.id {
+            tracing::warn!(
+                expected = %entry.id,
+                actual = %book.id,
+                path = %path.display(),
+                "ebook: refused library object whose bytes do not match its content address"
+            );
+            continue;
+        }
         book.cover_tint = tint_for(&book.id);
         out.push(LoadedBook { book, path });
         if out.len() >= MAX_LIBRARY {
@@ -345,24 +400,15 @@ fn scan_watched(watched_folders: &[PathBuf]) -> Vec<PathBuf> {
     if let Ok(v) = std::env::var(LIBRARY_DIR_ENV) {
         roots.extend(v.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
     }
-    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut paths = BTreeSet::new();
     for root in roots {
         collect_epubs(&root, 2, &mut paths);
-        if paths.len() >= MAX_LIBRARY {
-            break;
-        }
     }
-    paths.sort();
-    paths.dedup();
-    paths.truncate(MAX_LIBRARY);
-    paths
+    paths.into_iter().collect()
 }
 
 /// Recursively (bounded `depth`) collect `*.epub` file paths under `dir`.
-fn collect_epubs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if out.len() >= MAX_LIBRARY {
-        return;
-    }
+fn collect_epubs(dir: &Path, depth: usize, out: &mut BTreeSet<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -378,10 +424,10 @@ fn collect_epubs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
         {
-            out.push(path);
-        }
-        if out.len() >= MAX_LIBRARY {
-            return;
+            out.insert(path);
+            if out.len() > MAX_LIBRARY {
+                out.pop_last();
+            }
         }
     }
 }
@@ -524,7 +570,7 @@ const TIDEGLASS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     //! Discovery + import run against real temp directories. The tests that set
-    //! the process-global `EBOOK_LIBRARY_DIR` / `QOS_WORKSPACE_DIR` env vars are
+    //! the process-global `EBOOK_LIBRARY_DIR` / `TILO_WORKSPACE_DIR` env vars are
     //! `#[serial]` so cargo's default parallel runner can't race them.
 
     use super::*;
@@ -673,6 +719,10 @@ mod tests {
 
         assert!(is_shared(&shared), "a /workspace/Books path is shared");
         assert!(!is_shared(&local_path), "a book elsewhere is device-local");
+        assert!(
+            !is_shared(&workspace_root().join("Books/../../private/book.epub")),
+            "lexical traversal cannot spoof workspace membership"
+        );
     }
 
     #[test]
@@ -698,6 +748,13 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, recorded.id);
         assert!(entries[0].shared);
+        assert!(
+            std::fs::read_dir(workspace_books_dir())
+                .unwrap()
+                .flatten()
+                .all(|entry| entry.path().extension().is_none_or(|ext| ext != "part")),
+            "atomic publication removes its private staging file"
+        );
     }
 
     #[test]

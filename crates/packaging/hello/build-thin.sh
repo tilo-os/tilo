@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Thin-app proof — end to end, using only committed, non-breaking machinery.
 #
-# Ships a qOS app as a tiny binary that links the SDK + libstd as SHARED
+# Ships a Tilo app as a tiny binary that links the SDK + libstd as SHARED
 # libraries out of a content-addressed runtime bundle, instead of baking
 # the whole SDK into every binary. Prints before/after sizes and runs the
 # relinked apps against the bundle.
@@ -25,7 +25,7 @@
 #     serves `runtime`/`cli` (and libstd) from the shared libs; the app
 #     binary holds only its own code.
 #
-#   * `qos-runtime-bundle build --include <libstd> --include <libruntime>`
+#   * `tilo-runtime-bundle build --include <libstd> --include <libruntime>`
 #     folds those two shared objects into the signed, content-addressed
 #     bundle at `lib/`, alongside the host loader + libc set. The launcher
 #     mounts the bundle and sets `LD_LIBRARY_PATH=<mount>/lib`, so a thin
@@ -36,7 +36,7 @@ set -euo pipefail
 WT=$(cd "$(dirname "$0")/../../.." && pwd)
 RUNTIME_VERSION=${RUNTIME_VERSION:-thin-1}
 BUNDLE_ROOT="$WT/target/thin-bundle"
-BUNDLE_DIR="$BUNDLE_ROOT/qos-runtime/$RUNTIME_VERSION"
+BUNDLE_DIR="$BUNDLE_ROOT/tilo-runtime/$RUNTIME_VERSION"
 IDENTITY_JSON="$BUNDLE_ROOT/identity.json"
 
 run() { distrobox enter my-distrobox -- bash -c "cd '$WT' && $*"; }
@@ -52,11 +52,11 @@ env_prefix=""
 
 hr "1. baseline: static release (whole SDK baked into each app)"
 run "$env_prefix cargo build --release -p hello -p notes-cli >/dev/null 2>&1"
-cp "$WT/target/release/qos-hello" "$WT/target/qos-hello.static-baseline"
+cp "$WT/target/release/tilo-hello" "$WT/target/tilo-hello.static-baseline"
 cp "$WT/target/release/notes" "$WT/target/notes.static-baseline"
-HELLO_STATIC=$(size "$WT/target/qos-hello.static-baseline")
+HELLO_STATIC=$(size "$WT/target/tilo-hello.static-baseline")
 NOTES_STATIC=$(size "$WT/target/notes.static-baseline")
-printf '  qos-hello (static): %s bytes\n' "$HELLO_STATIC"
+printf '  tilo-hello (static): %s bytes\n' "$HELLO_STATIC"
 printf '  notes     (static): %s bytes\n' "$NOTES_STATIC"
 
 hr "2. thin: runtime-dylib + prefer-dynamic (--profile thin-app, --features thin)"
@@ -73,20 +73,20 @@ hr "2. thin: runtime-dylib + prefer-dynamic (--profile thin-app, --features thin
 # One invocation per binary, because `cargo rustc` takes a single target.
 run "$env_prefix cargo rustc --profile thin-app -p runtime-dylib \
      -- -C prefer-dynamic 2>&1 | tail -2"
-run "$env_prefix cargo rustc --profile thin-app -p hello --bin qos-hello --features thin \
+run "$env_prefix cargo rustc --profile thin-app -p hello --bin tilo-hello --features thin \
      -- -C prefer-dynamic 2>&1 | tail -2"
 run "$env_prefix cargo rustc --profile thin-app -p notes-cli --bin notes --features thin \
      -- -C prefer-dynamic 2>&1 | tail -2"
-HELLO_THIN=$(size "$WT/target/thin-app/qos-hello")
+HELLO_THIN=$(size "$WT/target/thin-app/tilo-hello")
 NOTES_THIN=$(size "$WT/target/thin-app/notes")
 LIBRT="$WT/target/thin-app/libruntime_dylib.so"
-printf '  qos-hello (thin):        %s bytes\n' "$HELLO_THIN"
+printf '  tilo-hello (thin):        %s bytes\n' "$HELLO_THIN"
 printf '  notes     (thin):        %s bytes\n' "$NOTES_THIN"
 printf '  libruntime_dylib.so:     %s bytes (shared, ships once)\n' "$(size "$LIBRT")"
 
 hr "3. build the signed {libstd, libruntime} runtime bundle"
 run "$env_prefix cargo build --release -p runtime-bundle >/dev/null 2>&1"
-BUNDLE_BIN="$WT/target/release/qos-runtime-bundle"
+BUNDLE_BIN="$WT/target/release/tilo-runtime-bundle"
 rm -rf "$BUNDLE_ROOT"
 mkdir -p "$BUNDLE_ROOT"
 run "'$BUNDLE_BIN' key generate --out '$IDENTITY_JSON' >/dev/null"
@@ -103,14 +103,14 @@ hr "4. run the thin apps against the shared bundle"
 run "LP='$BUNDLE_DIR/lib' && \
      echo '--- ldd notes (shared libs come from the bundle) ---' && \
      LD_LIBRARY_PATH=\$LP ldd '$WT/target/thin-app/notes' | grep -Ei 'runtime|libstd' && \
-     echo '--- run qos-hello ---' && \
-     LD_LIBRARY_PATH=\$LP '$WT/target/thin-app/qos-hello' | sed -n '1,2p' && \
+     echo '--- run tilo-hello ---' && \
+     LD_LIBRARY_PATH=\$LP '$WT/target/thin-app/tilo-hello' | sed -n '1,2p' && \
      echo '--- run notes ---' && \
      LD_LIBRARY_PATH=\$LP '$WT/target/thin-app/notes' --version"
 
 hr "result"
 awk -v hs="$HELLO_STATIC" -v ht="$HELLO_THIN" -v ns="$NOTES_STATIC" -v nt="$NOTES_THIN" 'BEGIN{
-  printf "  qos-hello: %d → %d bytes (%.1f%% smaller) — under 2 MB: %s\n", hs, ht, (1-ht/hs)*100, (ht < 2*1024*1024 ? "YES" : "NO");
+  printf "  tilo-hello: %d → %d bytes (%.1f%% smaller) — under 2 MB: %s\n", hs, ht, (1-ht/hs)*100, (ht < 2*1024*1024 ? "YES" : "NO");
   printf "  notes:     %d → %d bytes (%.1f%% smaller) — under 2 MB: %s\n", ns, nt, (1-nt/ns)*100, (nt < 2*1024*1024 ? "YES" : "NO");
 }'
 echo "  bundle: $BUNDLE_DIR (signed by ed25519:$PUBKEY)"

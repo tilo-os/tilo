@@ -33,7 +33,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Height of one option row.
-const ROW_H: f64 = 30.0;
+const ROW_H: f64 = 44.0;
 /// Vertical padding above the first / below the last row.
 const PAD_Y: f64 = 6.0;
 /// Horizontal padding inside a row (left of the check column, right of text).
@@ -239,6 +239,16 @@ impl Popover {
         )]
         let idx = row as usize;
         (idx < self.items.len()).then_some(idx)
+    }
+
+    /// Bounds of one option row after [`Self::place`] has resolved the menu.
+    /// Hand-drawn hosts and tests can synthesize a click without copying the
+    /// popover's private padding and row-height constants.
+    pub fn item_rect(&self, index: usize) -> Option<Rect> {
+        if !self.open || index >= self.items.len() {
+            return None;
+        }
+        Some(self.row_rect(index))
     }
 
     pub fn contains(&self, point: Point) -> bool {
@@ -725,7 +735,9 @@ mod tests {
     #[test]
     fn click_on_a_row_selects_it_click_outside_dismisses() {
         let mut p = opened();
-        let row2 = p.row_rect(2);
+        let row2 = p.item_rect(2).expect("published item geometry");
+        assert_eq!(p.item_at(row2.center()), Some(2));
+        assert!(p.item_rect(p.items().len()).is_none());
         dispatch(&mut p, &cursor_at(row2.center()));
         assert!(dispatch(&mut p, &left_press()), "row click consumed");
         assert_eq!(p.take_selection(), Some(2), "clicking a row selects it");
@@ -740,6 +752,13 @@ mod tests {
         assert!(dispatch(&mut p, &left_press()), "outside click swallowed");
         assert!(!p.is_open(), "outside click dismisses");
         assert_eq!(p.take_selection(), None, "no selection on dismiss");
+    }
+
+    #[test]
+    fn option_rows_meet_the_shared_touch_target_floor() {
+        let p = opened();
+        assert!(p.row_rect(0).height() >= 44.0);
+        assert!(p.row_rect(4).height() >= 44.0);
     }
 
     #[test]

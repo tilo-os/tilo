@@ -10,9 +10,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use qos_bluez::{PairingPrompt, PairingRequest};
 use shell::bluetooth_prompt::PairingPromptView;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_bluez::{PairingPrompt, PairingRequest};
 use ui::State;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;

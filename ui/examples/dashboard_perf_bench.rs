@@ -1021,7 +1021,7 @@ fn make_wheel(dy: f32) -> WindowEvent {
 fn init_i18n_resources() {
     I18nManager::init("en-US");
     let mut ftl = String::new();
-    ftl.push_str("dash_title = QuickDesktop Dashboard\n");
+    ftl.push_str("dash_title = Tilo Desktop Dashboard\n");
     for i in 0..8 {
         let _ = writeln!(ftl, "dash_p{i} = Panel {i}");
     }

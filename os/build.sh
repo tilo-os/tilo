@@ -1,8 +1,8 @@
 #!/bin/bash
-# Build the qOS image and a bootable qcow2.
+# Build the Tilo image and a bootable qcow2.
 #
 #   ./os/build.sh                        the full image
-#   QOS_WITH_BROWSER=0 ./os/build.sh     without the browser + its WPE WebKit
+#   TILO_WITH_BROWSER=0 ./os/build.sh     without the browser + its WPE WebKit
 #                                        engine stage (~45 of the ~60 minutes)
 #
 # This is a wrapper around os/dev/build-image.sh, which is the one implementation.
@@ -17,5 +17,5 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "=== Building qOS Image ==="
+echo "=== Building Tilo Image ==="
 exec "$SCRIPT_DIR/dev/build-image.sh" "$@"

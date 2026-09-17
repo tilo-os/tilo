@@ -8,7 +8,7 @@ profile.
 
 ## The problem it solves
 
-`apps/terminal` used to `exec` `$SHELL`. Inside a qOS app sandbox that fails
+`apps/terminal` used to `exec` `$SHELL`. Inside a Tilo app sandbox that fails
 with `ENOENT`: [`launcher::profile`](../../crates/packaging/launcher/src/profile.rs)
 binds the loader, fonts, `/sys` and the CA bundle, and deliberately binds no
 executable directory. The obvious repairs are both wrong:
@@ -46,7 +46,7 @@ carries no user content, the same judgement `launcher::profile` makes about
 
 Three principals, in decreasing authority.
 
-**The supervisor** is qOS code and runs in the user's session outside every app
+**The supervisor** is Tilo code and runs in the user's session outside every app
 sandbox. It builds namespaces, so it needs `unshare`, `mount` and `pivot_root`
 — the syscalls `launcher::seccomp` blanket-denies to apps. It is trusted with
 them because it is the thing that *creates* the confinement. It owns the layer
@@ -126,13 +126,13 @@ Three alternatives, and why not:
 - **A container image per layer.** Correct and heavy: a second package universe,
   a second update cadence, gigabytes where the delta is kilobytes.
 
-## Permissions are qOS's
+## Permissions are Tilo's
 
 `perm trust-dir ~/src` mints a `collab_types::caps::CapOverride` —
-`Subject::App("dev.qos.ush")`, `Scope::FsPath`, `Effect::Grant`, `Verb::Write` —
+`Subject::App("dev.tilo.ush")`, `Scope::FsPath`, `Effect::Grant`, `Verb::Write` —
 and every question is `decide_capability`. That is the same record the
 compositor stores on a workspace, renders in its permissions panel and can
-revoke, and the same deny-biased function `qos-launcher` and the FUSE mount
+revoke, and the same deny-biased function `tilo-launcher` and the FUSE mount
 call. There is no `ush`-local permission type: a `Restrict` written by the
 compositor removes the bind here, and an expired grant does not survive into the
 next session.
@@ -142,7 +142,7 @@ A new bind needs a new mount namespace, so `perm trust-dir` answers "run
 
 ## `scan`, `guard`, `quarantine` — and what they are not
 
-qOS ships no signature database and this runtime does not pretend to one.
+Tilo ships no signature database and this runtime does not pretend to one.
 
 - `guard status` reports enforcement it has **tested**, not enforcement it
   configured: the Landlock line comes from attempting an operation the ruleset
@@ -186,7 +186,7 @@ service socket at launch cannot ask for one.
 ```
 ush [-c COMMAND] [-v] [--ephemeral]   a sandboxed shell
 dsh [-c COMMAND] [-v]                 a developer shell (NOT a sandbox)
-qos-ush serve [--socket PATH]         hand guests to apps that ask
+tilo-ush serve [--socket PATH]         hand guests to apps that ask
 
 pkg install [--one-time] PKG…   pkg remove PKG…   pkg list
 pkg diff                        pkg inspect PKG   pkg freeze   pkg burn
@@ -213,7 +213,7 @@ mount.
   home/                    the guest's home — not yours
 ```
 
-`$QOS_USH_HOME` moves it. The store must be on ordinary disk: overlayfs will not
+`$TILO_USH_HOME` moves it. The store must be on ordinary disk: overlayfs will not
 take tmpfs as an upper directory, and the runtime says so by name rather than
 letting the mount fail with `Invalid argument`.
 

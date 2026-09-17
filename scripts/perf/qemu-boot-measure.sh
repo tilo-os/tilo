@@ -14,11 +14,22 @@
 
 set -euo pipefail
 
+# Leave empty to run QEMU and its tools on the host. Set this when the tools
+# live in a development distrobox, for example `TILO_DISTROBOX=tilo-dev`.
+DISTROBOX="${TILO_DISTROBOX:-}"
+run_in_env() {
+    if [ -n "$DISTROBOX" ]; then
+        distrobox enter "$DISTROBOX" -- "$@"
+    else
+        "$@"
+    fi
+}
+
 QCOW="${1:-}"
 LABEL="${2:-run}"
 [ -f "$QCOW" ] || { echo "usage: $0 <qcow2> <label>" >&2; exit 2; }
 
-OUT_DIR="${QOS_PERF_OUT:-$PWD/target/perf}"
+OUT_DIR="${TILO_PERF_OUT:-$PWD/target/perf}"
 mkdir -p "$OUT_DIR"
 SNAP="$OUT_DIR/$LABEL.snapshot.qcow2"
 CONSOLE="$OUT_DIR/$LABEL.console.log"
@@ -28,17 +39,17 @@ RESULT="$OUT_DIR/$LABEL.json"
 # The qcow2 base stays read-only; this snapshot holds everything the VM
 # writes during the boot measurement (systemd journal, resolv.conf,
 # etc). We delete it at exit so consecutive runs are clean.
-distrobox enter my-distrobox-44 -- \
+run_in_env \
     qemu-img create -f qcow2 -F qcow2 -b "$QCOW" "$SNAP" >/dev/null
 
-# --- Boot in a fresh distrobox process --------------------------------------
+# --- Boot in a fresh environment process ------------------------------------
 # `-monitor unix:...` gives us a control socket to shut the VM down
 # without needing the guest to cooperate; `-serial file:...` captures
 # every byte of the serial console.
 MONITOR="$OUT_DIR/$LABEL.monitor.sock"
 rm -f "$MONITOR" "$CONSOLE"
 
-distrobox enter my-distrobox-44 -- bash -c "
+run_in_env bash -c "
 set -euo pipefail
 qemu-system-x86_64 \
     -M q35 -m 2048 -smp 2 \
@@ -102,10 +113,10 @@ BOOT_TIME_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
     ' || echo 0)"
 
 # --- Shutdown --------------------------------------------------------------
-# `system_powerdown` sends an ACPI shutdown request; distrobox's socat is
-# not available so we speak QEMU monitor's binary handshake directly.
+# `system_powerdown` sends an ACPI shutdown request through QEMU's monitor
+# socket; this avoids relying on a guest login or an SSH service.
 if [ -S "$MONITOR" ]; then
-    echo "system_powerdown" | distrobox enter my-distrobox-44 -- \
+    echo "system_powerdown" | run_in_env \
         nc -U -q1 "$MONITOR" >/dev/null 2>&1 || true
 fi
 

@@ -91,8 +91,8 @@ def main():
                 modules.remove(name.removesuffix(".ko"))
     if modules:
         raise RuntimeError(f"missing modules: {modules}")
-    artifacts = {"compat-tests": args.test_binary, "qos-launcher": args.launcher,
-                 "qos-windows-runtime": args.helper, "umu_run.py": args.umu,
+    artifacts = {"compat-tests": args.test_binary, "tilo-launcher": args.launcher,
+                 "tilo-windows-runtime": args.helper, "umu_run.py": args.umu,
                  "run.sh": fixtures / "arm-capsule-vm-run.sh"}
     for name in ("fex-emulator.json", "fex-graphics-provider.json"):
         artifacts[name] = args.manifests / name
@@ -109,7 +109,7 @@ def main():
                        "version": run([str(qemu_binary), "--version"], stdout=subprocess.PIPE).stdout.strip()}
     for name, source in artifacts.items():
         shutil.copyfile(source, inputs / name)
-        (inputs / name).chmod(0o755 if name in ("compat-tests", "qos-launcher", "qos-windows-runtime") else 0o644)
+        (inputs / name).chmod(0o755 if name in ("compat-tests", "tilo-launcher", "tilo-windows-runtime") else 0o644)
         records["inputs"][name] = digest(source)
     (inputs / "mode").write_text(args.mode + "\n")
     (out / "inputs.json").write_text(json.dumps(records, indent=2) + "\n")
@@ -151,16 +151,16 @@ def main():
                                      "180" if args.mode == "probe" else "2100", *qemu],
                                     stdout=serial, stderr=subprocess.STDOUT)
         log = (out / "serial.log").read_text(errors="replace")
-        accepted = result.returncode == 0 and "\nQOS_ARM_CAPSULE_VM_PASS\n" in log
-        expected = ["QOS_ARM_CAPSULE_TRANSPORT_PASS"]
+        accepted = result.returncode == 0 and "\nTILO_ARM_CAPSULE_VM_PASS\n" in log
+        expected = ["TILO_ARM_CAPSULE_TRANSPORT_PASS"]
         if args.mode == "console":
-            expected += [f"QOS_ARM_CAPSULE_CASE_PASS={kind}" for kind in ("wine64", "wine32", "proton")]
+            expected += [f"TILO_ARM_CAPSULE_CASE_PASS={kind}" for kind in ("wine64", "wine32", "proton")]
         elif args.mode == "namespace-diagnostic":
-            expected += ["QOS_ARM_CAPSULE_CASE_PASS=wine64"]
+            expected += ["TILO_ARM_CAPSULE_CASE_PASS=wine64"]
         elif args.mode == "fex-diagnostic":
-            expected += ["QOS_FEX_DIAGNOSTIC_PASS"]
+            expected += ["TILO_FEX_DIAGNOSTIC_PASS"]
         elif args.mode == "wine-diagnostic":
-            expected += ["QOS_DIRECT_WINE_DIAGNOSTIC_PASS"]
+            expected += ["TILO_DIRECT_WINE_DIAGNOSTIC_PASS"]
         accepted &= all(marker in log for marker in expected)
         scope = {"probe": "transport-and-shim", "console": "console-capsules-with-Landlock",
                  "namespace-diagnostic": "namespace-only-diagnostic-NOT-Landlock-acceptance",

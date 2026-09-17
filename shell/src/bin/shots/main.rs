@@ -1,4 +1,4 @@
-//! `shots` — four-mode driver for the nirios shell (`window`, `offscreen`,
+//! `shots` — four-mode driver for the tilo shell (`window`, `offscreen`,
 //! `headless`, `recording`), plus a `check` subcommand that captures and
 //! pixel-diffs against baseline PNGs. Full flag reference in `--help`.
 //!
@@ -157,7 +157,7 @@ impl Args {
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
-            out: PathBuf::from("target/nirios-shots"),
+            out: PathBuf::from("target/tilo-shots"),
             width: 1600,
             height: 900,
             fps: 30,
@@ -297,8 +297,8 @@ impl Args {
             // Default `out` is a directory; in recording mode we write a
             // single file. Switch the default to a `.h264` path if the
             // caller didn't supply one.
-            if args.out == *"target/nirios-shots" {
-                args.out = PathBuf::from("target/nirios-shots.h264");
+            if args.out == *"target/tilo-shots" {
+                args.out = PathBuf::from("target/tilo-shots.h264");
             }
         }
         if args.mode == Mode::Window && (args.sweep.is_some() || args.per_frame.is_some()) {
@@ -356,7 +356,7 @@ fn print_help() {
         .map(|(w, h)| format!("{w}x{h}"))
         .collect();
     println!(
-        "shots — four-mode driver for the nirios shell\n\
+        "shots — four-mode driver for the tilo shell\n\
 \n\
 Usage:\n\
   shots [MODE-FLAGS]                        capture mode (default)\n\
@@ -372,8 +372,8 @@ Common flags:\n\
   --scenario NAME       replay a built-in scenario\n\
   --scenes A,B,C        [offscreen, no scenario] pick scenes from the legacy catalogue\n\
   --out PATH            output path. Directory for offscreen/headless/check;\n\
-                        file for recording (default ./target/nirios-shots for the\n\
-                        former, ./target/nirios-shots.h264 for the latter)\n\
+                        file for recording (default ./target/tilo-shots for the\n\
+                        former, ./target/tilo-shots.h264 for the latter)\n\
   --width N             viewport width  (default 1600)\n\
   --height N            viewport height (default 900)\n\
   --fps N               [recording] frame rate (default 30)\n\
@@ -401,7 +401,7 @@ Built-in scenarios:\n{scenarios}\n\
 Examples:\n\
   shots                                                 # offscreen, all scenes\n\
   shots --scenes desktop,palette --out /tmp/s\n\
-  QOS_SHOTS_THEME=high-contrast QOS_SHOTS_TEXT_SCALE=1.3 shots \\\n+    --scenes quick-settings,qs-compact,qs-wifi-long-labels,qs-bt-long-labels,qs-vpn-long-labels \\\n+    --sweep 1280x720,960x540 --out /tmp/quick-settings-a11y\n\
+  TILO_SHOTS_THEME=high-contrast TILO_SHOTS_TEXT_SCALE=1.3 shots \\\n+    --scenes quick-settings,qs-compact,qs-wifi-long-labels,qs-bt-long-labels,qs-vpn-long-labels \\\n+    --sweep 1280x720,960x540 --out /tmp/quick-settings-a11y\n\
   shots --mode offscreen --scenario palette_typing\n\
   shots --mode offscreen --scenes desktop --sweep --out /tmp/sweep\n\
   shots --mode offscreen --scenario overview_transition --per-frame 4\n\
@@ -416,18 +416,18 @@ Examples:\n\
 }
 
 fn main() -> Result<(), String> {
-    // Same env-var contract as `shell`: QOS_STARTUP_METRICS_PATH=/tmp/x.json
+    // Same env-var contract as `shell`: TILO_STARTUP_METRICS_PATH=/tmp/x.json
     // dumps JSON timings on exit; without it every `mark` is a no-op.
     // `shots` is the harness that measures the cold-start warmup win.
-    qos_startup_metrics::init();
-    let _startup_dump = qos_startup_metrics::ScopedDumper;
-    qos_startup_metrics::mark("main-start");
+    tilo_startup_metrics::init();
+    let _startup_dump = tilo_startup_metrics::ScopedDumper;
+    tilo_startup_metrics::mark("main-start");
 
     // cosmic-text + Vello warmup on a background thread, overlapping
     // argument parsing / driver bring-up. FontSystem-only by default (~90 ms
     // cold-start win, measured on this harness); Vello scratch-render
-    // opt-in via QOS_STARTUP_WARM_VELLO=1. Disabled with QOS_STARTUP_WARM=off.
-    let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
+    // opt-in via TILO_STARTUP_WARM_VELLO=1. Disabled with TILO_STARTUP_WARM=off.
+    let want_vello = std::env::var("TILO_STARTUP_WARM_VELLO")
         .ok()
         .is_some_and(|v| {
             !matches!(
@@ -532,7 +532,7 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> 
 /// diff or missing file).
 fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
     // Capture current state under args.out (default
-    // `target/nirios-shots`). The diff walker then compares every PNG
+    // `target/tilo-shots`). The diff walker then compares every PNG
     // in `baseline` against the corresponding file under `current`.
     let current = args.out.clone();
     if let Err(e) = std::fs::create_dir_all(&current) {

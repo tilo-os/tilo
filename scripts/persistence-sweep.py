@@ -59,11 +59,11 @@ NEEDS_CURATION = {
 # inputs; then keystrokes again now that something may hold focus.
 def generic_actions(viewport=(1280, 800)):
     w, h = viewport
-    acts = [{"type": "qos"}, {"key": "Enter"}]
+    acts = [{"type": "tilo"}, {"key": "Enter"}]
     for y in range(40, h, 80):
         for x in range(40, w, 120):
             acts.append({"click_at": [x, y]})
-    acts += [{"type": "qos"}, {"key": "Enter"}, {"key": "Space"}]
+    acts += [{"type": "tilo"}, {"key": "Enter"}, {"key": "Space"}]
     return acts
 
 
@@ -77,14 +77,14 @@ def app_dirs(names):
             continue
         if names and p.name not in names:
             continue
-        if not (p / "qos-app.toml").exists() or not (p / "Cargo.toml").exists():
+        if not (p / "tilo-app.toml").exists() or not (p / "Cargo.toml").exists():
             continue
         out.append(p)
     return out
 
 
 def app_meta(d):
-    manifest = tomllib.loads((d / "qos-app.toml").read_text())
+    manifest = tomllib.loads((d / "tilo-app.toml").read_text())
     cargo = tomllib.loads((d / "Cargo.toml").read_text())
     pkg = manifest.get("package", {}).get("id")
     bins = cargo.get("bin") or []
@@ -95,7 +95,7 @@ def app_meta(d):
 def run_app(binary, data_home, pkg, spec, log):
     env = dict(os.environ)
     env["XDG_DATA_HOME"] = str(data_home)
-    env["QOS_PACKAGE_ID"] = pkg
+    env["TILO_PACKAGE_ID"] = pkg
     # Keep an inherited compositor connection from turning a headless run
     # into a windowed one, and keep the app off the user's real config.
     env.pop("WAYLAND_DISPLAY", None)
@@ -240,7 +240,7 @@ def main():
     ap.add_argument(
         "--workdir",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "qos-persistence-sweep",
+        default=pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "tilo-persistence-sweep",
     )
     args = ap.parse_args()
 

@@ -1,4 +1,4 @@
-//! qOS **power management** — suspend-on-idle, lid/power-key handling,
+//! Tilo **power management** — suspend-on-idle, lid/power-key handling,
 //! suspend inhibitors, and battery thresholds, built on `systemd-logind` and
 //! `UPower` over D-Bus.
 //!

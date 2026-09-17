@@ -23,6 +23,29 @@ pub(super) enum ShelfControlAction {
     Swallow,
 }
 
+pub(super) struct ShelfPaintCtx<'a> {
+    pub scene: &'a mut Scene,
+    pub transform: Affine,
+    pub text: &'a mut TextRenderer,
+    pub theme: &'a Theme,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ShelfBarView {
+    pub viewport: Rect,
+    pub open_book_x: f64,
+    pub cursor: Point,
+    pub preferences: LibraryPrefs,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ShelfMenuView {
+    pub viewport: Rect,
+    pub anchor: Rect,
+    pub cursor: Point,
+    pub selected: LibrarySort,
+}
+
 #[derive(Default)]
 pub(super) struct ShelfControls {
     sort_menu_open: bool,
@@ -120,72 +143,59 @@ impl ShelfControls {
             .map(|(_, action)| *action)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context plus shelf geometry"
-    )]
-    pub(super) fn draw_bar(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        viewport: Rect,
-        open_book_x: f64,
-        cursor: Point,
-        prefs: LibraryPrefs,
-    ) -> Rect {
-        let colors = &theme.tokens.colors;
-        let y = viewport.y0 + 13.0;
-        let compact = viewport.width() < 560.0;
-        let mut right = open_book_x - if compact { 12.0 } else { 16.0 };
+    pub(super) fn draw_bar(&mut self, ctx: &mut ShelfPaintCtx<'_>, view: ShelfBarView) -> Rect {
+        let colors = &ctx.theme.tokens.colors;
+        let y = view.viewport.y0 + 13.0;
+        let compact = view.viewport.width() < 560.0;
+        let mut right = view.open_book_x - if compact { 12.0 } else { 16.0 };
 
         let label = if compact {
             "Sort".to_string()
         } else {
-            format!("Sort · {}", prefs.sort.label())
+            format!("Sort · {}", view.preferences.sort.label())
         };
-        let label_width = text
+        let label_width = ctx
+            .text
             .measure_weighted(&label, 13.0, None, TextWeight::Medium)
             .0;
         let width = f64::from(label_width) + if compact { 38.0 } else { 46.0 };
         right -= width;
         let sort = Rect::new(right, y, right + width, y + 30.0);
         paint::fill_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             sort,
             15.0,
-            if self.sort_menu_open || sort.contains(cursor) {
-                theme.bg_hover
+            if self.sort_menu_open || sort.contains(view.cursor) {
+                ctx.theme.bg_hover
             } else {
                 colors.surfaces.overlay
             },
         );
         paint::stroke_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             sort,
             15.0,
             if self.sort_menu_open {
-                theme.border_focus
+                ctx.theme.border_focus
             } else {
                 colors.border_standard
             },
             1.0,
         );
-        text.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &label,
             13.0,
             colors.text_primary,
-            transform * Affine::translate((right + 13.0, y + 8.0)),
+            ctx.transform * Affine::translate((right + 13.0, y + 8.0)),
             None,
             TextWeight::Medium,
         );
         paint::chevron_down(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             Rect::new(right + width - 26.0, y + 3.0, right + width - 4.0, y + 27.0),
             colors.text_dim,
             1.7,
@@ -195,23 +205,26 @@ impl ShelfControls {
         right -= if compact { 10.0 } else { 18.0 };
         let toggle = Rect::new(right - 40.0, y + 4.0, right, y + 26.0);
         Toggle::paint(
-            scene,
-            transform,
-            theme,
-            &ToggleFace::new(toggle, prefs.hide_read).hovered(toggle.contains(cursor)),
+            ctx.scene,
+            ctx.transform,
+            ctx.theme,
+            &ToggleFace::new(toggle, view.preferences.hide_read)
+                .hovered(toggle.contains(view.cursor)),
         );
         self.hits.push((toggle, ShelfControlAction::ToggleHideRead));
         if !compact {
             let hide = "Hide read";
-            let hide_width = text
+            let hide_width = ctx
+                .text
                 .measure_weighted(hide, 13.0, None, TextWeight::Medium)
                 .0;
-            text.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 hide,
                 13.0,
                 colors.text_dim,
-                transform * Affine::translate((toggle.x0 - 8.0 - f64::from(hide_width), y + 8.0)),
+                ctx.transform
+                    * Affine::translate((toggle.x0 - 8.0 - f64::from(hide_width), y + 8.0)),
                 None,
                 TextWeight::Medium,
             );
@@ -219,29 +232,15 @@ impl ShelfControls {
         sort
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context plus anchor geometry"
-    )]
-    pub(super) fn draw_menu(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        viewport: Rect,
-        anchor: Rect,
-        cursor: Point,
-        selected: LibrarySort,
-    ) {
+    pub(super) fn draw_menu(&mut self, ctx: &mut ShelfPaintCtx<'_>, view: ShelfMenuView) {
         if !self.sort_menu_open {
             return;
         }
-        let colors = &theme.tokens.colors;
-        let width = 190.0_f64.max(anchor.width());
+        let colors = &ctx.theme.tokens.colors;
+        let width = 190.0_f64.max(view.anchor.width());
         let row_height = 34.0;
-        let x = (anchor.x1 - width).max(viewport.x0 + 8.0);
-        let top = anchor.y1 + 6.0;
+        let x = (view.anchor.x1 - width).max(view.viewport.x0 + 8.0);
+        let top = view.anchor.y1 + 6.0;
         let menu = Rect::new(
             x,
             top,
@@ -249,24 +248,24 @@ impl ShelfControls {
             top + LibrarySort::ALL.len() as f64 * row_height + 8.0,
         );
         paint::fill_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             Rect::new(menu.x0 - 1.0, menu.y0 + 3.0, menu.x1 + 1.0, menu.y1 + 6.0),
             12.0,
             Color::from_rgba8(0, 0, 0, 80),
         );
         paint::fill_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             menu,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             colors.surfaces.raised,
         );
         paint::stroke_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             menu,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             colors.border_standard,
             1.0,
         );
@@ -275,28 +274,28 @@ impl ShelfControls {
         let mut row_y = top + 4.0;
         for choice in LibrarySort::ALL {
             let row = Rect::new(x + 6.0, row_y, x + width - 6.0, row_y + row_height - 4.0);
-            let active = selected == choice;
+            let active = view.selected == choice;
             if active {
                 paint::fill_round(
-                    scene,
-                    transform,
+                    ctx.scene,
+                    ctx.transform,
                     row,
                     8.0,
-                    theme.accent_primary.with_alpha_factor(0.16),
+                    ctx.theme.accent_primary.with_alpha_factor(0.16),
                 );
-            } else if row.contains(cursor) {
-                paint::fill_round(scene, transform, row, 8.0, theme.bg_hover);
+            } else if row.contains(view.cursor) {
+                paint::fill_round(ctx.scene, ctx.transform, row, 8.0, ctx.theme.bg_hover);
             }
-            text.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 choice.label(),
                 13.0,
                 if active {
-                    theme.accent_primary
+                    ctx.theme.accent_primary
                 } else {
                     colors.text_primary
                 },
-                transform * Affine::translate((x + 16.0, row_y + 8.0)),
+                ctx.transform * Affine::translate((x + 16.0, row_y + 8.0)),
                 None,
                 if active {
                     TextWeight::Semibold
@@ -321,24 +320,32 @@ mod tests {
         let theme = Theme::dark();
         let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let anchor = controls.draw_bar(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            viewport,
-            1120.0,
-            Point::ZERO,
-            prefs,
+            &mut ShelfPaintCtx {
+                scene: &mut scene,
+                transform: Affine::IDENTITY,
+                text: &mut text,
+                theme: &theme,
+            },
+            ShelfBarView {
+                viewport,
+                open_book_x: 1120.0,
+                cursor: Point::ZERO,
+                preferences: prefs,
+            },
         );
         controls.draw_menu(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            viewport,
-            anchor,
-            Point::ZERO,
-            prefs.sort,
+            &mut ShelfPaintCtx {
+                scene: &mut scene,
+                transform: Affine::IDENTITY,
+                text: &mut text,
+                theme: &theme,
+            },
+            ShelfMenuView {
+                viewport,
+                anchor,
+                cursor: Point::ZERO,
+                selected: prefs.sort,
+            },
         );
         anchor
     }

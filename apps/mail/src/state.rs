@@ -98,6 +98,10 @@ pub enum Intent {
     ContextMenu(MessageId, Point),
     /// Open the account setup sheet for the given account index (`None` = add).
     Settings(Option<usize>),
+    /// Ask the app-owned portal boundary to save one hydrated attachment.
+    /// Panes intentionally carry only a stable message id + attachment index;
+    /// the root revalidates both before it opens the host chooser.
+    SaveAttachment(MessageId, usize),
     /// Ask the app to post a request to the engine worker.
     Engine(EngineRequest),
     /// Surface a transient status toast.
@@ -227,7 +231,7 @@ impl MailState {
             doc,
             MAIL_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Mail", "Mail", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Mail", "Mail", action),
         );
     }
 
@@ -392,7 +396,7 @@ impl MailState {
     }
 
     /// Select a device-local account. Account identity/credentials live in the
-    /// shared qOS account store + secret vault, never in the collaborative mail
+    /// shared Tilo account store + secret vault, never in the collaborative mail
     /// document, so this deliberately has no Automerge write.
     pub fn set_active_account(&mut self, idx: usize) {
         self.accounts.set_active(idx);

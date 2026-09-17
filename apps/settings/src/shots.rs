@@ -93,7 +93,7 @@ impl Scenario {
 }
 
 /// Map a category slug to its [`Category`], for the per-panel capture
-/// driven by the `QOS_SHOTS_PANEL` env var.
+/// driven by the `TILO_SHOTS_PANEL` env var.
 fn category_from_slug(slug: &str) -> Option<Category> {
     Category::ALL.iter().copied().find(|c| c.slug() == slug)
 }
@@ -109,18 +109,21 @@ fn network_demo_pane() -> Box<dyn Widget> {
             ssid: "Home_Network".into(),
             signal: 4,
             secure: true,
+            security: os_actions::WifiSecurity::Wpa3,
             connected: true,
         },
         WifiNetworkInfo {
             ssid: "Cafe_Guest".into(),
             signal: 3,
             secure: false,
+            security: os_actions::WifiSecurity::Open,
             connected: false,
         },
         WifiNetworkInfo {
             ssid: "Office_5G".into(),
             signal: 2,
             secure: true,
+            security: os_actions::WifiSecurity::Wpa2,
             connected: false,
         },
     ];
@@ -221,7 +224,7 @@ fn audio_demo_pane() -> Box<dyn Widget> {
 
 /// Render the scenario selected by `out`'s filename into a PNG at `out`.
 ///
-/// When the `QOS_SHOTS_PANEL` env var is set to a category slug, the wide
+/// When the `TILO_SHOTS_PANEL` env var is set to a category slug, the wide
 /// two-pane layout is rendered with that category selected instead of the
 /// default scenario — this is how the verification harness captures every
 /// panel from one binary.
@@ -354,8 +357,8 @@ pub fn render_for_path_with_text_scale(
     }
 
     // Per-panel capture: a `…panel-<slug>.png` filename (or the
-    // `QOS_SHOTS_PANEL` env var) renders the wide layout on that category.
-    let panel_slug = std::env::var("QOS_SHOTS_PANEL").ok().or_else(|| {
+    // `TILO_SHOTS_PANEL` env var) renders the wide layout on that category.
+    let panel_slug = std::env::var("TILO_SHOTS_PANEL").ok().or_else(|| {
         let name = out.file_name().and_then(|s| s.to_str()).unwrap_or("");
         name.rsplit_once("panel-")
             .map(|(_, rest)| rest.trim_end_matches(".png").to_string())
@@ -460,9 +463,9 @@ pub fn build_widget_scene_with_text_scale(
     text_scale: Option<f32>,
 ) -> Scene {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=<name>` renders under any named theme (e.g. `dracula`,
+    // `TILO_SHOTS_THEME=<name>` renders under any named theme (e.g. `dracula`,
     // `gruvbox`, `catppuccin-mocha`, `light`, `high-contrast`); defaults to dark.
-    let theme = std::env::var("QOS_SHOTS_THEME")
+    let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|n| Theme::named(&n))
         .unwrap_or_else(Theme::dark)

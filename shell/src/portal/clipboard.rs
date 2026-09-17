@@ -196,7 +196,7 @@ impl ClipboardBroker for MemoryClipboardBroker {
 struct NullBroker;
 impl ClipboardBroker for NullBroker {
     fn begin_offer(&self, _: &[String]) -> Result<(), String> {
-        Err("the Clipboard portal is unavailable outside a live qOS compositor".into())
+        Err("the Clipboard portal is unavailable outside a live Tilo compositor".into())
     }
     fn read(&self, _: &str) -> Result<Vec<u8>, String> {
         Err("compositor clipboard broker is not installed".into())
@@ -376,7 +376,8 @@ impl ClipboardBackend {
     fn available(&self) -> zbus::fdo::Result<()> {
         self.broker.available().then_some(()).ok_or_else(|| {
             zbus::fdo::Error::Failed(
-                "Clipboard is unavailable because this is not a live qOS compositor session".into(),
+                "Clipboard is unavailable because this is not a live Tilo compositor session"
+                    .into(),
             )
         })
     }
@@ -701,7 +702,7 @@ mod tests {
 
     #[test]
     fn revoking_a_provider_clears_its_selection_and_pending_state() {
-        let session = "/org/freedesktop/portal/desktop/session/qos/test".to_string();
+        let session = "/org/freedesktop/portal/desktop/session/tilo/test".to_string();
         let live = Arc::new(AtomicBool::new(true));
         let broker = Arc::new(MemoryClipboardBroker::default());
         broker

@@ -16,10 +16,10 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 /// Damage-aware encode throttle, living in the standalone
-/// [`qos_callstream`] crate so surface streaming and the chat call app
+/// [`tilo_callstream`] crate so surface streaming and the chat call app
 /// share one copy: `should_encode(now)` gates the 30-fps cap,
 /// `mark_encoded(now)` stamps a successful encode.
-pub use qos_callstream::throttle::StreamingThrottle;
+pub use tilo_callstream::throttle::StreamingThrottle;
 
 /// Wire-format input event a peer publishes to drive the owner's seat:
 /// pointer motion/button + a single keysym (richer events are a
@@ -292,7 +292,7 @@ mod tests {
         ));
     }
 
-    // `StreamingThrottle` unit tests moved into the `qos_callstream` crate's `throttle` module.
+    // `StreamingThrottle` unit tests moved into the `tilo_callstream` crate's `throttle` module.
 
     /// A synthesised `RemoteInput` reaches the seat when read/write; dropped when the owner flips `read_only`.
     #[test]
@@ -738,6 +738,34 @@ mod tests {
         });
         let loc2 = state.seat.get_pointer().unwrap().current_location();
         assert_eq!((loc2.x, loc2.y), (150.0, 175.0));
+    }
+
+    #[test]
+    fn personal_fabric_motion_reaches_seat_but_yields_to_kill_switch() {
+        use crate::compositor::state::State;
+        use crate::shell::device_fabric::FabricInputEvent;
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let controller = crate::shell::personal_continuity::DeviceId::new("controller").unwrap();
+        assert!(state.apply_personal_fabric_input(
+            &controller,
+            FabricInputEvent::PointerMotion { x: 320, y: 180 }
+        ));
+        let loc = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((loc.x, loc.y), (320.0, 180.0));
+
+        state.remote_input_firewall.engage_kill_switch();
+        assert!(!state.apply_personal_fabric_input(
+            &controller,
+            FabricInputEvent::PointerMotion { x: 640, y: 360 }
+        ));
+        let unchanged = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((unchanged.x, unchanged.y), (320.0, 180.0));
     }
 
     /// A `RemoteDesktop` `NotifyKeyboardKeycode` reaches the seat keyboard, appearing in `pressed_keys()` after press and clearing on release.

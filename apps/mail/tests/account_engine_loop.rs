@@ -29,11 +29,15 @@ use mail::model::{AccountConfig, Addr, Draft, Folder};
 use mail::transport::{build_mime, parse_eml, parse_fetched};
 
 /// A process-unique temp config root so the test never collides with a real
-/// `~/.config/qos` or a parallel run.
+/// `~/.config/tilo` or a parallel run.
 fn unique_root() -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("qos-mail-engine-loop-{}-{}", std::process::id(), n))
+    std::env::temp_dir().join(format!(
+        "tilo-mail-engine-loop-{}-{}",
+        std::process::id(),
+        n
+    ))
 }
 
 fn recv(
@@ -42,15 +46,8 @@ fn recv(
     rx.recv_timeout(Duration::from_secs(5))
 }
 
-/// Step 4a of the end-to-end loop test: a compose produces a well-formed SMTP
-/// payload. Build the same draft's MIME (the exact function the engine's Send
-/// uses) and check it directly, then parse it back. Note: two independent
-/// builds are NOT byte-identical — RFC 5322 requires a unique Message-ID and
-/// a current Date, which mail-builder auto-generates per call, so the payload
-/// is verified by structure and content, not by comparing the length of a
-/// second build to the engine's. The exact bytes the engine puts on the wire
-/// are asserted by the `--features live` SMTP socket test, which captures the
-/// server-side DATA.
+/// Verify the MIME generated for a draft by structure and content. Independent
+/// builds differ because RFC 5322 headers include a Message-ID and Date.
 fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
     let from = Addr::new(loaded.display_name.clone(), loaded.email.clone());
     let mime = build_mime(&from, draft).expect("build MIME");
@@ -64,11 +61,11 @@ fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
         "From address present in the payload"
     );
     assert!(
-        text.contains("you@qos.example"),
+        text.contains("you@tilo.example"),
         "To recipient present in the payload"
     );
     assert!(
-        text.contains("cc@qos.example"),
+        text.contains("cc@tilo.example"),
         "Cc recipient present in the payload"
     );
     assert!(
@@ -80,11 +77,11 @@ fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
     assert_eq!(round.subject, "Loop check");
     assert_eq!(round.from.email, "ada@analytical.example");
     assert!(
-        round.to.iter().any(|a| a.email == "you@qos.example"),
+        round.to.iter().any(|a| a.email == "you@tilo.example"),
         "To recipient survives"
     );
     assert!(
-        round.cc.iter().any(|a| a.email == "cc@qos.example"),
+        round.cc.iter().any(|a| a.email == "cc@tilo.example"),
         "Cc recipient survives"
     );
 }
@@ -161,8 +158,8 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     // 4a) A compose produces a well-formed SMTP payload: the Send request builds
     //     real RFC 5322 MIME and reports its wire size.
     let draft = Draft {
-        to: "you@qos.example".into(),
-        cc: "cc@qos.example".into(),
+        to: "you@tilo.example".into(),
+        cc: "cc@tilo.example".into(),
         subject: "Loop check".into(),
         body: "This travels through the engine.".into(),
         ..Default::default()

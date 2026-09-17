@@ -60,9 +60,9 @@ mod tests {
     fn handshake_json_roundtrip() {
         let h = RegistryHandshake::new(
             "aa".repeat(32),
-            "qOS official",
-            "The default registry shipped with qOS.",
-            "https://apps.qos.dev",
+            "Tilo official",
+            "The default registry shipped with Tilo.",
+            "https://apps.tilo.dev",
         );
         let s = serde_json::to_string(&h).expect("encode");
         let back: RegistryHandshake = serde_json::from_str(&s).expect("decode");

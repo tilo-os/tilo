@@ -10,7 +10,7 @@
 //! Backends:
 //!  * [`test_engine::TestEngine`] — deterministic, dependency-free engine
 //!    used by unit tests and `--shots` headless renders.
-//!  * WPE `WebKit` — the qOS system engine, rendering real pages offscreen.
+//!  * WPE `WebKit` — the Tilo system engine, rendering real pages offscreen.
 //!
 //! Coordinates in commands are **physical pixels relative to the web
 //! view's top-left corner** — the widget does the logical→physical
@@ -365,8 +365,8 @@ mod tests {
             "https://duckduckgo.com/?q=rust+webview"
         );
         assert_eq!(
-            normalise_url("what is qOS?"),
-            "https://duckduckgo.com/?q=what+is+qOS%3F"
+            normalise_url("what is Tilo?"),
+            "https://duckduckgo.com/?q=what+is+Tilo%3F"
         );
     }
 }

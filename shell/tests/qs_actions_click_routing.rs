@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use settings_store::hardware::QuickSettingsConfig;
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::qs_actions::{PowerProfile, QsActions};
 use shell::shell::quick_settings::WifiNetwork;
 use shell::shell::state::{
@@ -312,7 +312,7 @@ fn open_quick_settings(
 #[test]
 fn brightness_slider_click_routes_to_set_brightness() {
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
 
@@ -338,7 +338,7 @@ fn brightness_slider_click_routes_to_set_brightness() {
 #[test]
 fn volume_slider_click_routes_to_set_volume() {
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
 
@@ -368,15 +368,16 @@ fn volume_slider_click_routes_to_set_volume() {
 #[test]
 fn keyboard_slider_arrows_route_through_the_host() {
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host
         .with_qs_actions(Box::new(recorder.clone()))
         .with_quick_settings_config(QuickSettingsConfig::default());
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-    // None → Edit → four destination buttons → Brightness.
-    for _ in 0..6 {
+    // None → Edit → six labeled destinations → Brightness. The full set of
+    // destinations must remain keyboard-reachable before the live controls.
+    for _ in 0..8 {
         assert!(press_key(
             &mut host,
             &taffy,
@@ -430,7 +431,7 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
     // test; this route test also guards against reopening the unrelated
     // workspace-sharing settings surface.
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
     assert!(press_key(
         &mut host,
@@ -461,7 +462,7 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
 
     // A fresh host: Space on History opens its in-panel activity route.
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
     for _ in 0..4 {
         assert!(press_key(
@@ -486,7 +487,7 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
 
     // Shift+Tab from no focus wraps to the final power-profile control.
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
@@ -520,7 +521,7 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
 #[test]
 fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     host = host.with_quick_settings_config(QuickSettingsConfig {
         controls: vec![
             settings_store::hardware::QuickSettingsControl::Wifi,
@@ -609,7 +610,7 @@ fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
 #[test]
 fn wifi_toggle_click_routes_to_set_wifi() {
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host
         .with_qs_actions(Box::new(recorder.clone()))
@@ -640,7 +641,7 @@ fn wifi_toggle_click_routes_to_set_wifi() {
 #[test]
 fn bluetooth_toggle_click_routes_to_set_bluetooth() {
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host
         .with_qs_actions(Box::new(recorder.clone()))
@@ -670,7 +671,7 @@ fn bluetooth_toggle_click_routes_to_set_bluetooth() {
 #[test]
 fn power_profile_chip_click_routes_to_set_power_profile() {
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
 
@@ -696,7 +697,7 @@ fn power_profile_chip_click_routes_to_set_power_profile() {
 #[test]
 fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
 
@@ -777,7 +778,7 @@ fn workspace_settings_invite_button_opens_the_signed_composer() {
 
     let mut tree = minimal_tree();
     tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome.borrow_mut();
         st.overlays.ws_settings = true;
@@ -813,7 +814,7 @@ fn a_click_beside_the_invite_button_does_not_open_the_composer() {
     use shell::shell::chrome_state::WsTab;
 
     let tree = minimal_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome.borrow_mut();
         st.overlays.ws_settings = true;
@@ -851,7 +852,7 @@ fn clicking_a_strip_ribbon_segment_moves_focus() {
     let first = tree.workspaces[0].strips[0].id;
     tree.active_strip.insert(ws_id, first);
 
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = layout_host(&mut host);
 
     let ribbon = host.strip_ribbon_for_tests();

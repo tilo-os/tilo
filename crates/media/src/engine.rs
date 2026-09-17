@@ -71,7 +71,7 @@ pub struct EngineConfig {
     /// default) keeps the long-standing [`VideoFrame`] behaviour;
     /// [`FrameAcceptance::Native`] lets the pipeline keep pictures on the GPU.
     pub acceptance: FrameAcceptance,
-    /// Hardware-decode policy. Defaults to whatever `QOS_MEDIA_HWDEC` says.
+    /// Hardware-decode policy. Defaults to whatever `TILO_MEDIA_HWDEC` says.
     pub hw_policy: HwPolicy,
     /// Starting output volume, `0.0..=1.0`.
     pub volume: f32,
@@ -172,6 +172,8 @@ fn mono_now_ms() -> u64 {
 /// which returns the [`MediaEvent`]s since the last call and refreshes
 /// [`Self::latest_frame`].
 pub struct MediaEngine {
+    handoff_id: u64,
+    handoff_controller_bus_name: Option<String>,
     backend: Backend,
     source: Option<Source>,
     volume: f32,
@@ -190,8 +192,36 @@ enum Backend {
 }
 
 impl MediaEngine {
+    fn next_handoff_id() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .max(1)
+    }
+
+    fn refresh_handoff(&self) {
+        crate::handoff::update(
+            self.handoff_id,
+            crate::handoff::EnginePlayback {
+                source: self.source.as_ref(),
+                audible: self.volume > 0.0,
+                position_ms: self.position_ms(),
+                duration_ms: self.duration_ms(),
+                playing: self.is_playing(),
+                has_video: self.latest().is_some(),
+                controller_bus_name: self.handoff_controller_bus_name.as_deref(),
+            },
+        );
+    }
+
+    /// Bind this engine to the exact MPRIS player that can pause it after a
+    /// destination acknowledges a cross-device handoff.
+    pub fn set_handoff_controller(&mut self, bus_name: Option<String>) {
+        self.handoff_controller_bus_name = bus_name;
+        self.refresh_handoff();
+    }
+
     /// Build an engine with the default configuration: system-memory RGBA
-    /// frames, hardware decode per `QOS_MEDIA_HWDEC`. With `--features decode`
+    /// frames, hardware decode per `TILO_MEDIA_HWDEC`. With `--features decode`
     /// this stands up a real `GStreamer` pipeline; if `GStreamer` can't initialise
     /// (or the feature is off) it transparently falls back to the synthesized
     /// backend. Never fails.
@@ -216,6 +246,8 @@ impl MediaEngine {
                 crate::gst_backend::GstState::new(config.acceptance, config.hw_policy)
             {
                 return Self {
+                    handoff_id: Self::next_handoff_id(),
+                    handoff_controller_bus_name: None,
                     backend: Backend::Gst(gst),
                     source: None,
                     volume: config.volume,
@@ -226,6 +258,8 @@ impl MediaEngine {
             }
         }
         Self {
+            handoff_id: Self::next_handoff_id(),
+            handoff_controller_bus_name: None,
             backend: Backend::Synth(SynthState::new()),
             source: None,
             volume: config.volume,
@@ -240,6 +274,8 @@ impl MediaEngine {
     /// exercised deterministically without a real decode.
     pub fn new_synthesized() -> Self {
         Self {
+            handoff_id: Self::next_handoff_id(),
+            handoff_controller_bus_name: None,
             backend: Backend::Synth(SynthState::new()),
             source: None,
             volume: 0.8,
@@ -302,6 +338,7 @@ impl MediaEngine {
         // backend reads `self.source`, so recording it afterwards is the same
         // observable state without the copy.
         self.source = Some(source);
+        self.refresh_handoff();
     }
 
     /// Start (or resume) playback.
@@ -311,6 +348,7 @@ impl MediaEngine {
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.set_playing(true),
         }
+        self.refresh_handoff();
     }
 
     /// Pause playback, holding the playhead in place.
@@ -320,6 +358,7 @@ impl MediaEngine {
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.set_playing(false),
         }
+        self.refresh_handoff();
     }
 
     /// Toggle play/pause.
@@ -358,7 +397,7 @@ impl MediaEngine {
     /// coarse option for a fast drag where landing within a GOP is acceptable;
     /// [`SeekMode::Accurate`] is the default everywhere else.
     pub fn seek_with(&mut self, ms: u64, mode: SeekMode) -> bool {
-        match &mut self.backend {
+        let accepted = match &mut self.backend {
             Backend::Synth(s) => {
                 let _ = mode;
                 s.seek(ms);
@@ -366,7 +405,9 @@ impl MediaEngine {
             }
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.seek(ms, mode),
-        }
+        };
+        self.refresh_handoff();
+        accepted
     }
 
     /// Seek to `ms` and pump until the picture for that time has landed, or
@@ -422,6 +463,7 @@ impl MediaEngine {
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.set_volume(self.volume),
         }
+        self.refresh_handoff();
     }
 
     pub fn volume(&self) -> f32 {
@@ -602,22 +644,26 @@ impl MediaEngine {
     /// playhead. Returns the [`MediaEvent`]s produced since the last call.
     /// Call once per rendered frame.
     pub fn poll(&mut self) -> Vec<MediaEvent> {
-        match &mut self.backend {
+        let events = match &mut self.backend {
             Backend::Synth(s) => s.poll_at(mono_now_ms()),
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.poll(),
-        }
+        };
+        self.refresh_handoff();
+        events
     }
 
     /// Test seam: pump the synthesized backend at an explicit virtual `now_ms`
     /// so event ordering is deterministic without real time. On a real-decode
     /// backend this behaves like [`Self::poll`] (the argument is ignored).
     pub fn poll_at(&mut self, now_ms: u64) -> Vec<MediaEvent> {
-        match &mut self.backend {
+        let events = match &mut self.backend {
             Backend::Synth(s) => s.poll_at(now_ms),
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.poll(),
-        }
+        };
+        self.refresh_handoff();
+        events
     }
 
     // --- Collaborative transport ------------------------------------------
@@ -652,6 +698,12 @@ impl MediaEngine {
             self.pause();
         }
         seeked
+    }
+}
+
+impl Drop for MediaEngine {
+    fn drop(&mut self) {
+        crate::handoff::remove(self.handoff_id);
     }
 }
 

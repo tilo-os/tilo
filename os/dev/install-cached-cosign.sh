@@ -18,10 +18,10 @@ case "$(uname -m)" in
     ;;
 esac
 
-cache_dir="${QOS_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
-QOS_GITHUB_ASSET_CACHE="$cache_dir" "$script_dir/cache-github-assets.sh" "$asset"
+cache_dir="${TILO_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
+TILO_GITHUB_ASSET_CACHE="$cache_dir" "$script_dir/cache-github-assets.sh" "$asset"
 
-tool_dir="$RUNNER_TEMP/qos-cosign-tools"
+tool_dir="$RUNNER_TEMP/tilo-cosign-tools"
 mkdir -p "$tool_dir"
 install -m 0755 "$cache_dir/$asset" "$tool_dir/cosign"
 printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"

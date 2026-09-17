@@ -15,7 +15,7 @@
 use semver::Version;
 
 use crate::id::Kind;
-use crate::manifest::{EntrypointType, Manifest};
+use crate::manifest::{ContinuityFacet, EntrypointType, Manifest};
 
 /// Validation failure reasons; each variant is one concrete invariant a manifest can violate, surfaced verbatim by the CLI.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -42,6 +42,12 @@ pub enum ManifestError {
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
     BadPublisherSignature(String),
+    #[error("continuity.required repeats facet {0:?}")]
+    DuplicateContinuityFacet(ContinuityFacet),
+    #[error("continuity.required semantic state also requires presentation state")]
+    SemanticContinuityWithoutPresentation,
+    #[error("kind=app requires presentation in continuity.required")]
+    AppContinuityMissingPresentation,
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -99,6 +105,21 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         });
     }
 
+    let mut facets = std::collections::BTreeSet::new();
+    for facet in &m.continuity.required {
+        if !facets.insert(*facet) {
+            return Err(ManifestError::DuplicateContinuityFacet(*facet));
+        }
+    }
+    if facets.contains(&ContinuityFacet::Semantic)
+        && !facets.contains(&ContinuityFacet::Presentation)
+    {
+        return Err(ManifestError::SemanticContinuityWithoutPresentation);
+    }
+    if m.package.kind == Kind::App && !facets.contains(&ContinuityFacet::Presentation) {
+        return Err(ManifestError::AppContinuityMissingPresentation);
+    }
+
     Version::parse(&m.package.version)
         .map_err(|e| ManifestError::BadVersion(m.package.version.clone(), e.to_string()))?;
 
@@ -143,7 +164,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             if matches!(ep.r#type, EntrypointType::Cli | EntrypointType::Both)
                 && m.cli.as_ref().is_none_or(|c| c.commands.is_empty())
             {
-                // A CLI entrypoint with no commands is fine — still runnable via `qos-install run <id>`, no error.
+                // A CLI entrypoint with no commands is fine — still runnable via `tilo-install run <id>`, no error.
             }
         }
         Kind::FormatProvider => {
@@ -226,7 +247,7 @@ fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {
         return Err(ManifestError::BadRuntimeForm(raw.to_string()));
     }
     // Some real-world runtime versions look like 2025.06, not semver (the
-    // spec example uses qos-runtime/2025.06) — accept strict semver or a
+    // spec example uses tilo-runtime/2025.06) — accept strict semver or a
     // YYYY.MM[.MICRO] calendar form.
     if is_calver(ver) || Version::parse(ver).is_ok() {
         Ok(())
@@ -282,7 +303,7 @@ mod tests {
     fn minimal_runtime_manifest() -> Manifest {
         let src = r#"
 [package]
-id = "dev.qos.runtime"
+id = "dev.tilo.runtime"
 version = "2025.6.0"
 kind = "runtime"
 
@@ -292,7 +313,7 @@ signature = ""
 
 [sandbox]
 namespaces = []
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.fs]
@@ -308,7 +329,7 @@ mode = "off"
     #[test]
     fn runtime_kind_with_runtime_field_rejected() {
         let mut m = minimal_runtime_manifest();
-        m.package.runtime = Some("qos-runtime/2025.06".into());
+        m.package.runtime = Some("tilo-runtime/2025.06".into());
         assert_eq!(
             validate_manifest(&m),
             Err(ManifestError::RuntimeKindHasRuntime)
@@ -319,7 +340,7 @@ mode = "off"
     fn calendar_runtime_version_accepted() {
         let mut m = minimal_runtime_manifest();
         m.package.kind = Kind::App;
-        m.package.runtime = Some("qos-runtime/2025.06".into());
+        m.package.runtime = Some("tilo-runtime/2025.06".into());
         // Will still fail because no entrypoint is set, but the
         // runtime-version parse should pass before that — make sure the
         // error is App-specific, not runtime-version.
@@ -327,6 +348,47 @@ mode = "off"
         assert!(
             matches!(e, ManifestError::AppMissingEntrypoint),
             "expected app-entrypoint error, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_continuity_requires_presentation() {
+        let mut m = minimal_runtime_manifest();
+        m.continuity.required = vec![ContinuityFacet::Semantic];
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::SemanticContinuityWithoutPresentation)
+        );
+    }
+
+    #[test]
+    fn continuity_facets_cannot_be_repeated() {
+        let mut m = minimal_runtime_manifest();
+        m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Presentation];
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::DuplicateContinuityFacet(
+                ContinuityFacet::Presentation
+            ))
+        );
+    }
+
+    #[test]
+    fn apps_cannot_opt_out_of_structural_presentation() {
+        let mut m = minimal_runtime_manifest();
+        m.package.kind = Kind::App;
+        m.entrypoint = Some(crate::manifest::Entrypoint {
+            bin: "bin/app".into(),
+            r#type: EntrypointType::Gui,
+            gui_bin: None,
+            cli_bin: None,
+            splash_segments: Vec::new(),
+            splash_budget_ms: 400,
+        });
+        m.continuity.required.clear();
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::AppContinuityMissingPresentation)
         );
     }
 }

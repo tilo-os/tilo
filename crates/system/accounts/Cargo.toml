@@ -16,7 +16,7 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 libc.workspace = true
-# Resolves the per-user config root ($XDG_CONFIG_HOME/qos) the same way the
+# Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
 # Settings app does, so every app agrees on one directory.
 dirs.workspace = true
 
@@ -32,9 +32,8 @@ dirs.workspace = true
 chacha20poly1305.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
-
-[dev-dependencies]
 uuid.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-//! Feeds — a CRDT-native RSS/Atom/Gemini reader for qOS.
+//! Feeds — a CRDT-native RSS/Atom/Gemini reader for Tilo.
 //!
 //! Architecture (mirrors the notes app):
 //!   * [`model`]  — pure data + the in-memory [`model::Store`].

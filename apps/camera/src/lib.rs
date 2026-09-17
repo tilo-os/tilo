@@ -1,11 +1,11 @@
-//! Camera — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Camera — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A real camera app: a live viewfinder (sample frames when headless), a
-//! photo/video shutter, a camera selector, an on-disk gallery (empty until
+//! photo/video shutter, a camera selector, and an on-disk capture history (empty until
 //! you capture), and a QR / barcode scanner that decodes codes for real
 //! (via [`rqrr`]) and
 //! offers contextual actions (open URL, copy, connect Wi-Fi, add contact).
-//! Settings and gallery metadata live in the Automerge CRDT.
+//! Settings and capture metadata live in the Automerge CRDT.
 //!
 //! `app_root()` is the single integration point used by both the live event
 //! loop and the `--shots` offscreen renderer.
@@ -41,6 +41,7 @@
 pub mod actions;
 pub mod app;
 pub mod doc;
+pub mod document_scan;
 pub mod frame;
 pub mod library;
 pub mod media;

@@ -1,11 +1,11 @@
 //! Opening a document from search, end to end: Super+K, the document's
 //! name, Enter — through a real `ShellOverlayHost`, real layout, real
 //! winit key events, the real search fan-out, `doc_open` routing and
-//! `qos-launcher` invocation, asserting on the command actually executed.
+//! `tilo-launcher` invocation, asserting on the command actually executed.
 //!
 //! Two process-wide env vars make this assertable without a session:
 //! `HOME` points at a temp tree the Files provider indexes, and
-//! `QOS_LAUNCHER_BIN` (the launcher's documented seam) points at a script
+//! `TILO_LAUNCHER_BIN` (the launcher's documented seam) points at a script
 //! that records its argv.
 
 #![allow(
@@ -28,7 +28,7 @@ use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::launcher;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::WorkspaceTree;
@@ -205,7 +205,7 @@ fn install(dir: &Path, package_id: &str, name: &str, exts: &[&str]) {
 fn install_recording_launcher(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let log = dir.join("launched.log");
-    let bin = dir.join("qos-launcher");
+    let bin = dir.join("tilo-launcher");
     std::fs::write(
         &bin,
         format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
@@ -248,11 +248,11 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
 
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
-    install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
+    install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
     // A decoy claiming nothing and sorting first by display name: without a
     // second package, "resolve the owner" and "take whatever's installed"
     // look the same.
-    install(&apps, "dev.qos.calculator", "Calculator", &[]);
+    install(&apps, "dev.tilo.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
@@ -264,9 +264,9 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     // are read on this thread and by the launch thread it spawns.
     unsafe {
         std::env::set_var("HOME", &home);
-        std::env::set_var("QOS_APPS_DATA_DIR", &apps);
+        std::env::set_var("TILO_APPS_DATA_DIR", &apps);
         std::env::set_var("XDG_RUNTIME_DIR", &runtime);
-        std::env::set_var("QOS_LAUNCHER_BIN", runtime.join("qos-launcher"));
+        std::env::set_var("TILO_LAUNCHER_BIN", runtime.join("tilo-launcher"));
     }
     launcher::invalidate_app_cache();
     launcher::clear_pending_placements();
@@ -274,7 +274,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     launcher::set_wayland_socket(OsStr::new("wayland-test"));
 
     let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let mut session = Session::new();
 
@@ -343,7 +343,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
     let cmd = &commands[0];
     assert!(
-        cmd.contains("--app-id dev.qos.word-processor"),
+        cmd.contains("--app-id dev.tilo.word-processor"),
         "the document had to open in the package that declares .odt: {cmd}"
     );
     assert!(
@@ -358,7 +358,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         let st = chrome.borrow();
         let tree = st.tree();
         let ws = tree.active_workspace().expect("an active workspace");
-        let want = Subject::app("dev.qos.word-processor");
+        let want = Subject::app("dev.tilo.word-processor");
         let scopes: Vec<&Scope> = ws
             .capabilities
             .iter()
@@ -381,8 +381,8 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
             Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
             None => std::env::remove_var("XDG_RUNTIME_DIR"),
         }
-        std::env::remove_var("QOS_APPS_DATA_DIR");
-        std::env::remove_var("QOS_LAUNCHER_BIN");
+        std::env::remove_var("TILO_APPS_DATA_DIR");
+        std::env::remove_var("TILO_LAUNCHER_BIN");
     }
     launcher::invalidate_app_cache();
 }
@@ -393,10 +393,10 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
-    install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
+    install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
     // The decoy is what makes "the app that owns .odt" a different claim
     // from "whatever is installed".
-    install(&apps, "dev.qos.calculator", "Calculator", &[]);
+    install(&apps, "dev.tilo.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
@@ -405,9 +405,9 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
 
     // SAFETY: serialised on `process_env` against the other test here.
     unsafe {
-        std::env::set_var("QOS_APPS_DATA_DIR", &apps);
+        std::env::set_var("TILO_APPS_DATA_DIR", &apps);
         std::env::set_var("XDG_RUNTIME_DIR", &runtime);
-        std::env::set_var("QOS_LAUNCHER_BIN", runtime.join("qos-launcher"));
+        std::env::set_var("TILO_LAUNCHER_BIN", runtime.join("tilo-launcher"));
     }
     launcher::invalidate_app_cache();
     launcher::clear_pending_placements();
@@ -416,7 +416,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
 
     let tree = WorkspaceTree::bootstrap_demo();
     let strip_id = tree.workspaces[0].strips[0].id;
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let mut session = Session::new();
 
@@ -452,7 +452,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let commands = launched_commands(&log, 1);
     assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
     assert!(
-        commands[0].contains("--app-id dev.qos.word-processor")
+        commands[0].contains("--app-id dev.tilo.word-processor")
             && commands[0].contains(&format!("--open {}", doc_path.display())),
         "the drop had to open the document in its own app: {}",
         commands[0]
@@ -477,8 +477,8 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     drop(st);
 
     unsafe {
-        std::env::remove_var("QOS_APPS_DATA_DIR");
-        std::env::remove_var("QOS_LAUNCHER_BIN");
+        std::env::remove_var("TILO_APPS_DATA_DIR");
+        std::env::remove_var("TILO_LAUNCHER_BIN");
     }
     launcher::invalidate_app_cache();
 }

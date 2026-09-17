@@ -1,7 +1,7 @@
 //! The sync plane: namespace replication plus content hydration.
 //!
 //! Unenforced workspaces use iroh-gossip for live Automerge deltas and
-//! `qos-fs-sync/0` for bootstrap/anti-entropy. Enforced workspaces use only
+//! `tilo-fs-sync/0` for bootstrap/anti-entropy. Enforced workspaces use only
 //! the authenticated sync ALPN: gossip does not preserve the original author
 //! needed for a write-authorisation decision. Iroh-blobs hydrates content on
 //! read, guarded by the live namespace and ACL.
@@ -25,8 +25,8 @@ use iroh_blobs::Hash;
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
-use qos_user_identity::RevocationList;
 use serde::{Deserialize, Serialize};
+use tilo_user_identity::RevocationList;
 use tokio::sync::mpsc;
 
 use crate::acl::{AclHandle, IdentityKey};
@@ -38,28 +38,29 @@ use crate::peer_auth::AuthenticatedFsPeer;
 use crate::record_access::RecordAccessRegistry;
 use crate::record_mesh::{
     MAX_RECORD_MESH_INVENTORY_PAGE_STREAMS, MAX_RECORD_MESH_PULL_BATCH_ENVELOPES,
-    QOS_FS_RECORD_MESH_ALPN, RECORD_MESH_PROTOCOL_VERSION, RecordMeshEndV1, RecordMeshOperationV1,
-    RecordMeshRequestV1, RecordMeshResultV1, RecordMeshStreamV1, read_record_mesh_request,
+    RECORD_MESH_PROTOCOL_VERSION, RecordMeshEndV1, RecordMeshOperationV1, RecordMeshRequestV1,
+    RecordMeshResultV1, RecordMeshStreamV1, TILO_FS_RECORD_MESH_ALPN, read_record_mesh_request,
     read_record_mesh_response, serve_authorized_request, write_record_mesh_request,
     write_record_mesh_response,
 };
-use crate::record_protocol::{QOS_FS_RECORD_ALPN, RecordProtocol};
+use crate::record_protocol::{RecordProtocol, TILO_FS_RECORD_ALPN};
 use crate::record_replication::{RecordAction, RecordAuthorizer};
 use crate::record_repository::{RecordRepository, RecordRepositoryKey};
 use crate::replica_ack::{
-    QOS_FS_REPLICA_ACK_ALPN, REPLICA_ACK_TIMEOUT, ReplicaAckRequestV1, ReplicaAckResponseV1,
-    ReplicaAckV1, read_frame as read_replica_ack_frame, write_frame as write_replica_ack_frame,
+    REPLICA_ACK_TIMEOUT, ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1,
+    TILO_FS_REPLICA_ACK_ALPN, read_frame as read_replica_ack_frame,
+    write_frame as write_replica_ack_frame,
 };
 use crate::share_authority::ShareAuthority;
 use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
 use crate::workspace_authority::{
-    AuthorityRequest, AuthorityResponse, QOS_FS_AUTHORITY_ALPN, WorkspaceAuthority,
+    AuthorityRequest, AuthorityResponse, TILO_FS_AUTHORITY_ALPN, WorkspaceAuthority,
     read_frame as read_authority_frame, write_frame as write_authority_frame,
 };
 
 /// Custom ALPN for the document exchange (bootstrap + incremental sync).
-pub const QOS_FS_SYNC_ALPN: &[u8] = b"qos-fs-sync/0";
+pub const TILO_FS_SYNC_ALPN: &[u8] = b"tilo-fs-sync/0";
 /// Interactive peers always retain small previews when metadata changes, but
 /// never fetch a file manifest/chunks merely to populate a directory view.
 const MAX_INTERACTIVE_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
@@ -160,7 +161,7 @@ impl crate::share_session::LiveActorCertification for FsTransportIdentity {
         if peer.user_public_key != peer.cert.user_public_key
             || peer.device_public_key != peer.cert.device_public_key
             || peer.cert.issued_at_ns > now_ns
-            || qos_user_identity::verify_device_cert_at(&peer.cert, now_ns).is_err()
+            || tilo_user_identity::verify_device_cert_at(&peer.cert, now_ns).is_err()
         {
             return false;
         }
@@ -332,7 +333,7 @@ pub async fn fetch_remote_doc(
         anyhow::bail!("transport partition gate is closed");
     }
     tokio::time::timeout(Duration::from_secs(10), async {
-        let conn = endpoint.connect(host, QOS_FS_SYNC_ALPN).await?;
+        let conn = endpoint.connect(host, TILO_FS_SYNC_ALPN).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let _peer =
             authenticate_connection(endpoint, &conn, &mut recv, &mut send, identity).await?;
@@ -366,7 +367,7 @@ pub async fn sync_with_peer(
         anyhow::bail!("transport partition gate is closed");
     }
     tokio::time::timeout(Duration::from_secs(15), async {
-        let conn = endpoint.connect(peer, QOS_FS_SYNC_ALPN).await?;
+        let conn = endpoint.connect(peer, TILO_FS_SYNC_ALPN).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let _peer =
             authenticate_connection(endpoint, &conn, &mut recv, &mut send, identity).await?;
@@ -539,7 +540,7 @@ fn authenticated_peer_may_write_whole_workspace(
         || peer_may_write_whole_workspace(policy, &peer.device_public_key)
 }
 
-/// An iroh endpoint id read as a qOS identity — the same 32 bytes (see
+/// An iroh endpoint id read as a Tilo identity — the same 32 bytes (see
 /// [`bind_endpoint_with_key`]), letting a capability written against a
 /// device key decide who may open a connection.
 fn identity_of(id: iroh::EndpointId) -> IdentityKey {
@@ -1610,15 +1611,15 @@ impl Workspace {
         );
         let builder = match (&record_plane, replica_ack_protocol) {
             (Some(records), Some(replica_ack)) => builder
-                .accept(QOS_FS_RECORD_ALPN, records.protocol.clone())
-                .accept(QOS_FS_RECORD_MESH_ALPN, records.mesh_protocol.clone())
-                .accept(QOS_FS_REPLICA_ACK_ALPN, replica_ack),
+                .accept(TILO_FS_RECORD_ALPN, records.protocol.clone())
+                .accept(TILO_FS_RECORD_MESH_ALPN, records.mesh_protocol.clone())
+                .accept(TILO_FS_REPLICA_ACK_ALPN, replica_ack),
             _ => builder,
         };
         let builder = if let Some(records) = &record_plane {
             if let Some(authority) = &records.workspace_authority {
                 builder.accept(
-                    QOS_FS_AUTHORITY_ALPN,
+                    TILO_FS_AUTHORITY_ALPN,
                     AuthorityProtocol {
                         endpoint: endpoint.clone(),
                         identity: identity.clone(),
@@ -1639,10 +1640,10 @@ impl Workspace {
         let router = if policy.is_none() {
             builder
                 .accept(GOSSIP_ALPN, gossip.clone())
-                .accept(QOS_FS_SYNC_ALPN, sync_proto)
+                .accept(TILO_FS_SYNC_ALPN, sync_proto)
                 .spawn()
         } else {
-            builder.accept(QOS_FS_SYNC_ALPN, sync_proto).spawn()
+            builder.accept(TILO_FS_SYNC_ALPN, sync_proto).spawn()
         };
 
         let (local_tx, local_rx) = mpsc::unbounded_channel();
@@ -1833,7 +1834,7 @@ async fn record_mesh_request(
     if identity.partitioned() {
         anyhow::bail!("transport partition gate is closed");
     }
-    let connection = endpoint.connect(remote, QOS_FS_RECORD_MESH_ALPN).await?;
+    let connection = endpoint.connect(remote, TILO_FS_RECORD_MESH_ALPN).await?;
     let (mut send, mut recv) = connection.open_bi().await?;
     let peer =
         authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
@@ -1851,7 +1852,7 @@ async fn pull_workspace_authority_from_peer(
     authority: &WorkspaceAuthority,
     workspace_id: uuid::Uuid,
 ) -> Result<()> {
-    let connection = endpoint.connect(remote, QOS_FS_AUTHORITY_ALPN).await?;
+    let connection = endpoint.connect(remote, TILO_FS_AUTHORITY_ALPN).await?;
     let (mut send, mut recv) = connection.open_bi().await?;
     let _peer =
         authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
@@ -1892,7 +1893,7 @@ pub async fn submit_workspace_authority(
     workspace: uuid::Uuid,
     publish: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
 ) -> Result<Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>> {
-    let connection = endpoint.connect(remote, QOS_FS_AUTHORITY_ALPN).await?;
+    let connection = endpoint.connect(remote, TILO_FS_AUTHORITY_ALPN).await?;
     let (mut send, mut recv) = connection.open_bi().await?;
     let _ = authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
     write_authority_frame(&mut send, &AuthorityRequest { workspace, publish }).await?;
@@ -2056,7 +2057,7 @@ async fn request_replica_ack(
         anyhow::bail!("transport partition gate is closed");
     }
     tokio::time::timeout(REPLICA_ACK_TIMEOUT, async {
-        let connection = endpoint.connect(remote, QOS_FS_REPLICA_ACK_ALPN).await?;
+        let connection = endpoint.connect(remote, TILO_FS_REPLICA_ACK_ALPN).await?;
         let (mut send, mut recv) = connection.open_bi().await?;
         let peer =
             authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
@@ -2391,11 +2392,11 @@ async fn bind_certified_test_endpoint_with_root() -> (
     ed25519_dalek::SigningKey,
 ) {
     use ed25519_dalek::SigningKey;
-    use qos_user_identity::{
+    use std::sync::atomic::Ordering;
+    use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
         persist::write_device_cert, sign_device_cert,
     };
-    use std::sync::atomic::Ordering;
 
     let sequence = NEXT_TEST_IDENTITY.fetch_add(1, Ordering::Relaxed);
     let device_seed = *blake3::hash(&sequence.to_le_bytes()).as_bytes();
@@ -2622,7 +2623,7 @@ mod tests {
         );
         let router = Router::builder(nas_endpoint.clone())
             .accept(
-                QOS_FS_AUTHORITY_ALPN,
+                TILO_FS_AUTHORITY_ALPN,
                 AuthorityProtocol {
                     endpoint: nas_endpoint.clone(),
                     identity: nas_identity,
@@ -3015,7 +3016,7 @@ mod tests {
             store,
         };
         let _router = Router::builder(server_ep.clone())
-            .accept(QOS_FS_REPLICA_ACK_ALPN, protocol)
+            .accept(TILO_FS_REPLICA_ACK_ALPN, protocol)
             .spawn();
 
         let request = ReplicaAckRequestV1::new(workspace_id, revision).unwrap();
@@ -3293,11 +3294,11 @@ mod tests {
                     None,
                 )),
             )
-            .accept(QOS_FS_REPLICA_ACK_ALPN, durable_ack)
+            .accept(TILO_FS_REPLICA_ACK_ALPN, durable_ack)
             .spawn();
         let _stale_router = Router::builder(stale_ep.clone())
             .accept(iroh_blobs::ALPN, stale_store.blobs_protocol(None))
-            .accept(QOS_FS_REPLICA_ACK_ALPN, stale_ack)
+            .accept(TILO_FS_REPLICA_ACK_ALPN, stale_ack)
             .spawn();
         let owner_policy = Some(policy_read_write(
             &[identity(&durable_ep), identity(&stale_ep)],
@@ -4261,7 +4262,7 @@ mod tests {
             Ed25519PublicKey, FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite,
         };
         use iroh_blobs::protocol::{ChunkRangesSeq, GetManyRequest};
-        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
         let temp = tempfile::tempdir().unwrap();
         let (server_ep, _server_lookup, server_identity, server_root, _server_device) =
@@ -4573,7 +4574,7 @@ mod tests {
 
     #[tokio::test]
     async fn blob_acl_resolves_only_a_live_certified_device_to_its_person() {
-        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
         let (_server_ep, _server_lookup, server_identity, _server_root, _server_device) =
             bind_certified_test_endpoint_with_root().await;
@@ -4684,7 +4685,7 @@ mod tests {
     /// the admitting mount has learned an effective root-signed revocation.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_sync_rejects_a_revoked_certified_device_before_mode() {
-        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
         let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
         let (ep_b, _look_b, auth_b, root_b, _device_b) =

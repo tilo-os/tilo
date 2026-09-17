@@ -20,11 +20,11 @@ use crate::availability::ReplicaObservation;
 use crate::peer_auth::AuthenticatedFsPeer;
 
 pub const REPLICA_ACK_PROTOCOL_VERSION: u16 = 1;
-pub const QOS_FS_REPLICA_ACK_ALPN: &[u8] = b"qos-fs-replica-ack/1";
+pub const TILO_FS_REPLICA_ACK_ALPN: &[u8] = b"tilo-fs-replica-ack/1";
 pub const MAX_REPLICA_ACK_FRAME_BYTES: usize = 8 * 1024;
 pub const MAX_REPLICA_ACK_LIFETIME_MS: u64 = 5 * 60 * 1000;
 pub const REPLICA_ACK_TIMEOUT: Duration = Duration::from_secs(15);
-pub(crate) const SIGNATURE_DOMAIN: &str = "qos.collaborative-fs.replica-ack.v1";
+pub(crate) const SIGNATURE_DOMAIN: &str = "tilo.collaborative-fs.replica-ack.v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -303,8 +303,8 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de
 mod tests {
     use super::*;
     use collab_types::{ContentHash, FileRecordId, FileVersionId};
-    use qos_user_identity::{DeviceCapabilities, sign_device_cert};
     use rand::rngs::OsRng;
+    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
     fn revision() -> ContentRevisionV1 {
         ContentRevisionV1 {
@@ -322,7 +322,7 @@ mod tests {
         let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
         let device = ed25519_dalek::SigningKey::generate(&mut OsRng);
         let capabilities = DeviceCapabilities::member();
-        let mut cert = qos_user_identity::DeviceCert {
+        let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
             device_label: "replica".into(),

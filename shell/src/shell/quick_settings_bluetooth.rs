@@ -1,8 +1,8 @@
-//! Bluetooth discovery list for quick settings.
+//! Bluetooth device list for quick settings.
 //!
-//! Device rows are intentionally informational: the hardware dispatcher only
-//! exposes radio power today, not pair/connect. The pane owns exact painted
-//! geometry and hit-testing so adding a typed device action later is local.
+//! Rows act only on accessories already paired through the compositor-owned
+//! `BlueZ` agent. Pairing remains a privileged conversation; reconnecting or
+//! disconnecting an existing bond is safe to expose as a typed shell action.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
@@ -10,8 +10,17 @@ use vello::kurbo::{Affine, Circle, Point, Rect};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
+use crate::shell::qs_actions::{QsActions, log_qs_result};
 use crate::shell::quick_settings::BtDevice;
-use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings_drill_in::DrillInList;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BluetoothOutcome {
+    Back,
+    Changed,
+    OpenDetails { address: String },
+    None,
+}
 
 #[derive(Default)]
 pub struct QuickSettingsBluetoothPane {
@@ -23,15 +32,36 @@ impl QuickSettingsBluetoothPane {
         &mut self,
         point: Point,
         panel: Rect,
-        devices: &[BtDevice],
-    ) -> DrillInOutcome {
+        devices: &mut [BtDevice],
+        actions: &dyn QsActions,
+    ) -> BluetoothOutcome {
         self.list.layout(panel, devices.len());
         if self.list.back_contains(point) {
-            DrillInOutcome::Back
+            BluetoothOutcome::Back
+        } else if let Some((index, _)) = self
+            .list
+            .rows()
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains(point))
+        {
+            let Some(device) = devices.get_mut(index) else {
+                return BluetoothOutcome::None;
+            };
+            let was_connected = device.connected;
+            if was_connected {
+                return BluetoothOutcome::OpenDetails {
+                    address: device.address.clone(),
+                };
+            }
+            let result = actions.connect_bluetooth(&device.address);
+            if result.is_ok() {
+                device.connected = true;
+            }
+            log_qs_result("connect_bluetooth", result);
+            BluetoothOutcome::Changed
         } else {
-            // Rows have no fake action: `os_actions::Dispatcher` has no
-            // pair/connect contract yet. They remain absorbed by the pane.
-            DrillInOutcome::None
+            BluetoothOutcome::None
         }
     }
 
@@ -117,28 +147,78 @@ impl QuickSettingsBluetoothPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Actions(RefCell<Vec<String>>);
+
+    impl QsActions for Actions {
+        fn set_brightness(&self, _: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_volume(&self, _: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_wifi(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_bluetooth(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect_wifi(&self, _: &str, _: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_power_profile(
+            &self,
+            _: crate::shell::qs_actions::PowerProfile,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("connect:{address}"));
+            Ok(())
+        }
+        fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("disconnect:{address}"));
+            Ok(())
+        }
+    }
 
     fn device() -> BtDevice {
         BtDevice {
             name: "Headphones".into(),
+            address: "02:00:00:00:00:01".into(),
             battery: 73,
             connected: true,
         }
     }
 
     #[test]
-    fn back_is_owned_but_an_informational_row_has_no_invented_action() {
+    fn back_is_owned_and_paired_rows_toggle_the_exact_accessory() {
         let mut pane = QuickSettingsBluetoothPane::default();
         let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let devices = vec![device()];
+        let mut devices = vec![device()];
+        let actions = Actions::default();
         pane.list.layout(panel, devices.len());
         assert_eq!(
-            pane.handle_click(pane.list.back_center(), panel, &devices),
-            DrillInOutcome::Back
+            pane.handle_click(pane.list.back_center(), panel, &mut devices, &actions),
+            BluetoothOutcome::Back
         );
+        let row = pane.list.rows()[0].center();
         assert_eq!(
-            pane.handle_click(pane.list.rows()[0].center(), panel, &devices),
-            DrillInOutcome::None
+            pane.handle_click(row, panel, &mut devices, &actions),
+            BluetoothOutcome::OpenDetails {
+                address: "02:00:00:00:00:01".into()
+            }
         );
+        assert!(devices[0].connected);
+        assert!(actions.0.borrow().is_empty());
+        devices[0].connected = false;
+        assert_eq!(
+            pane.handle_click(row, panel, &mut devices, &actions),
+            BluetoothOutcome::Changed
+        );
+        assert!(devices[0].connected);
+        assert_eq!(actions.0.borrow()[0], "connect:02:00:00:00:00:01");
     }
 }

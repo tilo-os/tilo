@@ -1,4 +1,4 @@
-//! qOS shared media layer.
+//! Tilo shared media layer.
 //!
 //! One streaming + playback layer for every media surface in the OS — the local
 //! video player, the video editor's preview, and the video app's watch page all
@@ -69,6 +69,7 @@ pub mod encode;
 pub mod engine;
 pub mod event;
 pub mod frame;
+pub mod handoff;
 pub mod hw;
 pub mod notification_sound;
 pub mod ring;

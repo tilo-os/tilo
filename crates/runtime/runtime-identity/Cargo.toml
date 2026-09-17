@@ -5,9 +5,9 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# qOS runtime — user-identity signing client and host-side lifecycle store.
+# Tilo runtime — user-identity signing client and host-side lifecycle store.
 # Packaged apps receive a connected broker descriptor and never a key path;
-# QOS_USER_IDENTITY remains only as an unsandboxed-development compatibility
+# TILO_USER_IDENTITY remains only as an unsandboxed-development compatibility
 # route.
 #
 # In single-device (1-of-1) mode signing is done locally via
@@ -15,7 +15,7 @@ license.workspace = true
 # multi-device orchestrator and returns
 # NotAvailable::ThresholdSigningNotSupported — the intended v1
 # UX is that only the primary device signs directly and secondary
-# devices use the FROST round-trip via `qos-threshold-identity`.
+# devices use the FROST round-trip via `tilo-threshold-identity`.
 
 [lib]
 name = "runtime_identity"

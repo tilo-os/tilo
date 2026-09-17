@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the application boundary around qOS text rendering.
+"""Enforce the application boundary around Tilo text rendering.
 
 Apps may compose the public ``ui`` text widgets, editors, ``RichTextLayout``
 or ``TextRenderer``. The shaping implementation and Vello glyph emission stay

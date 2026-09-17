@@ -1,9 +1,9 @@
 //! Device location via the **XDG Desktop Portal**
 //! (`org.freedesktop.portal.Location`, through the [`ashpd`] crate).
 //!
-//! Per the qOS HIG (§5 system integration) an app prefers host/portal services
+//! Per the Tilo HIG (§5 system integration) an app prefers host/portal services
 //! over reinventing them: the *host desktop* (`GeoClue2` behind the portal on
-//! GNOME; the compositor's portal backend on qOS) provides the fix and mediates
+//! GNOME; the compositor's portal backend on Tilo) provides the fix and mediates
 //! the permission prompt — the portal is the security boundary. This module
 //! never fabricates a position: if the portal is missing, permission is denied,
 //! or no fix arrives in time, it returns an honest [`LocationOutcome::Unavailable`].

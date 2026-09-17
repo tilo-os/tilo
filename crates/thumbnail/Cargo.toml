@@ -5,10 +5,8 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# The one shared thumbnail generator + content-addressed cache for qOS. The FUSE
-# filesystem host-generates previews as metadata, the file manager and pickers
-# request them off-thread, and system apps (ebook, video_editor, pdf_viewer)
-# reuse the same decode paths instead of each rolling their own.
+# Shared thumbnail generator and content-addressed cache for the FUSE host,
+# file manager, pickers, and document apps.
 #
 # Kept free of `vello`/`wgpu`/`ui` on purpose: the FUSE daemon links this crate
 # to host-generate previews, and it must never pull a GPU stack into the OS
@@ -17,23 +15,20 @@ license.workspace = true
 
 [features]
 default = []
-# Real PDF first-page rasterisation via pdfium (dynamically loads libpdfium at
-# runtime; falls back to a type badge when the library is absent). Pure-Rust to
-# BUILD — no native build dep — so enabling it never breaks a hermetic compile.
+# PDF first-page rasterisation via dynamically loaded pdfium; falls back to a
+# type badge when unavailable and adds no native build dependency.
 pdf = ["dep:pdfium-render"]
-# Real video keyframe extraction through the shared `media` GStreamer engine.
-# Off by default so hermetic builds, `--shots` and CI need no gstreamer stack.
+# Video keyframe extraction through the shared GStreamer media engine; off by
+# default to keep hermetic builds free of the GStreamer stack.
 video = ["dep:media", "media/decode"]
 
 [dependencies]
-# The shared decode + downscale primitive (the same 0.25 line every app uses, so
-# `DynamicImage` unifies to one type across the workspace).
+# Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
-# EPUB covers: a container is a ZIP with an OPF manifest pointing at a cover
-# image — the same reader the ebook app uses, lifted to the shared crate.
+# EPUB cover extraction from ZIP/OPF containers.
 zip.workspace = true
 roxmltree = "0.20"
-# Content addressing (same hash the rest of qOS uses end-to-end).
+# Content addressing (same hash the rest of Tilo uses end-to-end).
 blake3.workspace = true
 # In-memory LRU in front of the on-disk cache.
 moka = { version = "0.12.15", features = ["sync"] }

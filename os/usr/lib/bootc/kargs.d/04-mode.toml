@@ -1,18 +1,11 @@
 # Which mode this kernel image boots into.
 #
-# `qos.mode=normal` is the ordinary desktop session. `qos.mode=repair` boots the
-# same rootfs to the repair console instead — see /usr/share/doc/qos/repair-mode.md.
+# `tilo.mode=normal` is the ordinary desktop session. `tilo.mode=repair` boots the
+# same rootfs to the repair console instead — see /usr/share/doc/tilo/repair-mode.md.
 #
-# It is here, in kargs.d, for the same reason `qos.generation=` is: `bootc
-# container ukify` seals this directory's contents into the UKI's command line, so
-# the mode is inside the signature and inside the PCR 11 measurement. A mode
-# selected by an editable file beside the kernel would let anyone with write
-# access to the ESP turn a locked desktop into a root shell.
+# `bootc container ukify` seals this mode into the UKI command line and PCR 11;
+# an editable file beside the kernel could bypass the locked mode.
 #
-# The two values are deliberately THE SAME LENGTH. The repair entry is not a
-# second build artefact: /usr/libexec/qos-deployment derives it from whichever UKI
-# `bootc install` actually wrote, by rewriting these bytes in place. A
-# length-preserving edit keeps every following PE section at its file offset, so
-# the image still loads; a longer value would move them and produce a UKI that
-# does not boot. os/tests/repair_mode.sh asserts the lengths still match.
-kargs = ["qos.mode=normal"]
+# Keep both values the same length: tilo-deployment rewrites the selected value
+# in place, preserving following PE section offsets.
+kargs = ["tilo.mode=normal"]

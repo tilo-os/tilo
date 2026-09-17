@@ -35,10 +35,10 @@ class EvidenceTests(unittest.TestCase):
             source.write_bytes(selected.read_bytes())
             windows_path = f"C:\\windows\\{directory}\\{dll}"
             logged_path = windows_path.replace("\\", "\\\\")
-            lines.extend((f"QOS_DXVK_MODULE_{bits} {dll} {windows_path}",
-                          f"QOS_DXVK_EXPORT_{bits} {dll} {export}",
+            lines.extend((f"TILO_DXVK_MODULE_{bits} {dll} {windows_path}",
+                          f"TILO_DXVK_EXPORT_{bits} {dll} {export}",
                           f'0024:trace:loaddll:build_module Loaded L"{logged_path}" at 1234: native'))
-        lines.append(f"QOS_DXVK_LOAD_PASS_{bits}")
+        lines.append(f"TILO_DXVK_LOAD_PASS_{bits}")
         return "\n".join(lines)
 
     def test_both_widths_with_exact_native_payload_pass(self):
@@ -72,7 +72,7 @@ class EvidenceTests(unittest.TestCase):
 
     def run_simulated_cases(self, timeout_last=False):
         base = self.prefix.parent
-        self.prefix = PROBE.prepare_capsule_root(base / "run-qos")
+        self.prefix = PROBE.prepare_capsule_root(base / "run-tilo")
         fixtures = {bits: base / f"pe{bits}.exe" for bits in (32, 64)}
         for bits, fixture in fixtures.items():
             fixture.write_bytes(str(bits).encode())
@@ -82,7 +82,7 @@ class EvidenceTests(unittest.TestCase):
 
         def run(command, **kwargs):
             environment = kwargs["env"]
-            bits = int((self.prefix / "drive_c/qos-dxvk-load.exe").read_bytes())
+            bits = int((self.prefix / "drive_c/tilo-dxvk-load.exe").read_bytes())
             calls.append((command[1], bits, environment["HOME"]))
             self.assertNotIn("WINEDLLOVERRIDES", environment)
             self.assertEqual(kwargs["timeout"], 240)
@@ -124,7 +124,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_export_or_success_marker_alone_is_insufficient(self):
         output = self.fixture(64)
-        for remove in ("QOS_DXVK_EXPORT_64 d3d11.dll D3D11CreateDevice", "QOS_DXVK_LOAD_PASS_64"):
+        for remove in ("TILO_DXVK_EXPORT_64 d3d11.dll D3D11CreateDevice", "TILO_DXVK_LOAD_PASS_64"):
             with self.subTest(remove=remove):
                 self.assertFalse(PROBE.assess(output.replace(remove, ""), 64, self.prefix, self.dxvk)[0])
 
@@ -138,39 +138,39 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(PROBE.assess(output, 32, self.prefix, self.dxvk)[0])
 
     def test_ambiguous_duplicate_module_marker_rejected(self):
-        output = self.fixture(64) + "\nQOS_DXVK_MODULE_64 dxgi.dll C:\\windows\\system32\\dxgi.dll\n"
+        output = self.fixture(64) + "\nTILO_DXVK_MODULE_64 dxgi.dll C:\\windows\\system32\\dxgi.dll\n"
         self.assertFalse(PROBE.assess(output, 64, self.prefix, self.dxvk)[0])
 
     def test_separate_prefixes_preserve_c_drive_mapping_and_fixture(self):
-        run_qos = self.prefix.parent / "run-qos"
-        prefix = PROBE.prepare_capsule_root(run_qos)
+        run_tilo = self.prefix.parent / "run-tilo"
+        prefix = PROBE.prepare_capsule_root(run_tilo)
         fixture = self.prefix.parent / "fixture.exe"
         fixture.write_bytes(b"PE fixture placeholder")
         for bits in (32, 64):
             PROBE.create_prefix(prefix, fixture)
             self.assertEqual((prefix / "dosdevices/c:").readlink(), Path("../drive_c"))
-            self.assertEqual((prefix / "dosdevices/c:/qos-dxvk-load.exe").read_bytes(), fixture.read_bytes())
+            self.assertEqual((prefix / "dosdevices/c:/tilo-dxvk-load.exe").read_bytes(), fixture.read_bytes())
             prefix.rename(prefix.with_name(f"prefix-win{bits}"))
         for bits in (32, 64):
-            self.assertEqual((prefix.with_name(f"prefix-win{bits}") / "drive_c/qos-dxvk-load.exe").read_bytes(), fixture.read_bytes())
+            self.assertEqual((prefix.with_name(f"prefix-win{bits}") / "drive_c/tilo-dxvk-load.exe").read_bytes(), fixture.read_bytes())
 
     def test_existing_state_is_rejected_without_removing_it(self):
-        run_qos = self.prefix.parent / "run-qos"
-        run_qos.mkdir()
-        existing = run_qos / "unrelated-data"
+        run_tilo = self.prefix.parent / "run-tilo"
+        run_tilo.mkdir()
+        existing = run_tilo / "unrelated-data"
         existing.write_bytes(b"preserve")
         with self.assertRaisesRegex(ValueError, "empty"):
-            PROBE.prepare_capsule_root(run_qos)
+            PROBE.prepare_capsule_root(run_tilo)
         self.assertEqual(existing.read_bytes(), b"preserve")
-        self.assertEqual(list(run_qos.iterdir()), [existing])
+        self.assertEqual(list(run_tilo.iterdir()), [existing])
 
     def test_symlink_root_does_not_modify_target(self):
-        run_qos = self.prefix.parent / "run-qos"
+        run_tilo = self.prefix.parent / "run-tilo"
         external = self.prefix.parent / "external"
         external.mkdir()
-        run_qos.symlink_to(external, target_is_directory=True)
+        run_tilo.symlink_to(external, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "real, dedicated"):
-            PROBE.prepare_capsule_root(run_qos)
+            PROBE.prepare_capsule_root(run_tilo)
         self.assertEqual(list(external.iterdir()), [])
 
 

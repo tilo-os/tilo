@@ -13,11 +13,9 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use zip::ZipArchive;
 
-// ---- builders ---------------------------------------------------------------
-
 fn empty_snapshot() -> DocSnapshot {
     DocSnapshot {
-        schema: "qos.richtext".into(),
+        schema: "tilo.richtext".into(),
         schema_version: 1,
         ..Default::default()
     }
@@ -55,8 +53,6 @@ fn tiny_png() -> Vec<u8> {
         0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
     ]
 }
-
-// ---- unzip helpers ----------------------------------------------------------
 
 /// Read every entry of the produced archive into `(name, bytes)`, preserving
 /// the archive's stored order (so we can assert mimetype is first).
@@ -100,8 +96,6 @@ fn method_of(bytes: &[u8], name: &str) -> CompressionMethod {
     }
     panic!("entry {name} not found");
 }
-
-// ---- structural EPUB invariants --------------------------------------------
 
 #[test]
 fn first_entry_is_mimetype_stored_with_exact_payload() {
@@ -326,8 +320,6 @@ fn image_block_adds_an_image_manifest_item_and_packaged_resource() {
     );
 }
 
-// ---- XHTML well-formedness --------------------------------------------------
-
 #[test]
 fn chapters_are_well_formed_xml_with_self_closing_void_elements() {
     let mut snap = empty_snapshot();
@@ -450,8 +442,6 @@ fn text_specials_are_xml_escaped_not_injected() {
     );
     assert_well_formed_xml(&chapter);
 }
-
-// ---- minimal well-formedness checker ---------------------------------------
 
 /// A small XML well-formedness check: tags balance, prolog present, no raw `<`
 /// or `&` that isn't part of a tag/entity. Not a full parser, but catches the

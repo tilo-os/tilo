@@ -5,7 +5,7 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# qOS runtime — portal foundation: env-driven service discovery and a
+# Tilo runtime — portal foundation: env-driven service discovery and a
 # thin wrapper that lifts a connected Unix-socket file descriptor into
 # a tokio-backed Cap'n Proto RPC client. All higher-level service
 # clients (collab, fs, identity) sit on top of this crate.

@@ -58,7 +58,7 @@ done
 reject sh "$helper" check-config x86_64 "$tmp/aarch64.config"
 reject sh "$helper" check-config aarch64 "$tmp/x86_64.config"
 reject sh "$helper" check-config aarch64 "$tmp/absent.config"
-if grep -Eq '^CONFIG_(X86_|LEGACY_VSYSCALL_)' "$repo/os/kernel/config-fragments/qos.config"; then
+if grep -Eq '^CONFIG_(X86_|LEGACY_VSYSCALL_)' "$repo/os/kernel/config-fragments/tilo.config"; then
     fail 'x86-only options leaked into the shared fragment'
 fi
 printf 'ok    architecture-specific config checks retain every shared protection\n'
@@ -120,7 +120,7 @@ for contract in \
     'sh /work/kernel-build-support.sh stage-boot "$(uname -m)" "$KSRC" "$STAGE" "$KVER"'; do
     grep -Fq "$contract" "$tmp/Containerfile" || fail "kernel build bypassed tested helper: $contract"
 done
-spec="$repo/os/kernel/qos-kernel-payload.spec"
+spec="$repo/os/kernel/tilo-kernel-payload.spec"
 if grep -Eq '^BuildArch:' "$spec"; then fail 'RPM overrides the native target architecture'; fi
 grep -Eq '^ExclusiveArch:[[:space:]]+x86_64 aarch64[[:space:]]*$' "$spec" || fail 'RPM supported architectures changed'
 grep -Eq '^/lib/modules/%\{kver\}[[:space:]]*$' "$spec" || fail 'RPM does not package the complete boot artifact tree'

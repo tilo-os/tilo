@@ -3,7 +3,7 @@
 //! ## Where enforcement actually happens
 //!
 //! The compositor does **not** spawn applications itself. It execs
-//! `qos-launcher` (the `launcher` crate), and that process is what
+//! `tilo-launcher` (the `launcher` crate), and that process is what
 //! builds the bubblewrap namespace, compiles the seccomp filter,
 //! installs Landlock and execs the app. It is the single enforcement
 //! point, and it is where a workspace's capabilities become real kernel

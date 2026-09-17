@@ -1,9 +1,7 @@
 //! `NumberInput` — a compact, click-to-type numeric field with steppers.
 //!
-//! A number you can nudge with `−`/`+` buttons or click and type
-//! directly; always parsed, validated and clamped to a range. Before this
-//! widget every inspector (font size, line spacing, opacity, margins, …)
-//! hand-rolled it.
+//! A number you can nudge with `−`/`+` buttons or click and type directly;
+//! values are parsed, validated, and clamped to a range.
 //!
 //! Two stepper buttons flank an embedded local-mode [`TextInput`].
 //! Clicking the field focuses and pre-selects it; **Enter**, a stepper
@@ -305,7 +303,7 @@ impl NumberInput {
 
     /// Route every committed numeric value through an exported action.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<f64>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<f64>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.changed = None;
         self.pending_write = None;
@@ -728,13 +726,13 @@ impl Widget for NumberInput {
         "NumberInput"
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
@@ -1252,7 +1250,7 @@ mod tests {
         assert!(!Widget::is_enabled(&number));
         Widget::refresh_control_action_availability(
             &mut number,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                 "test:control",
                 "set",
             )]),

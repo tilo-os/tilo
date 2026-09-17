@@ -1,4 +1,4 @@
-//! HTTP client for a qOS registry — [`app_catalogue::client`], re-exported.
+//! HTTP client for a Tilo registry — [`app_catalogue::client`], re-exported.
 //!
 //! The store used to carry its own copy of this: the same two
 //! endpoints, the same signature check, the same trust classification,

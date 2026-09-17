@@ -22,8 +22,16 @@ use winit::event::{Modifiers, WindowEvent};
 
 use crate::widgets::{El, caption, card, card_with_action, rows, status_pill};
 
-const REFRESH_KEY: &str = "settings.printers.refresh";
-const SCAN_KEY: &str = "settings.printers.discover";
+pub(crate) const REFRESH_KEY: &str = "settings.printers.refresh";
+pub(crate) const SCAN_KEY: &str = "settings.printers.discover";
+
+pub(crate) fn queue_action_key(action: &str, name: &str) -> String {
+    format!("settings.printers.{action}.{}", slug(name))
+}
+
+pub(crate) fn job_action_key(action: &str, id: &str) -> String {
+    format!("settings.printers.job.{action}.{}", slug(id))
+}
 
 pub trait PrintService: Send + Sync {
     /// # Errors
@@ -134,6 +142,7 @@ pub struct PrintersPane {
     discovering: bool,
     confirm_remove: Option<String>,
     error: Option<String>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -172,6 +181,7 @@ impl PrintersPane {
             discovering: false,
             confirm_remove: None,
             error: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
@@ -196,6 +206,7 @@ impl PrintersPane {
             discovering: false,
             confirm_remove: None,
             error: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
@@ -216,7 +227,7 @@ impl PrintersPane {
         self.refresh_rx = Some(rx);
         self.loading = true;
         if let Err(error) = std::thread::Builder::new()
-            .name("qos-printer-status".into())
+            .name("tilo-printer-status".into())
             .spawn(move || {
                 let _ = tx.send(PrinterSnapshot {
                     printers: service.queues(),
@@ -240,7 +251,7 @@ impl PrintersPane {
         self.discover_rx = Some(rx);
         self.discovering = true;
         if let Err(error) = std::thread::Builder::new()
-            .name("qos-printer-discovery".into())
+            .name("tilo-printer-discovery".into())
             .spawn(move || {
                 let _ = tx.send(service.discover());
             })
@@ -287,8 +298,31 @@ impl PrintersPane {
     }
 
     fn apply(&mut self, result: Result<(), String>) {
+        if let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
+            && token.starts_with(crate::actions::PRINTER_OPERATION_TYPE)
+        {
+            self.operation_status.set(match &result {
+                Ok(()) => crate::actions::LocalOperationStatus::Succeeded {
+                    token,
+                    message: "Printer operation completed.".into(),
+                },
+                Err(error) => crate::actions::LocalOperationStatus::Failed {
+                    token,
+                    message: error.clone(),
+                },
+            });
+        }
         self.error = result.err();
         self.request_refresh();
+    }
+
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -615,9 +649,9 @@ impl Widget for PrintersPane {
             }
         }
         for p in self.printers.clone() {
-            let default = format!("settings.printers.default.{}", slug(&p.name));
-            let enabled = format!("settings.printers.enabled.{}", slug(&p.name));
-            let remove = format!("settings.printers.remove.{}", slug(&p.name));
+            let default = queue_action_key("default", &p.name);
+            let enabled = queue_action_key("enabled", &p.name);
+            let remove = queue_action_key("remove", &p.name);
             let confirm = format!("settings.printers.confirm_remove.{}", slug(&p.name));
             if take_bool(state, root, &default) {
                 let result = self.service.set_default(&p.name);
@@ -640,8 +674,8 @@ impl Widget for PrintersPane {
             }
         }
         for job in self.jobs.clone() {
-            let cancel = format!("settings.printers.job.cancel.{}", slug(&job.id));
-            let retry = format!("settings.printers.job.retry.{}", slug(&job.id));
+            let cancel = job_action_key("cancel", &job.id);
+            let retry = job_action_key("retry", &job.id);
             if take_bool(state, root, &cancel) {
                 let result = self.service.cancel(&job.id);
                 self.apply(result);
@@ -804,6 +838,7 @@ mod tests {
     fn job() -> PrintJob {
         PrintJob {
             id: "Office-42".into(),
+            title: Some("Quarterly report.pdf".into()),
             owner: "ada".into(),
             size_bytes: 2048,
             submitted: "now".into(),

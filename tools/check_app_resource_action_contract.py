@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep qOS applications on the resource/action application model.
+"""Keep Tilo applications on the resource/action application model.
 
 Every graphical app must publish its current resources from the widget tree and
 describe its operations with ``ActionSpec``. The headless agent is the one
@@ -60,16 +60,19 @@ LEGACY_ENTRY_POINTS = {
 SEARCH_PROVIDER_IMPL = re.compile(
     r"\bimpl(?:\s*<[^>{}]*>)?\s+SearchProvider\s+for\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
+FRAMEWORK_RESOURCE_SEARCH_BUILD = re.compile(
+    r"crate\s*::\s*search\s*::\s*OpenResourceSearch\s*::\s*new\s*\(\s*&resources\s*\)"
+)
+FRAMEWORK_RESOURCE_SEARCH_INSTALL = re.compile(
+    r"providers\s*\.\s*push\s*\(\s*Box\s*::\s*new\s*\(\s*open_resources\s*\)"
+)
 # Exception keys are `apps/<app>/src/<file>.rs::ProviderType`. Keep this empty
 # by default: adding one is an explicit, reviewable acknowledgement that the
 # corpus is intrinsically tiny and inheriting the unbounded fallback is safe.
 SEARCH_LIMIT_EXEMPTIONS: dict[str, str] = {}
 
-# Temporary, explicit migration inventory for providers that still discard a
-# durable tail before querying it. New entries are not permitted silently: use
-# ui::search::SearchCatalog and delete the corresponding item when migrated.
-# The value names the retained-model work still required, making this debt
-# visible in review without keeping the repository permanently red.
+# Reviewed exceptions for providers that discard a durable tail before querying
+# it. New entries require an explicit review; migrated providers are removed.
 TRUNCATING_SEARCH_REMEDIATION: dict[str, str] = {
 }
 TRUNCATING_SEARCH = re.compile(
@@ -468,6 +471,22 @@ def audit_search_provider_limits(
 
 def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     violations: list[Violation] = []
+    # This is a Tilo framework invariant, not a requirement on the isolated
+    # miniature app repositories used below and by third-party SDK consumers.
+    # Only the authoritative workspace owns ui/src/app.rs.
+    if root.resolve() == ROOT.resolve():
+        app_host_path = root / "ui" / "src" / "app.rs"
+        app_host = rust_code_only(app_host_path.read_text(encoding="utf-8"))
+        if not FRAMEWORK_RESOURCE_SEARCH_BUILD.search(
+            app_host
+        ) or not FRAMEWORK_RESOURCE_SEARCH_INSTALL.search(app_host):
+            violations.append(
+                Violation(
+                    app_host_path,
+                    1,
+                    "app host must install bounded canonical search for every live resource tree",
+                )
+            )
     ratchet_baseline = load_ratchet_baseline(root)
     baseline_path = root / "tools" / BASELINE
     for rule, entries in ratchet_baseline.items():
@@ -500,14 +519,14 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             specification for alias, specification in runtime_dependencies if alias == "ui"
         ]
         if not facades or any(
-            not (isinstance(facade, dict) and facade.get("package") == "qos-app")
+            not (isinstance(facade, dict) and facade.get("package") == "tilo-app")
             for facade in facades
         ):
             violations.append(
                 Violation(
                     manifest_path,
                     1,
-                    "app must depend on the `qos-app` SDK facade under the `ui` crate name",
+                    "app must depend on the `tilo-app` SDK facade under the `ui` crate name",
                 )
             )
         for alias, specification in dependencies:
@@ -516,7 +535,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     Violation(
                         manifest_path,
                         1,
-                        f"direct ui-core dependency `{alias}` bypasses the `qos-app` SDK facade",
+                        f"direct ui-core dependency `{alias}` bypasses the `tilo-app` SDK facade",
                     )
                 )
 

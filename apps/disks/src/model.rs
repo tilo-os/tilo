@@ -1,9 +1,8 @@
 //! Pure data model for the Disks app.
 //!
 //! Everything here is plain data + serde so the whole topology can be
-//! round-tripped through a single Automerge `Text` blob (the same
-//! Phase-1 pattern the notes app uses). Rendering, probing and CRDT
-//! plumbing live in sibling modules — this file knows nothing about
+//! round-tripped through a single Automerge `Text` blob. Rendering, probing,
+//! and CRDT plumbing live in sibling modules — this file knows nothing about
 //! vello, taffy or `lsblk`.
 
 use serde::{Deserialize, Serialize};
@@ -214,7 +213,7 @@ impl Partition {
         if mp == "/" || mp == "/sysroot" {
             return PartRole::Root;
         }
-        // On atomic Fedora / qOS (bootc) the home volume lives at /var/home.
+        // On atomic Fedora / Tilo (bootc) the home volume lives at /var/home.
         if mp == "/home" || mp == "/var/home" {
             return PartRole::Home;
         }

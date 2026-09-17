@@ -20,8 +20,8 @@ from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, PROFILES_DIR, load_de
 
 
 FIRMWARE_PATH = Path("usr/lib/firmware")
-PROFILE_PATH = Path("usr/lib/qos/hardware-profile.json")
-DRACUT_PATH = Path("etc/dracut.conf.d/41-qos-hardware.conf")
+PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
+DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
 
 
 def checked_path(root: Path, relative: Path, *, required: bool) -> Path:

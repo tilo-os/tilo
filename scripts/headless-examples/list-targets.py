@@ -2,7 +2,7 @@
 """List every clickable widget the compositor knows about.
 
 Usage:
-  ./list-targets.py [/tmp/nirios.sock]
+  ./list-targets.py [/tmp/tilo.sock]
 
 Each entry is `name (x, y, w, h)`. Use the `name` directly with
 `click_named` in the other examples — names that contain `[N]` are

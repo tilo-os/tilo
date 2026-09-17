@@ -1,6 +1,6 @@
 # Personal and workspace settings
 
-qOS does not ship two competing Settings applications. The ordinary Settings
+Tilo does not ship two competing Settings applications. The ordinary Settings
 app owns device and personal preferences. The shell owns contextual Workspace
 Settings because it already knows the active workspace, authenticated local
 identity, and role grants. Both surfaces call shared domain services.
@@ -72,7 +72,7 @@ to infer ownership from arbitrary home-directory paths:
 
 - signed application payloads from the qpkg payload store;
 - app-owned data from the per-room runtime directories;
-- application caches from the qOS cache root;
+- application caches from the Tilo cache root;
 - sync-replica bytes from the sync filesystem root.
 
 Until the sync filesystem publishes hydrated/evictable state, synced bytes are

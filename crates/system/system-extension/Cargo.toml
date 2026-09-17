@@ -4,15 +4,15 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Signed, pinned desired-state transactions for optional qOS system extensions."
+description = "Signed, pinned desired-state transactions for optional Tilo system extensions."
 
 [lib]
 name = "system_extension"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-system-extension-manager"
-path = "src/bin/qos-system-extension-manager.rs"
+name = "tilo-system-extension-manager"
+path = "src/bin/tilo-system-extension-manager.rs"
 
 [dependencies]
 atomic-file = { path = "../atomic-file" }

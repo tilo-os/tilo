@@ -126,10 +126,10 @@ impl NetworkSnapshot {
                 "A network is connected, but NetworkManager cannot confirm internet access."
             }
             ConnectivityState::Offline => {
-                "No internet connection. That's okay: qOS can install completely offline."
+                "No internet connection. That's okay: Tilo can install completely offline."
             }
             ConnectivityState::Unknown => {
-                "Connectivity could not be confirmed. You can still install qOS offline."
+                "Connectivity could not be confirmed. You can still install Tilo offline."
             }
         }
     }
@@ -390,6 +390,11 @@ mod tests {
             ssid: ssid.to_string(),
             signal,
             secure,
+            security: if secure {
+                os_actions::WifiSecurity::Wpa2
+            } else {
+                os_actions::WifiSecurity::Open
+            },
             connected,
         }
     }

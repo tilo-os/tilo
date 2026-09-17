@@ -16,7 +16,7 @@ esac
 
 scratch_root="${TMPDIR:-$repo/os/output/.tmp}"
 mkdir -p "$scratch_root"
-work="$(mktemp -d -p "$scratch_root" qos-rpm-snapshot-verify.XXXXXX)"
+work="$(mktemp -d -p "$scratch_root" tilo-rpm-snapshot-verify.XXXXXX)"
 container=''
 cleanup() {
   [ -z "$container" ] || "$runtime" rm "$container" >/dev/null 2>&1 || true
@@ -34,7 +34,7 @@ if [ "$actual_arch" != "$expected_arch" ]; then
   echo 'Use the promoted multi-architecture snapshot or the matching native child.' >&2
   exit 1
 fi
-if ! "$runtime" cp "$container:/repo/qos-direct-package-specs.txt" "$work/actual"; then
+if ! "$runtime" cp "$container:/repo/tilo-direct-package-specs.txt" "$work/actual"; then
   echo "frozen RPM snapshot has no package manifest: $ref" >&2
   echo 'Run the snapshot-rpms workflow before building the OS image.' >&2
   exit 1

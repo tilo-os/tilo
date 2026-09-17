@@ -281,9 +281,9 @@ pub fn render_to_path(
     let mut app = NotesApp::spawn(root.clone())?;
 
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme
     // so the same frame can be graded in both light and dark (default dark).
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -650,7 +650,7 @@ fn dispatch_scenario(
 /// `LaunchSpec` screenshot path. Invalid values are intentionally ignored,
 /// matching the live app's preference parser.
 fn reduced_motion_requested() -> bool {
-    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| {

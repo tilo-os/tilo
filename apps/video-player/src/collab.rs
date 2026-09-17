@@ -4,8 +4,8 @@
 //! engine's playback state into a [`media::CrdtTransport`] and broadcasts the
 //! change; followers merge it and bring their engine in line with drift
 //! correction ([`media::MediaEngine::apply_transport`]). The wire is the same
-//! `ui::collaboration` collab socket every qOS app uses — the CRDT bytes ride
-//! `CollabRequest::DocumentIncremental`, so a peer that joins the workspace simply
+//! `ui::collaboration` collab socket every Tilo app uses — the CRDT bytes ride
+//! `CollabRequest::document_incremental`, so a peer that joins the workspace simply
 //! starts following.
 //!
 //! This module holds only the CRDT-drive logic (`host_step` / ingest /
@@ -25,10 +25,10 @@ pub enum Role {
 }
 
 impl Role {
-    /// Resolve the role from `$QOS_PLAYER_ROLE` (`follower` → Follower, else
+    /// Resolve the role from `$TILO_PLAYER_ROLE` (`follower` → Follower, else
     /// Host), so two instances on a shared workspace pick complementary roles.
     pub fn from_env() -> Self {
-        match std::env::var("QOS_PLAYER_ROLE").ok().as_deref() {
+        match std::env::var("TILO_PLAYER_ROLE").ok().as_deref() {
             Some("follower" | "Follower") => Role::Follower,
             _ => Role::Host,
         }

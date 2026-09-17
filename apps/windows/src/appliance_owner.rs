@@ -10,8 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-const OWNER: &str = "/usr/libexec/qos-windows-owner";
-const RECOVERY_CONSOLE: &str = "/usr/libexec/qos-windows-recovery-console";
+const OWNER: &str = "/usr/libexec/tilo-windows-owner";
+const RECOVERY_CONSOLE: &str = "/usr/libexec/tilo-windows-recovery-console";
 const STATUS_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,7 +227,7 @@ impl ApplianceStatus {
             AppliancePhase::NotProvisioned => "Choose Windows installation media",
             AppliancePhase::Installing => "Complete Windows Setup in the authorised setup desktop",
             AppliancePhase::AwaitingGuestBridge => {
-                "Finish qOS guest integration in the authorised recovery desktop"
+                "Finish Tilo guest integration in the authorised recovery desktop"
             }
             AppliancePhase::Ready => "Windows is ready for published applications",
             AppliancePhase::RepairRequired => {
@@ -237,7 +237,7 @@ impl ApplianceStatus {
         }
     }
 
-    /// qOS reports only what the authenticated guest said. It deliberately
+    /// Tilo reports only what the authenticated guest said. It deliberately
     /// does not turn activation into a licensing determination.
     #[must_use]
     pub const fn license_label(&self) -> &'static str {
@@ -260,10 +260,10 @@ impl ApplianceStatus {
                 Some("Finish Windows Setup, then return here to check its activation status.")
             }
             LicenseState::Unlicensed => Some(
-                "Use the authorised setup or recovery desktop to activate Windows. qOS does not keep product keys or decide whether a licence is valid.",
+                "Use the authorised setup or recovery desktop to activate Windows. Tilo does not keep product keys or decide whether a licence is valid.",
             ),
             LicenseState::Evaluation => Some(
-                "Evaluation editions have their own terms and expiry. qOS does not keep product keys or decide whether a licence is valid.",
+                "Evaluation editions have their own terms and expiry. Tilo does not keep product keys or decide whether a licence is valid.",
             ),
             LicenseState::DigitallyActivated
             | LicenseState::ProductKeyActivated
@@ -723,7 +723,7 @@ mod tests {
         command
             .arg("-c")
             .arg("cat > \"$1\"")
-            .arg("qos-test-capture")
+            .arg("tilo-test-capture")
             .arg(&captured_path);
         let output = command_with_stdin(command, source).unwrap();
         assert!(output.status.success());

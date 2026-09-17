@@ -1,11 +1,13 @@
-//! Chat — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Chat — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A bespoke collaborative chat + calls surface tied to workspaces. The
 //! convergent state — workspaces, categories, channels, messages, reactions,
-//! edits + edit history, threads, members, voice membership, and FUSE-shared
-//! attachments — lives in an Automerge document ([`doc`]) that is **persisted
-//! to disk** ([`storage`]) so it survives across runs. The [`app::ChatApp`]
-//! widget is a projection of that document plus an input router.
+//! edits + edit history, threads, members, and voice membership — lives in an
+//! Automerge document ([`doc`]) that is **persisted to disk** ([`storage`]) so
+//! it survives across runs. Attachments are qdoc content-addressed references:
+//! the CRDT stores their identity and bounded metadata, while bytes stay in the
+//! shared blob store. The [`app::ChatApp`] widget is a projection of that
+//! document plus an input router.
 //!
 //! ## Layout
 //! Two adaptive flaps ([`responsive`]) frame a conversation column: a left
@@ -17,10 +19,12 @@
 //! Conferencing ([`call`]) is a movable floating overlay (drag to
 //! reposition) or an expanded grid, with an active-speaker ring, an
 //! adaptive participant list, voice-channel presence in the sidebar, and
-//! join/leave sounds. Call actions pass through a clean permission seam
-//! ([`call::CallPermissions`], default-allow). The real-time media engine
-//! ([`media`]) defines a MoQ-over-iroh transport trait with a simulated
-//! local backend and a feature-gated live one.
+//! join/leave sounds. App call actions are checked against the host-provided
+//! [`permissions::ChatPermissions`] context; capture additionally requires a
+//! source the user selected through the system portal. Chat makes no claim of
+//! room encryption or its own ACL system. The real-time media engine ([`media`])
+//! defines a MoQ-over-iroh transport trait with a simulated local backend and a
+//! feature-gated live one.
 //!
 //! `app_root()` is the single integration point used by the live event
 //! loop; [`app_root_for_shot`] stages a scenario for the offscreen renderer.
@@ -61,6 +65,7 @@ pub mod app;
 #[cfg(feature = "live-media")]
 pub mod audio;
 pub mod call;
+pub mod continuity;
 pub mod doc;
 pub mod emoji;
 pub mod events;

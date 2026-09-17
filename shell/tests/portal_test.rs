@@ -552,9 +552,9 @@ async fn session_outcome_persists_into_grant_store() {
 
 #[test]
 fn bus_name_matches_freedesktop_portal_convention() {
-    // Must match the shipped `os/.../portals/qos.portal` `DBusName`; the
+    // Must match the shipped `os/.../portals/tilo.portal` `DBusName`; the
     // compositor owns it directly rather than racing an activation service.
-    assert_eq!(BUS_NAME, "org.freedesktop.impl.portal.desktop.qos");
+    assert_eq!(BUS_NAME, "org.freedesktop.impl.portal.desktop.tilo");
     assert_eq!(OBJECT_PATH, "/org/freedesktop/portal/desktop");
 }
 

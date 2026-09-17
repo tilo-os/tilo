@@ -1,6 +1,6 @@
 use super::*;
 use ed25519_dalek::SigningKey;
-use qos_user_identity::{
+use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the reviewed qOS patch series to a disposable, clean FEX checkout."""
+"""Apply the reviewed Tilo patch series to a disposable, clean FEX checkout."""
 
 import argparse
 import hashlib

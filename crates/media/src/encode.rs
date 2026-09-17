@@ -31,7 +31,7 @@
 //!
 //! ## Overriding
 //!
-//! `QOS_MEDIA_HWENC` mirrors `QOS_MEDIA_HWDEC`:
+//! `TILO_MEDIA_HWENC` mirrors `TILO_MEDIA_HWDEC`:
 //!
 //! | value | effect |
 //! |---|---|
@@ -64,7 +64,7 @@ impl EncoderKind {
         !matches!(self, EncoderKind::Software)
     }
 
-    /// The family name used by `QOS_MEDIA_HWENC` and reported in logs.
+    /// The family name used by `TILO_MEDIA_HWENC` and reported in logs.
     pub fn as_str(self) -> &'static str {
         match self {
             EncoderKind::Va => "va",
@@ -360,7 +360,7 @@ impl AudioCodec {
     }
 }
 
-/// The hardware-encode policy for this process, from `QOS_MEDIA_HWENC`.
+/// The hardware-encode policy for this process, from `TILO_MEDIA_HWENC`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HwEncPolicy {
     /// Prefer hardware; fall back to software.
@@ -378,7 +378,7 @@ impl HwEncPolicy {
     /// [`HwEncPolicy::Auto`] with a warning: a typo must not silently disable
     /// hardware encode.
     pub fn from_env() -> Self {
-        match std::env::var("QOS_MEDIA_HWENC") {
+        match std::env::var("TILO_MEDIA_HWENC") {
             Ok(v) => Self::parse(&v),
             Err(_) => HwEncPolicy::Auto,
         }
@@ -395,7 +395,9 @@ impl HwEncPolicy {
             "qsv" | "quicksync" => HwEncPolicy::Force(EncoderKind::Qsv),
             "v4l2" => HwEncPolicy::Force(EncoderKind::V4l2),
             other => {
-                tracing::warn!("media: QOS_MEDIA_HWENC={other:?} is not a known value; using auto");
+                tracing::warn!(
+                    "media: TILO_MEDIA_HWENC={other:?} is not a known value; using auto"
+                );
                 HwEncPolicy::Auto
             }
         }
@@ -1027,7 +1029,7 @@ mod tests {
             return;
         }
 
-        let dir = std::env::temp_dir().join(format!("qos-media-kbps-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-media-kbps-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let seconds = 5u64;
         let mut sizes = Vec::new();
@@ -1176,7 +1178,7 @@ mod tests {
             .collect();
         assert!(!marked.is_empty(), "the table marks at least one encoder");
 
-        let dir = std::env::temp_dir().join(format!("qos-media-rate-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-media-rate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let seconds = 1u64;
         let asked_bps = 1_000_000u64;

@@ -23,7 +23,6 @@ fn widget_defaults_for_collab_methods() {
 
 #[test]
 fn draw_takes_presence_ctx() {
-    // compile-time assertion that draw signature is what we expect.
     fn _assert_draw_sig() {
         fn _call<W: Widget>(
             w: &mut W,
@@ -36,7 +35,6 @@ fn draw_takes_presence_ctx() {
             w.draw(scene, transform, tr, theme, presence);
         }
     }
-    // AppWidget marker compiles.
     fn _is_appwidget<W: AppWidget>() {}
 }
 
@@ -68,7 +66,6 @@ fn button_uses_token_radius() {
         caret_width: 2.0,
         tokens: t,
     };
-    // A scene is required to draw; just assert the legacy shortcut mirrors the token.
     assert_eq!(theme.radius_standard, 99.0);
     assert_eq!(theme.tokens.radii.md, 99.0);
 }

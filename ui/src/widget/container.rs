@@ -35,6 +35,9 @@ pub struct Container {
     /// to keep it centred in a wider parent. Unlike [`Container::with_width`]
     /// this remains responsive below the cap.
     max_width: Option<f32>,
+    /// Lower horizontal bound used by responsive flex children. Unlike
+    /// `fixed_width`, this still lets the container grow to share the row.
+    min_width: Option<f32>,
     /// Mutually independent from [`Container::fill_height`].
     fixed_height: Option<f32>,
     /// Also implies `has_background`. `None` keeps the legacy `bg_primary`
@@ -65,6 +68,7 @@ impl Container {
             permission_scope: None,
             no_padding: false,
             fixed_width: None,
+            min_width: None,
             max_width: None,
             fixed_height: None,
             fill_color: None,
@@ -112,6 +116,22 @@ impl Container {
     /// and sparse settings panes without constraining data-dense layouts.
     #[must_use]
     pub fn with_centered_max_width(mut self, px: f32) -> Self {
+        self.max_width = Some(px);
+        self
+    }
+
+    /// Keep this container usable when it participates in a wrapping row,
+    /// while still allowing it to grow and share spare horizontal space.
+    #[must_use]
+    pub fn with_min_width(mut self, px: f32) -> Self {
+        self.min_width = Some(px);
+        self
+    }
+
+    /// Keep readable content from becoming an excessively wide wall while
+    /// still shrinking naturally on compact windows.
+    #[must_use]
+    pub fn with_max_width(mut self, px: f32) -> Self {
         self.max_width = Some(px);
         self
     }
@@ -220,6 +240,10 @@ impl Widget for Container {
                 bottom: length(pad),
             },
             size: taffy::Size { width, height },
+            min_size: taffy::Size {
+                width: self.min_width.map_or(taffy::Dimension::auto(), length),
+                height: taffy::Dimension::auto(),
+            },
             max_size: taffy::Size {
                 width: self.max_width.map_or(taffy::Dimension::auto(), length),
                 height: taffy::Dimension::auto(),

@@ -10,7 +10,7 @@ name = "greeter"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-greeter"
+name = "tilo-greeter"
 path = "src/main.rs"
 
 [dependencies]
@@ -24,6 +24,7 @@ winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+zeroize.workspace = true
 # greetd's wire protocol. `sync-codec` pulls in the blocking
 # `SyncCodec` (`Request::write_to` / `Response::read_from` over
 # `std::io::{Read,Write}`) — no async runtime needed for a login box.

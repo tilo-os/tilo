@@ -86,8 +86,8 @@ class Session:
         os.makedirs(self.home, exist_ok=True)
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "HOME": self.home,
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
@@ -97,11 +97,11 @@ class Session:
             # Without its own device key peer-sync turns itself off, and
             # the only visible symptom is that `peer.invite` is never
             # exported — which reads as a refusal, not a prerequisite.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             # Distinct identities, or both sessions are the same person
             # and "somebody else's cursor" means nothing.
-            "QOS_USER_ID": name,
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_USER_ID": name,
+            "TILO_HEADLESS_SIZE": "1280x800",
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
         }

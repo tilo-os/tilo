@@ -17,7 +17,7 @@ use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
 use crate::sources::{
     flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
-    installed_qos_to_store_item, merge, qos_to_store_item,
+    installed_tilo_to_store_item, merge, tilo_to_store_item,
 };
 use crate::{FlatpakRef, StoreItem};
 
@@ -63,14 +63,14 @@ pub struct Snapshot {
     pub query: Option<String>,
     pub detail: Option<StoreItem>,
     pub remotes: Vec<Remote>,
-    pub invocation: Option<qos_actions::InvocationId>,
+    pub invocation: Option<tilo_actions::InvocationId>,
     pub operation_error: Option<String>,
     pub moderation_case: Option<registry_types::ModerationCase>,
 }
 
 struct QueuedRequest {
     request: Request,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 pub struct StoreWorker {
@@ -111,7 +111,7 @@ impl StoreWorker {
     pub fn request_with_invocation(
         &self,
         request: Request,
-        invocation: Option<qos_actions::InvocationId>,
+        invocation: Option<tilo_actions::InvocationId>,
     ) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
         if self
@@ -160,7 +160,7 @@ fn run(
     opened_ref: Option<FlatpakRef>,
 ) {
     let staging = crate::actions::qpkg_staging_dir()
-        .unwrap_or_else(|| std::env::temp_dir().join("qos-store-staged"));
+        .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
     let mut state = State {
         host: app_host::client::BlockingClient::from_service()
@@ -224,7 +224,7 @@ fn run(
 )]
 fn handle(
     request: Request,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     state: &mut State,
     snapshots: &mpsc::Sender<Snapshot>,
     staging: &std::path::Path,
@@ -413,11 +413,11 @@ fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) ->
     let items = if let Some(cached) = state.searches.get(&query).cloned() {
         cached
     } else {
-        let qos = state
+        let tilo = state
             .base_items
             .iter()
             .filter(|item| {
-                matches!(item.source, StoreSource::Qos { .. }) && item.matches_query(&query)
+                matches!(item.source, StoreSource::Tilo { .. }) && item.matches_query(&query)
             })
             .cloned()
             .collect();
@@ -426,7 +426,7 @@ fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) ->
             .iter()
             .map(|record| flathub_record_to_item(record, &state.installed))
             .collect();
-        let items = merge(qos, flatpak);
+        let items = merge(tilo, flatpak);
         state.searches.insert(query.clone(), items.clone());
         items
     };
@@ -440,7 +440,7 @@ fn detail(id: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bo
     } else if let Some(item) = state
         .base_items
         .iter()
-        .find(|item| item.id == id && matches!(item.source, StoreSource::Qos { .. }))
+        .find(|item| item.id == id && matches!(item.source, StoreSource::Tilo { .. }))
         .cloned()
     {
         state.details.insert(id.to_string(), item.clone());
@@ -500,7 +500,7 @@ fn send_tracked(
     status_line: &str,
     query: Option<String>,
     detail: Option<StoreItem>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     operation_error: Option<String>,
 ) -> bool {
     snapshots
@@ -568,7 +568,7 @@ fn moderation_registry(
 fn send_moderation_result(
     state: &State,
     snapshots: &mpsc::Sender<Snapshot>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
     success: &str,
 ) -> bool {
@@ -606,7 +606,7 @@ fn send_moderation_result(
 fn send_moderation_submission_result(
     state: &State,
     snapshots: &mpsc::Sender<Snapshot>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
     success: &str,
 ) -> bool {
@@ -657,7 +657,7 @@ fn collect_items(
     host: Option<&app_host::client::BlockingClient>,
 ) -> Vec<StoreItem> {
     let registries = load_registries().registries;
-    let installed_qos = host
+    let installed_tilo = host
         .and_then(|host| host.list().ok())
         .unwrap_or_default()
         .into_iter()
@@ -668,25 +668,25 @@ fn collect_items(
             ..crate::installed::InstalledEntry::default()
         })
         .collect::<Vec<_>>();
-    let mut qos_items = Vec::new();
+    let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
         match crate::registry_client::fetch_entries(registry) {
-            Ok(entries) => qos_items.extend(
+            Ok(entries) => tilo_items.extend(
                 entries
                     .iter()
-                    .map(|entry| qos_to_store_item(entry, &registry.name, &installed_qos)),
+                    .map(|entry| tilo_to_store_item(entry, &registry.name, &installed_tilo)),
             ),
             Err(error) => tracing::warn!("registry {} refresh failed: {error}", registry.name),
         }
     }
     // The Store's action surface is also the recovery path for software that
-    // is already here. Never make installed qOS apps vanish merely because a
+    // is already here. Never make installed Tilo apps vanish merely because a
     // configured registry is offline or no longer carries an older package.
     // Catalogue rows win whenever present because they carry the signed
     // download/update metadata; these local rows intentionally cannot update.
-    for installed in &installed_qos {
-        if !qos_items.iter().any(|item| item.id == installed.id) {
-            qos_items.push(installed_qos_to_store_item(installed));
+    for installed in &installed_tilo {
+        if !tilo_items.iter().any(|item| item.id == installed.id) {
+            tilo_items.push(installed_tilo_to_store_item(installed));
         }
     }
     let mut flatpak_items = crate::flathub_client::fetch_popular(200)
@@ -711,7 +711,7 @@ fn collect_items(
         flatpak_items.insert(0, reference.clone().into_store_item(version));
     }
     tracing::debug!("{}", registries_summary(&registries));
-    merge(qos_items, flatpak_items)
+    merge(tilo_items, flatpak_items)
 }
 
 fn registries_summary(registries: &[RegistryConfig]) -> String {

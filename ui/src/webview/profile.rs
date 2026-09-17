@@ -1,5 +1,5 @@
 //! Lightweight instrumentation for the `WebView` pipeline. Off by default;
-//! enabled by setting `QOS_WEBVIEW_PROFILE` in the environment.
+//! enabled by setting `TILO_WEBVIEW_PROFILE` in the environment.
 //!
 //! What it measures, from the engine thread and the widget:
 //!  * **frame throughput** — inter-frame intervals → frames/sec,
@@ -11,7 +11,7 @@
 //!    size/rect mismatch (a stretched or mispositioned frame) is visible.
 //!
 //! A summary prints to stderr every [`SUMMARY_EVERY`] frames and once
-//! more when the process exits. With `QOS_WEBVIEW_PROFILE=trace` the
+//! more when the process exits. With `TILO_WEBVIEW_PROFILE=trace` the
 //! first [`TRACE_FRAMES`] frames and draws are logged individually — the
 //! fast path to diagnosing a visual glitch.
 //!
@@ -39,7 +39,7 @@ static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 #[inline]
 pub fn enabled() -> bool {
     static INIT: OnceLock<()> = OnceLock::new();
-    INIT.get_or_init(|| match std::env::var("QOS_WEBVIEW_PROFILE") {
+    INIT.get_or_init(|| match std::env::var("TILO_WEBVIEW_PROFILE") {
         Ok(v) if !v.is_empty() && v != "0" => {
             ENABLED.store(true, Ordering::Relaxed);
             if v == "trace" {

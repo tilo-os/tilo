@@ -3,10 +3,10 @@
 //! Measures each of the toolkit's five frame passes (`sync`, `build_layout`,
 //! `apply_layout`, `draw`, `handle_event` — see [`crate::widget::Widget`]) so
 //! frame cost can be **read off, not guessed**. Three surfaces share one type
-//! ([`FrameTiming`]): an in-app HUD (`QOS_PROFILE=1`, hooked into
+//! ([`FrameTiming`]): an in-app HUD (`TILO_PROFILE=1`, hooked into
 //! [`crate::app::App`]'s render loop with no per-app code), a machine-readable
-//! dump (`QOS_PROFILE_OUT=<path>`, JSON-lines or CSV, plus a `tracing` event
-//! under `qos::profile` per frame), and a headless perf harness
+//! dump (`TILO_PROFILE_OUT=<path>`, JSON-lines or CSV, plus a `tracing` event
+//! under `tilo::profile` per frame), and a headless perf harness
 //! ([`run_scenario`]) that drives a scripted [`PerfScenario`] through the
 //! app's **real** widget passes with no GPU or display and returns a
 //! [`PerfReport`] a test can assert on.
@@ -106,7 +106,7 @@ impl DumpWriter {
                 header_written: false,
             }),
             Err(e) => {
-                eprintln!("QOS_PROFILE_OUT: cannot open {}: {e}", path.display());
+                eprintln!("TILO_PROFILE_OUT: cannot open {}: {e}", path.display());
                 None
             }
         }
@@ -246,14 +246,14 @@ impl FrameProfiler {
         }
     }
 
-    /// `QOS_PROFILE` (non-empty) turns on the in-app HUD;
-    /// `QOS_PROFILE_OUT=<path>` appends a per-frame dump (CSV when the path
+    /// `TILO_PROFILE` (non-empty) turns on the in-app HUD;
+    /// `TILO_PROFILE_OUT=<path>` appends a per-frame dump (CSV when the path
     /// ends in `.csv`, JSON-lines otherwise); either alone enables profiling.
     /// Deliberately **not** gated on `debug_assertions`: the point of a
     /// profiler is to measure release builds, where frame cost matters.
     pub fn from_env() -> Option<Self> {
-        let hud = std::env::var_os("QOS_PROFILE").is_some_and(|v| !v.is_empty());
-        let out = std::env::var_os("QOS_PROFILE_OUT").filter(|v| !v.is_empty());
+        let hud = std::env::var_os("TILO_PROFILE").is_some_and(|v| !v.is_empty());
+        let out = std::env::var_os("TILO_PROFILE_OUT").filter(|v| !v.is_empty());
         if !hud && out.is_none() {
             return None;
         }
@@ -322,7 +322,7 @@ impl FrameProfiler {
             c.push(sample);
         }
         tracing::debug!(
-            target: "qos::profile",
+            target: "tilo::profile",
             frame = sample.frame,
             t_us = sample.t_us,
             sync_us = sample.sync_us,

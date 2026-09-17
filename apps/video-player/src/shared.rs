@@ -6,8 +6,8 @@
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
-use qos_actions::{Action, ActionContext, ActionError, ActionRegistry, Doc, ExecutionLocus};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{Action, ActionContext, ActionError, ActionRegistry, Doc, ExecutionLocus};
 
 pub const ACTION_TYPE: &str = "video-player.shared-action";
 const PLAYLIST_PREFIX: &str = "video-player.shared.playlist:";
@@ -327,7 +327,7 @@ impl SharedAction {
 }
 
 pub fn history_context(action: &SharedAction) -> ActionContext {
-    let mut context = ActionContext::for_action("dev.qos.video-player", "Video Player", action);
+    let mut context = ActionContext::for_action("dev.tilo.video-player", "Video Player", action);
     let (label, id, kind) = match action {
         SharedAction::CreatePlaylist { id, .. } => (
             "Create playlist",
@@ -381,7 +381,7 @@ pub fn history_context(action: &SharedAction) -> ActionContext {
         ),
     };
     context.action_label = label.into();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id,
         kind: kind.into(),
         label: label.into(),

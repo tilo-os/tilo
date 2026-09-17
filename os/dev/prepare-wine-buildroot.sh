@@ -6,19 +6,19 @@ set -euo pipefail
 case "$(uname -m)" in x86_64|i686|i386) ;; *) echo 'native x86 buildroot required' >&2; exit 1;; esac
 case "${WINE_TARGET:?}" in x86_64|i686) ;; *) exit 1;; esac
 test ! -e /wine-source-check
-mkdir -p /wine-source-check /usr/lib/qos
-python3 /qos/wine_rpm_contract.py source /wine-source /qos/wine-source.json
+mkdir -p /wine-source-check /usr/lib/tilo
+python3 /tilo/wine_rpm_contract.py source /wine-source /tilo/wine-source.json
 # Source installation extracts the verified spec and sources; it does not run
 # %prep, %build or foreign binary-package scriptlets.
 rpm -i --define '_topdir /wine-source-check' /wine-source/wine-11.0-3.fc44.src.rpm
-python3 /qos/wine_rpm_contract.py spec /wine-source-check/SPECS/wine.spec /qos/wine-source.json
-build_dist=$(python3 /qos/wine_rpm_contract.py setting dist /qos/wine-source.json)
+python3 /tilo/wine_rpm_contract.py spec /wine-source-check/SPECS/wine.spec /tilo/wine-source.json
+build_dist=$(python3 /tilo/wine_rpm_contract.py setting dist /tilo/wine-source.json)
 # builddep's conditional flags apply to SPEC files, not to SRPM inputs.
 # Do not use --skip-unavailable, --nodeps, or remove any BuildRequires.
 dnf5 builddep -y --without=new_wow64 --define="_target_cpu $WINE_TARGET" \
     --define="dist $build_dist" \
     --spec /wine-source-check/SPECS/wine.spec
 rpmspec --target "$WINE_TARGET" --without new_wow64 --define "dist $build_dist" -q --buildrequires \
-    /wine-source-check/SPECS/wine.spec | LC_ALL=C sort -u > /usr/lib/qos/wine-buildrequires.txt
-python3 /qos/wine_rpm_contract.py record-buildroot "$WINE_TARGET" /qos/wine-source.json
+    /wine-source-check/SPECS/wine.spec | LC_ALL=C sort -u > /usr/lib/tilo/wine-buildrequires.txt
+python3 /tilo/wine_rpm_contract.py record-buildroot "$WINE_TARGET" /tilo/wine-source.json
 # Publish this complete root by OCI digest. No Wine compilation occurs here.
