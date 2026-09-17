@@ -36,6 +36,33 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def read_bounded(path, limit):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor)
+        require(stat.S_ISREG(before.st_mode) and before.st_size <= limit, 'bounded regular input required')
+        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            data = stream.read(limit + 1)
+        after = os.fstat(descriptor)
+        require(len(data) <= limit and (before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
+                (after.st_size, after.st_mtime_ns, after.st_ctime_ns), 'input changed or exceeds size bound')
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def strict_json(data):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, 'duplicate JSON key')
+            result[key] = value
+        return result
+    def invalid_constant(_):
+        raise ValueError('nonfinite JSON value')
+    return json.loads(data, object_pairs_hook=pairs, parse_constant=invalid_constant)
+
+
 def file_hash(path, limit):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -62,7 +89,8 @@ def dependency_inputs(repo, assets, architecture, epoch, buildroot):
             int(epoch) <= 253402300799, 'invalid dependency epoch')
     require(bool(re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@' + DIGEST, buildroot)),
             'immutable WPE buildroot required')
-    script = (repo / RECIPES[1]).read_text()
+    recipes = {name: read_bounded(repo / name, 2 * 1024 * 1024) for name in RECIPES}
+    script = recipes[RECIPES[1]].decode()
     pinned = []
     for variable in ('LIBWPE', 'FDO', 'WPEWK'):
         names = re.findall(r'^' + variable + r'=([a-z0-9.-]+\.tar\.xz)$', script, re.MULTILINE)
@@ -73,7 +101,7 @@ def dependency_inputs(repo, assets, architecture, epoch, buildroot):
         pinned.append({'name': names[0], 'sha256': actual})
     return dict(schema=1, purpose=PURPOSE, architecture=architecture, epoch=epoch,
                 wpe_buildroot=buildroot,
-                recipes={name: file_hash(repo / name, 2 * 1024 * 1024) for name in RECIPES},
+                recipes={name: sha(data) for name, data in recipes.items()},
                 assets=sorted(pinned, key=lambda value: value['name']))
 
 
@@ -102,7 +130,7 @@ def validate_receipt(receipt, inputs):
 def manifest_identity(raw, config_raw, reference, architecture):
     require(len(raw) <= 4 * 1024 * 1024 and len(config_raw) <= 4 * 1024 * 1024, 'metadata too large')
     require(reference.rsplit('@', 1)[-1] == 'sha256:' + sha(raw), 'registry manifest digest mismatch')
-    manifest, config = json.loads(raw), json.loads(config_raw)
+    manifest, config = strict_json(raw), strict_json(config_raw)
     require(manifest.get('schemaVersion') == 2 and 'manifests' not in manifest and
             manifest.get('mediaType') in ('application/vnd.oci.image.manifest.v1+json',
                                          'application/vnd.docker.distribution.manifest.v2+json'),
@@ -116,7 +144,10 @@ def manifest_identity(raw, config_raw, reference, architecture):
 
 
 def command(*arguments):
-    return subprocess.check_output(arguments, stderr=None)
+    try:
+        return subprocess.check_output(arguments, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError:
+        raise ValueError('external verification command failed') from None
 
 
 def native_host(architecture):
@@ -128,7 +159,7 @@ def native_host(architecture):
 
 
 def inspect_local(reference, architecture, expected_id=None):
-    images = json.loads(command('podman', '--remote=false', 'image', 'inspect', reference))
+    images = strict_json(command('podman', '--remote=false', 'image', 'inspect', reference))
     require(isinstance(images, list) and len(images) == 1, 'one local image required')
     image = images[0]
     identity = 'sha256:' + image.get('Id', '').removeprefix('sha256:')
@@ -148,10 +179,11 @@ def mounted(identity):
         require(path.is_absolute() and path.is_dir(), 'invalid image mount')
         yield path
     except BaseException:
-        subprocess.run(['podman', '--remote=false', 'image', 'unmount', identity], check=False)
+        subprocess.run(['podman', '--remote=false', 'image', 'unmount', identity], check=False,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         raise
     else:
-        subprocess.run(['podman', '--remote=false', 'image', 'unmount', identity], check=True)
+        command('podman', '--remote=false', 'image', 'unmount', identity)
 
 
 def payload_identity(root, architecture):
@@ -175,8 +207,8 @@ def payload_identity(root, architecture):
 
 
 def registry_identity(reference, architecture):
-    return manifest_identity(command('skopeo', 'inspect', '--raw', 'docker://' + reference),
-                             command('skopeo', 'inspect', '--config', 'docker://' + reference),
+    return manifest_identity(command('skopeo', 'inspect', '--tls-verify=true', '--raw', 'docker://' + reference),
+                             command('skopeo', 'inspect', '--tls-verify=true', '--config', '--raw', 'docker://' + reference),
                              reference, architecture)
 
 
@@ -187,7 +219,7 @@ def import_stage(receipt, inputs):
     reference = receipt['reference']
     config = registry_identity(reference, architecture)
     require(config == receipt['config_digest'], 'receipt config differs')
-    command('podman', '--remote=false', 'pull', '--platform=linux/' + ARCHES[architecture][0], reference)
+    command('podman', '--remote=false', 'pull', '--tls-verify=true', '--platform=linux/' + ARCHES[architecture][0], reference)
     identity = inspect_local(reference, architecture, config)
     with mounted(identity) as root:
         require(payload_identity(root, architecture) == receipt.get('payload'), 'completed payload differs')
@@ -210,8 +242,8 @@ def _export_stage(identity, inputs, jobs, revision, run_id, attempt):
     tag = repository(architecture) + f':candidate-{revision}-{run_id}-{attempt}'
     with tempfile.TemporaryDirectory(prefix='tilo-wpe-export-') as temporary:
         digest_path = Path(temporary) / 'manifest.digest'
-        command('podman', '--remote=false', 'push', '--digestfile', str(digest_path), identity, 'docker://' + tag)
-        digest = digest_path.read_text().strip()
+        command('podman', '--remote=false', 'push', '--tls-verify=true', '--digestfile', str(digest_path), identity, 'docker://' + tag)
+        digest = read_bounded(digest_path, 128).decode().strip()
         require(bool(re.fullmatch(DIGEST, digest)), 'push did not return manifest digest')
         receipt['reference'] = repository(architecture) + '@' + digest
     receipt['config_digest'] = registry_identity(receipt['reference'], architecture)
@@ -234,10 +266,22 @@ def build_export(args):
     require(bool(re.fullmatch('[0-9a-f]{40}', args.revision or '')), 'source revision required')
     for value in (args.run_id, args.attempt):
         require(bool(re.fullmatch('[1-9][0-9]*', value or '')), 'CI run identity required')
+    verify_source(args.repo, args.revision)
     identity = _build_stage(args)
+    verify_source(args.repo, args.revision)
     require(dependency_inputs(args.repo, args.assets, args.architecture, args.epoch, args.wpe) == inputs,
             'dependency inputs changed during compilation')
     return _export_stage(identity, inputs, args.jobs, args.revision, args.run_id, args.attempt)
+
+
+def verify_source(repo, revision):
+    require(command('git', '-C', str(repo), 'rev-parse', 'HEAD').decode().strip() == revision,
+            'producer checkout revision differs')
+    require(Path(command('git', '-C', str(repo), 'rev-parse', '--show-toplevel').decode().strip()).resolve()
+            == repo.resolve(), 'producer repository root differs')
+    command('git', '-C', str(repo), 'ls-files', '--error-unmatch', *RECIPES)
+    require(not command('git', '-C', str(repo), 'status', '--porcelain', '--untracked-files=no').strip(),
+            'producer tracked checkout is dirty')
 
 
 def main():
@@ -257,12 +301,12 @@ def main():
     try:
         inputs = dependency_inputs(args.repo, args.assets, args.architecture, args.epoch, args.wpe)
         if args.mode == 'import':
-            require(args.receipt is not None and args.receipt.stat().st_size <= 65536, 'bounded receipt required')
-            print(import_stage(json.loads(args.receipt.read_text()), inputs))
+            require(args.receipt is not None, 'bounded receipt required')
+            print(import_stage(strict_json(read_bounded(args.receipt, 65536)), inputs))
         else:
             print(json.dumps(build_export(args), sort_keys=True, indent=2))
-    except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as error:
-        parser.exit(1, f'WPE stage artifact: {error}\n')
+    except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError):
+        parser.exit(1, 'WPE stage artifact: input validation or artifact operation failed\n')
 
 
 if __name__ == '__main__':

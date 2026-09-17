@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -119,7 +120,8 @@ class WpeArtifactTests(unittest.TestCase):
     def test_producer_exports_only_id_from_same_build_and_rechecks_inputs(self):
         args = SimpleNamespace(repo=self.repo, assets=self.assets, architecture='x86_64',
             epoch='0', wpe=self.buildroot, jobs=6, revision='a' * 40, run_id='42', attempt='1')
-        with patch.object(wpe, '_build_stage', return_value=self.identity) as build, \
+        with patch.object(wpe, 'verify_source'), \
+             patch.object(wpe, '_build_stage', return_value=self.identity) as build, \
              patch.object(wpe, '_export_stage', return_value=self.receipt) as export:
             self.assertEqual(wpe.build_export(args), self.receipt)
             build.assert_called_once_with(args)
@@ -127,11 +129,55 @@ class WpeArtifactTests(unittest.TestCase):
         def changed(_):
             (self.repo / 'os/Containerfile').write_text('changed while building')
             return self.identity
-        with patch.object(wpe, '_build_stage', side_effect=changed), \
+        with patch.object(wpe, 'verify_source'), patch.object(wpe, '_build_stage', side_effect=changed), \
              patch.object(wpe, '_export_stage') as export:
             with self.assertRaises(ValueError):
                 wpe.build_export(args)
             export.assert_not_called()
+
+    def test_bounded_regular_reads_and_strict_json(self):
+        path = self.repo / 'receipt.json'
+        path.write_bytes(b'x' * 20)
+        with self.assertRaises(ValueError):
+            wpe.read_bounded(path, 10)
+        link = self.repo / 'link'
+        link.symlink_to(path)
+        with self.assertRaises(OSError):
+            wpe.read_bounded(link, 30)
+        for value in ('{"schema":1,"schema":2}', '{"nested":{"x":1,"x":2}}', '{"x":NaN}'):
+            with self.assertRaises(ValueError):
+                wpe.strict_json(value)
+        script = self.repo / 'os/dev/build-wpe.sh'
+        script.write_bytes(b'x' * (2 * 1024 * 1024 + 1))
+        with self.assertRaises(ValueError):
+            self.dependencies()
+
+    def test_registry_uses_raw_config_and_explicit_tls(self):
+        with patch.object(wpe, 'command', side_effect=[self.manifest, self.config]) as command:
+            self.assertEqual(wpe.registry_identity(self.reference, 'x86_64'), self.identity)
+        self.assertEqual(command.call_args_list[0].args,
+            ('skopeo', 'inspect', '--tls-verify=true', '--raw', 'docker://' + self.reference))
+        self.assertEqual(command.call_args_list[1].args,
+            ('skopeo', 'inspect', '--tls-verify=true', '--config', '--raw', 'docker://' + self.reference))
+
+    def test_failed_tool_diagnostics_are_not_exposed(self):
+        with patch.object(wpe.subprocess, 'check_output', side_effect=
+                subprocess.CalledProcessError(1, ['SECRET'], stderr=b'PRIVATE AUTH')) as command:
+            with self.assertRaisesRegex(ValueError, '^external verification command failed$'):
+                wpe.command('tool', 'argument')
+            self.assertEqual(command.call_args.kwargs['stderr'], subprocess.PIPE)
+
+    def test_source_revision_and_dirty_checkout_rejected(self):
+        revision = 'a' * 40
+        good = [revision.encode(), str(self.repo).encode(), b'tracked', b'']
+        with patch.object(wpe, 'command', side_effect=good):
+            wpe.verify_source(self.repo, revision)
+        with patch.object(wpe, 'command', return_value=b'wrong'):
+            with self.assertRaises(ValueError):
+                wpe.verify_source(self.repo, revision)
+        with patch.object(wpe, 'command', side_effect=good[:3] + [b' M file']):
+            with self.assertRaises(ValueError):
+                wpe.verify_source(self.repo, revision)
 
     def test_export_rejects_incomplete_payload_before_publication(self):
         with patch.object(wpe, 'native_host'), \
