@@ -19,6 +19,9 @@ ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
 
 
 def validate(args):
+    jobs = getattr(args, 'jobs', 2)
+    if type(jobs) is not int or not 1 <= jobs <= 64:
+        raise ValueError('WPE jobs must be an integer from 1 through 64')
     if args.architecture not in ARCHITECTURES:
         raise ValueError('unsupported WPE architecture')
     if (not re.fullmatch(r'0|[1-9][0-9]{0,11}', args.epoch)
@@ -44,7 +47,7 @@ def build_command(args, iidfile):
             '--build-arg', f'BASE_REF={args.base}', '--build-arg', f'RPMS_REF={args.rpms}',
             '--build-arg', f'KERNEL_RPMS_REF={args.kernel}', '--build-arg', f'WPE_BUILDROOT_REF={args.wpe}',
             '--build-arg', f'SOURCE_DATE_EPOCH={args.epoch}',
-            '--build-arg', 'WPE_BUILD_JOBS=2', '--build-arg', 'TILO_WITH_BROWSER=1',
+            '--build-arg', f'WPE_BUILD_JOBS={getattr(args, "jobs", 2)}', '--build-arg', 'TILO_WITH_BROWSER=1',
             '-f', str(args.repo / 'os/Containerfile'), str(args.repo)]
 
 
@@ -81,6 +84,7 @@ def prepare(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--jobs', type=int, default=2)
     for name in ('architecture', 'epoch', 'cache', 'base', 'rpms', 'kernel', 'wpe'):
         parser.add_argument('--' + name, required=True)
     for name in ('repo', 'assets'):
