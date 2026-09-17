@@ -45,7 +45,20 @@ set -euo pipefail
 REPO="${REPO:-/build}"
 BIN_DIR="${BIN_DIR:-/out}"
 STORE="${STORE:-/usr/share/tilo-apps}"
-STAGE="${STAGE:-$(mktemp -d)}"
+owned_stage=0
+if [ -z "${STAGE:-}" ]; then
+    STAGE=$(mktemp -d)
+    owned_stage=1
+fi
+# The default stage contains an ephemeral private publisher key. Remove it
+# before this RUN commits a layer, including on failure. Explicit caller-owned
+# stages remain the caller's responsibility and must never be deleted here.
+cleanup_stage() {
+    local status=$?
+    if [ "$owned_stage" = 1 ]; then rm -rf -- "$STAGE"; fi
+    exit "$status"
+}
+trap cleanup_stage EXIT
 IDENTITY_JSON="${IDENTITY_JSON:-$STAGE/publisher.json}"
 PUBKEY_OUT="${PUBKEY_OUT:-}"
 PKG_BIN="${PKG_BIN:-$BIN_DIR/tilo-pkg}"
