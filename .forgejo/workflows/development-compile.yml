@@ -36,8 +36,9 @@ jobs:
     runs-on: runner-disk-100g
     # Leave evidence-cleanup headroom inside the existing 180-minute runner cap.
     # This is a limit, not an estimate of full compilation duration.
-    # Cache-only includes tools image setup, then bounded compiler probes.
-    timeout-minutes: ${{ inputs.mode == 'cache-only' && 30 || 170 }}
+    # A literal job bound is required by the repository timeout policy.
+    # The selected operation below separately bounds cache-only tools/probes.
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -62,6 +63,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Run selected cache proof or full compilation
+        timeout-minutes: ${{ inputs.mode == 'cache-only' && 30 || 165 }}
         env:
           COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
