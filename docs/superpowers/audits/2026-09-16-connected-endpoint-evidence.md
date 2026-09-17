@@ -25,6 +25,8 @@ The Windows actual-backend `cargo +1.97.1 check --tests --target x86_64-pc-windo
 
 Fix verification: 42 host tests passed; strict production lint passed for host, Linux and Windows targets; Linux test compilation passed. The final broader Windows test compilation passed in 1.21 seconds with the same ten existing harness warnings. Windows hard-link, directory-stream and ACL fixtures were added but remain unrun. The frozen `native-fix1-harness` snapshot awaits native execution. None of these cfg checks establishes native support.
 
+A subsequent full-workspace integration check, `cargo +1.97.1 check -p imager --tests --offline`, exited 101 before reaching Imager. Five errors in concurrently modified `ui/src/render_thread.rs` refer to missing `Observer::log_native_config`, `log_native_worker`, and `log_native_present` methods. Retained log: `task-2-fix-1-full-imager-check.log`. The narrow endpoint checks therefore must not be presented as a verified complete app build. Shared UI changes were left intact.
+
 ## Outstanding delivery gates
 
 - Source findings 1–4 are fixed and independently re-reviewed; full Task 2 remains unaccepted because the native implementation/evidence gates below are outstanding.
