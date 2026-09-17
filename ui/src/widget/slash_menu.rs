@@ -41,6 +41,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
@@ -528,7 +529,7 @@ impl SlashMenu {
             true,
         );
 
-        let font_size = tokens.typography.scale.sm;
+        let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         // The armed row's ink is resolved against the accent it sits on, the
         // same way `Popover` and `Dropdown` do; `text_primary` is only legible
         // there on a dark theme.

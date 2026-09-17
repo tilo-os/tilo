@@ -23,7 +23,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
@@ -1703,21 +1703,16 @@ const WHEEL_LINE_PX: f64 = 60.0;
 
 /// Theme type sizes already carry the accessibility text scale, and the
 /// renderer applies that same scale once more inside `draw_text`/`measure`.
-/// Feed the size-based renderer APIs this renderer-relative size so the
-/// multiplier lands exactly once; it is the size-only twin of
-/// [`TextRenderer::renderer_input_style`]. The immediate-mode data widgets
-/// share it from here.
-pub(crate) fn renderer_type_size(text_renderer: &TextRenderer, resolved: f32) -> f32 {
-    text_renderer
-        .renderer_input_style(&TextStyle::new(resolved))
-        .size
-}
+/// The size-only twin of [`TextRenderer::renderer_input_style`], defined in
+/// [`crate::text_metrics`]; re-exported here for the immediate-mode data
+/// widgets that learned it from this module.
+pub(crate) use crate::text_metrics::renderer_type_size;
 
-/// Top edge that centres a measured text box of `text_h` in a band starting
-/// at `band_y0` with height `band_h`. Text taller than the band starts at the
-/// band's top rather than bleeding into the row above.
+/// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text
+/// taller than the band starts at the band's top rather than bleeding into
+/// the row above, which the unclamped rule would let it do.
 pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
-    band_y0 + ((band_h - f64::from(text_h)) / 2.0).max(0.0)
+    crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
 }
 
 /// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for

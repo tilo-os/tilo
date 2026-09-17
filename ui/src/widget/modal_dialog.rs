@@ -14,6 +14,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::color_compat::ColorCompat;
 use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::presence::PresenceCtx;
@@ -394,7 +395,7 @@ fn draw_action_button(
     } else {
         theme.tokens.colors.text_primary
     };
-    let text_size = theme.tokens.typography.scale.sm;
+    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     // Centre on the measured line in both axes — the width was already
     // measured; the height was the font size, which sat the label low.
     let (text_w, text_h) = text_renderer.measure(label, text_size, None);
@@ -536,9 +537,11 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             &box_shape,
         );
 
-        let title_size = theme.tokens.typography.scale.lg;
+        let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
         let title_x = self.rect.x0 + f64::from(theme.tokens.spacing.s4);
-        let title_y = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
+        // Centre the title on its measured line box, not the font size.
+        let (_, title_h) = text_renderer.measure(&self.title, title_size, None);
+        let title_y = centered_text_top(self.rect.y0, TITLE_BAR_HEIGHT, f64::from(title_h));
         text_renderer.draw_text(
             scene,
             &self.title,
