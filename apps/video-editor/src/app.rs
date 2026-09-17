@@ -7547,7 +7547,12 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Mix)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    let want = y - r.inspector.y0 - 22.0;
+                    // The fixed identity card is outside the scroll viewport.
+                    // Anchoring from the pane's outer edge put the MIX heading
+                    // beneath that card on a compact screen, producing a
+                    // mysterious partial control at the seam.  The viewport
+                    // is the first pixel the user can actually read.
+                    let want = y - self.inspector_viewport(r).y0 - 22.0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
                 // …with the keyboard cursor on the button that puts the lane
@@ -7695,7 +7700,7 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Curves)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    let want = y - r.inspector.y0 - 22.0;
+                    let want = y - self.inspector_viewport(r).y0 - 22.0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
             }
@@ -7743,9 +7748,11 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Key)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    // Land the header a little below the panel's top edge:
-                    // flush against it, its own row is clipped.
-                    let want = y - r.inspector.y0 - 22.0;
+                    // Land the header below the *scroll viewport* edge. The
+                    // fixed identity card occupies the panel's top edge; using
+                    // it here made the heading and its label scroll beneath
+                    // the card on narrow screens.
+                    let want = y - self.inspector_viewport(r).y0 - 22.0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
             }
@@ -30594,6 +30601,34 @@ mod tests {
             moved.0 <= noise.0.max(64),
             "and the picture is the same picture: {}",
             moved.1,
+        );
+    }
+
+    /// Scenario anchors must use the scroll viewport, not the outer pane.
+    /// The latter includes the fixed clip identity card; on a phone it placed
+    /// the requested CHROMA KEY heading behind that card and exposed only an
+    /// unlabeled lower half of the preceding slider.
+    #[test]
+    fn key_and_mask_capture_starts_below_the_fixed_inspector_header() {
+        let theme = Theme::light();
+        let (w, h) = (720u32, 820u32);
+        let mut doc = AutoCommit::new();
+        let mut app = VideoEditorApp::new_for_shot(ShotScenario::KeyAndMask);
+        app.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let r = app.prepare_draw_frame(&theme);
+        let view = app.inspector_viewport(&r);
+        let key = app
+            .inspector_layout(&r)
+            .sections
+            .iter()
+            .find(|(section, _)| *section == Section::Key)
+            .map(|(_, rect)| *rect)
+            .expect("the staged key-and-mask capture includes the key section");
+        assert!(
+            key.y0 >= view.y0 + 16.0,
+            "the requested heading is fully visible below the fixed header: {key:?} in {view:?}"
         );
     }
 

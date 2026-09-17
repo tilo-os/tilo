@@ -322,7 +322,7 @@ impl ExportDialog {
         scene.pop_layer();
     }
 
-    /// The Cancel / Export 3.0 / Export 4.0 buttons (part of [`Self::draw`]).
+    /// The Cancel / vCard 3.0 / vCard 4.0 buttons (part of [`Self::draw`]).
     fn draw_footer_buttons(
         &self,
         scene: &mut Scene,
@@ -337,11 +337,11 @@ impl ExportDialog {
                 .style(ButtonStyle::Neutral)
                 .hovered(geometry.cancel.contains(pointer))
                 .focused(self.focused == ExportFocus::Cancel),
-            ButtonFace::new(geometry.export_v3, "Export 3.0")
+            ButtonFace::new(geometry.export_v3, "vCard 3.0")
                 .style(ButtonStyle::Neutral)
                 .hovered(geometry.export_v3.contains(pointer))
                 .focused(self.focused == ExportFocus::ExportV3),
-            ButtonFace::new(geometry.export_v4, "Export 4.0")
+            ButtonFace::new(geometry.export_v4, "vCard 4.0")
                 .primary()
                 .hovered(geometry.export_v4.contains(pointer))
                 .focused(self.focused == ExportFocus::ExportV4),
