@@ -34,6 +34,17 @@ class RetentionTests(unittest.TestCase):
         self.assertEqual(retain.receipt_digest(self.receipt),
                          retain.receipt_digest(dict(reversed(list(self.receipt.items())))))
 
+    def test_remote_manifest_binds_original_configuration_before_signing(self):
+        image_id = self.receipt['raw_rootfs_id']
+        manifest = {'schemaVersion': 2, 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
+                    'config': {'digest': image_id, 'mediaType': 'application/vnd.oci.image.config.v1+json'}}
+        retain.verify_manifest(json.dumps(manifest), image_id)
+        for changed in (manifest | {'config': manifest['config'] | {'digest': 'sha256:' + 'd' * 64}},
+                        manifest | {'mediaType': 'application/vnd.oci.image.index.v1+json'},
+                        manifest | {'config': None}, {'schemaVersion': 2}):
+            with self.subTest(manifest=changed), self.assertRaises(ValueError):
+                retain.verify_manifest(json.dumps(changed), image_id)
+
     def test_mismatched_or_overclaiming_handoff_rejected(self):
         for field, value in [('revision', 'd' * 40), ('architecture', 'aarch64'),
                              ('public_manifest_sha256', 'e' * 64), ('target_update_ref', self.target + '-other'),
