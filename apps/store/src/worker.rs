@@ -15,6 +15,7 @@ use crate::app::ReportEnvelope;
 use crate::config::{RegistryConfig, load_registries};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
+use crate::search_provider::StoreSearchIndex;
 use crate::sources::{
     flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
     installed_tilo_to_store_item, merge, tilo_to_store_item,
@@ -89,13 +90,13 @@ impl StoreWorker {
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; there is no fallible path back through the root widget constructor to report it, and no live app to hand back without a worker"
     )]
-    pub fn spawn(opened_ref: Option<FlatpakRef>) -> Self {
+    pub fn spawn(opened_ref: Option<FlatpakRef>, search_index: StoreSearchIndex) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
         std::thread::Builder::new()
             .name("store-worker".into())
-            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref))
+            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref, search_index))
             .expect("spawn store worker");
         Self {
             requests: request_tx,
@@ -152,12 +153,17 @@ struct State {
     remotes: Vec<Remote>,
     searches: LruMap<String, Vec<StoreItem>>,
     details: LruMap<String, StoreItem>,
+    /// The current palette/action directory. Rebuilding it is linear in a
+    /// catalogue snapshot, so it belongs on this serialized worker rather
+    /// than in the UI's snapshot-drain loop.
+    search_index: StoreSearchIndex,
 }
 
 fn run(
     requests: &mpsc::Receiver<QueuedRequest>,
     snapshots: &mpsc::Sender<Snapshot>,
     opened_ref: Option<FlatpakRef>,
+    search_index: StoreSearchIndex,
 ) {
     let staging = crate::actions::qpkg_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
@@ -175,6 +181,7 @@ fn run(
         remotes: Vec::new(),
         searches: LruMap::new(CACHE_CAP),
         details: LruMap::new(CACHE_CAP),
+        search_index,
     };
     refresh(&mut state);
     if !send(
@@ -336,6 +343,7 @@ fn handle(
                     (message.clone(), None, Some(message))
                 }
             };
+            state.search_index.sync(&state.base_items);
             snapshots
                 .send(Snapshot {
                     items: state.base_items.clone(),
@@ -503,6 +511,10 @@ fn send_tracked(
     invocation: Option<tilo_actions::InvocationId>,
     operation_error: Option<String>,
 ) -> bool {
+    // Update the exact directory the visible snapshot will use before handing
+    // it to the UI. Search catalogues may be large; paying this cost here
+    // prevents refreshes from delaying input, painting, or a screen reader.
+    state.search_index.sync(&items);
     snapshots
         .send(Snapshot {
             items,
@@ -589,6 +601,7 @@ fn send_moderation_result(
             (message.clone(), None, Some(message))
         }
     };
+    state.search_index.sync(&state.base_items);
     snapshots
         .send(Snapshot {
             items: state.base_items.clone(),
@@ -625,6 +638,7 @@ fn send_moderation_submission_result(
             (message.clone(), Some(message))
         }
     };
+    state.search_index.sync(&state.base_items);
     snapshots
         .send(Snapshot {
             items: state.base_items.clone(),
@@ -792,7 +806,7 @@ mod tests {
 
     #[test]
     fn request_and_drain_are_non_blocking() {
-        let worker = StoreWorker::spawn(None);
+        let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
         let started = std::time::Instant::now();
         assert!(worker.request(Request::Search("editor".into())));
         assert!(started.elapsed() < Duration::from_millis(50));
