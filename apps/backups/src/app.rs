@@ -53,6 +53,11 @@ struct DrawContext<'a> {
     theme: &'a Theme,
 }
 
+struct RecentActivityLabels<'a> {
+    when: &'a str,
+    action: &'a str,
+}
+
 const BAR_H: f64 = 52.0;
 const PAD: f64 = 20.0;
 const RAIL_W: f64 = 256.0;
@@ -1600,6 +1605,29 @@ impl BackupsApp {
         );
     }
 
+    fn draw_rail_frame(&self, scene: &mut Scene, t: Affine, theme: &Theme, rail: Rect) {
+        let colors = &theme.tokens.colors;
+        if self.drawer.is_overlay() {
+            paint::card(
+                scene,
+                t,
+                rail,
+                14.0,
+                colors.surfaces.raised,
+                ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 51),
+            );
+        } else {
+            paint::card(
+                scene,
+                t,
+                rail,
+                14.0,
+                colors.surfaces.raised.with_alpha_factor(0.45),
+                ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
+            );
+        }
+    }
+
     fn draw_rail(
         &mut self,
         scene: &mut Scene,
@@ -1614,25 +1642,7 @@ impl BackupsApp {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rail);
         // A translucent card when docked (matches the panel), a solid surface
         // when the drawer floats over content in overlay mode.
-        if self.drawer.is_overlay() {
-            paint::card(
-                scene,
-                t,
-                rail,
-                14.0,
-                c.surfaces.raised,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
-            );
-        } else {
-            paint::card(
-                scene,
-                t,
-                rail,
-                14.0,
-                c.surfaces.raised.with_alpha_factor(0.45),
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            );
-        }
+        self.draw_rail_frame(scene, t, theme, rail);
         let pad = 14.0;
         let mut y = rail.y0 + 14.0;
         paint::text(scene, tr, t, "SOURCES", 10.5, c.text_dim, rail.x0 + pad, y);
@@ -2757,8 +2767,10 @@ impl BackupsApp {
                     ry,
                     row_h,
                     event,
-                    &when,
-                    &action,
+                    &RecentActivityLabels {
+                        when: &when,
+                        action: &action,
+                    },
                 );
             }
             if i + 1 < events.len() && ry + row_h * 2.0 <= region.y1 - 8.0 {
@@ -2840,8 +2852,7 @@ impl BackupsApp {
         ry: f64,
         row_h: f64,
         event: &Snapshot,
-        when: &str,
-        action: &str,
+        labels: &RecentActivityLabels<'_>,
     ) {
         let scene = &mut *ctx.scene;
         let tr = &mut *ctx.text;
@@ -2860,7 +2871,7 @@ impl BackupsApp {
             scene,
             tr,
             t,
-            when,
+            labels.when,
             12.5,
             c.text_primary,
             region.x0 + 36.0,
@@ -2870,7 +2881,7 @@ impl BackupsApp {
             scene,
             tr,
             t,
-            action,
+            labels.action,
             12.0,
             c.text_dim,
             region.x0 + 168.0,
@@ -2991,7 +3002,25 @@ impl BackupsApp {
             self.hits.push((card, Hit::Dest(d.id.clone())));
         }
 
-        // Aggregate bar across the bottom.
+        let ay = top + rows_used as f64 * (ch + row_gap) + 10.0;
+        self.draw_destination_capacity(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            content,
+            ay,
+        );
+    }
+
+    fn draw_destination_capacity(&self, ctx: &mut DrawContext<'_>, content: Rect, y: f64) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let colors = &theme.tokens.colors;
         let used: u64 = self.catalog.destinations.iter().map(|d| d.used_bytes).sum();
         let total: u64 = self
             .catalog
@@ -2999,25 +3028,28 @@ impl BackupsApp {
             .iter()
             .map(|d| d.total_bytes)
             .sum();
-        let ay = top + rows_used as f64 * (ch + row_gap) + 10.0;
         paint::text_bold(
             scene,
             tr,
             t,
             "Total capacity",
             13.5,
-            c.text_primary,
+            colors.text_primary,
             content.x0,
-            ay,
+            y,
         );
-        let bar = Rect::new(content.x0, ay + 24.0, content.x1, ay + 38.0);
+        let bar = Rect::new(content.x0, y + 24.0, content.x1, y + 38.0);
         paint::bar(
             scene,
             t,
             bar,
-            used as f64 / total as f64,
+            if total == 0 {
+                0.0
+            } else {
+                used as f64 / total as f64
+            },
             theme.accent_primary,
-            c.neutral[2],
+            colors.neutral[2],
         );
         paint::text(
             scene,
@@ -3030,13 +3062,13 @@ impl BackupsApp {
                 self.catalog.destinations.len()
             ),
             11.5,
-            c.text_dim,
+            colors.text_dim,
             content.x0,
-            ay + 44.0,
+            y + 44.0,
         );
 
         // Distribution: where the snapshots actually live.
-        self.draw_dest_distribution(scene, t, tr, theme, content, ay + 76.0);
+        self.draw_dest_distribution(scene, t, tr, theme, content, y + 76.0);
     }
 
     fn dest_color(theme: &Theme, id: &str) -> Color {
@@ -3679,7 +3711,22 @@ impl BackupsApp {
             row.y0 + 32.0 * scale,
         );
 
-        // Stepper: [-]  value  [+]
+        self.draw_schedule_stepper(ctx, row, field, value, scale);
+    }
+
+    fn draw_schedule_stepper(
+        &mut self,
+        ctx: &mut DrawContext<'_>,
+        row: Rect,
+        field: PolicyField,
+        value: u32,
+        scale: f64,
+    ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let colors = &theme.tokens.colors;
         let cy = row.center().y;
         let plus = Rect::new(
             row.x1 - 44.0 * scale,
@@ -3722,7 +3769,7 @@ impl BackupsApp {
             t,
             &format!("{value}"),
             20.0,
-            c.text_primary,
+            colors.text_primary,
             valx0 - 8.0 * scale,
             plus.x0,
             cy - 12.0 * scale,
