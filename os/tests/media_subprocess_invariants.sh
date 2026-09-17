@@ -9,6 +9,7 @@ RUNTIME="$ROOT/crates/media/src/audio_runtime.rs"
 OCR="$ROOT/crates/media/ocr/src/lib.rs"
 SETTINGS_AUDIO="$ROOT/apps/settings/src/panes/audio.rs"
 NOTIFICATION_SOUND="$ROOT/crates/media/src/notification_sound.rs"
+SHELL_CAPTURE="$ROOT/shell/src/compositor/audio_capture.rs"
 
 fails=0
 checks=0
@@ -49,6 +50,14 @@ must_contain "$NOTIFICATION_SOUND" 'bounded_command::run_prepared' \
     "notification audio does not use descendant-cleaning bounded execution"
 must_not_contain "$NOTIFICATION_SOUND" '\.spawn\(\)|child\.kill\(\)' \
     "notification audio contains direct-child-only execution"
+must_contain "$SHELL_CAPTURE" 'bounded_command::run_prepared' \
+    "screen-recording probes need bounded subprocess execution"
+must_not_contain "$SHELL_CAPTURE" '\.output\(\)|\.status\(\)' \
+    "screen-recording probes contain unbounded command execution"
+must_contain "$SHELL_CAPTURE" '\.process_group\(0\)' \
+    "long-lived screen audio capture needs isolated process ownership"
+must_contain "$SHELL_CAPTURE" 'libc::kill\(group, libc::SIGKILL\)' \
+    "screen audio teardown must remove recorder descendants"
 
 if [ "$fails" -gt 0 ]; then
     echo "media subprocess invariants: $fails failed, $checks passed" >&2
