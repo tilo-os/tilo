@@ -2994,7 +2994,7 @@ impl FileExplorerWidget {
                 self.nearby_send.open_picker();
                 true
             }
-            FileCommand::SendNearby { device } => {
+            FileCommand::SendNearby { target } => {
                 let Some(path) = self.nearby_send_path.clone().or_else(|| {
                     let mut selected = self.selected_paths().into_iter();
                     let only = selected.next()?;
@@ -3004,7 +3004,7 @@ impl FileExplorerWidget {
                     return true;
                 };
                 self.status = Some(t("files-nearby-queueing"));
-                self.nearby_send.send(&path, device);
+                self.nearby_send.send(&path, target);
                 true
             }
             FileCommand::DecideNearby {
@@ -5804,7 +5804,7 @@ impl FileExplorerWidget {
                 || {},
             ));
             commands.push(Some(FileCommand::SendNearby {
-                device: target.device,
+                target: target.handle,
             }));
         }
         menu.open_at([self.last_cursor.x as f32, self.last_cursor.y as f32]);
@@ -7292,7 +7292,7 @@ impl FileExplorerWidget {
                 .iter()
                 .filter(|target| target.online)
             {
-                let action_id = format!("send-nearby-{}", hex_prefix(&target.device, 6));
+                let action_id = format!("send-nearby-{}", hex_prefix(target.handle.as_bytes(), 6));
                 resource.actions.push(
                     ActionSpec::operation(
                         action_id,
@@ -7302,7 +7302,7 @@ impl FileExplorerWidget {
                         ),
                         OperationKind::Effect,
                         "files.nearby-send",
-                        &(resource_id.clone(), target.device),
+                        &(resource_id.clone(), target.handle),
                     )
                     .expect("exact nearby target payload is serializable")
                     .with_contract(ActionContract {
@@ -8341,7 +8341,7 @@ impl Widget for FileExplorerWidget {
                 }
             }
             (OperationKind::Effect, "files.nearby-send") => {
-                let (resource_id, device): (String, [u8; 32]) =
+                let (resource_id, handle): (String, ui::collaboration::NearbyTargetHandle) =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 let target = self
                     .visible_entry_path(&resource_id)
@@ -8350,12 +8350,12 @@ impl Widget for FileExplorerWidget {
                     .nearby_send
                     .targets()
                     .iter()
-                    .any(|target| target.device == device && target.online)
+                    .any(|target| target.handle == handle && target.online)
                 {
                     return Err("nearby device is no longer available".into());
                 }
                 self.nearby_send_path = Some(target.clone());
-                self.nearby_send.send(&target, device);
+                self.nearby_send.send(&target, handle);
                 self.status = Some(t("files-nearby-queueing"));
             }
             (OperationKind::Effect, "files.rename") => {
