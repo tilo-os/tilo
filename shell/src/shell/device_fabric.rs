@@ -407,6 +407,16 @@ pub enum PersonalFabricAction {
     RemoteCaptureChunk {
         chunk: crate::shell::remote_capture_device::RemoteCaptureChunk,
     },
+    /// Shell-owned liveness/RTT probe. The random nonce is bound to the exact
+    /// authenticated peer and is never exposed through an app contract.
+    DeviceHealthProbe {
+        nonce: [u8; 16],
+    },
+    /// Power is diagnostic routing context, never authorization. Latency is
+    /// deliberately absent because the probing compositor measures it.
+    DeviceHealthReport {
+        report: crate::shell::spatial_calibration::DeviceHealthReport,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -736,6 +746,16 @@ impl PersonalFabricActionEnvelope {
                     && !chunk.valid_for(RemoteCaptureKind::Microphone)
                     && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
                 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::DeviceHealthProbe { nonce } => {
+                if nonce == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::DeviceHealthReport { report } => {
+                if !report.valid() {
                     return Err(FabricError::InvalidAction);
                 }
             }
