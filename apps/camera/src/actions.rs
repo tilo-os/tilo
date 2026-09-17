@@ -15,8 +15,8 @@
 //!
 //! Capturing a photo/video (the frame write is device I/O), media-library
 //! management (owned by Photos or Video Player), and the live preview are
-//! external effects. The selected shot, recent-captures scroll, zoom, and an
-//! open chooser are presentation-only.
+//! external effects. The one recent handoff, zoom, and an open chooser are
+//! presentation-only.
 //!
 //! ## Determinism contract
 //!
@@ -45,10 +45,9 @@ use crate::model::{
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
 pub const CAMERA_OPERATION_TYPE: &str = "camera.operation";
 pub const APPLICATION_LAUNCH_TYPE: &str = "tilo.application.launch";
-/// The open-resource snapshot is contextual, not a dump of a 10,000-item
-/// camera roll. Exact/search results outside this page remain addressable via
-/// [`resolve_resource`].
-pub const MAX_CONTEXT_CAPTURE_RESOURCES: usize = 96;
+/// Device discovery is external and potentially hostile. Publishing a small,
+/// deterministic prefix keeps resource/search materialization bounded.
+pub const MAX_PUBLISHED_CAMERA_DEVICES: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraOperation {
@@ -67,12 +66,18 @@ pub enum CameraOperation {
     SelectCamera {
         device: String,
     },
-    Share {
-        id: String,
-    },
-    Delete {
-        id: String,
-    },
+    /// Choose an existing image through the system portal and scan it without
+    /// importing or browsing a Camera-owned media library.
+    ImportCodeImage,
+    CaptureDocumentPage,
+    RotateDocumentPage,
+    RecognizeDocumentPage,
+    CopyDocumentText,
+    ExportDocument,
+    BeginDocumentCrop,
+    MoveDocumentPageEarlier,
+    MoveDocumentPageLater,
+    RemoveDocumentPage,
 }
 
 /// Decode one Camera effect payload, declining operation types owned by other
@@ -108,9 +113,8 @@ pub enum CameraAction {
         label: String,
         facing: Facing,
     },
-    /// Remove a published capture from the shared capture index. Blob bytes
-    /// are content-addressed and may remain referenced elsewhere; this action
-    /// removes only this resource's canonical metadata row.
+    /// Legacy history payload retained only so old documents fail honestly;
+    /// media removal belongs to Photos or Video Player.
     RemoveCapture {
         id: String,
     },
@@ -150,10 +154,8 @@ pub enum CameraAction {
     SetDefaultFacing {
         facing: Facing,
     },
-    /// Star / unstar a capture by id (its file name). The pixels live on
-    /// disk (external); only the collaborative "favorited" bit is this action.
-    /// Explicit (`on`) rather than a toggle so a delete can also clear the flag
-    /// unconditionally, and so replay is a plain deterministic set.
+    /// Legacy payload retained for old action history. New Camera surfaces do
+    /// not publish or apply media-library favorite management.
     SetFavorite {
         id: String,
         on: bool,
@@ -182,7 +184,7 @@ impl Action for CameraAction {
                 dur_ms,
                 label,
                 facing,
-            } => doc::register_shared_capture(
+            } => doc::register_recent_capture(
                 doc,
                 &ROOT,
                 &doc::SharedCapture {
@@ -198,8 +200,10 @@ impl Action for CameraAction {
                 },
             )
             .map_err(ActionError::Refused)?,
-            CameraAction::RemoveCapture { id } => {
-                doc::remove_shared_capture(doc, &ROOT, id).map_err(ActionError::Refused)?;
+            CameraAction::RemoveCapture { .. } => {
+                return Err(ActionError::Refused(
+                    "Camera no longer removes media; use Photos or Video Player".into(),
+                ));
             }
             CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
             CameraAction::SetFacing { facing } => doc::write_facing(doc, &ROOT, *facing),
@@ -218,11 +222,10 @@ impl Action for CameraAction {
             CameraAction::SetDefaultFacing { facing } => {
                 doc::set_default_facing(doc, &ROOT, *facing);
             }
-            CameraAction::SetFavorite { id, on } => {
-                // An empty id is never produced by our own builder; no-op.
-                if !id.is_empty() {
-                    doc::set_favorite(doc, &ROOT, id, *on);
-                }
+            CameraAction::SetFavorite { .. } => {
+                return Err(ActionError::Refused(
+                    "Camera no longer manages favorites; use Photos".into(),
+                ));
             }
             CameraAction::RecordScan { raw, ts } => {
                 doc::record_scan(doc, &ROOT, raw, *ts).map_err(ActionError::Refused)?;
@@ -258,13 +261,6 @@ pub fn encode(action: &CameraAction) -> Result<EncodedAction, ActionError> {
 // affordances (see `crate::app`) and the Ctrl+K resource tree below.
 // ===========================================================================
 
-pub fn set_favorite_action(id: &str, on: bool) -> CameraAction {
-    CameraAction::SetFavorite {
-        id: id.to_string(),
-        on,
-    }
-}
-
 pub fn record_scan_action(raw: &str, ts: i64) -> CameraAction {
     CameraAction::RecordScan {
         raw: raw.to_string(),
@@ -276,26 +272,27 @@ pub fn record_scan_action(raw: &str, ts: i64) -> CameraAction {
 // Resource tree
 // ===========================================================================
 
-/// One capture surfaced as a resource: its id (file name), a one-line
-/// label, its current favorite state, and whether it is a video. Everything
+/// One recent capture surfaced as a handoff resource: its id (file name), a
+/// one-line label, and whether it is a video. Everything
 /// here is derived from state the app already holds; nothing is fabricated.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureItem {
     pub id: String,
     pub label: String,
-    pub favorite: bool,
     pub is_video: bool,
     /// A verified portable still-image identity, when the bytes have been
     /// published. It is intentionally not a local path.
     pub media_id: Option<String>,
 }
 
-/// The presentation context Camera hands [`provide_resources`]: recent capture
-/// items currently in the library cache (itself re-projected from disk / the
-/// sample source, with favorite state from the document).
-#[derive(Debug, Clone)]
+/// The compact presentation context Camera hands [`provide_resources`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this is a compact immutable availability snapshot for typed resources"
+)]
 pub struct CameraResourceCtx {
-    pub items: Vec<CaptureItem>,
+    pub recent: Option<CaptureItem>,
     pub mode: CaptureMode,
     pub facing: Facing,
     pub recording: bool,
@@ -309,12 +306,18 @@ pub struct CameraResourceCtx {
     pub camera_devices: Vec<String>,
     pub selected_camera: Option<String>,
     pub settings: Settings,
+    pub scan_import_pending: bool,
+    pub document_scanner_available: bool,
+    pub document_pages: usize,
+    pub document_selected: usize,
+    pub document_busy: bool,
+    pub document_has_text: bool,
 }
 
 impl Default for CameraResourceCtx {
     fn default() -> Self {
         Self {
-            items: Vec::new(),
+            recent: None,
             mode: CaptureMode::Photo,
             facing: Facing::Back,
             recording: false,
@@ -323,6 +326,12 @@ impl Default for CameraResourceCtx {
             camera_devices: Vec::new(),
             selected_camera: None,
             settings: Settings::default(),
+            scan_import_pending: false,
+            document_scanner_available: false,
+            document_pages: 0,
+            document_selected: 0,
+            document_busy: false,
+            document_has_text: false,
         }
     }
 }
@@ -409,16 +418,16 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
     child
 }
 
-/// Build Camera's contextual resource tree: recent captures with one typed
-/// handoff action per verified portable capture. Photos owns still-media
+/// Build Camera's contextual resource tree: one recent capture with a typed
+/// handoff action when verified and portable. Photos owns still-media
 /// library operations; Video Player owns recorded-video operations.
 #[allow(
     clippy::too_many_lines,
-    reason = "recent captures and settings are Camera's two resource roots; keeping their complete, typed action inventory together makes the palette contract auditable"
+    reason = "capture, scanner, document, and settings are Camera's bounded resource roots; keeping their complete typed inventory together makes the contract auditable"
 )]
 pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut navigation = Resource::new("camera", "camera", "Camera");
-    for screen in [Screen::Camera, Screen::Scanner, Screen::Settings] {
+    for screen in Screen::ALL {
         if let Ok(spec) = ActionSpec::operation(
             format!("open-{}", screen.as_str()),
             format!("Open {}", screen.label()),
@@ -429,7 +438,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             navigation = navigation.with_action(spec);
         }
     }
-    let mut root = Resource::new("camera.captures", "camera.captures", "Captures");
+    let mut root = Resource::new("camera.capture", "camera.capture", "Capture");
     if let Ok(spec) = ActionSpec::operation(
         "capture",
         "Capture photo",
@@ -473,7 +482,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             root = root.with_action(spec);
         }
         if ctx.camera_devices.len() > 1 {
-            for device in &ctx.camera_devices {
+            for device in ctx.camera_devices.iter().take(MAX_PUBLISHED_CAMERA_DEVICES) {
                 let label = if ctx.selected_camera.as_deref() == Some(device.as_str()) {
                     format!("Use {device} (selected)")
                 } else {
@@ -549,7 +558,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    for it in ctx.items.iter().take(MAX_CONTEXT_CAPTURE_RESOURCES) {
+    if let Some(it) = &ctx.recent {
         root = root.with_child(capture_resource(it));
     }
     let mut settings = Resource::new("camera.settings", "camera.settings", "Capture settings");
@@ -669,23 +678,122 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    // Keep the first capture for callers that scope Ctrl+K to the current
-    // media collection, then expose navigation as its own searchable root.
-    vec![root, settings, navigation]
+    let mut scanner = Resource::new("camera.scanner", "camera.scanner", "Code scanner");
+    if let Ok(spec) = ActionSpec::operation(
+        "import-image",
+        "Scan existing image",
+        OperationKind::Effect,
+        CAMERA_OPERATION_TYPE,
+        &CameraOperation::ImportCodeImage,
+    ) {
+        scanner = scanner.with_action(if ctx.scan_import_pending {
+            spec.unavailable("picker_open", "An image picker is already open")
+        } else {
+            spec
+        });
+    }
+
+    let mut document = Resource::new(
+        "camera.document-scanner",
+        "camera.document-scanner",
+        "Document scanner",
+    );
+    let document_actions = [
+        (
+            "capture-page",
+            "Capture document page",
+            CameraOperation::CaptureDocumentPage,
+            ctx.document_scanner_available,
+        ),
+        (
+            "rotate-page",
+            "Rotate selected page",
+            CameraOperation::RotateDocumentPage,
+            ctx.document_pages > 0,
+        ),
+        (
+            "recognize-text",
+            "Recognize text on selected page",
+            CameraOperation::RecognizeDocumentPage,
+            ctx.document_pages > 0,
+        ),
+        (
+            "copy-text",
+            "Copy recognized text",
+            CameraOperation::CopyDocumentText,
+            ctx.document_has_text,
+        ),
+        (
+            "export-pdf",
+            "Export searchable PDF",
+            CameraOperation::ExportDocument,
+            ctx.document_pages > 0,
+        ),
+        (
+            "crop-page",
+            "Crop selected page",
+            CameraOperation::BeginDocumentCrop,
+            ctx.document_pages > 0,
+        ),
+        (
+            "move-page-earlier",
+            "Move selected page earlier",
+            CameraOperation::MoveDocumentPageEarlier,
+            ctx.document_pages > 0 && ctx.document_selected > 0,
+        ),
+        (
+            "move-page-later",
+            "Move selected page later",
+            CameraOperation::MoveDocumentPageLater,
+            ctx.document_pages > 0 && ctx.document_selected + 1 < ctx.document_pages,
+        ),
+        (
+            "remove-page",
+            "Remove selected page",
+            CameraOperation::RemoveDocumentPage,
+            ctx.document_pages > 0,
+        ),
+    ];
+    for (id, label, operation, available) in document_actions {
+        let kind = if operation == CameraOperation::BeginDocumentCrop {
+            OperationKind::View
+        } else {
+            OperationKind::Effect
+        };
+        if let Ok(spec) = ActionSpec::operation(id, label, kind, CAMERA_OPERATION_TYPE, &operation)
+        {
+            document = document.with_action(if ctx.document_busy {
+                spec.unavailable("document_busy", "Wait for the current document task")
+            } else if available {
+                spec
+            } else if operation == CameraOperation::CaptureDocumentPage {
+                spec.unavailable("no_scanner", "Connect or select a document scanner first")
+            } else {
+                spec.unavailable("no_selected_page", "Capture and select a page first")
+            });
+        }
+    }
+    vec![root, scanner, document, settings, navigation]
 }
 
-/// Resolve a stable capture/root id independently of the bounded contextual
-/// snapshot. Search and agents use this to reach an exact older capture
-/// without forcing every camera-roll row into Ctrl+K on every frame.
+/// Resolve a stable root or the single recent-capture handoff independently
+/// of the bounded contextual snapshot. Camera never enumerates a roll.
 pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    if matches!(id, "camera.captures" | "camera.settings" | "camera") {
+    if matches!(
+        id,
+        "camera.capture"
+            | "camera.scanner"
+            | "camera.document-scanner"
+            | "camera.settings"
+            | "camera"
+    ) {
         return provide_resources(ctx, doc)
             .into_iter()
             .find(|resource| resource.id.as_str() == id);
     }
-    ctx.items
-        .iter()
-        .find_map(|item| (id == capture_resource_id(item)).then(|| capture_resource(item)))
+    ctx.recent
+        .as_ref()
+        .and_then(|item| (id == capture_resource_id(item)).then(|| capture_resource(item)))
 }
 
 impl ResourceProvider for crate::app::CameraApp {
@@ -702,8 +810,7 @@ impl ResourceProvider for crate::app::CameraApp {
 mod tests {
     use super::*;
     use crate::app::CameraApp;
-    use automerge::transaction::Transactable;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::ActionInput;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -713,7 +820,7 @@ mod tests {
     }
 
     /// A hermetic Camera app with its sample captures synced into a fresh
-    /// document. The sample set carries both photos and videos, some favorited.
+    /// document. The sample set exposes one contextual recent handoff.
     fn seeded() -> (CameraApp, AutoCommit) {
         let mut app = CameraApp::sample();
         let mut doc = AutoCommit::new();
@@ -721,35 +828,23 @@ mod tests {
         (app, doc)
     }
 
-    /// Ctrl+K on Camera yields the capture tree: a `camera.captures` root with a
-    /// `camera.photo` / `camera.video` child per shot, each exporting only
-    /// the typed handoff to its owning app. Drives the real resource hook.
+    /// Camera publishes capture/scanner/settings operations plus at most one
+    /// contextual handoff, never a media library management surface.
     #[test]
-    fn ctrl_k_publishes_the_capture_tree() {
+    fn published_resources_respect_camera_ownership() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
         assert!(
             resources.len() >= 3,
-            "captures, settings, navigation, and any declared handoff controls"
+            "capture, scanner, document scanner, settings, and navigation"
         );
         let captures = resources
             .iter()
-            .find(|resource| resource.id.as_str() == "camera.captures")
-            .expect("captures root");
-        assert_eq!(captures.kind, "camera.captures");
-        assert!(!captures.children.is_empty(), "the sample has captures");
-
-        let photo = captures
-            .children
-            .iter()
-            .find(|r| r.kind == "camera.photo")
-            .expect("a photo resource");
-        let video = captures
-            .children
-            .iter()
-            .find(|r| r.kind == "camera.video")
-            .expect("a video resource");
-        for (resource, app_id) in [(photo, "dev.tilo.photos"), (video, "dev.tilo.video-player")] {
+            .find(|resource| resource.id.as_str() == "camera.capture")
+            .expect("capture root");
+        assert_eq!(captures.kind, "camera.capture");
+        assert!(captures.children.len() <= 1);
+        for resource in &captures.children {
             let action = resource
                 .actions
                 .iter()
@@ -770,81 +865,26 @@ mod tests {
             };
             let payload: serde_json::Value =
                 serde_json::from_slice(&encoded.payload).expect("handoff payload JSON");
-            assert_eq!(payload["app_id"], app_id);
+            assert!(matches!(
+                payload["app_id"].as_str(),
+                Some("dev.tilo.photos" | "dev.tilo.video-player")
+            ));
             assert!(
                 payload["content_hash"]
                     .as_str()
                     .is_some_and(|hash| hash.len() == 64)
             );
         }
-    }
-
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn favorite_action_records_one_undo_boundary_and_reverts() {
-        let (_app, seeded_doc) = seeded();
-        let mut state = ui::State::new();
-        state.doc = seeded_doc;
-
-        // A sample shot that starts unfavorited (see `sample_captures`).
-        let id = "c2";
-        assert!(!doc::read_favorites(&state.doc, &ROOT).contains(id));
-        let before_heads = state.doc.get_heads();
-
-        let action = set_favorite_action(id, true);
-        let encoded = encode(&action).unwrap();
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
+        let ids: Vec<_> = resources
+            .iter()
+            .map(|resource| resource.id.as_str())
+            .collect();
+        assert!(ids.contains(&"camera.scanner"));
+        assert!(ids.contains(&"camera.document-scanner"));
+        assert!(ids.contains(&"camera.settings"));
         assert!(
-            doc::read_favorites(&state.doc, &ROOT).contains(id),
-            "the action favorited the shot"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert!(
-            !doc::read_favorites(&state.doc, &ROOT).contains(id),
-            "undo reverted the favorite and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded favorite on a
-    /// second independent replica (from the same base state) lands on the
-    /// byte-identical document — same head hashes, not merely the same values.
-    #[test]
-    fn favorite_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = set_favorite_action("c5", true);
-        let encoded = encode(&action).unwrap();
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            doc::read_favorites(&b, &ROOT).contains("c5"),
-            "the favorite landed on the peer too"
+            !ids.iter()
+                .any(|id| id.contains("gallery") || id.contains("library"))
         );
     }
 
@@ -921,61 +961,28 @@ mod tests {
             tilo_actions::apply_local(&mut a, &action, encode(&action).unwrap()).unwrap();
         tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
-        let captures = doc::read_shared_captures(&b, &ROOT);
-        assert_eq!(captures.len(), 1);
-        assert_eq!(captures[0].id, "IMG_peer.jpg");
-        assert!(crate::media::is_media_id(&captures[0].media_id));
+        let capture = doc::read_recent_capture(&b, &ROOT).expect("recent handoff");
+        assert_eq!(capture.id, "IMG_peer.jpg");
+        assert!(crate::media::is_media_id(&capture.media_id));
     }
 
     #[test]
-    fn published_capture_removal_replays_without_touching_blob_bytes() {
-        let media_id = crate::media::store(b"portable camera bytes").unwrap();
-        let mut a = AutoCommit::new();
-        doc::init_defaults(&mut a, &ROOT, Screen::Camera);
-        let register = CameraAction::RegisterCapture {
-            id: "IMG_remove.jpg".into(),
-            media_id: media_id.clone(),
-            kind: crate::model::CaptureKind::Photo,
-            ts: 42,
-            w: 64,
-            h: 48,
-            dur_ms: 0,
-            label: "Remove me".into(),
-            facing: Facing::Back,
-        };
-        tilo_actions::apply_local(&mut a, &register, encode(&register).unwrap()).unwrap();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let remove = CameraAction::RemoveCapture {
-            id: "IMG_remove.jpg".into(),
-        };
-        let envelope =
-            tilo_actions::apply_local(&mut a, &remove, encode(&remove).unwrap()).unwrap();
-        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
-        assert!(doc::read_shared_captures(&a, &ROOT).is_empty());
-        assert!(doc::read_shared_captures(&b, &ROOT).is_empty());
-        assert_eq!(
-            crate::media::read(&media_id).as_deref(),
-            Some(b"portable camera bytes".as_slice())
-        );
-    }
-
-    #[test]
-    fn oversized_capture_index_is_an_explicit_action_refusal() {
+    fn legacy_media_management_actions_are_decodable_but_refused() {
         let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(&ROOT, "captures", automerge::ObjType::List)
-            .expect("capture list");
-        for index in 0..=2_000 {
-            doc.insert(&list, index, "legacy row")
-                .expect("legacy capture row");
-        }
         let action = CameraAction::RemoveCapture {
             id: "IMG_refuse.jpg".into(),
         };
-
         assert!(matches!(
             action.apply(&mut doc),
-            Err(ActionError::Refused(message)) if message.contains("safety limit")
+            Err(ActionError::Refused(message)) if message.contains("Photos or Video Player")
+        ));
+        let favorite = CameraAction::SetFavorite {
+            id: "IMG_refuse.jpg".into(),
+            on: true,
+        };
+        assert!(matches!(
+            favorite.apply(&mut doc),
+            Err(ActionError::Refused(message)) if message.contains("Photos")
         ));
     }
 
@@ -1031,13 +1038,12 @@ mod tests {
     fn device_effects_are_honest_and_unverified_captures_publish_no_action() {
         let resources = provide_resources(
             &CameraResourceCtx {
-                items: vec![CaptureItem {
+                recent: Some(CaptureItem {
                     id: "IMG_1.jpg".into(),
                     label: "Capture".into(),
-                    favorite: false,
                     is_video: false,
                     media_id: None,
-                }],
+                }),
                 ..CameraResourceCtx::default()
             },
             &AutoCommit::new(),
@@ -1106,31 +1112,22 @@ mod tests {
     }
 
     #[test]
-    fn contextual_capture_page_is_bounded_and_late_items_resolve_exactly() {
-        let items: Vec<CaptureItem> = (0..MAX_CONTEXT_CAPTURE_RESOURCES + 2)
-            .map(|index| CaptureItem {
-                id: format!("IMG_{index:04}.jpg"),
-                label: format!("Capture {index}"),
-                favorite: index % 2 == 0,
-                is_video: false,
-                media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, index)),
-            })
-            .collect();
+    fn capture_surface_exposes_at_most_one_recent_handoff() {
         let ctx = CameraResourceCtx {
-            items,
+            recent: Some(CaptureItem {
+                id: "IMG_latest.jpg".into(),
+                label: "Latest capture".into(),
+                is_video: false,
+                media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
+            }),
             ..CameraResourceCtx::default()
         };
         let doc = AutoCommit::new();
         let page = provide_resources(&ctx, &doc);
-        assert_eq!(page[0].children.len(), MAX_CONTEXT_CAPTURE_RESOURCES);
-
-        let late_id = format!(
-            "camera.photo:IMG_{:04}.jpg",
-            MAX_CONTEXT_CAPTURE_RESOURCES + 1
-        );
-        let late = resolve_resource(&ctx, &doc, &late_id).expect("late capture resolves");
-        assert_eq!(late.id.as_str(), late_id);
-        let open = late
+        assert_eq!(page[0].children.len(), 1);
+        let recent = resolve_resource(&ctx, &doc, "camera.photo:IMG_latest.jpg")
+            .expect("recent capture resolves");
+        let open = recent
             .actions
             .iter()
             .find(|action| action.id == "open")

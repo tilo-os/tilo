@@ -5,12 +5,11 @@
 //! Scanner, and Settings) straight into the Vello scene, hit-testing
 //! its own controls.
 //!
-//! The photo/video library has an optional real file projection (see
-//! [`crate::library`]) backed by verified qdoc media blobs; recent captures
-//! reflects whatever is materialized locally, the shutter writes a PNG, and
-//! delete removes that projection only after its canonical metadata preflight.
-//! The Automerge document (see [`crate::doc`]) holds collaborative metadata —
-//! portable captures, favorites, scan history, and capture preferences. A
+//! A shutter press writes verified media bytes and retains one contextual
+//! recent-capture handoff. Photos and Video Player own collection browsing,
+//! favorites, deletion, and metadata. The Automerge document (see
+//! [`crate::doc`]) holds the recent handoff, scan history, and granular capture
+//! preferences. A
 //! live viewfinder needs a camera; when none is
 //! present the camera/scanner screens say so honestly rather than faking a
 //! feed. The hermetic `--shots` / test path uses a self-contained sample
@@ -54,14 +53,12 @@ use crate::paint as p;
 /// Uniform inset for floating controls from the window edge. The camera is an
 /// immersive, full-bleed app: the viewfinder fills the window edge-to-edge and
 /// every control floats over it at this margin — there is no navigation rail
-/// or sidebar (the OS owns window chrome). Recent captures and Settings are reached
-/// from the viewfinder as a push and an overlay sheet, not as rail items.
+/// or sidebar (the OS owns window chrome). The recent handoff and Settings are
+/// reached directly from the viewfinder.
 const EDGE: f64 = 18.0;
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
-/// Single decoded-size budget for recent-capture thumbnails/previews (one decode
-/// per item, reused across the card, detail preview, and camera library
-/// button).
+/// Single decoded-size budget for the contextual recent-capture preview.
 const THUMB: (u32, u32) = (512, 342);
 /// Below this content width the side panels fold away for a single-column
 /// layout.
@@ -77,9 +74,9 @@ const NAV_BREAKPOINT: f64 = 760.0;
 /// caller can smuggle malformed pixels into an `Image`.
 const MAX_FRAME_PIXELS: u64 = 8_847_360; // 4096 × 2160
 const MAX_FRAME_BYTES: usize = 48 * 1024 * 1024;
-/// Capture thumbnails are decoded lazily, but must not accumulate without bound
-/// while someone scrolls a large camera roll.
-const MAX_THUMB_CACHE: usize = 48;
+/// Keep only the current and immediately superseded thumbnail while an async
+/// recent-capture handoff changes; Camera never owns a browsing cache.
+const MAX_THUMB_CACHE: usize = 2;
 fn white() -> Color {
     Color::from_rgb8(255, 255, 255)
 }
@@ -150,7 +147,7 @@ fn sample_document_image() -> image::DynamicImage {
     image::DynamicImage::ImageRgb8(page)
 }
 
-/// Where the library's pixels live.
+/// Where newly captured pixels are projected.
 enum Storage {
     /// Live: real files under this directory.
     Disk(PathBuf),
@@ -281,9 +278,9 @@ enum Action {
     CycleFacing,
     DismissScan,
     Scan(usize),
-    /// Decode a QR/barcode out of a library photo (used when no camera feed
-    /// is available, so the scanner stays useful offline).
-    ScanLibraryItem(String),
+    /// Choose an existing image through the system portal and scan it without
+    /// turning Camera into a media browser.
+    ImportScanImage,
     CaptureDocument,
     OpenDocumentChoice(DocumentChoice),
     RotateDocument,
@@ -321,8 +318,8 @@ struct TouchTarget {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent, unrelated UI/lifecycle flag (library needs a \
-              rescan, the scan sheet was dismissed, the frame needs a repaint, first sync \
+    reason = "each bool is an independent, unrelated UI/lifecycle flag (the scan sheet was \
+              dismissed, the frame needs a repaint, first sync \
               has run); grouping them would just add a field prefix at every call site in \
               this file with no behavioral benefit"
 )]
@@ -338,14 +335,10 @@ pub struct CameraApp {
     mode: CaptureMode,
     facing: Facing,
     settings: Settings,
-    favorites: HashSet<String>,
     scans: Vec<ScanEntry>,
 
-    // Library (from disk scan or the sample set)
+    // One contextual recent-capture handoff. Camera never owns a media library.
     captures: Vec<Capture>,
-    lib_dirty: bool,
-    library_generation: u64,
-    library_pending: Option<u64>,
 
     // ephemeral UI state
     /// The viewfinder screen the Settings overlay was opened from,
@@ -355,8 +348,6 @@ pub struct CameraApp {
     /// presentation-only: opening the drawer must never move a collaborator
     /// away from their own current camera view.
     navigation: SidebarDrawer,
-    selected_capture: Option<String>,
-    pending_delete: Option<String>,
     scan_dismissed: bool,
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
@@ -371,6 +362,7 @@ pub struct CameraApp {
     scanner_devices: Vec<os_actions::printing::Scanner>,
     selected_scanner: Option<String>,
     document_save_picker: Option<ui::portal::PortalChannel>,
+    scan_image_picker: Option<ui::portal::PortalChannel>,
     document_crop_selection: ui::LocalState<CropSelection>,
     document_crop_editor: Option<ImageCropEditor>,
     document_crop_page: Option<usize>,
@@ -401,6 +393,9 @@ pub struct CameraApp {
     worker: crate::worker::CameraWorker,
     pending_capture: Option<(tilo_actions::InvocationId, u64)>,
     pending_video: Option<(tilo_actions::InvocationId, u64)>,
+    pending_scan_import: Option<tilo_actions::InvocationId>,
+    pending_document_job: Option<tilo_actions::InvocationId>,
+    pending_document_export: Option<tilo_actions::InvocationId>,
     completed_operations: HashMap<tilo_actions::InvocationId, tilo_actions::InvocationUpdate>,
     camera_issue: Option<CameraIssue>,
     selected_camera: Option<String>,
@@ -446,8 +441,8 @@ impl Default for CameraApp {
 }
 
 impl CameraApp {
-    /// The live app: library backed by real files on disk. Opens on the
-    /// viewfinder — the camera's home — with the recent captures a tap away.
+    /// The live app writes captures to the configured directory and opens on
+    /// the viewfinder, with one contextual recent handoff a tap away.
     pub fn disk() -> Self {
         Self::with(Storage::Disk(library::resolve_dir()), Screen::Camera)
     }
@@ -478,20 +473,14 @@ impl CameraApp {
             mode: CaptureMode::Photo,
             facing: Facing::Back,
             settings: Settings::default(),
-            favorites: HashSet::new(),
             scans: Vec::new(),
             captures: Vec::new(),
-            lib_dirty: true,
-            library_generation: 0,
-            library_pending: None,
             return_to: Screen::Camera,
             navigation: SidebarDrawer::new()
                 .left()
                 .docked_width(NAV_WIDTH)
                 .overlay_width(NAV_WIDTH.min(320.0))
                 .breakpoint(NAV_BREAKPOINT),
-            selected_capture: None,
-            pending_delete: None,
             scan_dismissed: false,
             scanned: None,
             scan_gen: (0, 0),
@@ -506,6 +495,7 @@ impl CameraApp {
             scanner_devices,
             selected_scanner,
             document_save_picker: None,
+            scan_image_picker: None,
             document_crop_selection: ui::LocalState::new(CropSelection::default()),
             document_crop_editor: None,
             document_crop_page: None,
@@ -526,6 +516,9 @@ impl CameraApp {
             worker: crate::worker::CameraWorker::new(),
             pending_capture: None,
             pending_video: None,
+            pending_scan_import: None,
+            pending_document_job: None,
+            pending_document_export: None,
             completed_operations: HashMap::new(),
             camera_issue: None,
             selected_camera: None,
@@ -589,7 +582,7 @@ impl CameraApp {
 
         let resource = Self::media_handoff_resource(app_id, label);
         let spec = resource.actions.first()?;
-        ActionBinding::new(&resource, &spec, |content_hash| {
+        ActionBinding::new(&resource, spec, |content_hash| {
             let mut arguments = serde_json::Map::new();
             arguments.insert(
                 "content_hash".into(),
@@ -813,7 +806,9 @@ impl CameraApp {
         #[cfg(feature = "live-capture")]
         {
             if matches!(self.storage, Storage::Disk(_)) {
-                return crate::capture::list_devices();
+                let mut devices = crate::capture::list_devices();
+                devices.truncate(crate::actions::MAX_PUBLISHED_CAMERA_DEVICES);
+                return devices;
             }
         }
         Vec::new()
@@ -867,7 +862,7 @@ impl CameraApp {
             Action::CycleFacing => "camera.facing".into(),
             Action::DismissScan => "camera.dismiss-scan".into(),
             Action::Scan(index) => format!("camera.scan:{index}"),
-            Action::ScanLibraryItem(id) => format!("camera.scan-library:{id}"),
+            Action::ImportScanImage => "camera.scan-image".into(),
             Action::CaptureDocument => "camera.document.capture".into(),
             Action::OpenDocumentChoice(choice) => {
                 format!("camera.document.choice:{}", choice.index())
@@ -972,16 +967,12 @@ impl CameraApp {
                 "Use scanned result".into(),
                 AccessState::new().focusable(true),
             ),
-            Action::ScanLibraryItem(id) => (
+            Action::ImportScanImage => (
                 Role::Button,
-                self.captures
-                    .iter()
-                    .find(|capture| capture.id == *id)
-                    .map_or_else(
-                        || "Scan media".into(),
-                        |capture| format!("Scan {}", capture.label),
-                    ),
-                AccessState::new().focusable(true),
+                "Choose an image to scan".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.scan_image_picker.is_some()),
             ),
             Action::CycleResolution => (
                 Role::Button,
@@ -1209,42 +1200,6 @@ impl CameraApp {
             .with_action_target(Self::a11y_target(action))
     }
 
-    fn request_library_reload(&mut self) {
-        if self.library_pending.is_some() {
-            return;
-        }
-        match &self.storage {
-            Storage::Sample => {
-                self.captures = sample_captures();
-                self.refresh_search_provider();
-                self.lib_dirty = false;
-            }
-            Storage::Disk(dir) => {
-                let Some(generation) = self.library_generation.checked_add(1) else {
-                    self.toast = Some("Library refresh counter exhausted; restart Camera".into());
-                    self.lib_dirty = false;
-                    return;
-                };
-                match self.worker.submit_library(crate::worker::LibraryJob {
-                    generation,
-                    dir: dir.clone(),
-                    favorites: self.favorites.clone(),
-                }) {
-                    Ok(()) => {
-                        self.library_generation = generation;
-                        self.library_pending = Some(generation);
-                    }
-                    Err(error) => {
-                        self.toast = Some(error);
-                        // Avoid spinning on a disconnected worker. A later
-                        // explicit mutation/retry may request another refresh.
-                        self.lib_dirty = false;
-                    }
-                }
-            }
-        }
-    }
-
     /// Dispatch one Camera [`CameraAction`](crate::actions::CameraAction) — the
     /// single mutation path shared with the Ctrl+K palette. The action is applied
     /// through the Tilo action executor (a pinned actor + committed change, so it
@@ -1275,36 +1230,27 @@ impl CameraApp {
             .map_err(|error| error.to_string())
     }
 
-    /// The context Ctrl+K needs to build Camera's resource tree: recent captures
-    /// shots currently in the library cache, with their favorite state. Derived
-    /// entirely from state the app already holds; nothing is fabricated.
+    /// The compact context Ctrl+K needs to build Camera's canonical resources.
     pub(crate) fn camera_resource_ctx(&self) -> crate::actions::CameraResourceCtx {
-        let items = self
-            .captures
-            .iter()
-            .take(crate::actions::MAX_CONTEXT_CAPTURE_RESOURCES)
-            .map(Self::capture_item)
-            .collect();
-        self.camera_resource_ctx_with_items(items)
+        self.camera_resource_ctx_with_recent(self.captures.first().map(Self::capture_item))
     }
 
     fn capture_item(capture: &Capture) -> crate::actions::CaptureItem {
         crate::actions::CaptureItem {
             id: capture.id.clone(),
             label: capture.label.clone(),
-            favorite: capture.favorite,
             is_video: capture.is_video(),
             media_id: capture.media_id.clone(),
         }
     }
 
-    fn camera_resource_ctx_with_items(
+    fn camera_resource_ctx_with_recent(
         &self,
-        items: Vec<crate::actions::CaptureItem>,
+        recent: Option<crate::actions::CaptureItem>,
     ) -> crate::actions::CameraResourceCtx {
         let camera_devices = self.available_camera_devices();
         crate::actions::CameraResourceCtx {
-            items,
+            recent,
             mode: self.mode,
             facing: self.facing,
             recording: self.is_recording(),
@@ -1313,6 +1259,20 @@ impl CameraApp {
             camera_devices,
             selected_camera: self.selected_camera.clone(),
             settings: self.settings,
+            scan_import_pending: self.scan_image_picker.is_some(),
+            document_scanner_available: self.selected_scanner.as_ref().is_some_and(|selected| {
+                self.scanner_devices
+                    .iter()
+                    .any(|scanner| scanner.device == *selected)
+            }),
+            document_pages: self.document_scan.pages.len(),
+            document_selected: self.document_scan.selected,
+            document_busy: self.document_job.is_some(),
+            document_has_text: self
+                .document_scan
+                .pages
+                .get(self.document_scan.selected)
+                .is_some_and(|page| page.ocr.is_some()),
         }
     }
 
@@ -1321,7 +1281,14 @@ impl CameraApp {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        if matches!(id, "camera.captures" | "camera.settings" | "camera") {
+        if matches!(
+            id,
+            "camera.capture"
+                | "camera.scanner"
+                | "camera.document-scanner"
+                | "camera.settings"
+                | "camera"
+        ) {
             return crate::actions::resolve_resource(&self.camera_resource_ctx(), doc, id);
         }
         let (capture_id, expect_video) = id
@@ -1336,12 +1303,13 @@ impl CameraApp {
             .iter()
             .find(|capture| capture.id == capture_id && capture.is_video() == expect_video)
             .map(Self::capture_item)?;
-        crate::actions::resolve_resource(&self.camera_resource_ctx_with_items(vec![item]), doc, id)
+        crate::actions::resolve_resource(&self.camera_resource_ctx_with_recent(Some(item)), doc, id)
     }
 
-    fn refresh_search_provider(&self) {
-        let items: Vec<_> = self.captures.iter().map(Self::capture_item).collect();
-        self.search_provider.sync(&items);
+    fn refresh_search_provider(&mut self) {
+        if let Err(error) = self.search_provider.sync(&self.camera_resource_ctx()) {
+            self.toast = Some(format!("Camera search kept its previous actions: {error}"));
+        }
     }
 
     fn apply(&mut self, action: Action, doc: &mut AutoCommit, root: &ObjId) {
@@ -1360,7 +1328,7 @@ impl CameraApp {
             Action::CycleFacing => self.apply_cycle_facing(doc, root),
             Action::DismissScan => self.scan_dismissed = true,
             Action::Scan(i) => self.apply_scan_action(i, doc, root),
-            Action::ScanLibraryItem(id) => self.scan_library_item(&id, doc, root),
+            Action::ImportScanImage => self.request_scan_image(),
             Action::RetryCamera => self.retry_camera(),
             Action::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
             Action::OpenCameraChooser => self.open_camera_chooser(),
@@ -1701,11 +1669,26 @@ impl CameraApp {
                 self.document_job = None;
                 self.document_job_kind = None;
                 self.toast = Some("Document processing stopped unexpectedly".into());
+                if let Some(invocation) = self.pending_document_job.take() {
+                    self.completed_operations.insert(
+                        invocation,
+                        tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "camera.document_worker_stopped".into(),
+                                message: "Document processing stopped unexpectedly".into(),
+                                details: None,
+                                retryable: true,
+                            },
+                        },
+                    );
+                }
                 return;
             }
         };
         self.document_job = None;
         self.document_job_kind = None;
+        let mut terminal_error = None;
         match result {
             DocumentJobResult::Capture(Ok(image)) => {
                 self.document_scan.add_page(image);
@@ -1713,6 +1696,7 @@ impl CameraApp {
             }
             DocumentJobResult::Capture(Err(error)) => {
                 self.toast = Some(crate::document_scan::capture_error_message(&error).into());
+                terminal_error = Some(("camera.document_capture_failed", error));
             }
             DocumentJobResult::Recognize {
                 page,
@@ -1735,7 +1719,28 @@ impl CameraApp {
             }
             DocumentJobResult::Recognize {
                 result: Err(error), ..
-            } => self.toast = Some(error.user_message().into()),
+            } => {
+                self.toast = Some(error.user_message().into());
+                terminal_error = Some(("camera.document_ocr_failed", error.user_message().into()));
+            }
+        }
+        if let Some(invocation) = self.pending_document_job.take() {
+            let update = terminal_error.map_or_else(
+                || tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                |(code, message)| tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: code.into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            );
+            self.completed_operations.insert(invocation, update);
         }
     }
 
@@ -1806,6 +1811,8 @@ impl CameraApp {
             }
         };
         self.document_save_picker = None;
+        let mut terminal_error = None;
+        let mut cancelled = false;
         match outcome {
             ui::portal::PortalOutcome::Opened(mut path) => {
                 if path.extension().is_none() {
@@ -1819,14 +1826,42 @@ impl CameraApp {
                                 .and_then(|name| name.to_str())
                                 .unwrap_or("scanned document")
                         ),
-                        Err(error) => format!("Could not save document: {error}"),
+                        Err(error) => {
+                            terminal_error = Some(error.to_string());
+                            format!("Could not save document: {error}")
+                        }
                     },
                 );
             }
-            ui::portal::PortalOutcome::Cancelled => {}
+            ui::portal::PortalOutcome::Cancelled => cancelled = true,
             ui::portal::PortalOutcome::Failed(error) => {
                 self.toast = Some(format!("Could not open save location: {error}"));
+                terminal_error = Some(error);
             }
+        }
+        if let Some(invocation) = self.pending_document_export.take() {
+            let update = if cancelled {
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("document export cancelled".into()),
+                }
+            } else if let Some(message) = terminal_error {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "camera.document_export_failed".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                }
+            } else {
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                }
+            };
+            self.completed_operations.insert(invocation, update);
         }
     }
 
@@ -1929,64 +1964,6 @@ impl CameraApp {
         self.cam_view = None;
     }
 
-    /// Delete external pixels only after the bounded canonical-removal
-    /// preflight. This never lets a hostile shared list turn a refused removal
-    /// into irreversible local deletion.
-    fn delete_capture(&mut self, id: &str, doc: &mut AutoCommit) -> Result<(), String> {
-        if !self.captures.iter().any(|capture| capture.id == id) {
-            return Err("the capture no longer exists".into());
-        }
-        doc::can_mutate_shared_captures(doc, &automerge::ROOT)?;
-        if let Storage::Disk(dir) = &self.storage {
-            library::delete(dir, id).map_err(|error| error.to_string())?;
-        }
-        // The pixels are device I/O (removed above / reconciled via FUSE).
-        // The resource's shared capture row and favorite state are both
-        // canonical actions, so peers/history never retain a ghost capture.
-        self.try_perform_action(
-            doc,
-            &crate::actions::CameraAction::RemoveCapture { id: id.to_string() },
-        )?;
-        if self.favorites.contains(id) {
-            self.try_perform_action(
-                doc,
-                &crate::actions::CameraAction::SetFavorite {
-                    id: id.to_string(),
-                    on: false,
-                },
-            )?;
-        }
-        self.captures.retain(|c| c.id != id);
-        self.refresh_search_provider();
-        self.thumbs.remove(id);
-        self.favorites.remove(id);
-        self.toast = Some("Deleted".into());
-        Ok(())
-    }
-
-    /// Copy a qdoc-backed, portable capture identity. This is deliberately a
-    /// fallible operation: a palette/agent invocation must not be reported as
-    /// successful when bytes cannot be admitted to portable transport.
-    fn share_capture(&mut self, id: &str) -> Result<String, String> {
-        let Some(capture) = self.captures.iter_mut().find(|capture| capture.id == id) else {
-            return Err("That capture is no longer available".into());
-        };
-        // Share a verified, portable identity — never a machine-local path.
-        // A peer can materialize this through qdoc's blob transport; a blob
-        // admission failure remains visible rather than pretending the path
-        // itself was shareable.
-        if capture.media_id.is_none() {
-            capture.media_id = capture.path.as_deref().and_then(crate::media::store_file);
-        }
-        if let Some(media_id) = &capture.media_id {
-            ui::clipboard_copy(media_id);
-            self.toast = Some("Portable media link copied".into());
-            Ok(media_id.clone())
-        } else {
-            Err("Couldn't prepare a portable copy".into())
-        }
-    }
-
     fn apply_scan_action(&mut self, i: usize, doc: &mut AutoCommit, root: &ObjId) {
         if let Some(s) = self.scanned.clone() {
             // The chosen action (open / connect / copy) is external; the
@@ -2074,20 +2051,20 @@ impl CameraApp {
                     self.settings.photo_format.extension()
                 );
                 let cap = Capture {
-                    id: id.clone(),
+                    id,
                     kind: CaptureKind::Photo,
                     ts: now_secs(),
                     w: self.settings.resolution.dims().0,
                     h: self.settings.resolution.dims().1,
                     dur_ms: 0,
                     label: "New capture".into(),
-                    favorite: false,
                     facing: self.facing,
                     scene: Self::viewfinder_seed(self.facing),
                     path: None,
                     media_id: None,
                 };
-                self.captures.insert(0, cap);
+                self.captures.clear();
+                self.captures.push(cap);
                 self.toast = Some("Photo saved".into());
                 Ok(())
             }
@@ -2135,12 +2112,16 @@ impl CameraApp {
             CameraOperation::RetryCamera => self.retry_camera(),
             CameraOperation::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
             CameraOperation::SelectCamera { device } => self.select_camera(&device),
-            CameraOperation::Share { id } => {
-                self.share_capture(&id)?;
-            }
-            CameraOperation::Delete { .. } => {
-                return Err("deletion requires a document-action completion step".into());
-            }
+            CameraOperation::ImportCodeImage => self.request_scan_image(),
+            CameraOperation::CaptureDocumentPage => self.capture_document_page(),
+            CameraOperation::RotateDocumentPage => self.rotate_document_page(),
+            CameraOperation::RecognizeDocumentPage => self.recognize_document_page(),
+            CameraOperation::CopyDocumentText => self.copy_document_text(),
+            CameraOperation::ExportDocument => self.request_document_export(),
+            CameraOperation::BeginDocumentCrop => self.begin_document_crop(),
+            CameraOperation::MoveDocumentPageEarlier => self.move_document_page(false),
+            CameraOperation::MoveDocumentPageLater => self.move_document_page(true),
+            CameraOperation::RemoveDocumentPage => self.remove_document_page(),
         }
         Ok(())
     }
@@ -2208,50 +2189,92 @@ impl CameraApp {
         self.toast = Some(format!("Selected {device}"));
     }
 
-    /// Decode a code out of a library photo by id. Real work: the photo is
-    /// decoded to luma and run through the QR detector. Used by the scanner
-    /// when there is no live camera feed, so a saved QR (a screenshot, a
-    /// shared poster) can still be acted on.
-    fn scan_library_item(&mut self, id: &str, _doc: &mut AutoCommit, _root: &ObjId) {
-        self.scan_dismissed = false;
-        let source = self
-            .captures
-            .iter()
-            .find(|c| c.id == id)
-            .and_then(|capture| {
-                capture
-                    .path
-                    .clone()
-                    .map(crate::worker::ScanSource::Path)
-                    .or_else(|| {
-                        capture
-                            .media_id
-                            .as_ref()
-                            .filter(|media_id| crate::media::is_media_id(media_id))
-                            .cloned()
-                            .map(crate::worker::ScanSource::Media)
-                    })
-            });
-        let Some(source) = source else {
-            self.toast = Some("That item isn't available on this device".into());
+    fn request_scan_image(&mut self) {
+        if self.scan_image_picker.is_some() {
+            return;
+        }
+        self.scan_image_picker = Some(
+            ui::portal::PickRequest::open("Scan a code from an image", "Scan")
+                .thread_name("camera-portal-scan-image")
+                .filter(
+                    ui::portal::FileFilter::new("Images")
+                        .mimetype("image/png")
+                        .mimetype("image/jpeg")
+                        .mimetype("image/webp")
+                        .mimetype("image/gif"),
+                )
+                .send(),
+        );
+        self.toast = Some("Choose an image containing a QR code or barcode".into());
+    }
+
+    fn poll_scan_image_picker(&mut self) {
+        let Some(receiver) = self.scan_image_picker.as_ref() else {
             return;
         };
+        let outcome = match receiver.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::PortalOutcome::Failed("The file picker stopped responding".into())
+            }
+        };
+        self.scan_image_picker = None;
+        match outcome {
+            ui::portal::PortalOutcome::Opened(path) => self.scan_image_path(path),
+            ui::portal::PortalOutcome::Cancelled => {
+                self.toast = Some("Image scan cancelled".into());
+                if let Some(invocation) = self.pending_scan_import.take() {
+                    self.completed_operations.insert(
+                        invocation,
+                        tilo_actions::InvocationUpdate::Cancelled {
+                            invocation,
+                            message: Some("image scan cancelled".into()),
+                        },
+                    );
+                }
+            }
+            ui::portal::PortalOutcome::Failed(error) => {
+                self.toast = Some(format!("Could not choose an image: {error}"));
+                if let Some(invocation) = self.pending_scan_import.take() {
+                    self.completed_operations.insert(
+                        invocation,
+                        tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "camera.image_picker_failed".into(),
+                                message: error,
+                                details: None,
+                                retryable: true,
+                            },
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// Decode a code from one portal-selected image. The path is ephemeral and
+    /// never enters Camera's collaborative state or a private media index.
+    fn scan_image_path(&mut self, path: std::path::PathBuf) {
+        self.scan_dismissed = false;
         let Some(generation) = self.scan_generation.checked_add(1) else {
             self.toast = Some("Code scan counter exhausted; restart Camera".into());
             return;
         };
+        let id = format!("portal:{generation}");
         if let Err(error) = self.worker.submit_scan(crate::worker::ScanJob {
             generation,
-            id: id.to_string(),
-            source,
+            id: id.clone(),
+            source: crate::worker::ScanSource::Path(path),
             record_history: true,
         }) {
             self.toast = Some(error);
             return;
         }
         self.scan_generation = generation;
-        self.pending_scan = Some((id.to_string(), generation));
-        self.toast = Some("Scanning photo…".into());
+        self.pending_scan = Some((id, generation));
+        self.toast = Some("Scanning image…".into());
     }
 
     /// Carry out the chosen action for a scanned code. Openable schemes are
@@ -2458,48 +2481,27 @@ fn frame_image_cover(buf: FrameBuf) -> Image {
     Image::from_rgba(Arc::from(buf.rgba), w, h).with_fit(ImageFit::Cover)
 }
 
-/// Self-contained sample library for the hermetic screenshot/test path.
+/// Self-contained recent-capture fixture for the hermetic screenshot/test path.
 /// Uses procedural scenes (`path = None`) so nothing is read from disk.
-fn sample_captures() -> Vec<Capture> {
-    use CaptureKind::{Photo, Video};
-    use Facing::{Back, Front, Wide};
+fn sample_recent_capture() -> Capture {
     let now = now_secs();
-    let mk = |id: &str,
-              kind: CaptureKind,
-              off: i64,
-              scene: u8,
-              fav: bool,
-              facing: Facing,
-              label: &str,
-              dur: i64| Capture {
-        id: id.into(),
-        kind,
-        ts: now - off,
+    Capture {
+        id: "c1".into(),
+        kind: CaptureKind::Photo,
+        ts: now - 120,
         w: 4_032,
         h: 3_024,
-        dur_ms: dur,
-        label: label.into(),
-        favorite: fav,
-        facing,
-        scene,
+        dur_ms: 0,
+        label: "Golden hour".into(),
+        facing: Facing::Back,
+        scene: 1,
         path: None,
         // Screenshot fixtures need a stable portable identity so their
         // resource/search contracts exercise the same typed handoff as a
         // captured item. The headless fixture intentionally has no local
         // blob; the real launcher reports that absence honestly if invoked.
-        media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, scene)),
-    };
-    vec![
-        mk("c1", Photo, 120, 1, true, Back, "Golden hour", 0),
-        mk("c2", Photo, 1_100, 2, false, Back, "City lights", 0),
-        mk("c3", Video, 4_200, 0, false, Back, "Coast drive", 7_400),
-        mk("c4", Photo, 9_000, 3, true, Front, "Portrait", 0),
-        mk("c5", Photo, 26_000, 4, false, Wide, "Forest trail", 0),
-        mk("c6", Photo, 90_000, 5, false, Back, "Desert dunes", 0),
-        mk("c7", Video, 180_000, 2, false, Back, "Night market", 12_300),
-        mk("c8", Photo, 360_000, 0, true, Back, "Mountain ridge", 0),
-        mk("c9", Photo, 520_000, 4, false, Wide, "Meadow", 0),
-    ]
+        media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
+    }
 }
 
 impl Widget for CameraApp {
@@ -2605,7 +2607,7 @@ impl Widget for CameraApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &mut AutoCommit,
+        _doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         if kind == tilo_actions::OperationKind::Document {
@@ -2615,12 +2617,6 @@ impl Widget for CameraApp {
             return Ok(None);
         };
         match operation {
-            crate::actions::CameraOperation::Delete { id } => {
-                if !self.captures.iter().any(|capture| capture.id == id) {
-                    return Err("the capture no longer exists".into());
-                }
-                self.delete_capture(&id, doc)?;
-            }
             crate::actions::CameraOperation::Capture => {
                 self.capture(Some(invocation))?;
                 if matches!(self.storage, Storage::Disk(_)) {
@@ -2634,29 +2630,40 @@ impl Widget for CameraApp {
                 // muxed, verified, and canonically registered.
                 return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
             }
-            crate::actions::CameraOperation::Share { id } => {
-                let media_id = self.share_capture(&id)?;
-                let resource = self
-                    .captures
-                    .iter()
-                    .find(|capture| capture.id == id)
-                    .map_or_else(Vec::new, |capture| {
-                        vec![format!(
-                            "{}:{}",
-                            if capture.is_video() {
-                                "camera.video"
-                            } else {
-                                "camera.photo"
-                            },
-                            capture.id
-                        )]
-                    });
-                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput {
-                        value: Some(serde_json::Value::String(media_id)),
-                        resources: resource,
-                    },
-                )));
+            crate::actions::CameraOperation::ImportCodeImage => {
+                self.request_scan_image();
+                if self.scan_image_picker.is_none() {
+                    return Err("The image picker could not be opened".into());
+                }
+                self.pending_scan_import = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::CameraOperation::CaptureDocumentPage => {
+                let pages_before = self.document_scan.pages.len();
+                self.capture_document_page();
+                if self.document_job.is_some() {
+                    self.pending_document_job = Some(invocation);
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+                if self.document_scan.pages.len() == pages_before {
+                    return Err("No document scanner is available".into());
+                }
+            }
+            crate::actions::CameraOperation::RecognizeDocumentPage => {
+                self.recognize_document_page();
+                if self.document_job.is_none() {
+                    return Err("Text recognition could not start".into());
+                }
+                self.pending_document_job = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::CameraOperation::ExportDocument => {
+                self.request_document_export();
+                if self.document_save_picker.is_none() {
+                    return Err("Document export could not start".into());
+                }
+                self.pending_document_export = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
             }
             operation => self.perform_resource_operation(operation)?,
         }
@@ -2701,6 +2708,32 @@ impl Widget for CameraApp {
                 message: Some("video finalization cancelled".into()),
             });
         }
+        if cancellation_requested && self.pending_scan_import == Some(invocation) {
+            self.pending_scan_import = None;
+            self.scan_image_picker = None;
+            self.pending_scan = None;
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("image scan cancelled".into()),
+            });
+        }
+        if cancellation_requested && self.pending_document_job == Some(invocation) {
+            self.pending_document_job = None;
+            self.document_job = None;
+            self.document_job_kind = None;
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("document task cancelled".into()),
+            });
+        }
+        if cancellation_requested && self.pending_document_export == Some(invocation) {
+            self.pending_document_export = None;
+            self.document_save_picker = None;
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("document export cancelled".into()),
+            });
+        }
         self.completed_operations.remove(&invocation)
     }
 
@@ -2711,6 +2744,7 @@ impl Widget for CameraApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.poll_document_job();
         self.poll_document_export();
+        self.poll_scan_image_picker();
         if !self.initialized {
             doc::init_defaults(state, path, self.initial_screen);
             self.initialized = true;
@@ -2772,7 +2806,6 @@ impl Widget for CameraApp {
                         })),
                         resources: vec![format!("camera.photo:{}", saved.name.clone())],
                     };
-                    self.lib_dirty = true;
                     self.toast = Some("Photo saved".into());
                     if let Some(invocation) = terminal {
                         self.completed_operations.insert(
@@ -2852,6 +2885,22 @@ impl Widget for CameraApp {
                         }
                         continue;
                     }
+                    if matches!(self.storage, Storage::Sample) {
+                        self.captures.clear();
+                        self.captures.push(Capture {
+                            id: saved.name.clone(),
+                            kind: CaptureKind::Video,
+                            ts: now_secs(),
+                            w: saved.w,
+                            h: saved.h,
+                            dur_ms: saved.dur_ms,
+                            label: "New clip".into(),
+                            facing: saved.facing,
+                            scene: 0,
+                            path: None,
+                            media_id: Some(saved.media_id.clone()),
+                        });
+                    }
                     let output = tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({
                             "media_id": saved.media_id.clone(),
@@ -2859,7 +2908,6 @@ impl Widget for CameraApp {
                         })),
                         resources: vec![format!("camera.video:{}", saved.name.clone())],
                     };
-                    self.lib_dirty = true;
                     self.toast = Some("Video saved".into());
                     if let Some(invocation) = terminal {
                         self.completed_operations.insert(
@@ -2884,27 +2932,6 @@ impl Widget for CameraApp {
                             },
                         );
                     }
-                }
-            }
-        }
-        while let Some(result) = self.worker.try_recv_library() {
-            if self.library_pending != Some(result.generation) {
-                continue;
-            }
-            self.library_pending = None;
-            match result.result {
-                Ok(captures) => {
-                    self.captures = captures;
-                    self.refresh_search_provider();
-                    self.lib_dirty = false;
-                    self.thumb_pending.clear();
-                    self.thumb_failed.clear();
-                    self.thumbs.clear();
-                    self.dirty = true;
-                }
-                Err(error) => {
-                    self.lib_dirty = false;
-                    self.toast = Some(format!("Library refresh failed: {error}"));
                 }
             }
         }
@@ -2934,6 +2961,7 @@ impl Widget for CameraApp {
                 continue;
             }
             self.pending_scan = None;
+            let mut terminal_error = None;
             match result.result {
                 Ok(Some(scanned)) => {
                     self.scanned = Some(scanned.clone());
@@ -2952,11 +2980,35 @@ impl Widget for CameraApp {
                 Ok(None) => {
                     self.scanned = None;
                     self.toast = Some("No code found in that photo".into());
+                    terminal_error = Some((
+                        "camera.code_not_found",
+                        "No QR code or barcode was found in that image".to_owned(),
+                        false,
+                    ));
                 }
                 Err(error) => {
                     self.scanned = None;
                     self.toast = Some(format!("Scan failed: {error}"));
+                    terminal_error = Some(("camera.scan_failed", error, true));
                 }
+            }
+            if let Some(invocation) = self.pending_scan_import.take() {
+                let update = terminal_error.map_or_else(
+                    || tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                    |(code, message, retryable)| tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: code.into(),
+                            message,
+                            details: None,
+                            retryable,
+                        },
+                    },
+                );
+                self.completed_operations.insert(invocation, update);
             }
             self.dirty = true;
         }
@@ -2972,13 +3024,15 @@ impl Widget for CameraApp {
         }
         self.facing = doc::read_facing(state, path);
         self.settings = doc::read_settings(state, path);
-        self.favorites = doc::read_favorites(state, path);
         self.scans = doc::read_scans(state, path);
 
         // Screenshot-only presentation fixtures.  They are restricted to the
         // hermetic sample storage, so no launch option can arm a physical
         // camera or modify a collaborator's preferred capture settings.
         if matches!(self.storage, Storage::Sample) {
+            if self.captures.is_empty() {
+                self.captures = vec![sample_recent_capture()];
+            }
             if let Ok(mode) = std::env::var("CAMERA_SHOT_MODE") {
                 self.mode = CaptureMode::parse_str(&mode);
             }
@@ -3019,45 +3073,10 @@ impl Widget for CameraApp {
             self.dirty = true;
         }
 
-        // Deterministic headless fixture for the same pending-library state
-        // produced while the bounded index worker is scanning disk. This lets
-        // visual regression shots cover the honest loading UI without racing
-        // a real filesystem worker.
-        if std::env::var_os("CAMERA_SHOT_LIBRARY_LOADING").is_some() {
-            self.library_pending = Some(u64::MAX);
-            self.lib_dirty = false;
-            self.captures.clear();
-        }
-        if self.lib_dirty {
-            self.request_library_reload();
-        }
-        // Materialize peer-published capture metadata as normal capture
-        // resources. The local path remains `None`; pixels are requested only
-        // through the verified qdoc media identity when a thumbnail is needed.
-        let shared_captures = doc::read_shared_captures(state, path);
-        let shared_ids: HashSet<_> = shared_captures
-            .iter()
-            .map(|capture| capture.id.as_str())
-            .collect();
-        let mut search_changed = false;
-        let before_retain = self.captures.len();
-        self.captures.retain(|capture| {
-            // Hermetic samples exercise the capture handoff contract without
-            // fabricating a qdoc row or a local blob. They remain local test
-            // fixtures; real disk/peer captures still require their canonical
-            // source below.
-            matches!(&self.storage, Storage::Sample)
-                || capture.path.is_some()
-                || capture.media_id.is_none()
-                || shared_ids.contains(capture.id.as_str())
-        });
-        search_changed |= self.captures.len() != before_retain;
-        for shared in shared_captures {
-            if self.captures.iter().any(|capture| capture.id == shared.id) {
-                continue;
-            }
-            let favorite = self.favorites.contains(&shared.id);
-            self.captures.push(Capture {
+        // Camera retains exactly one collaborative handoff. Photos and Video
+        // Player own collection browsing, deletion, favorites, and metadata.
+        if matches!(self.storage, Storage::Disk(_)) {
+            let next = doc::read_recent_capture(state, path).map(|shared| Capture {
                 id: shared.id,
                 kind: shared.kind,
                 ts: shared.ts,
@@ -3065,42 +3084,22 @@ impl Widget for CameraApp {
                 h: shared.h,
                 dur_ms: shared.dur_ms,
                 label: shared.label,
-                favorite,
                 facing: shared.facing,
                 scene: 0,
                 path: None,
                 media_id: Some(shared.media_id),
             });
-            search_changed = true;
-        }
-        self.captures
-            .sort_by(|a, b| b.ts.cmp(&a.ts).then_with(|| a.id.cmp(&b.id)));
-        // Reflect favorite changes onto disk-backed captures without a full
-        // rescan.
-        if matches!(self.storage, Storage::Disk(_)) {
-            for c in &mut self.captures {
-                let favorite = self.favorites.contains(&c.id);
-                search_changed |= c.favorite != favorite;
-                c.favorite = favorite;
+            let changed = self.captures.first().map(|capture| &capture.id)
+                != next.as_ref().map(|capture| &capture.id);
+            self.captures = next.into_iter().collect();
+            if changed {
+                self.thumb_pending.clear();
+                self.thumb_failed.clear();
+                self.thumbs.clear();
+                self.dirty = true;
             }
         }
-        if search_changed {
-            self.refresh_search_provider();
-        }
-        // Drop a stale selection.
-        if let Some(id) = self.selected_capture.clone()
-            && !self.captures.iter().any(|c| c.id == id)
-        {
-            self.selected_capture = None;
-        }
-        // Screenshot hook: preselect an item so the detail view can be
-        // captured headless. No effect on normal runtime (env is unset).
-        if self.selected_capture.is_none() && std::env::var_os("CAMERA_SELECT").is_some() {
-            self.selected_capture = self.captures.first().map(|c| c.id.clone());
-        }
-        if self.pending_delete.is_none() && std::env::var_os("CAMERA_CONFIRM_DELETE").is_some() {
-            self.pending_delete = self.selected_capture.clone();
-        }
+        self.refresh_search_provider();
         if self.screen == Screen::Document
             && self.document_scan.pages.is_empty()
             && std::env::var_os("CAMERA_SCAN_FIRST").is_some()
@@ -3113,19 +3112,6 @@ impl Widget for CameraApp {
             && std::env::var_os("CAMERA_CROP").is_some()
         {
             self.begin_document_crop();
-        }
-        // Screenshot hook uses the same bounded QR scanner path as interaction.
-        if self.screen != Screen::Document
-            && self.scanned.is_none()
-            && self.pending_scan.is_none()
-            && std::env::var_os("CAMERA_SCAN_FIRST").is_some()
-            && let Some(id) = self
-                .captures
-                .iter()
-                .find(|capture| !capture.is_video())
-                .map(|capture| capture.id.clone())
-        {
-            self.scan_library_item(&id, state, path);
         }
         // Screenshot hook: pin the Settings scroll position for headless rendering.
         if let Ok(v) = std::env::var("CAMERA_SCROLL")
@@ -3342,17 +3328,16 @@ impl Widget for CameraApp {
                             *handled = true;
                         }
                     }
-                    TouchPhase::Cancelled => {
+                    TouchPhase::Cancelled
                         if self
                             .active_touch
                             .as_ref()
-                            .is_some_and(|target| target.id == touch.id)
-                        {
-                            self.active_touch = None;
-                            *handled = true;
-                        }
+                            .is_some_and(|target| target.id == touch.id) =>
+                    {
+                        self.active_touch = None;
+                        *handled = true;
                     }
-                    _ => {}
+                    TouchPhase::Cancelled | TouchPhase::Started => {}
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3361,13 +3346,10 @@ impl Widget for CameraApp {
                     MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
                 };
                 // Wheel up (dy > 0) scrolls toward the top of the content.
-                match self.screen {
-                    Screen::Settings => {
-                        self.settings_scroll = (self.settings_scroll - dy).max(0.0);
-                        self.dirty = true;
-                        *handled = true;
-                    }
-                    _ => {}
+                if self.screen == Screen::Settings {
+                    self.settings_scroll = (self.settings_scroll - dy).max(0.0);
+                    self.dirty = true;
+                    *handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3440,7 +3422,9 @@ impl Widget for CameraApp {
         self.rect
     }
     fn needs_idle_sync(&self) -> bool {
-        self.document_save_picker.is_some() || self.document_job.is_some()
+        self.document_save_picker.is_some()
+            || self.scan_image_picker.is_some()
+            || self.document_job.is_some()
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
@@ -3462,23 +3446,6 @@ impl Widget for CameraApp {
             && let Some(crop) = editor.accessibility()
         {
             controls.push(crop);
-        }
-        if let Some(id) = self.pending_delete.as_deref() {
-            let label = self
-                .captures
-                .iter()
-                .find(|capture| capture.id == id)
-                .map_or("this capture", |capture| capture.label.as_str());
-            return Some(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Delete capture?")
-                    .with_description(format!(
-                        "{label} will be permanently removed from this device. This cannot be undone."
-                    ))
-                    .with_state(AccessState::new().modal(true))
-                    .with_bounds(self.rect)
-                    .with_children(controls),
-            );
         }
         Some(
             AccessNode::new(Role::Window)
@@ -3932,7 +3899,7 @@ impl CameraApp {
         self.push_tap_region(rect, action);
     }
 
-    /// A centred "status" card for sparse states (no camera, empty library):
+    /// A centred status card for sparse states such as no available camera:
     /// a bounded, softly-raised panel holding an icon, title and optional
     /// subtitle. Anchoring the message in a real panel — capped in width and
     /// centred in `area` — keeps it from reading as a lone cluster stranded in
@@ -4614,7 +4581,7 @@ impl CameraApp {
         }
     }
 
-    /// The bottom capture cluster floating over the viewfinder: a capture history
+    /// The bottom capture cluster floating over the viewfinder: a recent handoff
     /// thumbnail peek, the shutter, a lens switch, and — when idle — the
     /// Photo/Video/Scan mode switcher above the shutter.
     fn draw_capture_cluster(
@@ -4968,7 +4935,7 @@ impl CameraApp {
             Err(error) => {
                 self.thumb_failed.insert(cap.id.clone());
                 // Queue-full is expected under a quick scroll; the fallback
-                // stays visible and the next library refresh can retry it.
+                // stays visible and a later thumbnail request can retry it.
                 if !error.contains("busy") {
                     self.toast = Some(error);
                 }
@@ -4982,6 +4949,10 @@ impl CameraApp {
 // ====================================================================
 
 impl CameraApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the document workspace is one coordinated custom-painted semantic layout"
+    )]
     fn draw_document_scanner(
         &mut self,
         scene: &mut Scene,
@@ -5053,7 +5024,12 @@ impl CameraApp {
             controls.x1 - 18.0,
             controls.y0 + 56.0,
         );
-        self.document_choice_anchors[DocumentChoice::Scanner.index()] = scanner_rect;
+        if let Some(anchor) = self
+            .document_choice_anchors
+            .get_mut(DocumentChoice::Scanner.index())
+        {
+            *anchor = scanner_rect;
+        }
         Button::paint(
             scene,
             t,
@@ -5405,14 +5381,14 @@ impl CameraApp {
                 specs
             };
             let gap = 8.0;
-            let action_width = (actions.width()
+            let slot_width = (actions.width()
                 - gap * (action_specs.len().saturating_sub(1)) as f64)
                 / action_specs.len() as f64;
             for (index, (label, icon, action, danger)) in action_specs.into_iter().enumerate() {
                 let rect = Rect::new(
-                    actions.x0 + index as f64 * (action_width + gap),
+                    actions.x0 + index as f64 * (slot_width + gap),
                     actions.y0,
-                    actions.x0 + index as f64 * (action_width + gap) + action_width,
+                    actions.x0 + index as f64 * (slot_width + gap) + slot_width,
                     actions.y1,
                 );
                 let mut face = ButtonFace::new(rect, label)
@@ -5526,6 +5502,10 @@ impl CameraApp {
 
     /// A compact floating glass header (title + subtitle) used as an overlay
     /// label on the scanner's edge-to-edge feed.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "paint helpers receive the shared scene, text, theme, geometry, and copy explicitly"
+    )]
     fn draw_glass_header(
         scene: &mut Scene,
         t: Affine,
@@ -5756,7 +5736,7 @@ impl CameraApp {
     }
 
     /// No live camera: let the user scan a code out of a photo already in
-    /// the library. Real decode — tapping a thumbnail runs the QR detector
+    /// a portal-selected image. Real decode runs the QR detector
     /// over the file's pixels.
     fn draw_scanner_offline(
         &mut self,
@@ -5768,83 +5748,58 @@ impl CameraApp {
         stage: Rect,
     ) {
         let c = &theme.tokens.colors;
-        // Full-bleed "camera off" backdrop; the photo picker floats over it.
         p::fill_rect(scene, t, full, c.neutral[0]);
-
-        let photos: Vec<Capture> = self
-            .captures
-            .iter()
-            .filter(|c| !c.is_video() && c.path.is_some())
-            .cloned()
-            .collect();
-
-        let grid = Rect::new(
+        let content = Rect::new(
             stage.x0 + EDGE,
             full.y0 + 86.0,
-            stage.x1 - 8.0,
+            stage.x1 - EDGE,
             full.y1 - 76.0,
         );
-
-        if photos.is_empty() {
-            let cx = grid.center().x;
-            let cy = grid.center().y;
-            let ic = Rect::new(cx - 24.0, cy - 58.0, cx + 24.0, cy - 10.0);
-            p::icon(scene, t, "scan", ic, p::alpha(white(), 0.5), 2.0);
-            p::text_center(
-                scene,
-                tr,
-                cx,
-                cy + 6.0,
-                "Nothing to scan yet",
-                16.0,
-                p::alpha(white(), 0.9),
-            );
-            p::text_center(
-                scene,
-                tr,
-                cx,
-                cy + 30.0,
-                "Save a photo of a QR or barcode and it can be scanned here",
-                12.5,
-                p::alpha(white(), 0.55),
-            );
-            return;
+        let cx = content.center().x;
+        let cy = content.center().y;
+        let ic = Rect::new(cx - 28.0, cy - 92.0, cx + 28.0, cy - 36.0);
+        p::icon(scene, t, "scan", ic, p::alpha(white(), 0.72), 2.2);
+        p::text_center(
+            scene,
+            tr,
+            cx,
+            cy - 14.0,
+            "Scan without a camera",
+            19.0,
+            white(),
+        );
+        let hint = ellipsize(
+            tr,
+            "Choose a QR or barcode image from this device",
+            12.5,
+            (content.width() - 24.0).max(120.0),
+        );
+        p::text_center(
+            scene,
+            tr,
+            cx,
+            cy + 16.0,
+            &hint,
+            12.5,
+            p::alpha(white(), 0.68),
+        );
+        let button_width = (content.width() - 24.0).clamp(160.0, 240.0);
+        let button = Rect::new(
+            cx - button_width / 2.0,
+            cy + 48.0,
+            cx + button_width / 2.0,
+            cy + 96.0,
+        );
+        p::fill_round(scene, t, button, 14.0, theme.accent_primary);
+        let label = if self.scan_image_picker.is_some() {
+            "Waiting for file picker…"
+        } else {
+            "Choose image"
+        };
+        p::text_center(scene, tr, cx, button.y0 + 16.0, label, 14.0, white());
+        if self.scan_image_picker.is_none() {
+            self.push_region(button, Action::ImportScanImage);
         }
-
-        let target_w = 156.0;
-        let gap = 12.0;
-        // Shared reflow math so this grid lines up exactly like every other
-        // card grid in the OS (one canonical formula, not a per-app copy).
-        let cols = ui::widget::card_columns(grid.width(), target_w, gap);
-        let cell_w = ui::widget::card_column_width(grid.width(), cols, gap);
-        let card_h = (cell_w * 0.72).clamp(94.0, 150.0);
-        p::push_clip_rect(scene, t, grid);
-        for (i, cap) in photos.iter().enumerate() {
-            let col = i % cols;
-            let row = i / cols;
-            let x0 = grid.x0 + col as f64 * (cell_w + gap);
-            let y0 = grid.y0 + row as f64 * (card_h + gap);
-            if y0 > grid.y1 {
-                break;
-            }
-            let card = Rect::new(x0, y0, x0 + cell_w, y0 + card_h);
-            self.ensure_thumb(cap);
-            p::push_clip_round(scene, t, card, 14.0);
-            if let Some(img) = self.thumbs.get_mut(&cap.id) {
-                img.paint_at(scene, t, card);
-            }
-            p::pop(scene);
-            p::stroke_round(
-                scene,
-                t,
-                card,
-                14.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-                1.0,
-            );
-            self.push_region(card, Action::ScanLibraryItem(cap.id.clone()));
-        }
-        p::pop(scene);
 
         if let Some(s) = self.scanned.clone()
             && !self.scan_dismissed
@@ -5853,6 +5808,10 @@ impl CameraApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the scan result card is one responsive custom-painted semantic component"
+    )]
     fn draw_scan_card(
         &mut self,
         scene: &mut Scene,
@@ -5873,7 +5832,7 @@ impl CameraApp {
         let button_font = if large_type { 11.0 } else { 13.0 };
         let button_padding = if large_type { 42.0 } else { 30.0 };
         let button_height = if large_type { 48.0 } else { 30.0 };
-        let button_gap = if large_type { 10.0 } else { 10.0 };
+        let button_gap = 10.0;
         let widths: Vec<f64> = actions
             .iter()
             .map(|label| f64::from(p::text_w(tr, label, button_font)) + button_padding)
@@ -6173,8 +6132,10 @@ impl CameraApp {
         // Centred sheet — wide enough that grouped rows use the full width and
         // stay aligned, capped so it reads as a sheet rather than a stranded
         // narrow column in an empty window.
-        let total = Self::settings_total_height();
-        let sw = 620.0_f64.min(full.width() - 96.0);
+        let large_type = theme.text_scale >= 1.5;
+        let total = Self::settings_total_height(theme);
+        let horizontal_margin = if full.width() < 500.0 { 24.0 } else { 96.0 };
+        let sw = 620.0_f64.min(full.width() - horizontal_margin);
         let sh = (total + 24.0).min(full.height() - 72.0);
         let sx = full.center().x - sw / 2.0;
         let sy = full.center().y - sh / 2.0;
@@ -6197,7 +6158,7 @@ impl CameraApp {
         p::push_clip_round(scene, t, sheet, 22.0);
         let mut y = sheet.y0 + 22.0 - off;
         p::text(scene, tr, x0, y, "Settings", 22.0, c.text_primary);
-        y += 44.0;
+        y += if large_type { 60.0 } else { 44.0 };
 
         y = self.draw_settings_capture_group(scene, t, tr, theme, x0, y, colw);
         y = self.draw_settings_composition_group(scene, t, tr, theme, x0, y, colw);
@@ -6252,8 +6213,9 @@ impl CameraApp {
     ) -> f64 {
         let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Capture");
+        let row_height = Self::settings_row_height(theme);
         let cap_rows = 4;
-        let cap_rect = Rect::new(x0, y, x0 + colw, y + f64::from(cap_rows) * 52.0);
+        let cap_rect = Rect::new(x0, y, x0 + colw, y + f64::from(cap_rows) * row_height);
         p::fill_round(scene, t, cap_rect, 14.0, c.surfaces.raised);
         p::stroke_round(
             scene,
@@ -6268,7 +6230,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, y, x0 + colw, y + 52.0),
+            Rect::new(x0, y, x0 + colw, y + row_height),
             ValueRowContent {
                 label: "Resolution",
                 value: self.settings.resolution.label(),
@@ -6281,7 +6243,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ValueRowContent {
                 label: "Photo format",
                 value: self.settings.photo_format.label(),
@@ -6294,7 +6256,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ToggleRowContent {
                 label: "HDR",
                 on: self.settings.hdr,
@@ -6302,7 +6264,13 @@ impl CameraApp {
             },
         );
         Self::row_sep(scene, t, theme, x0, ry, colw);
-        let ry = self.timer_row(scene, t, tr, theme, Rect::new(x0, ry, x0 + colw, ry + 52.0));
+        let ry = self.timer_row(
+            scene,
+            t,
+            tr,
+            theme,
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
+        );
         ry + 20.0
     }
 
@@ -6326,7 +6294,8 @@ impl CameraApp {
     ) -> f64 {
         let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Composition");
-        let comp_rect = Rect::new(x0, y, x0 + colw, y + 3.0 * 52.0);
+        let row_height = Self::settings_row_height(theme);
+        let comp_rect = Rect::new(x0, y, x0 + colw, y + 3.0 * row_height);
         p::fill_round(scene, t, comp_rect, 14.0, c.surfaces.raised);
         p::stroke_round(
             scene,
@@ -6341,7 +6310,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, y, x0 + colw, y + 52.0),
+            Rect::new(x0, y, x0 + colw, y + row_height),
             ToggleRowContent {
                 label: "Grid (rule of thirds)",
                 on: self.settings.grid,
@@ -6354,7 +6323,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ToggleRowContent {
                 label: "Level guide",
                 on: self.settings.level,
@@ -6367,7 +6336,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ToggleRowContent {
                 label: "Mirror front camera",
                 on: self.settings.mirror_front,
@@ -6396,7 +6365,8 @@ impl CameraApp {
     ) {
         let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Privacy & camera");
-        let pc_rect = Rect::new(x0, y, x0 + colw, y + 2.0 * 52.0);
+        let row_height = Self::settings_row_height(theme);
+        let pc_rect = Rect::new(x0, y, x0 + colw, y + 2.0 * row_height);
         p::fill_round(scene, t, pc_rect, 14.0, c.surfaces.raised);
         p::stroke_round(
             scene,
@@ -6411,7 +6381,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, y, x0 + colw, y + 52.0),
+            Rect::new(x0, y, x0 + colw, y + row_height),
             ToggleRowContent {
                 label: "Location tags",
                 on: self.settings.geotag,
@@ -6424,7 +6394,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ValueRowContent {
                 label: "Default camera",
                 value: self.settings.default_facing.label(),
@@ -6436,15 +6406,20 @@ impl CameraApp {
     /// Full painted height of the settings sheet, independent of window size.
     /// Mirrors the group layout in [`Self::draw_settings`]; the two must stay
     /// in step so scroll always reaches the last row.
-    fn settings_total_height() -> f64 {
-        let row = 52.0;
-        let header = 24.0;
+    fn settings_total_height(theme: &Theme) -> f64 {
+        let large_type = theme.text_scale >= 1.5;
+        let row = Self::settings_row_height(theme);
+        let header = if large_type { 32.0 } else { 24.0 };
         let group_gap = 20.0;
-        let body = 44.0                                 // title → first group
+        let body = if large_type { 60.0 } else { 44.0 } // title → first group
             + header + 4.0 * row + group_gap            // Capture (4 rows)
             + header + 3.0 * row + group_gap            // Composition (3 rows)
             + header + 2.0 * row; // Privacy & camera (2 rows)
         22.0 + body + 24.0 // top gap + body + bottom breathing room
+    }
+
+    fn settings_row_height(theme: &Theme) -> f64 {
+        if theme.text_scale >= 1.5 { 84.0 } else { 52.0 }
     }
 
     fn group_title(
@@ -6464,7 +6439,7 @@ impl CameraApp {
             11.0,
             p::alpha(theme.tokens.colors.text_dim, 0.9),
         );
-        y + 24.0
+        y + if theme.text_scale >= 1.5 { 32.0 } else { 24.0 }
     }
 
     fn row_sep(scene: &mut Scene, t: Affine, theme: &Theme, x: f64, y: f64, w: f64) {
@@ -6494,20 +6469,38 @@ impl CameraApp {
     ) -> f64 {
         let ToggleRowContent { label, on, action } = content;
         let c = &theme.tokens.colors;
+        let large_type = theme.text_scale >= 1.5;
+        let label = if large_type {
+            ellipsize(tr, label, 14.0, row.width() - 36.0)
+        } else {
+            label.to_string()
+        };
         p::text(
             scene,
             tr,
             row.x0 + 18.0,
-            row.center().y - 8.0,
-            label,
+            if large_type {
+                row.y0 + 10.0
+            } else {
+                row.center().y - 8.0
+            },
+            &label,
             14.0,
             c.text_primary,
         );
         let sw = Rect::new(
             row.x1 - 18.0 - 46.0,
-            row.center().y - 13.0,
+            if large_type {
+                row.y1 - 34.0
+            } else {
+                row.center().y - 13.0
+            },
             row.x1 - 18.0,
-            row.center().y + 13.0,
+            if large_type {
+                row.y1 - 8.0
+            } else {
+                row.center().y + 13.0
+            },
         );
         self.toggle_switch(scene, t, theme, sw, on, action);
         row.y1
@@ -6531,27 +6524,49 @@ impl CameraApp {
             action,
         } = content;
         let c = &theme.tokens.colors;
+        let large_type = theme.text_scale >= 1.5;
+        let label = if large_type {
+            ellipsize(tr, label, 14.0, row.width() - 36.0)
+        } else {
+            label.to_string()
+        };
         p::text(
             scene,
             tr,
             row.x0 + 18.0,
-            row.center().y - 8.0,
-            label,
+            if large_type {
+                row.y0 + 10.0
+            } else {
+                row.center().y - 8.0
+            },
+            &label,
             14.0,
             c.text_primary,
         );
         let chev = Rect::new(
             row.x1 - 30.0,
-            row.center().y - 9.0,
+            if large_type {
+                row.y1 - 32.0
+            } else {
+                row.center().y - 9.0
+            },
             row.x1 - 16.0,
-            row.center().y + 9.0,
+            if large_type {
+                row.y1 - 14.0
+            } else {
+                row.center().y + 9.0
+            },
         );
         p::icon(scene, t, "chevron", chev, p::alpha(c.text_dim, 0.9), 1.8);
         p::text_right(
             scene,
             tr,
             chev.x0 - 8.0,
-            row.center().y - 8.0,
+            if large_type {
+                row.y1 - 34.0
+            } else {
+                row.center().y - 8.0
+            },
             value,
             13.5,
             theme.accent_primary,
@@ -6572,21 +6587,30 @@ impl CameraApp {
         row: Rect,
     ) -> f64 {
         let c = &theme.tokens.colors;
+        let large_type = theme.text_scale >= 1.5;
         p::text(
             scene,
             tr,
             row.x0 + 18.0,
-            row.center().y - 8.0,
+            if large_type {
+                row.y0 + 10.0
+            } else {
+                row.center().y - 8.0
+            },
             "Self-timer",
             14.0,
             c.text_primary,
         );
-        let seg = Rect::new(
-            row.x1 - 18.0 - 168.0,
-            row.center().y - 15.0,
-            row.x1 - 18.0,
-            row.center().y + 15.0,
-        );
+        let seg = if large_type {
+            Rect::new(row.x0 + 18.0, row.y1 - 40.0, row.x1 - 18.0, row.y1 - 8.0)
+        } else {
+            Rect::new(
+                row.x1 - 18.0 - 168.0,
+                row.center().y - 15.0,
+                row.x1 - 18.0,
+                row.center().y + 15.0,
+            )
+        };
         let items: Vec<(String, bool, Action)> = Timer::ALL
             .iter()
             .map(|tm| {
@@ -6634,7 +6658,6 @@ impl CameraApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
 
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();
@@ -6655,7 +6678,16 @@ mod tests {
             app.sync(doc, root);
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(done(app), "bounded camera worker did not settle in time");
+        assert!(
+            done(app),
+            "bounded camera worker did not settle in time: toast={:?}, video_finalizing={}, captures={:?}",
+            app.toast,
+            app.video_finalizing,
+            app.captures
+                .iter()
+                .map(|capture| capture.id.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -6672,19 +6704,19 @@ mod tests {
     fn sample_source_populates_without_touching_disk() {
         let (app, _doc, _root) = sample_app();
         assert_eq!(app.screen, Screen::Camera);
-        assert_eq!(app.captures.len(), 9);
+        assert_eq!(app.captures.len(), 1);
         assert!(app.captures.iter().all(|c| c.path.is_none()));
     }
 
     #[test]
     fn disk_source_starts_empty_and_seeds_no_content() {
-        // Point at a directory that does not exist → an empty library, never
+        // Point at a directory that does not exist → no fabricated media, never
         // fabricated samples.
         let dir = std::env::temp_dir().join("camera-empty-lib-xyz-does-not-exist");
         let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
+        sync_until(&mut app, &mut doc, &root, |_| true);
         assert!(app.captures.is_empty());
         assert!(app.scans.is_empty());
     }
@@ -6740,13 +6772,18 @@ mod tests {
         let (mut app, mut doc, root) = sample_app();
         app.apply(Action::SetTimer(Timer::S3), &mut doc, &root);
         let before = app.captures.len();
+        let before_id = app.captures.first().map(|capture| capture.id.clone());
         app.apply(Action::Shutter, &mut doc, &root);
         assert!(app.is_counting_down());
         assert_eq!(app.captures.len(), before, "timer does not capture early");
         app.countdown.as_mut().expect("armed timer").due = Instant::now();
         app.sync(&mut doc, &root);
         assert!(!app.is_counting_down());
-        assert_eq!(app.captures.len(), before + 1);
+        assert_eq!(app.captures.len(), 1);
+        assert_ne!(
+            app.captures.first().map(|capture| capture.id.clone()),
+            before_id
+        );
 
         app.apply(Action::Shutter, &mut doc, &root);
         assert!(app.is_counting_down());
@@ -6755,11 +6792,12 @@ mod tests {
     }
 
     #[test]
-    fn sample_shutter_appends_capture() {
+    fn sample_shutter_replaces_the_recent_handoff() {
         let (mut app, mut doc, root) = sample_app();
-        let before = app.captures.len();
+        let before = app.captures[0].id.clone();
         app.apply(Action::Shutter, &mut doc, &root);
-        assert_eq!(app.captures.len(), before + 1);
+        assert_eq!(app.captures.len(), 1);
+        assert_ne!(app.captures[0].id, before);
         assert!(app.toast.is_some());
     }
 
@@ -6774,7 +6812,7 @@ mod tests {
         let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
+        sync_until(&mut app, &mut doc, &root, |_| true);
         assert_eq!(app.screen, Screen::Camera);
         assert_eq!(
             app.settings.photo_format,
@@ -6831,7 +6869,8 @@ mod tests {
             app.sync(&mut doc, &root);
             std::thread::sleep(Duration::from_millis(1));
         }
-        // A real JPEG landed on disk and a rescan finds it.
+        // A real JPEG landed on disk. Camera publishes the portable identity,
+        // not the private local projection path.
         let files: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
@@ -6840,11 +6879,9 @@ mod tests {
         assert_eq!(files.len(), 1, "shutter wrote exactly one JPEG");
         let bytes = std::fs::read(files[0].path()).unwrap();
         assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "genuine JPEG (SOI marker)");
-        sync_until(&mut app, &mut doc, &root, |app| {
-            app.captures.len() == 1 && app.captures[0].path.is_some()
-        });
+        sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
         assert_eq!(app.captures.len(), 1);
-        assert!(app.captures[0].path.is_some());
+        assert!(app.captures[0].path.is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -6854,7 +6891,7 @@ mod tests {
         let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
+        sync_until(&mut app, &mut doc, &root, |_| true);
         assert!(!app.feed_active());
         app.apply(Action::Shutter, &mut doc, &root);
         // Nothing saved; the toast tells the truth.
@@ -7255,10 +7292,9 @@ mod tests {
     }
 
     #[test]
-    fn sample_video_record_round_trips_into_capture_history() {
+    fn sample_video_record_replaces_the_recent_handoff() {
         let (mut app, mut doc, root) = sample_app();
         app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-        let before = app.captures.len();
 
         // Start; the hermetic frame-synth runs on each sync tick.
         app.apply(Action::Shutter, &mut doc, &root);
@@ -7276,7 +7312,9 @@ mod tests {
         app.apply(Action::Shutter, &mut doc, &root);
         assert!(!app.is_recording());
         sync_until(&mut app, &mut doc, &root, |app| {
-            app.captures.len() == before + 1
+            app.captures
+                .first()
+                .is_some_and(|capture| capture.id.starts_with("VID_"))
         });
         let clip = app
             .captures
@@ -7325,9 +7363,7 @@ mod tests {
         app.apply(Action::Shutter, &mut doc, &root); // stop → write clip
         assert!(!app.is_recording());
 
-        sync_until(&mut app, &mut doc, &root, |app| {
-            app.captures.len() == 1 && !app.lib_dirty && app.library_pending.is_none()
-        });
+        sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
 
         // Exactly one real AVI on disk; it's a RIFF/AVI container that probes.
         let avis: Vec<_> = std::fs::read_dir(&dir)
@@ -7358,7 +7394,7 @@ mod tests {
         let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
+        sync_until(&mut app, &mut doc, &root, |_| true);
         app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
         assert!(!app.feed_active());
         app.apply(Action::Shutter, &mut doc, &root);
@@ -7560,46 +7596,15 @@ mod tests {
     fn accessibility_activation_reuses_camera_action_dispatch() {
         let (mut app, mut doc, root) = sample_app();
         render_at(&mut app, &mut doc, &root, 900.0, 700.0);
-        let before = app.captures.len();
+        let before = app.captures[0].id.clone();
         assert!(app.perform_semantic_action(
             "camera.shutter",
             &A11yAction::Activate,
             &mut doc,
             &root,
         ));
-        assert_eq!(app.captures.len(), before + 1);
-    }
-
-    #[test]
-    fn resource_delete_removes_pixels_and_dispatches_favorite_cleanup() {
-        let (mut app, mut doc, root) = sample_app();
-        let id = "c1";
-        assert!(app.captures.iter().any(|capture| capture.id == id));
-        doc::set_favorite(&mut doc, &automerge::ROOT, id, true);
-        app.favorites.insert(id.to_string());
-        assert!(doc::read_favorites(&doc, &automerge::ROOT).contains(id));
-        let payload =
-            serde_json::to_vec(&crate::actions::CameraOperation::Delete { id: id.to_string() })
-                .unwrap();
-
-        let started = Widget::start_resource_operation_with_document(
-            &mut app,
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CAMERA_OPERATION_TYPE,
-            &payload,
-            &mut doc,
-            &root,
-        )
-        .unwrap();
-
-        assert!(matches!(
-            started,
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert!(!app.captures.iter().any(|capture| capture.id == id));
-        assert!(!doc::read_favorites(&doc, &automerge::ROOT).contains(id));
-        assert!(app.take_committed_action().is_some());
+        assert_eq!(app.captures.len(), 1);
+        assert_ne!(app.captures[0].id, before);
     }
 
     #[test]
@@ -7613,7 +7618,7 @@ mod tests {
         let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
+        sync_until(&mut app, &mut doc, &root, |_| true);
         assert!(app.push_camera_frame(frame::viewfinder(1, 64, 48)));
         let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture).unwrap();
@@ -7638,13 +7643,40 @@ mod tests {
             app.sync(&mut doc, &root);
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(doc::read_shared_captures(&doc, &root).is_empty());
+        assert!(doc::read_recent_capture(&doc, &root).is_none());
         assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
             entries
                 .flatten()
                 .all(|entry| entry.path().extension().is_none_or(|ext| ext != "jpg"))
         }));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sample_document_capture_reports_completion_only_after_adding_the_page() {
+        let mut app = CameraApp::with(Storage::Sample, Screen::Document);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        assert!(app.document_scan.pages.is_empty());
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::CameraOperation::CaptureDocumentPage)
+            .expect("document capture payload");
+        let result = Widget::start_resource_operation_with_document(
+            &mut app,
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::CAMERA_OPERATION_TYPE,
+            &payload,
+            &mut doc,
+            &root,
+        )
+        .expect("sample capture succeeds");
+        assert!(matches!(
+            result,
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
+        assert_eq!(app.document_scan.pages.len(), 1);
     }
 
     #[test]
@@ -7658,7 +7690,7 @@ mod tests {
         let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
+        sync_until(&mut app, &mut doc, &root, |_| true);
         app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
         assert!(app.push_camera_frame(frame::viewfinder(1, 128, 96)));
         app.apply(Action::Shutter, &mut doc, &root);
@@ -7690,106 +7722,12 @@ mod tests {
             app.sync(&mut doc, &root);
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(doc::read_shared_captures(&doc, &root).is_empty());
+        assert!(doc::read_recent_capture(&doc, &root).is_none());
         assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
             entries
                 .flatten()
                 .all(|entry| entry.path().extension().is_none_or(|ext| ext != "avi"))
         }));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn refused_capture_registration_removes_projection_and_fails_invocation() {
-        let dir = std::env::temp_dir().join(format!(
-            "camera-refused-capture-{}-{}",
-            std::process::id(),
-            now_secs()
-        ));
-        std::fs::remove_dir_all(&dir).ok();
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
-        let list = doc
-            .put_object(&root, "captures", automerge::ObjType::List)
-            .expect("hostile captures list");
-        for index in 0..=2_000 {
-            doc.insert(&list, index, "legacy row")
-                .expect("hostile capture row");
-        }
-        assert!(app.push_camera_frame(frame::viewfinder(1, 64, 48)));
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture)
-            .expect("capture operation payload");
-        assert!(matches!(
-            Widget::start_resource_operation_with_document(
-                &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CAMERA_OPERATION_TYPE,
-                &payload,
-                &mut doc,
-                &root,
-            )
-            .expect("capture admission"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        sync_until(&mut app, &mut doc, &root, |app| {
-            app.completed_operations.contains_key(&invocation)
-        });
-        assert!(matches!(
-            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
-                if error.code == "camera.register_refused"
-        ));
-        assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
-            entries
-                .flatten()
-                .all(|entry| entry.path().extension().is_none_or(|ext| ext != "jpg"))
-        }));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn oversized_capture_preflight_preserves_local_file_on_delete() {
-        let dir = std::env::temp_dir().join(format!(
-            "camera-refused-delete-{}-{}",
-            std::process::id(),
-            now_secs()
-        ));
-        std::fs::create_dir_all(&dir).expect("capture directory");
-        let id = "IMG_keep.jpg";
-        let file = dir.join(id);
-        std::fs::write(&file, b"local capture").expect("local projection");
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
-        app.captures.push(Capture {
-            id: id.into(),
-            kind: CaptureKind::Photo,
-            ts: 1,
-            w: 64,
-            h: 48,
-            dur_ms: 0,
-            label: "Keep me".into(),
-            favorite: false,
-            facing: Facing::Back,
-            scene: 0,
-            path: Some(file.clone()),
-            media_id: None,
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let list = doc
-            .put_object(&root, "captures", automerge::ObjType::List)
-            .expect("hostile captures list");
-        for index in 0..=2_000 {
-            doc.insert(&list, index, "legacy row")
-                .expect("hostile capture row");
-        }
-
-        assert!(app.delete_capture(id, &mut doc).is_err());
-        assert!(file.exists(), "preflight refused before local deletion");
-        assert!(app.captures.iter().any(|capture| capture.id == id));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -7863,13 +7801,18 @@ mod tests {
     fn settings_sheet_needs_scroll_on_short_windows() {
         // On a short window the whole sheet must remain reachable: the max
         // scroll equals how far the content overflows the viewport.
-        let total = CameraApp::settings_total_height();
+        let total = CameraApp::settings_total_height(&Theme::dark());
         assert!(
             (total - 670.0).abs() < 1.0,
             "settings height ~670, got {total}"
         );
         let short = 560.0;
         assert!(total - short > 100.0, "last rows are below a 560px fold");
+        let large_type = CameraApp::settings_total_height(&Theme::dark().with_text_scale(2.0));
+        assert!(
+            large_type > total + 250.0,
+            "large text rows need independent vertical controls"
+        );
     }
 
     #[test]
@@ -7893,7 +7836,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_library_item_decodes_a_real_qr_from_disk() {
+    fn portal_selected_image_decodes_a_real_qr_without_media_indexing() {
         // Rasterize a real QR to a PNG on disk, then prove the scanner decodes
         // it through the production code path — no camera involved.
         let payload = "https://tilo.example/scanned-from-a-saved-photo";
@@ -7927,17 +7870,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("camera-scan-lib-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Lossless PNG so the QR survives the write for a clean decode.
-        library::write_photo(&dir, &fb, PhotoFormat::Png).unwrap();
+        let name = library::write_photo(&dir, &fb, PhotoFormat::Png).unwrap();
 
         let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Scanner);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
+        app.sync(&mut doc, &root);
         assert!(!app.feed_active(), "no camera in the test env");
-        assert_eq!(app.captures.len(), 1, "the QR photo is in the library");
-
-        let id = app.captures[0].id.clone();
-        app.scan_library_item(&id, &mut doc, &root);
+        assert!(
+            app.captures.is_empty(),
+            "Camera does not index the directory"
+        );
+        app.scan_image_path(dir.join(name));
         sync_until(&mut app, &mut doc, &root, |app| app.pending_scan.is_none());
         let scanned = app.scanned.clone().expect("the saved QR decodes");
         assert_eq!(scanned.raw, payload);
@@ -7948,17 +7892,22 @@ mod tests {
     }
 
     #[test]
-    fn synchronized_app_searches_and_resolves_canonical_capture_resources() {
+    fn synchronized_app_searches_and_resolves_canonical_scanner_actions() {
         let (app, doc, _root) = sample_app();
         let providers = Widget::search_providers(&app);
         assert_eq!(providers.len(), 1);
-        let hits = providers[0].search_limited("Golden hour", 4);
+        let hits = providers[0].search_limited("scan existing image", 4);
         assert_eq!(hits.len(), 1);
         let address = hits[0].action_address().expect("search action");
-        assert_eq!(address.action.as_str(), "open");
+        assert_eq!(address.action.as_str(), "import-image");
         let resource = Widget::resource(&app, &doc, address.resource.as_str())
             .expect("widget resolves search result");
         assert_eq!(resource.id.as_str(), address.resource);
-        assert!(resource.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == "import-image")
+        );
     }
 }
