@@ -31,6 +31,12 @@ pub struct GridView {
     /// The display-order row index permutation after sorting.
     order: Vec<usize>,
     rect: Rect,
+    /// Header band and row pitch measured from the renderer the grid paints
+    /// with (`measure_bands`): the 1× constants until the 13 px cell text
+    /// outgrows them, then the measured line plus padding. Paint, hit-testing
+    /// and the visible-row count all read these two values.
+    header_h: f64,
+    row_h: f64,
 }
 
 impl Default for GridView {
@@ -50,7 +56,33 @@ impl GridView {
             col_widths: Vec::new(),
             order: Vec::new(),
             rect: Rect::ZERO,
+            header_h: HEADER_H,
+            row_h: ROW_H,
         }
+    }
+
+    /// Re-measure the header band and row pitch with the renderer the grid is
+    /// about to paint with. Called by `bind` and by the owner before every
+    /// draw, so a text-scale change moves rows, hits and scroll range together.
+    pub fn measure_bands(&mut self, tr: &mut TextRenderer) {
+        // Cells and header labels are 13 px (a 16.25 px line at 1×): 4 px of
+        // padding either side stays inside the 26 px row and 6 px inside the
+        // 30 px header, so both floors hold at 1× and only larger text grows
+        // the bands.
+        let (_, lh) = tr.measure("Ag", 13.0, None);
+        let lh = f64::from(lh);
+        self.row_h = (lh + 2.0 * 4.0).max(ROW_H);
+        self.header_h = (lh + 2.0 * 6.0).max(HEADER_H);
+    }
+
+    /// The row pitch painted last (`ROW_H` at 1×).
+    pub fn row_height(&self) -> f64 {
+        self.row_h
+    }
+
+    /// The header band painted last (`HEADER_H` at 1×).
+    pub fn header_height(&self) -> f64 {
+        self.header_h
     }
 
     pub fn set_rect(&mut self, rect: Rect) {
@@ -63,6 +95,7 @@ impl GridView {
 
     /// Recompute column widths + sort order when a new result lands.
     pub fn bind(&mut self, result: &QueryResult, tr: &mut TextRenderer) {
+        self.measure_bands(tr);
         let ncols = result.columns.len();
         self.col_widths = vec![MIN_COL_W; ncols];
         for (ci, name) in result.columns.iter().enumerate() {
@@ -120,7 +153,7 @@ impl GridView {
     }
 
     pub fn visible_rows(&self) -> usize {
-        (((self.rect.height() - HEADER_H) / ROW_H).floor()).max(0.0) as usize
+        (((self.rect.height() - self.header_h) / self.row_h).floor()).max(0.0) as usize
     }
 
     pub fn scroll(&mut self, delta_rows: isize, total: usize) {
@@ -151,7 +184,7 @@ impl GridView {
     /// band is half-open (`[y0, y0 + HEADER_H)`) so its bottom edge belongs
     /// to the first body row, exactly as painted.
     pub fn header_hit(&self, p: Point) -> Option<usize> {
-        if p.y < self.rect.y0 || p.y >= self.rect.y0 + HEADER_H {
+        if p.y < self.rect.y0 || p.y >= self.rect.y0 + self.header_h {
             return None;
         }
         if p.x < self.rect.x0 || p.x > self.rect.x1 {
@@ -171,10 +204,10 @@ impl GridView {
     /// body actually paints (`visible_rows`) are hittable: the partial strip
     /// under the last full row is empty on screen and is empty here too.
     pub fn row_hit(&self, p: Point) -> Option<usize> {
-        if p.y < self.rect.y0 + HEADER_H || p.x < self.rect.x0 || p.x > self.rect.x1 {
+        if p.y < self.rect.y0 + self.header_h || p.x < self.rect.x0 || p.x > self.rect.x1 {
             return None;
         }
-        let rel = ((p.y - self.rect.y0 - HEADER_H) / ROW_H).floor() as usize;
+        let rel = ((p.y - self.rect.y0 - self.header_h) / self.row_h).floor() as usize;
         if rel >= self.visible_rows() {
             return None;
         }
@@ -254,11 +287,12 @@ impl GridView {
         let p = theme.db();
         let r = self.rect;
         let x0 = r.x0 - self.scroll_x;
-        let body_bottom = (r.y0 + HEADER_H + self.visible_rows() as f64 * ROW_H).min(r.y1);
+        let header_h = self.header_h;
+        let body_bottom = (r.y0 + header_h + self.visible_rows() as f64 * self.row_h).min(r.y1);
         let content_right = (x0 + self.total_width()).min(r.x1);
 
         // Header background spans the full visible width.
-        let header_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
+        let header_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + header_h);
         scene.fill(Fill::NonZero, transform, p.header_bg, None, &header_rect);
 
         // Column headers.
@@ -293,7 +327,7 @@ impl GridView {
                 13.0,
                 theme.text_primary,
                 transform
-                    * Affine::translate((x + CELL_PAD, r.y0 + (HEADER_H - f64::from(lh)) / 2.0)),
+                    * Affine::translate((x + CELL_PAD, r.y0 + (header_h - f64::from(lh)) / 2.0)),
                 Some(max_w),
             );
             // Column divider.
@@ -313,8 +347,8 @@ impl GridView {
             theme.border_standard,
             None,
             &Line::new(
-                Point::new(r.x0, r.y0 + HEADER_H),
-                Point::new(content_right, r.y0 + HEADER_H),
+                Point::new(r.x0, r.y0 + header_h),
+                Point::new(content_right, r.y0 + header_h),
             ),
         );
     }
@@ -345,8 +379,8 @@ impl GridView {
             let Some(row) = result.rows.get(row_idx) else {
                 break;
             };
-            let y = r.y0 + HEADER_H + vi as f64 * ROW_H;
-            let row_rect = Rect::new(r.x0, y, content_right, y + ROW_H);
+            let y = r.y0 + self.header_h + vi as f64 * self.row_h;
+            let row_rect = Rect::new(r.x0, y, content_right, y + self.row_h);
 
             // Zebra striping + hover.
             if Some(oidx) == self.hover_row {
@@ -365,7 +399,7 @@ impl GridView {
                     break;
                 }
                 let cell = row.get(ci).cloned().unwrap_or(Cell::Null);
-                let cell_rect = Rect::new(cx, y, cx + w, y + ROW_H);
+                let cell_rect = Rect::new(cx, y, cx + w, y + self.row_h);
                 draw_cell(scene, transform, tr, theme, &p, &cell, cell_rect);
                 cx += w;
             }
@@ -535,6 +569,35 @@ mod tests {
             "the unpainted partial strip under the last full row is not a row"
         );
         assert_eq!(grid.row_hit(Point::new(-1.0, HEADER_H + 1.0)), None);
+    }
+
+    /// At 1× the measured bands are the historical constants; at 2× they grow
+    /// to hold the 13 px line, and the hit-test rows move with the painted
+    /// pitch rather than staying at the 26 px the glyphs have outgrown.
+    #[test]
+    fn bands_match_the_constants_at_1x_and_hits_follow_the_scaled_pitch() {
+        let result = result();
+        let mut tr = TextRenderer::new();
+        let mut grid = GridView::new();
+        grid.bind(&result, &mut tr);
+        assert_eq!((grid.header_height(), grid.row_height()), (HEADER_H, ROW_H));
+
+        tr.set_text_scale(2.0);
+        grid.bind(&result, &mut tr);
+        let (_, lh) = tr.measure("Ag", 13.0, None);
+        let (hh, rh) = (grid.header_height(), grid.row_height());
+        assert!(rh >= f64::from(lh) + 2.0 * 4.0 && rh > ROW_H);
+        assert!(hh >= f64::from(lh) + 2.0 * 6.0 && hh > HEADER_H);
+        grid.set_rect(Rect::new(0.0, 0.0, 400.0, hh + 2.0 * rh + rh / 2.0));
+        assert_eq!(grid.visible_rows(), 2);
+        assert_eq!(grid.header_hit(Point::new(20.0, hh - 0.5)), Some(0));
+        assert_eq!(grid.row_hit(Point::new(20.0, hh)), Some(0));
+        assert_eq!(grid.row_hit(Point::new(20.0, hh + rh + 1.0)), Some(1));
+        assert_eq!(
+            grid.row_hit(Point::new(20.0, HEADER_H + ROW_H + 1.0)),
+            Some(0),
+            "the old 1× second-row y is still inside the taller first row"
+        );
     }
 
     #[test]
