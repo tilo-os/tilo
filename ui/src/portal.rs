@@ -471,7 +471,7 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
 
     // Windows URL conversion also accepts UNC hosts. A remote share is not
     // a local selection and must not silently cross this boundary.
-    if !matches!(uri.host_str(), None | Some("") | Some("localhost")) {
+    if !matches!(uri.host_str(), None | Some("" | "localhost")) {
         return None;
     }
     let path = uri.to_file_path().ok()?;

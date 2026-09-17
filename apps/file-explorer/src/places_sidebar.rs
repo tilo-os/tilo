@@ -131,7 +131,11 @@ impl PlacesSidebar {
     pub fn new(favs: FavStore, active: PathBuf, sink: CommandSink) -> Self {
         // System places: the filesystem root, then the Trash (when the platform
         // exposes one). Deleting moves files here; clicking it opens the trash.
-        let mut system = vec![(Icon::HardDrive, t("files-place-root"), PathBuf::from("/"))];
+        let mut system = vec![(
+            Icon::HardDrive,
+            t("files-place-root"),
+            crate::breadcrumbs::filesystem_root(&active),
+        )];
         if let Some(trash) = crate::fileops::trash_dir() {
             system.push((Icon::Trash2, t("files-place-trash"), trash));
         }
