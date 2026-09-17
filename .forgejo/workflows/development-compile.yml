@@ -44,13 +44,22 @@ on:
         type: string
         default: code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
       mode:
-        description: 'Cache proof only, or explicitly compile every OS component'
+        description: 'Cache proof, reusable native applications, or full OS assembly'
         required: true
         type: choice
         default: cache-only
         options:
           - cache-only
+          - native-payload
           - full-build
+      native_builder_receipt:
+        description: Optional completed native application payload receipt for full assembly
+        required: false
+        type: string
+      native_builder_sha256:
+        description: Independent SHA256 of the exact native application payload receipt
+        required: false
+        type: string
       wpe_candidate:
         description: 'Full-build only: reviewed matching native tilo-wpe-buildroot@sha256 candidate'
         required: false
@@ -108,12 +117,15 @@ jobs:
           WPE_ADOPTION_SHA256: ${{ inputs.wpe_adoption_sha256 }}
           FEX_PAYLOAD_CANDIDATE: ${{ inputs.fex_payload_candidate }}
           WINDOWS_GUEST_CANDIDATE: ${{ inputs.windows_guest_candidate }}
+          NATIVE_BUILDER_RECEIPT: ${{ inputs.native_builder_receipt }}
+          NATIVE_BUILDER_SHA256: ${{ inputs.native_builder_sha256 }}
         run: |
           set -euo pipefail
           bash os/dev/assert-native-arch.sh "$ARCHITECTURE"
           python3 os/tests/test_development_compile.py
           python3 os/tests/test_compile_retention.py
-          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"], wpe_adoption_receipt=os.environ["WPE_ADOPTION_RECEIPT"] or None, wpe_adoption_sha256=os.environ["WPE_ADOPTION_SHA256"], fex_payload_candidate=os.environ["FEX_PAYLOAD_CANDIDATE"], windows_guest_candidate=os.environ["WINDOWS_GUEST_CANDIDATE"], hardware_profile=os.environ["HARDWARE_PROFILE"], firmware_candidate=os.environ["FIRMWARE_CANDIDATE"], firmware_manifest_sha256=os.environ["FIRMWARE_MANIFEST_SHA256"], require_firmware_artifact=True)'
+          python3 os/tests/test_native_builder_artifact.py
+          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"], wpe_adoption_receipt=os.environ["WPE_ADOPTION_RECEIPT"] or None, wpe_adoption_sha256=os.environ["WPE_ADOPTION_SHA256"], fex_payload_candidate=os.environ["FEX_PAYLOAD_CANDIDATE"], windows_guest_candidate=os.environ["WINDOWS_GUEST_CANDIDATE"], hardware_profile=os.environ["HARDWARE_PROFILE"], firmware_candidate=os.environ["FIRMWARE_CANDIDATE"], firmware_manifest_sha256=os.environ["FIRMWARE_MANIFEST_SHA256"], require_firmware_artifact=True, native_builder_receipt=os.environ["NATIVE_BUILDER_RECEIPT"] or None, native_builder_sha256=os.environ["NATIVE_BUILDER_SHA256"])'
           python3 - <<'PY'
           import os, re
           for name in ('KERNEL_CANDIDATE', 'RPMS_CANDIDATE', 'BUILDER_CANDIDATE'):
@@ -150,6 +162,8 @@ jobs:
           WPE_ADOPTION_SHA256: ${{ inputs.wpe_adoption_sha256 }}
           FEX_PAYLOAD_CANDIDATE: ${{ inputs.fex_payload_candidate }}
           WINDOWS_GUEST_CANDIDATE: ${{ inputs.windows_guest_candidate }}
+          NATIVE_BUILDER_RECEIPT: ${{ inputs.native_builder_receipt }}
+          NATIVE_BUILDER_SHA256: ${{ inputs.native_builder_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -160,7 +174,7 @@ jobs:
           mkdir "$evidence"
           cleanup() {
             # Export an explicit public allowlist, never the private workspace.
-            for file in firmware-import.json inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json wpe-adoption.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
+            for file in native-builder.json firmware-import.json inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json wpe-adoption.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
               docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
             done
             mkdir -p "$evidence/public-trust"
@@ -180,10 +194,14 @@ jobs:
           adopted = os.environ.get('WPE_ADOPTION_RECEIPT', '').encode()
           if max(len(raw), len(adopted)) > 65536 or (raw and adopted):
               raise SystemExit('select exactly one bounded WPE receipt')
-          if os.environ['COMPILE_MODE'] == 'full-build' and not (raw or adopted):
+          if os.environ['COMPILE_MODE'] in ('full-build', 'native-payload') and not (raw or adopted):
               raise SystemExit('full-build requires a completed or adopted WPE receipt')
           pathlib.Path(sys.argv[1]).write_bytes(raw)
           pathlib.Path(sys.argv[1]).with_name('wpe-adoption.json').write_bytes(adopted)
+          native = os.environ.get('NATIVE_BUILDER_RECEIPT', '').encode()
+          if len(native) > 65536:
+              raise SystemExit('native builder receipt exceeds limit')
+          pathlib.Path(sys.argv[1]).with_name('native-builder.json').write_bytes(native)
           PY
           # Existing runner credentials enter only a private disposable volume,
           # then Podman secret mounts. They never enter a build context or ARG.
@@ -208,6 +226,12 @@ jobs:
           if [ -n "$WPE_ADOPTION_RECEIPT" ]; then
             wpe_receipt_args=(--wpe-adoption-receipt /work/wpe-adoption.json --wpe-adoption-sha256 "$WPE_ADOPTION_SHA256")
           fi
+          native_receipt_args=()
+          if [ -n "$NATIVE_BUILDER_RECEIPT" ]; then
+            native_receipt_args=(--native-builder-receipt /work/native-builder.json --native-builder-sha256 "$NATIVE_BUILDER_SHA256")
+          elif [ -n "$NATIVE_BUILDER_SHA256" ]; then
+            echo 'native builder digest requires receipt' >&2; exit 1
+          fi
           # These volumes and privileges exist only in the disposable Kata CI
           # guest. No physical disk, TPM, host directory or Docker socket is mounted.
           docker create --name "$name" --privileged --memory=9g --memory-swap=9g \
@@ -216,6 +240,7 @@ jobs:
             --mount "type=volume,src=$name-cache-secrets,dst=/run/tilo-cache-secrets" \
             --env SCCACHE_ENDPOINT --env SCCACHE_BUCKET --env SCCACHE_REGION \
             --env SCCACHE_S3_USE_SSL --env SCCACHE_S3_KEY_PREFIX \
+            --env GITHUB_RUN_ID --env GITHUB_RUN_ATTEMPT \
             --env REGISTRY_AUTH_FILE=/registry-auth.json \
             "$name:tools" --mode "$COMPILE_MODE" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
               --hardware-profile "$HARDWARE_PROFILE" --firmware-candidate "$FIRMWARE_CANDIDATE" \
@@ -224,10 +249,12 @@ jobs:
               --rpms-candidate "$RPMS_CANDIDATE" --builder-candidate "$BUILDER_CANDIDATE" \
               --fex-payload-candidate "$FEX_PAYLOAD_CANDIDATE" --windows-guest-candidate "$WINDOWS_GUEST_CANDIDATE" \
               "${wpe_receipt_args[@]}" \
+              "${native_receipt_args[@]}" \
               --revision "$GITHUB_SHA" --branch "$GITHUB_REF"
           docker cp . "$name:/work/repo"
           docker cp "$context/wpe-stage.json" "$name:/work/wpe-stage.json"
           docker cp "$context/wpe-adoption.json" "$name:/work/wpe-adoption.json"
+          docker cp "$context/native-builder.json" "$name:/work/native-builder.json"
           docker cp "$cache_secrets/." "$name:/run/tilo-cache-secrets/"
           python3 - "${DOCKER_CONFIG:-$HOME/.docker}/config.json" "$context/registry-auth.json" <<'PY'
           import json, os, sys
