@@ -44,7 +44,6 @@ src/widget/avatar.rs literal_color 1
 src/widget/avatar.rs white_or_black 1
 src/widget/button.rs literal_color 1
 src/widget/button.rs white_or_black 3
-src/widget/channel_browser.rs literal_color 1
 src/widget/channel_browser.rs theme_blind_white 6
 src/widget/checkbox.rs white_or_black 1
 src/widget/chip.rs theme_blind_white 2
@@ -86,5 +85,4 @@ src/widget/slider.rs theme_blind_white 5
 src/widget/table.rs theme_blind_white 3
 src/widget/table.rs white_or_black 1
 src/widget/tabs.rs literal_color 5
-src/widget/video_player.rs literal_color 1
 src/widget/window_group.rs literal_color 1
