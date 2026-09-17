@@ -516,3 +516,5 @@ installed-session launch/import/return test remain required. Launch must not
 start copying; destination review may create an AwaitingReview record, and
 publication requires explicit Copy. No successful automatic import is claimed
 from this incomplete native run.
+
+The corrected launch-ID shell built successfully in the native Fedora ARM64 VM (11m31s). Its replacement RPM has SHA-256 `0f9ef68085eae6710db325e58bdce7d34795c67836d6351ba131d6737c8ccab5`; packaged shell SHA-256 is `a1028676c6b122d648bd09cbcc00c0827eb77ef730a3ee17e6d2356d259b0bc8`. All four binaries passed payload, architecture, importer smoke and shared-library checks. Pre-strip staging matched the release binaries exactly, and extracted loadable contents matched after normal RPM stripping. An ordinary-user, isolated-home headless run of the extracted shell reached first-login setup, painted frames and created no primary identity. The new RPM has not yet replaced the active graphical fixture; fresh installed-session autolaunch remains pending.
