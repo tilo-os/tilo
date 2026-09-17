@@ -535,6 +535,9 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 /// undeclared `--scenario`), or if the app's root factory, shot factory, or
 /// shot handler returns one.
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
+    tilo_startup_metrics::init();
+    let _startup_metrics = tilo_startup_metrics::ScopedDumper;
+    tilo_startup_metrics::mark("app-launch-start");
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)

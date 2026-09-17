@@ -97,11 +97,18 @@ Start menu entries under **Tilo**:
 
 ```powershell
 ./tools/install-windows-apps.ps1
-# Or select applications and a build profile:
-./tools/install-windows-apps.ps1 -Apps calculator,notes -Profile release
+# Or select applications (optimized release builds are the default):
+./tools/install-windows-apps.ps1 -Apps calculator,notes
+# Use dev explicitly when debugging, rather than for everyday installed apps:
+./tools/install-windows-apps.ps1 -Apps calculator -Profile dev
 ```
 
 This builds before copying executables to `%LOCALAPPDATA%\Tilo\Applications`.
+Unoptimized builds spend substantially longer validating and loading fonts at
+startup. Windows prepares GPU pipelines before revealing the primary window to
+avoid displaying an empty client area during that work. To measure startup,
+set `TILO_STARTUP_METRICS_PATH` to a writable JSON filename before launching an
+app; it records font setup, GPU initialization, and the first presented frame.
 Close an installed app before updating its executable. Application documents
 remain in their normal user data locations; the installer does not move them.
 The installer also checks both Windows' application catalog and `Get-StartApps`
