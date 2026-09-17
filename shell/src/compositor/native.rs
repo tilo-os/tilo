@@ -15,7 +15,7 @@ use std::io::{BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -3687,28 +3687,6 @@ fn attach_peer_presence(
         Arc::clone(net),
         rooms,
     ));
-}
-
-/// A deferred first-login transport starts precisely once: after the trusted
-/// identity ceremony has released the desktop, never while it is still
-/// collecting secrets.
-fn take_deferred_peer_sync_activation(deferred: &mut bool, onboarding_active: bool) -> bool {
-    if *deferred && !onboarding_active {
-        *deferred = false;
-        true
-    } else {
-        false
-    }
-}
-
-#[allow(clippy::fn_params_excessive_bools)]
-fn should_activate_first_use(
-    identity_missing: bool,
-    progress_pending: bool,
-    identity_recovery: bool,
-    test_control_session: bool,
-) -> bool {
-    !test_control_session && (identity_missing || progress_pending || identity_recovery)
 }
 
 fn spawn_session_identity_broker(
