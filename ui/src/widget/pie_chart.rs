@@ -386,24 +386,22 @@ impl PieChart {
             return;
         };
         let total = self.total();
-        let percent = if total > 0.0 {
-            Self::value(slice) / total * 100.0
-        } else {
-            0.0
-        };
         let slice_anchor = || {
             self.sectors_at(Instant::now())
                 .into_iter()
                 .find(|sector| self.hovered == Some(sector.index))
-                .map_or(self.rect.center(), |sector| {
-                    let (center, outer, inner) = self.geometry();
-                    let angle = sector.start.midpoint(sector.end);
-                    let radius = inner.midpoint(outer);
-                    Point::new(
-                        center.x + radius * angle.cos(),
-                        center.y + radius * angle.sin(),
-                    )
-                })
+                .map_or_else(
+                    || self.rect.center(),
+                    |sector| {
+                        let (center, outer, inner) = self.geometry();
+                        let angle = sector.start.midpoint(sector.end);
+                        let radius = inner.midpoint(outer);
+                        Point::new(
+                            center.x + radius * angle.cos(),
+                            center.y + radius * angle.sin(),
+                        )
+                    },
+                )
         };
         let anchor = match self.style.tooltip_anchor {
             PieTooltipAnchor::Pointer if self.rect.contains(self.pointer) => self.pointer,
@@ -411,13 +409,7 @@ impl PieChart {
         };
         let title_size = theme.tokens.typography.scale.sm;
         let body_size = theme.tokens.typography.scale.xs;
-        let detail = if slice.detail.is_empty() && self.style.tooltip_show_percent {
-            format!("{percent:.1}%")
-        } else if self.style.tooltip_show_percent {
-            format!("{}  ·  {percent:.1}%", slice.detail)
-        } else {
-            slice.detail.clone()
-        };
+        let detail = self.tooltip_detail(slice, total);
         let (tw, _) = tr.measure(&slice.label, title_size, None);
         let (dw, _) = tr.measure(&detail, body_size, None);
         let padding = self.style.tooltip_padding.clamp(8.0, 32.0);
@@ -426,7 +418,9 @@ impl PieChart {
         let width = self
             .style
             .tooltip_width
-            .unwrap_or(f64::from(tw.max(dw)).max(self.style.tooltip_min_width) + padding * 2.0)
+            .unwrap_or_else(|| {
+                f64::from(tw.max(dw)).max(self.style.tooltip_min_width) + padding * 2.0
+            })
             .clamp(80.0, available_width);
         let height = 38.0 + padding * 2.0;
         let safe_right = (self.rect.x1 - self.style.tooltip_right_inset.max(0.0))
@@ -479,6 +473,19 @@ impl PieChart {
             transform * Affine::translate((x + padding, y + padding + 24.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
         );
+    }
+
+    fn tooltip_detail(&self, slice: &PieSlice, total: f64) -> String {
+        let percent = if total > 0.0 {
+            Self::value(slice) / total * 100.0
+        } else {
+            0.0
+        };
+        match (slice.detail.is_empty(), self.style.tooltip_show_percent) {
+            (true, true) => format!("{percent:.1}%"),
+            (false, true) => format!("{}  ·  {percent:.1}%", slice.detail),
+            (_, false) => slice.detail.clone(),
+        }
     }
 }
 
