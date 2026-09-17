@@ -119,6 +119,19 @@ pub struct NewMessage {
     pub work: Option<crate::model::AgentWork>,
 }
 
+/// Mutable call-participant fields persisted together in the voice map.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "typed snapshot of the four independent call-state fields persisted atomically for one participant"
+)]
+pub struct VoiceState {
+    pub talking: bool,
+    pub muted: bool,
+    pub deafened: bool,
+    pub audio_only: bool,
+}
+
 pub struct ChatDoc;
 
 /// One agent lifecycle transition is an indivisible authored claim: pairing a
@@ -599,7 +612,17 @@ impl ChatDoc {
             ("u_sora", false, false, true),
         ] {
             Self::voice_join(doc, "c_huddle", user);
-            Self::voice_set_state(doc, "c_huddle", user, talking, muted, false, audio_only);
+            Self::voice_set_state(
+                doc,
+                "c_huddle",
+                user,
+                VoiceState {
+                    talking,
+                    muted,
+                    deafened: false,
+                    audio_only,
+                },
+            );
         }
     }
 
@@ -833,7 +856,10 @@ impl ChatDoc {
         let _ = doc.put(&cat, "collapsed", collapsed);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "private leaf serializer mirrors the fixed channel CRDT schema; all call sites provide complete channel records"
+    )]
     fn put_channel(
         doc: &mut AutoCommit,
         id: &str,
@@ -1868,26 +1894,13 @@ impl ChatDoc {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::fn_params_excessive_bools,
-        reason = "each bool maps 1:1 to a distinct CRDT field (talking/muted/deafened/audio_only) mirrored from the shared voice-membership state — grouping them in a struct would just relocate the boolean soup, not remove it, and callers already pass them as named locals"
-    )]
-    pub fn voice_set_state(
-        doc: &mut AutoCommit,
-        channel: &str,
-        user: &str,
-        talking: bool,
-        muted: bool,
-        deafened: bool,
-        audio_only: bool,
-    ) {
+    pub fn voice_set_state(doc: &mut AutoCommit, channel: &str, user: &str, state: VoiceState) {
         let ch = Self::voice_channel_map(doc, channel);
         let m = get_or_map(doc, &ch, user);
-        let _ = doc.put(&m, "talking", talking);
-        let _ = doc.put(&m, "muted", muted);
-        let _ = doc.put(&m, "deafened", deafened);
-        let _ = doc.put(&m, "audio_only", audio_only);
+        let _ = doc.put(&m, "talking", state.talking);
+        let _ = doc.put(&m, "muted", state.muted);
+        let _ = doc.put(&m, "deafened", state.deafened);
+        let _ = doc.put(&m, "audio_only", state.audio_only);
     }
 
     pub fn voice_set_field(
@@ -2798,12 +2811,25 @@ mod tests {
         let mut doc = seeded();
         ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
         assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 4);
-        ChatDoc::voice_set_field(&mut doc, "c_huddle", "u_me", "muted", true);
+        ChatDoc::voice_set_state(
+            &mut doc,
+            "c_huddle",
+            "u_me",
+            VoiceState {
+                talking: true,
+                muted: true,
+                deafened: true,
+                audio_only: true,
+            },
+        );
         let me = ChatDoc::list_voice_members(&doc, "c_huddle")
             .into_iter()
             .find(|m| m.user == "u_me")
             .unwrap();
+        assert!(me.talking);
         assert!(me.muted);
+        assert!(me.deafened);
+        assert!(me.audio_only);
         ChatDoc::voice_leave(&mut doc, "c_huddle", "u_me");
         assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 3);
     }
