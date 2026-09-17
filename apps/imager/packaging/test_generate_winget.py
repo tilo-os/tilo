@@ -1,8 +1,10 @@
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("winget", Path(__file__).with_name("generate-winget.py"))
 winget = importlib.util.module_from_spec(SPEC)
@@ -11,6 +13,12 @@ SPEC.loader.exec_module(winget)
 
 class ManifestTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ, {
+            "GITHUB_SERVER_URL": "https://code.podesta.ai",
+            "TILO_RELEASE_REPOSITORY": "tilo/releases",
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -51,6 +59,11 @@ class ManifestTests(unittest.TestCase):
         for url in (self.url.replace("1.2.3", "1.2.4"), self.url.replace("code.podesta.ai", "example.org"), self.url + "?token=bad"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 winget.manifests(self.root, "1.2.3", url)
+
+    def test_insecure_configured_origin_fails(self):
+        with patch.dict(os.environ, {"GITHUB_SERVER_URL": "http://forgejo.internal:3000"}):
+            with self.assertRaisesRegex(ValueError, "release server must be an HTTPS origin"):
+                winget.manifests(self.root, "1.2.3", self.url)
 
 
 if __name__ == "__main__":
