@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use rand_core::{OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const AUTHORIZATION_TTL: Duration = Duration::from_secs(30);
@@ -102,7 +103,8 @@ pub struct PeripheralLeaseId {
     nonce: [u8; 16],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GamepadAxis {
     LeftX,
     LeftY,
@@ -112,7 +114,8 @@ pub enum GamepadAxis {
     RightTrigger,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GamepadButton {
     South,
     East,
@@ -127,7 +130,8 @@ pub enum GamepadButton {
     Guide,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ForwardedGamepadEvent {
     Axis {
         axis: GamepadAxis,
@@ -195,6 +199,15 @@ pub trait VirtualGamepadFactory: Send + Sync {
     ///
     /// Returns an error when a constrained virtual device cannot be created.
     fn create(&self, plan: VirtualGamepadPlan) -> Result<Box<dyn VirtualGamepad>, String>;
+}
+
+impl<T> VirtualGamepadFactory for Box<T>
+where
+    T: VirtualGamepadFactory + ?Sized,
+{
+    fn create(&self, plan: VirtualGamepadPlan) -> Result<Box<dyn VirtualGamepad>, String> {
+        (**self).create(plan)
+    }
 }
 
 struct DeviceRecord {
@@ -495,6 +508,11 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
 
     pub fn revoke(&mut self, lease: PeripheralLeaseId) -> bool {
         self.revoke_one(lease, PeripheralRevocation::Explicit)
+    }
+
+    #[must_use]
+    pub fn has_lease(&self, lease: PeripheralLeaseId) -> bool {
+        self.leases.contains_key(&lease)
     }
 
     pub fn app_exited(&mut self, identity: &ForwardedPeripheralIdentity) {
