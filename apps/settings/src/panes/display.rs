@@ -291,6 +291,10 @@ pub struct DisplayPane {
     brightness_result_rx: Option<std::sync::mpsc::Receiver<Result<f32, String>>>,
     pending_brightness: Option<(f32, f32)>,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
+    require_operation_token: bool,
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -350,6 +354,10 @@ impl DisplayPane {
             brightness_result_rx: Some(brightness_result_rx),
             pending_brightness: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -405,6 +413,10 @@ impl DisplayPane {
             brightness_result_rx: None,
             pending_brightness: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -430,7 +442,37 @@ impl DisplayPane {
         status: &ui::LocalState<crate::actions::LocalOperationStatus>,
     ) -> Self {
         self.operation_status = status.clone();
+        self.require_operation_token = true;
         self
+    }
+
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
+        self
+    }
+
+    fn execute_local_command(
+        &mut self,
+        local: &mut AutoCommit,
+        operation: crate::actions::DisplayOperation,
+    ) {
+        let root = automerge::ROOT;
+        self.prepare_running_operation(local, &root, &operation);
+        self.sync_brightness(local, &root);
+        self.sync_comfort_prefs(local, &root, true);
+        let connected: Vec<_> = self
+            .outputs
+            .iter()
+            .filter(|o| o.connected)
+            .cloned()
+            .collect();
+        self.sync_output_config(local, &root, &connected);
+        self.sync_transaction_controls(local, &root);
     }
 
     fn finish_display_operation(&self, result: Result<String, String>) {
@@ -445,6 +487,123 @@ impl DisplayPane {
             Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
             Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
         });
+    }
+
+    fn running_operation(&self) -> Option<crate::actions::DisplayOperation> {
+        if !self.require_operation_token {
+            return None;
+        }
+        let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
+        else {
+            return None;
+        };
+        let payload =
+            token.strip_prefix(&format!("{}:", crate::actions::DISPLAY_OPERATION_TYPE))?;
+        serde_json::from_str(payload).ok()
+    }
+
+    /// Replace the pane's transient document controls with authoritative
+    /// device state, then project only the operation admitted by the local
+    /// executor. This makes concurrently received CRDT edits inert even while
+    /// a legitimate display operation is in flight.
+    fn prepare_running_operation(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        operation: &crate::actions::DisplayOperation,
+    ) {
+        let _ = state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
+        let _ = state.put(root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
+        let _ = state.put(root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
+        let _ = state.put(root, APPLY_DISPLAY_KEY, false);
+        let _ = state.put(root, KEEP_DISPLAY_KEY, false);
+        let _ = state.put(root, REVERT_DISPLAY_KEY, false);
+        let committed = self.output_config.clone();
+        self.write_output_controls(state, root, &committed);
+
+        use crate::actions::DisplayOperation as Op;
+        match operation {
+            Op::SetBrightness { value } => {
+                let _ = state.put(root, BRIGHTNESS_KEY, *value);
+            }
+            Op::SetAutoBrightness { enabled } => {
+                let _ = state.put(root, AUTO_BRIGHTNESS_KEY, *enabled);
+            }
+            Op::SetNightLight { enabled } => {
+                let _ = state.put(root, NIGHT_LIGHT_KEY, *enabled);
+            }
+            Op::SetNightLightTemperature { label } => {
+                let _ = state.put(root, NIGHT_LIGHT_TEMPERATURE_KEY, label.as_str());
+            }
+            Op::SetScale { label } => {
+                let _ = state.put(root, DISPLAY_SCALE_KEY, label.as_str());
+            }
+            Op::SetEnabled { connector, enabled } => {
+                let _ = state.put(root, output_key(connector, "enabled"), *enabled);
+            }
+            Op::SetPrimary { connector, primary } => {
+                let _ = state.put(root, output_key(connector, "primary"), *primary);
+            }
+            Op::SetOutputScale { connector, label } => {
+                let _ = state.put(root, output_key(connector, "scale"), label.as_str());
+            }
+            Op::SetPosition { connector, label } => {
+                let _ = state.put(root, output_key(connector, "position"), label.as_str());
+            }
+            Op::SetMirror { connector, label } => {
+                let _ = state.put(root, output_key(connector, "mirror"), label.as_str());
+            }
+            Op::SetModeLabel { connector, label } => {
+                let _ = state.put(root, output_key(connector, "mode"), label.as_str());
+            }
+            Op::SetTransformLabel { connector, label } => {
+                let _ = state.put(root, output_key(connector, "transform"), label.as_str());
+            }
+            Op::SetColorProfileLabel { connector, label } => {
+                let _ = state.put(root, output_key(connector, "color_profile"), label.as_str());
+            }
+            Op::SetMode { connector, mode } => {
+                let _ = state.put(root, output_key(connector, "mode"), mode.label());
+            }
+            Op::SetTransform {
+                connector,
+                transform,
+            } => {
+                let _ = state.put(
+                    root,
+                    output_key(connector, "transform"),
+                    transform_label(*transform),
+                );
+            }
+            Op::SetHdr { connector, enabled } => {
+                let _ = state.put(root, output_key(connector, "hdr"), *enabled);
+            }
+            Op::SetVrr { connector, enabled } => {
+                let _ = state.put(root, output_key(connector, "vrr"), *enabled);
+            }
+            Op::SetColorProfile { connector, profile } => {
+                let label = profile.as_ref().map_or_else(
+                    || "System default".to_string(),
+                    |id| {
+                        self.outputs
+                            .iter()
+                            .find(|output| output.connector == *connector)
+                            .and_then(|output| output.color_profile_labels.get(id))
+                            .map_or_else(|| id.clone(), |name| format!("{name} · {id}"))
+                    },
+                );
+                let _ = state.put(root, output_key(connector, "color_profile"), label);
+            }
+            Op::Apply => {
+                let _ = state.put(root, APPLY_DISPLAY_KEY, true);
+            }
+            Op::Confirm => {
+                let _ = state.put(root, KEEP_DISPLAY_KEY, true);
+            }
+            Op::Revert => {
+                let _ = state.put(root, REVERT_DISPLAY_KEY, true);
+            }
+        }
     }
 
     pub fn outputs(&self) -> &[DisplayOutput] {
@@ -542,7 +701,11 @@ impl DisplayPane {
                     "Night light",
                     Box::new(
                         Toggle::new("settings.display.night_light", NIGHT_LIGHT_KEY)
-                            .with_id("display.night_light"),
+                            .with_id("display.night_light")
+                            .on_action(
+                                crate::actions::display_bool_binding("night_light")
+                                    .expect("Night Light is part of the static resource contract"),
+                            ),
                     ),
                 ),
                 choice_row(
@@ -556,6 +719,12 @@ impl DisplayPane {
                             NIGHT_LIGHT_TEMPERATURE_KEY,
                         )
                         .with_id("display.night_light_temperature")
+                        .on_action(
+                            crate::actions::display_choice_binding("night_light_temperature")
+                                .expect(
+                                    "Night Light warmth is part of the static resource contract",
+                                ),
+                        )
                         .with_placeholder(temperature_label(
                             self.initial_prefs.night_light_temperature,
                         )),
@@ -926,19 +1095,22 @@ impl DisplayPane {
                         )),
                         setting_row(
                             "Everything looks correct",
-                            Box::new(Button::new(
-                                "settings.display.keep",
-                                "Keep",
-                                Some(KEEP_DISPLAY_KEY),
-                            )),
+                            Box::new(
+                                Button::new("settings.display.keep", "Keep", None).on_action(
+                                    crate::actions::display_unit_binding("confirm")
+                                        .expect("display confirm action is published"),
+                                ),
+                            ),
                         ),
                         setting_row(
                             "Something is wrong",
-                            Box::new(Button::new(
-                                "settings.display.revert",
-                                "Revert now",
-                                Some(REVERT_DISPLAY_KEY),
-                            )),
+                            Box::new(
+                                Button::new("settings.display.revert", "Revert now", None)
+                                    .on_action(
+                                        crate::actions::display_unit_binding("revert")
+                                            .expect("display revert action is published"),
+                                    ),
+                            ),
                         ),
                     ]),
                 )
@@ -966,11 +1138,12 @@ impl DisplayPane {
                 if self.pending_candidate.is_some() {
                     content.push(setting_row(
                         "Test the newly edited layout",
-                        Box::new(Button::new(
-                            "settings.display.apply",
-                            "Try again",
-                            Some(APPLY_DISPLAY_KEY),
-                        )),
+                        Box::new(
+                            Button::new("settings.display.apply", "Try again", None).on_action(
+                                crate::actions::display_unit_binding("apply")
+                                    .expect("display apply action is published"),
+                            ),
+                        ),
                     ));
                 }
                 card("Display change was not applied", rows(content))
@@ -983,11 +1156,12 @@ impl DisplayPane {
                     ),
                     setting_row(
                         "Test staged layout",
-                        Box::new(Button::new(
-                            "settings.display.apply",
-                            "Apply",
-                            Some(APPLY_DISPLAY_KEY),
-                        )),
+                        Box::new(
+                            Button::new("settings.display.apply", "Apply", None).on_action(
+                                crate::actions::display_unit_binding("apply")
+                                    .expect("display apply action is published"),
+                            ),
+                        ),
                     ),
                 ]),
             ),
@@ -1061,15 +1235,43 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for DisplayPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.poll_brightness_result(state, root);
-        self.poll_hardware_probe(state, root);
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        self.poll_brightness_result(&mut state, &root);
+        self.poll_hardware_probe(&mut state, &root);
         self.refresh_outputs_if_stale();
         if self.needs_seed {
-            self.seed_state(state, root);
+            self.seed_state(&mut state, &root);
         }
-        self.sync_brightness(state, root);
-        self.sync_comfort_prefs(state, root);
+        if let Some(crate::actions::LocalPaneCommand::Display(operation)) = self.command_state.get()
+        {
+            self.command_state.set(None);
+            self.execute_local_command(&mut state, operation);
+        }
+        let running_operation = self.running_operation();
+        if let Some(operation) = &running_operation {
+            self.prepare_running_operation(&mut state, &root, operation);
+        } else if self.require_operation_token {
+            let committed = self.output_config.clone();
+            self.write_output_controls(&mut state, &root, &committed);
+            let _ = state.put(&root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
+            let _ = state.put(&root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
+            let _ = state.put(&root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
+            let _ = state.put(&root, APPLY_DISPLAY_KEY, false);
+            let _ = state.put(&root, KEEP_DISPLAY_KEY, false);
+            let _ = state.put(&root, REVERT_DISPLAY_KEY, false);
+        }
+        let has_pending_operation = !self.require_operation_token || running_operation.is_some();
+        if has_pending_operation {
+            self.sync_brightness(&mut state, &root);
+        }
+        self.sync_comfort_prefs(&mut state, &root, has_pending_operation);
 
         let connected: Vec<_> = self
             .outputs
@@ -1077,11 +1279,18 @@ impl Widget for DisplayPane {
             .filter(|o| o.connected)
             .cloned()
             .collect();
-        self.sync_output_config(state, root, &connected);
-        self.sync_transaction_controls(state, root);
+        if has_pending_operation {
+            self.sync_output_config(&mut state, &root, &connected);
+            self.sync_transaction_controls(&mut state, &root);
+        }
 
         if let Some(c) = &mut self.composed {
-            c.sync(state, root);
+            c.sync(&mut state, &root);
+        }
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 
@@ -1416,8 +1625,14 @@ impl DisplayPane {
     }
 
     /// Comfort preferences → persist to the shared store on change.
-    fn sync_comfort_prefs(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
+    fn sync_comfort_prefs(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        has_pending_operation: bool,
+    ) {
+        if has_pending_operation
+            && let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
             && b != self.last_prefs.auto_brightness
         {
             let effective = b && self.ambient_sensor_available;
@@ -1461,7 +1676,8 @@ impl DisplayPane {
         // Display scale → persist to the shared store on change. The
         // compositor reads `display.scale` at session start and advertises
         // it as the preferred fractional scale.
-        if let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
+        if has_pending_operation
+            && let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
             && let Some(v) = scale_factor_of(&label)
             && (v - self.last_prefs.scale).abs() > f64::EPSILON
         {
@@ -2061,6 +2277,28 @@ mod tests {
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root);
         assert_eq!(rec.calls().len(), 1);
+    }
+
+    #[test]
+    fn replicated_display_latches_are_inert_without_an_execution_token() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+        let commands = ui::LocalState::new(None);
+        let mut pane =
+            DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+                .with_command_state(&commands)
+                .with_operation_status(&status);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let initial_heads = doc.get_heads();
+        pane.sync(&mut doc, &root);
+        assert_eq!(doc.get_heads(), initial_heads);
+        let _ = doc.put(&root, BRIGHTNESS_KEY, 0.9);
+        let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
+        pane.sync(&mut doc, &root);
+
+        assert!(rec.calls().is_empty());
+        assert_eq!(pane.last_brightness, 0.5);
     }
 
     #[test]
