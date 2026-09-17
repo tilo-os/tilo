@@ -527,6 +527,14 @@ impl TextBoxStyle {
     }
 }
 
+/// Mutable rendering resources forwarded together through editor paint layers.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
 /// Default size of the fill colour-picker popover, in logical px.
 const FILL_PICKER_W: f64 = 260.0;
 const FILL_PICKER_H: f64 = 220.0;
@@ -3804,7 +3812,15 @@ impl SlidesApp {
         tr.set_text_scale(1.0);
         self.resolve_text_pointer(tr, chrome);
 
-        self.draw_editor_panels_base(scene, t, theme, chrome, rail_overlay, insp_overlay, div);
+        {
+            let mut paint = PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            };
+            self.draw_editor_panels_base(&mut paint, chrome, rail_overlay, insp_overlay, div);
+        }
         self.draw_editor_canvas(scene, t, tr, theme, chrome, &pal);
         tr.set_text_scale(chrome_text_scale);
         self.draw_editor_base_chrome(scene, t, tr, theme, chrome, &pal);
@@ -3837,8 +3853,16 @@ impl SlidesApp {
             );
         }
 
-        self.draw_editor_rail(scene, t, tr, theme, chrome, &pal, rail_overlay, div);
-        self.draw_editor_inspector_layer(scene, t, tr, theme, chrome, &pal, insp_overlay, div);
+        {
+            let mut paint = PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            };
+            self.draw_editor_rail(&mut paint, chrome, &pal, rail_overlay, div);
+            self.draw_editor_inspector_layer(&mut paint, chrome, &pal, insp_overlay, div);
+        }
 
         // Toolbar overflow menu — painted last so it floats above all chrome.
         ToolbarTools::draw(scene, t, theme, &chrome.toolbar_tools, |scene, button| {
@@ -3849,42 +3873,39 @@ impl SlidesApp {
     /// Base-layer panel fills + divider lines (toolbar, rail, inspector).
     /// A docked panel is part of this base layer; an overlay flap is
     /// painted later, on top of the dimming scrim.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the two panel-overlay flags every layer \
-                  below also needs; bundling them would only re-create this argument list \
-                  as a throwaway struct"
-    )]
     fn draw_editor_panels_base(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         chrome: &Chrome,
         rail_overlay: bool,
         insp_overlay: bool,
         div: Color,
     ) {
-        let c = &theme.tokens.colors;
+        let c = &paint.theme.tokens.colors;
         // Panels (base layer). A docked panel is part of the base; an overlay
         // flap is painted later, on top of the dimming scrim.
-        chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
+        chrome::fill_rect(paint.scene, paint.transform, self.rect, c.surfaces.base);
         if !rail_overlay {
-            chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
+            chrome::fill_rect(paint.scene, paint.transform, chrome.rail, c.surfaces.raised);
         }
         if !insp_overlay {
-            chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
+            chrome::fill_rect(
+                paint.scene,
+                paint.transform,
+                chrome.inspector,
+                c.surfaces.raised,
+            );
         }
         chrome::fill_rect(
-            scene,
-            t,
+            paint.scene,
+            paint.transform,
             chrome.toolbar,
             mix_panel(c.surfaces.raised, c.surfaces.base),
         );
         // Divider lines.
         stroke_line(
-            scene,
-            t,
+            paint.scene,
+            paint.transform,
             chrome.toolbar.x0,
             chrome.toolbar.y1,
             chrome.toolbar.x1,
@@ -3893,8 +3914,8 @@ impl SlidesApp {
         );
         if !rail_overlay {
             stroke_line(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 chrome.rail.x1,
                 chrome.rail.y0,
                 chrome.rail.x1,
@@ -3904,8 +3925,8 @@ impl SlidesApp {
         }
         if !insp_overlay {
             stroke_line(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 chrome.inspector.x0,
                 chrome.inspector.y0,
                 chrome.inspector.x0,
@@ -3959,7 +3980,7 @@ impl SlidesApp {
             1.0,
         );
 
-        self.draw_editor_selection_chrome(scene, t, tr, chrome, pal);
+        self.draw_editor_selection_chrome(scene, t, tr, theme, chrome, pal);
         self.draw_editor_guides(scene, t, chrome, pal);
 
         // Caption under the slide.
@@ -3983,6 +4004,7 @@ impl SlidesApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         chrome: &Chrome,
         pal: &Palette,
     ) {
@@ -4003,8 +4025,14 @@ impl SlidesApp {
             1.5,
         );
         if self.editing_text {
-            self.draw_text_selection(scene, t, tr, pal, el, er, chrome.scale);
-            self.draw_text_caret(scene, t, tr, pal, el, er, chrome.scale);
+            let mut paint = PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            };
+            self.draw_text_selection(&mut paint, pal, el, er, chrome.scale);
+            self.draw_text_caret(&mut paint, pal, el, er, chrome.scale);
         } else {
             for (_, hr) in self.handles_of(chrome.slide_dest, chrome.scale, el) {
                 // The returned rect is the generous grab zone (±HANDLE);
@@ -4083,32 +4111,23 @@ impl SlidesApp {
     /// Rail group on top: panel fill (overlay only), then the fixed header
     /// and action buttons, then the scrolling thumbnail list clipped to its
     /// viewport so it can never bleed over the pinned Add/Dup/Del row.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the rail-specific overlay flag and divider \
-                  colour every sub-step needs; bundling them would only re-create this \
-                  argument list as a throwaway struct"
-    )]
     fn draw_editor_rail(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         chrome: &Chrome,
         pal: &Palette,
         rail_overlay: bool,
         div: Color,
     ) {
-        let c = &theme.tokens.colors;
+        let c = &paint.theme.tokens.colors;
         // Rail group on top: panel fill (overlay only), then the fixed header
         // + action buttons, then the scrolling thumbnail list clipped to its
         // viewport so it can never bleed over the pinned Add/Dup/Del row.
         if rail_overlay && chrome.reveal > 0.001 {
-            chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
+            chrome::fill_rect(paint.scene, paint.transform, chrome.rail, c.surfaces.raised);
             stroke_line(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 chrome.rail.x1,
                 chrome.rail.y0,
                 chrome.rail.x1,
@@ -4128,15 +4147,36 @@ impl SlidesApp {
             if Self::in_rail(chrome, b.rect.center())
                 && !drag_zone.is_some_and(|z| z.contains(b.rect.center()))
             {
-                self.draw_button(scene, t, tr, theme, pal, b);
+                self.draw_button(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    pal,
+                    b,
+                );
             }
         }
         for l in &chrome.labels {
             if Self::in_rail(chrome, Point::new(l.pos.x, l.pos.y)) {
-                self.draw_label(scene, t, tr, theme, pal, l);
+                self.draw_label(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    pal,
+                    l,
+                );
             }
         }
-        self.draw_editor_rail_thumbnails(scene, t, tr, theme, chrome, pal);
+        self.draw_editor_rail_thumbnails(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            chrome,
+            pal,
+        );
     }
 
     /// Scrolling thumbnail list — the shared `PageSidebar` paints the
@@ -4225,30 +4265,26 @@ impl SlidesApp {
 
     /// Inspector group on top: panel fill (overlay only), buttons, notes,
     /// labels.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the inspector-specific overlay flag and divider \
-                  colour every sub-step needs; bundling them would only re-create this \
-                  argument list as a throwaway struct"
-    )]
     fn draw_editor_inspector_layer(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         chrome: &Chrome,
         pal: &Palette,
         insp_overlay: bool,
         div: Color,
     ) {
-        let c = &theme.tokens.colors;
+        let c = &paint.theme.tokens.colors;
         // Inspector group on top: panel fill (overlay only), buttons, notes, labels.
         if insp_overlay && chrome.inspector_reveal > 0.001 {
-            chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
+            chrome::fill_rect(
+                paint.scene,
+                paint.transform,
+                chrome.inspector,
+                c.surfaces.raised,
+            );
             stroke_line(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 chrome.inspector.x0,
                 chrome.inspector.y0,
                 chrome.inspector.x0,
@@ -4258,18 +4294,39 @@ impl SlidesApp {
         }
         for b in &chrome.buttons {
             if Self::in_inspector(chrome, b.rect.center()) {
-                self.draw_button(scene, t, tr, theme, pal, b);
+                self.draw_button(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    pal,
+                    b,
+                );
             }
         }
         if let (Some(nb), Some(notes)) = (
             chrome.notes_box,
             self.slide().map(|slide| slide.notes.clone()),
         ) {
-            self.draw_notes(scene, t, tr, theme, nb, &notes);
+            self.draw_notes(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                nb,
+                &notes,
+            );
         }
         for l in &chrome.labels {
             if Self::in_inspector(chrome, Point::new(l.pos.x, l.pos.y)) {
-                self.draw_label(scene, t, tr, theme, pal, l);
+                self.draw_label(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    pal,
+                    l,
+                );
             }
         }
     }
@@ -4410,49 +4467,66 @@ impl SlidesApp {
         b: &UiButton,
     ) {
         let c = &theme.tokens.colors;
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
         match &b.kind {
             ButtonKind::Text {
                 label,
                 active,
                 danger,
-            } => Self::draw_button_text(scene, t, tr, c, pal, b.rect, label, *active, *danger),
+            } => Self::draw_button_text(&mut paint, pal, b.rect, label, *active, *danger),
             ButtonKind::IconText {
                 icon,
                 label,
                 accent,
-            } => Self::draw_button_icon_text(scene, t, tr, c, pal, b.rect, *icon, label, *accent),
+            } => Self::draw_button_icon_text(&mut paint, pal, b.rect, *icon, label, *accent),
             ButtonKind::IconOnly { icon, active } => {
-                Self::draw_button_icon_only(scene, t, c, pal, b.rect, *icon, *active);
+                Self::draw_button_icon_only(
+                    paint.scene,
+                    paint.transform,
+                    c,
+                    pal,
+                    b.rect,
+                    *icon,
+                    *active,
+                );
             }
             ButtonKind::Swatch { role, selected } => {
-                Self::draw_button_swatch(scene, t, c, pal, b.rect, role, *selected);
+                Self::draw_button_swatch(
+                    paint.scene,
+                    paint.transform,
+                    c,
+                    pal,
+                    b.rect,
+                    role,
+                    *selected,
+                );
             }
             ButtonKind::Palette { kind, selected } => {
-                Self::draw_button_palette(scene, t, tr, theme, c, b.rect, *kind, *selected);
+                Self::draw_button_palette(&mut paint, b.rect, *kind, *selected);
             }
             ButtonKind::Segment { label, active, pos } => {
-                Self::draw_button_segment(scene, t, tr, c, pal, b.rect, label, *active, *pos);
+                Self::draw_button_segment(&mut paint, pal, b.rect, label, *active, *pos);
             }
-            ButtonKind::Hamburger => self.draw_button_hamburger(scene, t, c, pal, b.rect),
+            ButtonKind::Hamburger => {
+                self.draw_button_hamburger(paint.scene, paint.transform, c, pal, b.rect);
+            }
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::Text field plus the shared draw context; \
-                  bundling them would only re-create this argument list as a throwaway struct"
-    )]
     fn draw_button_text(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
         active: bool,
         danger: bool,
     ) {
+        let c = &paint.theme.tokens.colors;
         let (bg, fg) = if danger {
             (render::with_alpha(c.semantic.danger, 38), c.semantic.danger)
         } else if active {
@@ -4460,47 +4534,48 @@ impl SlidesApp {
         } else {
             (c.surfaces.base, c.text_primary)
         };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
+        chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, bg);
         chrome::stroke_rrect(
-            scene,
-            t,
+            paint.scene,
+            paint.transform,
             rect,
             8.0,
             render::with_alpha(c.text_primary, 26),
             1.0,
         );
         if !label.is_empty() {
-            chrome::text_centered(scene, t, tr, label, rect, 13.0, fg, TextWeight::Semibold);
+            chrome::text_centered(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                label,
+                rect,
+                13.0,
+                fg,
+                TextWeight::Semibold,
+            );
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::IconText field plus the shared draw \
-                  context; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
     fn draw_button_icon_text(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         rect: Rect,
         icon: Icon,
         label: &str,
         accent: bool,
     ) {
+        let c = &paint.theme.tokens.colors;
         let (bg, fg) = if accent {
             (pal.accent, Color::WHITE)
         } else {
             (c.surfaces.base, c.text_primary)
         };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
+        chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, bg);
         if !accent {
             chrome::stroke_rrect(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 rect,
                 8.0,
                 render::with_alpha(c.text_primary, 26),
@@ -4508,11 +4583,11 @@ impl SlidesApp {
             );
         }
         let ir = Rect::new(rect.x0 + 11.0, rect.y0 + 8.0, rect.x0 + 29.0, rect.y1 - 8.0);
-        draw_icon(scene, t, ir, icon, fg, 1.8);
+        draw_icon(paint.scene, paint.transform, ir, icon, fg, 1.8);
         chrome::text_vcenter(
-            scene,
-            t,
-            tr,
+            paint.scene,
+            paint.transform,
+            paint.text,
             label,
             rect,
             ir.x1 + 5.0,
@@ -4591,27 +4666,18 @@ impl SlidesApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::Palette field plus the shared draw \
-                  context; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
     fn draw_button_palette(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::Colors,
+        paint: &mut PaintContext<'_>,
         rect: Rect,
         kind: PaletteKind,
         selected: bool,
     ) {
-        let col = Palette::resolve(kind, theme).accent;
-        chrome::fill_rrect(scene, t, rect, 8.0, c.surfaces.base);
+        let c = &paint.theme.tokens.colors;
+        let col = Palette::resolve(kind, paint.theme).accent;
+        chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
         chrome::stroke_rrect(
-            scene,
-            t,
+            paint.scene,
+            paint.transform,
             rect,
             8.0,
             if selected {
@@ -4627,17 +4693,23 @@ impl SlidesApp {
             rect.x0 + 20.0,
             rect.center().y + 6.0,
         );
-        chrome::fill_rrect(scene, t, dot, 6.0, col);
+        chrome::fill_rrect(paint.scene, paint.transform, dot, 6.0, col);
         if rect.width() > 40.0 {
             // Clip the name to the pill so a slight text-metric over-run can
             // never bleed onto the next pill. Pills are sized (see
             // `palette_pill_width`) so the full name fits, making this a
             // belt-and-suspenders guard, not a truncation.
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rect);
+            paint.scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                paint.transform,
+                &rect,
+            );
             chrome::text_vcenter(
-                scene,
-                t,
-                tr,
+                paint.scene,
+                paint.transform,
+                paint.text,
                 kind.label(),
                 rect,
                 dot.x1 + 6.0,
@@ -4645,27 +4717,19 @@ impl SlidesApp {
                 c.text_primary,
                 TextWeight::Semibold,
             );
-            scene.pop_layer();
+            paint.scene.pop_layer();
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::Segment field plus the shared draw \
-                  context; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
     fn draw_button_segment(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
         active: bool,
         pos: SegPos,
     ) {
+        let c = &paint.theme.tokens.colors;
         let (bg, fg) = if active {
             (pal.accent, Color::WHITE)
         } else {
@@ -4682,15 +4746,26 @@ impl SlidesApp {
             }
             SegPos::Mid => vello::kurbo::RoundedRect::from_rect(rect, 0.0),
         };
-        scene.fill(Fill::NonZero, t, bg, None, &shape);
-        scene.stroke(
+        paint
+            .scene
+            .fill(Fill::NonZero, paint.transform, bg, None, &shape);
+        paint.scene.stroke(
             &Stroke::new(1.0),
-            t,
+            paint.transform,
             render::with_alpha(c.text_primary, 26),
             None,
             &shape,
         );
-        chrome::text_centered(scene, t, tr, label, rect, 12.5, fg, TextWeight::Semibold);
+        chrome::text_centered(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            label,
+            rect,
+            12.5,
+            fg,
+            TextWeight::Semibold,
+        );
     }
 
     fn draw_button_hamburger(
@@ -4722,24 +4797,24 @@ impl SlidesApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the element, its resolved destination rect and \
-                  scale; bundling them would only re-create this argument list as a throwaway \
-                  struct"
-    )]
     fn draw_text_caret(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         el: &Element,
         er: Rect,
         s: f64,
     ) {
         let style = TextBoxStyle::for_element(el, er, s);
-        self.draw_caret_in_box(scene, t, tr, pal.accent, &el.text, self.caret, style);
+        self.draw_caret_in_box(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            pal.accent,
+            &el.text,
+            self.caret,
+            style,
+        );
     }
 
     /// Paint a vertical caret over one line of text inside `er`. The caret
@@ -4978,17 +5053,9 @@ impl SlidesApp {
     }
 
     /// Paint the on-canvas text selection highlight for the editing element.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the element, its resolved destination rect and \
-                  scale; bundling them would only re-create this argument list as a throwaway \
-                  struct"
-    )]
     fn draw_text_selection(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         el: &Element,
         er: Rect,
@@ -5000,8 +5067,8 @@ impl SlidesApp {
         }
         let style = TextBoxStyle::for_element(el, er, s);
         let col = render::with_alpha(pal.accent, 70);
-        for r in self.selection_rects_in_box(tr, &el.text, sel.min(), sel.max(), style) {
-            chrome::fill_rrect(scene, t, r, 2.0, col);
+        for r in self.selection_rects_in_box(paint.text, &el.text, sel.min(), sel.max(), style) {
+            chrome::fill_rrect(paint.scene, paint.transform, r, 2.0, col);
         }
     }
 
