@@ -9,12 +9,12 @@
 //! agents all enter through the same brokered operation.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 use ui::icons::Icon;
 
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult,
 };
 
 use crate::model::{Contact, ContactId, ContactStore, normalize_text};
@@ -30,8 +30,10 @@ pub const CONTACT_KIND: &str = "Contacts";
 /// is an `Arc` handle managed by the shared search implementation.
 #[derive(Clone)]
 pub struct ContactSearchProvider {
-    catalog: SearchCatalog,
-    lookup: Arc<RwLock<ContactSearchLookup>>,
+    /// The catalogue and lazy labels are one published generation.  Keeping
+    /// them under the same lock prevents an activation from observing a new
+    /// search row before the corresponding exact label is available.
+    snapshot: Arc<Mutex<ContactSearchSnapshot>>,
 }
 
 /// Only the public label needed to resolve a search hit's canonical `open`
@@ -43,12 +45,25 @@ struct ContactSearchLookup {
     groups: BTreeMap<String, String>,
 }
 
+struct ContactSearchSnapshot {
+    catalog: SearchCatalog,
+    lookup: ContactSearchLookup,
+}
+
+impl Default for ContactSearchSnapshot {
+    fn default() -> Self {
+        Self {
+            catalog: SearchCatalog::new(CONTACT_KIND),
+            lookup: ContactSearchLookup::default(),
+        }
+    }
+}
+
 impl ContactSearchProvider {
     /// Snapshot the current address book into a provider.
     pub fn new(store: &ContactStore) -> Self {
         let provider = Self {
-            catalog: SearchCatalog::new(CONTACT_KIND),
-            lookup: Arc::new(RwLock::new(ContactSearchLookup::default())),
+            snapshot: Arc::new(Mutex::new(ContactSearchSnapshot::default())),
         };
         provider
             .refresh(store)
@@ -88,17 +103,34 @@ impl ContactSearchProvider {
                 result,
             ));
         }
-        self.catalog.replace_all(rows)?;
-        *self
-            .lookup
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = lookup;
+        // `replace_all` validates off-lock internally, then exchanges its
+        // generation. Holding the snapshot lock through that exchange and
+        // the matching label swap makes the two views indivisible to search
+        // and exact-resolution callers. A rejected replacement leaves both
+        // pieces of the prior, last-good generation intact.
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        snapshot.catalog.replace_all(rows)?;
+        snapshot.lookup = lookup;
         Ok(())
     }
 
     #[cfg(test)]
     fn stats(&self) -> ui::search::SearchCatalogStats {
-        self.catalog.stats()
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .stats()
+    }
+
+    fn page_limits(work_budget: usize, result_limit: usize) -> (usize, usize) {
+        (
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
     }
 }
 
@@ -146,11 +178,22 @@ impl SearchProvider for ContactSearchProvider {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+        Some(
+            self.snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .catalog
+                .stats()
+                .generation,
+        )
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .cursor_is_current(cursor)
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -158,7 +201,14 @@ impl SearchProvider for ContactSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(&normalize_text(query), limit)
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .search_limited(
+                &normalize_text(query),
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
     }
 
     fn search_page(
@@ -168,7 +218,11 @@ impl SearchProvider for ContactSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
+        let (work_budget, result_limit) = Self::page_limits(work_budget, result_limit);
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
             .query_page(&normalize_text(query), cursor, work_budget, result_limit)
     }
 
@@ -176,25 +230,17 @@ impl SearchProvider for ContactSearchProvider {
         &self,
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::Resource> {
+        let snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(raw_id) = address.resource.strip_prefix("contacts.contact:") {
             let id = raw_id.parse::<ContactId>().ok()?;
-            let label = self
-                .lookup
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contacts
-                .get(&id)
-                .cloned()?;
+            let label = snapshot.lookup.contacts.get(&id).cloned()?;
             return (address == &crate::actions::open_contact_address(id))
                 .then(|| crate::actions::contact_open_resource(id, &label));
         }
-        let group = self
-            .lookup
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .groups
-            .get(&address.resource)
-            .cloned()?;
+        let group = snapshot.lookup.groups.get(&address.resource).cloned()?;
         (address == &crate::actions::open_group_address(&group))
             .then(|| crate::actions::group_resource(&group))
     }
@@ -446,6 +492,37 @@ mod tests {
     }
 
     #[test]
+    fn paged_search_clamps_untrusted_work_and_result_limits() {
+        let contacts = (0..(DEFAULT_SEARCH_RESULT_LIMIT + 64) as u128)
+            .map(|index| Contact {
+                id: Uuid::from_u128(index + 1),
+                first: format!("Common bounded contact {index}"),
+                ..Contact::default()
+            })
+            .collect();
+        let provider = ContactSearchProvider::new(&ContactStore { contacts });
+        assert_eq!(
+            ContactSearchProvider::page_limits(usize::MAX, usize::MAX),
+            (DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT),
+            "both caller-provided limits are clamped before querying the retained catalogue"
+        );
+        let page = provider.search_page("common bounded", None, usize::MAX, usize::MAX);
+        assert!(
+            page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT,
+            "a caller cannot force unbounded candidate inspection"
+        );
+        assert!(
+            page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT,
+            "a caller cannot materialise an unbounded palette page"
+        );
+        assert!(
+            provider.search_limited("common bounded", usize::MAX).len()
+                <= DEFAULT_SEARCH_RESULT_LIMIT,
+            "the non-paged compatibility API uses the same result cap"
+        );
+    }
+
+    #[test]
     fn paged_unicode_query_continues_with_an_opaque_cursor() {
         let contacts = (0..3u128)
             .map(|index| Contact {
@@ -466,5 +543,130 @@ mod tests {
         assert_eq!(second.results.len(), 1);
         assert_ne!(second.results[0].action_id, first.results[0].action_id);
         assert_eq!(second.inspected, 1);
+    }
+
+    #[test]
+    fn failed_refresh_keeps_the_last_complete_catalogue_and_cursor() {
+        let store = store_with_samples();
+        let provider = ContactSearchProvider::new(&store);
+        let first = provider.search_page("", None, 1, 1);
+        let cursor = first.next.expect("the sample book has more than one row");
+        let before = provider.search("grace");
+
+        let duplicate = Contact {
+            id: store.contacts[0].id,
+            first: "Duplicate id must fail atomically".into(),
+            ..Contact::default()
+        };
+        let invalid = ContactStore {
+            contacts: vec![store.contacts[0].clone(), duplicate],
+        };
+        assert!(
+            provider.refresh(&invalid).is_err(),
+            "duplicate canonical resource ids reject the new generation"
+        );
+        assert_eq!(
+            provider.search("grace"),
+            before,
+            "last good results remain live"
+        );
+        assert!(
+            provider.action_directory_cursor_is_current(&cursor),
+            "a failed replacement leaves the prior generation/current cursor intact"
+        );
+    }
+
+    #[test]
+    fn search_and_exact_resolution_share_the_snapshot_publication_boundary() {
+        use std::sync::mpsc;
+
+        let store = store_with_samples();
+        let provider = ContactSearchProvider::new(&store);
+        let result = provider
+            .search("grace")
+            .into_iter()
+            .next()
+            .expect("sample contact is searchable");
+        let address = result
+            .action_address()
+            .expect("sample contact uses its canonical open address");
+
+        // Both operations lock the same snapshot that `refresh` holds while
+        // it replaces catalogue generation and exact labels. Neither may
+        // observe a halfway-published generation.
+        let publication = provider.snapshot.lock().expect("snapshot lock");
+        let (search_started_tx, search_started_rx) = mpsc::channel();
+        let (resolve_started_tx, resolve_started_rx) = mpsc::channel();
+        let (search_done_tx, search_done_rx) = mpsc::channel();
+        let (resolve_done_tx, resolve_done_rx) = mpsc::channel();
+        let search_provider = provider.clone();
+        let resolve_provider = provider.clone();
+        let search_worker = std::thread::spawn(move || {
+            search_started_tx.send(()).expect("test coordinator lives");
+            search_done_tx
+                .send(search_provider.search("grace"))
+                .expect("test coordinator lives");
+        });
+        let resolve_worker = std::thread::spawn(move || {
+            resolve_started_tx.send(()).expect("test coordinator lives");
+            resolve_done_tx
+                .send(resolve_provider.resolve_action_resource(&address).is_some())
+                .expect("test coordinator lives");
+        });
+
+        search_started_rx.recv().expect("search started");
+        resolve_started_rx.recv().expect("resolution started");
+
+        assert!(
+            matches!(search_done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "a search cannot pass the publication boundary early"
+        );
+        assert!(
+            matches!(resolve_done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "exact resolution cannot pair a new catalogue with old labels"
+        );
+        drop(publication);
+        assert_eq!(
+            search_done_rx
+                .recv()
+                .expect("search resumes after publication")[0]
+                .title,
+            "Grace Hopper"
+        );
+        assert!(
+            resolve_done_rx
+                .recv()
+                .expect("exact resolution resumes after publication")
+        );
+        search_worker.join().expect("search worker completes");
+        resolve_worker.join().expect("resolve worker completes");
+    }
+
+    #[test]
+    fn sensitive_search_terms_find_contacts_without_leaking_private_values() {
+        let mut contact = Contact::new();
+        contact.first = "Private person".into();
+        contact.emails.push(crate::model::Labeled::new(
+            "personal",
+            "very-private@example.test",
+        ));
+        contact.notes = "confidential medical note".into();
+        let provider = ContactSearchProvider::new(&ContactStore {
+            contacts: vec![contact],
+        });
+
+        for term in ["very-private@example.test", "confidential medical note"] {
+            let hit = provider
+                .search(term)
+                .into_iter()
+                .next()
+                .expect("private field is searchable");
+            assert!(!hit.title.contains(term));
+            assert!(
+                hit.subtitle
+                    .as_deref()
+                    .is_none_or(|subtitle| !subtitle.contains(term))
+            );
+        }
     }
 }
