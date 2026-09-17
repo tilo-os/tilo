@@ -6063,6 +6063,19 @@ struct ParagraphPaginationContext<'a> {
     cursor: &'a mut PageCursor,
 }
 
+struct ResolvedImage {
+    hash: String,
+    intrinsic: Option<(u32, u32)>,
+    width: f64,
+    height: f64,
+}
+
+struct ImagePlacement {
+    x: f64,
+    y: f64,
+    page: usize,
+}
+
 /// [`WordProcessorWidget::resolve_paragraph_shape`]'s output: everything
 /// [`WordProcessorWidget::paginate_paragraph`] needs to decide where the
 /// block lands and how to lay it out.
@@ -6639,14 +6652,13 @@ impl WordProcessorWidget {
     /// distorting. Also seeds `new_cache` with the block's trivial empty
     /// layout (used only so pointer hit-testing resolves to offset 0; cheap
     /// enough to re-shape every frame rather than cache incrementally).
-    /// Returns `(blob_hash, intrinsic_size, draw_w, draw_h)`.
     fn resolve_image_display_size(
         &mut self,
         b: &BlockView,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
         new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-    ) -> (String, Option<(u32, u32)>, f64, f64) {
+    ) -> ResolvedImage {
         let hash = match b.attrs.get("blob") {
             Some(AttrVal::Str(s)) => s.clone(),
             _ => String::new(),
@@ -6692,16 +6704,43 @@ impl WordProcessorWidget {
             1.0,
         );
         new_cache.insert(b.id.clone(), (0, empty));
-        (hash, intrinsic, draw_w, draw_h)
+        ResolvedImage {
+            hash,
+            intrinsic,
+            width: draw_w,
+            height: draw_h,
+        }
+    }
+
+    fn push_laid_image(
+        laid: &mut Vec<Laid>,
+        block: &BlockView,
+        image: &ResolvedImage,
+        placement: &ImagePlacement,
+    ) {
+        laid.push(Laid {
+            id: block.id.clone(),
+            text: String::new(),
+            kind: "image".into(),
+            size: 16.0,
+            y_top: placement.y,
+            text_x: placement.x,
+            width: image.width,
+            height: image.height,
+            layout_y: placement.y,
+            clip: None,
+            bullet: None,
+            ink: PAPER_INK,
+            image_hash: image.intrinsic.map(|_| image.hash.clone()),
+            cell_box: None,
+            cell_row: None,
+            page: placement.page,
+        });
     }
 
     /// One image block: resolve its decoded size, paginate it (a floated
     /// image reserves a column beside it instead of a full-width slot; see
     /// `FloatReserve`), and push its `Laid` entry.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one image pagination path keeps inline, wrapped, and free-object placement rules together"
-    )]
     fn paginate_image(
         &mut self,
         b: &BlockView,
@@ -6712,8 +6751,7 @@ impl WordProcessorWidget {
         cur: &mut PageCursor,
     ) {
         cur.ol_counts.clear();
-        let (hash, intrinsic, draw_w, draw_h) =
-            self.resolve_image_display_size(b, fg, text_renderer, new_cache);
+        let image = self.resolve_image_display_size(b, fg, text_renderer, new_cache);
         // A user-positioned page object is intentionally out of normal flow:
         // text retains its natural cursor while the object is painted at its
         // durable page-relative coordinates. Imported `anchor=page` objects
@@ -6728,28 +6766,20 @@ impl WordProcessorWidget {
                 transient_position.or_else(|| image_free_position(b))
         {
             let page = requested_page;
-            let max_x = (f64::from(fg.content_w) - draw_w).max(0.0);
-            let max_y = (fg.letter_h - fg.m.top - fg.m.bottom - draw_h).max(0.0);
+            let max_x = (f64::from(fg.content_w) - image.width).max(0.0);
+            let max_y = (fg.letter_h - fg.m.top - fg.m.bottom - image.height).max(0.0);
             let img_x = fg.content_x + offset_x.clamp(0.0, max_x);
             let img_y = page_content_top(fg, page) + offset_y.clamp(0.0, max_y);
-            laid.push(Laid {
-                id: b.id.clone(),
-                text: String::new(),
-                kind: "image".into(),
-                size: 16.0,
-                y_top: img_y,
-                text_x: img_x,
-                width: draw_w,
-                height: draw_h,
-                layout_y: img_y,
-                clip: None,
-                bullet: None,
-                ink: PAPER_INK,
-                image_hash: intrinsic.map(|_| hash),
-                cell_box: None,
-                cell_row: None,
-                page,
-            });
+            Self::push_laid_image(
+                laid,
+                b,
+                &image,
+                &ImagePlacement {
+                    x: img_x,
+                    y: img_y,
+                    page,
+                },
+            );
             // Keep enough sheets alive to show a deliberately later placement,
             // but leave `y` untouched so a free object cannot create phantom
             // blank paragraphs in the document flow.
@@ -6760,7 +6790,7 @@ impl WordProcessorWidget {
         // would not fit.
         let force_break = block_page_break_before(b);
         let item_top = if cur.placed_on_page
-            && (force_break || cur.y + draw_h > page_content_bottom(fg, cur.cur_page) + 0.5)
+            && (force_break || cur.y + image.height > page_content_bottom(fg, cur.cur_page) + 0.5)
         {
             cur.cur_page += 1;
             page_content_top(fg, cur.cur_page)
@@ -6779,30 +6809,22 @@ impl WordProcessorWidget {
             let img_x = if left {
                 fg.content_x
             } else {
-                fg.content_x + f64::from(fg.content_w) - draw_w
+                fg.content_x + f64::from(fg.content_w) - image.width
             };
-            laid.push(Laid {
-                id: b.id.clone(),
-                text: String::new(),
-                kind: "image".into(),
-                size: 16.0,
-                y_top: item_top,
-                text_x: img_x,
-                width: draw_w,
-                height: draw_h,
-                layout_y: item_top,
-                clip: None,
-                bullet: None,
-                ink: PAPER_INK,
-                image_hash: intrinsic.map(|_| hash),
-                cell_box: None,
-                cell_row: None,
-                page: cur.cur_page,
-            });
+            Self::push_laid_image(
+                laid,
+                b,
+                &image,
+                &ImagePlacement {
+                    x: img_x,
+                    y: item_top,
+                    page: cur.cur_page,
+                },
+            );
             cur.active_float = Some(FloatReserve {
                 left,
-                reserve_w: draw_w + FLOAT_GUTTER,
-                bottom: item_top + draw_h,
+                reserve_w: image.width + FLOAT_GUTTER,
+                bottom: item_top + image.height,
                 page: cur.cur_page,
             });
             // Leave `cur.y` at the image top so following text wraps beside it.
@@ -6813,29 +6835,21 @@ impl WordProcessorWidget {
             // wrap is centered in the column; inline images stay left-aligned.
             let centered = image_anchor(b) != "inline";
             let img_x = if centered {
-                fg.content_x + ((f64::from(fg.content_w) - draw_w) / 2.0).max(0.0)
+                fg.content_x + ((f64::from(fg.content_w) - image.width) / 2.0).max(0.0)
             } else {
                 fg.content_x
             };
-            laid.push(Laid {
-                id: b.id.clone(),
-                text: String::new(),
-                kind: "image".into(),
-                size: 16.0,
-                y_top: item_top,
-                text_x: img_x,
-                width: draw_w,
-                height: draw_h,
-                layout_y: item_top,
-                clip: None,
-                bullet: None,
-                ink: PAPER_INK,
-                image_hash: intrinsic.map(|_| hash),
-                cell_box: None,
-                cell_row: None,
-                page: cur.cur_page,
-            });
-            cur.y = item_top + draw_h + f64::from(self.sheet.get("body").space_after);
+            Self::push_laid_image(
+                laid,
+                b,
+                &image,
+                &ImagePlacement {
+                    x: img_x,
+                    y: item_top,
+                    page: cur.cur_page,
+                },
+            );
+            cur.y = item_top + image.height + f64::from(self.sheet.get("body").space_after);
         }
     }
 
