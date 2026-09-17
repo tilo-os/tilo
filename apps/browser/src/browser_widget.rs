@@ -47,6 +47,7 @@ use crate::actions::{
     BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, history_resource_id,
 };
 use crate::address_overlay::AddressSuggestions;
+use crate::browsing_mode::BrowsingMode;
 use crate::history::History;
 use crate::library::Bookmarks;
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
@@ -306,6 +307,7 @@ struct PendingHistory {
 pub struct BrowserWidget {
     rect: Rect,
     engine: SharedEngine,
+    browsing_mode: BrowsingMode,
     composed: Option<Box<dyn Widget>>,
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
@@ -322,6 +324,8 @@ pub struct BrowserWidget {
     site: crate::site_controls::SiteControls,
     site_panel: Option<Box<dyn Widget>>,
     pending_chrome_focus: Option<(NodeId, &'static str)>,
+    private_window_request: ui::LocalState<bool>,
+    private_window_notice: Option<String>,
     window_scale: f32,
     native_closed: bool,
     close_blocked: bool,
@@ -435,7 +439,11 @@ impl BrowserWidget {
     /// Live-mode widget with the default engine (WPE `WebKit` where the
     /// backend is available, the deterministic test engine otherwise).
     pub fn new() -> Self {
-        Self::with_engine(default_engine(), false)
+        Self::new_with_mode(BrowsingMode::Normal)
+    }
+
+    pub fn new_with_mode(mode: BrowsingMode) -> Self {
+        Self::with_engine_mode(default_engine(mode), false, mode)
     }
 
     /// Headless widget for `--shots`: test engine, pre-navigated to a
@@ -485,6 +493,12 @@ impl BrowserWidget {
     /// Widget over an explicit engine — used by tests.
     pub(crate) fn is_headless(&self) -> bool {
         self.headless
+    }
+    pub(crate) fn browsing_mode(&self) -> BrowsingMode {
+        self.browsing_mode
+    }
+    pub(crate) fn request_private_window(&self) {
+        self.private_window_request.set(true);
     }
     pub(crate) fn tab_url(&self) -> &str {
         if self.navigation_deferred || self.current_uri.is_empty() {
@@ -582,27 +596,37 @@ impl BrowserWidget {
     pub(crate) fn inherit_workspace_state(&mut self, other: &Self) {
         self.window_scale = other.window_scale;
         self.capabilities.share_downloads(&other.capabilities);
+        self.site.share_runtime_state(&other.site);
     }
     pub(crate) fn refresh_shared_history(&mut self) {
-        if !self.headless {
+        if !self.headless && self.browsing_mode.persists_personal_state() {
             self.history = History::load();
         }
     }
 
     pub fn with_engine(engine: SharedEngine, headless: bool) -> Self {
+        Self::with_engine_mode(engine, headless, BrowsingMode::Normal)
+    }
+
+    pub fn with_engine_mode(
+        engine: SharedEngine,
+        headless: bool,
+        browsing_mode: BrowsingMode,
+    ) -> Self {
         // Persisted state; `load()` returns defaults/empty when absent, so
         // `--shots` runs are unaffected by (and don't write) real files.
-        let settings = if headless {
+        let persistent = !headless && browsing_mode.persists_personal_state();
+        let settings = if !persistent {
             Settings::default()
         } else {
             Settings::load()
         };
-        let history = if headless {
+        let history = if !persistent {
             History::default()
         } else {
             History::load()
         };
-        let bookmarks = if headless {
+        let bookmarks = if !persistent {
             Bookmarks::default()
         } else {
             Bookmarks::load()
@@ -618,6 +642,7 @@ impl BrowserWidget {
         Self {
             rect: Rect::ZERO,
             engine,
+            browsing_mode,
             composed: None,
             bootstrap_done: false,
             headless,
@@ -627,6 +652,8 @@ impl BrowserWidget {
             site: crate::site_controls::SiteControls::default(),
             site_panel: None,
             pending_chrome_focus: None,
+            private_window_request: ui::LocalState::new(false),
+            private_window_notice: None,
             window_scale: 1.0,
             native_closed: false,
             close_blocked: false,
@@ -650,7 +677,7 @@ impl BrowserWidget {
             forced_loading: false,
             settings,
             capabilities: crate::capabilities::Capabilities::default(),
-            startup_extensions: if headless {
+            startup_extensions: if !persistent {
                 Vec::new()
             } else {
                 crate::extensions::approved_paths()
@@ -942,6 +969,7 @@ impl BrowserWidget {
         let previous = self.history.clone();
         self.history.clear();
         if !self.headless
+            && self.browsing_mode.persists_personal_state()
             && let Err(error) = (self.history_save)(&self.history)
         {
             self.history = previous;
@@ -1552,6 +1580,26 @@ impl BrowserWidget {
         } else {
             history_pause_btn
         };
+        let private_request = self.private_window_request.clone();
+        let private_window_btn = Button::new(
+            "browser.private-window",
+            if self.compact_chrome { "" } else { "Private" },
+            None,
+        )
+        .with_icon(Icon::Shield)
+        .with_accessible_name(if self.browsing_mode.is_private() {
+            "Private window; open another private window"
+        } else {
+            "New Private Window"
+        })
+        .tooltip("New Private Window (Cmd+Shift+N)")
+        .with_size(if self.compact_chrome { 33.0 } else { 92.0 }, 40.0)
+        .on_effect(move || private_request.set(true));
+        let private_window_btn = if self.browsing_mode.is_private() {
+            private_window_btn.primary()
+        } else {
+            private_window_btn
+        };
 
         // `no_wrap` keeps the address input on the same line as the
         // buttons (a wrapping row would push the 100%-width input onto
@@ -1635,6 +1683,9 @@ impl BrowserWidget {
             toolbar = toolbar.push(Box::new(self.daily.launcher()));
             toolbar = toolbar.push(Box::new(self.daily.zoom_reset()));
         }
+        if !self.compact_chrome {
+            toolbar = toolbar.push(Box::new(private_window_btn));
+        }
         toolbar = toolbar.push(Box::new(settings_btn));
 
         // The web view must reach the window edges — no border, no gap.
@@ -1646,6 +1697,22 @@ impl BrowserWidget {
             .with_no_padding()
             .with_gap(0.0)
             .push(Box::new(Container::new().with_child(Box::new(toolbar))));
+        if self.browsing_mode.is_private() {
+            column = column.push(Box::new(Container::new().with_background().with_child(
+                Box::new(
+                    Text::new("Private window — browsing data is removed when this window closes. Files you download remain.")
+                        .with_id("browser.private-indicator")
+                        .with_size(13.0),
+                ),
+            )));
+        }
+        if let Some(message) = &self.private_window_notice {
+            column = column.push(Box::new(
+                Container::new()
+                    .with_background()
+                    .with_child(Box::new(Text::new(message).with_size(13.0))),
+            ));
+        }
         if self.close_blocked {
             column = column.push(Box::new(Container::new().with_child(Box::new(
                 Text::new("This tab has an active download. Finish or cancel it in Library → Downloads, then close the tab.").with_size(13.0)
@@ -1673,7 +1740,8 @@ impl BrowserWidget {
                 SettingsPane::with_settings(&self.settings)
                     .with_presentation(self.settings_presentation.clone())
                     .with_action_bindings(self.settings_action_bindings())
-                    .with_history_clear_error(self.history_clear_error.clone()),
+                    .with_history_clear_error(self.history_clear_error.clone())
+                    .with_private_window_request(self.private_window_request.clone()),
             )
         } else if self.show_library {
             self.build_library_composition()
@@ -2172,7 +2240,7 @@ impl BrowserWidget {
         if incoming != self.bookmarks {
             self.bookmarks = incoming;
             self.search_index.invalidate();
-            if !self.headless {
+            if !self.headless && self.browsing_mode.persists_personal_state() {
                 let _ = self.bookmarks.save();
             }
             self.structure_dirty = true;
@@ -2225,7 +2293,7 @@ impl BrowserWidget {
                     .send(WebViewCommand::SetClearOnExit(next.clear_on_exit));
             }
             self.settings = next;
-            if !self.headless {
+            if !self.headless && self.browsing_mode.persists_personal_state() {
                 self.settings.save();
             }
         }
@@ -2445,6 +2513,7 @@ impl BrowserWidget {
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
                     if !self.headless
+                        && self.browsing_mode.persists_personal_state()
                         && !self.history_paused()
                         && self.current_uri.starts_with("http")
                     {
@@ -2922,11 +2991,33 @@ impl Default for BrowserWidget {
 
 /// Live browsing always uses a real engine. WPE is an explicit migration
 /// option; deterministic rendering is confined to `new_headless`.
-fn default_engine() -> SharedEngine {
+fn default_engine(mode: BrowsingMode) -> SharedEngine {
     #[cfg(feature = "wpe")]
     if std::env::var("QOS_BROWSER_ENGINE").as_deref() == Ok("wpe") {
+        if mode.is_private() {
+            return engine_or_error(
+                crate::storage::explicit_root()
+                    .ok_or_else(|| "Private browser root was not configured".to_string())
+                    .and_then(|root| {
+                        ui::webview::chromium::UnavailableEngine::new_with_private_root(
+                            "Private windows require the Chromium engine; WPE private storage is unavailable."
+                                .into(),
+                            root,
+                        )
+                    })
+                    .map(|engine| engine as SharedEngine),
+            );
+        }
         return engine_or_error(
             ui::webview::wpe::WpeEngine::new().map(|engine| engine as SharedEngine),
+        );
+    }
+    if mode.is_private() {
+        return engine_or_error(
+            crate::storage::explicit_root()
+                .ok_or_else(|| "Private browser root was not configured".to_string())
+                .and_then(ui::webview::chromium::ChromiumEngine::new_private)
+                .map(|engine| engine as SharedEngine),
         );
     }
     if let Some(root) = crate::storage::explicit_root() {
@@ -2959,6 +3050,9 @@ impl Widget for BrowserWidget {
         _state: &AutoCommit,
         _root: &ObjId,
     ) -> Option<ui::collaboration::ContinuationMetadata> {
+        if self.browsing_mode.is_private() {
+            return None;
+        }
         let url = self.continuation_url()?;
         let bytes = serde_json::to_vec(&serde_json::json!({ "url": url })).ok()?;
         Some(ui::collaboration::ContinuationMetadata {
@@ -2973,6 +3067,9 @@ impl Widget for BrowserWidget {
         _state: &mut AutoCommit,
         _root: &ObjId,
     ) -> bool {
+        if self.browsing_mode.is_private() {
+            return false;
+        }
         if metadata.schema_version != 1 {
             return false;
         }
@@ -3597,13 +3694,21 @@ impl Widget for BrowserWidget {
         reason = "Browser's frame-level input routing remains ordered in one place."
     )]
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if self.private_window_request.get() {
+            self.private_window_request.set(false);
+            self.private_window_notice = crate::private_window::launch().err();
+            self.structure_dirty = true;
+        }
         let paused = self.history_paused();
         if self.observed_history_paused != paused {
             self.observed_history_paused = paused;
             self.structure_dirty = true;
         }
         if !self.bootstrap_done {
-            self.site.initialize(&self.engine, !self.headless);
+            self.site.initialize(
+                &self.engine,
+                !self.headless && self.browsing_mode.persists_personal_state(),
+            );
             if !self.headless {
                 self.engine
                     .send(WebViewCommand::SetClearOnExit(self.settings.clear_on_exit));
@@ -6975,11 +7080,55 @@ mod tests {
             Some("https://example.test/reading")
         );
     }
+
+    #[test]
+    fn private_mode_has_empty_personal_state_and_no_continuation_channel() {
+        let mut widget = BrowserWidget::with_engine_mode(
+            TestEngine::new(),
+            false,
+            crate::browsing_mode::BrowsingMode::Private,
+        );
+        assert!(widget.history.is_empty());
+        assert!(widget.bookmarks.entries().is_empty());
+        assert_eq!(widget.settings, Settings::default());
+        widget
+            .history
+            .record_at("https://private.test", "Private", 1);
+        widget.clear_history_durably().unwrap();
+        assert!(widget.history.is_empty());
+        let mut document = AutoCommit::new();
+        assert!(
+            widget
+                .continuation_metadata(&document, &automerge::ROOT)
+                .is_none()
+        );
+        let metadata = ui::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: br#"{"url":"https://normal.test"}"#.to_vec(),
+        };
+        assert!(!widget.restore_continuation_metadata(&metadata, &mut document, &automerge::ROOT,));
+    }
+
+    #[test]
+    fn private_indicator_action_stays_visible_in_compact_chrome() {
+        let mut widget = BrowserWidget::with_engine_mode(
+            TestEngine::new(),
+            true,
+            crate::browsing_mode::BrowsingMode::Private,
+        );
+        widget.debug_set_viewport_width(390);
+        layout_at(&mut widget, 390.0, 844.0);
+        let indicator = widget.find_rect("browser.private-indicator").unwrap();
+        assert!(indicator.width() > 0.0 && indicator.height() > 0.0);
+    }
 }
 
 impl BrowserWidget {
     pub(crate) fn clear_history_on_workspace_exit(&mut self) {
-        if !self.headless && self.settings.clear_on_exit {
+        if !self.headless
+            && self.browsing_mode.persists_personal_state()
+            && self.settings.clear_on_exit
+        {
             self.history.clear();
             if let Err(error) = self.history.save() {
                 tracing::error!(%error,"Could not clear browser history on exit");

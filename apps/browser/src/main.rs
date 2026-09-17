@@ -47,6 +47,7 @@ extern crate runtime_dylib;
 
 use std::collections::HashMap;
 
+use browser::browsing_mode::BrowsingMode;
 use browser::{BrowserTabStrip, BrowserTabs, BrowserWidget};
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
@@ -107,6 +108,7 @@ pub fn main() {
                 "--app-root",
             ])
             .allowed_flags(&["--probe-pip", "--pip-active"])
+            .allowed_live_flags(&["--private"])
             .max_positionals(1)
             .command_handler(command)
             .live_handler(run_live),
@@ -125,8 +127,65 @@ static LAUNCH_SESSION: std::sync::OnceLock<
     std::sync::Mutex<Result<Option<browser::session::SessionStore>, String>>,
 > = std::sync::OnceLock::new();
 
+#[derive(Clone, Debug)]
+struct LaunchPolicy {
+    mode: BrowsingMode,
+    root: Option<std::path::PathBuf>,
+}
+
+static LAUNCH_POLICY: std::sync::OnceLock<Result<LaunchPolicy, String>> =
+    std::sync::OnceLock::new();
+
+fn requested_browsing_mode(
+    explicit_private: bool,
+    bundle_fallback: Option<&std::ffi::OsStr>,
+) -> BrowsingMode {
+    if explicit_private || bundle_fallback.is_some_and(|value| value == "1") {
+        BrowsingMode::Private
+    } else {
+        BrowsingMode::Normal
+    }
+}
+
+fn prepare_launch(args: &LaunchArgs) -> Result<&'static LaunchPolicy, String> {
+    LAUNCH_POLICY
+        .get_or_init(|| {
+            let mode = requested_browsing_mode(
+                args.has("--private"),
+                std::env::var_os("QOS_BROWSER_PRIVATE").as_deref(),
+            );
+            if mode.is_private() {
+                let root = browser::storage::allocate_private_root()?;
+                let root_text = root
+                    .to_str()
+                    .ok_or_else(|| "Private browser root is not valid UTF-8".to_string())?;
+                if let Err(error) = browser::storage::configure(Some(root_text)) {
+                    if browser::storage::is_owned_private_root(&root) {
+                        let _ = std::fs::remove_dir_all(&root);
+                    }
+                    return Err(error);
+                }
+                Ok(LaunchPolicy {
+                    mode,
+                    root: Some(root),
+                })
+            } else {
+                browser::storage::configure(args.value("--app-root"))?;
+                Ok(LaunchPolicy {
+                    mode,
+                    root: browser::storage::explicit_root().map(std::path::Path::to_owned),
+                })
+            }
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 fn prepare_session(args: &LaunchArgs) -> Result<(), String> {
-    browser::storage::configure(args.value("--app-root"))?;
+    let policy = prepare_launch(args)?;
+    if !policy.mode.allows_session_recovery() {
+        return Ok(());
+    }
     let session = LAUNCH_SESSION.get_or_init(|| {
         std::sync::Mutex::new((|| {
             let root = browser::storage::data_dir().ok_or("Cannot locate browser app root")?;
@@ -140,7 +199,17 @@ fn prepare_session(args: &LaunchArgs) -> Result<(), String> {
 }
 
 fn browser_workspace(args: &LaunchArgs) -> Result<BrowserTabs, LaunchError> {
+    let policy = prepare_launch(args).map_err(LaunchError::Operation)?;
+    if let Some(root) = policy.root.as_deref()
+        && policy.mode.is_private()
+    {
+        tracing::info!(private_root = %root.display(), "Private browser root allocated");
+    }
     prepare_session(args).map_err(LaunchError::Operation)?;
+    let tabs = BrowserTabs::new(browser_widget(args, policy.mode));
+    if policy.mode.is_private() {
+        return Ok(tabs);
+    }
     let store = LAUNCH_SESSION
         .get()
         .and_then(|session| {
@@ -150,12 +219,20 @@ fn browser_workspace(args: &LaunchArgs) -> Result<BrowserTabs, LaunchError> {
                 .and_then(|mut slot| slot.as_mut().ok().and_then(Option::take))
         })
         .ok_or_else(|| LaunchError::Operation("Browser recovery store already attached".into()))?;
-    BrowserTabs::new(browser_widget(args))
-        .with_session(store)
-        .map_err(LaunchError::Operation)
+    tabs.with_session(store).map_err(LaunchError::Operation)
 }
 
 fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    let policy = match prepare_launch(args) {
+        Ok(policy) => policy,
+        Err(error) => return (ui::State::new(), ui::persist::Autosave::disabled(error)),
+    };
+    if policy.mode.is_private() {
+        return (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("Private window state is memory-only"),
+        );
+    }
     if let Err(error) = prepare_session(args) {
         return (ui::State::new(), ui::persist::Autosave::disabled(error));
     }
@@ -184,10 +261,11 @@ fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::pe
     ui::persist::open(id)
 }
 
-fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
-    let mut widget = launch_target(args.positionals()).map_or_else(BrowserWidget::new, |uri| {
-        BrowserWidget::new().with_initial_uri(uri)
-    });
+fn browser_widget(args: &LaunchArgs, mode: BrowsingMode) -> BrowserWidget {
+    let mut widget = launch_target(args.positionals()).map_or_else(
+        || BrowserWidget::new_with_mode(mode),
+        |uri| BrowserWidget::new_with_mode(mode).with_initial_uri(uri),
+    );
     match args.value("--audit-state") {
         Some("error") => widget.debug_show_load_error(),
         Some("history") => widget.debug_show_library("history"),
@@ -823,7 +901,30 @@ fn render_shot_to_png(
 
 #[cfg(test)]
 mod resource_claim_tests {
-    use super::launch_target;
+    use super::{launch_target, requested_browsing_mode};
+    use browser::browsing_mode::BrowsingMode;
+
+    #[test]
+    fn explicit_private_flag_wins_and_environment_one_is_bundle_fallback() {
+        assert_eq!(
+            requested_browsing_mode(true, Some(std::ffi::OsStr::new("0"))),
+            BrowsingMode::Private
+        );
+        assert_eq!(
+            requested_browsing_mode(false, Some(std::ffi::OsStr::new("1"))),
+            BrowsingMode::Private
+        );
+        for fallback in [
+            None,
+            Some(std::ffi::OsStr::new("0")),
+            Some(std::ffi::OsStr::new("true")),
+        ] {
+            assert_eq!(
+                requested_browsing_mode(false, fallback),
+                BrowsingMode::Normal
+            );
+        }
+    }
 
     #[test]
     fn startup_accepts_only_declared_web_schemes_as_one_value() {
