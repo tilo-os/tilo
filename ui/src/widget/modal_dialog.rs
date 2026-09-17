@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use vello::peniko::{BlendMode, Color, Fill};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -21,6 +21,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 
 pub const MAX_DIALOG_WIDTH: f64 = 480.0;
 pub const MAX_DIALOG_HEIGHT: f64 = 320.0;
@@ -188,6 +189,12 @@ pub struct ModalDialog<C: Widget> {
     /// the caret on click. `None` until the first content layout.
     content_taffy: Option<TaffyTree<()>>,
     content_node: Option<NodeId>,
+    /// Visible body lane and its natural height. Long bodies scroll here;
+    /// title and actions deliberately remain outside this viewport.
+    content_viewport: Rect,
+    content_height: f64,
+    content_offset: f64,
+    content_scrollbar: Scrollbar,
     platform: PlatformConventions,
 }
 
@@ -210,6 +217,10 @@ impl<C: Widget> ModalDialog<C> {
             last_cursor: Point::ZERO,
             content_taffy: None,
             content_node: None,
+            content_viewport: Rect::ZERO,
+            content_height: 0.0,
+            content_offset: 0.0,
+            content_scrollbar: Scrollbar::vertical(),
             platform: PlatformConventions::default(),
         }
     }
@@ -380,6 +391,7 @@ impl<C: Widget> ModalDialog<C> {
         if inner.width() <= 0.0 || inner.height() <= 0.0 {
             return;
         }
+        self.content_viewport = inner;
         let mut inner_taffy = TaffyTree::<()>::new();
         let mut inner_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let content_node = self
@@ -397,7 +409,7 @@ impl<C: Widget> ModalDialog<C> {
             content_node,
             Size {
                 width: taffy::AvailableSpace::Definite(inner_w),
-                height: taffy::AvailableSpace::Definite(inner_h),
+                height: taffy::AvailableSpace::MaxContent,
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = inner_map.get(&node_id) {
@@ -407,8 +419,36 @@ impl<C: Widget> ModalDialog<C> {
                 }
             },
         );
-        self.content
-            .apply_layout(&inner_taffy, content_node, Point::new(inner.x0, inner.y0));
+        let natural_h = inner_taffy
+            .layout(content_node)
+            .map_or(inner_h, |layout| layout.size.height)
+            .max(inner_h);
+        // Re-resolve percentage/flex descendants against the actual scroll
+        // canvas. This preserves the old fill-the-body default for short
+        // content while allowing intrinsically tall content to keep its size.
+        let _ = inner_taffy.compute_layout_with_measure(
+            content_node,
+            Size {
+                width: taffy::AvailableSpace::Definite(inner_w),
+                height: taffy::AvailableSpace::Definite(natural_h),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = inner_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, text_renderer) }
+                } else {
+                    Size::ZERO
+                }
+            },
+        );
+        self.content_height = f64::from(natural_h);
+        self.content_offset = self
+            .content_offset
+            .clamp(0.0, (self.content_height - inner.height()).max(0.0));
+        self.content.apply_layout(
+            &inner_taffy,
+            content_node,
+            Point::new(inner.x0, inner.y0 - self.content_offset),
+        );
         self.content_taffy = Some(inner_taffy);
         self.content_node = Some(content_node);
     }
@@ -455,6 +495,27 @@ impl<C: Widget> ModalDialog<C> {
     }
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    fn scroll_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(
+            self.content_height,
+            self.content_viewport.height(),
+            self.content_offset,
+        )
+    }
+
+    fn scrollbar_track(&self) -> Rect {
+        Rect::new(
+            self.content_viewport.x1 - 8.0,
+            self.content_viewport.y0 + 2.0,
+            self.content_viewport.x1 - 2.0,
+            self.content_viewport.y1 - 2.0,
+        )
+    }
+
+    fn set_content_offset(&mut self, offset: f64) {
+        self.content_offset = offset.clamp(0.0, self.scroll_metrics().max_scroll());
     }
 }
 
@@ -640,6 +701,11 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             return;
         }
 
+        // `apply_layout` has no Theme/TextRenderer arguments. Resolve the
+        // body here as well so large type and non-default spacing affect its
+        // natural scroll extent before it is painted.
+        self.place_content(theme, text_renderer);
+
         let backdrop = Color::BLACK.with_alpha_factor(0.7);
         scene.fill(Fill::NonZero, transform, backdrop, None, &self.viewport);
 
@@ -672,8 +738,32 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             None,
         );
 
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.content_viewport,
+        );
         self.content
             .draw(scene, transform, text_renderer, theme, presence);
+        scene.pop_layer();
+
+        let metrics = self.scroll_metrics();
+        if metrics.overflows()
+            && let Some(thumb) = self
+                .content_scrollbar
+                .thumb_rect(self.scrollbar_track(), metrics)
+        {
+            let radius = f64::from(theme.tokens.radii.sm);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &RoundedRect::from_rect(thumb, radius),
+            );
+        }
 
         // Skipped when no action is wired (e.g. an info-only dialog with
         // just the Escape-to-dismiss affordance).
@@ -726,9 +816,30 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let metrics = self.scroll_metrics();
+                let track = self.scrollbar_track();
+                if let Some(offset) =
+                    self.content_scrollbar
+                        .drag_to(track, metrics, self.last_cursor)
+                {
+                    self.set_content_offset(offset);
+                } else {
+                    self.content_scrollbar
+                        .update_hover(track, metrics, self.last_cursor);
+                }
                 // A TextInput only takes a click while hovered, and this
                 // CursorMoved is what arms it.
                 self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.content_viewport.contains(self.last_cursor) =>
+            {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
+                    MouseScrollDelta::PixelDelta(p) => -p.y / scale_factor,
+                };
+                self.set_content_offset(self.content_offset + dy);
+                *handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -815,6 +926,42 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 }
                 *handled = true;
             }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key:
+                            Key::Named(
+                                key @ (NamedKey::PageDown
+                                | NamedKey::PageUp
+                                | NamedKey::Home
+                                | NamedKey::End),
+                            ),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.scroll_metrics().overflows() => {
+                let content_handled = self.forward_to_content(
+                    event,
+                    scale_factor,
+                    *modifiers,
+                    state,
+                    path,
+                    focus_target,
+                );
+                if !content_handled {
+                    let metrics = self.scroll_metrics();
+                    let offset = match key {
+                        NamedKey::PageDown => self.content_offset + metrics.viewport * 0.9,
+                        NamedKey::PageUp => self.content_offset - metrics.viewport * 0.9,
+                        NamedKey::Home => 0.0,
+                        NamedKey::End => metrics.max_scroll(),
+                        _ => self.content_offset,
+                    };
+                    self.set_content_offset(offset);
+                }
+                *handled = true;
+            }
             WindowEvent::KeyboardInput { .. } => {
                 self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
                 *handled = true;
@@ -826,6 +973,24 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             } => {
                 let p = self.last_cursor;
                 // Button rects sit INSIDE the dialog rect, so check first.
+                let metrics = self.scroll_metrics();
+                if metrics.overflows() {
+                    match self
+                        .content_scrollbar
+                        .press(self.scrollbar_track(), metrics, p)
+                    {
+                        PressOutcome::Thumb => {
+                            *handled = true;
+                            return;
+                        }
+                        PressOutcome::Page(offset) => {
+                            self.set_content_offset(offset);
+                            *handled = true;
+                            return;
+                        }
+                        PressOutcome::Miss => {}
+                    }
+                }
                 if self.primary_action.is_some() && self.primary_rect.contains(p) {
                     if let Some(action) = self.primary_action.as_mut() {
                         (action.on_click)();
@@ -849,6 +1014,15 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 *handled = true;
             }
             WindowEvent::MouseInput { .. } => {
+                if matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Released,
+                        ..
+                    }
+                ) {
+                    self.content_scrollbar.release();
+                }
                 // Still forward in-box presses so e.g. a right-click context
                 // affordance in the content can react.
                 if self.rect.contains(self.last_cursor) {
@@ -1076,6 +1250,68 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct TallContent {
+        rect: Rect,
+    }
+
+    impl Widget for TallContent {
+        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(600.0),
+                },
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).copied().unwrap_or_default();
+            self.rect = Rect::new(
+                origin.x,
+                origin.y,
+                origin.x + f64::from(layout.size.width),
+                origin.y + f64::from(layout.size.height),
+            );
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "TallContent"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
     /// SAFETY: opaque `DeviceId` whose all-zero bit pattern is tolerated
     /// by winit — same trick used in `permission_prompt::tests` and in
     /// `shell/tests/e2e_shell_flows.rs::key_press`.
@@ -1211,6 +1447,60 @@ mod tests {
             &mut TextRenderer::new(),
         );
         assert_eq!(dialog.get_rect(), Rect::new(220.0, 230.0, 620.0, 430.0));
+    }
+
+    #[test]
+    fn tall_content_scrolls_inside_body_while_footer_stays_fixed() {
+        let mut dialog = ModalDialog::new("Long setup", TallContent::default())
+            .secondary_action("Cancel", || {})
+            .primary_action("Continue", || {})
+            .open(true);
+        dialog.layout_in(
+            Rect::new(0.0, 0.0, 390.0, 320.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+
+        assert!(dialog.scroll_metrics().overflows());
+        let footer_before = dialog.primary_rect();
+        let content_before = dialog.content().get_rect();
+        let body_center = dialog.content_viewport.center();
+        dispatch(&mut dialog, &cursor_at(body_center));
+        dispatch(
+            &mut dialog,
+            &WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        dialog.layout_in(
+            Rect::new(0.0, 0.0, 390.0, 320.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+
+        assert!(dialog.content_offset > 0.0);
+        assert!(dialog.content().get_rect().y0 < content_before.y0);
+        assert_eq!(dialog.primary_rect(), footer_before);
+        assert!(dialog.primary_rect().y0 >= dialog.content_viewport.y1);
+
+        dispatch(&mut dialog, &key_press_event(NamedKey::End));
+        assert_eq!(dialog.content_offset, dialog.scroll_metrics().max_scroll());
+    }
+
+    #[test]
+    fn short_content_does_not_gain_spurious_scrolling() {
+        let mut dialog = ModalDialog::new("Short", CountingContent::default())
+            .primary_action("Done", || {})
+            .open(true);
+        dialog.layout_in(
+            Rect::new(0.0, 0.0, 390.0, 320.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert!(!dialog.scroll_metrics().overflows());
+        assert_eq!(dialog.content_offset, 0.0);
     }
 
     #[test]

@@ -1187,6 +1187,7 @@ impl Widget for Button {
                 .as_ref()
                 .map(|n| i18n!(n))
                 .or_else(|| self.tooltip.as_ref().map(|t| i18n!(t)))
+                .or_else(|| Some(super::humanize_control_id(&self.id)))
                 .filter(|n| !n.is_empty())
         } else {
             Some(label)
@@ -1812,10 +1813,10 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_icon_only_button_without_name_is_silent() {
+    fn accessibility_icon_only_button_without_name_uses_stable_id() {
         let b = Button::new("id", "", None).with_icon(crate::icons::Icon::Check);
         let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name, None);
+        assert_eq!(node.name.as_deref(), Some("Id"));
     }
 
     #[test]

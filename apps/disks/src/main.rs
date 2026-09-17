@@ -109,8 +109,15 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         }
         _ => {}
     }
-    render_shot_to_png(DisksApp::new(), viewport, narrow, &preset, out)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    render_shot_to_png(
+        DisksApp::new(),
+        viewport,
+        args.text_scale,
+        narrow,
+        &preset,
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 fn live_root() -> Box<dyn Widget> {
@@ -158,6 +165,7 @@ struct Preset {
 fn render_shot_to_png(
     mut widget: DisksApp,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     narrow: bool,
     preset: &Preset,
     out: &std::path::Path,
@@ -169,10 +177,16 @@ fn render_shot_to_png(
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
-    };
+    }
+    .with_text_scale(text_scale.unwrap_or(1.0))
+    .with_reduce_motion(matches!(
+        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 

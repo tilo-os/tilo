@@ -108,15 +108,18 @@ const HEADER_H: f64 = 96.0;
 const ACTIONBAR_H: f64 = 94.0;
 const TAB_H: f64 = 44.0;
 
+/// Extra vertical room required by manually-painted typography. TextRenderer
+/// scales glyphs for accessibility, but this canvas owns its row geometry and
+/// must grow the corresponding line boxes itself.
+fn scaled_stack(base: f64, extra_at_double: f64, text_scale: f32) -> f64 {
+    base + (f64::from(text_scale).clamp(1.0, 2.0) - 1.0) * extra_at_double
+}
+
 /// Below this allocated width (logical px) the drive list stops fitting
 /// beside a readable detail pane, so it collapses from a docked column into
 /// an overlay flap summoned by the hamburger. Matches the shared toolkit's
 /// `DEFAULT_BREAKPOINT`.
 const BREAKPOINT: f64 = 900.0;
-/// The full slide width of the overlay drive list (its column plus the
-/// padding gutters either side), so the eased slide and scrim line up.
-const SIDEBAR_W: f64 = PAD + LIST_W + PAD;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Overview,
@@ -362,6 +365,9 @@ pub struct DisksApp {
     /// Hamburger-toggle and whole-disk-pill hover, checked together each
     /// frame when resolving the overlay's hit targets.
     hover_toggle: HoverToggles,
+    /// Last theme scale observed during layout. All hand-painted vertical
+    /// stacks derive from this so larger text never shares 1x line boxes.
+    text_scale: f32,
 }
 
 /// One-time first-frame setup flags for [`DisksApp`] (part of `DisksApp`).
@@ -423,7 +429,28 @@ impl DisksApp {
             hover_part: None,
             flap: FlapState::open_when_docked(),
             hover_toggle: HoverToggles::default(),
+            text_scale: 1.0,
         }
+    }
+
+    fn card_h(&self) -> f64 {
+        scaled_stack(CARD_H, 72.0, self.text_scale)
+    }
+
+    fn header_h(&self) -> f64 {
+        scaled_stack(HEADER_H, 48.0, self.text_scale)
+    }
+
+    fn actionbar_h(&self) -> f64 {
+        scaled_stack(ACTIONBAR_H, 42.0, self.text_scale)
+    }
+
+    fn list_w(&self) -> f64 {
+        scaled_stack(LIST_W, 120.0, self.text_scale)
+    }
+
+    fn sidebar_w(&self) -> f64 {
+        PAD + self.list_w() + PAD
     }
 
     /// The drive-list layout at the current width: a docked column beside the
@@ -513,10 +540,10 @@ impl DisksApp {
         let dx0 = detail_x0;
         let dx1 = v.x1 - PAD;
         let region_top = TOPBAR_H + PAD;
-        let header = Rect::new(dx0, region_top, dx1, region_top + HEADER_H);
+        let header = Rect::new(dx0, region_top, dx1, region_top + self.header_h());
 
         let (action_bar, action_buttons) = self.compute_action_bar_layout(dx0, dx1, header);
-        let (tabs, tab_top) = Self::compute_tabs_layout(dx0, action_bar);
+        let (tabs, tab_top) = self.compute_tabs_layout(dx0, action_bar);
         let content = Rect::new(dx0, tab_top + TAB_H + PAD, dx1, v.y1 - PAD);
         let (whole_disk_pill, part_segments, part_rows) = self.compute_content_rects(content);
         let modal = self.compute_modal_layout(v);
@@ -560,7 +587,7 @@ impl DisksApp {
             SplitLayout::Docked => {
                 // The list column eases in/out by the reveal so toggling it is
                 // smooth; the detail follows the list's trailing edge.
-                let inset = SIDEBAR_W * self.flap.reveal();
+                let inset = self.sidebar_w() * self.flap.reveal();
                 let sidebar = Rect::new(v.x0, v.y0, v.x0 + inset, v.y1);
                 let detail_x0 = v.x0 + inset + if inset > 0.5 { 0.0 } else { PAD };
                 (
@@ -576,8 +603,8 @@ impl DisksApp {
                 // Detail spans the full width; the list slides in from the
                 // left over a scrim. The hamburger lives in the top bar.
                 let slide = self.flap.slide();
-                let panel_x0 = v.x0 - SIDEBAR_W * (1.0 - slide);
-                let sidebar = Rect::new(panel_x0, v.y0, panel_x0 + SIDEBAR_W, v.y1);
+                let panel_x0 = v.x0 - self.sidebar_w() * (1.0 - slide);
+                let sidebar = Rect::new(panel_x0, v.y0, panel_x0 + self.sidebar_w(), v.y1);
                 let scrim = if self.flap.reveal() > 0.001 {
                     v
                 } else {
@@ -601,15 +628,16 @@ impl DisksApp {
         let list_header = Rect::new(
             list_x0,
             TOPBAR_H + PAD,
-            list_x0 + LIST_W,
+            list_x0 + self.list_w(),
             TOPBAR_H + PAD + LIST_HEADER_H,
         );
-        let list_body = Rect::new(list_x0, list_header.y1, list_x0 + LIST_W, v.y1 - PAD);
+        let list_body = Rect::new(list_x0, list_header.y1, list_x0 + self.list_w(), v.y1 - PAD);
         let mut cards = Vec::new();
         let mut cy = list_body.y0 - self.list_scroll;
         for _ in &self.topo.drives {
-            cards.push(Rect::new(list_x0, cy, list_x0 + LIST_W, cy + CARD_H));
-            cy += CARD_H + CARD_GAP;
+            let card_h = self.card_h();
+            cards.push(Rect::new(list_x0, cy, list_x0 + self.list_w(), cy + card_h));
+            cy += card_h + CARD_GAP;
         }
         (list_header, list_body, cards)
     }
@@ -624,11 +652,16 @@ impl DisksApp {
         dx1: f64,
         header: Rect,
     ) -> (Rect, Vec<(Rect, ActionKind, bool)>) {
-        let action_bar = Rect::new(dx0, header.y1 + 12.0, dx1, header.y1 + 12.0 + ACTIONBAR_H);
+        let action_bar = Rect::new(
+            dx0,
+            header.y1 + 12.0,
+            dx1,
+            header.y1 + 12.0 + self.actionbar_h(),
+        );
         let mut action_buttons = Vec::new();
         let drive_ref = self.drive();
         let btn_h = 44.0;
-        let btn_y = action_bar.y0 + 28.0;
+        let btn_y = action_bar.y0 + scaled_stack(28.0, 15.0, self.text_scale);
         let mut bx = action_bar.x0 + 14.0;
         for a in ActionKind::bar() {
             let w = (a.label().len() as f64) * 8.0 + 30.0;
@@ -641,12 +674,13 @@ impl DisksApp {
 
     /// The tab bar rects, below the action band (part of
     /// [`Self::compute_layout`]).
-    fn compute_tabs_layout(dx0: f64, action_bar: Rect) -> (Vec<(Rect, Tab)>, f64) {
+    fn compute_tabs_layout(&self, dx0: f64, action_bar: Rect) -> (Vec<(Rect, Tab)>, f64) {
         let tab_top = action_bar.y1 + 12.0;
         let mut tabs = Vec::new();
         let mut tx = dx0;
         for t in Tab::all() {
-            let w = (t.title().len() as f64) * 8.2 + 28.0;
+            let w =
+                (t.title().len() as f64) * 8.2 * f64::from(self.text_scale.clamp(1.0, 2.0)) + 28.0;
             tabs.push((Rect::new(tx, tab_top, tx + w, tab_top + TAB_H), t));
             tx += w + 6.0;
         }
@@ -943,7 +977,17 @@ impl DisksApp {
             }
             let selected = i == self.selected;
             let hover = self.hover_card == Some(i);
-            Self::draw_drive_row(scene, tr, theme, t, r, drive, selected, hover);
+            Self::draw_drive_row(
+                scene,
+                tr,
+                theme,
+                t,
+                r,
+                drive,
+                selected,
+                hover,
+                self.text_scale,
+            );
         }
         scene.pop_layer();
     }
@@ -993,6 +1037,7 @@ impl DisksApp {
         drive: &Drive,
         selected: bool,
         hover: bool,
+        text_scale: f32,
     ) {
         let c = &theme.tokens.colors;
         let bg = if selected {
@@ -1027,6 +1072,7 @@ impl DisksApp {
         }
 
         let inset = if selected { 8.0 } else { 0.0 };
+        let line_growth = f64::from(text_scale.clamp(1.0, 2.0));
         // Kind badge.
         let badge = Rect::new(
             r.x0 + 14.0 + inset,
@@ -1067,8 +1113,8 @@ impl DisksApp {
             12.0,
             c.text_dim,
             tx,
-            r.y0 + 63.0,
-            None,
+            r.y0 + 42.0 + 21.0 * line_growth,
+            Some((r.width() - 28.0 - inset) as f32),
             TextWeight::Regular,
         );
 
@@ -1107,6 +1153,7 @@ impl DisksApp {
 
     // ---- detail header -------------------------------------------------
     fn draw_header(
+        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1151,13 +1198,13 @@ impl DisksApp {
             13.0,
             c.text_dim,
             tx,
-            h.y0 + 46.0,
+            h.y0 + 16.0 + 28.0 * f64::from(self.text_scale.clamp(1.0, 2.0)),
             Some((h.width() - 40.0) as f32),
             TextWeight::Regular,
         );
 
         // Health + connection chips.
-        let chip_y = h.y0 + 62.0;
+        let chip_y = h.y0 + 16.0 + 50.0 * f64::from(self.text_scale.clamp(1.0, 2.0));
         let status = drive.smart_status();
         Self::draw_chip(
             scene,
@@ -1239,11 +1286,12 @@ impl DisksApp {
         let sx = bar.x0 + 14.0;
         // Small scope tag.
         let (tw, _) = tr.measure_weighted(scope, 10.5, None, TextWeight::Bold);
+        let tag_h = 18.0 * f64::from(self.text_scale.clamp(1.0, 2.0));
         let tag = Rect::new(
             sx,
             bar.y0 + 9.0,
             sx + f64::from(tw) + 16.0,
-            bar.y0 + 9.0 + 18.0,
+            bar.y0 + 9.0 + tag_h,
         );
         Self::fill_rr(scene, t, tag, 6.0, with_alpha(scope_c, 46));
         Self::txt(
@@ -1326,7 +1374,7 @@ impl DisksApp {
             11.5,
             c.text_dim,
             bar.x0 + 14.0,
-            bar.y1 - 20.0,
+            bar.y1 - scaled_stack(20.0, 10.0, self.text_scale),
             Some((bar.width() - 28.0) as f32),
             TextWeight::Regular,
         );
@@ -1340,7 +1388,7 @@ impl DisksApp {
     fn draw_chip(
         scene: &mut Scene,
         tr: &mut TextRenderer,
-        _theme: &Theme,
+        theme: &Theme,
         t: Affine,
         x: f64,
         y: f64,
@@ -1348,7 +1396,8 @@ impl DisksApp {
         color: Color,
     ) {
         let (w, _) = tr.measure_weighted(label, 12.0, None, TextWeight::Semibold);
-        let r = Rect::new(x, y, x + f64::from(w) + 22.0, y + 24.0);
+        let chip_h = 24.0 * f64::from(theme.text_scale.clamp(1.0, 2.0));
+        let r = Rect::new(x, y, x + f64::from(w) + 22.0, y + chip_h);
         Self::fill_rr(scene, t, r, 12.0, with_alpha(color, 38));
         Self::stroke_rr(scene, t, r, 12.0, with_alpha(color, 120), 1.0);
         Self::txt(
@@ -1358,7 +1407,7 @@ impl DisksApp {
             12.0,
             color,
             x + 11.0,
-            y + 5.0,
+            y + 5.0 * f64::from(theme.text_scale.clamp(1.0, 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -3581,9 +3630,10 @@ impl Widget for DisksApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = theme.text_scale;
         let node = leaf_node(
             taffy,
             Style {
@@ -3656,7 +3706,7 @@ impl Widget for DisksApp {
         let (ch, lh) = match self.drive() {
             Some(d) => (
                 self.content_height(d),
-                n as f64 * CARD_H + n.saturating_sub(1) as f64 * CARD_GAP,
+                n as f64 * self.card_h() + n.saturating_sub(1) as f64 * CARD_GAP,
             ),
             None => (0.0, 0.0),
         };
@@ -3664,7 +3714,8 @@ impl Widget for DisksApp {
         self.list_h = lh;
         let v = self.rect;
         let list_body_h = (v.y1 - PAD) - (TOPBAR_H + PAD + LIST_HEADER_H);
-        let content_top = TOPBAR_H + PAD + HEADER_H + 12.0 + ACTIONBAR_H + 12.0 + TAB_H + PAD;
+        let content_top =
+            TOPBAR_H + PAD + self.header_h() + 12.0 + self.actionbar_h() + 12.0 + TAB_H + PAD;
         let content_avail = (v.y1 - PAD) - content_top;
         self.content_scroll = self
             .content_scroll
@@ -3676,7 +3727,7 @@ impl Widget for DisksApp {
 
         // Detail pane (drawn first; in overlay mode the flap sits on top).
         if let Some(drive) = self.drive() {
-            Self::draw_header(scene, tr, theme, transform, &lay, drive);
+            self.draw_header(scene, tr, theme, transform, &lay, drive);
             self.draw_action_bar(scene, tr, theme, transform, &lay, drive);
             self.draw_tabs(scene, tr, theme, transform, &lay);
             // Content scrolls within its own clip so it stays usable when the
@@ -3711,7 +3762,10 @@ impl Widget for DisksApp {
 
         // Dimming scrim behind the open overlay flap (eased with the reveal).
         if lay.scrim.width() > 0.0 {
-            let alpha = (self.flap.reveal() * 0.5 * 255.0) as u8;
+            // The drawer is a staged single-pane surface, not translucent
+            // decoration. A strong scrim prevents high-contrast detail text
+            // from competing with drive names while the list is open.
+            let alpha = (self.flap.reveal() * 0.78 * 255.0) as u8;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -4707,7 +4761,11 @@ mod tests {
     }
 
     fn layout_at(app: &mut DisksApp, width: f64) {
-        let theme = Theme::dark();
+        layout_at_scale(app, width, 1.0);
+    }
+
+    fn layout_at_scale(app: &mut DisksApp, width: f64, text_scale: f32) {
+        let theme = Theme::dark().with_text_scale(text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = app.build_layout(&mut taffy, &theme, &mut node_map);
@@ -4778,6 +4836,33 @@ mod tests {
         // Cards ride along with the panel.
         assert_eq!(lay.cards.len(), 4);
         assert!((lay.cards[0].x0 - (app.rect.x0 + PAD)).abs() < 1.0);
+    }
+
+    #[test]
+    fn large_text_grows_cards_and_detail_stacks_at_narrow_width() {
+        let (mut app, _doc) = seeded_app();
+        layout_at_scale(&mut app, 768.0, 1.5);
+        app.flap.snap(true);
+        let lay = app.compute_layout();
+
+        assert_eq!(lay.split, SplitLayout::Overlay);
+        assert!(lay.scrim.width() > 0.0);
+        assert!(
+            lay.cards.iter().all(|card| card.height() >= 132.0),
+            "1.5x typography needs independent model, path, and usage lines"
+        );
+        assert!(
+            lay.cards.windows(2).all(|pair| pair[0].y1 < pair[1].y0),
+            "scaled drive cards retain a visible inter-card gutter"
+        );
+        assert!(
+            lay.header.height() >= 120.0 && lay.action_bar.height() >= 115.0,
+            "detail identity and action copy grow with accessible text"
+        );
+        assert!(
+            lay.content.y0 > lay.tabs.iter().map(|(rect, _)| rect.y1).fold(0.0, f64::max),
+            "content begins below the expanded header/action/tab stack"
+        );
     }
 
     #[test]

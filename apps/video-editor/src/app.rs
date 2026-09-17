@@ -147,7 +147,7 @@ const SECTION_H: f64 = INSPECTOR_TARGET;
 const PIP_SCALE: f64 = 0.32;
 const PIP_INSET: f64 = 0.04;
 /// Width of the key control at the head of an animatable inspector row.
-const KEY_BOX: f64 = 20.0;
+const KEY_BOX: f64 = 32.0;
 
 /// The keyboard cursor's ring, in the width every shared widget in `ui` draws
 /// focus at (`Button`, `DataTable`, `IconGrid`, `ToggleGroup` all stroke 2px in
@@ -6177,12 +6177,12 @@ impl VideoEditorApp {
         // line reaches ~15px past it, so the first control label cannot start
         // before `top + 147` without sitting on top of "Source Out".
         let mut y = top;
-        let row = 34.0; // label sits at y, the 9px track at y+19
-        let track_at = |y: f64| Rect::new(x0, y + 19.0, x1, y + 28.0);
+        let row = 68.0; // label/key row, then a distinct full 32px drag band
+        let track_at = |y: f64| Rect::new(x0, y + 27.0, x1, y + 59.0);
         // An animatable row indents its label past a key control at the head.
         // The indent is unconditional so the row does not shuffle sideways the
         // moment a parameter is keyed.
-        let key_at = |y: f64| Rect::new(x0, y - 3.0, x0 + KEY_BOX, y + 15.0);
+        let key_at = |y: f64| Rect::new(x0, y - 8.0, x0 + KEY_BOX, y + 24.0);
 
         if is_video {
             l.opacity = Some(track_at(y));
@@ -6204,8 +6204,8 @@ impl VideoEditorApp {
         }
         // Fade in / out share a row (two half-width tracks).
         let half = (x1 - x0) / 2.0 - 6.0;
-        l.fade_in = Some(Rect::new(x0, y + 19.0, x0 + half, y + 28.0));
-        l.fade_out = Some(Rect::new(x1 - half, y + 19.0, x1, y + 28.0));
+        l.fade_in = Some(Rect::new(x0, y + 27.0, x0 + half, y + 59.0));
+        l.fade_out = Some(Rect::new(x1 - half, y + 27.0, x1, y + 59.0));
         y += row + 2.0;
 
         // Transition segmented control.
@@ -6214,17 +6214,17 @@ impl VideoEditorApp {
         for (i, t) in Transition::ALL.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
             l.transitions
-                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
+                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 51.0)));
         }
-        y += 48.0;
+        y += 60.0;
         // Transition length, only when there is a transition to size.
         if clip.transition != Transition::None {
-            l.transition_len = Some(Rect::new(x0, y + 19.0, x1, y + 28.0));
+            l.transition_len = Some(Rect::new(x0, y + 27.0, x1, y + 59.0));
             y += row;
         }
         // Label color swatches.
         l.colors_y = y + 15.0;
-        let sw = 24.0;
+        let sw = 32.0;
         for i in 0..7u8 {
             let sx0 = x0 + f64::from(i) * (sw + 4.0);
             if sx0 + sw > x1 {
@@ -6240,8 +6240,8 @@ impl VideoEditorApp {
         // and because an audio clip has to be able to reach it too.
         if self.link_affordance().is_some() {
             l.link_label_y = y + 15.0;
-            l.link = Some(Rect::new(x0, y + 20.0, x1, y + 46.0));
-            y += 56.0;
+            l.link = Some(Rect::new(x0, y + 20.0, x1, y + 56.0));
+            y += 66.0;
         }
 
         // ---- collapsible sections ------------------------------------
@@ -6259,9 +6259,9 @@ impl VideoEditorApp {
             for (i, ch) in crate::curve::Channel::ALL.iter().enumerate() {
                 let cx = x0 + i as f64 * cw;
                 l.curve_channels
-                    .push((*ch, Rect::new(cx, y, cx + cw - 3.0, y + 24.0)));
+                    .push((*ch, Rect::new(cx, y, cx + cw - 3.0, y + 36.0)));
             }
-            y += 32.0;
+            y += 44.0;
             // Square, so the diagonal that means "unchanged" really is a
             // diagonal — on a squashed box a curve reads as steeper or
             // flatter than it is.
@@ -6274,8 +6274,8 @@ impl VideoEditorApp {
             l.nums.push((NumField::CurveMix, track_at(y)));
             l.keys.push((Param::CurveMix, key_at(y)));
             y += row;
-            l.curve_reset = Some(Rect::new(x0, y, x1, y + 26.0));
-            y += 34.0;
+            l.curve_reset = Some(Rect::new(x0, y, x1, y + 36.0));
+            y += 44.0;
         }
         // Geometry, video only — an audio clip has no picture to place.
         if is_video && header(&mut l, &mut y, Section::Transform) {
@@ -6304,9 +6304,9 @@ impl VideoEditorApp {
                 [NumField::CropTop, NumField::CropBottom],
             ] {
                 l.nums
-                    .push((pair[0], Rect::new(x0, y + 19.0, x0 + half, y + 28.0)));
+                    .push((pair[0], Rect::new(x0, y + 27.0, x0 + half, y + 59.0)));
                 l.nums
-                    .push((pair[1], Rect::new(x1 - half, y + 19.0, x1, y + 28.0)));
+                    .push((pair[1], Rect::new(x1 - half, y + 27.0, x1, y + 59.0)));
                 y += row;
             }
             // Anchor: the point scale and rotation turn about. Nine presets
@@ -6321,9 +6321,9 @@ impl VideoEditorApp {
                 for (col, ax) in ANCHOR_STOPS.iter().enumerate() {
                     let cx = x0 + col as f64 * cell;
                     l.anchor
-                        .push(((*ax, ay), Rect::new(cx, y, cx + cell - 3.0, y + 22.0)));
+                        .push(((*ax, ay), Rect::new(cx, y, cx + cell - 3.0, y + 36.0)));
                 }
-                y += 25.0;
+                y += 39.0;
             }
             y += 6.0;
             // Picture-in-picture, as the four corners it is actually used for.
@@ -6340,11 +6340,11 @@ impl VideoEditorApp {
             {
                 let bx = x0 + i as f64 * (bw + 6.0);
                 l.pip
-                    .push((label, corner, Rect::new(bx, y, bx + bw, y + 26.0)));
+                    .push((label, corner, Rect::new(bx, y, bx + bw, y + 36.0)));
             }
-            y += 32.0;
-            l.reset_transform = Some(Rect::new(x0, y, x1, y + 26.0));
-            y += 34.0;
+            y += 44.0;
+            l.reset_transform = Some(Rect::new(x0, y, x1, y + 36.0));
+            y += 44.0;
         }
         // Rate and direction.
         if header(&mut l, &mut y, Section::Speed) {
@@ -6354,11 +6354,11 @@ impl VideoEditorApp {
             for (i, rate) in SPEED_PRESETS.iter().enumerate() {
                 let px0 = x0 + i as f64 * pw;
                 l.speed_presets
-                    .push((*rate, Rect::new(px0, y, px0 + pw - 3.0, y + 24.0)));
+                    .push((*rate, Rect::new(px0, y, px0 + pw - 3.0, y + 36.0)));
             }
-            y += 32.0;
-            l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
-            y += 34.0;
+            y += 44.0;
+            l.reverse = Some(Rect::new(x0, y, x1, y + 36.0));
+            y += 44.0;
         }
         // The lane's own fader and pan. Present for a picture clip as well as
         // an audio one: a shot on a video track carries its source's sound,
@@ -6381,8 +6381,8 @@ impl VideoEditorApp {
                 .selected_track()
                 .is_some_and(crate::model::Track::mix_is_set)
             {
-                l.mix_reset = Some(Rect::new(x0, y, x1, y + 26.0));
-                y += 34.0;
+                l.mix_reset = Some(Rect::new(x0, y, x1, y + 36.0));
+                y += 44.0;
             } else {
                 y += 4.0;
             }
@@ -6393,15 +6393,15 @@ impl VideoEditorApp {
         if is_video {
             let open = header(&mut l, &mut y, Section::Key);
             if open {
-                l.key_enable = Some(Rect::new(x0, y, x1, y + 26.0));
-                y += 34.0;
+                l.key_enable = Some(Rect::new(x0, y, x1, y + 36.0));
+                y += 44.0;
                 if clip.key.enabled {
                     // The caption's own line, then the swatches under it —
                     // the same 20px the Crop caption takes, so the two read
                     // as one convention rather than two.
                     l.key_color_y = y;
                     y += 20.0;
-                    let sw = 26.0;
+                    let sw = 32.0;
                     for (i, (_, col)) in crate::model::KEY_PRESETS.iter().enumerate() {
                         let sx = x0 + i as f64 * (sw + 5.0);
                         if sx + sw > x1 {
@@ -6440,9 +6440,9 @@ impl VideoEditorApp {
                 for (i, s) in crate::model::MaskShape::ALL.iter().enumerate() {
                     let sx = x0 + i as f64 * mw;
                     l.mask_shapes
-                        .push((*s, Rect::new(sx, y, sx + mw - 3.0, y + 24.0)));
+                        .push((*s, Rect::new(sx, y, sx + mw - 3.0, y + 36.0)));
                 }
-                y += 32.0;
+                y += 44.0;
                 if clip.mask.is_active() {
                     for f in [
                         NumField::MaskX,
@@ -6459,9 +6459,9 @@ impl VideoEditorApp {
                         y += row;
                     }
                     let hw = (x1 - x0) / 2.0 - 4.0;
-                    l.mask_fit = Some(Rect::new(x0, y, x0 + hw, y + 26.0));
-                    l.mask_invert = Some(Rect::new(x1 - hw, y, x1, y + 26.0));
-                    y += 34.0;
+                    l.mask_fit = Some(Rect::new(x0, y, x0 + hw, y + 36.0));
+                    l.mask_invert = Some(Rect::new(x1 - hw, y, x1, y + 36.0));
+                    y += 44.0;
                 }
             }
         }
@@ -6480,14 +6480,14 @@ impl VideoEditorApp {
             for (i, a) in TextAlign::ALL.iter().enumerate() {
                 let ax = x0 + i as f64 * aw;
                 l.title_align
-                    .push((*a, Rect::new(ax, y, ax + aw - 3.0, y + 24.0)));
+                    .push((*a, Rect::new(ax, y, ax + aw - 3.0, y + 36.0)));
             }
             // The caption above the chooser needs its own line: at the
             // ordinary 16px gap it landed on the alignment row's buttons.
-            y += 32.0 + 22.0;
-            l.title_font = Some(Rect::new(x0, y, x1, y + 28.0));
-            y += 36.0 + 16.0;
-            let sw = 24.0;
+            y += 44.0 + 22.0;
+            l.title_font = Some(Rect::new(x0, y, x1, y + 36.0));
+            y += 44.0 + 16.0;
+            let sw = 32.0;
             for (i, col) in TITLE_COLORS.iter().enumerate() {
                 let sx = x0 + i as f64 * (sw + 4.0);
                 if sx + sw > x1 {
@@ -6498,9 +6498,9 @@ impl VideoEditorApp {
             }
             y += sw + 12.0;
             let hw = (x1 - x0) / 2.0 - 4.0;
-            l.title_bold = Some(Rect::new(x0, y, x0 + hw, y + 26.0));
-            l.title_italic = Some(Rect::new(x1 - hw, y, x1, y + 26.0));
-            y += 34.0;
+            l.title_bold = Some(Rect::new(x0, y, x0 + hw, y + 36.0));
+            l.title_italic = Some(Rect::new(x1 - hw, y, x1, y + 36.0));
+            y += 44.0;
             l.nums.push((NumField::TitleBackdrop, track_at(y)));
             y += row + 4.0;
         }
@@ -6511,17 +6511,17 @@ impl VideoEditorApp {
             l.effects_label_y = y;
             if open {
                 for i in 0..clip.effects.len() {
-                    let row = Rect::new(x0, y, x1, y + 24.0);
+                    let row = Rect::new(x0, y, x1, y + 40.0);
                     l.effect_rows.push(row);
                     // The row's key control joins the panel's one list of
                     // them, so drawing, hit-testing and the keyframe menu all
                     // reach it without a second code path.
                     l.keys
                         .push((Param::EffectAmount(i as u32), Self::effect_row_parts(row).0));
-                    y += 28.0;
+                    y += 44.0;
                 }
-                l.add_effect = Rect::new(x0, y, x0 + 132.0, y + 24.0);
-                y += 34.0;
+                l.add_effect = Rect::new(x0, y, x0 + 132.0, y + 36.0);
+                y += 44.0;
             }
         }
         // Markers: every marked instant on the timeline, the project's own and
@@ -6530,9 +6530,9 @@ impl VideoEditorApp {
         self.layout_project(&mut l, x0, x1, &mut y);
         // Actions.
         y += 6.0;
-        l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 28.0);
-        l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 28.0);
-        y += 34.0;
+        l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 36.0);
+        l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 36.0);
+        y += 44.0;
         l.content_height = (y - top) * scale;
         l.valid = true;
         l.scale_from(r.inspector.x0, r.inspector.y0, scale);
@@ -7012,26 +7012,17 @@ impl VideoEditorApp {
     /// it costs is width off the effect's name, and the names are one word.
     fn effect_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
         let cy = row.center().y;
-        let scale = (row.height() / 24.0).clamp(1.0, 2.0);
-        // 22px tall targets — the row is 24px, so this is as close to the
-        // toolkit's minimum as the row allows, and a real improvement on the
-        // 16x18 boxes these were.
-        let h = 11.0 * scale;
-        let key = Rect::new(
-            row.x0,
-            cy - 9.0 * scale,
-            row.x0 + KEY_BOX * scale,
-            cy + 9.0 * scale,
-        );
-        let up = Rect::new(key.x1 + 4.0 * scale, cy - h, key.x1 + 26.0 * scale, cy + h);
-        let down = Rect::new(up.x1 + scale, cy - h, up.x1 + 23.0 * scale, cy + h);
-        let remove = Rect::new(row.x1 - 22.0 * scale, cy - h, row.x1, cy + h);
-        let slider = Rect::new(
-            row.x1 - 96.0 * scale,
-            cy - 4.0 * scale,
-            row.x1 - 30.0 * scale,
-            cy + 4.0 * scale,
-        );
+        // Every icon and drag surface owns a full pointer target. The glyphs
+        // remain deliberately small; generous geometry must not make this
+        // dense stack look like a toolbar of oversized symbols.
+        let h = row.height().max(32.0).min(40.0);
+        let y0 = cy - h / 2.0;
+        let y1 = cy + h / 2.0;
+        let key = Rect::new(row.x0, y0, row.x0 + 32.0, y1);
+        let up = Rect::new(key.x1 + 4.0, y0, key.x1 + 36.0, y1);
+        let down = Rect::new(up.x1 + 2.0, y0, up.x1 + 34.0, y1);
+        let remove = Rect::new(row.x1 - 32.0, y0, row.x1, y1);
+        let slider = Rect::new(row.x1 - 106.0, cy - 16.0, row.x1 - 38.0, cy + 16.0);
         (key, up, down, slider, remove)
     }
 
@@ -7511,6 +7502,9 @@ impl VideoEditorApp {
                 | ShotScenario::Keyframes
                 | ShotScenario::Markers
                 | ShotScenario::Effects
+                | ShotScenario::KeyAndMask
+                | ShotScenario::Curves
+                | ShotScenario::ProjectFormat
                 | ShotScenario::FocusInspector
                 | ShotScenario::LinkedAudio
                 | ShotScenario::Mix
@@ -21649,6 +21643,14 @@ mod tests {
             .iter()
             .find(|((w, h), _)| (*w, *h) == (1080, 1920))
             .expect("the panel offers a vertical frame");
+        reveal_inspector_rect_for_test(&mut app, &r, rect);
+        let rect = app
+            .inspector_layout(&r)
+            .project_frames
+            .iter()
+            .find(|((w, h), _)| (*w, *h) == (1080, 1920))
+            .map(|(_, rect)| *rect)
+            .expect("vertical frame remains present");
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         assert_eq!((app.project.width, app.project.height), (w, h));
 
@@ -21659,6 +21661,14 @@ mod tests {
             .iter()
             .find(|(rate, _)| (rate - 24.0).abs() < 1e-6)
             .expect("the panel offers 24");
+        reveal_inspector_rect_for_test(&mut app, &r, rect);
+        let rect = app
+            .inspector_layout(&r)
+            .project_rates
+            .iter()
+            .find(|(rate, _)| (rate - 24.0).abs() < 1e-6)
+            .map(|(_, rect)| *rect)
+            .expect("24 fps remains present");
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         assert!((app.project.fps - rate).abs() < 1e-9);
     }
@@ -26887,6 +26897,9 @@ mod tests {
         app.inspector_scroll = app.inspector_max_scroll(&r);
         let l = app.inspector_layout(&r);
         // Move the second effect up via its ▲.
+        let row = l.effect_rows[1];
+        reveal_inspector_rect_for_test(&mut app, &r, row);
+        let l = app.inspector_layout(&r);
         let (_k, up, _d, _s, _x) = VideoEditorApp::effect_row_parts(l.effect_rows[1]);
         assert!(
             r.inspector.contains(up.center()),
@@ -27612,6 +27625,176 @@ mod tests {
             !l.sections.iter().any(|(s, _)| *s == Section::Curves),
             "and no header claiming otherwise",
         );
+    }
+
+    #[test]
+    fn every_inspector_control_keeps_a_full_pointer_target_at_narrow_and_wide_sizes() {
+        // This inventories production `InspectorLayout`, including controls
+        // that only exist for an enabled key/mask, a transition, a title, or
+        // a populated effects stack. A new inspector option must join this
+        // assertion rather than quietly returning to a glyph-sized target.
+        for (width, height) in [(720.0, 820.0), (1440.0, 960.0)] {
+            let (mut app, mut doc) = app_sized(width, height);
+            app.collapsed.clear();
+            let visual = app
+                .project
+                .clips
+                .iter()
+                .find(|clip| {
+                    app.project
+                        .media(clip.media)
+                        .is_none_or(|media| media.kind.is_visual())
+                })
+                .map(|clip| clip.id)
+                .expect("fixture has a visual clip");
+            app.selection.select_only(visual);
+            app.edit_selected(&mut doc, |clip| {
+                clip.transition = Transition::CrossDissolve;
+                clip.key.enabled = true;
+                clip.mask.shape = crate::model::MaskShape::Rect;
+                clip.add_effect(EffectKind::Sepia);
+                clip.add_effect(EffectKind::Vignette);
+            });
+
+            let assert_target = |name: &str, rect: Rect| {
+                assert!(
+                    rect.width() >= 32.0 && rect.height() >= 32.0,
+                    "{width}x{height} {name} target is smaller than 32px: {rect:?}",
+                );
+            };
+            let l = app.inspector_layout(&app.regions());
+            for (name, rect) in [
+                ("opacity", l.opacity),
+                ("brightness", l.brightness),
+                ("contrast", l.contrast),
+                ("saturation", l.saturation),
+                ("fade in", l.fade_in),
+                ("fade out", l.fade_out),
+                ("transition length", l.transition_len),
+                ("link", l.link),
+                ("curve reset", l.curve_reset),
+                ("transform reset", l.reset_transform),
+                ("reverse", l.reverse),
+                ("mix reset", l.mix_reset),
+                ("key enable", l.key_enable),
+                ("key picker", l.key_pick),
+                ("mask fit", l.mask_fit),
+                ("mask invert", l.mask_invert),
+            ] {
+                if let Some(rect) = rect {
+                    assert_target(name, rect);
+                }
+            }
+            let target_groups: [(&str, Vec<Rect>); 11] = [
+                (
+                    "transition",
+                    l.transitions.iter().map(|(_, r)| *r).collect(),
+                ),
+                ("label colour", l.colors.iter().map(|(_, r)| *r).collect()),
+                ("section", l.sections.iter().map(|(_, r)| *r).collect()),
+                ("number slider", l.nums.iter().map(|(_, r)| *r).collect()),
+                ("keyframe", l.keys.iter().map(|(_, r)| *r).collect()),
+                (
+                    "curve channel",
+                    l.curve_channels.iter().map(|(_, r)| *r).collect(),
+                ),
+                ("anchor", l.anchor.iter().map(|(_, r)| *r).collect()),
+                (
+                    "picture in picture",
+                    l.pip.iter().map(|(_, _, r)| *r).collect(),
+                ),
+                (
+                    "speed preset",
+                    l.speed_presets.iter().map(|(_, r)| *r).collect(),
+                ),
+                ("key colour", l.key_colors.iter().map(|(_, r)| *r).collect()),
+                (
+                    "mask shape",
+                    l.mask_shapes.iter().map(|(_, r)| *r).collect(),
+                ),
+            ];
+            for (name, rects) in target_groups {
+                for rect in rects {
+                    assert_target(name, rect);
+                }
+            }
+            let mut drag_bands: Vec<Rect> = l.nums.iter().map(|(_, rect)| *rect).collect();
+            drag_bands.extend(
+                [
+                    l.opacity,
+                    l.brightness,
+                    l.contrast,
+                    l.saturation,
+                    l.fade_in,
+                    l.fade_out,
+                    l.transition_len,
+                ]
+                .into_iter()
+                .flatten(),
+            );
+            for (_, key) in &l.keys {
+                for band in &drag_bands {
+                    assert!(
+                        key.y1 <= band.y0 || band.y1 <= key.y0,
+                        "key and drag band must never answer the same point: {key:?} / {band:?}",
+                    );
+                }
+            }
+            for row in &l.effect_rows {
+                assert_target("effect row", *row);
+                let (key, up, down, slider, remove) = VideoEditorApp::effect_row_parts(*row);
+                for (name, rect) in [
+                    ("effect key", key),
+                    ("effect up", up),
+                    ("effect down", down),
+                    ("effect slider", slider),
+                    ("effect remove", remove),
+                ] {
+                    assert_target(name, rect);
+                }
+            }
+            for (name, rect) in [
+                ("add effect", l.add_effect),
+                ("split", l.split),
+                ("delete", l.delete),
+            ] {
+                assert_target(name, rect);
+            }
+
+            // The other two content kinds exercise their distinct branches.
+            let audio = app
+                .project
+                .clips
+                .iter()
+                .find(|clip| {
+                    app.project
+                        .track(clip.track)
+                        .is_some_and(|track| track.kind == TrackKind::Audio)
+                })
+                .map(|clip| clip.id)
+                .expect("fixture has audio");
+            app.selection.select_only(audio);
+            assert_target(
+                "audio volume",
+                app.inspector_layout(&app.regions())
+                    .volume
+                    .expect("audio has volume"),
+            );
+
+            app.add_title(&mut doc);
+            app.title_edit = None;
+            let title_l = app.inspector_layout(&app.regions());
+            assert_target("title words", title_l.title_text.expect("title words"));
+            assert_target("title font", title_l.title_font.expect("title font"));
+            for (_, rect) in &title_l.title_align {
+                assert_target("title alignment", *rect);
+            }
+            for (_, rect) in &title_l.title_colors {
+                assert_target("title colour", *rect);
+            }
+            assert_target("title bold", title_l.title_bold.expect("bold"));
+            assert_target("title italic", title_l.title_italic.expect("italic"));
+        }
     }
 
     #[test]

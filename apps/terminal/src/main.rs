@@ -131,7 +131,7 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .shots
         .as_deref()
         .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
-    render_shot_to_png(&mut widget, viewport, out, scenario)
+    render_shot_to_png(&mut widget, viewport, out, scenario, args.text_scale)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -149,6 +149,7 @@ fn render_shot_to_png(
     viewport: (u32, u32),
     out: &std::path::Path,
     scenario: Option<&str>,
+    text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
@@ -160,16 +161,18 @@ fn render_shot_to_png(
         std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
     );
-    if let Some(scale) = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .ok()
-        .and_then(|raw| raw.parse::<f32>().ok())
-        .filter(|scale| scale.is_finite())
-    {
+    if let Some(scale) = text_scale.or_else(|| {
+        std::env::var("TILO_SHOTS_TEXT_SCALE")
+            .ok()
+            .and_then(|raw| raw.parse::<f32>().ok())
+            .filter(|scale| scale.is_finite())
+    }) {
         theme = theme.with_text_scale(scale);
     }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 

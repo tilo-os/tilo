@@ -38,7 +38,16 @@ fn root() -> Box<dyn Widget> {
 
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
-    let result = args.viewport.map_or_else(
+    // Named scenarios must not depend on the output filename: scenario
+    // discovery promises that `--scenario narrow --shots arbitrary.png`
+    // renders narrow. An explicit viewport remains authoritative so visual
+    // matrices can exercise the exact responsive boundary they requested.
+    let scenario_viewport = match args.scenario.as_deref() {
+        Some("wide") => Some(settings::shots::DEFAULT_SHOTS_VIEWPORT),
+        Some("narrow") => Some(settings::shots::NARROW_SHOTS_VIEWPORT),
+        _ => None,
+    };
+    let result = args.viewport.or(scenario_viewport).map_or_else(
         || settings::shots::render_for_path_with_text_scale(out, args.text_scale),
         |viewport| {
             settings::shots::render_responsive_to_path_with_text_scale(
@@ -67,6 +76,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new(APP_ID, root)
             .shot_handler(render_shot)
+            .scenarios(&["wide", "narrow"])
             .configure_app(configure),
     );
 }
