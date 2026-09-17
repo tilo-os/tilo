@@ -126,11 +126,13 @@ class IdentityTests(unittest.TestCase):
                 bundle = Path(directory) / 'bundle'
                 bundle.mkdir()
                 (bundle / 'cosign.pub').write_text('independently pinned public fixture')
+                original_auth = Path(directory) / 'auth.json'
+                original_auth.write_text('{"auths":{"example":{"auth":"test-secret"}}}')
                 args = SimpleNamespace(source=self.reference, target=self.repository + ':test',
                     architecture='aarch64', revision=self.revision, public_bundle=bundle,
                     manifest_sha256='d' * 64, offline_key_signature=True)
                 with mock.patch.object(source.os, 'getuid', return_value=0), \
-                        mock.patch.dict(source.os.environ, {}, clear=True), \
+                        mock.patch.dict(source.os.environ, {'REGISTRY_AUTH_FILE': str(original_auth)}, clear=True), \
                         mock.patch.object(source.trust, 'validate'), \
                         mock.patch.object(source, 'mounted_identity', return_value='fixture'), \
                         mock.patch.object(source, 'command', side_effect=[json.dumps(self.payload), '',
@@ -143,6 +145,14 @@ class IdentityTests(unittest.TestCase):
                             self.assertEqual(verified.receipt['image_id'], verified.image_id)
                             self.assertEqual(verified.root, Path('/image/root'))
                             self.assertEqual(len(run.call_args_list), 4)
+                            auth_snapshot = verified.auth_file
+                            self.assertIsNotNone(auth_snapshot)
+                            self.assertEqual(auth_snapshot.read_bytes(), original_auth.read_bytes())
+                            for call in run.call_args_list:
+                                self.assertEqual(call.args[1]['REGISTRY_AUTH_FILE'], str(auth_snapshot))
+                            original_auth.write_text('replaced')
+                            self.assertIn('test-secret', auth_snapshot.read_text())
+                            self.assertNotIn('test-secret', json.dumps(verified.receipt))
                             # Replacing the caller's bundle or moving its target
                             # tag cannot change the held consumer inputs.
                             (bundle / 'cosign.pub').write_text('replacement')
@@ -157,6 +167,7 @@ class IdentityTests(unittest.TestCase):
                                      ['podman', 'image', 'unmount', 'c' * 64])
                     self.assertEqual(len(run.call_args_list), 5)
                     self.assertFalse(snapshot.exists())
+                    self.assertFalse(auth_snapshot.exists())
 
 
 if __name__ == '__main__':

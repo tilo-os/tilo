@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from typing import NamedTuple
@@ -31,6 +32,23 @@ class VerifiedSource(NamedTuple):
     root: Path
     public_bundle: Path
     receipt: dict
+    # Context-lifetime private path only; never include it in public receipts.
+    auth_file: Path | None = None
+
+
+def snapshot_auth(original, destination):
+    """Bounded private snapshot shared by verification and its active consumer."""
+    descriptor = os.open(original, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+            raise ValueError('registry auth must be a bounded regular file')
+        contents = handle.read(1024 * 1024 + 1)
+    if not contents or len(contents) > 1024 * 1024:
+        raise ValueError('registry auth must be populated and bounded')
+    with destination.open('xb') as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        handle.write(contents)
 
 
 def inputs(source, target, architecture, revision):
@@ -120,10 +138,10 @@ def verified_source(args):
         shutil.copytree(args.public_bundle, bundle, symlinks=True)
         trust.validate(bundle, args.manifest_sha256)
         # Cosign and Podman must use the same explicitly supplied registry auth.
+        auth = None
         if env.get('REGISTRY_AUTH_FILE'):
             auth = scratch / 'config.json'
-            auth.write_bytes(Path(env['REGISTRY_AUTH_FILE']).read_bytes())
-            auth.chmod(0o600)
+            snapshot_auth(env['REGISTRY_AUTH_FILE'], auth)
             env['DOCKER_CONFIG'] = str(scratch)
             env['REGISTRY_AUTH_FILE'] = str(auth)
         verify_command = ['cosign', 'verify', '--key', str(bundle / 'cosign.pub')]
@@ -150,7 +168,7 @@ def verified_source(args):
                        'manifest_sha256': args.manifest_sha256, 'hardware_profile': profile,
                        'image_id': canonical_id,
                        'transparency_log_required': not args.offline_key_signature}
-            yield VerifiedSource(canonical_id, root, bundle, receipt)
+            yield VerifiedSource(canonical_id, root, bundle, receipt, auth)
         finally:
             command(['podman', 'image', 'unmount', image_id], env)
 

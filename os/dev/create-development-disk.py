@@ -11,17 +11,15 @@ disposability or device isolation. Privileged Podman can access guest devices;
 the runner must enforce the no-passthrough boundary outside this program.
 """
 import argparse
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 import importlib.util
 import json
 import os
 from pathlib import Path
 import platform
 import re
-import stat
 import subprocess
 import sys
-import tempfile
 
 import development_prediction as prediction
 from private_disk_image import PrivateDiskImage
@@ -33,38 +31,6 @@ spec.loader.exec_module(source)
 FLAGS = ('--via-loopback', '--generic-image', '--composefs-backend', '--bootloader',
          '--source-imgref', '--target-imgref', '--enforce-container-sigpolicy', '--run-fetch-check')
 
-
-@contextmanager
-def registry_auth():
-    """Share one private snapshot with verification and the transient installer.
-
-    The CLI is single-threaded; restore its original environment on every exit.
-    Authentication permits reads, never bypasses source/target signature policy.
-    This mount is outside the installation target and is not a build input.
-    """
-    original = os.environ.get('REGISTRY_AUTH_FILE')
-    if not original:
-        yield []
-        return
-    with tempfile.TemporaryDirectory(prefix='tilo-disk-auth-') as temporary:
-        snapshot = Path(temporary) / 'auth.json'
-        descriptor = os.open(original, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(descriptor, 'rb') as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
-                raise ValueError('registry auth must be a bounded regular file')
-            contents = handle.read(1024 * 1024 + 1)
-        if not contents or len(contents) > 1024 * 1024:
-            raise ValueError('registry auth must be populated and bounded')
-        with snapshot.open('xb') as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(contents)
-        os.environ['REGISTRY_AUTH_FILE'] = str(snapshot)
-        try:
-            yield ['--volume', f'{snapshot}:/run/tilo-registry-auth.json:ro',
-                   '--env', 'REGISTRY_AUTH_FILE=/run/tilo-registry-auth.json']
-        finally:
-            os.environ['REGISTRY_AUTH_FILE'] = original
 
 
 def command(argv):
@@ -104,7 +70,11 @@ def guest_inputs(args):
 def create(args):
     guest_inputs(args)
     with ExitStack() as disks:
-        with registry_auth() as auth_args, source.verified_source(args) as verified:
+        with source.verified_source(args) as verified:
+            auth_args = []
+            if verified.auth_file is not None:
+                auth_args = ['--volume', f'{verified.auth_file}:/run/tilo-registry-auth.json:ro',
+                             '--env', 'REGISTRY_AUTH_FILE=/run/tilo-registry-auth.json']
             boot = prediction.verify_prediction(verified.root, verified.public_bundle,
                 args.manifest_sha256, args.architecture, args.generation,
                 args.composefs_digest, args.systemd_version)
