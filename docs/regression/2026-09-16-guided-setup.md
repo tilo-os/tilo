@@ -350,6 +350,17 @@ catalog/download/folder modules and no helper/worker findings. The production
 Desktop catalog remains unreleased. Graphical login, identity completion,
 selected-folder import and returning to the prior desktop are still unproved.
 
+A subsequent real GDM login attempt with a disposable fixture account exposed
+an actual graphical blocker in that local package: qOS reported zero usable DRM
+outputs and returned to the greeter. GNOME rendered successfully for the same
+account before and after the attempt. The connected VM output is `Virtual-1`;
+the existing compositor connector filter rejects names containing `virtual`
+along with writeback connectors. That policy needs a focused regression, fix
+and rebuilt-package verification. It is not acceptable to substitute the
+passing headless startup test for graphical login evidence. Temporary GDM
+autologin settings were restored to their original bytes; the original user
+account was not changed and installed package verification remains clean.
+
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
 - Linux interactive wizard, graphical desktop-session lifecycle, and complete boot flow.
 - Internal installer bundle and same-disk protected-partition protocol.
