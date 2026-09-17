@@ -204,7 +204,7 @@ esac
 # not make this check pass.
 policy=/etc/containers/policy.json
 if [ -r "$policy" ] \
-   && grep -Fq '"code.sandbox.example/tilo/tilo"' "$policy" \
+   && grep -Fq '"code.sandbox.example/qos/tilo"' "$policy" \
    && grep -Fq '"type": "sigstoreSigned"' "$policy" \
    && grep -Fq '"keyPath": "/usr/share/tilo/cosign.pub"' "$policy" \
    && [ -s /usr/share/tilo/cosign.pub ]; then

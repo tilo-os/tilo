@@ -30,7 +30,7 @@ jobs:
     container:
       # Keep this identical to nightly.yml. Updating visual baselines under a
       # mutable image would silently bless changes in fonts or Mesa.
-      image: code.sandbox.example/tilo/tilo-builder@sha256:e3b372adc7f2a6eb624c7a1993d7131dc87654b11189ab1982ec165a493c421c
+      image: code.sandbox.example/qos/qos-builder@sha256:e3b372adc7f2a6eb624c7a1993d7131dc87654b11189ab1982ec165a493c421c
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

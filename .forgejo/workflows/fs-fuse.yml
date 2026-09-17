@@ -81,7 +81,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 60
     container:
-      image: code.sandbox.example/tilo/tilo-builder:latest
+      image: code.sandbox.example/qos/qos-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -177,7 +177,7 @@ jobs:
     env:
       TILO_FS_FUSE_REQUIRED: "0"
     container:
-      image: code.sandbox.example/tilo/tilo-builder:latest
+      image: code.sandbox.example/qos/qos-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
