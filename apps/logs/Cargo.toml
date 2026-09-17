@@ -24,6 +24,7 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
 tilo-actions = { path = "../../crates/collab/actions" }
+bounded-command = { path = "../../crates/system/bounded-command" }
 automerge.workspace = true
 serde_json.workspace = true
 serde.workspace = true
