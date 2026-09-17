@@ -62,6 +62,7 @@ class BuilderCandidates(unittest.TestCase):
             # registry client, signing key, build or network call is executed.
             stub = '''python3() {
               printf '%s\\n' "$@" > arguments
+              cp "$CONTAINERS_STORAGE_CONF" storage-evidence
               printf 'candidate-reference\\n' > builder-index.txt
             }
             '''
@@ -69,10 +70,16 @@ class BuilderCandidates(unittest.TestCase):
                 ['bash', '-c', stub + step_script(BUILD, 'Verify and publish the tested native builder index')],
                 cwd=work, env={**os.environ, 'BUILDER_REF': ref,
                                'GITHUB_SHA': 'b' * 40, 'GITHUB_RUN_ID': '42',
-                               'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_STEP_SUMMARY': str(work / 'summary')},
+                               'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_STEP_SUMMARY': str(work / 'summary'),
+                               'RUNNER_TEMP': str(work)},
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            storage = (work / 'storage-evidence').read_text()
+            self.assertIn('driver = "vfs"', storage)
+            self.assertIn(f'graphroot = "{work}/tilo-builder-manifests.', storage)
+            self.assertIn(f'runroot = "{work}/tilo-builder-manifests.', storage)
+            self.assertEqual(list(work.glob('tilo-builder-manifests.*')), [])
             arguments = (work / 'arguments').read_text().splitlines()
             return [arguments[i + 1] for i, argument in enumerate(arguments) if argument == '--tag']
 
@@ -84,6 +91,23 @@ class BuilderCandidates(unittest.TestCase):
 
     def test_main_keeps_existing_promotion_policy(self):
         self.assertEqual(self.publication_tags('refs/heads/main'), ['b' * 40, '1.97.1', 'latest'])
+
+    def test_candidate_buildcache_requires_a_full_revision(self):
+        for revision in ['', 'a' * 40, 'latest', 'a' * 39, 'a' * 40 + '\ninjected=value']:
+            with self.subTest(revision=revision), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / 'env'
+                result = subprocess.run(
+                    ['bash', '-c', step_script(BUILD, 'Select an optional candidate buildcache')],
+                    env={**os.environ, 'REQUESTED_CACHE_REVISION': revision,
+                         'GITHUB_SHA': 'b' * 40, 'GITHUB_ENV': str(output)},
+                    text=True, capture_output=True,
+                )
+                if revision in ('', 'a' * 40):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), f'BUILDER_CACHE_REVISION={revision or "b" * 40}\n')
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
 
     def test_both_architectures_and_consumers_keep_acceptance_gates(self):
         self.assertIn('needs: [build, cache-warm]', BUILD)
