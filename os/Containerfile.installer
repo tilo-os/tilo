@@ -52,7 +52,7 @@ RUN printf 'kargs = ["tilo.install"]\n' \
     && /usr/libexec/tilo-uki-cmdline append tilo.luks=000000000000000000000000000000000000000000000 \
     # Reserve one length-stable measured token for per-volume TPM2/FIDO2
     # discovery. tilo-install replaces it after the target LUKS UUID exists.
-    && /usr/libexec/tilo-uki-cmdline append tilo.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000 \
+    && /usr/libexec/tilo-uki-cmdline append tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000 \
     && /usr/libexec/tilo-uki-cmdline append tilo.install \
     # Keep a deterministic installed-target UKI outside bootc's EFI scan path.
     # It seals the same composefs tree but contains no live marker or device UUID.
