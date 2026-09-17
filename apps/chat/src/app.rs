@@ -2739,6 +2739,10 @@ impl Widget for ChatApp {
 
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.queue_realtime_registration();
+        if self.realtime.target_media_ready {
+            self.realtime.target_media_ready = false;
+            let _ = self.realtime_target_media_ready();
+        }
         std::mem::take(&mut self.realtime.requests)
     }
 
@@ -2748,6 +2752,9 @@ impl Widget for ChatApp {
                 Ok(ui::realtime_continuity::RealtimeReply::Registered { session }) => {
                     self.realtime.registration_pending = false;
                     self.realtime.session = Some(session.clone());
+                }
+                Ok(ui::realtime_continuity::RealtimeReply::Accepted) => {
+                    self.realtime.accepted_target = true;
                 }
                 Ok(ui::realtime_continuity::RealtimeReply::Rejected { .. }) | Err(_) => {
                     self.realtime.registration_pending = false;
@@ -2773,6 +2780,19 @@ impl Widget for ChatApp {
                 }
             }
             ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
+                    session,
+                    capture_authorizations,
+                },
+            ) if self
+                .realtime
+                .offer
+                .as_ref()
+                .is_some_and(|(offered_session, _)| offered_session == session) =>
+            {
+                let _ = self.accept_realtime_offer(capture_authorizations.clone());
+            }
+            ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::StopSource { session },
             ) if self.realtime.session.as_ref() == Some(session) => {
                 self.realtime.stop_source = Some(session.clone());
@@ -2795,6 +2815,7 @@ impl Widget for ChatApp {
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         self.apply_realtime_stop(doc);
+        self.establish_realtime_target();
         if self.is_live {
             // Live instance. `app-state` has already restored the previous
             // session's document by now, so an unseeded document really is a
