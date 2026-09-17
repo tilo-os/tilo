@@ -107,7 +107,7 @@ pub enum SettingScope {
     Presentation,
 }
 
-const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
+pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
     ACCOUNT_OPERATION_TYPE,
     UPDATE_OPERATION_TYPE,
     KEYBOARD_SOURCE_OPERATION_TYPE,
@@ -406,6 +406,10 @@ pub enum LocalPaneCommand {
     Bluetooth(BluetoothOperation),
     Audio(AudioOperation),
     Display(DisplayOperation),
+    Storage(StorageOperation),
+    Printer(PrinterOperation),
+    User(UserOperation),
+    AgentModel(AgentModelOperation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5855,12 +5859,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         let _ = doc.put(
             &ROOT,
-            panes::display::NIGHT_LIGHT_KEY,
+            panes::notifications::DND_KEY,
             ScalarValue::Boolean(true),
         );
         doc.commit();
         let before = doc.get_heads();
-        let action = set_bool_action(panes::display::NIGHT_LIGHT_KEY, true);
+        let action = set_bool_action(panes::notifications::DND_KEY, true);
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();

@@ -259,6 +259,7 @@ fn all_panels_navigate_and_seed_their_controls() {
         let _ = navigate(&mut app, &mut doc, target);
         // The pane rebuilt by navigate's final layout seeds on its next
         // sync; run one so the seed lands before we assert on it.
+        let heads_before_idle_sync = doc.get_heads();
         app.sync(&mut doc, &automerge::ROOT);
         // Hardware panes render from process-local snapshots and must not
         // seed their primary device state into the collaborative document.
@@ -267,9 +268,18 @@ fn all_panels_navigate_and_seed_their_controls() {
             Category::Bluetooth => Some(settings::panes::bluetooth::BT_ENABLED_KEY),
             Category::Sound => Some(settings::panes::audio::VOLUME_KEY),
             Category::Displays => Some(settings::panes::display::BRIGHTNESS_KEY),
+            Category::Storage => Some(settings::panes::storage::CLEAN_KEY),
+            Category::Printers => Some("settings.printers.refresh"),
+            Category::Users => Some("settings.users.add"),
+            Category::AgentModels => Some("agent_models.local.confirm"),
             _ => None,
         };
         if let Some(key) = seeded_key {
+            assert_eq!(
+                doc.get_heads(),
+                heads_before_idle_sync,
+                "{target:?} idle sync must leave the collaborative document unchanged"
+            );
             assert!(
                 doc.get(&automerge::ROOT, key).ok().flatten().is_none(),
                 "{target:?} must keep device-local control key {key} out of collaboration"
