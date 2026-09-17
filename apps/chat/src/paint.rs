@@ -12,6 +12,43 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
+/// Backend state shared by Chat's custom-painted views.
+///
+/// View helpers should accept this bundle alongside their semantic model and
+/// geometry inputs, instead of repeating renderer plumbing in every signature.
+pub struct PaintContext<'a> {
+    pub scene: &'a mut Scene,
+    pub transform: Affine,
+    pub text: &'a mut TextRenderer,
+    pub theme: &'a Theme,
+}
+
+impl<'a> PaintContext<'a> {
+    pub fn new(
+        scene: &'a mut Scene,
+        transform: Affine,
+        text: &'a mut TextRenderer,
+        theme: &'a Theme,
+    ) -> Self {
+        Self {
+            scene,
+            transform,
+            text,
+            theme,
+        }
+    }
+
+    /// Borrow the same backend state for a nested paint helper.
+    pub fn reborrow(&mut self) -> PaintContext<'_> {
+        PaintContext {
+            scene: self.scene,
+            transform: self.transform,
+            text: self.text,
+            theme: self.theme,
+        }
+    }
+}
+
 /// Fill a rounded rectangle.
 pub fn fill_round(scene: &mut Scene, tf: Affine, rect: Rect, radius: f64, color: Color) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
