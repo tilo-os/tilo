@@ -17,11 +17,13 @@ The shared host supplies the entry point, panel, controller, historical banner, 
 - At narrow widths, activity and preview are separate selectable pages within the same history surface. Controls remain reachable by keyboard and expose accessible labels.
 - History is pinned to its selected resource while previewing. A resource change cannot silently retarget a restore. Resource-level state is the initial scope; existing workspace activity can navigate to it.
 
+Use the existing UI HIG: history activity is content/master-detail, not a narrow overlay drawer. Compose standard Button, ActivityTimeline, ModalDialog and navigation primitives so focus, keyboard, accessibility and theming remain shared. Do not hand-paint interactive rectangles. Existing workspace History shortcuts retain their meaning; app history entry points must not steal them.
+
 ## Runtime boundary
 
 Build on `qos_actions::replay`, `ui::history_source`, `qdoc::history`, `AppComponent`, `RecordStore`, and canonical bound dispatch. Do not create a parallel action log or migrate stored change graphs. Historical reads use immutable snapshots/forks. Reconstruct state from existing CRDT history without reexecuting external effects.
 
-Current production apps use two hosting paths: Notes has an `ApplicationDefinition`/`AppComponent`, while most applications use `LaunchSpec::new` and an unbound `App`/`State` root. The implementation must cover both paths, including headless drivers and embedded app roots. Adding History only to `AppComponent` would not satisfy this specification. No wholesale application-lifecycle migration is required merely to display history.
+Current apps expose two hosting paths: Notes defines an `ApplicationDefinition`/`AppComponent`, but its production launcher also still uses the legacy path. The inventory finds 47 GUI applications using `LaunchSpec::new`/`new_with_args`, including six custom live handlers that construct `App` directly. The implementation must cover the common App construction path, headless drivers, nested TileHost roots and bound components. Adding History only to `AppComponent` would not satisfy this specification. No wholesale application-lifecycle migration is required merely to display history.
 
 A shared controller owns resource identity, activity/group selection, pinned heads, before/after bytes, live-update tracking, errors, and a restore-review token. A snapshot contains no live record, permission, invocation, persistence, or publication handle. Keep the controller independent of window/compositor state.
 
