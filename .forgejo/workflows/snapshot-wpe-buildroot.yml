@@ -221,7 +221,7 @@ jobs:
           . "$x86"
           . "$arm"
           for ref in "$WPE_BUILDROOT_X86_64_REF" "$WPE_BUILDROOT_AARCH64_REF"; do
-            [[ "$ref" =~ ^code\.podesta\.ai/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]
             cosign verify --key keys/cosign.pub "$ref" >/dev/null
           done
           git fetch --no-tags origin main
