@@ -1669,9 +1669,17 @@ fn target_identity_matches(selected: &TargetDrive, current: &TargetDrive) -> boo
 
 #[cfg(target_os = "linux")]
 fn prepare_target(target: &TargetDrive) -> io::Result<()> {
-    let out = std::process::Command::new("lsblk")
-        .args(["-lnpo", "NAME,MOUNTPOINT", &target.dev_path()])
-        .output()?;
+    const PREPARE_OUTPUT_LIMIT: usize = 1024 * 1024;
+    const PREPARE_TIMEOUT: Duration = Duration::from_secs(10);
+    let device_path = target.dev_path();
+    let out = bounded_command::run(
+        "lsblk",
+        &["-lnpo", "NAME,MOUNTPOINT", &device_path],
+        None,
+        PREPARE_OUTPUT_LIMIT,
+        PREPARE_TIMEOUT,
+    )
+    .map_err(|error| io::Error::other(format!("lsblk probe failed: {error}")))?;
     if !out.status.success() {
         return Err(io::Error::other("lsblk could not inspect mount state"));
     }
@@ -1681,8 +1689,15 @@ fn prepare_target(target: &TargetDrive) -> io::Result<()> {
             continue;
         };
         if fields.next().is_some() {
-            let status = std::process::Command::new("umount").arg(device).status()?;
-            if !status.success() {
+            let out = bounded_command::run(
+                "umount",
+                &[device],
+                None,
+                PREPARE_OUTPUT_LIMIT,
+                PREPARE_TIMEOUT,
+            )
+            .map_err(|error| io::Error::other(format!("unmount failed: {error}")))?;
+            if !out.status.success() {
                 return Err(io::Error::other(format!("failed to unmount {device}")));
             }
         }

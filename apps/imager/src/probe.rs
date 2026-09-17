@@ -12,6 +12,7 @@
 #[cfg(target_os = "macos")]
 use std::io::Write;
 use std::path::Path;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::process::Stdio;
@@ -19,6 +20,11 @@ use std::process::Stdio;
 use serde_json::Value;
 
 use crate::model::{Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, TargetPartition};
+
+#[cfg(target_os = "linux")]
+const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
+#[cfg(target_os = "linux")]
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[cfg(not(target_os = "linux"))]
 pub fn pick_image_native() -> ui::PortalChannel {
@@ -73,15 +79,19 @@ pub fn probe() -> Option<Vec<TargetDrive>> {
 
 #[cfg(target_os = "linux")]
 fn probe_platform() -> Option<Vec<TargetDrive>> {
-    let out = Command::new("lsblk")
-        .args([
+    let out = bounded_command::run(
+        "lsblk",
+        &[
             "-J",
             "-b",
             "-o",
             "NAME,MODEL,SERIAL,WWN,SIZE,TYPE,ROTA,TRAN,RM,FSTYPE,LABEL,MOUNTPOINT",
-        ])
-        .output()
-        .ok()?;
+        ],
+        None,
+        PROBE_OUTPUT_LIMIT,
+        PROBE_TIMEOUT,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
