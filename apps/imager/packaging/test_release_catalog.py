@@ -1,10 +1,14 @@
 import importlib.util
+import copy
+import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("release-catalog.py")
@@ -68,6 +72,71 @@ class CatalogSelectionTests(unittest.TestCase):
                                  "--copy-to", str(destination)], capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(destination.read_bytes(), b"existing authenticated build input")
+
+    def media_fixture(self):
+        entries = []
+        for arch, profile in (("x86_64", "generic"), ("aarch64", "generic"), ("aarch64", "lenovo-83ed")):
+            suffix = "" if profile == "generic" else f"-{profile}"
+            name = f"tilo-installer-linux-{arch}{suffix}.img.zst"
+            path = self.root / name
+            path.write_bytes(name.encode())
+            entry = {"arch": arch, "hardware_profile": profile,
+                     "url": f"https://code.podesta.ai/tilo/releases/releases/download/imager-v1.2.3/{name}",
+                     "archive_size": path.stat().st_size, "image_size": 1024,
+                     "archive_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                     "image_sha256": "b" * 64}
+            if profile != "generic":
+                entry["provenance"] = {"source_image_id": "sha256:" + "a" * 64,
+                                       "input_qcow2_sha256": "c" * 64,
+                                       "hardware_profile_sha256": "d" * 64,
+                                       "target_update_ref": "code.podesta.ai/qos/tilo:lenovo-fixture"}
+            entries.append(entry)
+        return {"schema": 2, "tag": "imager-v1.2.3", "releases": entries}
+
+    @patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "tilo/releases", "GITHUB_SERVER_URL": "https://code.podesta.ai"})
+    def test_media_rejects_unexpected_origin_tag_credentials_port_and_path(self):
+        data = self.media_fixture()
+        self.assertEqual(len(catalog.media(data, self.root)), 3)
+        original = data["releases"][-1]["url"]
+        bad_urls = [original.replace("code.podesta.ai", "example.invalid"),
+                    original.replace("code.podesta.ai", "user@code.podesta.ai"),
+                    original.replace("code.podesta.ai", "code.podesta.ai:444"),
+                    original.replace("imager-v1.2.3", "imager-v9.9.9"),
+                    original.replace("/tilo/releases/", "/other/releases/"),
+                    original + "?download=1", original + "#fragment",
+                    original.replace("lenovo-83ed", "other-board")]
+        for url in bad_urls:
+            with self.subTest(url=url):
+                data["releases"][-1]["url"] = url
+                with self.assertRaisesRegex(ValueError, "configured release origin"):
+                    catalog.media(data, self.root)
+
+    @patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "tilo/releases", "GITHUB_SERVER_URL": "https://code.podesta.ai"})
+    def test_board_provenance_is_mandatory_and_uses_the_os_origin_contract(self):
+        original = self.media_fixture()
+        for field in ("source_image_id", "input_qcow2_sha256", "hardware_profile_sha256", "target_update_ref"):
+            data = copy.deepcopy(original)
+            del data["releases"][-1]["provenance"][field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                catalog.media(data, self.root)
+        for field in ("hardware_profile", "provenance"):
+            data = copy.deepcopy(original)
+            del data["releases"][-1][field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                catalog.media(data, self.root)
+        data = copy.deepcopy(original)
+        data["releases"][-1]["provenance"]["target_update_ref"] = "example.invalid/tilo:latest"
+        with self.assertRaisesRegex(ValueError, "signature-required"):
+            catalog.media(data, self.root)
+
+    def test_explicit_public_release_origin_configuration_is_respected(self):
+        data = self.media_fixture()
+        for entry in data["releases"]:
+            entry["url"] = entry["url"].replace("https://code.podesta.ai/tilo/releases/",
+                                               "https://downloads.example.invalid/team/public/")
+        with patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "team/public",
+                                     "GITHUB_SERVER_URL": "https://downloads.example.invalid"}):
+            self.assertEqual(len(catalog.media(data, self.root)), 3)
 
 
 if __name__ == "__main__":
