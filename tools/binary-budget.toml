@@ -9,7 +9,7 @@
 # Budgets include headroom; raising one is an intentional reviewed change.
 
 [budgets]
-"api_tester" = 26   # 22.3 MB
+"api-tester" = 26   # 22.3 MB
 "backups" = 22   # 18.9 MB
 "browser" = 27   # 23.0 MB
 "calculator" = 23   # 19.2 MB
@@ -17,10 +17,10 @@
 "camera" = 23   # 19.8 MB
 "chat" = 38   # 32.9 MB
 "click_test_client" = 3   # 1.9 MB
-"code_editor" = 27   # 23.0 MB
+"code-editor" = 27   # 23.0 MB
 "contacts" = 25   # 21.1 MB
 "containers" = 24   # 20.1 MB
-"db_client" = 26   # 22.6 MB
+"db-client" = 26   # 22.6 MB
 "diffmerge" = 25   # 20.9 MB
 "disks" = 24   # 20.4 MB
 "ebook" = 25   # 21.5 MB
@@ -30,8 +30,8 @@
 "flatpak-share-demo" = 4   # 2.9 MB
 "format-host" = 20   # 16.6 MB
 "fs" = 21   # 17.8 MB
-"git_client" = 24   # 20.1 MB
-"hex_editor" = 24   # 20.8 MB
+"git-client" = 24   # 20.1 MB
+"hex-editor" = 24   # 20.8 MB
 "imager" = 25   # 20.9 MB
 "logs" = 22   # 18.9 MB
 "mail" = 28   # 24.0 MB
@@ -40,7 +40,7 @@
 "music" = 35   # 29.8 MB
 "notes" = 1   # 0.6 MB
 "osk" = 23   # 19.9 MB
-"pdf_viewer" = 30   # 25.9 MB
+"pdf-viewer" = 30   # 25.9 MB
 "photos" = 25   # 21.0 MB
 "tilo" = 1   # 0.7 MB
 "tilo-agent" = 11   # 9.4 MB
@@ -81,9 +81,9 @@
 "tinker" = 2   # 1.1 MB
 "totp" = 25   # 21.6 MB
 "tube" = 35   # 29.9 MB
-"typst_editor" = 63   # 54.4 MB
+"typst-editor" = 63   # 54.4 MB
 "video-player" = 25   # 21.5 MB
-"video_editor" = 25   # 21.1 MB
+"video-editor" = 25   # 21.1 MB
 "vpn" = 25   # 21.3 MB
 "weather" = 26   # 22.6 MB
 "word-processor" = 28   # 24.0 MB

@@ -1,5 +1,9 @@
 # Tilo apps
 
+Use hyphens for multiword package names, app directories, and executables.
+Rust library names and imports use underscores (`code_editor`).
+
+
 Every app here is a native Tilo application built on the public
 [`tilo-app`](../crates/app/tilo-app) SDK (normally renamed to `ui` in Cargo).
 `tilo-app` re-exports the complete retained-widget, layout, canvas,
@@ -118,11 +122,11 @@ semantic actions and records their mutations in shared history.
 | `notes` | Markdown note-taking: page side-tree, block editor, `[[Page]]` links, on-disk `~/notes/` storage with debounced save. |
 | `calendar` | Calendar + task manager (Planify-style): month/week/day/agenda, recurrence, tasks; iCalendar interop and live CalDAV sync (PROPFIND/REPORT/ETag PUT, worker thread, `live` on by default). |
 | `contacts` | Address book with vCard import/export. |
-| `typst_editor` | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile. |
+| `typst-editor` | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile. |
 | `calculator` | Scientific calculator with 2D/3D function graphing. |
 | `snippets` | Snippet manager: taggable library, `${placeholder}` expansion, syntax-highlighted preview. |
 | `ebook` | EPUB reader ("Books"): in-tree ZIP+OPF+XHTML parser, reflowable pagination, real embedded cover art, shared annotation model. |
-| `pdf_viewer` | Collaborative PDF reader ("PDF"): pdfium rasterisation (dynamically loaded) with a pure-Rust text-extract fallback; highlight/ink/sticky-note annotations + signing. |
+| `pdf-viewer` | Collaborative PDF reader ("PDF"): pdfium rasterisation (dynamically loaded) with a pure-Rust text-extract fallback; highlight/ink/sticky-note annotations + signing. |
 
 ## Media
 
@@ -130,8 +134,8 @@ semantic actions and records their mutations in shared history.
 |---|---|
 | `music` | Streaming + local library: swappable YouTube-Music backend (rustypipe InnerTube under `live`), GStreamer `playbin` audio (`audio`), lrclib synced lyrics, iroh P2P library sync — all off by default over a bundled sample library. |
 | `tube` | Privacy YouTube client: Invidious metadata, SponsorBlock skip, DeArrow de-clickbait; openh264 H.264 decode; optional rustypipe `live` backend and Grayjay device sync over the Noise protocol. |
-| `video_editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/openh264 preview decode and GStreamer export, both feature-gated. |
-| `image_editor` | Non-destructive raster editor and reusable typed node-graph test bed; edits stay independently adjustable, projects are CRDT-native, and preview/export traverse the same DAG. |
+| `video-editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/openh264 preview decode and GStreamer export, both feature-gated. |
+| `image-editor` | Non-destructive raster editor and reusable typed node-graph test bed; edits stay independently adjustable, projects are CRDT-native, and preview/export traverse the same DAG. |
 | `camera` | Camera with QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; captured photos and videos open in their owning media apps; live v4l2 capture via GStreamer. |
 | `imager` | Install-media creator + Tilo installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config. |
 | `maps` | OpenStreetMap client: Nominatim search, OSRM routing (car/bike/foot), Transitous/MOTIS transit; Vello vector basemap; device location via the XDG Location portal (GeoClue2). |
@@ -171,12 +175,12 @@ semantic actions and records their mutations in shared history.
 | Crate | What it is |
 |---|---|
 | `terminal` | GPU-accelerated terminal: portable-pty + vte; embeddable as a tile widget in the shell. |
-| `code_editor` | Code editor / light IDE ("Code"): file-tree, editor tabs, syntect highlighting, command palette, problems panel. |
-| `git_client` | Graphical git client ("Git"): libgit2 via `git2`; changes with per-hunk staging, commit-graph history, branches/remotes. |
+| `code-editor` | Code editor / light IDE ("Code"): file-tree, editor tabs, syntect highlighting, command palette, problems panel. |
+| `git-client` | Graphical git client ("Git"): libgit2 via `git2`; changes with per-hunk staging, commit-graph history, branches/remotes. |
 | `diffmerge` | Diff + 3-way merge tool ("Diff"): `similar` line diff, per-hunk conflict resolution, editable merged output. |
-| `db_client` | Database client ("Database"): PostgreSQL/MySQL/SQLite, bundled SQLite sample (rusqlite), schema browser + SQL editor + results grid. |
-| `hex_editor` | Hex editor ("Hex"): CRDT byte buffer, data inspector, hex/text search, goto-offset. |
-| `api_tester` | HTTP client (Postman/Insomnia-class): reqwest, request collections, `{{variable}}` environments, JSON/raw/preview body viewer. |
+| `db-client` | Database client ("Database"): PostgreSQL/MySQL/SQLite, bundled SQLite sample (rusqlite), schema browser + SQL editor + results grid. |
+| `hex-editor` | Hex editor ("Hex"): CRDT byte buffer, data inspector, hex/text search, goto-offset. |
+| `api-tester` | HTTP client (Postman/Insomnia-class): reqwest, request collections, `{{variable}}` environments, JSON/raw/preview body viewer. |
 
 ## Files & web
 

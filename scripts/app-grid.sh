@@ -68,16 +68,16 @@ trap 'rm -rf "$SHOTS"' EXIT
 # by people, so it is labelled the way the OS labels these apps, not with cargo
 # package names.
 declare -A NAME=(
-[api_tester]="API Tester" [backups]="Backups" [calculator]="Calculator" [calendar]="Calendar"
-[camera]="Camera" [chat]="Chat" [code_editor]="Code Editor" [contacts]="Contacts"
-[containers]="Containers" [db_client]="Database Client" [diffmerge]="Diff & Merge" [disks]="Disks"
+[api-tester]="API Tester" [backups]="Backups" [calculator]="Calculator" [calendar]="Calendar"
+[camera]="Camera" [chat]="Chat" [code-editor]="Code Editor" [contacts]="Contacts"
+[containers]="Containers" [db-client]="Database Client" [diffmerge]="Diff & Merge" [disks]="Disks"
 [ebook]="E-Book Reader" [feeds]="Feeds" [file-explorer]="Files" [firewall]="Firewall"
-[git_client]="Git" [hex_editor]="Hex Editor" [imager]="Disk Imager" [logs]="Logs"
+[git-client]="Git" [hex-editor]="Hex Editor" [imager]="Disk Imager" [logs]="Logs"
 [mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
-[osk]="On-Screen Keyboard" [pdf_viewer]="PDF Viewer" [remote]="Remote Desktop" [settings]="Settings"
+[osk]="On-Screen Keyboard" [pdf-viewer]="PDF Viewer" [remote]="Remote Desktop" [settings]="Settings"
 [sheets]="Sheets" [slides]="Slides" [snippets]="Snippets" [store]="App Store"
 [terminal]="Terminal" [themes]="Themes" [totp]="TOTP" [tube]="Tube"
-[typst_editor]="Typst Editor" [video_editor]="Video Editor" [video-player]="Video Player"
+[typst-editor]="Typst Editor" [video-editor]="Video Editor" [video-player]="Video Player"
 [vpn]="VPN" [weather]="Weather" [word-processor]="Word Processor")
 
 # Apps with no window to shoot, and why. Listing them explicitly is what lets

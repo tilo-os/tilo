@@ -286,7 +286,7 @@ fi
 # contains these features"), so the image build dies — but it dies *after* the
 # builder stage's 600-odd package install and the cold Rust compile, tens of
 # minutes in, at the one step whose log nobody reads to the end. That is how
-# `video_editor/portal` reached this file: video_editor enables `ui`'s portal
+# `video-editor/portal` reached this file: video-editor enables `ui`'s portal
 # unconditionally and has no portal feature of its own, so the pair looked exactly
 # like the twelve valid ones next to it.
 #

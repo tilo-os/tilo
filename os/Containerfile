@@ -362,10 +362,10 @@ COPY . /build
 # `mail/html-webview` is deliberately NOT here: it pulls ui/webview-wpe, and the
 # engine behind it is the browser's, which TILO_WITH_BROWSER=0 does not build.
 #
-# `video_editor` takes decode and gst but no `portal`, because it has no such
+# `video-editor` takes decode and gst but no `portal`, because it has no such
 # feature to take: it depends on `ui` with features = ["portal"] unconditionally,
 # so its file chooser is compiled in on every build including --shots. Asking for
-# `video_editor/portal` is not a no-op — cargo refuses the whole invocation with
+# `video-editor/portal` is not a no-op — cargo refuses the whole invocation with
 # "none of the selected packages contains these features", which fails the image
 # build after the package install and the cold Rust compile have already run.
 # os/tests/app_store.sh checks each pair against cargo metadata for that reason.
@@ -401,7 +401,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          BROWSER_PKG="-p browser --features browser/wpe"; \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \

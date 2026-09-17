@@ -1,0 +1,67 @@
+# PDF Viewer — Tilo application manifest.
+#
+# The viewer does not edit, and annotations are the app's own state.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read on the document it was asked to open. Open-from-elsewhere goes
+# through the host file-chooser portal, which hands back a descriptor
+# rather than a path.
+#
+
+
+[package]
+id       = "dev.tilo.pdf-viewer"
+name     = "PDF Viewer"
+category = "Office"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/pdf-viewer"
+type            = "gui"
+splash-segments = ["bin/pdf-viewer[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "application/pdf",
+]
+ext  = [
+    "pdf",
+]
