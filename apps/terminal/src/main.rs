@@ -122,7 +122,16 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let scenario = args.scenario.as_deref();
     let mut widget = match scenario {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
-        Some("ended") => TerminalWidget::spawn_command(terminal::CommandBuilder::new("/bin/true")),
+        // A command that exits at once. `portable-pty` spawns the literal path
+        // (no `PATH` lookup), and macOS ships `true` at `/usr/bin/true` only —
+        // there is no `/bin/true` on Darwin, so the spawn failed with ENOENT on
+        // the development hosts. `/bin/sh` is the one path POSIX guarantees on
+        // every host this scenario runs on.
+        Some("ended") => {
+            let mut cmd = terminal::CommandBuilder::new("/bin/sh");
+            cmd.args(["-c", "exit 0"]);
+            TerminalWidget::spawn_command(cmd)
+        }
         Some(_) => TerminalWidget::spawn_headless(),
     }
     .map_err(|error| LaunchError::Operation(error.to_string()))?;
