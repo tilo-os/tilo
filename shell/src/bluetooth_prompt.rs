@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
-use qos_bluez::{PairingPrompt, PairingReply, PairingRequest};
 use taffy::{NodeId, TaffyTree};
+use tilo_bluez::{PairingPrompt, PairingReply, PairingRequest};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, Widget};
 use vello::Scene;

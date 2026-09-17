@@ -104,7 +104,7 @@ fn fold_typed_presence(
             let kind = update.actor.kind;
             let sequence = update.sequence;
             let update = (*update)
-                .normalized_by_broker(qos_actions::InteractionActor { id: user, kind }, sequence);
+                .normalized_by_broker(tilo_actions::InteractionActor { id: user, kind }, sequence);
             let _ = presence.observe_interaction(update);
         } else if matches!(payload, PresencePayload::Left) && matches!(key, PresenceKey::Tab { .. })
         {
@@ -608,26 +608,26 @@ mod tests {
     use ui::permissions::UserId;
 
     fn interaction(actor: &str) -> PresencePayload {
-        PresencePayload::Interaction(Box::new(qos_actions::SemanticInteraction {
-            version: qos_actions::INTERACTION_VERSION,
-            invocation: qos_actions::InvocationId::new(),
+        PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId::new(),
             sequence: 1,
-            actor: qos_actions::InteractionActor {
+            actor: tilo_actions::InteractionActor {
                 id: actor.to_string(),
-                kind: qos_actions::InteractionActorKind::Person,
+                kind: tilo_actions::InteractionActorKind::Person,
             },
-            phase: qos_actions::InteractionPhase::Applying,
-            action: qos_actions::InteractionAction {
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
                 id: "edit".into(),
                 label: "Editing".into(),
                 app: None,
             },
-            resource: qos_actions::ActionResource {
+            resource: tilo_actions::ActionResource {
                 id: "report:q3".into(),
                 kind: "document".into(),
                 label: "Q3 report".into(),
             },
-            anchor: qos_actions::InteractionAnchor::Resource,
+            anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,
         }))
     }
@@ -639,7 +639,7 @@ mod tests {
         };
         let tab = PresenceKey::Tab { id: "2a".into() };
         let resource = PresenceKey::Resource {
-            app: "org.qos.Writer".into(),
+            app: "org.tilo.Writer".into(),
             id: "report:q3".into(),
             kind: "document".into(),
         };
@@ -656,7 +656,7 @@ mod tests {
         ));
         assert!(!typed_presence_authorized(
             &PresenceKey::Resource {
-                app: "org.qos.Writer".into(),
+                app: "org.tilo.Writer".into(),
                 id: "another-report".into(),
                 kind: "document".into(),
             },
@@ -1331,7 +1331,7 @@ mod two_sessions {
         let host_net = Arc::new(host_net);
         let guest_net = Arc::new(guest_net);
 
-        let dir = std::env::temp_dir().join(format!("qos-two-sessions-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-two-sessions-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let host_broker = broker(&dir, "h.sock");
         let guest_broker = broker(&dir, "g.sock");
@@ -1410,7 +1410,7 @@ mod two_sessions {
         let host_net = Arc::new(host_net);
         let guest_net = Arc::new(guest_net);
 
-        let dir = std::env::temp_dir().join(format!("qos-silent-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-silent-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let host_broker = broker(&dir, "h.sock");
         let guest_broker = broker(&dir, "g.sock");
@@ -1465,7 +1465,7 @@ mod two_sessions {
         let host_net = Arc::new(host_net);
         let guest_net = Arc::new(guest_net);
 
-        let dir = std::env::temp_dir().join(format!("qos-frameloop-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-frameloop-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let host_broker = broker(&dir, "h.sock");
         let guest_broker = broker(&dir, "g.sock");
@@ -1537,7 +1537,7 @@ mod two_sessions {
         let host_net = Arc::new(host_net);
         let stranger_net = Arc::new(stranger_net);
 
-        let dir = std::env::temp_dir().join(format!("qos-stranger-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-stranger-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let host_broker = broker(&dir, "h.sock");
         let stranger_broker = broker(&dir, "s.sock");
@@ -1619,7 +1619,7 @@ mod two_sessions {
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
 
-        let dir = std::env::temp_dir().join(format!("qos-roster-join-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-roster-join-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
         let (guest, _guest_net, mut guest_cmds) =
@@ -1669,7 +1669,7 @@ mod two_sessions {
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
 
-        let dir = std::env::temp_dir().join(format!("qos-roster-unnamed-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-roster-unnamed-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
         let (guest, _guest_net, mut guest_cmds) =
@@ -1706,7 +1706,7 @@ mod two_sessions {
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
 
-        let dir = std::env::temp_dir().join(format!("qos-roster-self-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-roster-self-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
         let (guest, _guest_net, mut guest_cmds) =
@@ -1742,7 +1742,7 @@ mod two_sessions {
         looking_at_its_room(&mut guest_tree);
         let guest_handle = guest_tree.shared();
 
-        let dir = std::env::temp_dir().join(format!("qos-roster-guest-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-roster-guest-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (guest, _guest_net, _guest_cmds) = session(&dir, "g.sock", &guest_handle, &guest_peer);
 
@@ -1778,7 +1778,7 @@ mod two_sessions {
         looking_at_its_room(&mut host_tree);
         let host_handle = host_tree.shared();
 
-        let dir = std::env::temp_dir().join(format!("qos-roster-beat-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-roster-beat-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
 

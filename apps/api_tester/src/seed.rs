@@ -136,7 +136,7 @@ pub fn active_request() -> Request {
     ];
     r.headers = vec![
         KeyValue::new("Accept", "application/json"),
-        KeyValue::new("X-Client", "qos-api-tester"),
+        KeyValue::new("X-Client", "tilo-api-tester"),
     ];
     r.auth = Auth::Bearer {
         token: "{{token}}".into(),

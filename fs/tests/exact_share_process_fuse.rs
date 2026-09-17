@@ -28,12 +28,12 @@ use ed25519_dalek::SigningKey;
 use fs::availability::{EvictionDecision, EvictionRequirements, Residency};
 use fs::eviction::{EvictionQueue, EvictionRequestState};
 use fs::{AvailabilityRegistry, ContentStore};
-use qos_user_identity::{
+use tempfile::TempDir;
+use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
     sign_device_cert,
 };
-use tempfile::TempDir;
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const GC_TIMEOUT: Duration = Duration::from_secs(90);
@@ -172,8 +172,8 @@ fn spawn_host(
 ) -> MountedProcess {
     let mut child = Command::new(binary)
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
-        .env("QOS_AUTHORITY_SOCKET_DIR", authority_sockets)
-        .env("QOS_FS_FUSE_OWNER_ONLY", "1")
+        .env("TILO_AUTHORITY_SOCKET_DIR", authority_sockets)
+        .env("TILO_FS_FUSE_OWNER_ONLY", "1")
         .arg("--test-clock-file")
         .arg(clock)
         .args(["serve", "--mount-point"])
@@ -206,7 +206,7 @@ fn spawn_recipient(
 ) -> MountedProcess {
     let mut child = Command::new(binary)
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
-        .env("QOS_FS_FUSE_OWNER_ONLY", "1")
+        .env("TILO_FS_FUSE_OWNER_ONLY", "1")
         .arg("--test-clock-file")
         .arg(clock)
         .args(["mount-share", "--mount-point"])
@@ -367,7 +367,7 @@ fn write_clock(path: &Path, now_ms: u64) {
 #[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
-    if std::env::var("QOS_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
         eprintln!("skipping real FUSE lifecycle outside the dedicated mandatory FUSE job");
         return;
     }

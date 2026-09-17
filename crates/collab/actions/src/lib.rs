@@ -1,4 +1,4 @@
-//! # qOS ACTION model
+//! # Tilo ACTION model
 //!
 //! The state layer behind Ctrl+K and cross-peer collaboration: a
 //! serializable, **replayable** unit of CRDT mutation.

@@ -140,8 +140,8 @@ fn load_missing_file_returns_default() {
 }
 
 #[test]
-fn nirios_shell_root_constructs_from_tree() {
-    use shell::shell::build_nirios_root;
+fn tilo_shell_root_constructs_from_tree() {
+    use shell::shell::build_tilo_root;
     let tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
-    let _boxed: Box<dyn ui::widget::Widget> = build_nirios_root(&tree);
+    let _boxed: Box<dyn ui::widget::Widget> = build_tilo_root(&tree);
 }

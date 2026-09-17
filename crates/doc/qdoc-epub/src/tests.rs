@@ -15,7 +15,7 @@ use zip::ZipArchive;
 
 fn empty_snapshot() -> DocSnapshot {
     DocSnapshot {
-        schema: "qos.richtext".into(),
+        schema: "tilo.richtext".into(),
         schema_version: 1,
         ..Default::default()
     }

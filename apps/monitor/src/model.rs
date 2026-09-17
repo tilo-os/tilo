@@ -426,10 +426,10 @@ const SAMPLE_ROWS: &[SampleRow] = &[
     ),
     // ---- the system service tree, rooted at systemd ----------------
     ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
-    ("qos-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
+    ("tilo-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
     (
         "iroh-node",
-        "qos-fs",
+        "tilo-fs",
         "ada",
         6.1,
         310,
@@ -666,7 +666,7 @@ fn sample_cmdline(name: &str, user: &str) -> String {
         "terminal" => "/usr/bin/terminal --shots off".into(),
         "monitor" => "/usr/bin/monitor".into(),
         "systemd" => "/usr/lib/systemd/systemd --system --deserialize 34".into(),
-        "qos-fs" => "/usr/bin/qos-fs --mount /var/workspace --cache /var/cache/qos-fs".into(),
+        "tilo-fs" => "/usr/bin/tilo-fs --mount /var/workspace --cache /var/cache/tilo-fs".into(),
         "iroh-node" => "/usr/bin/iroh-node --relay code.sandbox.example".into(),
         "pipewire" => "/usr/bin/pipewire".into(),
         _ => format!("/usr/bin/{name}"),

@@ -2,7 +2,7 @@
 //!
 //! Two backends: an in-memory boot-time walk of `~` for name/fuzzy queries,
 //! and a persistent tantivy index (see [`super::super::files_index`]) over
-//! file contents at `~/.cache/qos/files-index`, rebuilt incrementally in the
+//! file contents at `~/.cache/tilo/files-index`, rebuilt incrementally in the
 //! background. Enter routes a hit through [`crate::shell::doc_open`], which
 //! resolves the extension to the installed package that opens it.
 
@@ -282,7 +282,7 @@ impl FilesProvider {
         let worker_active = Arc::clone(&active);
         let worker_peak = Arc::clone(&peak);
         let spawned = thread::Builder::new()
-            .name("qos-search-files-rank".into())
+            .name("tilo-search-files-rank".into())
             .spawn(move || {
                 while wake.recv().is_ok() {
                     let request = worker_mailbox.lock().ok().and_then(|mut slot| slot.take());
@@ -353,7 +353,7 @@ impl FilesProvider {
             let name_index = Arc::clone(&name_index);
             let home = home.clone();
             thread::Builder::new()
-                .name("qos-search-files-walk".into())
+                .name("tilo-search-files-walk".into())
                 .spawn(move || walk_home(&home, &name_index))
                 .ok();
         }
@@ -379,7 +379,7 @@ impl FilesProvider {
         let name_index = Arc::clone(&self.name_index);
         let home = self.home.clone();
         thread::Builder::new()
-            .name("qos-search-files-rescan".into())
+            .name("tilo-search-files-rescan".into())
             .spawn(move || walk_home(&home, &name_index))
             .ok();
     }
@@ -1312,7 +1312,7 @@ fn notify_open_failure(path: &Path, detail: &str, chrome: &Chrome) {
 fn spawn_open(path: &Path, _is_dir: bool) {
     let path = path.to_owned();
     thread::Builder::new()
-        .name("qos-search-open".into())
+        .name("tilo-search-open".into())
         .spawn(move || {
             let _ = std::process::Command::new("xdg-open").arg(path).spawn();
         })

@@ -23,7 +23,7 @@ pub struct LocalHistoryNarrator {
 
 const FAILED_RETRY_DELAY: Duration = Duration::from_secs(60);
 /// Automatic history prose stays a background convenience rather than
-/// evicting the foreground app's working set. `QOS_HISTORY_LLM_MODEL` remains
+/// evicting the foreground app's working set. `TILO_HISTORY_LLM_MODEL` remains
 /// an explicit opt-in escape hatch for a larger installed model.
 const MAX_AUTOMATIC_MODEL_BYTES: u64 = 5_000_000_000;
 
@@ -99,7 +99,7 @@ fn installed_model() -> Option<String> {
     output.status.success().then_some(())?;
     select_installed_model(
         &String::from_utf8(output.stdout).ok()?,
-        std::env::var("QOS_HISTORY_LLM_MODEL").ok().as_deref(),
+        std::env::var("TILO_HISTORY_LLM_MODEL").ok().as_deref(),
     )
 }
 

@@ -9,7 +9,7 @@
 //!
 //! This module owns the engine-thread EGL context (a surfaceless context
 //! on a chosen DRM render node via gbm) and the per-frame image→dmabuf
-//! export. It is only constructed when `QOS_WEBVIEW_DMABUF=1`.
+//! export. It is only constructed when `TILO_WEBVIEW_DMABUF=1`.
 
 use std::os::fd::AsRawFd;
 
@@ -36,9 +36,9 @@ impl EglExport {
     /// on any failure so the caller can fall back to the SHM path.
     pub fn setup() -> Option<Self> {
         // Default to the first render node; a hybrid machine may need the
-        // node with a working mesa driver selected via QOS_WEBVIEW_DRM_NODE,
+        // node with a working mesa driver selected via TILO_WEBVIEW_DRM_NODE,
         // since a node without one can't back an EGL display.
-        let node_path = std::env::var("QOS_WEBVIEW_DRM_NODE")
+        let node_path = std::env::var("TILO_WEBVIEW_DRM_NODE")
             .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
         let node = std::fs::OpenOptions::new()
             .read(true)

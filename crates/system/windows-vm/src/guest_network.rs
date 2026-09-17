@@ -21,7 +21,7 @@ use launcher::netgate::{Destination, EgressPolicy, connect_upstream};
 use rand::RngCore as _;
 use thiserror::Error;
 
-/// qOS's immutable host-only gateway. This is not an internet route.
+/// Tilo's immutable host-only gateway. This is not an internet route.
 pub const HOST_ONLY_GATEWAY: Ipv4Addr = Ipv4Addr::new(192, 168, 251, 1);
 const GUEST_ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 168, 251, 2);
 const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -205,7 +205,7 @@ fn serve_connect(
     if supplied_token != token {
         return write_response(&mut client, "502 Bad Gateway");
     }
-    // Do not resolve here. `connect_upstream` is the canonical qOS NetHost
+    // Do not resolve here. `connect_upstream` is the canonical Tilo NetHost
     // path: it resolves after policy, rejects address-literal bypasses, and
     // removes loopback/link-local/this-host addresses unless named exactly.
     let policy = EgressPolicy::new(

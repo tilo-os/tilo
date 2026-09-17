@@ -252,7 +252,7 @@ impl RecoveryShareScreen {
         text_renderer.draw_text(
             scene,
             if self.mnemonic.is_empty() {
-                "Pair another trusted device first. qOS will show real recovery words only after the secure setup completes."
+                "Pair another trusted device first. Tilo will show real recovery words only after the secure setup completes."
             } else {
                 "Write these 24 words down. They restore your identity if you lose every device."
             },

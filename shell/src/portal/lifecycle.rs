@@ -519,11 +519,11 @@ mod tests {
     #[test]
     fn only_portal_object_space_is_accepted() {
         assert!(valid_portal_path(
-            "/org/freedesktop/portal/desktop/request/qos/one",
+            "/org/freedesktop/portal/desktop/request/tilo/one",
             "/request/"
         ));
         assert!(!valid_portal_path(
-            "/org/qos/private/request/one",
+            "/org/tilo/private/request/one",
             "/request/"
         ));
     }

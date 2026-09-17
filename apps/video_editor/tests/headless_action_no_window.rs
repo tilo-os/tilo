@@ -10,12 +10,12 @@
 //! invokes a resource action from a bare document, then opens the result in
 //! the production headless driver.
 
-use qos_actions::door::{self, ActionAddress, DoorError};
-use qos_actions::{ActionRegistry, executor::LocalTransport};
+use tilo_actions::door::{self, ActionAddress, DoorError};
+use tilo_actions::{ActionRegistry, executor::LocalTransport};
 use video_editor::actions::{VideoResourceCtx, provide_resources};
 use video_editor::doc::VideoDoc;
 
-const APP_ID: &str = "dev.qos.video-editor";
+const APP_ID: &str = "dev.tilo.video-editor";
 
 /// Point the persistence layer at a private directory for one test.
 ///
@@ -28,7 +28,7 @@ struct DataHome {
 
 impl DataHome {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("qos-ve-headless-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("tilo-ve-headless-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create the private data home");
         let previous = std::env::var_os("XDG_DATA_HOME");
         // SAFETY: every test that touches this variable is serialised on the

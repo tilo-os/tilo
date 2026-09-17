@@ -187,9 +187,9 @@ pub struct TypstApp {
     /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
     /// when no Open / Save / Export chooser is open.
     io: Option<(PendingIo, PortalChannel)>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    pending_resource_io: Option<(qos_actions::InvocationId, ResourceIo)>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    pending_resource_io: Option<(tilo_actions::InvocationId, ResourceIo)>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
     /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
@@ -741,19 +741,19 @@ impl TypstApp {
                 };
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_result = Some(match result {
-                        Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         },
                         Err(message) if message == "cancelled" => {
-                            qos_actions::InvocationUpdate::Cancelled {
+                            tilo_actions::InvocationUpdate::Cancelled {
                                 invocation,
                                 message: Some(message),
                             }
                         }
-                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "typst.io_failed".into(),
                                 message,
                                 details: None,
@@ -767,9 +767,9 @@ impl TypstApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.io = None;
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "typst.portal_disconnected".into(),
                             message: "file picker disconnected".into(),
                             details: None,
@@ -1800,19 +1800,19 @@ impl Widget for TypstApp {
         &[crate::actions::OPERATION_TYPE]
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         crate::actions::resources(doc)
     }
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode(type_id, payload)? else {
@@ -1824,8 +1824,8 @@ impl Widget for TypstApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -1878,11 +1878,11 @@ impl Widget for TypstApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested {
             if self
                 .pending_resource_io
@@ -1890,7 +1890,7 @@ impl Widget for TypstApp {
                 .is_some_and(|(id, _)| *id == invocation)
             {
                 self.pending_resource_io = None;
-                return Some(qos_actions::InvocationUpdate::Cancelled {
+                return Some(tilo_actions::InvocationUpdate::Cancelled {
                     invocation,
                     message: Some("cancelled before file I/O".into()),
                 });
@@ -1898,7 +1898,7 @@ impl Widget for TypstApp {
             if self.resource_invocation == Some(invocation) {
                 self.resource_invocation = None;
                 self.io = None;
-                return Some(qos_actions::InvocationUpdate::Cancelled {
+                return Some(tilo_actions::InvocationUpdate::Cancelled {
                     invocation,
                     message: Some("file selection cancelled".into()),
                 });
@@ -1919,13 +1919,13 @@ impl Widget for TypstApp {
                 ResourceIo::ExportPdf(path) => self.export_pdf_to_path(doc, &path),
             };
             self.resource_result = Some(match result {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "typst.io_failed".into(),
                         message,
                         details: None,
@@ -2177,20 +2177,20 @@ impl Widget for TypstApp {
         self.native_edit_pending
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         self.native_edit_pending.then(|| {
             let document = self
                 .documents
                 .get(self.current)
                 .map_or("Untitled.typ", |document| document.name.as_str());
-            ui::qos_actions::ActionContext::for_resource(
+            ui::tilo_actions::ActionContext::for_resource(
                 "Edit source",
                 format!("typst.document:{document}"),
                 "typst.document",
                 document,
             )
-            .with_app("org.qos.Typst", "Typst")
-            .with_facet(ui::qos_actions::ActionFacet::new("file-type", "Typst"))
+            .with_app("org.tilo.Typst", "Typst")
+            .with_facet(ui::tilo_actions::ActionFacet::new("file-type", "Typst"))
         })
     }
 
@@ -2556,7 +2556,7 @@ mod tests {
         let dir = unique_dir("direct-lifecycle");
         std::fs::create_dir_all(&dir).unwrap();
         let destination = dir.join("saved.typ");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::TypstOperation::Save {
             path: Some(destination.display().to_string()),
         })
@@ -2564,7 +2564,7 @@ mod tests {
         let started = Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::OPERATION_TYPE,
             &payload,
             &doc,
@@ -2576,7 +2576,7 @@ mod tests {
         app.sync(&mut doc, &ROOT);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert!(destination.exists());
         std::fs::remove_dir_all(dir).ok();
@@ -2668,7 +2668,7 @@ mod tests {
         assert_eq!(context.action_label, "Edit source");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
-            Some("org.qos.Typst")
+            Some("org.tilo.Typst")
         );
         assert_eq!(
             context

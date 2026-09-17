@@ -1,0 +1,61 @@
+# TOTP — Tilo application manifest.
+#
+# Holds authenticator secrets, so its store is its own directory and
+# nothing else is granted — no network (TOTP is computed locally from
+# the clock), no exec, no shared config. QR import comes in through the
+# file-chooser portal.
+#
+
+
+[package]
+id       = "dev.tilo.totp"
+name     = "TOTP"
+category = "Utility"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/totp"
+type            = "gui"
+splash-segments = ["bin/totp[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

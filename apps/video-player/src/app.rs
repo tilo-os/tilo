@@ -54,7 +54,7 @@ const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 struct PendingPortalOpen {
     channel: PortalChannel,
     generation: u64,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 /// A terminal response paired with the request identity and optional action
@@ -62,7 +62,7 @@ struct PendingPortalOpen {
 /// guard readable without a deeply nested tuple type.
 type PortalOpenOutcome = (
     u64,
-    Option<qos_actions::InvocationId>,
+    Option<tilo_actions::InvocationId>,
     Result<PathBuf, Option<String>>,
 );
 
@@ -70,7 +70,7 @@ type PortalOpenOutcome = (
 /// separate from the file-picker request: the picker can succeed while decode
 /// fails, stalls, or is superseded before a frame appears.
 struct PendingMediaOpen {
-    invocation: qos_actions::InvocationId,
+    invocation: tilo_actions::InvocationId,
     source_id: String,
     deadline: std::time::Instant,
 }
@@ -110,7 +110,7 @@ fn configured_player(autoplay: bool, loop_enabled: bool) -> VideoPlayer {
     let mut player = VideoPlayer::new()
         .with_engine(media::MediaEngine::new())
         .with_test_id("video_surface");
-    player.enable_mpris("qos_video_player", "Video Player");
+    player.enable_mpris("tilo_video_player", "Video Player");
     configure_player_settings(&mut player, autoplay, loop_enabled);
     player
 }
@@ -216,9 +216,9 @@ fn panel_text(
 }
 
 fn find_resource<'a>(
-    resources: &'a [qos_actions::Resource],
+    resources: &'a [tilo_actions::Resource],
     id: &str,
-) -> Option<&'a qos_actions::Resource> {
+) -> Option<&'a tilo_actions::Resource> {
     resources.iter().find_map(|resource| {
         if resource.id.0 == id {
             Some(resource)
@@ -310,9 +310,9 @@ pub struct PlayerApp {
     portal_open: Option<PendingPortalOpen>,
     media_open: Option<PendingMediaOpen>,
     portal_generation: u64,
-    resource_results: VecDeque<qos_actions::InvocationUpdate>,
+    resource_results: VecDeque<tilo_actions::InvocationUpdate>,
     open_action: Option<ActionEmitter<()>>,
-    library_control_invocations: VecDeque<qos_actions::ControlInvocation>,
+    library_control_invocations: VecDeque<tilo_actions::ControlInvocation>,
     open_focused: bool,
     library_focused: bool,
     library_focus_id: Option<String>,
@@ -573,7 +573,7 @@ impl PlayerApp {
         let action_surface = crate::actions::resources(&action_ctx, &AutoCommit::new());
         let open_action = action_surface
             .first()
-            .and_then(|resource| qos_actions::ActionBinding::unit_for(resource, "open").ok())
+            .and_then(|resource| tilo_actions::ActionBinding::unit_for(resource, "open").ok())
             .map(ActionEmitter::new);
         Self {
             player,
@@ -901,7 +901,7 @@ impl PlayerApp {
         }
         self.cancel_pending_portal("a direct video open replaced the file picker");
         if let Some(pending) = self.media_open.take() {
-            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+            self.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                 invocation: pending.invocation,
                 message: Some("a newer video open replaced this decoder request".into()),
             });
@@ -1035,7 +1035,7 @@ impl PlayerApp {
 
     fn close_media(&mut self) {
         if let Some(pending) = self.media_open.take() {
-            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+            self.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                 invocation: pending.invocation,
                 message: Some("video was closed before decoding a first frame".into()),
             });
@@ -1073,7 +1073,7 @@ impl PlayerApp {
             title: self.title.clone(),
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.qos.video-player".into(),
+                app_id: "dev.tilo.video-player".into(),
                 element_id: "video_surface".into(),
                 region,
             },
@@ -1201,7 +1201,7 @@ impl PlayerApp {
         let Some(resource) = find_resource(&resources, resource_id) else {
             return;
         };
-        let Ok(binding) = qos_actions::ActionBinding::unit_for(resource, action_id) else {
+        let Ok(binding) = tilo_actions::ActionBinding::unit_for(resource, action_id) else {
             return;
         };
         if let Ok(invocation) = binding.invoke(()) {
@@ -1247,14 +1247,14 @@ impl PlayerApp {
             return;
         };
         if let Some(invocation) = pending.invocation {
-            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+            self.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some(message.into()),
             });
         }
     }
 
-    fn await_open_frame(&mut self, invocation: qos_actions::InvocationId) -> Result<(), String> {
+    fn await_open_frame(&mut self, invocation: tilo_actions::InvocationId) -> Result<(), String> {
         if self.media_open.is_some() {
             return Err("another video open is still waiting for decoder output".into());
         }
@@ -1272,17 +1272,17 @@ impl PlayerApp {
 
     fn poll_open_frame(
         &mut self,
-        invocation: qos_actions::InvocationId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let pending = self.media_open.as_ref()?;
         if pending.invocation != invocation {
             return None;
         }
         if self.current_source_id.as_deref() != Some(pending.source_id.as_str()) {
             let pending = self.media_open.take()?;
-            return Some(qos_actions::InvocationUpdate::Failed {
+            return Some(tilo_actions::InvocationUpdate::Failed {
                 invocation: pending.invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "video_player.open_superseded".into(),
                     message: "The requested video was superseded before decoding a frame.".into(),
                     details: None,
@@ -1293,9 +1293,9 @@ impl PlayerApp {
         if self.player.latest_frame().is_some() {
             let pending = self.media_open.take()?;
             self.record_current_history();
-            return Some(qos_actions::InvocationUpdate::Succeeded {
+            return Some(tilo_actions::InvocationUpdate::Succeeded {
                 invocation: pending.invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             });
         }
         if std::time::Instant::now() >= pending.deadline {
@@ -1303,9 +1303,9 @@ impl PlayerApp {
             let message = "The decoder did not produce a first frame in time.".to_string();
             self.open_error = Some(message.clone());
             self.dirty = true;
-            return Some(qos_actions::InvocationUpdate::Failed {
+            return Some(tilo_actions::InvocationUpdate::Failed {
                 invocation: pending.invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "video_player.open_timed_out".into(),
                     message,
                     details: Some(serde_json::json!({
@@ -1322,7 +1322,7 @@ impl PlayerApp {
     /// older invocation that the host has not polled yet. `trigger_open`
     /// applies backpressure before accepting another asynchronous request, so
     /// every accepted invocation keeps its result until it is collected.
-    fn queue_resource_result(&mut self, update: qos_actions::InvocationUpdate) {
+    fn queue_resource_result(&mut self, update: tilo_actions::InvocationUpdate) {
         self.resource_results.push_back(update);
     }
 
@@ -1561,9 +1561,9 @@ impl PlayerApp {
                     "video player: ignored a stale portal outcome"
                 );
                 if let Some(invocation) = invocation {
-                    self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                    self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "video_player.stale_open_response".into(),
                             message: "ignored a stale video picker response; open again".into(),
                             details: None,
@@ -1589,9 +1589,9 @@ impl PlayerApp {
                         // invocation until `poll_open_frame` observes a first
                         // decoded picture (or a truthful timeout/failure).
                         if let Err(message) = self.await_open_frame(invocation) {
-                            self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                            self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "video_player.open_lifecycle_failed".into(),
                                     message,
                                     details: None,
@@ -1601,15 +1601,15 @@ impl PlayerApp {
                         }
                     }
                     Ok(false) => {
-                        self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+                        self.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                             invocation,
                             message: Some("video selection was cancelled".into()),
                         });
                     }
                     Err(message) => {
-                        self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                        self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "video_player.open_failed".into(),
                                 message,
                                 details: None,
@@ -1747,9 +1747,9 @@ impl PlayerApp {
                     self.open_error = Some(message.clone());
                     self.dirty = true;
                     if let Some(pending) = self.media_open.take() {
-                        self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                        self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                             invocation: pending.invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "video_player.decoder_failed".into(),
                                 message,
                                 details: None,
@@ -2690,7 +2690,7 @@ impl Widget for PlayerApp {
         &[crate::actions::OPERATION_TYPE]
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resources(
             &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
@@ -2698,7 +2698,7 @@ impl Widget for PlayerApp {
         )
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resource(
             &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
@@ -2742,13 +2742,13 @@ impl Widget for PlayerApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode(type_id, payload)? else {
@@ -2811,8 +2811,8 @@ impl Widget for PlayerApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -2848,18 +2848,18 @@ impl Widget for PlayerApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.drain_portal();
         if let Some(update) = self.poll_open_frame(invocation) {
             return Some(update);
@@ -3093,7 +3093,7 @@ impl Widget for PlayerApp {
         vec![&mut self.player as &mut (dyn Widget + '_)]
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.open_action
             .as_mut()
             .and_then(ActionEmitter::take)
@@ -3112,7 +3112,7 @@ impl Widget for PlayerApp {
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.open_action {
             action.refresh_availability(allowed);
@@ -3576,13 +3576,13 @@ mod tests {
     #[test]
     fn source_for_path_splits_local_vs_workspace() {
         // Point the mount at a scratch root so the classification is testable.
-        let root = std::env::temp_dir().join(format!("qos-vp-app-{}", std::process::id()));
-        unsafe { std::env::set_var("QOS_WORKSPACE_ROOT", &root) };
+        let root = std::env::temp_dir().join(format!("tilo-vp-app-{}", std::process::id()));
+        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &root) };
         let ws = source_for_path(&root.join("media/a.mp4"));
         assert!(matches!(ws, media::Source::Workspace(_)));
         let local = source_for_path(Path::new("/home/u/b.mp4"));
         assert!(matches!(local, media::Source::LocalFile(_)));
-        unsafe { std::env::remove_var("QOS_WORKSPACE_ROOT") };
+        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
     }
 
     #[test]
@@ -3732,8 +3732,8 @@ mod tests {
     #[test]
     fn completed_portal_result_backpressures_new_async_requests_until_polled() {
         let mut app = PlayerApp::new();
-        app.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
-            invocation: qos_actions::InvocationId::new(),
+        app.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
+            invocation: tilo_actions::InvocationId::new(),
             message: Some("test completion".into()),
         });
         let error = app
@@ -3919,7 +3919,7 @@ mod tests {
         );
         assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
         assert!(
-            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "dev.qos.video-player" && element_id == "video_surface")
+            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "dev.tilo.video-player" && element_id == "video_surface")
         );
     }
 
@@ -3959,14 +3959,14 @@ mod tests {
             .expect("source identity available");
         app.collab = Some(CollabPlayback::new(Role::Follower));
         app.player.set_transport_enabled(false);
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::actions::OPERATION_TYPE,
             &crate::actions::PlayerOperation::TogglePlayback,
         )
         .unwrap();
         let result = Widget::invoke_resource_operation(
             &mut app,
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &AutoCommit::new(),
@@ -3978,14 +3978,14 @@ mod tests {
     #[test]
     fn unavailable_transport_is_rejected_even_if_a_caller_bypasses_discovery() {
         let mut app = PlayerApp::new();
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::actions::OPERATION_TYPE,
             &crate::actions::PlayerOperation::TogglePlayback,
         )
         .unwrap();
         let result = Widget::invoke_resource_operation(
             &mut app,
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &AutoCommit::new(),
@@ -4056,7 +4056,7 @@ mod tests {
     fn direct_open_is_accepted_until_a_decoder_frame_confirms_success() {
         let mut app = synth_app();
         let path = std::env::temp_dir().join(format!(
-            "qos-video-player-open-lifecycle-{}-{}.mp4",
+            "tilo-video-player-open-lifecycle-{}-{}.mp4",
             std::process::id(),
             media::now_ms()
         ));
@@ -4065,12 +4065,12 @@ mod tests {
             path: Some(path.to_string_lossy().into_owned()),
         };
         let payload = serde_json::to_vec(&operation).expect("serialize operation");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let doc = AutoCommit::new();
         let started = Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::OPERATION_TYPE,
             &payload,
             &doc,
@@ -4089,7 +4089,7 @@ mod tests {
         app.sync(&mut mutable_doc, &root());
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &mutable_doc, &root()),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         std::fs::remove_file(path).ok();
     }
@@ -4102,13 +4102,13 @@ mod tests {
             item_id: item_id.clone(),
         })
         .expect("serialize queue operation");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let mut doc = AutoCommit::new();
         assert_eq!(
             Widget::start_resource_operation(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -4125,7 +4125,7 @@ mod tests {
         app.sync(&mut doc, &root());
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert_eq!(
             app.recent.front().map(|entry| entry.id.as_str()),
@@ -4137,7 +4137,7 @@ mod tests {
     fn admitted_direct_open_reports_a_decoder_timeout_instead_of_false_success() {
         let mut app = synth_app();
         let path = std::env::temp_dir().join(format!(
-            "qos-video-player-open-timeout-{}-{}.mp4",
+            "tilo-video-player-open-timeout-{}-{}.mp4",
             std::process::id(),
             media::now_ms()
         ));
@@ -4146,13 +4146,13 @@ mod tests {
             path: Some(path.to_string_lossy().into_owned()),
         })
         .expect("serialize operation");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let doc = AutoCommit::new();
         assert_eq!(
             Widget::start_resource_operation(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -4167,7 +4167,7 @@ mod tests {
             .deadline = std::time::Instant::now();
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()),
-            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "video_player.open_timed_out"
         ));
         assert_eq!(

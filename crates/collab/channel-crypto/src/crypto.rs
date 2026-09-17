@@ -1,7 +1,7 @@
 //! `OpenMLS` provider wiring + per-member key material.
 //!
 //! One ciphersuite — `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` —
-//! with no negotiation: Ed25519 lines up with the rest of qOS (identity
+//! with no negotiation: Ed25519 lines up with the rest of Tilo (identity
 //! keys, the FROST threshold crate, Iroh's transport key), so a
 //! different MLS signature scheme would force two key materials per
 //! member; X25519/AES-128-GCM/SHA-256 are the small-ciphersuite MLS

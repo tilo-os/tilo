@@ -489,7 +489,7 @@ impl PeerSyncOverlay {
                 self.state.invite_name = Some(String::new());
                 self.state.invite_recipient_key = None;
                 self.state.status =
-                    Some("Ask them to send their qOS identity, then paste it here.".to_string());
+                    Some("Ask them to send their Tilo identity, then paste it here.".to_string());
                 EventOutcome::consumed()
             }
             Button::Join => self.submit_connect(),
@@ -543,7 +543,7 @@ impl PeerSyncOverlay {
         }
         let Some(recipient_user_public_key) = self.state.invite_recipient_key else {
             self.state.status =
-                Some("Paste their qOS identity key so the invite cannot be stolen".to_string());
+                Some("Paste their Tilo identity key so the invite cannot be stolen".to_string());
             return EventOutcome::consumed();
         };
         EventOutcome::request(
@@ -567,7 +567,7 @@ impl PeerSyncOverlay {
         }
         if self.state.invite_recipient_key.is_none() {
             self.state.status = Some(
-                "Choose a verified person or paste their qOS identity so the invite cannot be stolen"
+                "Choose a verified person or paste their Tilo identity so the invite cannot be stolen"
                     .to_string(),
             );
             return EventOutcome::consumed();
@@ -625,7 +625,7 @@ impl PeerSyncOverlay {
             }
             None => {
                 self.state.status = Some(
-                    "That is not a qOS identity key (expected 64 hexadecimal characters)"
+                    "That is not a Tilo identity key (expected 64 hexadecimal characters)"
                         .to_string(),
                 );
             }
@@ -962,7 +962,7 @@ impl PeerSyncOverlay {
             text,
             theme,
             choice,
-            "Someone new · exchange their qOS identity",
+            "Someone new · exchange their Tilo identity",
             self.state.invite_recipient_path == InviteRecipientPath::New,
             Button::SelectNewRecipient,
             body,
@@ -1290,7 +1290,7 @@ fn peer_fingerprint(peer_id: &str) -> String {
 fn parse_recipient_identity(value: &str) -> Option<[u8; 32]> {
     let compact = value.trim();
     let encoded = compact
-        .strip_prefix("qos-identity:")
+        .strip_prefix("tilo-identity:")
         .unwrap_or(compact)
         .trim();
     let bytes = hex::decode(encoded).ok()?;
@@ -1406,7 +1406,7 @@ fn draw_naming(
     );
     y = field.y1 + 12.0;
     let identity = recipient.map_or_else(
-        || "Choose a verified person or paste their qOS identity.".to_string(),
+        || "Choose a verified person or paste their Tilo identity.".to_string(),
         |key| match recipient_path {
             InviteRecipientPath::Known => {
                 format!(
@@ -1899,7 +1899,7 @@ mod tests {
         let key = [0x5a; 32];
         assert_eq!(parse_recipient_identity(&hex::encode(key)), Some(key));
         assert_eq!(
-            parse_recipient_identity(&format!("qos-identity:{}", hex::encode(key))),
+            parse_recipient_identity(&format!("tilo-identity:{}", hex::encode(key))),
             Some(key)
         );
         assert_eq!(parse_recipient_identity("5a"), None);
@@ -1911,7 +1911,7 @@ mod tests {
     fn exporting_identity_copies_a_non_secret_card_without_closing_join() {
         let mut overlay = PeerSyncOverlay::default();
         overlay.prompt_connect();
-        let card = format!("qos-identity:{}", hex::encode([0x2a; 32]));
+        let card = format!("tilo-identity:{}", hex::encode([0x2a; 32]));
         overlay.finish_request(&PeerSyncRequest::ExportIdentity, Ok(card.clone()), false);
         assert_eq!(ui::text_selection::clipboard_paste(), Some(card));
         assert!(overlay.state.connect_input.is_some());

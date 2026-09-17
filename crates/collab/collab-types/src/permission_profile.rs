@@ -147,10 +147,10 @@ mod tests {
             name: "Release reviewer".into(),
             description: "Can inspect Builds and approve exactly one action".into(),
             rules: vec![
-                PermissionProfileRule::grant(Scope::App("org.qos.Builds".into()), Verb::Read),
+                PermissionProfileRule::grant(Scope::App("org.tilo.Builds".into()), Verb::Read),
                 PermissionProfileRule::grant(
                     Scope::Action {
-                        app: "org.qos.Builds".into(),
+                        app: "org.tilo.Builds".into(),
                         action: "release.approve".into(),
                     },
                     Verb::Write,
@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(
             decide_capability(
                 &actor,
-                &ResourceRef::App("org.qos.Builds".into()),
+                &ResourceRef::App("org.tilo.Builds".into()),
                 Verb::Read,
                 &caps,
                 None
@@ -179,7 +179,7 @@ mod tests {
             decide_capability(
                 &actor,
                 &ResourceRef::Action {
-                    app: "org.qos.Builds".into(),
+                    app: "org.tilo.Builds".into(),
                     action: "release.approve".into()
                 },
                 Verb::Write,
@@ -192,7 +192,7 @@ mod tests {
             decide_capability(
                 &actor,
                 &ResourceRef::Action {
-                    app: "org.qos.Builds".into(),
+                    app: "org.tilo.Builds".into(),
                     action: "release.delete".into()
                 },
                 Verb::Write,

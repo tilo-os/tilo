@@ -89,7 +89,7 @@ jobs:
           REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
           REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
-          MAIN_ARCHITECTURES: ${{ vars.QOS_APP_MAIN_ARCHITECTURES }}
+          MAIN_ARCHITECTURES: ${{ vars.TILO_APP_MAIN_ARCHITECTURES }}
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
@@ -166,7 +166,7 @@ jobs:
     # Keep those system headers in the versioned CI builder image instead of
     # resolving distro packages independently in every release job.
     container:
-      image: code.sandbox.example/qos/qos-builder:latest
+      image: code.sandbox.example/tilo/tilo-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -179,7 +179,7 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: thin
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       # v2 retires a malformed archive written by the original app namespace.
-      QOS_SCCACHE_KEY_PREFIX: quickdesktop/apps/v2/${{ matrix.arch }}
+      TILO_SCCACHE_KEY_PREFIX: tilo/apps/v2/${{ matrix.arch }}
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -201,12 +201,12 @@ jobs:
         run: bash tools/ci-sccache.sh prepare
       - name: Build and verify selected qpkgs once for this architecture
         env:
-          QOS_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
+          TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
           QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
         run: |
           if [[ -n ${QPKG_PUBLISHER_IDENTITY:-} ]]; then
-            identity="$RUNNER_TEMP/qos-app-publisher.json"
+            identity="$RUNNER_TEMP/tilo-app-publisher.json"
             (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$identity")
             export QPKG_PUBLISHER_IDENTITY_FILE="$identity"
           elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
@@ -214,7 +214,7 @@ jobs:
             exit 1
           fi
           if [[ -n ${RUNTIME_BUNDLE_SIGNING_KEY:-} ]]; then
-            runtime_identity="$RUNNER_TEMP/qos-runtime-publisher.json"
+            runtime_identity="$RUNNER_TEMP/tilo-runtime-publisher.json"
             (umask 077; printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" > "$runtime_identity")
             export RUNTIME_BUNDLE_IDENTITY_FILE="$runtime_identity"
           elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
@@ -226,7 +226,7 @@ jobs:
             [[ -z ${runtime_identity:-} ]] || rm -f "$runtime_identity"
           }
           trap cleanup_identities EXIT
-          build_log=$(mktemp "$RUNNER_TEMP/qos-app-build.XXXXXX")
+          build_log=$(mktemp "$RUNNER_TEMP/tilo-app-build.XXXXXX")
           if ! dist/apps/package-apps.sh 2> >(tee "$build_log" >&2); then
             if ! grep -Eq 'truncated or malformed archive|failed to read object file' "$build_log"; then
               exit 1
@@ -237,7 +237,7 @@ jobs:
           fi
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: qos-apps-${{ matrix.arch }}
+          name: tilo-apps-${{ matrix.arch }}
           path: |
             dist/app-release/qpkg/*.qpkg
             dist/app-release/runtime/**
@@ -263,14 +263,14 @@ jobs:
           path: release
       - name: Publish reusable qpkgs and assemble immutable collections
         env:
-          MAIN_AUDIENCE: ${{ vars.QOS_APP_RELEASE_MAIN_AUDIENCE }}
-          TAG_AUDIENCE: ${{ vars.QOS_APP_RELEASE_TAG_AUDIENCE }}
+          MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
+          TAG_AUDIENCE: ${{ vars.TILO_APP_RELEASE_TAG_AUDIENCE }}
           VERSION: ${{ needs.plan.outputs.version }}
           COLLECTION: ${{ needs.plan.outputs.collection }}
-          PRIOR_X86_URL: ${{ vars.QOS_APP_COLLECTION_URL_X86_64 || vars.QOS_APP_COLLECTION_URL }}
-          PRIOR_X86_SHA256: ${{ vars.QOS_APP_COLLECTION_SHA256_X86_64 || vars.QOS_APP_COLLECTION_SHA256 }}
-          PRIOR_ARM64_URL: ${{ vars.QOS_APP_COLLECTION_URL_AARCH64 }}
-          PRIOR_ARM64_SHA256: ${{ vars.QOS_APP_COLLECTION_SHA256_AARCH64 }}
+          PRIOR_X86_URL: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 || vars.TILO_APP_COLLECTION_URL }}
+          PRIOR_X86_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 || vars.TILO_APP_COLLECTION_SHA256 }}
+          PRIOR_ARM64_URL: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
+          PRIOR_ARM64_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
         run: |
           set -euo pipefail
           if [[ $GITHUB_REF == refs/tags/* ]]; then
@@ -288,7 +288,7 @@ jobs:
 
           put_immutable() {
             local file=$1 url=$2 response remote
-            response=$(mktemp "$RUNNER_TEMP/qos-package-response.XXXXXX")
+            response=$(mktemp "$RUNNER_TEMP/tilo-package-response.XXXXXX")
             status=$(curl --silent --show-error --retry 3 --retry-all-errors \
               --output "$response" --write-out '%{http_code}' \
               --header "Authorization: Bearer $jwt" \
@@ -296,7 +296,7 @@ jobs:
             case "$status" in
               200|201|204) echo "published ${file##*/}" ;;
               409)
-                remote=$(mktemp "$RUNNER_TEMP/qos-existing-package.XXXXXX")
+                remote=$(mktemp "$RUNNER_TEMP/tilo-existing-package.XXXXXX")
                 curl --fail --silent --show-error --retry 3 --retry-all-errors \
                   --header "Authorization: Bearer $jwt" "$url" --output "$remote"
                 cmp --silent "$file" "$remote" || {
@@ -317,19 +317,19 @@ jobs:
               qpkg="${index%/index.json}/qpkg/$file"
               test -f "$qpkg"
               put_immutable "$qpkg" \
-                "$package_api/qos-app-$name/$VERSION/$file"
+                "$package_api/tilo-app-$name/$VERSION/$file"
             done < <(jq -r '.apps[] | [.name,.version,.file] | @tsv' "$index")
           done
 
           [[ -n ${COLLECTION:-} ]] || exit 0
-          collection_plan="$RUNNER_TEMP/qos-collection-plan.json"
+          collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
           python3 tools/app_release.py --collection "$COLLECTION" > "$collection_plan"
           source_epoch=$(git log -1 --format=%ct)
           channel_url=
           channel_sha=
           for index in release/*/index.json; do
             arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
-            qpkg_dir="$RUNNER_TEMP/qos-collection-$arch"
+            qpkg_dir="$RUNNER_TEMP/tilo-collection-$arch"
             mkdir -p "$qpkg_dir"
             prior_url=
             prior_sha=
@@ -345,8 +345,8 @@ jobs:
             fi
             if [[ -n $prior_url ]]; then
               [[ $prior_sha =~ ^[0-9a-fA-F]{64}$ ]]
-              prior="$RUNNER_TEMP/qos-prior-$arch.tar.gz"
-              prior_dir="$RUNNER_TEMP/qos-prior-$arch"
+              prior="$RUNNER_TEMP/tilo-prior-$arch.tar.gz"
+              prior_dir="$RUNNER_TEMP/tilo-prior-$arch"
               mkdir -p "$prior_dir"
               curl --fail --silent --show-error --retry 3 --retry-all-errors \
                 --header "Authorization: Bearer $jwt" "$prior_url" --output "$prior"
@@ -369,9 +369,9 @@ jobs:
               built_count=$(jq -r '.apps | length' "$index")
               collection_count=$(jq -r '.catalog | length' "$collection_plan")
               if (( built_count < collection_count )); then
-                new_manifest=$(find "${index%/index.json}/runtime/qos-runtime" \
+                new_manifest=$(find "${index%/index.json}/runtime/tilo-runtime" \
                   -mindepth 2 -maxdepth 2 -name bundle.toml -type f -print -quit)
-                prior_manifest=$(find "$prior_dir/runtime/qos-runtime" \
+                prior_manifest=$(find "$prior_dir/runtime/tilo-runtime" \
                   -mindepth 2 -maxdepth 2 -name bundle.toml -type f -print -quit)
                 new_root=$(sed -n 's/^root_hash *= *"\([0-9a-fA-F]\{64\}\)".*/\1/p' "$new_manifest")
                 prior_root=$(sed -n 's/^root_hash *= *"\([0-9a-fA-F]\{64\}\)".*/\1/p' "$prior_manifest")
@@ -395,17 +395,17 @@ jobs:
               }
             done < <(jq -r '.catalog[] | [.name,.version] | @tsv' "$collection_plan")
             out="dist/app-collections/$arch"
-            QOS_APP_COLLECTION_PLAN="$collection_plan" \
-              QOS_APP_ARCH="$arch" QOS_APP_QPKG_DIR="$qpkg_dir" \
-              QOS_APP_RUNTIME_DIR="${index%/index.json}/runtime" \
-              QOS_APP_COLLECTION_OUT="$out" SOURCE_DATE_EPOCH="$source_epoch" \
+            TILO_APP_COLLECTION_PLAN="$collection_plan" \
+              TILO_APP_ARCH="$arch" TILO_APP_QPKG_DIR="$qpkg_dir" \
+              TILO_APP_RUNTIME_DIR="${index%/index.json}/runtime" \
+              TILO_APP_COLLECTION_OUT="$out" SOURCE_DATE_EPOCH="$source_epoch" \
               dist/apps/assemble-collection.sh
-            bundle="$out/qos-apps-$arch.tar.gz"
+            bundle="$out/tilo-apps-$arch.tar.gz"
             digest_file="$bundle.sha256"
-            bundle_url="$package_api/qos-app-collections/$VERSION/${bundle##*/}"
+            bundle_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
             put_immutable "$bundle" "$bundle_url"
             put_immutable "$digest_file" \
-              "$package_api/qos-app-collections/$VERSION/${digest_file##*/}"
+              "$package_api/tilo-app-collections/$VERSION/${digest_file##*/}"
             if [[ $arch == x86_64 ]]; then
               channel_url=$bundle_url
               channel_sha=$(awk '{print $1}' "$digest_file")
@@ -432,13 +432,13 @@ jobs:
                 --header 'Content-Type: application/json' \
                 --data "$(jq -cn --arg value "$value" '{value:$value}')" "$endpoint"
             }
-            update_variable QOS_APP_COLLECTION_URL "$channel_url"
-            update_variable QOS_APP_COLLECTION_SHA256 "$channel_sha"
-            update_variable QOS_APP_COLLECTION_URL_X86_64 "$channel_url"
-            update_variable QOS_APP_COLLECTION_SHA256_X86_64 "$channel_sha"
+            update_variable TILO_APP_COLLECTION_URL "$channel_url"
+            update_variable TILO_APP_COLLECTION_SHA256 "$channel_sha"
+            update_variable TILO_APP_COLLECTION_URL_X86_64 "$channel_url"
+            update_variable TILO_APP_COLLECTION_SHA256_X86_64 "$channel_sha"
             if [[ -n ${arm64_channel_url:-} ]]; then
-              update_variable QOS_APP_COLLECTION_URL_AARCH64 "$arm64_channel_url"
-              update_variable QOS_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
+              update_variable TILO_APP_COLLECTION_URL_AARCH64 "$arm64_channel_url"
+              update_variable TILO_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
             fi
             echo '::notice::advanced the default OS app-collection channel'
           fi

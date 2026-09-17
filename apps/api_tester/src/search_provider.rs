@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use qos_actions::{ActionAddress, ActionSpec, ExecutionLocus, Resource};
+use tilo_actions::{ActionAddress, ActionSpec, ExecutionLocus, Resource};
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError, SearchCursor, SearchPage,
     SearchProvider, SearchResult,

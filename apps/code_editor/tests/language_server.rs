@@ -5,7 +5,7 @@
 //! Unit tests cover the protocol parser; this test verifies project-root
 //! resolution and diagnostics against a real filesystem directory.
 //!
-//! The test builds its own tiny crate rather than using this workspace: qOS has
+//! The test builds its own tiny crate rather than using this workspace: Tilo has
 //! ~200 members and indexing it takes minutes, which is not a unit of work a
 //! test suite should contain. The plumbing under test — root resolution,
 //! `initialize`, answering the server's own requests, `didOpen`, `$/progress`,
@@ -47,7 +47,7 @@ fn project_with_a_deliberate_error() -> Result<tempfile::TempDir, Box<dyn std::e
     std::fs::create_dir_all(root.join("src"))?;
     std::fs::write(
         root.join("Cargo.toml"),
-        "[package]\nname = \"qos-lsp-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+        "[package]\nname = \"tilo-lsp-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
          [dependencies]\n",
     )?;
     // `parse_limitt` does not exist. rustc's message for this is stable and
@@ -240,6 +240,6 @@ fn the_editor_roots_its_server_at_a_real_directory() {
     assert!(err.contains("not a directory"), "got: {err}");
 
     // And a real one produces a real `file://` URI for its workspace root.
-    let uri = code_editor::lsp::path_to_uri(Path::new("/home/me/qos"));
-    assert_eq!(uri, "file:///home/me/qos");
+    let uri = code_editor::lsp::path_to_uri(Path::new("/home/me/tilo"));
+    assert_eq!(uri, "file:///home/me/tilo");
 }

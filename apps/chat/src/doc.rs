@@ -112,7 +112,7 @@ pub struct NewMessage {
     /// by selecting something. Minted by the publishing app at authoring
     /// time and carried verbatim, so it survives into the document instead
     /// of being lost at the composer.
-    pub reference: Option<qos_reference::ResourceRef>,
+    pub reference: Option<tilo_reference::ResourceRef>,
     /// An agent's record of what it is doing with the message this one
     /// replies to. Written by the agent at the moment it takes a summons, so
     /// the reply exists — and says so — before there is an outcome.
@@ -423,7 +423,7 @@ impl ChatDoc {
     fn seed_demo_workspaces(doc: &mut AutoCommit) {
         for (id, name, glyph, color, order) in [
             ("ws_acme", "Acme Design", "AD", 0usize, 0u32),
-            ("ws_qos", "qOS Core", "QC", 1, 1),
+            ("ws_tilo", "Tilo Core", "QC", 1, 1),
             ("ws_jam", "Weekend Jam", "WJ", 3, 2),
         ] {
             Self::put_workspace(doc, id, name, glyph, color, order);
@@ -436,8 +436,8 @@ impl ChatDoc {
         for (id, ws, name, order) in [
             ("cat_acme_main", "ws_acme", "Channels", 0u32),
             ("cat_acme_voice", "ws_acme", "Voice", 1),
-            ("cat_qos_eng", "ws_qos", "Engineering", 0),
-            ("cat_qos_voice", "ws_qos", "Voice", 1),
+            ("cat_tilo_eng", "ws_tilo", "Engineering", 0),
+            ("cat_tilo_voice", "ws_tilo", "Voice", 1),
             ("cat_jam_main", "ws_jam", "Hangout", 0),
         ] {
             Self::put_category(doc, id, ws, name, order, false);
@@ -451,7 +451,7 @@ impl ChatDoc {
         for (id, ws, cat, name, topic, kind, order) in Self::demo_channel_table_acme() {
             Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order);
         }
-        for (id, ws, cat, name, topic, kind, order) in Self::demo_channel_table_qos_and_jam() {
+        for (id, ws, cat, name, topic, kind, order) in Self::demo_channel_table_tilo_and_jam() {
             Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order);
         }
     }
@@ -518,15 +518,15 @@ impl ChatDoc {
         ]
     }
 
-    /// The demo `ws_qos` and `ws_jam` workspaces' channel rosters: (id,
+    /// The demo `ws_tilo` and `ws_jam` workspaces' channel rosters: (id,
     /// workspace, category, name, topic, kind, sort order within its
     /// category). Part of [`Self::seed_demo_channels`].
-    fn demo_channel_table_qos_and_jam() -> &'static [DemoChannelSeed] {
+    fn demo_channel_table_tilo_and_jam() -> &'static [DemoChannelSeed] {
         &[
             (
                 "c_kernel",
-                "ws_qos",
-                "cat_qos_eng",
+                "ws_tilo",
+                "cat_tilo_eng",
                 "kernel",
                 "bootc + immutable base",
                 ChannelKind::Text,
@@ -534,8 +534,8 @@ impl ChatDoc {
             ),
             (
                 "c_compositor",
-                "ws_qos",
-                "cat_qos_eng",
+                "ws_tilo",
+                "cat_tilo_eng",
                 "compositor",
                 "2D clusters & sandboxing",
                 ChannelKind::Text,
@@ -543,8 +543,8 @@ impl ChatDoc {
             ),
             (
                 "c_fssync",
-                "ws_qos",
-                "cat_qos_eng",
+                "ws_tilo",
+                "cat_tilo_eng",
                 "fs-sync",
                 "iroh projection & hydration",
                 ChannelKind::Text,
@@ -552,8 +552,8 @@ impl ChatDoc {
             ),
             (
                 "c_releases",
-                "ws_qos",
-                "cat_qos_eng",
+                "ws_tilo",
+                "cat_tilo_eng",
                 "releases",
                 "ship logs",
                 ChannelKind::Text,
@@ -561,8 +561,8 @@ impl ChatDoc {
             ),
             (
                 "c_warroom",
-                "ws_qos",
-                "cat_qos_voice",
+                "ws_tilo",
+                "cat_tilo_voice",
                 "War Room",
                 "",
                 ChannelKind::Voice,
@@ -774,7 +774,7 @@ impl ChatDoc {
             NewMessage {
                 author: "u_iris".into(),
                 ts: m(220),
-                text: "Welcome to Acme Design on qOS 👋 Channels relate to the workspace you're standing in — switch workspaces from the rail on the left.".into(),
+                text: "Welcome to Acme Design on Tilo 👋 Channels relate to the workspace you're standing in — switch workspaces from the rail on the left.".into(),
                 reactions: vec![("👋".into(), vec!["u_me".into(), "u_aria".into(), "u_milo".into()])],
                 ..Default::default()
             },
@@ -968,7 +968,7 @@ impl ChatDoc {
     fn write_reference(
         doc: &mut AutoCommit,
         block: &ObjId,
-        reference: Option<&qos_reference::ResourceRef>,
+        reference: Option<&tilo_reference::ResourceRef>,
     ) {
         if let Some(r) = reference
             && let Ok(json) = serde_json::to_string(r)
@@ -2221,7 +2221,7 @@ impl ChatDoc {
     /// message — and also for one whose stored address will not parse, which
     /// is deliberately not the same as a nearby address that does. A
     /// reference that cannot be read is no reference at all.
-    fn read_reference(doc: &AutoCommit, msg: &ObjId) -> Option<qos_reference::ResourceRef> {
+    fn read_reference(doc: &AutoCommit, msg: &ObjId) -> Option<tilo_reference::ResourceRef> {
         let raw = get_str(doc, msg, "reference");
         if raw.is_empty() {
             return None;
@@ -2414,7 +2414,7 @@ mod tests {
     #[test]
     fn a_messages_reference_round_trips_and_an_ordinary_message_carries_none() {
         let mut doc = seeded();
-        let about = qos_reference::ResourceRef::whole(
+        let about = tilo_reference::ResourceRef::whole(
             "files.entry",
             "files.entry:/var/workspace/harbour.png",
             "harbour.png",

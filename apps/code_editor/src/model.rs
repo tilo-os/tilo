@@ -1240,8 +1240,8 @@ mod tests {
 
     #[test]
     fn opening_a_missing_path_fails_rather_than_opening_an_empty_project() {
-        assert!(Project::from_dir(Path::new("/nonexistent/qos/project")).is_err());
-        assert!(Project::open_single_file(Path::new("/nonexistent/qos/a.rs")).is_err());
+        assert!(Project::from_dir(Path::new("/nonexistent/tilo/project")).is_err());
+        assert!(Project::open_single_file(Path::new("/nonexistent/tilo/a.rs")).is_err());
     }
 
     #[test]

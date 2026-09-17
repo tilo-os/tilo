@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Second-phase build: consume the merged .profdata to guide codegen.
 #
-# Reads os/pgo/qos.profdata (produced by scripts/perf/pgo-merge.sh) and
+# Reads os/pgo/tilo.profdata (produced by scripts/perf/pgo-merge.sh) and
 # builds the release-shaped binaries with `-C profile-use=<file>`. The
 # output lands at target/pgo-release/release/, out of the way of a
 # normal `cargo build --release`.
 #
 # Usage:   scripts/perf/pgo-rebuild.sh
-# Emits:   target/pgo-release/release/{shell,terminal,file-explorer,qos-install}
+# Emits:   target/pgo-release/release/{shell,terminal,file-explorer,tilo-install}
 
 set -euo pipefail
 
-DISTROBOX="${QOS_DISTROBOX:-}"
+DISTROBOX="${TILO_DISTROBOX:-}"
 run_in_env() {
     if [ -n "$DISTROBOX" ]; then
         distrobox enter "$DISTROBOX" -- "$@"
@@ -23,7 +23,7 @@ run_in_env() {
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-PROFDATA="$ROOT/os/pgo/qos.profdata"
+PROFDATA="$ROOT/os/pgo/tilo.profdata"
 BUILD="$ROOT/target/pgo-release"
 
 if [ ! -f "$PROFDATA" ]; then
@@ -41,6 +41,6 @@ run_in_env bash -c "cd $ROOT && cargo build --release \
 
 echo
 ls -la "$BUILD/release/shell" "$BUILD/release/terminal" \
-       "$BUILD/release/file-explorer" "$BUILD/release/qos-install"
+       "$BUILD/release/file-explorer" "$BUILD/release/tilo-install"
 echo
 echo "PGO'd binaries. Ready for BOLT (scripts/perf/bolt-optimize.sh)."

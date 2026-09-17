@@ -23,10 +23,10 @@ live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# The qOS ACTION model: Camera's `actions` module exports capture/scan metadata
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+# The Tilo ACTION model: Camera's `actions` module exports capture/scan metadata
 # operations as replayable actions the host's Ctrl+K palette dispatches.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
 serde.workspace = true
@@ -41,7 +41,7 @@ anyhow.workspace = true
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 png.workspace = true
 dirs.workspace = true
-qos-ocr = { path = "../../crates/media/ocr" }
+tilo-ocr = { path = "../../crates/media/ocr" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
 os-actions = { path = "../../crates/system/os-actions" }
 

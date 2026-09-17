@@ -306,7 +306,7 @@ where
         self.child.set_record_scope(record);
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         self.child.resources(doc)
     }
 

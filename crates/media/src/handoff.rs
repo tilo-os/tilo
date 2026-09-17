@@ -296,7 +296,7 @@ pub(crate) fn update(engine_id: u64, playback: EnginePlayback<'_>) {
         "blake3:{}",
         blake3::hash(identity_material.as_bytes()).to_hex()
     );
-    let workspace_id = std::env::var("QOS_WORKSPACE_ID").unwrap_or_default();
+    let workspace_id = std::env::var("TILO_WORKSPACE_ID").unwrap_or_default();
     let accepted_handoff_request = accepted_handoff_request();
     sessions.insert(
         engine_id,
@@ -545,7 +545,7 @@ fn valid_app_resource_uri(uri: &str) -> bool {
 }
 
 fn accepted_handoff_request() -> Option<[u8; 16]> {
-    std::env::var("QOS_MEDIA_HANDOFF_REQUEST_ID")
+    std::env::var("TILO_MEDIA_HANDOFF_REQUEST_ID")
         .ok()
         .and_then(|value| hex::decode(value).ok())
         .and_then(|bytes| bytes.try_into().ok())
@@ -579,8 +579,8 @@ mod tests {
     fn report(id: &str, bus_name: &str) -> PlaybackReport {
         PlaybackReport {
             session: PlaybackSession {
-                id: format!("dev.qos.player:{id}"),
-                app_id: "dev.qos.player".into(),
+                id: format!("dev.tilo.player:{id}"),
+                app_id: "dev.tilo.player".into(),
                 title: id.into(),
                 content_id: format!("blake3:{}", "0".repeat(64)),
                 position_ms: 0,
@@ -634,13 +634,13 @@ mod tests {
             playing: true,
             has_video: false,
             audible: true,
-            controller_bus_name: Some("org.mpris.MediaPlayer2.qos-music"),
+            controller_bus_name: Some("org.mpris.MediaPlayer2.tilo-music"),
         });
-        let report = playback_reports("dev.qos.music", "workspace")
+        let report = playback_reports("dev.tilo.music", "workspace")
             .into_iter()
             .find(|report| report.session.title == "A durable song")
             .expect("app-owned playback is reported");
-        assert_eq!(report.session.app_id, "dev.qos.music");
+        assert_eq!(report.session.app_id, "dev.tilo.music");
         assert_eq!(report.workspace_id, "workspace");
         assert!(matches!(
             report.source,

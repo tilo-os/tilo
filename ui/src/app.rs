@@ -551,8 +551,8 @@ type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send +
 type FrameTick = Box<dyn FnMut(&mut PresenceCtx) -> bool + Send + Sync>;
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
-    &'a qos_actions::Resource,
-    &'a qos_actions::ActionSpec,
+    &'a tilo_actions::Resource,
+    &'a tilo_actions::ActionSpec,
 );
 
 /// Exact host-side mutation key for the resource/action surface. Every route
@@ -566,15 +566,15 @@ struct ResourceCacheKey {
 
 struct ResourceCache {
     key: ResourceCacheKey,
-    declared: Vec<qos_actions::Resource>,
-    complete: Vec<qos_actions::Resource>,
+    declared: Vec<tilo_actions::Resource>,
+    complete: Vec<tilo_actions::Resource>,
 }
 
 struct LocalResourceCache {
     key: ResourceCacheKey,
     permission_generation: u64,
-    resources: Vec<qos_actions::Resource>,
-    allowed: std::collections::HashSet<qos_actions::ActionAddress>,
+    resources: Vec<tilo_actions::Resource>,
+    allowed: std::collections::HashSet<tilo_actions::ActionAddress>,
 }
 
 struct OpenResourceSearchCache {
@@ -584,9 +584,9 @@ struct OpenResourceSearchCache {
 }
 
 fn find_action_resource<'a>(
-    resources: &'a [qos_actions::Resource],
+    resources: &'a [tilo_actions::Resource],
     id: &str,
-) -> Option<&'a qos_actions::Resource> {
+) -> Option<&'a tilo_actions::Resource> {
     for resource in resources {
         if resource.id.as_str() == id {
             return Some(resource);
@@ -623,7 +623,7 @@ pub struct ControlBindingCoverage {
 /// metadata for focus, presence, animation, and “show me where” behavior.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionUiRoute {
-    pub address: qos_actions::ActionAddress,
+    pub address: tilo_actions::ActionAddress,
     pub control_id: String,
     /// Root-to-control semantic path. Fewer nodes is the cheaper UI route.
     pub path: Vec<crate::a11y_tree::SemanticId>,
@@ -767,8 +767,8 @@ pub struct App {
     room_index: Option<crate::state::DocumentReplica>,
 
     action_palette: Option<crate::action_palette::ActionPalette>,
-    action_registry: qos_actions::ActionRegistry,
-    action_transport: Box<dyn qos_actions::ActionTransport>,
+    action_registry: tilo_actions::ActionRegistry,
+    action_transport: Box<dyn tilo_actions::ActionTransport>,
     /// Resource declarations are expensive tree materialisations and used by
     /// input gating, Ctrl+K, accessibility and broker publication. Keep one
     /// exact snapshot until the host crosses a state-mutation boundary.
@@ -778,7 +778,7 @@ pub struct App {
     resource_generation: Cell<u64>,
     permission_generation: Cell<u64>,
     last_control_availability: Option<(ResourceCacheKey, u64)>,
-    last_published_actions: Option<Vec<qos_actions::ActionDescriptor>>,
+    last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
     /// Opaque, revision-bound continuation state for the broker pull
     /// directory. It holds provider cursors, never resource bodies, and is
     /// touched only by the main/UI thread.
@@ -793,16 +793,16 @@ pub struct App {
     pending_continuation_view: Option<crate::view::View>,
     /// Background/streaming operations admitted by the retained widget tree.
     /// They remain here until the widget reports exactly one terminal update.
-    directed_invocations: std::collections::HashMap<qos_actions::InvocationId, DirectedInvocation>,
+    directed_invocations: std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
     /// Same lifecycle for actions started from this window rather than by the
     /// broker; terminal state is reflected by the owning widget's UI.
     local_invocations: std::collections::HashMap<
-        qos_actions::InvocationId,
-        (qos_actions::ActionAddress, qos_actions::OperationKind),
+        tilo_actions::InvocationId,
+        (tilo_actions::ActionAddress, tilo_actions::OperationKind),
     >,
     /// A generic app-launch request finishes an already-admitted source
     /// invocation only after the session reports the staging/launch result.
-    pending_application_launches: std::collections::HashMap<u64, qos_actions::InvocationId>,
+    pending_application_launches: std::collections::HashMap<u64, tilo_actions::InvocationId>,
     /// Correlates local requests routed through the authoritative session
     /// broker. `None` means this process has consumed the complete u64
     /// namespace and must refuse rather than alias an earlier request.
@@ -813,13 +813,13 @@ pub struct App {
 
     /// Wins over the automatic env/package-id/binary-name resolution.
     window_title: Option<String>,
-    /// Wins over `QOS_PACKAGE_ID`/binary-name resolution for the Wayland
+    /// Wins over `TILO_PACKAGE_ID`/binary-name resolution for the Wayland
     /// `xdg_toplevel.app_id`. System surfaces use this as a stable identity.
     window_app_id: Option<String>,
 
     /// Optional app → shell lifecycle channel for detachable surfaces. It is
     /// discovered from the launcher-provided service fd and absent outside a
-    /// qOS session, where apps simply keep their overlays attached.
+    /// Tilo session, where apps simply keep their overlays attached.
     floating_surface_client: Option<crate::floating_surface::FloatingSurfaceServiceClient>,
     last_floating_presentations:
         std::collections::HashMap<String, crate::floating_surface::FloatingSurfacePresentation>,
@@ -927,7 +927,7 @@ impl App {
             frame_tick: None,
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
-            // Auto-enable if the shell mirrored QOS_A11Y_* into this sandbox.
+            // Auto-enable if the shell mirrored TILO_A11Y_* into this sandbox.
             screen_reader: if Self::screen_reader_env_enabled()
                 || Self::persisted_accessibility_bool("screen_reader")
             {
@@ -949,8 +949,8 @@ impl App {
             records: None,
             room_index: None,
             action_palette: None,
-            action_registry: qos_actions::ActionRegistry::new(),
-            action_transport: Box::new(qos_actions::LocalTransport::new()),
+            action_registry: tilo_actions::ActionRegistry::new(),
+            action_transport: Box::new(tilo_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
             local_resource_cache: RefCell::new(None),
             open_resource_search_cache: RefCell::new(None),
@@ -1033,7 +1033,7 @@ impl App {
             .collect::<std::collections::HashSet<_>>();
         let Some(client) = self.floating_surface_client.as_mut() else {
             let mut changed = false;
-            // Outside a qOS session there is no trusted shell chooser to
+            // Outside a Tilo session there is no trusted shell chooser to
             // open. Drain the edge so reconnecting later cannot replay a
             // stale user gesture.
             while self.root_widget.take_capture_studio_request().is_some() {}
@@ -1362,12 +1362,12 @@ impl App {
 
     /// Lets the hosted app register its action types, e.g.
     /// `app.action_registry_mut().register::<TubeAction>("tube.action")`.
-    pub fn action_registry_mut(&mut self) -> &mut qos_actions::ActionRegistry {
+    pub fn action_registry_mut(&mut self) -> &mut tilo_actions::ActionRegistry {
         self.invalidate_widget_resource_cache();
         &mut self.action_registry
     }
 
-    pub fn set_action_transport(&mut self, transport: Box<dyn qos_actions::ActionTransport>) {
+    pub fn set_action_transport(&mut self, transport: Box<dyn tilo_actions::ActionTransport>) {
         self.action_transport = transport;
     }
 
@@ -1420,7 +1420,7 @@ impl App {
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         let violations =
-            qos_actions::validate_surface(&complete, &self.action_registry, &operation_handlers);
+            tilo_actions::validate_surface(&complete, &self.action_registry, &operation_handlers);
         if !violations.is_empty() {
             for violation in violations {
                 tracing::error!(
@@ -1443,7 +1443,7 @@ impl App {
         key
     }
 
-    fn collect_declared_resources(&self) -> Vec<qos_actions::Resource> {
+    fn collect_declared_resources(&self) -> Vec<tilo_actions::Resource> {
         let key = self.ensure_resource_cache();
         self.resource_cache
             .borrow()
@@ -1454,12 +1454,12 @@ impl App {
 
     fn ensure_local_resource_cache(&self) -> (ResourceCacheKey, u64) {
         fn collect_addresses(
-            resources: &[qos_actions::Resource],
-            allowed: &mut std::collections::HashSet<qos_actions::ActionAddress>,
+            resources: &[tilo_actions::Resource],
+            allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
         ) {
             for resource in resources {
                 allowed.extend(resource.actions.iter().map(|action| {
-                    qos_actions::ActionAddress::new(resource.id.as_str(), &action.id)
+                    tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)
                 }));
                 collect_addresses(&resource.children, allowed);
             }
@@ -1505,7 +1505,7 @@ impl App {
         (key, permission_generation)
     }
 
-    fn collect_local_resources(&self) -> Vec<qos_actions::Resource> {
+    fn collect_local_resources(&self) -> Vec<tilo_actions::Resource> {
         let (key, permission_generation) = self.ensure_local_resource_cache();
         self.local_resource_cache
             .borrow()
@@ -1538,7 +1538,7 @@ impl App {
     /// The complete machine-driveable surface: domain resources declared by
     /// the app plus ordinary controls projected from its retained semantic
     /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
-    pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
+    pub fn collect_resources(&self) -> Vec<tilo_actions::Resource> {
         let key = self.ensure_resource_cache();
         self.resource_cache
             .borrow()
@@ -1560,7 +1560,10 @@ impl App {
     /// usable, visible, short paths first. Agents still invoke `address`
     /// directly; the chosen route makes the resulting interaction project
     /// into the same UI a person sees without fragile coordinate clicking.
-    pub fn action_ui_routes(&mut self, address: &qos_actions::ActionAddress) -> Vec<ActionUiRoute> {
+    pub fn action_ui_routes(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+    ) -> Vec<ActionUiRoute> {
         self.refresh_semantic_tree();
         let mut routes = Vec::new();
         for binding in self.root_widget.control_action_bindings() {
@@ -1608,14 +1611,14 @@ impl App {
 
     pub fn preferred_action_ui_route(
         &mut self,
-        address: &qos_actions::ActionAddress,
+        address: &tilo_actions::ActionAddress,
     ) -> Option<ActionUiRoute> {
         self.action_ui_routes(address).into_iter().next()
     }
 
     fn control_action_coverage_for(
         &self,
-        resources: &[qos_actions::Resource],
+        resources: &[tilo_actions::Resource],
     ) -> Vec<ControlBindingCoverage> {
         let mut seen = std::collections::HashSet::new();
         self.root_widget
@@ -1624,7 +1627,7 @@ impl App {
             .map(|binding| {
                 let status = match &binding.kind {
                     crate::widget::ControlBindingKind::Action(address) => {
-                        if qos_actions::door::resolve(resources, address).is_none() {
+                        if tilo_actions::door::resolve(resources, address).is_none() {
                             ControlBindingStatus::StaleAddress
                         } else if !seen.insert(address.clone()) {
                             ControlBindingStatus::SharedAddress
@@ -1650,7 +1653,7 @@ impl App {
 
     fn invoke_semantic_operation_encoded(
         &mut self,
-        encoded: &qos_actions::EncodedAction,
+        encoded: &tilo_actions::EncodedAction,
     ) -> Result<bool, String> {
         if encoded.type_id != crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
             return Ok(false);
@@ -1713,7 +1716,7 @@ impl App {
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         let violations =
-            qos_actions::validate_surface(&resources, &self.action_registry, &operation_handlers);
+            tilo_actions::validate_surface(&resources, &self.action_registry, &operation_handlers);
         if !violations.is_empty() {
             for violation in &violations {
                 tracing::error!(
@@ -1738,7 +1741,7 @@ impl App {
             self.last_published_actions = Some(Vec::new());
             return;
         }
-        let descriptors = qos_actions::door::survey(&resources);
+        let descriptors = tilo_actions::door::survey(&resources);
         if self.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
@@ -1755,15 +1758,15 @@ impl App {
                 params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
                 contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
                 input: match &descriptor.input {
-                    qos_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
-                    qos_actions::InputSpec::Text {
+                    tilo_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
+                    tilo_actions::InputSpec::Text {
                         prompt,
                         placeholder,
                         collects,
                     } => crate::collaboration::ExportedInput::Text {
                         prompt: prompt.clone(),
                         placeholder: placeholder.clone(),
-                        wants_content: *collects == qos_actions::Collects::Content,
+                        wants_content: *collects == tilo_actions::Collects::Content,
                     },
                 },
             })
@@ -1809,7 +1812,7 @@ impl App {
     }
 
     fn exported_directory_action(
-        descriptor: &qos_actions::ActionDescriptor,
+        descriptor: &tilo_actions::ActionDescriptor,
     ) -> runtime_collab::ExportedAction {
         runtime_collab::ExportedAction {
             resource: descriptor.address.resource.clone(),
@@ -1822,15 +1825,15 @@ impl App {
             params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
             contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
             input: match &descriptor.input {
-                qos_actions::InputSpec::None => runtime_collab::ExportedInput::None,
-                qos_actions::InputSpec::Text {
+                tilo_actions::InputSpec::None => runtime_collab::ExportedInput::None,
+                tilo_actions::InputSpec::Text {
                     prompt,
                     placeholder,
                     collects,
                 } => runtime_collab::ExportedInput::Text {
                     prompt: prompt.clone(),
                     placeholder: placeholder.clone(),
-                    wants_content: *collects == qos_actions::Collects::Content,
+                    wants_content: *collects == tilo_actions::Collects::Content,
                 },
             },
         }
@@ -1838,11 +1841,11 @@ impl App {
 
     fn directory_resource_row(
         &self,
-        resource: &qos_actions::Resource,
+        resource: &tilo_actions::Resource,
         parent_resource: &str,
         may_descend: bool,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let descriptors = qos_actions::door::survey(std::slice::from_ref(resource));
+        let descriptors = tilo_actions::door::survey(std::slice::from_ref(resource));
         let explicit = crate::widget::resolve_action_directory_visibility(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -1855,7 +1858,7 @@ impl App {
             explicit
                 .as_ref()
                 .is_some_and(|address| &descriptor.address == address)
-                || (explicit.is_none() && descriptor.kind == qos_actions::OperationKind::View)
+                || (explicit.is_none() && descriptor.kind == tilo_actions::OperationKind::View)
         })?;
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: parent_resource.to_owned(),
@@ -1872,10 +1875,10 @@ impl App {
     }
 
     fn directory_action_row(
-        resource: &qos_actions::Resource,
+        resource: &tilo_actions::Resource,
         action_id: &str,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let descriptor = qos_actions::door::survey(std::slice::from_ref(resource))
+        let descriptor = tilo_actions::door::survey(std::slice::from_ref(resource))
             .into_iter()
             .find(|descriptor| descriptor.address.action == action_id)?;
         let exported = Self::exported_directory_action(&descriptor);
@@ -1894,7 +1897,7 @@ impl App {
 
     fn action_directory_cursor_key(&mut self) -> String {
         let revision = self.action_directory_revision();
-        format!("qos-dir-{}-{revision}", uuid::Uuid::new_v4())
+        format!("tilo-dir-{}-{revision}", uuid::Uuid::new_v4())
     }
 
     fn action_directory_next_cursor(&mut self, state: ActionDirectoryCursor) -> Vec<u8> {
@@ -2295,7 +2298,7 @@ impl App {
                 .into_iter()
                 .filter(|provider| provider.action_directory_generation().is_some())
                 .find_map(|provider| {
-                    provider.resolve_action_resource(&qos_actions::ActionAddress::new(
+                    provider.resolve_action_resource(&tilo_actions::ActionAddress::new(
                         resource_id,
                         action_id,
                     ))
@@ -2435,12 +2438,12 @@ impl App {
         action: String,
         argument: Option<&str>,
         actor: &str,
-        ambient_context: Option<&qos_actions::ActionContext>,
+        ambient_context: Option<&tilo_actions::ActionContext>,
     ) {
-        let address = qos_actions::ActionAddress::new(resource, action);
+        let address = tilo_actions::ActionAddress::new(resource, action);
         // Arrival on this directed stream means the broker already performed
         // permission and one-use confirmation-token checks.
-        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let result = self.invoke_resource_action(
             &address,
             argument,
@@ -2453,7 +2456,7 @@ impl App {
         );
         let update = match result {
             Ok(crate::widget::ResourceOperationStart::Completed(output)) => {
-                qos_actions::InvocationUpdate::Succeeded { invocation, output }
+                tilo_actions::InvocationUpdate::Succeeded { invocation, output }
             }
             Ok(crate::widget::ResourceOperationStart::Accepted) => {
                 self.directed_invocations.insert(
@@ -2463,11 +2466,11 @@ impl App {
                         cancellation_requested: false,
                     },
                 );
-                qos_actions::InvocationUpdate::Accepted { invocation }
+                tilo_actions::InvocationUpdate::Accepted { invocation }
             }
-            Err(error) => qos_actions::InvocationUpdate::Failed {
+            Err(error) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: error.code().to_string(),
                     message: error.to_string(),
                     details: None,
@@ -2480,45 +2483,45 @@ impl App {
     }
 
     fn resolve_resource_invocation<'a>(
-        resources: &'a [qos_actions::Resource],
-        address: &qos_actions::ActionAddress,
+        resources: &'a [tilo_actions::Resource],
+        address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
         confirmed_by_broker: bool,
-    ) -> Result<ResolvedResourceInvocation<'a>, qos_actions::DoorError> {
+    ) -> Result<ResolvedResourceInvocation<'a>, tilo_actions::DoorError> {
         let typed_arguments = argument
-            .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
+            .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
             .map(|json| {
                 serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-                    .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
+                    .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))
             })
             .transpose()?;
         let resource = find_action_resource(resources, &address.resource)
-            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
         let resolved = resource
             .actions
             .iter()
             .find(|candidate| candidate.id == address.action)
-            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
         if !matches!(
             resolved.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         ) && !confirmed_by_broker
         {
-            return Err(qos_actions::DoorError::ConfirmationRequired);
+            return Err(tilo_actions::DoorError::ConfirmationRequired);
         }
         Ok((typed_arguments, resource, resolved))
     }
 
     fn encode_resource_action(
-        resources: &[qos_actions::Resource],
-        address: &qos_actions::ActionAddress,
+        resources: &[tilo_actions::Resource],
+        address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
-    ) -> Result<qos_actions::EncodedAction, qos_actions::DoorError> {
+    ) -> Result<tilo_actions::EncodedAction, tilo_actions::DoorError> {
         if let Some(arguments) = typed_arguments {
-            qos_actions::door::encode_json(resources, address, arguments)
+            tilo_actions::door::encode_json(resources, address, arguments)
         } else {
-            qos_actions::door::encode(resources, address, argument)
+            tilo_actions::door::encode(resources, address, argument)
         }
     }
 
@@ -2531,13 +2534,13 @@ impl App {
     /// action entirely.
     fn invoke_via_broker(
         &mut self,
-        address: &qos_actions::ActionAddress,
+        address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         confirmation_evidence: Option<&serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         if !self.collab_manager.is_connected() {
-            return Err(qos_actions::DoorError::Unavailable {
+            return Err(tilo_actions::DoorError::Unavailable {
                 code: "authoritative_host_unavailable".into(),
                 reason: "This operation requires the workspace action broker, but collaboration is offline".into(),
             });
@@ -2547,7 +2550,7 @@ impl App {
             let mut arguments = serde_json::Map::new();
             if let Some(value) = argument {
                 arguments.insert(
-                    qos_actions::PROMPTED_PARAM.to_string(),
+                    tilo_actions::PROMPTED_PARAM.to_string(),
                     serde_json::Value::String(value.to_string()),
                 );
             }
@@ -2567,9 +2570,9 @@ impl App {
         Ok(crate::widget::ResourceOperationStart::Accepted)
     }
 
-    fn take_broker_request_id(&mut self) -> Result<u64, qos_actions::DoorError> {
+    fn take_broker_request_id(&mut self) -> Result<u64, tilo_actions::DoorError> {
         let request_id = self.next_broker_request_id.take().ok_or_else(|| {
-            qos_actions::DoorError::Unavailable {
+            tilo_actions::DoorError::Unavailable {
                 code: "broker_request_identity_exhausted".into(),
                 reason: "This app has exhausted its broker request identities; restart it before invoking another hosted operation".into(),
             }
@@ -2584,10 +2587,10 @@ impl App {
     fn admit_application_launch(
         &mut self,
         request_id: u64,
-        invocation: qos_actions::InvocationId,
-    ) -> Result<(), qos_actions::DoorError> {
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<(), tilo_actions::DoorError> {
         if self.pending_application_launches.len() >= MAX_PENDING_APPLICATION_LAUNCHES {
-            return Err(qos_actions::DoorError::Unavailable {
+            return Err(tilo_actions::DoorError::Unavailable {
                 code: "application_launch_queue_full".into(),
                 reason: "Too many application launches are awaiting broker receipts".into(),
             });
@@ -2603,24 +2606,24 @@ impl App {
     )]
     fn invoke_document_resource_action(
         &mut self,
-        resources: &[qos_actions::Resource],
-        address: &qos_actions::ActionAddress,
+        resources: &[tilo_actions::Resource],
+        address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         actor: &str,
-        resource: &qos_actions::Resource,
-        spec: &qos_actions::ActionSpec,
-        ambient_context: Option<&qos_actions::ActionContext>,
+        resource: &tilo_actions::Resource,
+        spec: &tilo_actions::ActionSpec,
+        ambient_context: Option<&tilo_actions::ActionContext>,
         confirmed_by_broker: bool,
         confirmation_evidence: Option<&serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let before = self.state.doc.get_heads();
         let encoded = Self::encode_resource_action(resources, address, typed_arguments, argument)?;
         let action = self
             .action_registry
             .decode(&encoded)
-            .map_err(|_| qos_actions::DoorError::UnregisteredType(encoded.type_id.clone()))?;
-        if action.locus() == qos_actions::ExecutionLocus::ServerPreferred && !confirmed_by_broker {
+            .map_err(|_| tilo_actions::DoorError::UnregisteredType(encoded.type_id.clone()))?;
+        if action.locus() == tilo_actions::ExecutionLocus::ServerPreferred && !confirmed_by_broker {
             return self.invoke_via_broker(
                 address,
                 typed_arguments,
@@ -2628,7 +2631,7 @@ impl App {
                 confirmation_evidence,
             );
         }
-        let mut context = qos_actions::ActionContext::for_resource(
+        let mut context = tilo_actions::ActionContext::for_resource(
             &spec.label,
             resource.id.as_str(),
             &resource.kind,
@@ -2644,19 +2647,19 @@ impl App {
         // sync broadcast the resulting change. An unbrokered caller still
         // enters locus-aware dispatch and fails closed without a host.
         let mutated_local = if confirmed_by_broker
-            && action.locus() == qos_actions::ExecutionLocus::ServerPreferred
+            && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred
         {
-            qos_actions::apply_local_with_context(
+            tilo_actions::apply_local_with_context(
                 &mut self.state.doc,
                 action.as_ref(),
                 encoded,
                 Some(actor.as_bytes()),
                 context,
             )
-            .map_err(|error| qos_actions::DoorError::Failed(error.to_string()))?;
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
             true
         } else {
-            qos_actions::dispatch_by_with_context(
+            tilo_actions::dispatch_by_with_context(
                 &mut self.state.doc,
                 action.as_ref(),
                 encoded,
@@ -2664,7 +2667,7 @@ impl App {
                 Some(actor.as_bytes()),
                 context,
             )
-            .map_err(|error| qos_actions::DoorError::Failed(error.to_string()))?
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
             .mutated_local()
         };
         if mutated_local {
@@ -2679,7 +2682,7 @@ impl App {
             self.invalidate_widget_resource_cache();
         }
         Ok(crate::widget::ResourceOperationStart::Completed(
-            qos_actions::ActionOutput::default(),
+            tilo_actions::ActionOutput::default(),
         ))
     }
 
@@ -2690,21 +2693,21 @@ impl App {
     )]
     fn invoke_resource_action(
         &mut self,
-        address: &qos_actions::ActionAddress,
+        address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
         actor: &str,
         confirmation_satisfied: bool,
         broker_admitted: bool,
         confirmation_evidence: Option<&serde_json::Value>,
-        invocation: Option<qos_actions::InvocationId>,
-        ambient_context: Option<&qos_actions::ActionContext>,
-    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+        invocation: Option<tilo_actions::InvocationId>,
+        ambient_context: Option<&tilo_actions::ActionContext>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let mut resources = if actor == self.local_author.0 {
             self.collect_local_resources()
         } else {
             self.collect_resources()
         };
-        if qos_actions::door::resolve(&resources, address).is_none() {
+        if tilo_actions::door::resolve(&resources, address).is_none() {
             let fallback = crate::widget::resolve_widget_resource(
                 self.root_widget.as_ref(),
                 &self.state.doc,
@@ -2726,8 +2729,8 @@ impl App {
             confirmation_satisfied,
         )?;
         let kind = resolved.kind;
-        if kind == qos_actions::OperationKind::View && actor != self.local_author.0 {
-            return Err(qos_actions::DoorError::Unavailable {
+        if kind == tilo_actions::OperationKind::View && actor != self.local_author.0 {
+            return Err(tilo_actions::DoorError::Unavailable {
                 code: "private_view".into(),
                 reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
             });
@@ -2737,8 +2740,8 @@ impl App {
         // outside world. Directed invocations carry a real id and
         // `broker_admitted=true`, so they execute exactly once when routed
         // back here. Standalone development runs retain the existing local
-        // fallback below; installed qOS apps always have the session broker.
-        if kind == qos_actions::OperationKind::Effect
+        // fallback below; installed Tilo apps always have the session broker.
+        if kind == tilo_actions::OperationKind::Effect
             && invocation.is_none()
             && !broker_admitted
             && self.collab_manager.is_connected()
@@ -2750,7 +2753,7 @@ impl App {
                 confirmation_evidence,
             );
         }
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return self.invoke_document_resource_action(
                 &resources,
                 address,
@@ -2770,25 +2773,25 @@ impl App {
         // argument-binding, confirmation, and broker-admission door above.
         // This branch runs only when the broker directs that admitted action
         // back to its source app, preserving the normal receipt lifecycle.
-        if encoded.type_id == "qos.application.launch" {
+        if encoded.type_id == "tilo.application.launch" {
             let launch: ApplicationLaunchPayload = serde_json::from_slice(&encoded.payload)
                 .map_err(|_| {
-                    qos_actions::DoorError::Failed("invalid application launch payload".into())
+                    tilo_actions::DoorError::Failed("invalid application launch payload".into())
                 })?;
             if !launch.valid() {
-                return Err(qos_actions::DoorError::Failed(
+                return Err(tilo_actions::DoorError::Failed(
                     "application launch payload is out of bounds".into(),
                 ));
             }
             if !self.collab_manager.is_connected() {
-                return Err(qos_actions::DoorError::Unavailable {
+                return Err(tilo_actions::DoorError::Unavailable {
                     code: "authoritative_host_unavailable".into(),
                     reason: "Opening staged media requires the workspace action broker".into(),
                 });
             }
             let request_id = self.take_broker_request_id()?;
             let Some(invocation) = invocation else {
-                return Err(qos_actions::DoorError::Failed(
+                return Err(tilo_actions::DoorError::Failed(
                     "application launch was not admitted by the broker".into(),
                 ));
             };
@@ -2807,12 +2810,12 @@ impl App {
             let handled = match semantic_result {
                 Ok(handled) => handled,
                 Err(message) => {
-                    if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
+                    if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                         self.collab_manager.send(CollabRequest::RecordLocalEffect {
                             address: address.clone(),
-                            update: qos_actions::InvocationUpdate::Failed {
+                            update: tilo_actions::InvocationUpdate::Failed {
                                 invocation: operation_invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "semantic_action_failed".into(),
                                     message: message.clone(),
                                     details: None,
@@ -2821,16 +2824,16 @@ impl App {
                             },
                         });
                     }
-                    return Err(qos_actions::DoorError::Failed(message));
+                    return Err(tilo_actions::DoorError::Failed(message));
                 }
             };
             if !handled {
-                if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
+                if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                     self.collab_manager.send(CollabRequest::RecordLocalEffect {
                         address: address.clone(),
-                        update: qos_actions::InvocationUpdate::Failed {
+                        update: tilo_actions::InvocationUpdate::Failed {
                             invocation: operation_invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "unknown_action".into(),
                                 message: "the semantic target no longer accepts this action".into(),
                                 details: None,
@@ -2839,22 +2842,22 @@ impl App {
                         },
                     });
                 }
-                return Err(qos_actions::DoorError::Unknown(address.clone()));
+                return Err(tilo_actions::DoorError::Unknown(address.clone()));
             }
             self.commit_action();
             self.needs_sync = true;
             self.layout_dirty = true;
-            if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
+            if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                 self.collab_manager.send(CollabRequest::RecordLocalEffect {
                     address: address.clone(),
-                    update: qos_actions::InvocationUpdate::Succeeded {
+                    update: tilo_actions::InvocationUpdate::Succeeded {
                         invocation: operation_invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     },
                 });
             }
             return Ok(crate::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             ));
         }
         let started = match self.root_widget.start_resource_operation_with_document(
@@ -2867,10 +2870,10 @@ impl App {
         ) {
             Ok(started) => started,
             Err(message) => {
-                if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
-                    let update = qos_actions::InvocationUpdate::Failed {
+                if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
+                    let update = tilo_actions::InvocationUpdate::Failed {
                         invocation: operation_invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "action_failed".into(),
                             message: message.clone(),
                             details: None,
@@ -2882,16 +2885,16 @@ impl App {
                         update,
                     });
                 }
-                return Err(qos_actions::DoorError::Failed(message));
+                return Err(tilo_actions::DoorError::Failed(message));
             }
         };
         let Some(started) = started else {
-            if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
+            if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                 self.collab_manager.send(CollabRequest::RecordLocalEffect {
                     address: address.clone(),
-                    update: qos_actions::InvocationUpdate::Failed {
+                    update: tilo_actions::InvocationUpdate::Failed {
                         invocation: operation_invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "unknown_action".into(),
                             message: "the published effect had no operation handler".into(),
                             details: None,
@@ -2900,15 +2903,15 @@ impl App {
                     },
                 });
             }
-            return Err(qos_actions::DoorError::Unknown(address.clone()));
+            return Err(tilo_actions::DoorError::Unknown(address.clone()));
         };
         if matches!(started, crate::widget::ResourceOperationStart::Accepted)
             && matches!(
                 resolved.contract.execution,
-                qos_actions::ExecutionMode::Immediate
+                tilo_actions::ExecutionMode::Immediate
             )
         {
-            return Err(qos_actions::DoorError::Failed(
+            return Err(tilo_actions::DoorError::Failed(
                 "an immediate operation cannot remain pending".into(),
             ));
         }
@@ -2926,12 +2929,12 @@ impl App {
         }
         if let crate::widget::ResourceOperationStart::Completed(output) = &started {
             if let Err(message) = resolved.contract.result.validate(output) {
-                if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
+                if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                     self.collab_manager.send(CollabRequest::RecordLocalEffect {
                         address: address.clone(),
-                        update: qos_actions::InvocationUpdate::Failed {
+                        update: tilo_actions::InvocationUpdate::Failed {
                             invocation: operation_invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "invalid_result".into(),
                                 message: message.clone(),
                                 details: None,
@@ -2940,12 +2943,12 @@ impl App {
                         },
                     });
                 }
-                return Err(qos_actions::DoorError::Failed(message));
+                return Err(tilo_actions::DoorError::Failed(message));
             }
-            if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
+            if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                 self.collab_manager.send(CollabRequest::RecordLocalEffect {
                     address: address.clone(),
-                    update: qos_actions::InvocationUpdate::Succeeded {
+                    update: tilo_actions::InvocationUpdate::Succeeded {
                         invocation: operation_invocation,
                         output: output.clone(),
                     },
@@ -2965,7 +2968,7 @@ impl App {
         let mut dispatched = 0_usize;
         while let Some(intent) = self.root_widget.take_control_invocation() {
             let local_resources = self.collect_local_resources();
-            let Some(resolved) = qos_actions::door::resolve(&local_resources, &intent.address)
+            let Some(resolved) = tilo_actions::door::resolve(&local_resources, &intent.address)
             else {
                 tracing::warn!(
                     resource = %intent.address.resource,
@@ -2976,7 +2979,7 @@ impl App {
             };
             if !matches!(
                 resolved.contract.confirmation,
-                qos_actions::ConfirmationPolicy::None
+                tilo_actions::ConfirmationPolicy::None
             ) {
                 // A bound control never manufactures confirmation. Hand the
                 // exact address to the standard palette flow, which owns the
@@ -2987,7 +2990,7 @@ impl App {
             }
             let json = format!(
                 "{}{}",
-                qos_actions::ARGUMENTS_JSON_PREFIX,
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(intent.arguments.clone())
             );
             let actor = self.local_author.0.clone();
@@ -3036,9 +3039,9 @@ impl App {
             };
             self.collab_manager.send(CollabRequest::UpdateInvocation {
                 id: directed.wire_id,
-                update: qos_actions::InvocationUpdate::Failed {
+                update: tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "application_launch_broker_disconnected".into(),
                         message: "The launcher broker disconnected before confirming the application launch".into(),
                         details: None,
@@ -3075,12 +3078,12 @@ impl App {
                 continue;
             };
             if update.invocation() != invocation
-                || matches!(update, qos_actions::InvocationUpdate::Accepted { .. })
+                || matches!(update, tilo_actions::InvocationUpdate::Accepted { .. })
             {
-                update = qos_actions::InvocationUpdate::Failed {
+                update = tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
-                        code: "qos.invalid_lifecycle_update".into(),
+                    error: tilo_actions::ActionFailure {
+                        code: "tilo.invalid_lifecycle_update".into(),
                         message: "operation handler returned an invalid lifecycle update".into(),
                         details: None,
                         retryable: false,
@@ -3115,13 +3118,13 @@ impl App {
                 self.local_invocations.remove(&invocation);
             }
             if (update.is_terminal() || invalid_identity)
-                && kind == qos_actions::OperationKind::Effect
+                && kind == tilo_actions::OperationKind::Effect
             {
                 let update = if invalid_identity {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
-                            code: "qos.invalid_lifecycle_update".into(),
+                        error: tilo_actions::ActionFailure {
+                            code: "tilo.invalid_lifecycle_update".into(),
                             message: "operation handler returned an update for another invocation"
                                 .into(),
                             details: None,
@@ -3179,7 +3182,7 @@ impl App {
         self.action_palette = Some(palette);
     }
 
-    fn open_action_palette_at(&mut self, address: &qos_actions::ActionAddress) -> bool {
+    fn open_action_palette_at(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         self.open_action_palette();
         let activated = self
             .action_palette
@@ -3193,17 +3196,17 @@ impl App {
 
     fn filter_resource_for_local_actor(
         &self,
-        mut resource: qos_actions::Resource,
-    ) -> Option<qos_actions::Resource> {
+        mut resource: tilo_actions::Resource,
+    ) -> Option<tilo_actions::Resource> {
         use collab_types::caps::Verb;
         resource.actions.retain(|action| {
             let verb = match action.contract.permission {
-                qos_actions::PermissionRequirement::None => return true,
-                qos_actions::PermissionRequirement::Read => Verb::Read,
-                qos_actions::PermissionRequirement::Comment => Verb::Comment,
-                qos_actions::PermissionRequirement::Write => Verb::Write,
-                qos_actions::PermissionRequirement::Invite => Verb::Invite,
-                qos_actions::PermissionRequirement::Admin => Verb::Admin,
+                tilo_actions::PermissionRequirement::None => return true,
+                tilo_actions::PermissionRequirement::Read => Verb::Read,
+                tilo_actions::PermissionRequirement::Comment => Verb::Comment,
+                tilo_actions::PermissionRequirement::Write => Verb::Write,
+                tilo_actions::PermissionRequirement::Invite => Verb::Invite,
+                tilo_actions::PermissionRequirement::Admin => Verb::Admin,
             };
             self.permission_ctx
                 .check(&crate::permissions::PermissionScope::action(
@@ -3320,7 +3323,7 @@ impl App {
     }
 
     fn screen_reader_env_enabled() -> bool {
-        for key in ["QOS_A11Y_SCREEN_READER", "QOS_SCREEN_READER"] {
+        for key in ["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"] {
             if let Ok(v) = std::env::var(key) {
                 let v = v.trim();
                 if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") {
@@ -3385,16 +3388,16 @@ impl App {
     }
 
     fn high_contrast_env_enabled() -> bool {
-        Self::bool_env(&["QOS_A11Y_HIGH_CONTRAST", "QOS_HIGH_CONTRAST"])
+        Self::bool_env(&["TILO_A11Y_HIGH_CONTRAST", "TILO_HIGH_CONTRAST"])
     }
 
     fn reduce_motion_env_enabled() -> bool {
-        Self::bool_env(&["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"])
+        Self::bool_env(&["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"])
     }
 
     /// A bad value is ignored rather than crashing the app at startup.
     fn text_scale_env() -> Option<f32> {
-        for key in ["QOS_A11Y_TEXT_SCALE", "QOS_TEXT_SCALE"] {
+        for key in ["TILO_A11Y_TEXT_SCALE", "TILO_TEXT_SCALE"] {
             if let Ok(v) = std::env::var(key)
                 && let Ok(f) = v.trim().parse::<f32>()
                 && f.is_finite()
@@ -3409,7 +3412,7 @@ impl App {
     /// The shell mirrors the user's UI-scale preference into spawned
     /// sandboxes via this var so an app comes up already scaled.
     fn ui_scale_env() -> Option<f32> {
-        for key in ["QOS_UI_SCALE", "QOS_A11Y_UI_SCALE"] {
+        for key in ["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"] {
             if let Ok(v) = std::env::var(key)
                 && let Ok(f) = v.trim().parse::<f32>()
                 && f.is_finite()
@@ -3785,7 +3788,7 @@ impl App {
         self.theme_store_stamp = stamp;
         self.base_theme = Theme::configured();
         // Screen reader is a device/personal setting, not a per-application
-        // opt-in. Every qOS app watches the same file and changes its real
+        // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
             || Self::screen_reader_env_enabled();
@@ -3896,7 +3899,7 @@ impl App {
         // broker-directed request with one selected snapshot responder.
         if let Some(k) = key {
             tracing::debug!(
-                target: "qos.state",
+                target: "tilo.state",
                 event = "presence_arrived",
                 connected = self.collab_manager.is_connected(),
                 "publishing collaboration presence"
@@ -4014,7 +4017,7 @@ impl App {
             let (delta, heads) = self.state.pending_outbound_delta();
             if !delta.is_empty() {
                 tracing::debug!(
-                    target: "qos.state",
+                    target: "tilo.state",
                     event = "document_send",
                     kind = "incremental",
                     bytes = delta.len(),
@@ -4359,7 +4362,7 @@ impl App {
                     // The broker already validated the envelope (signature +
                     // role table + replay defence); the toolkit trusts it.
                     tracing::debug!(
-                        target: "qos.state",
+                        target: "tilo.state",
                         event = "document_receive",
                         bytes = envelope.payload.len(),
                         author = ?envelope.author,
@@ -4378,7 +4381,7 @@ impl App {
                     // Broker pre-validated each envelope, trusted the same
                     // way as a live document mutation.
                     tracing::debug!(
-                        target: "qos.state",
+                        target: "tilo.state",
                         event = "document_scrollback",
                         operations = ops.len(),
                         "applying document scrollback"
@@ -4419,21 +4422,21 @@ impl App {
                         continue;
                     };
                     let update = match result {
-                        Ok((_id, qos_actions::InvocationUpdate::Succeeded { output, .. })) => {
-                            qos_actions::InvocationUpdate::Succeeded { invocation, output }
+                        Ok((_id, tilo_actions::InvocationUpdate::Succeeded { output, .. })) => {
+                            tilo_actions::InvocationUpdate::Succeeded { invocation, output }
                         }
-                        Ok((_id, qos_actions::InvocationUpdate::Failed { error, .. })) => {
-                            qos_actions::InvocationUpdate::Failed { invocation, error }
+                        Ok((_id, tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+                            tilo_actions::InvocationUpdate::Failed { invocation, error }
                         }
-                        Ok((_id, qos_actions::InvocationUpdate::Cancelled { message, .. })) => {
-                            qos_actions::InvocationUpdate::Cancelled {
+                        Ok((_id, tilo_actions::InvocationUpdate::Cancelled { message, .. })) => {
+                            tilo_actions::InvocationUpdate::Cancelled {
                                 invocation,
                                 message,
                             }
                         }
-                        Ok((_id, other)) => qos_actions::InvocationUpdate::Failed {
+                        Ok((_id, other)) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "application_launch_invalid_receipt".into(),
                                 message: format!(
                                     "application launch returned non-terminal {other:?}"
@@ -4442,9 +4445,9 @@ impl App {
                                 retryable: false,
                             },
                         },
-                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "application_launch_failed".into(),
                                 message,
                                 details: None,
@@ -4598,30 +4601,30 @@ impl App {
                     return;
                 };
                 let update = match result {
-                    Ok((_id, qos_actions::InvocationUpdate::Succeeded { output, .. })) => {
-                        qos_actions::InvocationUpdate::Succeeded { invocation, output }
+                    Ok((_id, tilo_actions::InvocationUpdate::Succeeded { output, .. })) => {
+                        tilo_actions::InvocationUpdate::Succeeded { invocation, output }
                     }
-                    Ok((_id, qos_actions::InvocationUpdate::Failed { error, .. })) => {
-                        qos_actions::InvocationUpdate::Failed { invocation, error }
+                    Ok((_id, tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+                        tilo_actions::InvocationUpdate::Failed { invocation, error }
                     }
-                    Ok((_id, qos_actions::InvocationUpdate::Cancelled { message, .. })) => {
-                        qos_actions::InvocationUpdate::Cancelled {
+                    Ok((_id, tilo_actions::InvocationUpdate::Cancelled { message, .. })) => {
+                        tilo_actions::InvocationUpdate::Cancelled {
                             invocation,
                             message,
                         }
                     }
-                    Ok((_id, other)) => qos_actions::InvocationUpdate::Failed {
+                    Ok((_id, other)) => tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "application_launch_invalid_receipt".into(),
                             message: format!("application launch returned non-terminal {other:?}"),
                             details: None,
                             retryable: false,
                         },
                     },
-                    Err(message) => qos_actions::InvocationUpdate::Failed {
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "application_launch_failed".into(),
                             message,
                             details: None,
@@ -4759,16 +4762,16 @@ impl App {
         // monotonic presence store sees it. Every later phase resolves by the
         // same address, so identity remains stable while menus/toolbars move.
         if let crate::collaboration::PresencePayload::Interaction(update) = &mut payload
-            && matches!(&update.anchor, qos_actions::InteractionAnchor::Resource)
+            && matches!(&update.anchor, tilo_actions::InteractionAnchor::Resource)
         {
-            let address = qos_actions::ActionAddress::new(
+            let address = tilo_actions::ActionAddress::new(
                 update.resource.id.clone(),
                 update.action.id.clone(),
             );
             if let Some(route) = self.preferred_action_ui_route(&address)
                 && let Some(target) = route.path.last()
             {
-                update.anchor = qos_actions::InteractionAnchor::SemanticControl {
+                update.anchor = tilo_actions::InteractionAnchor::SemanticControl {
                     id: target.as_str().to_string(),
                 };
             }
@@ -4790,7 +4793,7 @@ impl App {
                 {
                     let assertive = matches!(
                         interaction.phase,
-                        qos_actions::InteractionPhase::Failed { .. }
+                        tilo_actions::InteractionPhase::Failed { .. }
                     );
                     reader.announce(
                         text,
@@ -5166,9 +5169,9 @@ impl App {
     }
 
     fn find_resource_action(
-        resources: &[qos_actions::Resource],
+        resources: &[tilo_actions::Resource],
         target: accesskit::NodeId,
-    ) -> Option<qos_actions::ActionAddress> {
+    ) -> Option<tilo_actions::ActionAddress> {
         resources.iter().find_map(|resource| {
             resource
                 .actions
@@ -5177,7 +5180,7 @@ impl App {
                     crate::accesskit_bridge::resource_action_node_id(resource.id.as_str(), &spec.id)
                         == target
                 })
-                .map(|spec| qos_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
+                .map(|spec| tilo_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
                 .or_else(|| Self::find_resource_action(&resource.children, target))
         })
     }
@@ -5204,10 +5207,10 @@ impl App {
         if let Some(argument) = argument {
             let resources = self.collect_declared_resources();
             if let Some(address) = Self::find_resource_action(&resources, target) {
-                let confirmation = qos_actions::door::resolve(&resources, &address)
+                let confirmation = tilo_actions::door::resolve(&resources, &address)
                     .map(|spec| spec.contract.confirmation.clone())
                     .unwrap_or_default();
-                if !matches!(confirmation, qos_actions::ConfirmationPolicy::None) {
+                if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
                     let _ = self.open_action_palette_at(&address);
                     return None;
                 }
@@ -5364,7 +5367,7 @@ impl App {
     /// the same [`dispatch_a11y_action`](Self::dispatch_a11y_action) path an
     /// AccessKit `ActionRequest` takes; an
     /// [`App`](crate::a11y_tree::SemanticActionKind::App) affordance
-    /// dispatches through [`qos_actions::dispatch`], the same audited path
+    /// dispatches through [`tilo_actions::dispatch`], the same audited path
     /// the Ctrl+K palette uses. Call
     /// [`refresh_semantic_tree`](Self::refresh_semantic_tree) first so the
     /// ids are current.
@@ -5414,7 +5417,7 @@ impl App {
                         return Ok(false);
                     };
                     let keyed_path = semantic_target
-                        .strip_prefix("qos.key-action:")
+                        .strip_prefix("tilo.key-action:")
                         .and_then(|target| target.rsplit_once(':'))
                         .map(|(_, path)| {
                             path.split('/')
@@ -5473,14 +5476,14 @@ impl App {
     /// ([`Self::action_palette_handle_key`]).
     fn dispatch_encoded_semantic(
         &mut self,
-        encoded: qos_actions::EncodedAction,
+        encoded: tilo_actions::EncodedAction,
     ) -> Result<bool, String> {
         let before = self.state.doc.get_heads();
         let action = self
             .action_registry
             .decode(&encoded)
             .map_err(|e| e.to_string())?;
-        let dispatched = qos_actions::dispatch(
+        let dispatched = tilo_actions::dispatch(
             &mut self.state.doc,
             action.as_ref(),
             encoded,
@@ -5604,7 +5607,7 @@ impl App {
     /// previous session left plus its writer:
     ///
     /// ```ignore
-    /// let (state, autosave) = ui::persist::open("dev.qos.my-app");
+    /// let (state, autosave) = ui::persist::open("dev.tilo.my-app");
     /// ui::App::new(state, my_app::app_root())
     ///     .with_autosave(autosave)
     ///     .run();
@@ -5634,7 +5637,7 @@ impl App {
         self.window_title = title;
     }
 
-    /// Precedence: explicit override → `QOS_APP_NAME` → package id → binary
+    /// Precedence: explicit override → `TILO_APP_NAME` → package id → binary
     /// name → generic default.
     pub fn resolved_window_title(&self) -> String {
         resolve_window_title(self.window_title.as_deref())
@@ -5701,7 +5704,7 @@ impl App {
                     self.collab_manager = CollaborationManager::for_record(&id);
                 }
                 tracing::debug!(
-                    target: "qos.state",
+                    target: "tilo.state",
                     event = "record_checkout",
                     record = id.as_str(),
                     connected = self.collab_manager.is_connected(),
@@ -5931,8 +5934,8 @@ mod generic_floating_activity_tests {
 
 /// See [`resolve_title_from`] for the precedence.
 fn resolve_window_title(explicit: Option<&str>) -> String {
-    let app_name = std::env::var("QOS_APP_NAME").ok();
-    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let app_name = std::env::var("TILO_APP_NAME").ok();
+    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -5949,7 +5952,7 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
 pub fn local_surface_id() -> String {
-    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -5970,7 +5973,7 @@ fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
     if let Some(bin) = binary.and_then(non_blank) {
         return bin;
     }
-    "org.qos.app".to_string()
+    "org.tilo.app".to_string()
 }
 
 /// Pure, so the precedence is unit-testable without touching the process
@@ -6004,7 +6007,7 @@ fn resolve_title_from(
             return human;
         }
     }
-    "qOS App".to_string()
+    "Tilo App".to_string()
 }
 
 fn humanize_ident(ident: &str) -> String {
@@ -6522,7 +6525,7 @@ impl AppHandler {
         #[cfg(target_os = "linux")]
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
                 self.app.window_app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
@@ -7095,16 +7098,16 @@ impl AppHandler {
     )]
     fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
         if self.render.is_none() {
-            qos_startup_metrics::mark("first-redraw-init-render-start");
+            tilo_startup_metrics::mark("first-redraw-init-render-start");
             if let Err(reason) = self.init_render(window) {
                 // Retrying every redraw would only spin.
-                crate::diag!("qos: {reason}");
+                crate::diag!("tilo: {reason}");
                 event_loop.exit();
                 return;
             }
-            qos_startup_metrics::mark("first-redraw-init-render-done");
+            tilo_startup_metrics::mark("first-redraw-init-render-done");
         } else {
-            qos_startup_metrics::mark("first-paint");
+            tilo_startup_metrics::mark("first-paint");
         }
         let Some(render) = self.render.as_mut() else {
             return;
@@ -7346,12 +7349,12 @@ impl AppHandler {
             .iter()
             .filter_map(|interaction| {
                 let exact = match &interaction.anchor {
-                    qos_actions::InteractionAnchor::SemanticControl { id } => app
+                    tilo_actions::InteractionAnchor::SemanticControl { id } => app
                         .semantic_tree()
                         .node(&crate::a11y_tree::SemanticId(id.clone()))
                         .and_then(|node| node.bounds),
-                    qos_actions::InteractionAnchor::ListItems { .. }
-                    | qos_actions::InteractionAnchor::Resource => {
+                    tilo_actions::InteractionAnchor::ListItems { .. }
+                    | tilo_actions::InteractionAnchor::Resource => {
                         let mut matches = app
                             .semantic_tree()
                             .iter()
@@ -8233,7 +8236,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         #[cfg(target_os = "linux")]
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
                 self.app.window_app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
@@ -8725,7 +8728,7 @@ mod window_title_tests {
         let t = resolve_title_from(
             Some("My Doc — Notes"),
             Some("Notes"),
-            Some("dev.qos.notes"),
+            Some("dev.tilo.notes"),
             Some("notes"),
         );
         assert_eq!(t, "My Doc — Notes");
@@ -8733,7 +8736,7 @@ mod window_title_tests {
 
     #[test]
     fn app_name_env_resolves_to_the_manifest_name() {
-        let t = resolve_title_from(None, Some("Notes"), Some("dev.qos.notes"), Some("notes"));
+        let t = resolve_title_from(None, Some("Notes"), Some("dev.tilo.notes"), Some("notes"));
         assert_eq!(t, "Notes");
         assert_ne!(t, "QuickUI App");
     }
@@ -8743,7 +8746,7 @@ mod window_title_tests {
         let t = resolve_title_from(
             None,
             None,
-            Some("dev.qos.file-explorer"),
+            Some("dev.tilo.file-explorer"),
             Some("file-explorer"),
         );
         assert_eq!(t, "File Explorer");
@@ -8759,22 +8762,22 @@ mod window_title_tests {
 
     #[test]
     fn blank_candidates_are_skipped_not_used() {
-        let t = resolve_title_from(Some("  "), Some(""), Some("dev.qos.notes"), Some("notes"));
+        let t = resolve_title_from(Some("  "), Some(""), Some("dev.tilo.notes"), Some("notes"));
         assert_eq!(t, "Notes");
     }
 
     #[test]
-    fn generic_default_is_qos_app_never_quickui_app() {
+    fn generic_default_is_tilo_app_never_quickui_app() {
         let t = resolve_title_from(None, None, None, None);
-        assert_eq!(t, "qOS App");
+        assert_eq!(t, "Tilo App");
         assert_ne!(t, "QuickUI App");
     }
 
     #[test]
     fn the_app_id_is_never_the_generic_one_when_anything_identifies_the_app() {
         assert_eq!(
-            resolve_app_id(Some("dev.qos.file-explorer"), Some("file-explorer")),
-            "dev.qos.file-explorer",
+            resolve_app_id(Some("dev.tilo.file-explorer"), Some("file-explorer")),
+            "dev.tilo.file-explorer",
             "the package id is the identity everything else is keyed on"
         );
         assert_eq!(
@@ -8790,32 +8793,32 @@ mod window_title_tests {
         );
         assert_eq!(
             resolve_app_id(None, None),
-            "org.qos.app",
+            "org.tilo.app",
             "the generic id survives only when there is nothing to say"
         );
-        assert_ne!(resolve_app_id(None, Some("file-explorer")), "org.qos.app");
+        assert_ne!(resolve_app_id(None, Some("file-explorer")), "org.tilo.app");
     }
 
     #[test]
     #[serial_test::serial(process_env)]
     fn env_path_end_to_end_prefers_app_name() {
-        let prev_name = std::env::var_os("QOS_APP_NAME");
-        let prev_id = std::env::var_os("QOS_PACKAGE_ID");
+        let prev_name = std::env::var_os("TILO_APP_NAME");
+        let prev_id = std::env::var_os("TILO_PACKAGE_ID");
         // SAFETY: guarded by the `process_env` serial group.
         unsafe {
-            std::env::set_var("QOS_APP_NAME", "Weather");
-            std::env::set_var("QOS_PACKAGE_ID", "dev.qos.weather");
+            std::env::set_var("TILO_APP_NAME", "Weather");
+            std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.weather");
         }
         let resolved = resolve_window_title(None);
         // Restore before asserting so a failure doesn't leak env.
         unsafe {
             match prev_name {
-                Some(v) => std::env::set_var("QOS_APP_NAME", v),
-                None => std::env::remove_var("QOS_APP_NAME"),
+                Some(v) => std::env::set_var("TILO_APP_NAME", v),
+                None => std::env::remove_var("TILO_APP_NAME"),
             }
             match prev_id {
-                Some(v) => std::env::set_var("QOS_PACKAGE_ID", v),
-                None => std::env::remove_var("QOS_PACKAGE_ID"),
+                Some(v) => std::env::set_var("TILO_PACKAGE_ID", v),
+                None => std::env::remove_var("TILO_PACKAGE_ID"),
             }
         }
         assert_eq!(resolved, "Weather");
@@ -8825,22 +8828,22 @@ mod window_title_tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn env_path_falls_back_to_package_id_without_app_name() {
-        let prev_name = std::env::var_os("QOS_APP_NAME");
-        let prev_id = std::env::var_os("QOS_PACKAGE_ID");
+        let prev_name = std::env::var_os("TILO_APP_NAME");
+        let prev_id = std::env::var_os("TILO_PACKAGE_ID");
         // SAFETY: guarded by the `process_env` serial group.
         unsafe {
-            std::env::remove_var("QOS_APP_NAME");
-            std::env::set_var("QOS_PACKAGE_ID", "dev.qos.calculator");
+            std::env::remove_var("TILO_APP_NAME");
+            std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.calculator");
         }
         let resolved = resolve_window_title(None);
         unsafe {
             match prev_name {
-                Some(v) => std::env::set_var("QOS_APP_NAME", v),
-                None => std::env::remove_var("QOS_APP_NAME"),
+                Some(v) => std::env::set_var("TILO_APP_NAME", v),
+                None => std::env::remove_var("TILO_APP_NAME"),
             }
             match prev_id {
-                Some(v) => std::env::set_var("QOS_PACKAGE_ID", v),
-                None => std::env::remove_var("QOS_PACKAGE_ID"),
+                Some(v) => std::env::set_var("TILO_PACKAGE_ID", v),
+                None => std::env::remove_var("TILO_PACKAGE_ID"),
             }
         }
         assert_eq!(resolved, "Calculator");
@@ -8941,7 +8944,7 @@ mod pointer_broadcast_tests {
     fn an_app_in_a_workspace_publishes_presence_without_being_asked() {
         let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
         // SAFETY: serialised against the sibling env test below.
-        unsafe { std::env::set_var("QOS_WORKSPACE_ID", room) };
+        unsafe { std::env::set_var("TILO_WORKSPACE_ID", room) };
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert_eq!(
             app.presence_broadcast_scope(),
@@ -8950,7 +8953,7 @@ mod pointer_broadcast_tests {
             }),
             "a workspace in the environment is a scope, with no app-side call"
         );
-        unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
+        unsafe { std::env::remove_var("TILO_WORKSPACE_ID") };
     }
 
     /// The nil cluster addresses nobody, so no room means nothing published.
@@ -8959,7 +8962,7 @@ mod pointer_broadcast_tests {
     fn an_app_with_no_workspace_publishes_nothing() {
         // SAFETY: see above.
         unsafe {
-            std::env::remove_var("QOS_WORKSPACE_ID");
+            std::env::remove_var("TILO_WORKSPACE_ID");
             std::env::remove_var("QUICK_CLUSTER_ID");
         }
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
@@ -10444,9 +10447,9 @@ mod action_palette_tests {
     use crate::widget::{Button, Widget};
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue};
-    use qos_actions::{Action, ActionError, ActionSpec, Doc, Resource};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+    use tilo_actions::{Action, ActionError, ActionSpec, Doc, Resource};
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
@@ -10488,7 +10491,7 @@ mod action_palette_tests {
                 vec![crate::search::SearchResult::for_action(
                     "Lazy",
                     "Restricted lazy action",
-                    qos_actions::ActionAddress::new("test.lazy:1", "flip"),
+                    tilo_actions::ActionAddress::new("test.lazy:1", "flip"),
                 )]
             } else {
                 Vec::new()
@@ -10497,7 +10500,7 @@ mod action_palette_tests {
 
         fn resolve_action_resource(
             &self,
-            _address: &qos_actions::ActionAddress,
+            _address: &tilo_actions::ActionAddress,
         ) -> Option<Resource> {
             panic!("search providers must never be asked for authority")
         }
@@ -10574,7 +10577,7 @@ mod action_palette_tests {
                         },
                     )
                     .unwrap()
-                    .requiring(qos_actions::PermissionRequirement::Write),
+                    .requiring(tilo_actions::PermissionRequirement::Write),
                 )
             })
         }
@@ -10817,7 +10820,7 @@ mod action_palette_tests {
             .collect_resources()
             .into_iter()
             .find(|resource| {
-                resource.kind == "qos.ui.control"
+                resource.kind == "tilo.ui.control"
                     && resource.label == "Complete"
                     && resource
                         .actions
@@ -10825,7 +10828,7 @@ mod action_palette_tests {
                         .any(|action| action.id == "activate")
             })
             .expect("collaborative button publishes a semantic action");
-        let address = qos_actions::ActionAddress::new(resource.id.as_str(), "activate");
+        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
         let route = app
             .preferred_action_ui_route(&address)
             .expect("semantic action resolves to visible UI");
@@ -10839,9 +10842,11 @@ mod action_palette_tests {
     fn exact_widget_palette_request_resolves_only_declared_actions() {
         let mut app = App::new(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        assert!(app.open_action_palette_at(&qos_actions::ActionAddress::new("test.obj:1", "flip")));
         assert!(
-            !app.open_action_palette_at(&qos_actions::ActionAddress::new(
+            app.open_action_palette_at(&tilo_actions::ActionAddress::new("test.obj:1", "flip"))
+        );
+        assert!(
+            !app.open_action_palette_at(&tilo_actions::ActionAddress::new(
                 "test.obj:1",
                 "not-declared"
             )),
@@ -11143,16 +11148,16 @@ mod view_presence_tests {
         for (request_id, update) in [
             (
                 1,
-                qos_actions::InvocationUpdate::Succeeded {
-                    invocation: qos_actions::InvocationId::new(),
-                    output: qos_actions::ActionOutput::default(),
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: tilo_actions::InvocationId::new(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
             ),
             (
                 2,
-                qos_actions::InvocationUpdate::Failed {
-                    invocation: qos_actions::InvocationId::new(),
-                    error: qos_actions::ActionFailure {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation: tilo_actions::InvocationId::new(),
+                    error: tilo_actions::ActionFailure {
                         code: "missing_hash".into(),
                         message: "launch content is unavailable on this device".into(),
                         details: None,
@@ -11162,13 +11167,13 @@ mod view_presence_tests {
             ),
             (
                 3,
-                qos_actions::InvocationUpdate::Cancelled {
-                    invocation: qos_actions::InvocationId::new(),
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation: tilo_actions::InvocationId::new(),
                     message: Some("launcher refused".into()),
                 },
             ),
         ] {
-            let invocation = qos_actions::InvocationId::new();
+            let invocation = tilo_actions::InvocationId::new();
             app.pending_application_launches
                 .insert(request_id, invocation);
             app.directed_invocations.insert(
@@ -11196,7 +11201,7 @@ mod view_presence_tests {
     #[test]
     fn disconnected_application_launches_are_bounded_and_failed_once() {
         let mut app = app_with_root(ViewRoot::new());
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.pending_application_launches.insert(1, invocation);
         app.directed_invocations.insert(
             invocation,
@@ -11215,15 +11220,15 @@ mod view_presence_tests {
         let mut app = app_with_root(ViewRoot::new());
         for request_id in 0..MAX_PENDING_APPLICATION_LAUNCHES as u64 {
             app.pending_application_launches
-                .insert(request_id, qos_actions::InvocationId::new());
+                .insert(request_id, tilo_actions::InvocationId::new());
         }
 
         assert!(matches!(
             app.admit_application_launch(
                 MAX_PENDING_APPLICATION_LAUNCHES as u64,
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
             ),
-            Err(qos_actions::DoorError::Unavailable { code, .. })
+            Err(tilo_actions::DoorError::Unavailable { code, .. })
                 if code == "application_launch_queue_full"
         ));
         assert_eq!(
@@ -11550,12 +11555,12 @@ mod semantic_tree_app_tests {
     use crate::widget::{Button, Widget};
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-    use qos_actions::{
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use tilo_actions::{
         Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
         OperationKind, PermissionRequirement, Resource,
     };
-    use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum CounterAction {
@@ -11577,7 +11582,7 @@ mod semantic_tree_app_tests {
             let catalog = crate::search::SearchCatalog::new("Large directory");
             for index in 0..records {
                 let resource = format!("test.item:{index}");
-                let address = qos_actions::ActionAddress::new(resource.clone(), "open");
+                let address = tilo_actions::ActionAddress::new(resource.clone(), "open");
                 catalog
                     .upsert(
                         resource,
@@ -11597,7 +11602,7 @@ mod semantic_tree_app_tests {
             }
         }
 
-        fn resource_for(address: &qos_actions::ActionAddress) -> Option<Resource> {
+        fn resource_for(address: &tilo_actions::ActionAddress) -> Option<Resource> {
             address
                 .resource
                 .strip_prefix("test.item:")?
@@ -11614,7 +11619,7 @@ mod semantic_tree_app_tests {
                             &CounterAction::Bump,
                         )
                         .ok()?
-                        .with_contract(qos_actions::ActionContract::view()),
+                        .with_contract(tilo_actions::ActionContract::view()),
                     ),
             )
         }
@@ -11654,7 +11659,7 @@ mod semantic_tree_app_tests {
 
         fn resolve_action_resource(
             &self,
-            address: &qos_actions::ActionAddress,
+            address: &tilo_actions::ActionAddress,
         ) -> Option<Resource> {
             Self::resource_for(address)
         }
@@ -11725,7 +11730,7 @@ mod semantic_tree_app_tests {
                     &CounterAction::Bump,
                 )
                 .unwrap()
-                .with_contract(qos_actions::ActionContract::view()),
+                .with_contract(tilo_actions::ActionContract::view()),
             )
             .with_action(
                 ActionSpec::operation(
@@ -11736,7 +11741,7 @@ mod semantic_tree_app_tests {
                     &CounterAction::Bump,
                 )
                 .unwrap()
-                .with_contract(qos_actions::ActionContract::default()),
+                .with_contract(tilo_actions::ActionContract::default()),
             )
             .with_action(ActionSpec::prompted(
                 "set-label",
@@ -11758,7 +11763,7 @@ mod semantic_tree_app_tests {
 
         fn with_destructive(destructive: bool) -> Self {
             let resource = counter_resource(destructive);
-            let binding = qos_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
             Self {
                 button: Button::new("bump", "Bump", None).on_action(binding),
                 destructive,
@@ -11879,7 +11884,7 @@ mod semantic_tree_app_tests {
                                 &CounterAction::Bump,
                             )
                             .unwrap()
-                            .with_contract(qos_actions::ActionContract::view()),
+                            .with_contract(tilo_actions::ActionContract::view()),
                         )
                     }
                 })
@@ -11917,7 +11922,7 @@ mod semantic_tree_app_tests {
                             &CounterAction::Bump,
                         )
                         .unwrap()
-                        .with_contract(qos_actions::ActionContract::view()),
+                        .with_contract(tilo_actions::ActionContract::view()),
                     )
                 })
         }
@@ -11932,15 +11937,15 @@ mod semantic_tree_app_tests {
         }
         fn invoke_resource_operation_v2(
             &mut self,
-            kind: qos_actions::OperationKind,
+            kind: tilo_actions::OperationKind,
             type_id: &str,
             _payload: &[u8],
             _doc: &automerge::AutoCommit,
             _path: &automerge::ObjId,
-        ) -> Result<Option<qos_actions::ActionOutput>, String> {
+        ) -> Result<Option<tilo_actions::ActionOutput>, String> {
             Ok(
-                (kind == qos_actions::OperationKind::Effect && type_id == COUNTER_TYPE)
-                    .then(qos_actions::ActionOutput::default),
+                (kind == tilo_actions::OperationKind::Effect && type_id == COUNTER_TYPE)
+                    .then(tilo_actions::ActionOutput::default),
             )
         }
     }
@@ -11995,10 +12000,10 @@ mod semantic_tree_app_tests {
     fn lazy_resource_fallback_invokes_after_retained_cache_snapshot() {
         let resource = lazy_resource("test.lazy");
         let mut app = lazy_app(resource);
-        let address = qos_actions::ActionAddress::new("test.lazy", "bump");
+        let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
         let snapshot = app.collect_resources();
         assert!(
-            qos_actions::door::resolve(&snapshot, &address).is_none(),
+            tilo_actions::door::resolve(&snapshot, &address).is_none(),
             "the retained snapshot must omit the lazy action"
         );
         assert!(
@@ -12033,7 +12038,7 @@ mod semantic_tree_app_tests {
         ));
 
         let denied = app.invoke_resource_action(
-            &qos_actions::ActionAddress::new("test.lazy", "bump"),
+            &tilo_actions::ActionAddress::new("test.lazy", "bump"),
             None,
             &app.local_author.0.clone(),
             false,
@@ -12042,12 +12047,12 @@ mod semantic_tree_app_tests {
             None,
             None,
         );
-        assert!(matches!(denied, Err(qos_actions::DoorError::Unknown(_))));
+        assert!(matches!(denied, Err(tilo_actions::DoorError::Unknown(_))));
         assert_eq!(counter(&app), 0, "the denied fallback must not run");
 
         app.set_permission_ctx(PermissionContext::permissive());
         let allowed = app.invoke_resource_action(
-            &qos_actions::ActionAddress::new("test.lazy", "bump"),
+            &tilo_actions::ActionAddress::new("test.lazy", "bump"),
             None,
             &app.local_author.0.clone(),
             false,
@@ -12082,7 +12087,7 @@ mod semantic_tree_app_tests {
         );
 
         let result = app.invoke_resource_action(
-            &qos_actions::ActionAddress::new("test.lazy.child", "bump"),
+            &tilo_actions::ActionAddress::new("test.lazy.child", "bump"),
             None,
             &app.local_author.0.clone(),
             false,
@@ -12138,19 +12143,19 @@ mod semantic_tree_app_tests {
         let mut app = app();
         let resources = app.collect_resources();
         assert!(!resources.is_empty(), "test action surface was rejected");
-        let ambient = qos_actions::ActionContext::default()
-            .with_app("org.qos.Agent", "Agent")
+        let ambient = tilo_actions::ActionContext::default()
+            .with_app("org.tilo.Agent", "Agent")
             .with_purpose("Make the opening concrete")
             .with_group("task:opening", "Rewrite the opening", "task");
 
         let result = app.invoke_resource_action(
-            &qos_actions::ActionAddress::new("test.counter", "bump"),
+            &tilo_actions::ActionAddress::new("test.counter", "bump"),
             None,
             "agent:Scribe",
             true,
             true,
             None,
-            Some(qos_actions::InvocationId::new()),
+            Some(tilo_actions::InvocationId::new()),
             Some(&ambient),
         );
 
@@ -12161,7 +12166,7 @@ mod semantic_tree_app_tests {
         assert_eq!(committed.actor_id().to_bytes(), b"agent:Scribe");
         let context = committed
             .message()
-            .and_then(|message| qos_actions::ActionContext::from_change_message(message))
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
             .expect("the action commit retained semantic provenance");
         assert_eq!(context.action_label, "Bump");
         assert_eq!(
@@ -12187,7 +12192,7 @@ mod semantic_tree_app_tests {
     #[test]
     fn host_required_document_action_runs_only_after_broker_admission() {
         let mut app = app();
-        let address = qos_actions::ActionAddress::new("test.counter", "host-bump");
+        let address = tilo_actions::ActionAddress::new("test.counter", "host-bump");
 
         let local = app.invoke_resource_action(
             &address,
@@ -12209,7 +12214,7 @@ mod semantic_tree_app_tests {
             true,
             true,
             None,
-            Some(qos_actions::InvocationId::new()),
+            Some(tilo_actions::InvocationId::new()),
             None,
         );
         assert!(admitted.is_ok(), "the authoritative broker admitted it");
@@ -12225,10 +12230,10 @@ mod semantic_tree_app_tests {
     #[test]
     fn directed_view_action_cannot_steal_the_local_view() {
         let mut app = app();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let error = app
             .invoke_resource_action(
-                &qos_actions::ActionAddress::new("test.counter", "inspect"),
+                &tilo_actions::ActionAddress::new("test.counter", "inspect"),
                 None,
                 "agent:Scribe",
                 true,
@@ -12243,7 +12248,7 @@ mod semantic_tree_app_tests {
         assert!(
             matches!(
                 error,
-                qos_actions::DoorError::Unavailable { ref code, .. } if code == "private_view"
+                tilo_actions::DoorError::Unavailable { ref code, .. } if code == "private_view"
             ),
             "unexpected refusal: {error:?}"
         );
@@ -12254,7 +12259,7 @@ mod semantic_tree_app_tests {
         let mut app = app();
         let before = app.state.doc.get_heads();
         let result = app.invoke_resource_action(
-            &qos_actions::ActionAddress::new("test.counter", "ping"),
+            &tilo_actions::ActionAddress::new("test.counter", "ping"),
             None,
             &app.local_author.0.clone(),
             false,
@@ -12312,12 +12317,12 @@ mod semantic_tree_app_tests {
     fn action_bound_background_control_remains_pending_until_terminal_update() {
         let resource =
             crate::widget::resource_actions::resource("test.job", "Job", "run", "Run", true);
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "run").unwrap();
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
         let button = Button::new("run", "Run", None).on_action(binding);
         let root = crate::widget::resource_actions::background(Box::new(button), resource, |_| {
             let (sender, receiver) = std::sync::mpsc::channel();
             sender
-                .send(Ok(qos_actions::ActionOutput::default()))
+                .send(Ok(tilo_actions::ActionOutput::default()))
                 .unwrap();
             Ok(receiver)
         });
@@ -12660,7 +12665,7 @@ mod semantic_tree_app_tests {
         let resource = app
             .collect_resources()
             .into_iter()
-            .find(|resource| resource.kind == "qos.ui.control" && resource.label == "Drive me");
+            .find(|resource| resource.kind == "tilo.ui.control" && resource.label == "Drive me");
         assert!(resource.is_none_or(|resource| {
             resource
                 .actions
@@ -12716,7 +12721,7 @@ mod semantic_tree_app_tests {
         assert_eq!(app.take_broker_request_id().unwrap(), u64::MAX);
         assert!(matches!(
             app.take_broker_request_id(),
-            Err(qos_actions::DoorError::Unavailable { code, .. })
+            Err(tilo_actions::DoorError::Unavailable { code, .. })
                 if code == "broker_request_identity_exhausted"
         ));
     }
@@ -12727,8 +12732,8 @@ mod semantic_tree_app_tests {
         let first = app.action_directory_cursor_key();
         let second = app.action_directory_cursor_key();
         assert_ne!(first, second);
-        assert!(first.starts_with("qos-dir-"));
-        assert!(second.starts_with("qos-dir-"));
+        assert!(first.starts_with("tilo-dir-"));
+        assert!(second.starts_with("tilo-dir-"));
     }
 
     #[test]

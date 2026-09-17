@@ -1,6 +1,6 @@
-//! Policy and convergent state for one person's certified qOS devices.
+//! Policy and convergent state for one person's certified Tilo devices.
 //!
-//! qOS does not equate proximity, Bluetooth pairing, or a shared network with
+//! Tilo does not equate proximity, Bluetooth pairing, or a shared network with
 //! trust. The private same-identity lane authenticates and encrypts peers; this
 //! module applies one policy model to media, clipboard, roaming preferences,
 //! secret references and cross-screen input.
@@ -151,7 +151,7 @@ pub struct MediaHandoff {
     pub pause_source: bool,
 }
 
-/// A locator usable on another qOS device. Workspace paths hydrate through
+/// A locator usable on another Tilo device. Workspace paths hydrate through
 /// Files; stream URLs travel only in an ephemeral exact-target action and are
 /// never persisted in the fabric snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -749,7 +749,7 @@ impl ClipboardPayload {
             return Err(FabricError::ClipboardItemTooLarge);
         }
         if let Self::Binary { mime, .. } = self
-            && (!valid_mime(mime) || mime == "application/x-qos-secret")
+            && (!valid_mime(mime) || mime == "application/x-tilo-secret")
         {
             return Err(FabricError::InvalidClipboardMime);
         }
@@ -1553,7 +1553,7 @@ fn valid_bluetooth_pairing_action(
 /// local until its semantics have been reviewed. In particular, connector
 /// names, selected audio devices, display geometry/scale, radios, mounts,
 /// power policy, update state and credentials must never become convergent
-/// state merely because their key happens to begin with `qos.`.
+/// state merely because their key happens to begin with `tilo.`.
 pub(super) fn valid_setting_key(key: &str) -> bool {
     valid_identifier(key, 256) && settings_store::continuity::is_personal(key)
 }
@@ -1688,7 +1688,7 @@ mod tests {
         let mut laptop = snapshot("laptop", 1, 0, caps);
         laptop.media.push(MediaSession {
             id: "movie-1".into(),
-            app_id: "dev.qos.video".into(),
+            app_id: "dev.tilo.video".into(),
             title: "Film".into(),
             content_id: "record:film".into(),
             position_ms: 42_000,
@@ -1868,14 +1868,14 @@ mod tests {
     #[test]
     fn local_hardware_settings_do_not_roam() {
         for key in [
-            "qos.device.name",
-            "qos.display.hardware.edid",
-            "qos.display.scale",
-            "qos.network.interface.mac",
-            "qos.storage.mount.usb",
-            "qos.input.pen_output",
-            "qos.audio.output_device",
-            "qos.agent_providers.api_key",
+            "tilo.device.name",
+            "tilo.display.hardware.edid",
+            "tilo.display.scale",
+            "tilo.network.interface.mac",
+            "tilo.storage.mount.usb",
+            "tilo.input.pen_output",
+            "tilo.audio.output_device",
+            "tilo.agent_providers.api_key",
         ] {
             let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
             source.settings.push(RoamingSetting {
@@ -1890,28 +1890,28 @@ mod tests {
     #[test]
     fn only_audited_personal_setting_leaves_are_accepted() {
         for key in [
-            "qos.accessibility.screen_reader",
-            "qos.appearance.studio",
-            "qos.locale.measurement",
-            "qos.notifications.per_app",
-            "qos.input.keyboard_layouts",
-            "qos.audio.mono_output",
-            "qos.display.night_light_temperature",
-            "qos.shortcuts.bindings",
-            "qos.desktop_controls.vim_mode",
-            "qos.quick_settings.controls",
-            "qos.text_assistance.auto_correct",
+            "tilo.accessibility.screen_reader",
+            "tilo.appearance.studio",
+            "tilo.locale.measurement",
+            "tilo.notifications.per_app",
+            "tilo.input.keyboard_layouts",
+            "tilo.audio.mono_output",
+            "tilo.display.night_light_temperature",
+            "tilo.shortcuts.bindings",
+            "tilo.desktop_controls.vim_mode",
+            "tilo.quick_settings.controls",
+            "tilo.text_assistance.auto_correct",
         ] {
             assert!(valid_setting_key(key), "expected {key} to roam");
         }
         for key in [
-            "qos.appearance.wallpaper_path",
-            "qos.input.future_device_serial",
-            "qos.audio.input_device",
-            "qos.display.auto_brightness",
-            "qos.power.auto_suspend",
-            "qos.updates.channel",
-            "qos.security.local_credential.pin",
+            "tilo.appearance.wallpaper_path",
+            "tilo.input.future_device_serial",
+            "tilo.audio.input_device",
+            "tilo.display.auto_brightness",
+            "tilo.power.auto_suspend",
+            "tilo.updates.channel",
+            "tilo.security.local_credential.pin",
         ] {
             assert!(!valid_setting_key(key), "expected {key} to stay local");
         }
@@ -1921,13 +1921,13 @@ mod tests {
     fn newest_roaming_setting_wins_deterministically() {
         let mut old = snapshot("desktop", 1, 0, FabricCapabilities::default());
         old.settings.push(RoamingSetting {
-            key: "qos.appearance.theme".into(),
+            key: "tilo.appearance.theme".into(),
             value: Value::Bool(false),
             stamp: stamp("desktop", 1),
         });
         let mut new = snapshot("laptop", 2, 1000, FabricCapabilities::default());
         new.settings.push(RoamingSetting {
-            key: "qos.appearance.theme".into(),
+            key: "tilo.appearance.theme".into(),
             value: Value::Bool(true),
             stamp: stamp("laptop", 2),
         });
@@ -1935,7 +1935,7 @@ mod tests {
         fabric.upsert(old).unwrap();
         fabric.upsert(new).unwrap();
         assert_eq!(
-            fabric.merged_settings()["qos.appearance.theme"],
+            fabric.merged_settings()["tilo.appearance.theme"],
             Value::Bool(true)
         );
     }
@@ -2009,7 +2009,7 @@ mod tests {
         let mut source = snapshot(&owner_text, 1, 0, FabricCapabilities::default());
         source.wifi.push(credential);
         source.settings.push(RoamingSetting {
-            key: "qos.appearance.theme".into(),
+            key: "tilo.appearance.theme".into(),
             value: Value::String("Nord".into()),
             stamp: FabricStamp {
                 counter: 1,
@@ -2020,7 +2020,7 @@ mod tests {
         fabric.upsert(source).unwrap();
 
         assert_eq!(
-            fabric.merged_settings()["qos.appearance.theme"],
+            fabric.merged_settings()["tilo.appearance.theme"],
             Value::String("Nord".into())
         );
     }
@@ -2169,7 +2169,7 @@ mod tests {
             issued_unix_ms: 10_000,
             action: PersonalFabricAction::ResumeMedia {
                 session_id: "player:one".into(),
-                app_id: "dev.qos.music".into(),
+                app_id: "dev.tilo.music".into(),
                 workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                 title: "Track".into(),
                 locator: MediaSourceLocator::Workspace {
@@ -2351,7 +2351,7 @@ mod tests {
                 epoch: [1; 16],
                 token: [2; 16],
             },
-            app_id: "dev.qos.mail".into(),
+            app_id: "dev.tilo.mail".into(),
             app_name: "Mail".into(),
             title: "New message".into(),
             body: "Preview".into(),
@@ -2508,7 +2508,7 @@ mod tests {
                 issued_unix_ms: 10_000,
                 action: PersonalFabricAction::ResumeMedia {
                     session_id: "player:one".into(),
-                    app_id: "dev.qos.music".into(),
+                    app_id: "dev.tilo.music".into(),
                     workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                     title: "Track".into(),
                     locator,

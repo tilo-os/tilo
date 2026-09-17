@@ -18,11 +18,11 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
 automerge.workspace = true
-# The qOS ACTION model: the reader's `actions` module exports its markup-store
+# The Tilo ACTION model: the reader's `actions` module exports its markup-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 serde.workspace = true
 serde_json.workspace = true

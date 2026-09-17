@@ -1,6 +1,6 @@
 //! The FUSE-media seam.
 //!
-//! In qOS, source media lives on the **P2P FUSE filesystem mounted at
+//! In Tilo, source media lives on the **P2P FUSE filesystem mounted at
 //! `/var/workspace`** (see the workspace `fs` crate), *not* in the editor's
 //! CRDT. This is deliberate and load-bearing for collaboration:
 //!
@@ -30,7 +30,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// Root of the qOS P2P FUSE filesystem. Every collaborator mounts the same
+/// Root of the Tilo P2P FUSE filesystem. Every collaborator mounts the same
 /// logical tree here, so a workspace-relative media path resolves to the
 /// same logical file for all peers (the bytes hydrate per-peer on read).
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
@@ -123,8 +123,8 @@ pub fn project_anchor() -> Option<PathBuf> {
 ///   0. **Absolute path** — a `path` that is already absolute (an imported
 ///      local file, or a path already under the mount) is used verbatim. This
 ///      is how a portal-imported file outside the workspace reaches the decoder.
-///   1. **Bundled sample** — otherwise, if `$QOS_VE_MEDIA_DIR/<path>` exists,
-///      use it. `--shots` sets `QOS_VE_MEDIA_DIR` to the crate's `sample-media/`
+///   1. **Bundled sample** — otherwise, if `$TILO_VE_MEDIA_DIR/<path>` exists,
+///      use it. `--shots` sets `TILO_VE_MEDIA_DIR` to the crate's `sample-media/`
 ///      directory so headless captures decode real bytes deterministically
 ///      without a live FUSE mount.
 ///   2. **FUSE mount** — `/var/workspace/<path>`, when it is really there.
@@ -158,7 +158,7 @@ pub fn resolve(path: &str) -> MediaSource {
         };
     }
     // 1. Bundled / dev override.
-    if let Some(dir) = std::env::var_os("QOS_VE_MEDIA_DIR") {
+    if let Some(dir) = std::env::var_os("TILO_VE_MEDIA_DIR") {
         let candidate = Path::new(&dir).join(path);
         if candidate.exists() {
             return MediaSource {
@@ -238,7 +238,7 @@ mod tests {
     }
 
     // Both env-sensitive cases live in one test so there's no inter-test
-    // race over the shared `QOS_VE_MEDIA_DIR` process env var. The serial
+    // race over the shared `TILO_VE_MEDIA_DIR` process env var. The serial
     // group additionally keeps it off the project anchor, which is the
     // other piece of process-wide state `resolve` reads.
     #[test]
@@ -246,7 +246,7 @@ mod tests {
     fn resolve_reports_projected_or_local_via_the_seam() {
         // Safety: single-threaded test mutation of process env.
         unsafe {
-            std::env::remove_var("QOS_VE_MEDIA_DIR");
+            std::env::remove_var("TILO_VE_MEDIA_DIR");
         }
         // 1. A path that cannot exist on this host resolves as Projected —
         //    the reference is valid, the bytes simply are not hydrated.
@@ -258,18 +258,18 @@ mod tests {
         // 2. With the bundled override pointing at a dir that has the file,
         //    the seam reports it Local + decodable.
         let dir = std::env::temp_dir();
-        let name = format!("qos-ve-seam-{}.bin", std::process::id());
+        let name = format!("tilo-ve-seam-{}.bin", std::process::id());
         let f = dir.join(&name);
         std::fs::write(&f, b"x").unwrap();
         unsafe {
-            std::env::set_var("QOS_VE_MEDIA_DIR", &dir);
+            std::env::set_var("TILO_VE_MEDIA_DIR", &dir);
         }
         let local = resolve(&name);
         assert_eq!(local.hydration, Hydration::Local);
         assert!(local.is_decodable());
         assert_eq!(local.abs_path, f);
         unsafe {
-            std::env::remove_var("QOS_VE_MEDIA_DIR");
+            std::env::remove_var("TILO_VE_MEDIA_DIR");
         }
         std::fs::remove_file(&f).ok();
     }
@@ -280,8 +280,8 @@ mod tests {
     #[serial_test::serial(video_editor_media_env)]
     fn a_relative_path_resolves_beside_the_project_and_then_in_the_working_directory() {
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::remove_var("QOS_VE_MEDIA_DIR") };
-        let root = std::env::temp_dir().join(format!("qos-ve-anchor-{}", std::process::id()));
+        unsafe { std::env::remove_var("TILO_VE_MEDIA_DIR") };
+        let root = std::env::temp_dir().join(format!("tilo-ve-anchor-{}", std::process::id()));
         let nested = root.join("footage");
         std::fs::create_dir_all(&nested).expect("make the fixture tree");
         let rel = "footage/take1.mp4";
@@ -323,7 +323,7 @@ mod tests {
     fn absolute_import_path_resolves_verbatim_and_reports_hydration() {
         // A real imported local file resolves to itself and reports Local.
         let dir = std::env::temp_dir();
-        let name = format!("qos-ve-import-{}.mp4", std::process::id());
+        let name = format!("tilo-ve-import-{}.mp4", std::process::id());
         let f = dir.join(&name);
         std::fs::write(&f, b"real bytes").unwrap();
         let src = resolve(&f.to_string_lossy());
@@ -339,9 +339,9 @@ mod tests {
 
     #[test]
     fn engine_source_splits_workspace_from_local() {
-        let root = std::env::temp_dir().join(format!("qos-ve-eng-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tilo-ve-eng-{}", std::process::id()));
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("QOS_WORKSPACE_ROOT", &root) };
+        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &root) };
         let ws = engine_source(&root.join("media/a.mp4"));
         assert!(
             matches!(ws, ::media::Source::Workspace(_)),
@@ -352,14 +352,14 @@ mod tests {
             matches!(local, ::media::Source::LocalFile(_)),
             "outside the mount → LocalFile"
         );
-        unsafe { std::env::remove_var("QOS_WORKSPACE_ROOT") };
+        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
     }
 
     #[test]
     fn stored_path_is_relative_under_mount_absolute_otherwise() {
-        let root = std::env::temp_dir().join(format!("qos-ve-store-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tilo-ve-store-{}", std::process::id()));
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("QOS_WORKSPACE_ROOT", &root) };
+        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &root) };
         assert_eq!(
             stored_path_for_import(&root.join("media/Clip.mp4")),
             "media/Clip.mp4"
@@ -368,6 +368,6 @@ mod tests {
             stored_path_for_import(Path::new("/home/u/Holiday.mov")),
             "/home/u/Holiday.mov"
         );
-        unsafe { std::env::remove_var("QOS_WORKSPACE_ROOT") };
+        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
     }
 }

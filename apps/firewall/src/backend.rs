@@ -3,7 +3,7 @@
 //!
 //! This is **gated**: nothing here runs during `--shots` or in the headless
 //! renderer. The live app calls [`Backend::detect`] once at startup; if
-//! `firewall-cmd` is on `$PATH` *and* `QOS_FIREWALL_APPLY=1` is set, applies
+//! `firewall-cmd` is on `$PATH` *and* `TILO_FIREWALL_APPLY=1` is set, applies
 //! are executed for real. Otherwise the backend stays in **dry-run** mode
 //! and only records the commands it *would* run, which the UI surfaces in
 //! the apply preview. This keeps the app safe to demo on any machine while
@@ -20,7 +20,7 @@ use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, Z
 /// How the backend will treat apply requests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// `firewall-cmd` present and `QOS_FIREWALL_APPLY=1` — commands run.
+    /// `firewall-cmd` present and `TILO_FIREWALL_APPLY=1` — commands run.
     Live,
     /// Commands are generated but never executed.
     DryRun,
@@ -71,7 +71,7 @@ impl Backend {
     /// Inspect the environment and decide the operating mode.
     pub fn detect() -> Self {
         let has_cmd = which_firewall_cmd();
-        let armed = std::env::var("QOS_FIREWALL_APPLY").as_deref() == Ok("1");
+        let armed = std::env::var("TILO_FIREWALL_APPLY").as_deref() == Ok("1");
         let mode = if has_cmd && armed {
             Mode::Live
         } else {
@@ -640,14 +640,14 @@ public (active)
 
     #[test]
     fn detect_defaults_to_dry_run_without_env() {
-        // Without QOS_FIREWALL_APPLY=1 we must never be Live, regardless of
+        // Without TILO_FIREWALL_APPLY=1 we must never be Live, regardless of
         // whether firewall-cmd happens to exist on this host.
-        let prev = std::env::var("QOS_FIREWALL_APPLY").ok();
-        unsafe { std::env::remove_var("QOS_FIREWALL_APPLY") };
+        let prev = std::env::var("TILO_FIREWALL_APPLY").ok();
+        unsafe { std::env::remove_var("TILO_FIREWALL_APPLY") };
         let b = Backend::detect();
         assert_eq!(b.mode(), Mode::DryRun);
         if let Some(v) = prev {
-            unsafe { std::env::set_var("QOS_FIREWALL_APPLY", v) };
+            unsafe { std::env::set_var("TILO_FIREWALL_APPLY", v) };
         }
     }
 }

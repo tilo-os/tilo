@@ -7,11 +7,11 @@ snapshots, and kills it. Use this as the template for a CI smoke test
 or an AI agent's exploratory probe.
 
 Usage:
-  ./full-loop.py [/tmp/nirios-full-loop.sock]
+  ./full-loop.py [/tmp/tilo-full-loop.sock]
 
 What it does:
   1. Spawns ./target/debug/shell --backend headless with
-     QOS_TEST_CONTROL set to the socket path and DISPLAY +
+     TILO_TEST_CONTROL set to the socket path and DISPLAY +
      WAYLAND_DISPLAY unset.
   2. Waits up to 15s for the socket to appear.
   3. Lists targets, picks the workspace wheel, clicks it.
@@ -31,7 +31,7 @@ import time
 
 from _control import call, require_ok
 
-SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/nirios-full-loop.sock"
+SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/tilo-full-loop.sock"
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 BINARY = SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell"
 BINARY = BINARY.resolve()
@@ -48,7 +48,7 @@ def main() -> int:
         os.unlink(SOCKET)
     except FileNotFoundError:
         pass
-    env = {**os.environ, "QOS_TEST_CONTROL": SOCKET}
+    env = {**os.environ, "TILO_TEST_CONTROL": SOCKET}
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
     print(f"spawning {BINARY} --backend headless ...")

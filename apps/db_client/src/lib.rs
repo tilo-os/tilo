@@ -1,4 +1,4 @@
-//! Database — a qOS native database client built on the `ui` toolkit.
+//! Database — a Tilo native database client built on the `ui` toolkit.
 //!
 //! Connects to `PostgreSQL`, `MySQL` and `SQLite` over real drivers. `SQLite` runs
 //! fully locally (and ships a bundled sample catalog for the offline `--shots`

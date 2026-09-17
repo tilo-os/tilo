@@ -31,16 +31,16 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
-    "crates/app/qos-app",
+    "crates/app/tilo-app",
     "crates/windows/compat-catalogue",
     "crates/windows/compat-service",
     "crates/dev/headless-schema",
-    "crates/dev/qos-dev",
-    "crates/dev/qos-dev-template-smoke",
+    "crates/dev/tilo-dev",
+    "crates/dev/tilo-dev-template-smoke",
     "crates/dev/ui-builder",
     "crates/dev/ui-graph",
-    "crates/system/qos-rollback",
-    "crates/system/qos-cli",
+    "crates/system/tilo-rollback",
+    "crates/system/tilo-cli",
     "crates/system/tinker",
     "crates/system/swipe",
     "crates/system/tts",
@@ -67,7 +67,7 @@ members = [
     "shell",
     "ui",
     "crates/system/os-actions",
-    "crates/system/qos-bluez",
+    "crates/system/tilo-bluez",
     "crates/system/power",
     "crates/collab/collab-types",
     "crates/collab/actions",
@@ -77,7 +77,7 @@ members = [
     "crates/collab/channel-crypto",
     "crates/collab/collab-link",
     "crates/collab/frame-link",
-    "crates/collab/qos-callstream",
+    "crates/collab/tilo-callstream",
     "crates/packaging/pkg",
     "crates/packaging/collab-probe",
     "crates/packaging/pkg-cli",
@@ -103,8 +103,8 @@ members = [
     "crates/packaging/install",
     "crates/packaging/cli-shim",
     "crates/packaging/notes-cli",
-    "crates/identity/qos-user-identity",
-    "crates/hosting/qos-relay",
+    "crates/identity/tilo-user-identity",
+    "crates/hosting/tilo-relay",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
@@ -153,9 +153,9 @@ members = [
     "apps/vpn",
     "apps/weather",
     "crates/session/greeter",
-    "crates/session/qos-unlock-helper",
-    "crates/session/qos-power",
-    "crates/system/qos-startup-metrics",
+    "crates/session/tilo-unlock-helper",
+    "crates/session/tilo-power",
+    "crates/system/tilo-startup-metrics",
     "crates/system/system-extension",
     "crates/system/projector",
     "crates/session/installer",
@@ -168,7 +168,7 @@ members = [
 ]
 resolver = "2"
 
-# qOS is distributed as one AGPL operating-system source tree; workspace
+# Tilo is distributed as one AGPL operating-system source tree; workspace
 # members inherit this metadata and are not published independently.
 [workspace.package]
 license = "AGPL-3.0-only"
@@ -301,8 +301,8 @@ tar = "0.4"
 # ---------------------------------------------------------------------------
 # Cryptography and identity
 #
-# The Ed25519 stack is deliberately conservative. Every qOS signing path
-# (`collab-types`, `qos-user-identity`, `threshold-identity`, `app-registry`,
+# The Ed25519 stack is deliberately conservative. Every Tilo signing path
+# (`collab-types`, `tilo-user-identity`, `threshold-identity`, `app-registry`,
 # `pkg`, `runtime-identity`) is on ed25519-dalek 2.x, which consumes `rand_core`
 # 0.6 — and `rand` 0.8 is the only release that hands out a 0.6-shaped `OsRng`.
 # That is why `rand` is pinned to 0.8 rather than the current 0.10: bumping it
@@ -347,7 +347,7 @@ gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 rustypipe = { version = "0.11", default-features = false }
 # Sender-side discovery and transports for FCast and Google Cast. Disable the
-# mobile FFI/logging defaults: qos-projector is a native Rust broker.
+# mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
 mdns-sd = "=0.20.3"
 

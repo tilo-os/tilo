@@ -17,7 +17,7 @@ for argument in "$@"; do
     previous="$argument"
 done
 
-case ":${QOS_THIN_BIN_CRATES:-}:" in
+case ":${TILO_THIN_BIN_CRATES:-}:" in
     *":${crate_name}:"*) exec "$compiler" "$@" -C prefer-dynamic ;;
 esac
 

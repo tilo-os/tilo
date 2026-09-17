@@ -50,7 +50,7 @@ impl ImagerDoc {
         }
     }
 
-    /// Seed a fully-populated **demo** document: a pre-selected qOS image and
+    /// Seed a fully-populated **demo** document: a pre-selected Tilo image and
     /// short recent-sources history. Device/release fixtures live in the local
     /// app, never in this collaborative document. This is the single home of
     /// the imager's sample content — used
@@ -342,7 +342,7 @@ impl ImagerDoc {
         let digest = Self::map_str(doc, map, "expected_sha256");
         Some(Source {
             kind: match Self::map_str(doc, map, "kind").as_str() {
-                "qOS" => crate::model::SourceKind::QosImage,
+                "Tilo" => crate::model::SourceKind::TiloImage,
                 _ => crate::model::SourceKind::IsoFile,
             },
             path: Self::map_str(doc, map, "path"),
@@ -515,7 +515,7 @@ mod tests {
         let sample = sample_source();
         ImagerDoc::set_source(&mut doc, Some(&sample));
         let src = ImagerDoc::source(&doc).unwrap();
-        assert_eq!(src.kind, SourceKind::QosImage);
+        assert_eq!(src.kind, SourceKind::TiloImage);
         ImagerDoc::set_source(&mut doc, None);
         assert!(ImagerDoc::source(&doc).is_none());
     }

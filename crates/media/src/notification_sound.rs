@@ -56,7 +56,10 @@ fn play_one(backend: SoundBackend) {
     let mut command = match backend {
         SoundBackend::Libcanberra => {
             let mut c = Command::new("canberra-gtk-play");
-            c.args(["--id=message-new-instant", "--description=qOS notification"]);
+            c.args([
+                "--id=message-new-instant",
+                "--description=Tilo notification",
+            ]);
             c
         }
         SoundBackend::PipeWire => {
@@ -124,7 +127,7 @@ impl NotificationSoundPlayer {
         let backend = sound_backend();
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
-            .name("qos-notification-sound".into())
+            .name("tilo-notification-sound".into())
             .spawn(move || {
                 while receiver.recv().is_ok() {
                     play_one(backend);

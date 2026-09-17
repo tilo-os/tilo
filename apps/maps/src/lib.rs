@@ -1,4 +1,4 @@
-//! Maps — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Maps — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! An OpenStreetMap-style maps app with search (Nominatim), turn-by-turn
 //! routing (OSRM) across car/bike/foot, and public-transport journey

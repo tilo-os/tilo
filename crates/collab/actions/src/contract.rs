@@ -114,7 +114,7 @@ pub enum DiscoveryScope {
 }
 
 /// Shape of a successful result. Schemas use JSON Schema so non-Rust callers
-/// do not need a parallel qOS-only type system.
+/// do not need a parallel Tilo-only type system.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResultSpec {

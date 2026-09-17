@@ -18,10 +18,10 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
 # Canonical resource-operation types and local invocation contracts. Raw bytes
 # and their undo history are deliberately never replicated through this crate.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

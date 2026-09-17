@@ -27,13 +27,13 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_agent::{Config, Session};
+use tilo_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 
 mod typed_peer;
 use typed_peer::{TypedPeer, document_mutation};
 
-const APP: &str = "dev.qos.word-processor";
+const APP: &str = "dev.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 
 /// What the person types while the agent's app action is still in flight.
@@ -124,7 +124,7 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
 /// The live resource tree the Word Processor itself publishes for this
 /// document. The table anchor is the final bullet, matching where a person
 /// would leave the caret after entering the list.
-fn word_processor_resources(doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+fn word_processor_resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
     let b = blocks(doc);
     let anchor = b
         .iter()

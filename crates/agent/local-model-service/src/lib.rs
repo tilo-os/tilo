@@ -1269,7 +1269,7 @@ mod tests {
     #[test]
     fn command_is_argv_and_never_uses_a_mutable_tag() {
         let command = VllmCommand {
-            runtime_image: "registry.example.invalid/qos/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            runtime_image: "registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             runtime_kind: RuntimeKind::Cpu,
             args: vec![
                 "serve".into(),

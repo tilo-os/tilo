@@ -1094,7 +1094,7 @@ fn envelope_prefix_digest<'a>(
     envelopes: impl IntoIterator<Item = &'a RecordEnvelopeV1>,
 ) -> Result<[u8; 32], RecordRepositoryError> {
     let mut digest = blake3::Hasher::new();
-    digest.update(b"qos.collaborative-fs.record-stream-prefix.v1\0");
+    digest.update(b"tilo.collaborative-fs.record-stream-prefix.v1\0");
     for envelope in envelopes {
         let bytes = envelope.canonical_bytes()?;
         digest.update(&(bytes.len() as u64).to_be_bytes());
@@ -2514,7 +2514,7 @@ mod tests {
         assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
 
         let backup_dir = path.with_file_name(format!(
-            ".{}.qos-backups",
+            ".{}.tilo-backups",
             path.file_name().unwrap().to_string_lossy()
         ));
         let entries = std::fs::read_dir(backup_dir)

@@ -17,16 +17,16 @@ const FRAMES: u32 = 52 * FPS;
 /// Return a real H.264/AAC MP4 source with deterministic moving imagery and
 /// an audible 440 Hz stereo track.
 ///
-/// One fixture is encoded per test process. `QOS_VE_TEST_CLIP` remains useful
+/// One fixture is encoded per test process. `TILO_VE_TEST_CLIP` remains useful
 /// for deliberately exercising another source, but normal tests have no
 /// dependency outside the checkout and the `GStreamer` stack they already test.
 pub fn encoded_video() -> std::path::PathBuf {
     static CLIP: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    if let Some(path) = std::env::var_os("QOS_VE_TEST_CLIP") {
+    if let Some(path) = std::env::var_os("TILO_VE_TEST_CLIP") {
         let path = std::path::PathBuf::from(path);
         assert!(
             path.exists(),
-            "$QOS_VE_TEST_CLIP does not exist: {}",
+            "$TILO_VE_TEST_CLIP does not exist: {}",
             path.display()
         );
         return path;
@@ -56,7 +56,7 @@ pub fn encoded_video_only() -> std::path::PathBuf {
 fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     gst::init().expect("initialize GStreamer for generated video fixture");
     let path = std::env::temp_dir().join(format!(
-        "qos-ve-generated-motion-{}-{}.mp4",
+        "tilo-ve-generated-motion-{}-{}.mp4",
         if with_audio { "av" } else { "video-only" },
         std::process::id()
     ));

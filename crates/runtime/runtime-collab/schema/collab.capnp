@@ -1,10 +1,10 @@
 @0xc418c22ce00b8d8d;
 
-# qOS collaboration broker — public Cap'n Proto contract.
+# Tilo collaboration broker — public Cap'n Proto contract.
 #
 # This is the wire surface app SDK clients talk to. The broker is
 # the compositor's in-session broker; when an app is launched
-# under qOS, the launcher hands the app a connected Unix socket
+# under Tilo, the launcher hands the app a connected Unix socket
 # whose other end speaks this protocol.
 #
 # Streaming caveat (capnp-rpc 0.26): there is no first-class
@@ -175,7 +175,7 @@ interface ChannelHandle {
   completeInvocation @15 (id :UInt64, code :Text, message :Text) -> ();
 
   # Additive v2 lifecycle update. `updateJson` is a serialized
-  # qos_actions::InvocationUpdate. Legacy clients continue using @15.
+  # tilo_actions::InvocationUpdate. Legacy clients continue using @15.
   updateInvocation @17 (id :UInt64, updateJson :Text) -> ();
   # Cooperative cancellation flag polled by background application jobs.
   invocationCancellation @18 (id :UInt64) -> (cancelled :Bool);
@@ -204,7 +204,7 @@ interface ChannelHandle {
   # socket every app already holds and what it carries is a resource
   # address — this interface's subject.
   #
-  # `reference` is a serialised `qos_reference::ResourceRef` (JSON, the
+  # `reference` is a serialised `tilo_reference::ResourceRef` (JSON, the
   # encoding `sendAction` payloads use). `x`/`y`/`w`/`h` are the rect to
   # sit beside, in the ASKING WINDOW's own coordinates: the app reports
   # where its context menu is and the session converts, because only the
@@ -289,7 +289,7 @@ interface ChannelHandle {
   requestDocumentSnapshot @37 () -> ();
 
   # Versioned, bounded active-session continuity control. The JSON vocabulary
-  # is owned by qos-app's realtime_continuity module. Device routing and app /
+  # is owned by tilo-app's realtime_continuity module. Device routing and app /
   # workspace identity are re-derived by the broker; apps receive only opaque
   # restart-scoped session capabilities.
   realtimeCommand @38 (appId :Text, commandJson :Data) -> (replyJson :Data);
@@ -380,14 +380,14 @@ interface ActionCatalogueStream {
 }
 
 interface RealtimeStream {
-  # Versioned qos-app RealtimeEvent JSON. Client-pull preserves bounded
+  # Versioned tilo-app RealtimeEvent JSON. Client-pull preserves bounded
   # backpressure and prevents an idle app from accumulating callbacks.
   read @0 () -> (eventJson :Data);
 }
 
 # One operation an application exports, as inert data.
 #
-# Mirrors `qos_actions::door::ActionDescriptor`. A native capnp struct
+# Mirrors `tilo_actions::door::ActionDescriptor`. A native capnp struct
 # rather than opaque bytes for the reason `PresencePayload` is: this is
 # what a non-Rust participant reads to find out what a window can do,
 # and it should not need a postcard decoder to do it.
@@ -413,11 +413,11 @@ struct ExportedAction {
   # `document`, `effect`, or `view`. Empty from an older client means
   # `document` for backwards compatibility.
   operationKind @7 :Text;
-  # JSON encoding of `qos_actions::ActionParam[]`. Kept as an opaque JSON
+  # JSON encoding of `tilo_actions::ActionParam[]`. Kept as an opaque JSON
   # projection so Cap'n Proto clients can forward newer parameter vocabulary
   # without a schema bump; empty means the legacy `input` projection.
   paramsJson @8 :Text;
-  # Versioned JSON encoding of qos_actions::ActionContract. Empty from an
+  # Versioned JSON encoding of tilo_actions::ActionContract. Empty from an
   # older client selects conservative compatibility defaults.
   contractJson @9 :Text;
 }
@@ -638,7 +638,7 @@ struct PresencePayload {
     # never a request to alter the receiver's viewport.
     following @11 :Text;
 
-    # Versioned qos_actions::InteractionUpdate JSON. Kept as an additive
+    # Versioned tilo_actions::InteractionUpdate JSON. Kept as an additive
     # union arm so non-Rust peers can preserve/forward evolving semantic
     # targets without understanding app-specific anchor variants.
     interactionJson @12 :Text;

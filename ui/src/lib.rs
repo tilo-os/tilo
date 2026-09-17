@@ -1,4 +1,4 @@
-//! The qOS UI toolkit: retained-mode, CRDT-native widgets.
+//! The Tilo UI toolkit: retained-mode, CRDT-native widgets.
 //!
 //! # Reach for the toolkit's stack through the toolkit
 //!
@@ -212,7 +212,7 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
-pub use qos_actions;
+pub use tilo_actions;
 pub use widget::ModelView;
 pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,

@@ -7,7 +7,7 @@ license.workspace = true
 description = "Sandboxed CRDT collaboration probe — reaches the broker exactly as a packaged app does."
 
 [[bin]]
-name = "qos-collab-probe"
+name = "tilo-collab-probe"
 path = "src/main.rs"
 
 [dependencies]

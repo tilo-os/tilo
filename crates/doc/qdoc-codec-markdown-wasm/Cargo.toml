@@ -1,5 +1,5 @@
 [workspace]
-# Standalone — not a member of the qOS workspace because this crate must be
+# Standalone — not a member of the Tilo workspace because this crate must be
 # compiled for `wasm32-wasip2`, not the host target. The exclusion in
 # ../Cargo.toml prevents the workspace from picking it up; this empty
 # [workspace] table keeps Cargo from walking *up* to find one.
@@ -8,7 +8,7 @@
 name = "qdoc-codec-markdown-wasm"
 version = "0.1.0"
 edition = "2024"
-description = "WASM Component Model build of qdoc's Markdown codec, for the qOS format-router."
+description = "WASM Component Model build of qdoc's Markdown codec, for the Tilo format-router."
 
 [lib]
 crate-type = ["cdylib"]

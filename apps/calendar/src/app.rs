@@ -474,22 +474,22 @@ pub struct CalendarApp {
     /// ticking (`needs_animation_frame`) so the worker's result lands promptly
     /// without waiting for the next unrelated input.
     syncing: bool,
-    resource_sync_invocation: Option<qos_actions::InvocationId>,
-    resource_sync_result: Option<qos_actions::InvocationUpdate>,
+    resource_sync_invocation: Option<tilo_actions::InvocationId>,
+    resource_sync_result: Option<tilo_actions::InvocationUpdate>,
     /// A resource import is parsed on explicit invocation, then dispatched on
     /// the next mutable document sync. Resource-operation handlers receive an
     /// immutable snapshot, so this bridge prevents a false successful import
     /// against a throwaway clone.
     pending_resource_import: Option<crate::actions::CalendarAction>,
-    resource_import_invocation: Option<qos_actions::InvocationId>,
-    resource_import_result: Option<qos_actions::InvocationUpdate>,
+    resource_import_invocation: Option<tilo_actions::InvocationId>,
+    resource_import_result: Option<tilo_actions::InvocationUpdate>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
     /// [`CalendarAction`](crate::actions::CalendarAction) through this: the host
     /// brackets the undo boundary, applies the action through the executor (so it
     /// replays byte-identically on peers, exactly as the Ctrl+K palette does), and
     /// records the last one so a test can prove a button and its
-    /// [`ActionSpec`](qos_actions::ActionSpec) build the identical action.
+    /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
     actions: ui::ActionHost,
 
     /// The document heads the in-memory [`Model`] was last derived from. When the
@@ -984,9 +984,9 @@ impl CalendarApp {
                 self.apply_sync_result(result, outcome, doc);
                 if let Some(invocation) = self.resource_sync_invocation.take() {
                     self.resource_sync_result = Some(if let Some(message) = failure {
-                        qos_actions::InvocationUpdate::Failed {
+                        tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "calendar.sync_failed".into(),
                                 message,
                                 details: None,
@@ -994,9 +994,9 @@ impl CalendarApp {
                             },
                         }
                     } else {
-                        qos_actions::InvocationUpdate::Succeeded {
+                        tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         }
                     });
                 }
@@ -1010,9 +1010,9 @@ impl CalendarApp {
                 self.syncing = false;
                 self.status = Some("Sync failed".into());
                 if let Some(invocation) = self.resource_sync_invocation.take() {
-                    self.resource_sync_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_sync_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "calendar.sync_worker_lost".into(),
                             message: "calendar synchronization worker stopped without a result"
                                 .into(),
@@ -1067,7 +1067,7 @@ impl CalendarApp {
                 let binding_href = if index == 0 {
                     resource.href.clone()
                 } else {
-                    format!("{}#qos-component-{index}", resource.href)
+                    format!("{}#tilo-component-{index}", resource.href)
                 };
                 let id = if index == 0 {
                     existing
@@ -1101,7 +1101,7 @@ impl CalendarApp {
                 );
             }
             for (index, mut task) in resource.tasks.into_iter().enumerate() {
-                let binding_href = format!("{}#qos-task-{index}", resource.href);
+                let binding_href = format!("{}#tilo-task-{index}", resource.href);
                 let id = CalDoc::remote_id_for_href(doc, &resource.calendar_id, &binding_href)
                     .unwrap_or_else(Uuid::new_v4);
                 if CalDoc::task_tombstoned(doc, id) {
@@ -1129,7 +1129,7 @@ impl CalendarApp {
             let victims: Vec<Id> = CalDoc::remote_bindings_for_calendar(doc, &deletion.calendar_id)
                 .into_iter()
                 .filter(|(_, href)| {
-                    caldav::hrefs_equal(href.split("#qos-").next().unwrap_or(href), &deletion.href)
+                    caldav::hrefs_equal(href.split("#tilo-").next().unwrap_or(href), &deletion.href)
                 })
                 .map(|(id, _)| id)
                 .collect();
@@ -1151,7 +1151,7 @@ impl CalendarApp {
                     checkpoint.seen_hrefs.iter().map(String::as_str).collect();
                 for (id, href) in CalDoc::remote_bindings_for_calendar(doc, &checkpoint.calendar_id)
                 {
-                    let base = href.split("#qos-").next().unwrap_or(&href);
+                    let base = href.split("#tilo-").next().unwrap_or(&href);
                     if !seen
                         .iter()
                         .any(|seen_href| caldav::hrefs_equal(base, seen_href))
@@ -1605,12 +1605,12 @@ impl CalendarApp {
         );
     }
 
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the button == [`ActionSpec`](qos_actions::ActionSpec)
+    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the button == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical
     /// action.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -1918,7 +1918,7 @@ impl CalendarApp {
         self.resource_ctx_base()
     }
 
-    /// Convert parsed ICS records into one deterministic action. qOS's UUID
+    /// Convert parsed ICS records into one deterministic action. Tilo's UUID
     /// UIDs survive parsing, so a repeated import resolves to the same task;
     /// missing or external non-UUID identities are minted during parsing.
     /// Replays carry this exact payload and never consult the filesystem or
@@ -6059,9 +6059,9 @@ impl CalendarApp {
         self.status = Some("Imported calendar items from the latest ICS file".to_string());
         self.dirty = true;
         if let Some(invocation) = self.resource_import_invocation.take() {
-            self.resource_import_result = Some(qos_actions::InvocationUpdate::Succeeded {
+            self.resource_import_result = Some(tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             });
         }
     }
@@ -6078,8 +6078,8 @@ impl Widget for CalendarApp {
         &[crate::actions::CALENDAR_OPERATION_TYPE]
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -6098,19 +6098,19 @@ impl Widget for CalendarApp {
         })
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<qos_actions::ActionOutput>, String> {
-        if kind == qos_actions::OperationKind::Effect
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if kind == tilo_actions::OperationKind::Effect
             && type_id == crate::actions::CALENDAR_OPERATION_TYPE
         {
             let operation: crate::actions::CalendarOperation =
@@ -6147,7 +6147,7 @@ impl Widget for CalendarApp {
                 self.status =
                     Some("Invitation prepared for Mail — review it there before sending".into());
                 self.dirty = true;
-                return Ok(Some(qos_actions::ActionOutput {
+                return Ok(Some(tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({
                         "delivery": "not_sent",
                         "target": {
@@ -6167,7 +6167,7 @@ impl Widget for CalendarApp {
             }
         }
         self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(qos_actions::ActionOutput::default))
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -6183,7 +6183,7 @@ impl Widget for CalendarApp {
     )]
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -6196,7 +6196,7 @@ impl Widget for CalendarApp {
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         match (kind, operation) {
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenEvent { id },
             ) => {
                 let id = id
@@ -6210,7 +6210,7 @@ impl Widget for CalendarApp {
                 self.select_event(id);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenOccurrence {
                     event_id,
                     original_date,
@@ -6234,7 +6234,7 @@ impl Widget for CalendarApp {
                 self.select_event(id);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenTask { id },
             ) => {
                 let id = id
@@ -6250,7 +6250,7 @@ impl Widget for CalendarApp {
                 self.select_task(id);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenProject { id },
             ) => {
                 let id = id
@@ -6269,7 +6269,7 @@ impl Widget for CalendarApp {
                 self.blur_editor();
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenCalendar { id },
             ) => {
                 let calendar = self
@@ -6290,7 +6290,7 @@ impl Widget for CalendarApp {
                 });
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::ShowAllCalendars,
             ) => {
                 self.calendar_filter = None;
@@ -6300,29 +6300,29 @@ impl Widget for CalendarApp {
                 self.blur_editor();
                 self.status = Some("Showing all calendars".into());
             }
-            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
+            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
                 self.view = View::Month;
             }
-            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowWeek) => {
+            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowWeek) => {
                 self.view = View::Week;
             }
-            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowDay) => {
+            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowDay) => {
                 self.view = View::Day;
             }
-            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
+            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
                 self.view = View::Agenda;
             }
-            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
                 if self.syncing {
                     return Err("calendar synchronization is already running".into());
                 }
                 let mut doc = doc.clone();
                 self.start_sync(&mut doc);
             }
-            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::ExportIcs) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::ExportIcs) => {
                 self.export_ics();
             }
-            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::ImportIcs) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::ImportIcs) => {
                 return Err("calendar import requires the lifecycle-capable operation host".into());
             }
             _ => return Err("operation kind does not match Calendar operation".into()),
@@ -6333,8 +6333,8 @@ impl Widget for CalendarApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -6344,7 +6344,7 @@ impl Widget for CalendarApp {
             .then(|| serde_json::from_slice::<crate::actions::CalendarOperation>(payload))
             .transpose()
             .map_err(|error| error.to_string())?;
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return self
                 .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
                 .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
@@ -6374,18 +6374,18 @@ impl Widget for CalendarApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .resource_sync_result
             .as_ref()
@@ -7555,8 +7555,8 @@ fn elide(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use automerge::ROOT;
-    use qos_actions::Action as _;
     use serial_test::serial;
+    use tilo_actions::Action as _;
 
     #[test]
     fn task_checkbox_paints_both_completion_states() {
@@ -7652,7 +7652,7 @@ mod tests {
         let late_task_id = app.model.tasks.last().expect("late task").id;
         app.rebuild_resource_index();
 
-        let root = <CalendarApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let root = <CalendarApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
         assert_eq!(root.len(), 1);
         assert!(
             app.resource_snapshot_inspected.get()
@@ -7663,7 +7663,7 @@ mod tests {
 
         let expect_exact = |id: String, kind: &str| {
             let resource =
-                <CalendarApp as qos_actions::ResourceProvider>::resource(&app, &doc, &id)
+                <CalendarApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &id)
                     .unwrap_or_else(|| panic!("late stable resource did not resolve: {id}"));
             assert_eq!(resource.kind, kind);
             assert!(
@@ -7701,7 +7701,7 @@ mod tests {
 
         app.model.tasks.pop();
         assert!(
-            <CalendarApp as qos_actions::ResourceProvider>::resource(&app, &doc, &task_id)
+            <CalendarApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &task_id)
                 .is_none(),
             "a stale index position must not redirect a deleted stable task id"
         );
@@ -7733,7 +7733,7 @@ mod tests {
         app.model.tasks = tasks;
         app.rebuild_resource_index();
 
-        let resource = <CalendarApp as qos_actions::ResourceProvider>::resource(
+        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
             &app,
             &doc,
             &crate::actions::task_resource_id(parent.id),
@@ -7750,7 +7750,7 @@ mod tests {
             .expect("task exposes a delete action with an honest contract");
         assert!(matches!(
             &delete.contract.availability,
-            qos_actions::Availability::Unavailable { code, .. } if code == "task_children_overflow"
+            tilo_actions::Availability::Unavailable { code, .. } if code == "task_children_overflow"
         ));
         let ctx = app
             .exact_resource_ctx(&crate::actions::task_resource_id(parent.id))
@@ -7898,7 +7898,7 @@ mod tests {
             })
             .expect("calendar collection is indexed by canonical address");
         assert_eq!(hit.title, calendar.label);
-        let resource = <CalendarApp as qos_actions::ResourceProvider>::resource(
+        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
             &app,
             &doc,
             &crate::actions::calendar_resource_id(&calendar.id),
@@ -7912,7 +7912,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CALENDAR_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -8155,7 +8155,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cal-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: single-threaded test process for this env var.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
         let today = chrono::Local::now().date_naive();
         std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).unwrap();
 
@@ -8175,7 +8175,7 @@ mod tests {
                 .any(|e| e.title == "Quarterly all-hands"),
             "the .ics file's event parsed in"
         );
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -8183,7 +8183,7 @@ mod tests {
     fn uuid_vtodo_import_preserves_identity_and_is_idempotent() {
         let id = Uuid::new_v4();
         let payload = format!(
-            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:{id}@qos\r\nSUMMARY:Durable imported task\r\nDUE;VALUE=DATE:20260916\r\nPRIORITY:1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:{id}@tilo\r\nSUMMARY:Durable imported task\r\nDUE;VALUE=DATE:20260916\r\nPRIORITY:1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
         );
         let mut app = CalendarApp::new_empty_for_shots();
         let mut doc = AutoCommit::new();
@@ -8217,7 +8217,7 @@ mod tests {
             std::env::temp_dir().join(format!("cal-resource-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temporary transfer directory");
         // SAFETY: `serial` prevents this process-global test seam from racing.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
         let today = chrono::Local::now().date_naive();
         std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today))
             .expect("write fixture");
@@ -8231,7 +8231,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "import-latest-ics")
                 .expect("import remains discoverable")
-                .build_args(std::iter::empty::<(String, qos_actions::ArgValue)>())
+                .build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
                 .expect("nullary import operation")
         };
         let first = resource_import(&app, &state);
@@ -8250,11 +8250,11 @@ mod tests {
             "resource enumeration did not read or apply the transfer file"
         );
 
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let start = Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             &first.type_id,
             &first.payload,
             &state,
@@ -8289,13 +8289,13 @@ mod tests {
                     &state,
                     &automerge::ROOT
                 ),
-                Some(qos_actions::InvocationUpdate::Succeeded { .. })
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
             ),
             "completion arrives only after the document action commits"
         );
 
         // SAFETY: see the setup above.
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -8592,7 +8592,7 @@ mod tests {
         .unwrap();
         let output = Widget::invoke_resource_operation_v2(
             &mut app,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::CALENDAR_OPERATION_TYPE,
             &payload,
             &doc,
@@ -8615,9 +8615,9 @@ mod tests {
             has_draft: false,
             can_sync: true,
         });
-        let encoded = qos_actions::door::encode_json(
+        let encoded = tilo_actions::door::encode_json(
             &[mail_root],
-            &qos_actions::ActionAddress::new("mail.mailbox", "prepare-calendar-invitation"),
+            &tilo_actions::ActionAddress::new("mail.mailbox", "prepare-calendar-invitation"),
             &arguments,
         )
         .expect("Mail accepts Calendar's exact typed arguments");
@@ -8989,10 +8989,10 @@ mod tests {
 
     #[test]
     fn direct_task_detail_choices_match_their_resource_action_envelopes() {
-        use qos_actions::ActionInput;
+        use tilo_actions::ActionInput;
         use ui::widget::Widget;
 
-        fn prompted(spec: &qos_actions::ActionSpec, value: &str) -> qos_actions::EncodedAction {
+        fn prompted(spec: &tilo_actions::ActionSpec, value: &str) -> tilo_actions::EncodedAction {
             match &spec.input {
                 ActionInput::Prompted { build, .. } => build(value),
                 ActionInput::Immediate(_) => panic!("{} must prompt for a choice", spec.id),
@@ -9032,7 +9032,7 @@ mod tests {
                 .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Project)))
         );
 
-        let task = <CalendarApp as qos_actions::ResourceProvider>::resource(
+        let task = <CalendarApp as tilo_actions::ResourceProvider>::resource(
             &app,
             &state,
             &crate::actions::task_resource_id(id),
@@ -10150,7 +10150,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CALENDAR_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -10173,7 +10173,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         app.calendar_filter = Some("work/default".into());
-        let root = <CalendarApp as qos_actions::ResourceProvider>::resource(
+        let root = <CalendarApp as tilo_actions::ResourceProvider>::resource(
             &app,
             &doc,
             "calendar.calendar",
@@ -10190,7 +10190,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CALENDAR_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -10412,7 +10412,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cal-export-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: `#[serial]` keeps env-var tests off each other's toes.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
 
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
@@ -10438,7 +10438,7 @@ mod tests {
             "the confirmation truthfully includes the exported VTODO count"
         );
 
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10452,7 +10452,7 @@ mod tests {
         // it to a temp dir first.
         let dir = std::env::temp_dir().join(format!("cal-keys-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
 
         let mut h = Harness::new(1280, 800);
         // Close the demo's detail so the notes editor doesn't own keystrokes.
@@ -10504,7 +10504,7 @@ mod tests {
             "'e' exported an .ics through the key path"
         );
 
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -11401,8 +11401,9 @@ mod tests {
             };
 
         apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
-        let id = CalDoc::remote_id_for_href(&doc, "work/default", "/dav/work/tasks.ics#qos-task-0")
-            .expect("the VTODO has a href binding");
+        let id =
+            CalDoc::remote_id_for_href(&doc, "work/default", "/dav/work/tasks.ics#tilo-task-0")
+                .expect("the VTODO has a href binding");
         apply(&mut app, &mut doc, parsed_task(true), "\"two\"");
 
         assert_eq!(

@@ -1,0 +1,66 @@
+# Camera — Tilo application manifest.
+#
+# Captures land in the app's own directory. `/dev/video*` and the
+# v4l2 GStreamer path are behind feature `live-capture` (off by
+# default, not even compiled). Scanned QR codes are opened through the
+# host, not by the app.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# the camera device, and `~/Pictures` if captures are to leave the
+# app's own directory.
+#
+
+
+[package]
+id       = "dev.tilo.camera"
+name     = "Camera"
+category = "Multimedia"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+open-uri = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+tools = "optional@1"
+
+[entrypoint]
+bin             = "bin/camera"
+type            = "gui"
+splash-segments = ["bin/camera[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

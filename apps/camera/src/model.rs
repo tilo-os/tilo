@@ -576,13 +576,13 @@ mod tests {
 
     #[test]
     fn classify_url() {
-        assert_eq!(classify("https://qos.example/app"), CodeKind::Url);
+        assert_eq!(classify("https://tilo.example/app"), CodeKind::Url);
         assert_eq!(classify("HTTP://X"), CodeKind::Url);
     }
 
     #[test]
     fn classify_and_parse_wifi() {
-        let k = classify("WIFI:T:WPA2;S:qOS Guest;P:hunter2;H:false;;");
+        let k = classify("WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;");
         match k {
             CodeKind::Wifi {
                 ssid,
@@ -590,7 +590,7 @@ mod tests {
                 password,
                 hidden,
             } => {
-                assert_eq!(ssid, "qOS Guest");
+                assert_eq!(ssid, "Tilo Guest");
                 assert_eq!(auth, "WPA2");
                 assert_eq!(password, "hunter2");
                 assert!(!hidden);

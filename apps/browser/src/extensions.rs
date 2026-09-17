@@ -78,7 +78,7 @@ impl From<std::io::Error> for ExtensionError {
 pub fn extensions_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("qos-browser")
+        .join("tilo-browser")
         .join("extensions")
 }
 

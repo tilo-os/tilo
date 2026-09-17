@@ -10,7 +10,7 @@
 set -uo pipefail
 
 TINKER=${TINKER:-$(cd "$(dirname "$0")/../../.." && pwd)/target/debug/tinker}
-export QOS_TINKER_ROOT=${QOS_TINKER_ROOT:-${TMPDIR:-/tmp}/tinker-demo}
+export TILO_TINKER_ROOT=${TILO_TINKER_ROOT:-${TMPDIR:-/tmp}/tinker-demo}
 
 [ -x "$TINKER" ] || { echo "build it first: cargo build -p tinker" >&2; exit 1; }
 
@@ -18,12 +18,12 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 # Layer contents belong to subordinate ids, so removing the store needs the
 # mapping too — the same reason `tinker discard` re-enters it.
-unshare --user --map-root-user --map-auto --mount -- rm -rf "$QOS_TINKER_ROOT" 2>/dev/null
-rm -rf "$QOS_TINKER_ROOT"
+unshare --user --map-root-user --map-auto --mount -- rm -rf "$TILO_TINKER_ROOT" 2>/dev/null
+rm -rf "$TILO_TINKER_ROOT"
 
 step "a base to stack on (fetched once, then reused)"
 "$TINKER" base add debian --from-image docker.io/library/debian:stable-slim || exit 1
-BASE_BEFORE=$(find "$QOS_TINKER_ROOT/bases/debian" -mindepth 1 -printf '%P %y %s\n' | sort | sha256sum)
+BASE_BEFORE=$(find "$TILO_TINKER_ROOT/bases/debian" -mindepth 1 -printf '%P %y %s\n' | sort | sha256sum)
 
 step "what would a session actually be? (--explain runs nothing)"
 "$TINKER" shell --explain | tr ' ' '\n' | grep -A3 -e '--overlay$' -e '--bind$' | head -12
@@ -64,7 +64,7 @@ step "throw it all away, top down"
 "$TINKER" list
 
 step "and the base never moved"
-BASE_AFTER=$(find "$QOS_TINKER_ROOT/bases/debian" -mindepth 1 -printf '%P %y %s\n' | sort | sha256sum)
+BASE_AFTER=$(find "$TILO_TINKER_ROOT/bases/debian" -mindepth 1 -printf '%P %y %s\n' | sort | sha256sum)
 if [ "$BASE_BEFORE" = "$BASE_AFTER" ]; then
   echo "base is identical to before the demo — nothing to repair, nothing to roll back"
 else

@@ -65,7 +65,7 @@ fn undo_for_author_skips_entries_owned_by_other_users() {
 }
 
 /// The path an app's own toolbar button takes, end to end: a widget
-/// dispatches its `qos_actions` action out-of-band, the host brackets it
+/// dispatches its `tilo_actions` action out-of-band, the host brackets it
 /// via `record_committed_action`, then Ctrl+Z is `undo_as(Some(local_author))`
 /// — never the plain LIFO `undo`.
 ///

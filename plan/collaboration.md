@@ -1,6 +1,6 @@
 # Collaboration architecture
 
-qOS uses one collaboration model across direct peer-to-peer sessions, a
+Tilo uses one collaboration model across direct peer-to-peer sessions, a
 user-owned home server, and a hosted workspace server. Iroh is the only
 network transport. The placement of a peer changes availability and storage,
 not identity or document semantics.
@@ -10,9 +10,9 @@ not identity or document semantics.
 First setup creates two related Ed25519 identities:
 
 - A human root, stored as the personal `primary.json` signing identity and as
-  `/var/lib/qos/user-identity/{privkey,pubkey}.bin` on the primary device.
-- One device key at `/var/lib/qos/device/keypair.bin`, certified by the human
-  root in `/var/lib/qos/device/cert.bin`.
+  `/var/lib/tilo/user-identity/{privkey,pubkey}.bin` on the primary device.
+- One device key at `/var/lib/tilo/device/keypair.bin`, certified by the human
+  root in `/var/lib/tilo/device/cert.bin`.
 
 The device key is also the Iroh `EndpointId`. The shell, filesystem sync, and
 workspace host therefore present the same device identity. A home or hosted
@@ -23,8 +23,8 @@ Existing installations are migrated idempotently by `shell
 --provision-identity`. Existing keys are checked for agreement and are never
 silently replaced.
 
-Native qOS and the legacy-host compatibility route deliberately have different
-trust models. A normal qOS installation creates identity through the dedicated
+Native Tilo and the legacy-host compatibility route deliberately have different
+trust models. A normal Tilo installation creates identity through the dedicated
 OOBE and requires a LUKS2-encrypted system before that identity is created.
 Machines with TPM2 use one required startup PIN only after a dedicated preflight
 proves verified boot continues from the live medium through the installed
@@ -37,7 +37,7 @@ second password. Native provisioning remains responsible for protected-key
 migration and does not infer a person's identity from the implementation-level
 Unix account.
 
-Only when qDesktop is installed on top of an existing Linux distribution does
+Only when Tilo Desktop is installed on top of an existing Linux distribution does
 identity associate with the already-authenticated Unix login. Its files live in
 that user's XDG trees with ordinary Unix ownership, and a newly-created identity
 takes its public display label from the account's passwd entry. This route does
@@ -91,13 +91,13 @@ copying that member's numeric session handle.
 
 ## Workspace hosts
 
-`crates/hosting/qos-relay` is the persistent server tier. Despite the retained
+`crates/hosting/tilo-relay` is the persistent server tier. Despite the retained
 binary name, it is an authenticated Iroh workspace host, not a transport
-relay. Peers prove possession of certified device keys on the `qos-relay/1`
+relay. Peers prove possession of certified device keys on the `tilo-relay/1`
 ALPN before subscribing.
 
 The shell can attach a host with `ShellNetwork::connect_host`. For unattended
-configuration, `QOS_COLLAB_HOST` accepts an Iroh endpoint id or the JSON
+configuration, `TILO_COLLAB_HOST` accepts an Iroh endpoint id or the JSON
 representation of a complete `EndpointAddr`. Durable messages travel to both the direct gossip mesh and the
 host. The host persists and store-and-forwards them; presence stays ephemeral.
 Multiple hosts federate through the same authenticated Iroh protocol.
@@ -113,7 +113,7 @@ This gives three deployments without three protocols:
 ## Wire boundaries
 
 - Direct fan-out: deterministic `iroh-gossip` topic derived from workspace id.
-- Persistent host: `qos-relay/1`, mutually authenticated with device certs.
+- Persistent host: `tilo-relay/1`, mutually authenticated with device certs.
 - Content: `iroh-blobs` on the filesystem endpoint.
 - Messages: postcard-encoded `NeighbourMsg`; non-ephemeral messages are stored
   by the host as opaque co-edit deltas.

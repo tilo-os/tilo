@@ -16,7 +16,7 @@
 //!    document's own, so search, selection and markup still operate on real
 //!    content; only the exact visual layout is lost.
 //!
-//! The library is discovered via `QOS_PDFIUM_LIB`, a few well-known system
+//! The library is discovered via `TILO_PDFIUM_LIB`, a few well-known system
 //! paths, or the platform loader — never bundled, so the binary runs whether
 //! or not pdfium is present on the host.
 
@@ -27,11 +27,11 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
-/// Emit a per-stage open timing line to stderr when `QOS_PDF_PROFILE` is set.
+/// Emit a per-stage open timing line to stderr when `TILO_PDF_PROFILE` is set.
 /// Zero cost when the env var is unset (the format args are only built then).
 #[inline]
 fn prof(stage: &str, since: Instant) {
-    if std::env::var_os("QOS_PDF_PROFILE").is_some() {
+    if std::env::var_os("TILO_PDF_PROFILE").is_some() {
         eprintln!(
             "[pdf-profile] {stage}: {:.1}ms",
             since.elapsed().as_secs_f64() * 1000.0
@@ -39,7 +39,7 @@ fn prof(stage: &str, since: Instant) {
     }
 }
 fn profiling() -> bool {
-    std::env::var_os("QOS_PDF_PROFILE").is_some()
+    std::env::var_os("TILO_PDF_PROFILE").is_some()
 }
 
 use anyhow::{Context, anyhow};
@@ -133,7 +133,7 @@ fn private_save_path(destination: &Path, request_id: u64) -> anyhow::Result<Priv
     // directory. The private directory prevents a local symlink/collision from
     // redirecting the export before the final atomic rename.
     let directory = tempfile::Builder::new()
-        .prefix(&format!(".qos-pdf-{request_id}-"))
+        .prefix(&format!(".tilo-pdf-{request_id}-"))
         .tempdir_in(parent)
         .with_context(|| format!("creating a private save directory in {}", parent.display()))?;
     Ok(PrivateSave {
@@ -2512,7 +2512,7 @@ fn pt_tl_to_pdf(x: f64, y: f64, page_h: f64) -> (PdfPoints, PdfPoints) {
 
 /// Locate a usable pdfium library without ever bundling one.
 fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
-    if let Ok(path) = std::env::var("QOS_PDFIUM_LIB")
+    if let Ok(path) = std::env::var("TILO_PDFIUM_LIB")
         && !path.is_empty()
         && let Ok(b) = Pdfium::bind_to_library(&path)
     {
@@ -2847,7 +2847,7 @@ mod tests {
         let destination = parent.path().join("export.pdf");
         let victim = parent.path().join("victim.pdf");
         std::fs::write(&victim, b"keep").expect("victim");
-        let predictable = parent.path().join(".export.pdf.qos-7.saving");
+        let predictable = parent.path().join(".export.pdf.tilo-7.saving");
         symlink(&victim, &predictable).expect("attacker symlink");
 
         let private = private_save_path(&destination, 7).expect("private directory");

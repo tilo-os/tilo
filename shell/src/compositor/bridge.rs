@@ -6,7 +6,7 @@
 //! workspace attribution in `ClientState`. A byte proxy cannot tag smithay
 //! clients and must never be treated as workspace authorization.
 //!
-//! This utility spawns a UNIX listener at `$XDG_RUNTIME_DIR/nirios-ws-<ws_id>` and,
+//! This utility spawns a UNIX listener at `$XDG_RUNTIME_DIR/tilo-ws-<ws_id>` and,
 //! for each accepted connection, opens a parallel connection to the main
 //! Wayland socket and shovels bytes both ways.
 
@@ -60,7 +60,7 @@ impl BridgeSocket {
         runtime_dir: &Path,
         upstream_wayland_socket: &Path,
     ) -> io::Result<Self> {
-        let bridge_path = runtime_dir.join(format!("nirios-ws-{workspace_id}"));
+        let bridge_path = runtime_dir.join(format!("tilo-ws-{workspace_id}"));
         if let Ok(metadata) = std::fs::symlink_metadata(&bridge_path) {
             // SAFETY: `geteuid` has no failure mode.
             let owner = unsafe { libc::geteuid() };
@@ -247,7 +247,7 @@ mod tests {
         std::fs::File::create(&upstream).unwrap();
 
         // Plant a stale same-uid socket at the bridge path.
-        let stale_path = runtime.path().join("nirios-ws-7");
+        let stale_path = runtime.path().join("tilo-ws-7");
         let stale = UnixListener::bind(&stale_path).unwrap();
         drop(stale);
         assert!(stale_path.exists());
@@ -263,7 +263,7 @@ mod tests {
         let runtime = tempfile::tempdir().unwrap();
         let upstream = runtime.path().join("wayland-0");
         std::fs::File::create(&upstream).unwrap();
-        let occupied = runtime.path().join("nirios-ws-8");
+        let occupied = runtime.path().join("tilo-ws-8");
         std::fs::write(&occupied, b"keep me").unwrap();
 
         let error = BridgeSocket::bind(8, runtime.path(), &upstream)

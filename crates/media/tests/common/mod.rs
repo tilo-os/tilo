@@ -104,7 +104,7 @@ pub fn fixture_path() -> PathBuf {
 fn generate_fixture() -> PathBuf {
     const CACHE_FILE: &str = "h264-smpte-scroll-1920x1080-30fps-1717frames-gop250-v1.mp4";
 
-    let cache = std::env::temp_dir().join("qos-media-test-fixtures");
+    let cache = std::env::temp_dir().join("tilo-media-test-fixtures");
     std::fs::create_dir_all(&cache).expect("create media fixture cache directory");
     let published = cache.join(CACHE_FILE);
     if fixture_is_ready(&published) {

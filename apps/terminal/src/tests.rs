@@ -1564,7 +1564,7 @@ fn terminal_resources_are_bounded_remote_resolvable_and_title_aware() {
     widget.feed(
         &mut doc,
         &ROOT,
-        b"\x1b]2;build session\x07\x1b]8;;https://qos.example/docs\x1b\\docs\x1b]8;;\x1b\\",
+        b"\x1b]2;build session\x07\x1b]8;;https://tilo.example/docs\x1b\\docs\x1b]8;;\x1b\\",
     );
     widget.sync(&mut doc, &ROOT);
 
@@ -1583,12 +1583,12 @@ fn terminal_resources_are_bounded_remote_resolvable_and_title_aware() {
         .iter()
         .find(|resource| resource.kind == "terminal.link")
         .expect("visible OSC link child");
-    assert_eq!(link.label, "https://qos.example/docs");
+    assert_eq!(link.label, "https://tilo.example/docs");
     assert!(Widget::resource(&widget, &doc, link.id.as_str()).is_some());
     let semantics = Widget::accessibility(&widget).expect("terminal semantics");
     assert!(semantics.children.iter().any(|child| {
         child.role == ui::a11y::Role::Link
-            && child.name.as_deref() == Some("https://qos.example/docs")
+            && child.name.as_deref() == Some("https://tilo.example/docs")
             && child.action_target.as_deref() == Some(link.id.as_str())
             && child.state.focusable
     }));
@@ -1598,7 +1598,7 @@ fn terminal_resources_are_bounded_remote_resolvable_and_title_aware() {
     let mut link_burst = Vec::new();
     for index in 0..40 {
         link_burst.extend_from_slice(
-            format!("\x1b]8;;https://qos.example/{index}\x1b\\x\x1b]8;;\x1b\\").as_bytes(),
+            format!("\x1b]8;;https://tilo.example/{index}\x1b\\x\x1b]8;;\x1b\\").as_bytes(),
         );
     }
     widget.feed(&mut doc, &ROOT, &link_burst);
@@ -1883,11 +1883,11 @@ fn spawn_command_runs_real_pty_and_grid_shows_output() {
     // runs programs" proof.
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.arg("-c");
-    cmd.arg("printf 'QOS_PTY_OK\\n'");
+    cmd.arg("printf 'TILO_PTY_OK\\n'");
     let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
     let mut doc = AutoCommit::new();
     assert!(
-        pump_until_contains(&mut w, &mut doc, "QOS_PTY_OK", 200),
+        pump_until_contains(&mut w, &mut doc, "TILO_PTY_OK", 200),
         "real PTY command output must reach the grid; grid was:\n{}",
         w.grid_text()
     );
@@ -1902,9 +1902,9 @@ fn spawn_default_runs_real_shell_and_executes_typed_command() {
     let mut doc = AutoCommit::new();
     // Let the shell reach a prompt before typing.
     w.sync(&mut doc, &ROOT);
-    w.write_input(b"printf 'QOS_SHELL_OK\\n'\n");
+    w.write_input(b"printf 'TILO_SHELL_OK\\n'\n");
     assert!(
-        pump_until_contains(&mut w, &mut doc, "QOS_SHELL_OK", 300),
+        pump_until_contains(&mut w, &mut doc, "TILO_SHELL_OK", 300),
         "the real shell must run the typed command and show output; grid was:\n{}",
         w.grid_text()
     );
@@ -2740,11 +2740,11 @@ fn osc_52_writes_clipboard_from_base64() {
     // decoded nothing fails here rather than passing quietly.
     let (mut w, _) = build_test_widget();
     let mut doc = AutoCommit::new();
-    // base64("qos-osc52") = cW9zLW9zYzUy
+    // base64("tilo-osc52") = cW9zLW9zYzUy
     w.feed(&mut doc, &automerge::ROOT, b"\x1b]52;c;cW9zLW9zYzUy\x07");
     assert_eq!(
         ui::text_selection::clipboard_paste().as_deref(),
-        Some("qos-osc52"),
+        Some("tilo-osc52"),
         "OSC 52 decodes base64 into the clipboard"
     );
 }
@@ -2761,19 +2761,19 @@ fn osc_8_hyperlink_marks_cells_and_resolves_url() {
     w.feed(
         &mut doc,
         &automerge::ROOT,
-        b"\x1b[H\x1b]8;;https://qos.example/docs\x1b\\link\x1b]8;;\x1b\\",
+        b"\x1b[H\x1b]8;;https://tilo.example/docs\x1b\\link\x1b]8;;\x1b\\",
     );
     w.sync(&mut doc, &automerge::ROOT);
 
     assert_eq!(w.grid_row(0).trim_end(), "link", "the link text is printed");
     assert_eq!(
         w.hyperlink_at(0, 0),
-        Some("https://qos.example/docs"),
+        Some("https://tilo.example/docs"),
         "first link cell resolves to the URL"
     );
     assert_eq!(
         w.hyperlink_at(0, 3),
-        Some("https://qos.example/docs"),
+        Some("https://tilo.example/docs"),
         "last link cell resolves to the URL"
     );
     assert_eq!(
@@ -2789,7 +2789,7 @@ fn osc_8_hyperlink_marks_cells_and_resolves_url() {
     peer.sync(&mut peer_doc, &automerge::ROOT);
     assert_eq!(
         peer.hyperlink_at(0, 1),
-        Some("https://qos.example/docs"),
+        Some("https://tilo.example/docs"),
         "a collaborator resolves the same OSC 8 hyperlink"
     );
 }
@@ -2970,7 +2970,7 @@ fn xtversion_reply_names_the_terminal() {
     let mut doc = AutoCommit::new();
     w.feed(&mut doc, &automerge::ROOT, b"\x1b[>0q");
     let got = drain_writes(&write_rx);
-    let expected = format!("\x1bP>|qos-terminal({})\x1b\\", env!("CARGO_PKG_VERSION"));
+    let expected = format!("\x1bP>|tilo-terminal({})\x1b\\", env!("CARGO_PKG_VERSION"));
     assert_eq!(
         got,
         expected.as_bytes(),
@@ -3193,8 +3193,8 @@ fn fish_starts_without_the_device_attribute_warning() {
     }
 
     // Now type the sentinel the way a user would, then quit.
-    w.write_input(b"echo QOS_FISH_READY\r");
-    let ready = pump_until_contains(&mut w, &mut doc, "QOS_FISH_READY", 200);
+    w.write_input(b"echo TILO_FISH_READY\r");
+    let ready = pump_until_contains(&mut w, &mut doc, "TILO_FISH_READY", 200);
     w.write_input(b"exit\r");
     w.sync(&mut doc, &ROOT);
 
@@ -3216,7 +3216,7 @@ fn fish_starts_without_the_device_attribute_warning() {
 }
 
 // ---------------------------------------------------------------
-// Confinement / capability detection (issue: ush errors off qOS).
+// Confinement / capability detection (issue: ush errors off Tilo).
 // ---------------------------------------------------------------
 
 #[test]
@@ -3224,11 +3224,11 @@ fn confine_route_service_is_mandatory_and_cannot_be_downgraded() {
     // The security invariant, at the decision point: when the supervisor
     // service is available it is chosen unconditionally, so no combination
     // of the inputs an app could influence (a present runtime, a host that
-    // *could* self-host) can force best-effort. On qOS the service is what
-    // the launcher provides, so this is "best-effort can't be forced on qOS".
+    // *could* self-host) can force best-effort. On Tilo the service is what
+    // the launcher provides, so this is "best-effort can't be forced on Tilo".
     use crate::inner::{ConfineRoute, decide_route};
     use std::path::PathBuf;
-    let bin = PathBuf::from("/usr/libexec/qos-ush");
+    let bin = PathBuf::from("/usr/libexec/tilo-ush");
     assert_eq!(decide_route(true, false, None), ConfineRoute::Service);
     assert_eq!(decide_route(true, true, None), ConfineRoute::Service);
     assert_eq!(
@@ -3239,14 +3239,14 @@ fn confine_route_service_is_mandatory_and_cannot_be_downgraded() {
 }
 
 #[test]
-fn confine_route_best_effort_off_qos_and_never_a_doomed_spawn() {
+fn confine_route_best_effort_off_tilo_and_never_a_doomed_spawn() {
     // No service. Best-effort is chosen exactly when confinement genuinely
     // isn't available: no runtime, OR a runtime that could only fail because
     // this host can't build a namespace. The latter is the fix for the wall
     // of ush errors — we don't launch the runtime where it can't succeed.
     use crate::inner::{ConfineRoute, decide_route};
     use std::path::PathBuf;
-    let bin = PathBuf::from("/usr/libexec/qos-ush");
+    let bin = PathBuf::from("/usr/libexec/tilo-ush");
     // Can't self-host → best-effort even though the runtime is installed.
     assert_eq!(
         decide_route(false, false, Some(bin.clone())),
@@ -3278,24 +3278,24 @@ fn service_fd_is_detected_only_when_the_descriptor_is_actually_open() {
 
     // SAFETY (env): serialised via `#[serial]`; no other thread reads this
     // var concurrently. `set_var`/`remove_var` are `unsafe` in edition 2024.
-    unsafe { std::env::set_var("QOS_SVC_USH_FD", fds[0].to_string()) };
+    unsafe { std::env::set_var("TILO_SVC_USH_FD", fds[0].to_string()) };
     assert_eq!(
         ush_service_fd(),
         Some(fds[0]),
         "an open descriptor is the service"
     );
 
-    unsafe { std::env::set_var("QOS_SVC_USH_FD", "999999") };
+    unsafe { std::env::set_var("TILO_SVC_USH_FD", "999999") };
     assert_eq!(
         ush_service_fd(),
         None,
         "a closed descriptor is not the service"
     );
 
-    unsafe { std::env::set_var("QOS_SVC_USH_FD", "not-a-number") };
+    unsafe { std::env::set_var("TILO_SVC_USH_FD", "not-a-number") };
     assert_eq!(ush_service_fd(), None, "garbage is not the service");
 
-    unsafe { std::env::remove_var("QOS_SVC_USH_FD") };
+    unsafe { std::env::remove_var("TILO_SVC_USH_FD") };
     assert_eq!(ush_service_fd(), None, "unset is not the service");
 
     // SAFETY: closing the two fds we own.

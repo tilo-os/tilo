@@ -11,16 +11,16 @@ use crate::{
     LaunchResourceBroker, NetworkShape, ResourceError, ResourceRequest,
 };
 
-const LEASE_ROOT: &str = "/run/qos/windows-compat/leases";
-const SANDBOX_GATE: &str = "/run/qos/network/gate.sock";
+const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
+const SANDBOX_GATE: &str = "/run/tilo/network/gate.sock";
 
 type StartAudioProxy = fn(PathBuf, u32, bool) -> Result<AudioProxyLease, AudioProxyError>;
 
-/// Concrete qOS adapter for resources that already have a secure broker.
+/// Concrete Tilo adapter for resources that already have a secure broker.
 /// Host-filtered networking reuses the launcher's net-gate implementation.
 /// Each capsule receives a private `PipeWire` graph, never the session audio
 /// socket. The graph has a playback tunnel on every launch and materializes a
-/// microphone source only when the canonical qOS device grant says so.
+/// microphone source only when the canonical Tilo device grant says so.
 pub struct SystemResourceBroker {
     next: AtomicU64,
     gates: Mutex<BTreeMap<String, NetGate>>,
@@ -164,7 +164,7 @@ mod tests {
         let broker = SystemResourceBroker::for_uid_with_audio_proxy(99_999, unavailable_proxy);
         let caps = CapabilityPlan::empty();
         let result = broker.materialize(ResourceRequest {
-            app_id: "dev.qos.windows.test",
+            app_id: "dev.tilo.windows.test",
             workspace_id: "workspace",
             capabilities: &caps,
         });

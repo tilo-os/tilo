@@ -1688,7 +1688,7 @@ mod tests {
 
         // A unique name under the OS temp dir rather than a `tempfile`
         // dependency the crate does not otherwise carry; removed at the end.
-        let path = std::env::temp_dir().join(format!("qos-ve-notmedia-{}.mp4", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("tilo-ve-notmedia-{}.mp4", Uuid::new_v4()));
         std::fs::write(
             &path,
             b"<!DOCTYPE html>\n<html><head><title>Not a video</title></head>\

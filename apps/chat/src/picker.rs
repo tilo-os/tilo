@@ -1,12 +1,12 @@
 //! Choosing a real file to share into a channel.
 //!
-//! qOS files live in the P2P FUSE workspace mounted at `/var/workspace`; a
+//! Tilo files live in the P2P FUSE workspace mounted at `/var/workspace`; a
 //! chat attachment is imported as bounded shared bytes before it is projected
 //! into a message. The composer's "+" opens this picker over the workspace so
 //! a share is always a *real* file the user selected, never fabricated content.
 //!
 //! The browsed directory is the workspace mount, overridable with
-//! `QOS_CHAT_ATTACH_DIR` (for tests and for an install that mounts the shared
+//! `TILO_CHAT_ATTACH_DIR` (for tests and for an install that mounts the shared
 //! space elsewhere). In a headless environment with no workspace the listing is
 //! simply empty and nothing can be attached — honest, not faked.
 
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Where the picker browses: the P2P workspace mount by default.
 pub fn attach_dir() -> PathBuf {
-    std::env::var_os("QOS_CHAT_ATTACH_DIR")
+    std::env::var_os("TILO_CHAT_ATTACH_DIR")
         .map_or_else(|| PathBuf::from("/var/workspace"), PathBuf::from)
 }
 

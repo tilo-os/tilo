@@ -1,0 +1,68 @@
+# Feeds — Tilo application manifest.
+#
+# Subscriptions are user-supplied URLs over HTTPS and gemini:// (TOFU,
+# port 1965), so the host set is unbounded — `mode = "host"`. Import
+# uses the file-chooser portal, article links open through the host,
+# and OPML export is written to the sandbox's own /tmp.
+#
+
+
+[package]
+id       = "dev.tilo.feeds"
+name     = "Feeds"
+category = "Network"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+file-chooser = "via-host"
+open-uri = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/feeds"
+type            = "gui"
+splash-segments = ["bin/feeds[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "application/rss+xml",
+    "application/atom+xml",
+]
+ext  = [
+    "opml",
+    "rss",
+    "atom",
+]

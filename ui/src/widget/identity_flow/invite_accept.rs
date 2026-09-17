@@ -1,6 +1,6 @@
 //! Screen 6 — channel invite acceptance.
 //!
-//! Triggered by a `qos://invite/...` URL (typed, chat handoff, or system "open").
+//! Triggered by a `tilo://invite/...` URL (typed, chat handoff, or system "open").
 //! On accept, builds a `ChannelEvent::AttestationIssued` signed by the embedded
 //! delegation key the inviting owner pre-signed, and emits it via the supplied
 //! callback.
@@ -432,7 +432,7 @@ impl InviteAcceptScreen {
             &RoundedRect::from_rect(self.url_rect, 8.0),
         );
         let placeholder = if self.url.is_empty() {
-            "Paste a qos://invite/... URL".to_string()
+            "Paste a tilo://invite/... URL".to_string()
         } else {
             self.url.clone()
         };

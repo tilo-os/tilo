@@ -1,4 +1,4 @@
-//! Runtime tile/workspace tree for the nirios shell.
+//! Runtime tile/workspace tree for the tilo shell.
 //!
 //! The serializable, JSON-persisted shape lives in [`crate::shell::state`]:
 //! it carries only symbolic placeholders, since live `Box<dyn AppWidget>`

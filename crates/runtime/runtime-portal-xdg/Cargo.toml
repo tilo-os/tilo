@@ -5,7 +5,7 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# qOS runtime XDG portal client for file chooser, screencast, notifications,
+# Tilo runtime XDG portal client for file chooser, screencast, notifications,
 # secret service, and open-uri operations. Calls return
 # `PortalError::NotAvailable` when no D-Bus session bus is reachable.
 #
@@ -17,7 +17,7 @@ name = "runtime_portal_xdg"
 path = "src/lib.rs"
 
 [dependencies]
-# ashpd uses the tokio backend to match the rest of the qOS runtime stack;
+# ashpd uses the tokio backend to match the rest of the Tilo runtime stack;
 # default features are disabled to drop async-std.
 ashpd.workspace = true
 # tokio powers the sync wrapper; apps with an existing runtime should use the

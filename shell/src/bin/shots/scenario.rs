@@ -1041,7 +1041,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             );
 
             let save = mode == "save";
-            let caller = PortalCaller::new(WorkspaceId(1), "dev.qos.word-processor");
+            let caller = PortalCaller::new(WorkspaceId(1), "dev.tilo.word-processor");
             let opts = FilePickerOptions::new(
                 caller,
                 if save {
@@ -1592,7 +1592,7 @@ fn lock_screen_states() -> Scenario {
     }
 }
 
-/// The exact identity introduction shown on first qOS login when the package
+/// The exact identity introduction shown on first Tilo login when the package
 /// is layered onto an existing Linux installation.
 fn host_desktop_first_login() -> Scenario {
     use shell::onboarding_view::OnboardingVisualState as Visual;
@@ -1682,7 +1682,7 @@ fn collaboration_product_proof() -> Scenario {
     }
 }
 
-/// The two resting states that define qOS's chrome contract. The first frame
+/// The two resting states that define Tilo's chrome contract. The first frame
 /// must read as an ordinary personal desktop; the second adds collaboration
 /// without changing the underlying navigation model. The final frame proves
 /// the persistent presence entry opens the roster it represents.
@@ -1813,8 +1813,8 @@ fn collaboration_status_privacy() -> Scenario {
 /// capture rather than as a silently wrong one.
 fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
     use os_actions::{LinkKind, LinkStatus, VolumeState};
-    use qos_power_mgmt::{BatterySnapshot, BatteryState};
     use shell::shell::status::SystemStatus;
+    use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
     let wifi = |signal: u8| LinkStatus {
         kind: LinkKind::Wifi,

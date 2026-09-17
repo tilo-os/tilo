@@ -23,7 +23,7 @@ if [[ ! -r /dev/fuse || ! -w /dev/fuse ]]; then
 fi
 
 fuse_helper="$(command -v fusermount3)" || {
-    echo "qOS builder image does not contain fusermount3" >&2
+    echo "Tilo builder image does not contain fusermount3" >&2
     exit 1
 }
 

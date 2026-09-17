@@ -2,7 +2,7 @@
 //!
 //! This is deliberately a narrow vocabulary.  Callers cannot pass command
 //! fragments: queue names and URIs are validated and are always individual
-//! argv entries.  CUPS remains the policy/driver authority; qOS does not grow
+//! argv entries.  CUPS remains the policy/driver authority; Tilo does not grow
 //! a second printer database.
 
 use crate::process::{run, run_capture};
@@ -279,7 +279,7 @@ fn query_ipp(queue: &str, test: &str) -> Result<String, String> {
 }
 
 /// Discover only driverless IPP devices.  `driverless` delegates DNS-SD and
-/// IPP capability probing to cups-filters and therefore avoids a qOS-specific
+/// IPP capability probing to cups-filters and therefore avoids a Tilo-specific
 /// discovery stack or legacy PPD downloads.
 ///
 /// # Errors

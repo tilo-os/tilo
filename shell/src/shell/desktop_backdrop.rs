@@ -103,7 +103,7 @@ fn build_noise_image() -> Image {
     Image::new(data).with_extend(Extend::Repeat)
 }
 
-/// Widget that paints the nirios desktop backdrop (gradient + grid + noise)
+/// Widget that paints the tilo desktop backdrop (gradient + grid + noise)
 /// behind its single child.
 pub struct DesktopBackdrop {
     child: Option<Box<dyn Widget>>,
@@ -430,7 +430,7 @@ fn wallpaper_render_cache() -> &'static Mutex<WallpaperRenderCache> {
 }
 
 /// Return a normalised, private wallpaper image for the named local workspace.
-/// The cache only reads qOS's 0600 registry and cache directory; it never
+/// The cache only reads Tilo's 0600 registry and cache directory; it never
 /// dereferences the original document URI.
 pub fn wallpaper_image_for_workspace(workspace_id: &str, target: &str) -> Option<ImageData> {
     let path = crate::portal::desktop_services::wallpaper_state_path();

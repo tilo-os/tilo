@@ -20,7 +20,7 @@ pub enum EntryType {
 
 /// Where an entry came from, as far as it can be told from the file. What matters to the
 /// desktop is *confinement*: a Flatpak carries its own sandbox and must not be wrapped in
-/// qOS's, while a plain system binary carries none — both are "host applications", not qOS
+/// Tilo's, while a plain system binary carries none — both are "host applications", not Tilo
 /// packages, so this is a provenance label, not a permission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntrySource {
@@ -32,7 +32,7 @@ pub enum EntrySource {
 }
 
 impl EntrySource {
-    /// Short label for UI. Deliberately never "qOS" — nothing this module produces is a qOS package.
+    /// Short label for UI. Deliberately never "Tilo" — nothing this module produces is a Tilo package.
     pub fn label(&self) -> &'static str {
         match self {
             EntrySource::Flatpak { .. } => "Flatpak",
@@ -480,8 +480,8 @@ X-Flatpak=com.spotify.Client
         );
         assert!(hidden.hidden && !hidden.no_display);
         assert!(nodisplay.no_display && !nodisplay.hidden);
-        assert!(!hidden.is_visible_in(&["nirios".into()]));
-        assert!(!nodisplay.is_visible_in(&["nirios".into()]));
+        assert!(!hidden.is_visible_in(&["tilo".into()]));
+        assert!(!nodisplay.is_visible_in(&["tilo".into()]));
     }
 
     #[test]
@@ -490,15 +490,15 @@ X-Flatpak=com.spotify.Client
             "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=GNOME;\n",
             "x",
         );
-        assert!(!gnome_only.is_visible_in(&["nirios".into()]));
+        assert!(!gnome_only.is_visible_in(&["tilo".into()]));
         assert!(gnome_only.is_visible_in(&["GNOME".into()]));
 
-        let not_nirios = parse_str(
-            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNotShowIn=nirios;KDE;\n",
+        let not_tilo = parse_str(
+            "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNotShowIn=tilo;KDE;\n",
             "x",
         );
-        assert!(!not_nirios.is_visible_in(&["nirios".into()]));
-        assert!(not_nirios.is_visible_in(&["GNOME".into()]));
+        assert!(!not_tilo.is_visible_in(&["tilo".into()]));
+        assert!(not_tilo.is_visible_in(&["GNOME".into()]));
     }
 
     #[test]

@@ -4,11 +4,11 @@
 set -euo pipefail
 
 root="${1:-release-assets}"
-expected="${QOS_LINUX_EXPECTED_FINGERPRINT:-}"
+expected="${TILO_LINUX_EXPECTED_FINGERPRINT:-}"
 expected="${expected^^}"
 expected="${expected//[[:space:]]/}"
 [[ "$expected" =~ ^([A-F0-9]{40}|[A-F0-9]{64})$ ]] \
-  || { printf 'QOS_LINUX_EXPECTED_FINGERPRINT must be a full OpenPGP fingerprint\n' >&2; exit 1; }
+  || { printf 'TILO_LINUX_EXPECTED_FINGERPRINT must be a full OpenPGP fingerprint\n' >&2; exit 1; }
 
 find_one() {
   local name="$1"
@@ -28,8 +28,8 @@ verify_digest() {
   (cd "$(dirname "$artifact")" && sha256sum --check --strict "$(basename "$sidecar")" >/dev/null)
 }
 
-key="$(find_one qos-release-key.asc)"
-fingerprint_file="$(find_one qos-release-key.fingerprint)"
+key="$(find_one tilo-release-key.asc)"
+fingerprint_file="$(find_one tilo-release-key.fingerprint)"
 verify_digest "$key"
 verify_digest "$fingerprint_file"
 
@@ -37,7 +37,7 @@ published_fingerprint="$(tr -d '[:space:]' <"$fingerprint_file")"
 [ "$published_fingerprint" = "$expected" ] \
   || { printf 'published Linux fingerprint does not match protected release policy\n' >&2; exit 1; }
 
-keyring="$(mktemp -d /var/tmp/qos-imager-release-keyring.XXXXXX)"
+keyring="$(mktemp -d /var/tmp/tilo-imager-release-keyring.XXXXXX)"
 trap 'find "$keyring" -depth -delete' EXIT
 chmod 0700 "$keyring"
 GNUPGHOME="$keyring" gpg --batch --import "$key" >/dev/null 2>&1
@@ -57,15 +57,15 @@ mapfile -t imported_fingerprints < <(
 
 verified=0
 for name in \
-  qos-imager-linux-x86_64.AppImage \
-  qos-imager-linux-x86_64.tar.gz \
-  qos-imager-linux-x86_64.flatpak \
-  qos-imager-linux-aarch64.AppImage \
-  qos-imager-linux-aarch64.tar.gz \
-  qos-imager-linux-aarch64.flatpak \
-  qos-installer-linux-x86_64.img.zst \
-  qos-installer-linux-aarch64.img.zst \
-  qos-installer-catalog-v1.json; do
+  tilo-imager-linux-x86_64.AppImage \
+  tilo-imager-linux-x86_64.tar.gz \
+  tilo-imager-linux-x86_64.flatpak \
+  tilo-imager-linux-aarch64.AppImage \
+  tilo-imager-linux-aarch64.tar.gz \
+  tilo-imager-linux-aarch64.flatpak \
+  tilo-installer-linux-x86_64.img.zst \
+  tilo-installer-linux-aarch64.img.zst \
+  tilo-installer-catalog-v1.json; do
     artifact="$(find_one "$name")"
     signature="$(find_one "$(basename "$artifact").asc")"
     verify_digest "$artifact"

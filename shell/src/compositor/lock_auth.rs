@@ -8,16 +8,16 @@
 //! [`GreetdVerifier`] is the real path — reuses the greeter's greetd/PAM conversation but stops
 //! at `Success`/`Error` instead of starting a session, which is why unlock and login share one
 //! non-leaky failure message. [`FixedVerifier`] is the injected headless-test path, selected by
-//! `QOS_LOCK_TEST_PASSWORD` and read only when [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]
+//! `TILO_LOCK_TEST_PASSWORD` and read only when [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]
 //! is set, so a `--release` binary can't be talked into accepting a caller-chosen password.
 //! [`verifier_from_env`] picks between them; the default with neither configured is fail-closed ([`UnavailableVerifier`]).
 //!
 //! A running session exposes no greetd socket, so verifying a live session's password instead
-//! spawns the privileged [`qos-unlock-helper`] binary via [`HelperVerifier`]: username on argv,
+//! spawns the privileged [`tilo-unlock-helper`] binary via [`HelperVerifier`]: username on argv,
 //! password on **stdin** (never argv, so it never lands in `/proc/*/cmdline`), exit code mapped
 //! to a result. The compositor itself links no PAM — the helper is the only piece that touches the auth stack.
 //!
-//! [`qos-unlock-helper`]: ../../../../crates/session/qos-unlock-helper
+//! [`tilo-unlock-helper`]: ../../../../crates/session/tilo-unlock-helper
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -64,7 +64,7 @@ impl PasswordVerifier for GreetdVerifier {
     }
 }
 
-/// A verifier that accepts exactly one known password with no I/O, via `QOS_LOCK_TEST_PASSWORD`
+/// A verifier that accepts exactly one known password with no I/O, via `TILO_LOCK_TEST_PASSWORD`
 /// — lets the lock/unlock state machine run the real code path in headless tests without a PAM/greetd socket. Never used when the env var is unset.
 #[derive(Debug, Clone)]
 pub struct FixedVerifier {
@@ -94,12 +94,12 @@ impl PasswordVerifier for FixedVerifier {
 /// Env var pointing at the in-session verify helper binary ([`HelperVerifier`]). In a
 /// **developer build** it takes precedence over the default install path; a `--release` build
 /// never reads it — "name the program that decides whether this password unlocks the screen" is not a decision the process environment gets to make on a real machine.
-pub const UNLOCK_HELPER_ENV: &str = "QOS_UNLOCK_HELPER";
+pub const UNLOCK_HELPER_ENV: &str = "TILO_UNLOCK_HELPER";
 
-/// Where the helper is installed — by the OS image and the host session RPM (`dist/rpm/qos-session.spec`), at exactly this path so no override is needed on a non-qOS host.
-pub const DEFAULT_UNLOCK_HELPER: &str = match option_env!("QOS_UNLOCK_HELPER_PATH") {
+/// Where the helper is installed — by the OS image and the host session RPM (`dist/rpm/tilo-session.spec`), at exactly this path so no override is needed on a non-Tilo host.
+pub const DEFAULT_UNLOCK_HELPER: &str = match option_env!("TILO_UNLOCK_HELPER_PATH") {
     Some(path) => path,
-    None => "/usr/libexec/qos-unlock-helper",
+    None => "/usr/libexec/tilo-unlock-helper",
 };
 
 /// Upper bound on a single verify. Generous for a slow PAM stack (`pam_unix` fail delay is
@@ -207,7 +207,7 @@ impl PasswordVerifier for UnavailableVerifier {
 
 /// Env var injecting a fixed unlock password ([`FixedVerifier`]) for the headless harness /
 /// display-less dev. Read only in developer builds — a `--release` binary ignores it entirely. See [`crate::compositor::dev_env`].
-pub const LOCK_TEST_PASSWORD_ENV: &str = "QOS_LOCK_TEST_PASSWORD";
+pub const LOCK_TEST_PASSWORD_ENV: &str = "TILO_LOCK_TEST_PASSWORD";
 
 /// Which verifier [`select_verifier`] picked — named so the selection policy can be asserted on directly, without introspecting a `dyn PasswordVerifier`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,7 +398,7 @@ mod tests {
         unsafe { std::env::remove_var(LOCK_TEST_PASSWORD_ENV) };
     }
 
-    // HelperVerifier (real subprocess spawn): exercises the *real* production mechanism — spawn a helper, feed the password on stdin, map the exit code — against a fake helper script standing in for `qos-unlock-helper`.
+    // HelperVerifier (real subprocess spawn): exercises the *real* production mechanism — spawn a helper, feed the password on stdin, map the exit code — against a fake helper script standing in for `tilo-unlock-helper`.
 
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
@@ -414,7 +414,7 @@ mod tests {
     fn fake_helper(body: &str) -> (HelperVerifier, PathBuf) {
         let n = FAKE_SEQ.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "qos-fake-unlock-helper-{}-{}.sh",
+            "tilo-fake-unlock-helper-{}-{}.sh",
             std::process::id(),
             n
         ));
@@ -460,7 +460,7 @@ mod tests {
     fn helper_spawn_failure_is_unavailable_fail_closed() {
         // A non-existent program can never authenticate anyone.
         let v = HelperVerifier::new(vec![
-            "/nonexistent/definitely/not/a/qos-unlock-helper".to_string(),
+            "/nonexistent/definitely/not/a/tilo-unlock-helper".to_string(),
         ]);
         assert_eq!(v.verify("alice", "s3cr3t").unwrap_err(), UNAVAILABLE_MSG);
     }
@@ -487,7 +487,7 @@ mod tests {
         // Prove the secret is passed on stdin only: the script records its argv to a file; the password must be absent from it and the username present.
         let n = FAKE_SEQ.fetch_add(1, Ordering::Relaxed);
         let args_out = std::env::temp_dir().join(format!(
-            "qos-fake-helper-argv-{}-{}.txt",
+            "tilo-fake-helper-argv-{}-{}.txt",
             std::process::id(),
             n
         ));

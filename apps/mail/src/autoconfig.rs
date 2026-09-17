@@ -369,7 +369,7 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
     let (_, domain) = email.split_once('@')?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
-        .user_agent("qOS Mail")
+        .user_agent("Tilo Mail")
         .build()
         .ok()?;
 

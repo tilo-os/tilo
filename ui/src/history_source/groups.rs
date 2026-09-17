@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ROOT
-//!   "qos:group:<hex of the range's first change>"   <- the key IS the range
+//!   "tilo:group:<hex of the range's first change>"   <- the key IS the range
 //!      label : "Intro rewrite"
 //!      end   : "<hex of the range's last change>"   (absent while open)
 //!      by    : "<actor hex of whoever wrote the name>"
@@ -39,7 +39,7 @@ use crate::widget::history_group::{NamedRange, from_hex16, hex16};
 /// Namespaced so it cannot collide with an app's own schema: `qdoc` uses
 /// `content` / `comments` / `props`, and the shell's room document uses
 /// `workspaces` / `active`.
-pub const GROUPS_KEY: &str = "qos:group:";
+pub const GROUPS_KEY: &str = "tilo:group:";
 
 /// A version name is a label, not a paragraph; past this it stops fitting
 /// anywhere it is rendered and starts being a way to make another user's
@@ -442,7 +442,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let before = doc.get_heads();
         assert!(
-            split_named_range(&mut doc, "qos:group:missing", &id(1), &id(2), "A", "B").is_none()
+            split_named_range(&mut doc, "tilo:group:missing", &id(1), &id(2), "A", "B").is_none()
         );
         assert!(
             merge_named_ranges(

@@ -22,7 +22,7 @@ os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
 
 cache_driver_ok=1
-for workflow in build-builder-image.yml build-image.yml build-kernel.yml qos-relay.yaml snapshot-rpms.yml; do
+for workflow in build-builder-image.yml build-image.yml build-kernel.yml tilo-relay.yaml snapshot-rpms.yml; do
   file="$workflows/$workflow"
   if grep -Fq 'cache-to: type=registry' "$file" \
      && { ! grep -Fq 'docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f' "$file" \
@@ -38,8 +38,8 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
-grep -Fq 'qos-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Fq 'qos-kernel-buildcache:latest,mode=max' "$workflows/build-kernel.yml" \
+grep -Fq 'tilo-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Fq 'tilo-kernel-buildcache:latest,mode=max' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
@@ -51,8 +51,8 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
 
 grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
   && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
-  && grep -Fq 'QOS_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
-  && grep -Fq '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
+  && grep -Fq 'TILO_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
+  && grep -Fq '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
   && grep -Fq 'arm64_runner=runner-large-arm64' "$desktop" \
   && grep -Fq 'release_arches=amd64,arm64' "$desktop" \
   && grep -Fq 'release_arches: ${{ steps.lanes.outputs.release_arches }}' "$desktop" \
@@ -62,22 +62,22 @@ grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
 grep -Fq 'publish-os-payload:' "$desktop" \
-  && grep -Fq 'QOS_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
+  && grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
   && grep -Fq '"with_browser":"1","publish":"true"' "$desktop" \
-  && grep -Fq 'QOS_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
-  && grep -Fq 'QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}' "$os" \
+  && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
+  && grep -Fq 'TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}' "$os" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
   && ok 'OS composition reuses the install-tested native desktop payload' \
   || bad 'OS releases still rebuild the desktop component'
 
 grep -Fq 'with_browser=0' "$os" \
-  && grep -Fq 'WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}' "$os" \
+  && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \
   && grep -Fq 'max-parallelism = 1' "$os" \
-  && test "$(grep -Fc 'QOS_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 2 \
-  && grep -Fq 'QOS_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
-  && ! grep -Fq 'id=qos-composefs-' "$repo/os/Containerfile" \
+  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 2 \
+  && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
+  && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
-  && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}' "$os" \
+  && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
@@ -114,36 +114,36 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
 
 grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$apps" \
-  && grep -Fq '$package_api/qos-app-collections/$VERSION/' "$apps" \
-  && grep -Fq '$package_api/qos-app-$name/$VERSION/$file' "$apps" \
+  && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" \
+  && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
   && grep -Fq 'if [[ $GITHUB_REF == refs/heads/main ]]; then' "$apps" \
   && grep -Fq 'dist/app-release/runtime/**' "$apps" \
-  && grep -Fq 'update_variable QOS_APP_COLLECTION_URL' "$apps" \
+  && grep -Fq 'update_variable TILO_APP_COLLECTION_URL' "$apps" \
   && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
-  && grep -Fq 'image: code.sandbox.example/qos/qos-builder:latest' "$apps" \
+  && grep -Fq 'image: code.sandbox.example/tilo/tilo-builder:latest' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
-  && grep -Fq 'QOS_APP_RELEASE_TAG_AUDIENCE' "$apps" \
+  && grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \
   && ! awk '/^  publish:/{publish=1} publish' "$apps" | grep -Fq 'secrets.REGISTRY_TOKEN' \
   && ok 'app collections serialize channel updates and remain durable across workflows' \
   || bad 'app releases can cancel a required channel update or cannot be consumed later'
 
-grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
-  && grep -Fq 'QOS_APP_COLLECTION_URL_AARCH64' "$os" \
+grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
+  && grep -Fq 'TILO_APP_COLLECTION_URL_AARCH64' "$os" \
   && grep -Fq 'enable-openid-connect: true' "$os" \
-  && grep -Fq 'QOS_OS_APP_COLLECTION_AUDIENCE' "$os" \
-  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)' "$os")" -eq 2 \
+  && grep -Fq 'TILO_OS_APP_COLLECTION_AUDIENCE' "$os" \
+  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)' "$os")" -eq 2 \
   && test "$(grep -Fc -- "--proto '=https' --proto-redir '=https'" "$os")" -eq 2 \
   && test "$(grep -Fc -- "--proto '=http' --fail --retry 3" "$os")" -eq 2 \
   && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
   && grep -Fq 'Authorization: Bearer $jwt' "$os" \
-  && grep -Fq 'QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}' "$os" \
+  && grep -Fq 'TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'QPKG_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
-  && grep -Fq 'cp -a /build/os/app-runtime/qos-runtime /usr/lib/' "$repo/os/Containerfile" \
+  && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \

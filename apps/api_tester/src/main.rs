@@ -1,4 +1,4 @@
-//! API tester — standard qOS application entry point.
+//! API tester — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -58,7 +58,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.api-tester", api_tester::app_root)
+        &LaunchSpec::new("dev.tilo.api-tester", api_tester::app_root)
             .shot_root(shot_root)
             .allowed_flags(&["--rail-open", "--empty", "--error", "--focus-url"])
             .allowed_options(&["--form"])

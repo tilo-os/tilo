@@ -1,4 +1,4 @@
-//! Database client — standard qOS application entry point.
+//! Database client — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -44,7 +44,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.db-client", db_client::app_root)
+        &LaunchSpec::new("dev.tilo.db-client", db_client::app_root)
             .shot_root(shot_root)
             .allowed_flags(&["--empty", "--status"])
             .configure_app(|app| db_client::actions::register(app.action_registry_mut())),

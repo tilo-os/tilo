@@ -17,7 +17,7 @@ for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm edk2-o
     || bad "$package is absent from the Windows compatibility package transaction"
 done
 
-grep -q '^# qos-rpm-snapshot-package: virtio-win$' "$CF" \
+grep -q '^# tilo-rpm-snapshot-package: virtio-win$' "$CF" \
   && grep -q 'COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso' "$CF" \
   && grep -q 'COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe' "$CF" \
   && ok 'minimal authenticated virtio-win media is part of the immutable image' \
@@ -39,17 +39,17 @@ grep -q 'UMU-Proton-10.0-4/proton' "$CF" \
   && ok 'default UMU-Proton artifact is versioned and checksum-pinned' \
   || bad 'default UMU-Proton is missing its pinned version or checksum'
 
-grep -q 'COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run' "$CF" \
-  && ok 'UMU launcher is installed under the qOS-owned execution path' \
+grep -q 'COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/tilo-umu-run' "$CF" \
+  && ok 'UMU launcher is installed under the Tilo-owned execution path' \
   || bad 'UMU launcher is not copied into the final image'
 
-grep -q 'COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/proton/' "$CF" \
+grep -q 'COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/tilo/windows-runners/proton/' "$CF" \
   && ok 'pinned Proton runner is installed in the system runner store' \
   || bad 'pinned Proton runner is not copied into the final image'
 
 grep -q 'umu-database-8297d420.csv' "$CF" \
   && grep -q $'^87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8\tumu-database-8297d420.csv\t.*/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv' "$ASSETS" \
-  && grep -q 'COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/' "$CF" \
+  && grep -q 'COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/tilo/windows/catalogues/' "$CF" \
   && ok 'UMU compatibility catalogue is commit-pinned, checksummed, and installed' \
   || bad 'UMU compatibility catalogue is not reproducibly installed'
 

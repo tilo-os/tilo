@@ -6,7 +6,7 @@
 //! compositor's own `State`, and reads the registry the way GTK, Qt or SDL
 //! would. GTK refuses a Wayland display without `wl_data_device_manager`
 //! and silently falls back to a nonexistent X11 display with no logged
-//! error, and qOS's own toolkit never asks for it — so nothing in-tree
+//! error, and Tilo's own toolkit never asks for it — so nothing in-tree
 //! noticed it was missing until the wire itself was observed.
 
 #![allow(

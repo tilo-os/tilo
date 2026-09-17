@@ -30,7 +30,7 @@ jobs:
     container:
       # Keep this identical to nightly.yml. Updating visual baselines under a
       # mutable image would silently bless changes in fonts or Mesa.
-      image: code.sandbox.example/qos/qos-builder@sha256:e3b372adc7f2a6eb624c7a1993d7131dc87654b11189ab1982ec165a493c421c
+      image: code.sandbox.example/tilo/tilo-builder@sha256:e3b372adc7f2a6eb624c7a1993d7131dc87654b11189ab1982ec165a493c421c
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -44,13 +44,13 @@ jobs:
       - name: Prepare headless runtime and compiler cache
         run: |
           test -r "$VK_DRIVER_FILES"
-          mkdir -p /tmp/qos-xdg-runtime
-          chmod 700 /tmp/qos-xdg-runtime
+          mkdir -p /tmp/tilo-xdg-runtime
+          chmod 700 /tmp/tilo-xdg-runtime
           bash tools/ci-sccache.sh prepare
 
       - name: Render canonical visual baselines
         env:
-          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
           UPDATE_EBOOK_MATH_BASELINE: "1"
           UPDATE_EBOOK_TYPOGRAPHY_BASELINE: "1"
           UPDATE_SNAPSHOTS: "1"

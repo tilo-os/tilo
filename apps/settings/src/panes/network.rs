@@ -368,7 +368,7 @@ impl NetworkPane {
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "qOS Hotspot".into(),
+            hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
             hotspot_qr_visible: false,
             hotspot_clients: os_actions::list_hotspot_clients().unwrap_or_default(),
@@ -419,7 +419,7 @@ impl NetworkPane {
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "qOS Hotspot".into(),
+            hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
             hotspot_qr_visible: false,
             hotspot_clients: Vec::new(),
@@ -465,7 +465,7 @@ impl NetworkPane {
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "qOS Hotspot".into(),
+            hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
             hotspot_qr_visible: false,
             hotspot_clients: Vec::new(),
@@ -994,7 +994,7 @@ impl NetworkPane {
                 out.push(caption(recommendation));
             }
         } else {
-            out.push(caption("Checks NetworkManager state, address, gateway and DNS without sending traffic to a qOS service."));
+            out.push(caption("Checks NetworkManager state, address, gateway and DNS without sending traffic to a Tilo service."));
         }
         out
     }
@@ -1460,7 +1460,7 @@ impl NetworkPane {
                 Err(error) => {
                     self.connection_notice =
                         Some(format!("Could not configure {subject}: {error}"));
-                    warn!(target: "qos::settings", op = "network_job", %subject, %error, "network pane operation failed");
+                    warn!(target: "tilo::settings", op = "network_job", %subject, %error, "network pane operation failed");
                 }
             }
             self.structure_dirty = true;
@@ -1665,7 +1665,7 @@ impl NetworkPane {
         {
             self.last_wifi_enabled = *b;
             if let Err(e) = self.dispatcher.set_wifi(*b) {
-                warn!(target: "qos::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
+                warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
             }
         }
 
@@ -1690,7 +1690,7 @@ impl NetworkPane {
                     );
                 }
                 Err(e) => {
-                    warn!(target: "qos::settings", op = "set_wired", error = %e, "network pane dispatch failed");
+                    warn!(target: "tilo::settings", op = "set_wired", error = %e, "network pane dispatch failed");
                     let _ = state.put(
                         root,
                         WIRED_ENABLED_KEY,
@@ -1760,7 +1760,7 @@ impl NetworkPane {
                     );
                 }
                 Err(e) => {
-                    warn!(target: "qos::settings", op, error = %e, "radio action failed");
+                    warn!(target: "tilo::settings", op, error = %e, "radio action failed");
                     let _ = state.put(root, key, old);
                     let operation = match op {
                         "airplane" => crate::actions::NetworkOperation::SetAirplaneMode { enabled },
@@ -1784,7 +1784,7 @@ impl NetworkPane {
                 match self.dispatcher.set_vpn_connection(&vpn.name, enabled) {
                     Ok(()) => vpn.active = enabled,
                     Err(e) => {
-                        warn!(target: "qos::settings", op = "set_vpn_connection", profile = %vpn.name, error = %e, "VPN action failed");
+                        warn!(target: "tilo::settings", op = "set_vpn_connection", profile = %vpn.name, error = %e, "VPN action failed");
                         let _ = state.put(root, key, vpn.active);
                     }
                 }
@@ -1850,7 +1850,7 @@ impl NetworkPane {
         let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
         self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "qOS Hotspot".into());
+            .unwrap_or_else(|| "Tilo Hotspot".into());
         self.hotspot_band =
             read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
         match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
@@ -1875,7 +1875,7 @@ impl NetworkPane {
         let _ = state.put(root, HOTSPOT_QR_KEY, false);
         self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "qOS Hotspot".into());
+            .unwrap_or_else(|| "Tilo Hotspot".into());
         self.hotspot_band =
             read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
         match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
@@ -2245,7 +2245,7 @@ impl NetworkPane {
                 route: VpnRoute::Profile,
                 profile: Some(profile.clone()),
             }) {
-                warn!(target: "qos::settings", profile = %profile, error = %e, "could not open VPN Studio");
+                warn!(target: "tilo::settings", profile = %profile, error = %e, "could not open VPN Studio");
             }
         }
         if read_bool(state, root, Self::VPN_STUDIO_OVERVIEW_KEY) {
@@ -2254,7 +2254,7 @@ impl NetworkPane {
                 route: VpnRoute::Overview,
                 profile: None,
             }) {
-                warn!(target: "qos::settings", error = %e, "could not open VPN Studio");
+                warn!(target: "tilo::settings", error = %e, "could not open VPN Studio");
             }
         }
     }
@@ -2279,7 +2279,7 @@ impl NetworkPane {
                 );
             }
             Err(e) => {
-                warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed");
+                warn!(target: "tilo::settings", op = "list_wifi_networks", error = %e, "rescan failed");
                 self.finish_local_operation(
                     crate::actions::NetworkOperation::Refresh,
                     Err(format!("Could not refresh network list: {e}")),

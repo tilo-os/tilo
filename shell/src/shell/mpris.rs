@@ -2,7 +2,7 @@
 //!
 //! The transport keys (play/pause, next, previous) address *an
 //! application*, not the machine, so they go over `org.mpris.MediaPlayer2`
-//! on the session bus — the interface every real player and qOS's own
+//! on the session bus — the interface every real player and Tilo's own
 //! Music app (`apps/music/src/mpris.rs`) implements.
 //!
 //! Called from the compositor's input path, but a D-Bus round trip has no
@@ -102,7 +102,7 @@ pub fn refresh_handoff_reports() {
     refresh.running = true;
     refresh.last_started = Some(Instant::now());
     if std::thread::Builder::new()
-        .name("qos-mpris-discovery".to_string())
+        .name("tilo-mpris-discovery".to_string())
         .spawn(|| {
             media::handoff::replace_system_reports(discover_handoff_reports());
             if let Ok(mut refresh) = REFRESH.lock() {
@@ -136,7 +136,7 @@ pub fn resume_after_launch(request: ResumeRequest) -> bool {
     }
     let request_id = request.request_id;
     if std::thread::Builder::new()
-        .name("qos-mpris-resume".to_string())
+        .name("tilo-mpris-resume".to_string())
         .spawn(move || {
             let accepted = run_resume(&request);
             if let Ok(mut resumes) = RESUMES.lock() {
@@ -624,18 +624,18 @@ pub enum Outcome {
 pub fn send(cmd: Command) -> Option<Outcome> {
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new()
-        .name("qos-mpris".to_string())
+        .name("tilo-mpris".to_string())
         .spawn(move || {
             let _ = tx.send(run(cmd)); // dropped if the caller already gave up
         });
     if let Err(e) = spawned {
-        tracing::warn!(target: "qos::mpris", error = %e, "could not spawn mpris worker");
+        tracing::warn!(target: "tilo::mpris", error = %e, "could not spawn mpris worker");
         return None;
     }
     if let Ok(outcome) = rx.recv_timeout(DEADLINE) {
         outcome
     } else {
-        tracing::debug!(target: "qos::mpris", "no player answered within the deadline");
+        tracing::debug!(target: "tilo::mpris", "no player answered within the deadline");
         None
     }
 }
@@ -650,7 +650,7 @@ pub fn pause_named(bus_name: &str) -> bool {
     let owned = bus_name.to_string();
     let (tx, rx) = mpsc::channel();
     if std::thread::Builder::new()
-        .name("qos-mpris-handoff".to_string())
+        .name("tilo-mpris-handoff".to_string())
         .spawn(move || {
             let result = zbus::blocking::Connection::session()
                 .ok()
@@ -678,7 +678,7 @@ pub fn pause_named(bus_name: &str) -> bool {
 fn run(cmd: Command) -> Option<Outcome> {
     let conn = zbus::blocking::Connection::session()
         .map_err(|e| {
-            tracing::debug!(target: "qos::mpris", error = %e, "no session bus");
+            tracing::debug!(target: "tilo::mpris", error = %e, "no session bus");
         })
         .ok()?;
 
@@ -692,7 +692,7 @@ fn run(cmd: Command) -> Option<Outcome> {
     proxy
         .call_method(cmd.method(), &())
         .map_err(|e| {
-            tracing::debug!(target: "qos::mpris", error = %e, method = cmd.method(), "player rejected the command");
+            tracing::debug!(target: "tilo::mpris", error = %e, method = cmd.method(), "player rejected the command");
         })
         .ok()?;
 
@@ -755,7 +755,7 @@ mod tests {
     fn observation(locator: &str) -> PlayerObservation {
         PlayerObservation {
             bus_name: "org.mpris.MediaPlayer2.browser".into(),
-            package_id: "dev.qos.browser".into(),
+            package_id: "dev.tilo.browser".into(),
             identity: Some("Browser".into()),
             status: "Playing".into(),
             metadata: HashMap::from([
@@ -769,7 +769,7 @@ mod tests {
 
     fn browser() -> InstalledMediaApp {
         InstalledMediaApp {
-            package_id: "dev.qos.browser".into(),
+            package_id: "dev.tilo.browser".into(),
             uri_schemes: vec!["http".into(), "https".into()],
             extensions: vec!["mp4".into()],
         }
@@ -798,7 +798,7 @@ mod tests {
         let second = report_from_observation(&observed, &[browser()]).unwrap();
 
         assert_eq!(first, second, "session identity must be stable");
-        assert_eq!(first.session.app_id, "dev.qos.browser");
+        assert_eq!(first.session.app_id, "dev.tilo.browser");
         assert_eq!(first.session.position_ms, 4_000);
         assert_eq!(first.session.duration_ms, Some(9_000));
         assert!(first.session.has_video);

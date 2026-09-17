@@ -13,19 +13,23 @@ use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
 
-/// Where the calendar document is stored. Honors `QOS_CALENDAR_DATA` (used
+/// Where the calendar document is stored. Honors `TILO_CALENDAR_DATA` (used
 /// by tests and by callers who want an explicit location), then
 /// `XDG_DATA_HOME`, then `$HOME/.local/share`. Returns `None` only when no
 /// home can be resolved, in which case the app simply runs without
 /// persistence.
 pub fn default_path() -> Option<PathBuf> {
-    if let Some(over) = std::env::var_os("QOS_CALENDAR_DATA") {
+    if let Some(over) = std::env::var_os("TILO_CALENDAR_DATA") {
         return Some(PathBuf::from(over));
     }
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
-    Some(base.join("qos").join("calendar").join("calendar.automerge"))
+    Some(
+        base.join("tilo")
+            .join("calendar")
+            .join("calendar.automerge"),
+    )
 }
 
 /// Load a previously-saved calendar document. Returns `None` when the file
@@ -51,11 +55,11 @@ pub fn save(path: &Path, doc: &mut AutoCommit) -> io::Result<()> {
 
 /// Directory the import/export actions read from and write to. A real
 /// calendar client opens a file picker; with none available here we use the
-/// user's `Downloads` folder (overridable via `QOS_CALENDAR_IMPORT_DIR`),
+/// user's `Downloads` folder (overridable via `TILO_CALENDAR_IMPORT_DIR`),
 /// which is where downloaded `.ics` invites and exported files naturally
 /// live.
 pub fn transfer_dir() -> PathBuf {
-    if let Some(over) = std::env::var_os("QOS_CALENDAR_IMPORT_DIR") {
+    if let Some(over) = std::env::var_os("TILO_CALENDAR_IMPORT_DIR") {
         return PathBuf::from(over);
     }
     if let Some(home) = std::env::var_os("HOME") {

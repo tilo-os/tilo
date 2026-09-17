@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn uri_rejects_path_and_controls() {
         assert!(valid_uri("file:///run/user/1000/doc/token/a.png"));
-        assert!(!valid_uri("document://qos/a.png"));
+        assert!(!valid_uri("document://tilo/a.png"));
         assert!(!valid_uri("/tmp/a.png"));
         assert!(!valid_uri("file:///tmp/a\n.png"));
     }

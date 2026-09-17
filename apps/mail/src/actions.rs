@@ -42,7 +42,7 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
@@ -465,7 +465,7 @@ pub fn prepare_calendar_invitation_operation(
         },
     )
     .unwrap_or_else(|_| EncodedAction {
-        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: b"Mail invitation handoff could not be encoded".to_vec(),
     })
 }
@@ -1039,7 +1039,7 @@ mod tests {
     use crate::model::Folder;
     use crate::state::{CtxAction, MailState};
 
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1072,7 +1072,7 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     /// A sample app synced into a fresh document, plus that document.
@@ -1142,9 +1142,9 @@ mod tests {
         let refresh = mailbox.actions.iter().find(|a| a.id == "refresh").unwrap();
         assert_eq!(
             refresh.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: false }
+            tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
+        assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::None);
 
         let folder = mailbox
             .children
@@ -1188,7 +1188,7 @@ mod tests {
                 .unwrap()
                 .contract
                 .risk,
-            qos_actions::RiskLevel::Destructive
+            tilo_actions::RiskLevel::Destructive
         );
 
         let mut palette = ui::ActionPalette::new();
@@ -1348,8 +1348,8 @@ mod tests {
             can_sync: false,
         };
         let resources = provide_resources(&ctx, &AutoCommit::new());
-        let address = qos_actions::ActionAddress::new("mail.account:work-99", "open");
-        let encoded = qos_actions::door::encode(&resources, &address, None)
+        let address = tilo_actions::ActionAddress::new("mail.account:work-99", "open");
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("the stable account address resolves through the mailbox tree");
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
@@ -1374,7 +1374,7 @@ mod tests {
         let encoded = encode(&move_action(vec![id.to_string()], Folder::Trash));
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1413,8 +1413,8 @@ mod tests {
 
         let action = set_starred_action(vec!["m".to_string()], true);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1468,8 +1468,8 @@ mod tests {
 
         let action = move_action(vec!["m1".into(), "m2".into(), "m3".into()], Folder::Archive);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1493,8 +1493,8 @@ mod tests {
 
         let action = add_label_action(vec!["m".to_string()], "work");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1537,7 +1537,7 @@ mod tests {
         let mut doc = state.doc;
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         let folders = MailDoc::list_folders(&doc);
         assert_eq!(folders.len(), 1, "one local folder created");
         assert_eq!(folders[0].1, "Receipts");
@@ -1678,8 +1678,8 @@ mod tests {
         let mut b = AutoCommit::load(&a.save()).unwrap();
 
         let action = purge_action(vec!["m".into()]);
-        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads(), "purge is replay-identical");
         assert!(!MailDoc::is_present_message(&b, "m"));
 

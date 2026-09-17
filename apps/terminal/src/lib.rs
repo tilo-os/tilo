@@ -1,5 +1,5 @@
 //! Library target for `quick-terminal`. The binary in `main.rs` delegates
-//! widget construction to this module so the nirios shell can embed a
+//! widget construction to this module so the tilo shell can embed a
 //! `TerminalWidget` as an `AppWidget` inside a tile.
 //!
 //! See [`actions`] for the resource + action-model split: the shared document is

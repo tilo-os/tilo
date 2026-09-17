@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 /// Public Invidious instances tried in order until one's `local` media proxy
 /// actually serves bytes. Operators can prepend their own via
-/// `QOS_TUBE_INVIDIOUS` (comma-separated) for reliability / self-hosting.
+/// `TILO_TUBE_INVIDIOUS` (comma-separated) for reliability / self-hosting.
 ///
 /// Ordering matters: instances whose media proxy is reliably up come first, so
 /// the common case resolves on the first probe.
@@ -170,11 +170,11 @@ pub fn best_muxed(list: &[MuxedFormat]) -> Option<&MuxedFormat> {
         .or_else(|| list.iter().max_by_key(|f| f.height))
 }
 
-/// The instances to try, honouring the `QOS_TUBE_INVIDIOUS` override (a
+/// The instances to try, honouring the `TILO_TUBE_INVIDIOUS` override (a
 /// comma-separated list prepended to the built-in defaults).
 pub fn instances() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    if let Some(env) = std::env::var_os("QOS_TUBE_INVIDIOUS") {
+    if let Some(env) = std::env::var_os("TILO_TUBE_INVIDIOUS") {
         for s in env.to_string_lossy().split(',') {
             let s = s.trim();
             if !s.is_empty() {
@@ -326,12 +326,12 @@ mod tests {
     #[test]
     fn instances_honours_env_override_first() {
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("QOS_TUBE_INVIDIOUS", "https://my.inv, https://two.inv") };
+        unsafe { std::env::set_var("TILO_TUBE_INVIDIOUS", "https://my.inv, https://two.inv") };
         let list = instances();
         assert_eq!(list[0], "https://my.inv");
         assert_eq!(list[1], "https://two.inv");
         assert!(list.len() > 2, "defaults are appended after the override");
-        unsafe { std::env::remove_var("QOS_TUBE_INVIDIOUS") };
+        unsafe { std::env::remove_var("TILO_TUBE_INVIDIOUS") };
     }
 
     /// Integration check: resolve a real, widely-available video and prove the

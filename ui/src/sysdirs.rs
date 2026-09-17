@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 /// Set by the launcher only when the capability plan bound a path containing it —
 /// presence means "you can read this", not merely "this is where it would be".
 pub fn user_home_override() -> Option<PathBuf> {
-    let raw = std::env::var_os("QOS_USER_HOME")?;
+    let raw = std::env::var_os("TILO_USER_HOME")?;
     if raw.is_empty() {
         return None;
     }
@@ -72,7 +72,7 @@ pub struct UserDirs {
 impl UserDirs {
     pub fn from_system() -> Self {
         // A confined app's `HOME` is its own per-app directory with none of the
-        // user's files, so prefer `QOS_USER_HOME` when the launcher bound it.
+        // user's files, so prefer `TILO_USER_HOME` when the launcher bound it.
         if let Some(home) = user_home_override() {
             return Self::under(home);
         }

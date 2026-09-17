@@ -17,7 +17,7 @@
 //! ```
 
 use automerge::{AutoCommit, ChangeHash};
-use qos_actions::{
+use tilo_actions::{
     Action, ActionContext, ActionEnvelope, EncodedAction, OptimisticError, OptimisticQueue,
 };
 
@@ -34,7 +34,7 @@ pub struct ActionHost {
     /// to record exactly one undo boundary bracketing the action(s).
     commit_before: Option<Vec<ChangeHash>>,
     /// Lets a test prove an affordance and the Ctrl+K
-    /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical
+    /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical
     /// action.
     last_dispatched: Option<EncodedAction>,
     ambient_context: Option<ActionContext>,
@@ -56,7 +56,7 @@ impl ActionHost {
     /// (`get_heads` flushes pending app writes, so the bracket covers only
     /// the action's own change), encodes + remembers it as
     /// [`last_dispatched`](Self::last_dispatched), then dispatches through
-    /// the default [`LocalTransport`](qos_actions::LocalTransport) — applied
+    /// the default [`LocalTransport`](tilo_actions::LocalTransport) — applied
     /// via the executor with a pinned actor, so it replays byte-identically
     /// on peers. A dispatch error is logged at WARN and swallowed; an
     /// affordance never panics the app.
@@ -85,7 +85,7 @@ impl ActionHost {
         doc: &mut AutoCommit,
         type_id: &str,
         action: &A,
-    ) -> Result<(), qos_actions::ActionError>
+    ) -> Result<(), tilo_actions::ActionError>
     where
         A: Action + serde::Serialize,
     {
@@ -124,7 +124,7 @@ impl ActionHost {
         type_id: &str,
         action: &A,
         context: ActionContext,
-    ) -> Result<(), qos_actions::ActionError>
+    ) -> Result<(), tilo_actions::ActionError>
     where
         A: Action + serde::Serialize,
     {
@@ -137,13 +137,13 @@ impl ActionHost {
         type_id: &str,
         action: &A,
         context: Option<ActionContext>,
-    ) -> Result<(), qos_actions::ActionError>
+    ) -> Result<(), tilo_actions::ActionError>
     where
         A: Action + serde::Serialize,
     {
         let encoded = EncodedAction::encode(type_id, action)?;
         let before = doc.get_heads();
-        let mut transport = qos_actions::LocalTransport::new();
+        let mut transport = tilo_actions::LocalTransport::new();
         let actor = doc.get_actor().to_bytes().to_vec();
         let context = match (context, self.ambient_context.as_ref()) {
             (Some(context), Some(ambient)) => Some(context.enriched_by(ambient)),
@@ -151,7 +151,7 @@ impl ActionHost {
             (context, None) => context,
         };
         let result = match context {
-            Some(context) => qos_actions::dispatch_by_with_context(
+            Some(context) => tilo_actions::dispatch_by_with_context(
                 doc,
                 action,
                 encoded.clone(),
@@ -159,9 +159,13 @@ impl ActionHost {
                 Some(&actor),
                 context,
             ),
-            None => {
-                qos_actions::dispatch_by(doc, action, encoded.clone(), &mut transport, Some(&actor))
-            }
+            None => tilo_actions::dispatch_by(
+                doc,
+                action,
+                encoded.clone(),
+                &mut transport,
+                Some(&actor),
+            ),
         };
         result?;
         if self.commit_before.is_none() {
@@ -226,8 +230,8 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
-    use qos_actions::{ActionError, ActionRegistry, Doc, ExecutionLocus};
     use serde::{Deserialize, Serialize};
+    use tilo_actions::{ActionError, ActionRegistry, Doc, ExecutionLocus};
 
     /// Deterministic, no wall-clock / RNG — the executor's contract.
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,12 +256,12 @@ mod tests {
     struct Refuse;
 
     impl Action for Refuse {
-        fn apply(&self, _doc: &mut qos_actions::Doc) -> Result<(), qos_actions::ActionError> {
-            Err(qos_actions::ActionError::Refused("not allowed".into()))
+        fn apply(&self, _doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            Err(tilo_actions::ActionError::Refused("not allowed".into()))
         }
 
-        fn locus(&self) -> qos_actions::ExecutionLocus {
-            qos_actions::ExecutionLocus::ClientLocal
+        fn locus(&self) -> tilo_actions::ExecutionLocus {
+            tilo_actions::ExecutionLocus::ClientLocal
         }
     }
 
@@ -292,7 +296,7 @@ mod tests {
                 value: 42,
             },
             ActionContext::for_action(
-                "org.qos.Test",
+                "org.tilo.Test",
                 "Test",
                 &Put {
                     key: "score".into(),
@@ -368,7 +372,7 @@ mod tests {
         let mut host = ActionHost::new();
         assert!(matches!(
             host.try_dispatch(&mut doc, "test.refuse", &Refuse),
-            Err(qos_actions::ActionError::Refused(_))
+            Err(tilo_actions::ActionError::Refused(_))
         ));
         assert!(host.take_committed().is_none());
         assert!(host.last_dispatched().is_none());
@@ -466,7 +470,7 @@ mod tests {
         registry.register::<Put>(PUT_TYPE);
         assert_eq!(
             queue.acknowledge(envelope.id, &registry).unwrap(),
-            qos_actions::Acknowledgement::Accepted
+            tilo_actions::Acknowledgement::Accepted
         );
         assert!(queue.is_settled());
     }
