@@ -177,16 +177,37 @@ two launchpad hint-glyph probes in `scripts/ux-bench/run-suite.py` moved with th
 
 ### Gates on the integration branch
 
-TODO final numbers.
+All with `--locked --no-default-features` on macOS (the `shots`, `--backend headless` and
+`qos-control` paths are Linux-only), `CARGO_BUILD_JOBS` 1–2 because the machine was shared
+with another session's builds.
 
-- `cargo check -p ui --tests --examples`, `cargo check -p shell --lib --bin ux-bench --bin shell --bin qos-control`, `cargo check --tests` for every app crate.
-- `cargo test -p ui --lib`: TODO.
-- `cargo test -p ui --test it -- f1_ f2_ f3_ f4_ f5_ f6_ x1_ design_token tokens_ context_menu tabs toast tooltip data_table window_group icon_grid`: TODO.
+- `cargo check -p ui --tests --examples`: clean. `cargo check -p shell --lib --bin ux-bench
+  --bin shell --bin qos-control`: clean. `cargo build --bins` for all 46 app crates that
+  build on macOS (everything under `apps/` except `osk` and `windows-app`): all built.
+  `cargo check --tests` for the same 46 crates: see the table below.
+- `cargo test -p ui --lib`: 3565 passed, 0 failed, 5 ignored.
+- `cargo test -p ui --test it -- f1_ f2_ f3_ f4_ f5_ f6_ x1_ design_token tokens_ context_menu
+  tabs toast tooltip data_table window_group icon_grid`: 77 passed, 1 failed — the pre-existing
+  `design_token_audit::app_and_shell_theme_escape_hatches_do_not_grow` (below).
+- Scoped shell lib tests (`overlay_host topbar_chrome sidebar_wheel workspace_settings
+  room_activity quick_settings notification onboarding_view portal_dialog power_menu osd
+  collaboration_launchpad peer_sync projection_overlay window_actions state::tests tab_binding
+  lock_screen drag_feedback remote_cursors editor_app notes_app chrome_state search::`):
+  927 passed, 5 failed — `collaborator_actions_are_absent_without_the_invite_capability`
+  (pre-existing, round one) and four `search::action_api` / `search::visibility` tests
+  (VERIFY-AT-BASE).
 - Spacing-literal ratchet (`f1_spacing_token_audit`): re-baselined once after all nineteen
-  merges — the app units named their remaining pixel constants (HIG §7a: an authored value is
-  not a defect per se), which the ratchet counts as growth; the baseline only moves down
-  from here.
-- Scoped shell lib tests: TODO.
+  merges (42 entries moved) — the app units named their remaining pixel constants in parallel
+  (HIG §7a: an authored value is not a defect per se), which the ratchet counts as growth,
+  while several entries fell (`overlay_host` 22 → 17, `workspace_settings` 21 → 17,
+  `video_editor` 56 → 53, `modal_dialog` 6 → 3, `themes/app.rs` 6 → 3). The baseline only
+  moves down from here.
+- Shell lib tests run as the scoped set (the chrome, panel, palette, tab and state modules),
+  the way round one ran them: the whole suite in parallel trips the `DenyAmbientStarts` guard
+  across tests (one test arms a process-wide flag, dozens of unrelated tests then panic
+  "ambient service start forbidden"), and forced to one thread a test spins at 100 % on
+  260 threads without finishing. Both are properties of the suite, not of this merge; S1
+  reproduced the same at the base.
 - Pre-existing failures, verified at the branch tip before this merge and left untouched:
   `design_token_audit::app_and_shell_theme_escape_hatches_do_not_grow` (`apps/browser/src/browser_tabs.rs`,
   `shell/src/shell/frame.rs` — the live checkout's uncommitted work), `typography_visual_regression`,
