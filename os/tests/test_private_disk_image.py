@@ -60,6 +60,15 @@ class AllocationTests(unittest.TestCase):
                 raise RuntimeError('installer failed')
         self.assertFalse(self.path.exists())
 
+    def test_retention_requires_file_and_directory_durability(self):
+        with patch.object(disk.os, 'fsync', side_effect=[None, OSError('directory sync failed')]) as sync:
+            with self.assertRaisesRegex(OSError, 'directory sync failed'):
+                with disk.PrivateDiskImage(self.path, 4096) as image:
+                    file_fd, parent_fd = image._fd, image._directory_fd
+                    image.retain()
+        self.assertEqual([call.args[0] for call in sync.call_args_list], [file_fd, parent_fd])
+        self.assertFalse(self.path.exists())
+
     def test_existing_regular_hardlink_symlink_and_fifo_never_opened(self):
         source = self.root / 'source'
         source.write_bytes(b'preserve')
