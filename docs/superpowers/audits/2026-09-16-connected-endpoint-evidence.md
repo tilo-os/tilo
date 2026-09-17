@@ -159,3 +159,9 @@ Commit `cbea72f31ce9c4e366ea92e30558c9333832e295` adds exact replacement-aware a
 The initial long-locator regression had an invalid fixture and is not counted as behavioral failure evidence. Its corrected admitted locator was tested against the original implementation and failed at the disconnect fence, then passed with the fix. Checkpoint tests distinguish identity replacement from content change, check both publication boundaries, and verify unexpected log bytes survive reopen and attempted reclamation. Native platform runtime and power-loss proof remain unrun.
 
 A fresh scoped independent review is underway. Its exact fix package SHA-256 is `b0dfe57a13a4cec4827db98c42967ae1c9ff76c52a4f18b5f6dfc43fc3307f51`. Source acceptance remains withheld until both findings close. Native regular-file mutation design is prepared for the following source work; Windows durability, writable NTFS qualification, directory recovery and service/UI delivery remain explicit obligations.
+
+### Connected store source review closed
+
+Fresh scoped re-review of `cbea72f31` marked both Important findings addressed and found no new Critical/Important breakage. The private store source slice is accepted. Exact row admission now precedes persistence and is recomputed after checkpointing; checkpoint publication validates retained pointer/log evidence before replacement and before adopting the new generation.
+
+This does not complete Task 3 or establish native Windows/Linux persistence. Actual native mutation evidence, platform runtime qualification and service/UI integration remain required. The next source slice implements Linux regular-file primitives and an isolated lease receiver, with real native test entry points and honest execution limits while both Fedora VMs remain on hold. Windows durability/executor and writable NTFS work remain part of the delivery scope.
