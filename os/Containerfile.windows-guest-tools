@@ -1,0 +1,7 @@
+# Packaging tools only: no Wine or OS compilation.
+ARG WINDOWS_GUEST_BUILDROOT_REF
+FROM ${WINDOWS_GUEST_BUILDROOT_REF}
+RUN test "$(uname -m)" = x86_64 \
+ && dnf5 install -y --setopt=gpgcheck=True rpm-sign gnupg2 \
+ && dnf5 clean all \
+ && command -v rpmsign && command -v gpg && command -v gpgconf
