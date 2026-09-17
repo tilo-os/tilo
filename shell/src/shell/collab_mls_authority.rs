@@ -10,8 +10,8 @@ use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use channel_crypto::{ChannelGroup, GovernanceJournal, KeyPackage, VaultKey};
 use collab_types::{
@@ -485,31 +485,24 @@ fn random_capability() -> [u8; 32] {
 
 fn secret_service_store(locator: &str, secret: &[u8]) -> Result<(), MlsAuthorityError> {
     let encoded = Zeroizing::new(hex::encode(secret));
-    let mut child = Command::new("secret-tool")
-        .args([
+    let output = bounded_command::run(
+        "secret-tool",
+        &[
             "store",
             "--label=Tilo MLS key",
             "tilo-purpose",
             "mls",
             "tilo-mls-key",
             locator,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| MlsAuthorityError::VaultUnavailable(error.to_string()))?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| MlsAuthorityError::VaultUnavailable("secret-tool stdin unavailable".into()))?
-        .write_all(encoded.as_bytes())
-        .map_err(|error| MlsAuthorityError::VaultUnavailable(error.to_string()))?;
-    if child
-        .wait()
-        .map_err(|error| MlsAuthorityError::VaultUnavailable(error.to_string()))?
-        .success()
-    {
+        ],
+        Some(encoded.as_bytes()),
+        64 * 1024,
+        Duration::from_secs(10),
+    )
+    .map_err(|_| {
+        MlsAuthorityError::VaultUnavailable("Secret Service MLS storage unavailable".into())
+    })?;
+    if output.status.success() {
         Ok(())
     } else {
         Err(MlsAuthorityError::VaultUnavailable(
@@ -519,12 +512,16 @@ fn secret_service_store(locator: &str, secret: &[u8]) -> Result<(), MlsAuthority
 }
 
 fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, MlsAuthorityError> {
-    let output = Command::new("secret-tool")
-        .args(["lookup", "tilo-purpose", "mls", "tilo-mls-key", locator])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|error| MlsAuthorityError::VaultUnavailable(error.to_string()))?;
+    let output = bounded_command::run(
+        "secret-tool",
+        &["lookup", "tilo-purpose", "mls", "tilo-mls-key", locator],
+        None,
+        64 * 1024,
+        Duration::from_secs(10),
+    )
+    .map_err(|_| {
+        MlsAuthorityError::VaultUnavailable("Secret Service MLS lookup unavailable".into())
+    })?;
     if !output.status.success() {
         return Err(MlsAuthorityError::VaultUnavailable(
             "Secret Service MLS key unavailable".into(),

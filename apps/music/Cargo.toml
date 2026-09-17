@@ -58,7 +58,7 @@ taffy.workspace = true
 # Optional: enabled only by the `audio` / `live` / `lyrics` / `p2p`
 # features above. Versions pinned to match the workspace lock so no extra
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
-reqwest = { workspace = true, optional = true, features = ["blocking", "json"], default-features = true }
+reqwest = { workspace = true, optional = true, features = ["blocking", "json", "rustls-tls"] }
 gstreamer = { workspace = true, optional = true }
 # MPRIS D-Bus media control. The version matches `apps/chat` and `ashpd` to
 # keep one zbus copy; `p2p` also supports socket-pair round-trip tests.
@@ -70,7 +70,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
 # resolution. Embeds `rquickjs` for signature deobfuscation — no ffmpeg /
 # yt-dlp / JS runtime binary. Gated behind `live`; off the `--shots` path.
-rustypipe = { workspace = true, optional = true, default-features = true }
+rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
 
 [lints]
 workspace = true

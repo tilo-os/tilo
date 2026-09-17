@@ -31,7 +31,41 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
-    # Core
+    "crates/app/tilo-app",
+    "crates/windows/compat-catalogue",
+    "crates/windows/compat-service",
+    "crates/dev/headless-schema",
+    "crates/dev/tilo-dev",
+    "crates/dev/tilo-dev-template-smoke",
+    "crates/dev/ui-builder",
+    "crates/dev/ui-graph",
+    "crates/system/tilo-rollback",
+    "crates/system/tilo-crypto",
+    "crates/system/tilo-native-certs",
+    "crates/system/bounded-command",
+    "crates/system/tilo-cli",
+    "crates/system/tinker",
+    "crates/system/swipe",
+    "crates/system/tts",
+    "crates/system/accounts",
+    "crates/agent/provider-config",
+    "crates/agent/model-gateway",
+    "crates/agent/local-model-service",
+    "crates/system/app-state",
+    "crates/system/desktop-policy",
+    "crates/doc/qdoc",
+    "crates/text/spellcheck",
+    "crates/doc/qdoc-pdf",
+    "crates/doc/qdoc-html",
+    "crates/doc/qdoc-rtf",
+    "crates/doc/qdoc-epub",
+    "apps/word-processor",
+    "apps/photos",
+    "apps/agent",
+    "apps/video-player",
+    "crates/media",
+    "crates/media/ocr",
+    "crates/thumbnail",
     "fs",
     "shell",
     "ui",
@@ -364,7 +398,10 @@ bip39 = "2"
 # ---------------------------------------------------------------------------
 iroh = "1.0.3"
 iroh-base = "1.0.3"
-iroh-blobs = "0.103.0"
+# The default `rpc` feature enables Noq's platform certificate verifier and
+# its `openssl-probe` path discovery helper.  Tilo uses the blob protocol and
+# stores directly, never iroh-blobs RPC, so keep that unnecessary edge out.
+iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 iroh-gossip = "0.101.0"
 iroh-mdns-address-lookup = "0.5.0"
 # ---------------------------------------------------------------------------
@@ -487,6 +524,7 @@ debug-assertions = true
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
+rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 winit = { path = "vendor/winit" }
 # Vendored vello variants size scratch buffers from the current scene and
 # include the matching shader/encoding changes.

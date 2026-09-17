@@ -169,7 +169,9 @@ pub struct LpSpooler;
 impl PrintSpooler for LpSpooler {
     fn destinations(&self) -> Vec<String> {
         // `lpstat -a` prints one line per destination, name first.
-        let Ok(out) = std::process::Command::new("lpstat").arg("-a").output() else {
+        let Ok(out) =
+            bounded_command::run("lpstat", &["-a"], None, 1024 * 1024, Duration::from_secs(5))
+        else {
             // No CUPS on this machine — an empty list is the truthful answer; `PreparePrint` turns it into an error rather than inventing a printer.
             return Vec::new();
         };
@@ -194,8 +196,7 @@ impl PrintSpooler for LpSpooler {
     }
 
     fn submit(&self, job: PrintJobRequest) -> Result<String, String> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
+        use std::process::Command;
 
         // Re-checked even though `PreparePrint` already matched it — this is the last point before the string becomes argv.
         if !valid_destination(&job.destination) {
@@ -208,36 +209,41 @@ impl PrintSpooler for LpSpooler {
         // Argv, not a shell string: `-t <title>` consumes its value
         // unconditionally, so even a title shaped like a flag can't become one.
         // No document-format option is passed either — CUPS runs its own type detection over the actual bytes instead of trusting the app's claim.
-        let mut child = Command::new("lp")
+        let mut command = Command::new("lp");
+        command
             .arg("-d")
             .arg(&job.destination)
             .arg("-t")
             .arg(&job.title)
             .arg("-n")
-            .arg(job.copies.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("lp not available: {e}"))?;
-
-        {
-            let stdin = child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| "lp stdin unavailable".to_string())?;
-            stdin
-                .write_all(&job.document)
-                .map_err(|e| format!("writing document to lp: {e}"))?;
-        }
-
-        let out = child
-            .wait_with_output()
-            .map_err(|e| format!("waiting on lp: {e}"))?;
+            .arg(job.copies.to_string());
+        let out = bounded_command::run_prepared_with_input_limit(
+            command,
+            Some(&job.document),
+            MAX_SPOOL_BYTES,
+            1024 * 1024,
+            1024 * 1024,
+            Duration::from_secs(5 * 60),
+        )
+        .map_err(|error| format!("print spooler failed: {error}"))?;
         if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            Ok(String::from_utf8_lossy(&out.stdout)
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(512)
+                .collect::<String>()
+                .trim()
+                .to_string())
         } else {
-            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+            Err(String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .filter(|character| {
+                    !character.is_control() || matches!(character, ' ' | '\n' | '\t')
+                })
+                .take(512)
+                .collect::<String>()
+                .trim()
+                .to_string())
         }
     }
 }
@@ -245,10 +251,8 @@ impl PrintSpooler for LpSpooler {
 /// `lpstat -d` → the system default destination, if there is one.
 #[cfg(target_os = "linux")]
 fn lpstat_default() -> Option<String> {
-    let out = std::process::Command::new("lpstat")
-        .arg("-d")
-        .output()
-        .ok()?;
+    let out =
+        bounded_command::run("lpstat", &["-d"], None, 1024 * 1024, Duration::from_secs(5)).ok()?;
     if !out.status.success() {
         return None;
     }

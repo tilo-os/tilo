@@ -38,20 +38,51 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
-grep -Fq 'qos-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Fq 'qos-kernel-buildcache:latest,mode=max' "$workflows/build-kernel.yml" \
+grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=max' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
-grep -Fq 'tilo-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-image.yml" \
-  && ! grep -Fq 'tilo-buildcache:${{ matrix.arch }},mode=max' "$workflows/build-image.yml" \
-  && ok 'OS cache export excludes its multi-gigabyte intermediate build graph' \
-  || bad 'OS cache export can duplicate the intermediate build graph and exhaust the runner'
+if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF"; expected_arch=amd64' "$os" \
+   && grep -Fq 'aarch64) ref="$KERNEL_RPMS_AARCH64_REF"; expected_arch=arm64' "$os" \
+   && grep -Fq '[[ "$ref" =~ ^code\.podesta\.ai/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$os" \
+   && grep -Fq 'cosign verify --key keys/cosign.pub "$ref"' "$os" \
+   && grep -Fq 'cosign verify-attestation --key keys/cosign.pub' "$os" \
+   && grep -Fq 'https://tilo.dev/buildtypes/kernel-rpm/v1' "$os" \
+   && grep -Fq 'actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"' "$os" \
+   && grep -Fq 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$os" \
+   && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
+   && grep -Fq 'cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF"' "$repo/os/dev/build-image.sh" \
+   && grep -Fq 'cosign verify-attestation' "$repo/os/dev/build-image.sh" \
+   && grep -Fq 'https://tilo.dev/buildtypes/kernel-rpm/v1' "$repo/os/dev/build-image.sh"; then
+  ok 'CI and local OS builds authenticate kernel digest, architecture, and provenance before consumption'
+else
+  bad 'an OS build can consume an unpinned or unauthenticated kernel repository'
+fi
 
-grep -Fq "expected=\$'SHA256SUMS\\nmanifest.json\\nshell\\ntilo-launcher\\ntilo-unlock-helper'" \
-  "$workflows/build-image.yml" \
-  && ok 'desktop payload allow-list matches its sorted archive comparison' \
-  || bad 'desktop payload allow-list is not in archive comparison order'
+kernel_workflow="$workflows/build-kernel.yml"
+if grep -Fq 'runner: imager-linux-x86_64' "$kernel_workflow" \
+   && grep -Fq 'runner: imager-linux-aarch64' "$kernel_workflow" \
+   && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
+   && grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
+   && grep -Fq 'KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
+   && grep -Fq 'promote-native-kernels:' "$kernel_workflow" \
+   && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$kernel_workflow" \
+   && grep -Fq 'KERNEL_RPMS_AARCH64_REF=$KERNEL_RPMS_AARCH64_REF' "$kernel_workflow" \
+   && grep -Fq 'kernel inputs changed during promotion; refusing stale push' "$kernel_workflow" \
+   && grep -Fq "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" "$kernel_workflow" \
+   && ! grep -Fq "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$kernel_workflow" \
+   && grep -Fq 'aarch64) kernel_image=arch/arm64/boot/Image' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'rpm-build make gcc clang lld bc flex bison rust cargo' "$repo/os/kernel/Containerfile" \
+   && ! grep -Fq 'TILO_BUILDER_REF' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'https://tilo.dev/buildtypes/kernel-rpm/v1' "$kernel_workflow" \
+   && grep -Fq -- '--predicate kernel-provenance.json --type slsaprovenance1' "$kernel_workflow" \
+   && grep -Fq 'cosign verify-attestation --key keys/cosign.pub' "$kernel_workflow" \
+   && grep -Fq 'BuildArch:      %{_arch}' "$repo/os/kernel/tilo-kernel-payload.spec"; then
+  ok 'kernel publication builds, signs, attests, and reports native x86-64 and ARM64 payloads'
+else
+  bad 'the two-architecture OS release does not have matching native kernel builds'
+fi
 
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
@@ -134,7 +165,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
-  && grep -Fq 'image: code.podesta.ai/qos/qos-builder:latest' "$apps" \
+  && grep -Fq 'image: code.podesta.ai/tilo/tilo-builder:latest' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \
@@ -147,7 +178,7 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'enable-openid-connect: true' "$os" \
   && grep -Fq 'TILO_OS_APP_COLLECTION_AUDIENCE' "$os" \
   && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*' "$os")" -eq 2 \
-  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*' "$os")" -eq 2 \
+  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*' "$os")" -eq 2 \
   && test "$(grep -Fc -- "--proto '=https' --proto-redir '=https'" "$os")" -eq 2 \
   && test "$(grep -Fc -- "--proto '=http' --fail --retry 3" "$os")" -eq 2 \
   && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \

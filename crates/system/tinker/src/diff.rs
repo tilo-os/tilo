@@ -154,6 +154,10 @@ fn is_pkg_metadata(path: &Path) -> bool {
 ///
 /// Filesystem failures for individual entries are represented as unknown-size
 /// additions or skipped; failures opening `upper` are returned.
+///
+/// # Errors
+///
+/// Returns an I/O error when the upper layer cannot be traversed.
 pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
     let mut changes = Vec::new();
 

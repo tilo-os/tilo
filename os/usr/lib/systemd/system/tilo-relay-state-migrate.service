@@ -1,0 +1,34 @@
+[Unit]
+Description=Migrate host relay state to its unprivileged account
+After=systemd-tmpfiles-setup.service
+Before=tilo-relay.service tilo-fs-replica.service
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-relay-state-migrate
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/tilo /var/lib/tilo-relay
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @keyring @module @mount @network-io @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM

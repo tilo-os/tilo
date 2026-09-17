@@ -68,8 +68,10 @@ for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
 done
 require_file /etc/fuse.conf
 require_file /usr/lib/systemd/system/fs.service
+require_file /usr/lib/systemd/system/tilo-fs-start.timer
 require_file /usr/lib/systemd/system/fs-identity.path
 require_file /usr/lib/systemd/user/tilo-fs-recipient.service
+require_file /usr/lib/systemd/user/tilo-fs-recipient.socket
 require_file /usr/lib/systemd/user/tilo-identity.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
@@ -88,12 +90,13 @@ else
 fi
 
 # The system host and per-user recipient must be enabled, not merely copied.
-require_link /etc/systemd/system/multi-user.target.wants/fs.service
-require_link /etc/systemd/system/multi-user.target.wants/tilo-growfs-sysroot.service
+require_link /etc/systemd/system/timers.target.wants/tilo-fs-start.timer
+require_link /etc/systemd/system/timers.target.wants/tilo-growfs-sysroot.timer
 require_link /etc/systemd/system/multi-user.target.wants/fs-identity.path
-require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-recipient.service
+require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-recipient.socket
 require_link /etc/systemd/user/graphical-session-pre.target.wants/tilo-identity.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.service
+require_file /usr/lib/systemd/system/tilo-growfs-sysroot.timer
 require_file /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
 if [ -L "$(at /etc/systemd/system/systemd-growfs-root.service)" ] \
    && [ "$(readlink "$(at /etc/systemd/system/systemd-growfs-root.service)")" = /dev/null ]; then
@@ -101,6 +104,8 @@ if [ -L "$(at /etc/systemd/system/systemd-growfs-root.service)" ] \
 fi
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ConditionPathIsMountPoint=/sysroot"
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot"
+require_line /usr/lib/systemd/system/tilo-growfs-sysroot.timer "Unit=tilo-growfs-sysroot.service"
+require_line /usr/lib/systemd/system/tilo-growfs-sysroot.timer "OnBootSec=5s"
 require_line /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf "ConditionPathIsMountPoint=!/sysroot"
 
 # Keep the unit/launcher protocol literal and paths tied together.  Exact-line
@@ -116,6 +121,9 @@ require_text /usr/lib/systemd/user/tilo-fs-recipient.service "/usr/bin/fs recipi
 require_text /usr/lib/systemd/user/tilo-fs-recipient.service "--mounts-root %h/Shared --cache-root %h/.cache/tilo/received-files"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.service "Requires=tilo-identity.service"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.service "PartOf=graphical-session.target"
+require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "ListenStream=%t/tilo/services/tilo-fs.sock"
+require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "Service=tilo-fs-recipient.service"
+require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "SocketMode=0600"
 require_line /usr/lib/systemd/user/tilo-identity.service "ExecStart=/usr/bin/shell --provision-identity"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graphical-session-pre.target graphical-session.target"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
@@ -182,7 +190,7 @@ fi
 if [ "$mode" = runtime ]; then
   [ "$root" = / ] || die "runtime mode requires OS_ROOT=/"
   [ -c /dev/fuse ] || die "/dev/fuse is absent or not a character device"
-  systemctl is-enabled --quiet fs.service || die "fs.service is not enabled"
+  systemctl is-enabled --quiet tilo-fs-start.timer || die "tilo-fs-start.timer is not enabled"
   systemctl is-enabled --quiet fs-identity.path || die "fs-identity.path is not enabled"
   systemctl is-active --quiet fs.service || die "fs.service is not active"
   mountpoint -q /var/workspace || die "/var/workspace is not mounted"
@@ -195,7 +203,7 @@ if [ "$mode" = runtime ]; then
   user_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export XDG_RUNTIME_DIR="$user_runtime"
   systemctl --user is-enabled --quiet tilo-identity.service || die "identity user unit is not enabled"
-  systemctl --user is-enabled --quiet tilo-fs-recipient.service || die "recipient user unit is not enabled"
+  systemctl --user is-enabled --quiet tilo-fs-recipient.socket || die "recipient socket is not enabled"
 
   # SSH is normally ready before greetd has finished the graphical login.
   # Give the bounded boot transaction time to settle, while still failing
@@ -209,7 +217,7 @@ if [ "$mode" = runtime ]; then
     die "$unit is not active after 60 seconds"
   }
   await_user_active tilo-identity.service
-  await_user_active tilo-fs-recipient.service
+  await_user_active tilo-fs-recipient.socket
   systemctl --user is-active --quiet tilo-graphical-session.target \
     || die "Tilo graphical-session lifecycle target is not active"
 
@@ -221,7 +229,7 @@ if [ "$mode" = runtime ]; then
   for identity_file in \
     "$HOME/.config/tilo/identity/primary.json" \
     /var/lib/tilo/user-identity/pubkey.bin \
-    /var/lib/tilo/device/keypair.bin \
+    /var/lib/tilo/device-private/keypair.bin \
     /var/lib/tilo/device/cert.bin; do
     [ -s "$identity_file" ] || die "identity artifact is absent or empty: $identity_file"
   done

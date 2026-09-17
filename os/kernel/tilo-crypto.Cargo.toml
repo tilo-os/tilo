@@ -1,0 +1,34 @@
+[package]
+name = "tilo-crypto"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "tilo_crypto"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-crypto"
+path = "src/main.rs"
+
+[dependencies]
+authenticode = { version = "0.6", features = ["object", "std"] }
+cms = "0.2"
+const-oid = { version = "0.9", features = ["db"] }
+der = { version = "0.7", features = ["alloc", "pem"] }
+hex = "0.4.3"
+libc = "0.2"
+object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
+picky = { version = "=7.0.0-rc.26", default-features = false, features = ["pkcs7", "time_conversion", "wincert"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+sha-crypt = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+signature = "2"
+spki = "0.7"
+time = "0.3"
+x509-parser = "0.18"
+x509-cert = { version = "0.2", features = ["pem"] }
+zeroize = "1"

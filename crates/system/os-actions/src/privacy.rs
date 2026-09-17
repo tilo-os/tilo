@@ -1,7 +1,8 @@
 //! Kernel and `PipeWire` privacy state for shell indicators.
 
 use std::collections::HashMap;
-use std::io::BufRead;
+use std::io::Read;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -130,6 +131,7 @@ pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Re
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .map_err(|error| format!("PipeWire monitor could not start: {error}"))?;
     let stdout = child
@@ -138,17 +140,28 @@ pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Re
         .ok_or("PipeWire monitor has no output")?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines() {
-            if tx
-                .send(line.map(|_| ()).map_err(|error| error.to_string()))
-                .is_err()
-            {
-                break;
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut chunk = [0_u8; 8192];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if tx.send(Ok(())).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(error.to_string()));
+                    break;
+                }
             }
         }
     });
     while let Ok(event) = rx.recv() {
-        event.map_err(|error| format!("PipeWire monitor failed: {error}"))?;
+        if let Err(error) = event {
+            terminate_monitor(&mut child);
+            return Err(format!("PipeWire monitor failed: {error}"));
+        }
         // Pretty-printed JSON produces many lines per graph mutation. Wait
         // until the burst goes quiet, then take one authoritative snapshot.
         while rx.recv_timeout(Duration::from_millis(100)).is_ok() {}
@@ -163,6 +176,17 @@ pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Re
         "PipeWire monitor exited with status {:?}",
         status.code()
     ))
+}
+
+fn terminate_monitor(child: &mut std::process::Child) {
+    if let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: the monitor is spawned into its own pid-named process group.
+        unsafe { libc::kill(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Immediately disconnect an offending `PipeWire` client. This is deliberately

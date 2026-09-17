@@ -11,7 +11,7 @@ Version:        %{kver}
 Release:        1
 Summary:        Tilo custom kernel (initramfs-less boot, tuned for interactive use)
 License:        GPL-2.0
-BuildArch:      x86_64
+BuildArch:      %{_arch}
 # Satisfy Fedora's `Requires: kernel-core` in the base OS + let
 # `dnf swap kernel-core tilo-kernel-core` resolve by both name and
 # virtual provides.
@@ -24,9 +24,9 @@ Provides:       installonlypkg(kernel)
 
 # Empty %prep + %build + %install — everything is already staged.
 %description
-Tilo custom kernel with statically-linked storage/net/USB/paravirt
-drivers on the boot path (no initramfs required) and PREEMPT + HZ=1000
-+ THP=always tuning for interactive throughput.
+Tilo custom kernel with statically linked storage/USB/paravirt drivers on the
+boot path, signed modular network drivers outside it, and PREEMPT + HZ=1000 +
+THP=madvise and dynamic full preemption tuning for consistent frame latency.
 
 %install
 mkdir -p %{buildroot}

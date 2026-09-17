@@ -205,7 +205,7 @@ jobs:
                 "$COLLECTION_URL" -o "$work/apps.tar.gz"
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*|\
-            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
               # The in-cluster Forgejo service is reached over the cluster's
               # private network. Do not follow redirects from this allowlisted
               # HTTP origin, and never permit arbitrary cleartext package URLs.
@@ -297,7 +297,7 @@ jobs:
                 --output "$work/desktop.tar.gz"
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*|\
-            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
               curl --proto '=http' --fail --retry 3 \
                 --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
                 --output "$work/desktop.tar.gz"
@@ -356,8 +356,40 @@ jobs:
       # Pin the frozen RPM repo the build installs from (cross-time reproducible).
       # Only the RPMS_REF= line — $GITHUB_ENV has no comment syntax, so the file's
       # leading `#` lines would corrupt the env (RPMS_REF ended up empty).
-      - name: Load RPMS_REF (frozen package snapshot)
-        run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
+      - name: Authenticate RPMS_REF (frozen package snapshot)
+        run: |
+          set -euo pipefail
+          . os/rpms-snapshot.env
+          [[ "$RPMS_REF" =~ ^code\.podesta\.ai/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || {
+            printf 'RPMS_REF is not the digest-pinned Tilo RPM repository\n' >&2
+            exit 1
+          }
+          cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null
+          digest="${RPMS_REF##*@}"
+          package_set_sha256="$(./os/dev/derive-rpm-package-set.py | sort -u | sha256sum | cut -d' ' -f1)"
+          provenance="$(cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance1 "$RPMS_REF")"
+          printf '%s' "$provenance" | jq -e --arg digest "$digest" \
+            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" '
+              [.[].payload | @base64d | fromjson | .predicate]
+              | any(
+                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/frozen-rpm-index/v1"
+                  and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+                  and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+                )
+            ' >/dev/null || {
+              printf 'frozen RPM provenance does not bind its package set, digest, base, and architectures\n' >&2
+              exit 1
+            }
+          platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
+            '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')"
+          [ "$platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] || {
+            printf 'frozen RPM index has unexpected platforms: %s\n' "$platforms" >&2
+            exit 1
+          }
+          echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
 
       # Branch/PR runs validate the OS integration boundary. Browser engine
       # compilation has its own signed snapshot workflow and is exercised by
@@ -405,10 +437,50 @@ jobs:
           [ -n "$ref" ] || ref="$BASE_REF"
           echo "WPE_BUILDROOT_REF=$ref" >> "$GITHUB_ENV"
 
-      # Pin the tilo-kernel image the build swaps into kernel-core.  Same
-      # digest-pinning + strip-comments-strategy as RPMS_REF.
-      - name: Load KERNEL_RPMS_REF (tilo-kernel image)
-        run: grep '^KERNEL_RPMS_REF=' os/kernel-snapshot.env >> "$GITHUB_ENV"
+      # Authenticate the exact kernel repository before BuildKit can mount it.
+      # Digest pinning prevents substitution after this verification; the
+      # repository restriction prevents a valid Tilo signature being replayed
+      # from a different artifact namespace.
+      - name: Verify KERNEL_RPMS_REF (tilo-kernel image)
+        run: |
+          set -euo pipefail
+          . os/kernel-snapshot.env
+          case "$(uname -m)" in
+            x86_64) ref="$KERNEL_RPMS_X86_64_REF"; expected_arch=amd64 ;;
+            aarch64) ref="$KERNEL_RPMS_AARCH64_REF"; expected_arch=arm64 ;;
+            *) printf 'unsupported kernel architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
+          esac
+          [[ "$ref" =~ ^code\.podesta\.ai/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]] || {
+            printf 'no digest-pinned native Tilo kernel for %s\n' "$(uname -m)" >&2
+            exit 1
+          }
+          cosign verify --key keys/cosign.pub "$ref" >/dev/null
+          digest="${ref##*@}"
+          provenance="$(cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance1 "$ref")"
+          printf '%s' "$provenance" | jq -e \
+            --arg digest "$digest" --arg architecture "$(uname -m)" \
+            --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
+              [.[].payload | @base64d | fromjson | .predicate]
+              | any(
+                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/kernel-rpm/v1"
+                  and .buildDefinition.externalParameters.architecture == $architecture
+                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                  and any(.buildDefinition.resolvedDependencies[]?;
+                    .uri | test("^git\\+ssh://code\\.podesta\\.ai/tilo/tilo@[0-9a-f]{40}$"))
+                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
+                )
+            ' >/dev/null || {
+              printf 'Tilo kernel provenance does not bind its source, architecture, digest, base, and RPM inputs\n' >&2
+              exit 1
+            }
+          actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"
+          [[ "$actual_arch" == "$expected_arch" ]] || {
+            printf 'signed Tilo kernel architecture is %s, expected %s\n' "$actual_arch" "$expected_arch" >&2
+            exit 1
+          }
+          echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"
 
       # Deterministic timestamp for reproducible builds: the HEAD commit time.
       # buildkit rewrites layer/image timestamps to SOURCE_DATE_EPOCH, and the
@@ -526,7 +598,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: code.podesta.ai/qos/tilo
+          images: code.podesta.ai/tilo/tilo
           tags: |
             type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' }}
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
@@ -605,8 +677,8 @@ jobs:
           # (~1-2 min). Export only final-stage dependencies: mode=max
           # duplicates the multi-gigabyte Rust build graph and can exhaust
           # the runner before BuildKit can finish or clean up.
-          cache-from: type=registry,ref=code.podesta.ai/qos/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.podesta.ai/qos/tilo-buildcache:${{ matrix.arch }},mode=min
+          cache-from: type=registry,ref=code.podesta.ai/tilo/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.podesta.ai/tilo/tilo-buildcache:${{ matrix.arch }},mode=min
 
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
@@ -623,7 +695,7 @@ jobs:
           file: os/Containerfile
           push: false
           outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar
-          tags: code.podesta.ai/qos/tilo:repro-${{ github.sha }}
+          tags: code.podesta.ai/tilo/tilo:repro-${{ github.sha }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
@@ -754,7 +826,7 @@ jobs:
           # build-image may add a deterministic /boot-only UKI reseal layer.
           # Reproduce that exact final layer on the independent image and gate
           # the artifact that will actually be published, not merely its base.
-          repro_image="code.podesta.ai/qos/tilo:repro-${GITHUB_SHA}"
+          repro_image="code.podesta.ai/tilo/tilo:repro-${GITHUB_SHA}"
           podman load --input /var/tmp/tilo-image-repro.tar
           rm -f /var/tmp/tilo-image-repro.tar
           if [[ -s "$TILO_RESEALED_DIGEST_FILE" ]]; then
@@ -790,6 +862,11 @@ jobs:
             fi
             sleep 2
           done
+
+          # Fixed QEMU hardware makes this a stable regression gate. Keep a
+          # generous ceiling for shared-runner variance while still catching a
+          # newly serialized network wait, initramfs stall, or service timeout.
+          ./os/dev/vm.sh ssh 'TILO_BOOT_USERSPACE_BUDGET_SEC=30 /usr/libexec/tilo/boot-performance-gate.sh'
 
           # This is a fresh installed user, so the real compositor must start
           # directly into its trusted first-login identity ceremony. The
@@ -848,7 +925,7 @@ jobs:
             # verification, so update clients cannot observe a half-published
             # release through a channel tag.
             digest_file="$(mktemp /var/tmp/tilo-push-digest.XXXXXX)"
-            candidate="code.podesta.ai/qos/tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}"
+            candidate="code.podesta.ai/tilo/tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}"
             podman tag "$TILO_IMAGE" "$candidate"
             podman push --digestfile "$digest_file" "$candidate"
             digest="$(tr -d '[:space:]' < "$digest_file")"
@@ -878,7 +955,7 @@ jobs:
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
           cosign sign --yes --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Install checksum-pinned Syft from the persistent asset cache
         if: steps.release-mode.outputs.publish == 'true'
@@ -892,7 +969,7 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         run: |
           syft \
-            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}" \
+            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}" \
             --output spdx-json=sbom.spdx.json
 
       - name: Attest the SBOM to the image (signed)
@@ -903,7 +980,7 @@ jobs:
           cosign attest --yes \
             --predicate sbom.spdx.json --type spdxjson \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Generate and attest SLSA provenance
         if: steps.release-mode.outputs.publish == 'true'
@@ -915,7 +992,7 @@ jobs:
           cosign attest --yes \
             --predicate provenance.json --type slsaprovenance1 \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
 
       # A short-lived, digest-bound statement makes release freshness an
       # authenticated value instead of an inference from mutable registry tags.
@@ -933,13 +1010,13 @@ jobs:
           cosign attest --yes \
             --predicate freshness.json --type https://tilo.dev/security/release-freshness/v1 \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Verify and describe the native release child
         if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          image="code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
+          image="code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
           cosign verify-attestation --key keys/cosign.pub \
             --type spdxjson "$image" >/dev/null
@@ -956,7 +1033,7 @@ jobs:
               [.[].payload | @base64d | fromjson | .predicate]
               | any(
                   .schema == "https://tilo.dev/security/release-freshness/v1"
-                  and .repository == "code.podesta.ai/qos/tilo"
+                  and .repository == "code.podesta.ai/tilo/tilo"
                   and .digest == $digest
                   and .sourceRevision == $source
                   and .generation == $generation
@@ -1065,7 +1142,7 @@ jobs:
           child_dependencies='[]'
           for arch in x86_64 aarch64; do
             digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
-            image="code.podesta.ai/qos/tilo@$digest"
+            image="code.podesta.ai/tilo/tilo@$digest"
             case "$arch" in x86_64) expected_registry_arch=amd64 ;; aarch64) expected_registry_arch=arm64 ;; esac
             actual_registry_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
             [[ "$actual_registry_arch" == "$expected_registry_arch" ]] || {
@@ -1080,7 +1157,7 @@ jobs:
                 [.[].payload | @base64d | fromjson | .predicate]
                 | any(.buildDefinition.externalParameters.generation == $generation
                       and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/qos/tilo@" + $source)))
+                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/tilo/tilo@" + $source)))
               ' >/dev/null || {
                 echo "::error::$arch child provenance does not bind its digest, source, and generation"
                 exit 1
@@ -1089,18 +1166,18 @@ jobs:
               '. + [{architecture:$arch,digest:$digest}]' <<<"$child_dependencies")"
           done
 
-          candidate="code.podesta.ai/qos/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          candidate="code.podesta.ai/tilo/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
           manifest="tilo-release-index-${GITHUB_RUN_ID}"
           podman manifest create "$manifest"
           for arch in x86_64 aarch64; do
             digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
-            podman manifest add "$manifest" "docker://code.podesta.ai/qos/tilo@$digest"
+            podman manifest add "$manifest" "docker://code.podesta.ai/tilo/tilo@$digest"
           done
           digest_file="$(mktemp /var/tmp/tilo-index-digest.XXXXXX)"
           podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
           index_digest="$(tr -d '[:space:]' < "$digest_file")"
           [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          index_image="code.podesta.ai/qos/tilo@$index_digest"
+          index_image="code.podesta.ai/tilo/tilo@$index_digest"
           expected_index="$(jq -c 'sort_by(.architecture)' <<<"$child_dependencies")"
           actual_index="$(skopeo inspect --raw "docker://$index_image" | jq -ce '
             [.manifests[] | {
@@ -1121,8 +1198,12 @@ jobs:
           export TILO_RELEASE_CHILDREN_JSON="$child_dependencies"
           source <(grep '^BASE_REF=' os/base-snapshot.env)
           source <(grep '^RPMS_REF=' os/rpms-snapshot.env)
-          source <(grep '^KERNEL_RPMS_REF=' os/kernel-snapshot.env)
-          export BASE_REF RPMS_REF KERNEL_RPMS_REF
+          . os/kernel-snapshot.env
+          export BASE_REF RPMS_REF
+          export TILO_KERNEL_REFS_JSON="$(jq -cn \
+            --arg x86_64 "$KERNEL_RPMS_X86_64_REF" \
+            --arg aarch64 "$KERNEL_RPMS_AARCH64_REF" \
+            '[{architecture:"x86_64",ref:$x86_64},{architecture:"aarch64",ref:$aarch64}]')"
           ./os/dev/release-provenance.sh index-provenance.json
           cosign attest --yes --predicate index-provenance.json --type slsaprovenance1 \
             --key "$COSIGN_KEY_REF" "$index_image"
@@ -1134,10 +1215,11 @@ jobs:
           cosign verify --key keys/cosign.pub "$index_image" >/dev/null
           index_provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$index_image")"
           printf '%s' "$index_provenance" | jq -e --argjson generation "$generation" \
-            --argjson children "$child_dependencies" '
+            --argjson children "$child_dependencies" --argjson kernels "$TILO_KERNEL_REFS_JSON" '
               [.[].payload | @base64d | fromjson | .predicate]
               | any(.buildDefinition.externalParameters.generation == $generation
-                    and .buildDefinition.externalParameters.children == $children)
+                    and .buildDefinition.externalParameters.children == $children
+                    and .buildDefinition.externalParameters.kernelInputs == $kernels)
             ' >/dev/null
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
             --type https://tilo.dev/security/release-freshness/v1 "$index_image")"
@@ -1154,17 +1236,17 @@ jobs:
           # with different bytes, tolerate an exact retry, and verify every
           # registry write. `latest` is the sole mutable commit point and moves
           # only after all durable names are present.
-          durable_tags=("code.podesta.ai/qos/tilo:gen$generation")
+          durable_tags=("code.podesta.ai/tilo/tilo:gen$generation")
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
             [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
               echo '::error::OS release tag must be vMAJOR.MINOR.PATCH'
               exit 1
             }
-            durable_tags+=("code.podesta.ai/qos/tilo:$version")
+            durable_tags+=("code.podesta.ai/tilo/tilo:$version")
           fi
           if [[ $GITHUB_REF == refs/heads/main ]]; then
-            durable_tags+=("code.podesta.ai/qos/tilo:main-${GITHUB_SHA:0:7}")
+            durable_tags+=("code.podesta.ai/tilo/tilo:main-${GITHUB_SHA:0:7}")
           fi
 
           manifest_digest() {
@@ -1199,7 +1281,7 @@ jobs:
           for tag in "${durable_tags[@]}"; do
             promote_immutable "$tag"
           done
-          latest="code.podesta.ai/qos/tilo:latest"
+          latest="code.podesta.ai/tilo/tilo:latest"
           skopeo copy --all "docker://$index_image" "docker://$latest"
           [[ "$(manifest_digest "$latest")" == "$index_digest" ]] || {
             echo "::error::registry did not commit latest as $index_digest"

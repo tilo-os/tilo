@@ -275,13 +275,38 @@ fn spawn_detached(mut command: std::process::Command) -> Result<String, Error> {
         .map_err(|error| Error::failed(format!("launch failed: {error}")))
 }
 
-fn run_host_command(mut command: std::process::Command) -> Result<String, Error> {
-    let output = command
-        .output()
-        .map_err(|error| Error::failed(format!("host command failed: {error}")))?;
-    let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+fn safe_host_diagnostic(bytes: &[u8]) -> String {
+    const MAX_DIAGNOSTIC_BYTES: usize = 4096;
+    // Invalid UTF-8 expands to a three-byte replacement character. Limit the
+    // source window accordingly so even adversarial bytes stay under the RPC
+    // response ceiling after lossy decoding.
+    const MAX_SOURCE_BYTES: usize = MAX_DIAGNOSTIC_BYTES / 3;
+    let start = bytes.len().saturating_sub(MAX_SOURCE_BYTES);
+    String::from_utf8_lossy(bytes.get(start..).unwrap_or_default())
+        .chars()
+        .map(|character| {
+            if character.is_control() && !matches!(character, '\n' | '\t') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn run_host_command(command: std::process::Command) -> Result<String, Error> {
+    let output = bounded_command::run_prepared(
+        command,
+        None,
+        1024 * 1024,
+        std::time::Duration::from_secs(1800),
+    )
+    .map_err(|error| Error::failed(format!("host command failed: {error}")))?;
+    let mut text = safe_host_diagnostic(&output.stdout);
     if text.is_empty() {
-        text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        text = safe_host_diagnostic(&output.stderr);
     }
     if output.status.success() {
         Ok(text)
@@ -290,6 +315,22 @@ fn run_host_command(mut command: std::process::Command) -> Result<String, Error>
             "host command exited {}: {text}",
             output.status.code().unwrap_or(1)
         )))
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::safe_host_diagnostic;
+
+    #[test]
+    fn host_diagnostics_are_small_and_strip_terminal_controls() {
+        let mut bytes = vec![b'x'; 8192];
+        bytes.extend_from_slice(b"\n\x1b[31mfailure\0");
+        let diagnostic = safe_host_diagnostic(&bytes);
+        assert!(diagnostic.len() <= 4096);
+        assert!(!diagnostic.contains('\x1b'));
+        assert!(!diagnostic.contains('\0'));
+        assert!(diagnostic.ends_with("[31mfailure"));
     }
 }
 

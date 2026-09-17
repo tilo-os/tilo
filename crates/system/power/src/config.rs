@@ -202,10 +202,14 @@ pub fn policy_from_section_for_profile(
 }
 
 fn active_power_profile() -> Option<String> {
-    let output = std::process::Command::new("powerprofilesctl")
-        .arg("get")
-        .output()
-        .ok()?;
+    let output = bounded_command::run(
+        "powerprofilesctl",
+        &["get"],
+        None,
+        64 * 1024,
+        Duration::from_secs(3),
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }

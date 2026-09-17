@@ -103,22 +103,11 @@ entry_id_of() {
 # --- listing ------------------------------------------------------------------
 bootc_status_json() { bootc status --format json 2>/dev/null; }
 
-# Pull one string out of `bootc status --format json` without a JSON parser in the
-# initramfs-adjacent case. python3 is in the image and in the repair console's
-# rootfs, so use it and fail visibly rather than guessing with sed.
-bootc_field() {  # $1 = python expression over `s` (the status dict)
-  bootc_status_json | python3 -c '
-import json, sys
-try:
-    s = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-try:
-    v = eval(sys.argv[1], {}, {"s": s})
-except Exception:
-    sys.exit(1)
-print("" if v is None else v)
-' "$1" 2>/dev/null
+# Fixed selectors are parsed from a bounded stream by the Rust identity tool.
+# This path supplies staged composefs identity to TPM rollback enrollment, so a
+# general interpreter/eval belongs nowhere on the authority boundary.
+bootc_field() {  # $1 = bootc-status-field selector
+  bootc_status_json | tilo-image-trust bootc-status-field "$1" 2>/dev/null
 }
 
 cmd_list() {
@@ -136,12 +125,12 @@ cmd_list() {
 
   printf 'Deployments (from bootc):\n'
   local booted staged rollback
-  booted="$(bootc_field 's["status"]["booted"]["image"]["image"]["image"]')"
-  staged="$(bootc_field 's["status"]["staged"]["image"]["image"]["image"]')"
-  rollback="$(bootc_field 's["status"]["rollback"]["image"]["image"]["image"]')"
+  booted="$(bootc_field booted-image)"
+  staged="$(bootc_field staged-image)"
+  rollback="$(bootc_field rollback-image)"
   printf '  booted   : %s\n' "${booted:-<unknown>}"
   printf '             generation %s, composefs %.16s\n' \
-    "$(tilo_running_generation)" "$(bootc_field 's["status"]["booted"]["composefs"]["verity"]')"
+    "$(tilo_running_generation)" "$(bootc_field booted-composefs)"
   printf '  staged   : %s\n' "${staged:-<none>}"
   printf '  rollback : %s\n' "${rollback:-<none>}"
 
@@ -176,7 +165,20 @@ cmd_list() {
 }
 
 tilo_running_generation() {
-  tr ' \t' '\n\n' < /proc/cmdline 2>/dev/null \
+  # Read the generation from the UKI selected by the boot loader. This remains
+  # available to the boot-entry maintenance service under ProcSubset=pid, while
+  # preserving the trust property of the former /proc/cmdline source: the value
+  # comes from the signed UKI's sealed .cmdline section.
+  local esp entry conf uki_rel cmdline
+  esp="$(esp_path)" || return 0
+  entry="$(current_entry)"
+  [ -n "$entry" ] || return 0
+  conf="$esp/loader/entries/$entry"
+  [ -f "$conf" ] && [ ! -L "$conf" ] || return 0
+  uki_rel="$(sed -n 's/^uki *//p' "$conf" | head -1)"
+  [ -n "$uki_rel" ] || return 0
+  cmdline="$($UKI_CMDLINE show "$esp/${uki_rel#/}" 2>/dev/null || true)"
+  printf '%s\n' "$cmdline" | tr ' \t' '\n\n' \
     | sed -n 's/^tilo\.generation=\([0-9][0-9]*\)$/\1/p' | head -1
 }
 
@@ -244,7 +246,7 @@ cmd_rollback() {
   before="$(next_boot_entry "$esp")"
 
   local target
-  target="$(bootc_field 's["status"]["rollback"]["image"]["image"]["image"]')"
+  target="$(bootc_field rollback-image)"
   if [ -z "$target" ]; then
     # No bootc rollback deployment. There may still be another loader entry —
     # which is the case that matters after an automatic rollback has already
@@ -354,7 +356,7 @@ cmd_update() {
     local a; read -r a || a=""
     case "$a" in y|Y|yes|YES) ;; *) die "cancelled" ;; esac
   fi
-  bootc upgrade || die "bootc upgrade failed — see the output above. If the registry
+  /usr/libexec/tilo-verified-update || die "bootc upgrade failed — see the output above. If the registry
   is unreachable this machine keeps running what it has."
   stage_rollback_generation || {
     bootc rollback >/dev/null 2>&1 || true
@@ -379,7 +381,7 @@ stage_rollback_generation() {
 
   local staged_digest incoming="" incoming_uki="" uki cmd gen uki_digest predictions pin
   local -a prediction_matches=()
-  staged_digest="$(bootc_field 's["status"]["staged"]["composefs"]["verity"]')"
+  staged_digest="$(bootc_field staged-composefs)"
   [ -n "$staged_digest" ] || return 1
   staged_digest="${staged_digest#sha512:}"
   predictions="$(esp_path)/EFI/tilo/pcr-predictions"
@@ -426,6 +428,10 @@ stage_rollback_generation() {
 cmd_entries() {
   [ "$(id -u)" = 0 ] || die "entries needs root"
   local esp; esp="$(esp_path)" || { log "no systemd-boot layout — nothing to maintain"; return 0; }
+  command -v flock >/dev/null 2>&1 || die "entries needs flock"
+  [ -d "$esp" ] && [ ! -L "$esp" ] || die "ESP is not a real directory: $esp"
+  exec 6<"$esp"
+  flock -x 6
   local cur; cur="$(current_entry)"
 
   local f name id changed=0
@@ -445,6 +451,10 @@ cmd_entries() {
   done
   [ "$changed" = 0 ] && log "boot counters: nothing to add"
 
+  # cmd_repair_entry takes the same ESP lock and may hand it to the sealed-key
+  # signer. Release this phase's descriptor before entering that operation.
+  flock -u 6
+
   cmd_repair_entry
 }
 
@@ -461,6 +471,19 @@ cmd_entries() {
 cmd_repair_entry() {
   [ "$(id -u)" = 0 ] || die "repair-entry needs root"
   local esp; esp="$(esp_path)" || { log "no systemd-boot layout — no repair entry to make"; return 0; }
+  command -v flock >/dev/null 2>&1 || die "repair-entry needs flock"
+  [ -d "$esp" ] && [ ! -L "$esp" ] || die "ESP is not a real directory: $esp"
+  # One repair derivation remains in flight across the sealed-key service call.
+  # Locking the stable ESP directory separately coordinates the actual mutation
+  # with tilo-secureboot without trusting a replaceable lock-file pathname.
+  local repair_lock_dir="$esp/EFI/tilo"
+  mkdir -p "$repair_lock_dir" || die "cannot create the repair metadata directory"
+  [ -d "$repair_lock_dir" ] && [ ! -L "$repair_lock_dir" ] \
+    || die "repair metadata path is not a real directory"
+  exec 7<"$repair_lock_dir"
+  flock -x 7
+  exec 8<"$esp"
+  flock -x 8
   local entries="$esp/loader/entries"
   local cur; cur="$(current_entry)"
 
@@ -571,10 +594,12 @@ cmd_repair_entry() {
   # Sign it if this machine has enrolled its own Secure Boot key. Unsigned is fine
   # on a machine that has not — and on one that has, an unsigned repair image is a
   # menu entry the firmware refuses, which is worse than none.
-  if [ -f /var/lib/tilo/secureboot/db.key ] && command -v sbsign >/dev/null 2>&1; then
-    if sbsign --key /var/lib/tilo/secureboot/db.key \
-              --cert /var/lib/tilo/secureboot/db.crt \
-              --output "$tmp.signed" "$tmp" >/dev/null 2>&1 \
+  local sealed_sign=0
+  if [ -f /var/lib/tilo/secureboot/db.key ] && command -v tilo-crypto >/dev/null 2>&1; then
+    if tilo-crypto sign-efi /var/lib/tilo/secureboot/db.key \
+              /var/lib/tilo/secureboot/db.crt "$tmp" "$tmp.signed" >/dev/null 2>&1 \
+       && tilo-crypto verify-efi /var/lib/tilo/secureboot/db.crt \
+              "$tmp.signed" >/dev/null 2>&1 \
        && mv -f "$tmp.signed" "$tmp"; then
       log "repair image signed with this machine's Secure Boot key"
     else
@@ -583,11 +608,38 @@ cmd_repair_entry() {
   not be signed, and the firmware would refuse it. No repair entry made."
       return 0
     fi
+  elif [ -f /var/lib/tilo/secureboot/db.key.cred ]; then
+    # The TPM credential is deliberately not unsealed into this broad
+    # deployment process. Publish the complete candidate, then synchronously
+    # invoke the narrow credential-bearing signer and retain the entry only if
+    # its owner signature reads back successfully.
+    sealed_sign=1
   fi
 
   # The rename into EFI/Linux is the moment the entry exists. Everything before
   # it happened somewhere the boot loader does not look.
   mv -f "$tmp" "$dest" || { warn "could not install $dest"; rm -f "$tmp"; return 0; }
+  if [ "$sealed_sign" -eq 1 ]; then
+    # The credential-bearing service takes the ESP lock itself.  Retain the
+    # repair-operation lock, hand it the ESP lock, then reacquire before
+    # inspecting or publishing provenance for the result.
+    flock -u 8
+    if ! systemctl start --wait tilo-secureboot-sign.service \
+       || ! flock -x 8 \
+       || ! tilo-crypto verify-efi /var/lib/tilo/secureboot/db.crt "$dest" \
+              >/dev/null 2>&1 \
+       || ! "$UKI_CMDLINE" show "$dest" | grep -q 'tilo\.mode=repair' \
+       || ! "$UKI_CMDLINE" osrel "$dest" \
+              | grep -q "^PRETTY_NAME=$REPAIR_TITLE\$"; then
+      # Ensure cleanup also happens under the ESP mutation lock when service
+      # activation itself failed before the reacquire expression ran.
+      flock -x 8
+      rm -f "$dest"
+      warn "TPM-sealed Secure Boot signing failed; removed the unsigned repair entry"
+      return 0
+    fi
+    log "repair image signed by the TPM-credential service"
+  fi
   printf '%s\n' "$uki_rel" > "$stamp"
   sync
   log "repair image: $dest (from $uki_rel)"

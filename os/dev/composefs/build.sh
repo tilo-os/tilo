@@ -46,7 +46,9 @@ for f in usr/libexec/tilo-rollback-common \
          usr/lib/systemd/system/tilo-rollback-confirm.service \
          usr/lib/systemd/system/tilo-rollback-confirm.timer \
          usr/lib/systemd/system/tilo-rollback-harden.service \
+         usr/lib/systemd/system/tilo-rollback-harden.timer \
          usr/lib/systemd/system/tilo-boot-entries.service \
+         usr/lib/systemd/system/tilo-boot-entries.timer \
          usr/lib/systemd/system/tilo-boot-health.service \
          usr/lib/systemd/system/tilo-repair.target \
          usr/lib/systemd/system/tilo-repair@.service \
@@ -67,14 +69,17 @@ ROLLBACK_BIN="${ROLLBACK_BIN:-$TILO_REPO/target/release/tilo-rollback}"
 [ -x "$ROLLBACK_BIN" ] || die "no tilo-rollback binary at $ROLLBACK_BIN
   Remedy: cargo build -p tilo-rollback --release"
 cp -f "$ROLLBACK_BIN" "$TREE/usr/bin/tilo-rollback"
+CRYPTO_BIN="${CRYPTO_BIN:-$TILO_REPO/target/release/tilo-crypto}"
+[ -x "$CRYPTO_BIN" ] || die "no tilo-crypto binary at $CRYPTO_BIN
+  Remedy: cargo build -p tilo-crypto --release"
+cp -f "$CRYPTO_BIN" "$TREE/usr/bin/tilo-crypto"
 
 sb_key="$TILO_CFS_RUN/sb/db.key"
 sb_crt="$TILO_CFS_RUN/sb/db.crt"
 if [ "$TILO_CFS_SIGN" = "1" ] && [ ! -f "$sb_key" ]; then
   msg "generating a throwaway Secure Boot signing key"
   mkdir -p "$TILO_CFS_RUN/sb"
-  openssl req -new -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -subj "/CN=Tilo composefs spike/" -keyout "$sb_key" -out "$sb_crt" 2>/dev/null
+  tilo-crypto generate-secure-boot-cert "Tilo composefs spike" "$sb_key" "$sb_crt"
 fi
 
 msg "building $IMAGE (generation $GEN, sign=$TILO_CFS_SIGN)"

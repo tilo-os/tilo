@@ -49,8 +49,7 @@ thiserror.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicit rustls provider — the tree carries both ring + aws-lc-rs and
-# rustls 0.23 won't auto-disambiguate. Matches the sibling maps / feeds apps.
+# Explicitly install the workspace-standard ring provider at startup.
 rustls.workspace = true
 
 [dev-dependencies]

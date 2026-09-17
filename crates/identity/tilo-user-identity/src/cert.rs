@@ -12,9 +12,9 @@ use thiserror::Error;
 use crate::canonical::{CanonicalError, signing_digest};
 
 /// Signing-domain tag for `DeviceCert`. Frozen wire ABI:
-/// `qos-devcert-v1` + NUL. Any change breaks in-field
+/// `tilo-devcert-v1` + NUL. Any change breaks in-field
 /// certificates.
-pub const DEVCERT_PREIMAGE_TAG: &[u8] = b"qos-devcert-v1\0";
+pub const DEVCERT_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v1\0";
 
 /// What a device may do on behalf of its user.
 ///
@@ -202,6 +202,14 @@ pub enum DeviceCertError {
     #[error("device cert has expired")]
     Expired,
 
+    /// The certificate's claimed issuance time has not arrived.
+    #[error("device cert is not yet valid")]
+    NotYetValid,
+
+    /// A finite expiry must be strictly later than issuance.
+    #[error("device cert has an invalid validity interval")]
+    InvalidValidity,
+
     /// Canonical-encoding failure. Effectively unreachable but
     /// propagated for hygiene.
     #[error("canonicalisation failed: {0}")]
@@ -230,6 +238,12 @@ pub fn sign_device_cert(
     let derived = root_signing_key.verifying_key().to_bytes();
     if cert.user_public_key != derived {
         return Err(DeviceCertError::BadSignature);
+    }
+    if cert
+        .expires_at_ns
+        .is_some_and(|expiry| expiry <= cert.issued_at_ns)
+    {
+        return Err(DeviceCertError::InvalidValidity);
     }
 
     let digest = signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view())?;
@@ -285,7 +299,7 @@ pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     Ok(())
 }
 
-/// Full validation: signature + expiry.
+/// Full validation: signature + not-before + expiry.
 ///
 /// Revocation is NOT checked here — the caller passes in a
 /// [`crate::RevocationList`] separately because the list lives in
@@ -295,10 +309,20 @@ pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
 /// # Errors
 ///
 /// Returns anything [`verify_device_cert`] can return, or
-/// [`DeviceCertError::Expired`] if `now_ns` is at or past
-/// `cert.expires_at_ns`.
+/// [`DeviceCertError::NotYetValid`] if `now_ns` predates issuance,
+/// [`DeviceCertError::InvalidValidity`] for a backwards/empty finite interval,
+/// or [`DeviceCertError::Expired`] if `now_ns` is at or past expiry.
 pub fn verify_device_cert_at(cert: &DeviceCert, now_ns: u64) -> Result<(), DeviceCertError> {
     verify_device_cert(cert)?;
+    if cert
+        .expires_at_ns
+        .is_some_and(|expiry| expiry <= cert.issued_at_ns)
+    {
+        return Err(DeviceCertError::InvalidValidity);
+    }
+    if now_ns < cert.issued_at_ns {
+        return Err(DeviceCertError::NotYetValid);
+    }
     if cert.is_expired_at(now_ns) {
         return Err(DeviceCertError::Expired);
     }
@@ -308,7 +332,7 @@ pub fn verify_device_cert_at(cert: &DeviceCert, now_ns: u64) -> Result<(), Devic
 /// Serde helper: a 64-byte-array serialiser that emits a length-
 /// prefixed byte string rather than 64 separate `u8`s. Saves 63
 /// bytes of varint overhead per signature on the wire.
-mod serde_bytes_64 {
+pub(crate) mod serde_bytes_64 {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -438,6 +462,10 @@ mod tests {
             signature: [0u8; 64],
         };
         sign_device_cert(&mut cert, &root_sk).unwrap();
+        assert_eq!(
+            verify_device_cert_at(&cert, 99).unwrap_err(),
+            DeviceCertError::NotYetValid
+        );
         // Before expiry
         verify_device_cert_at(&cert, 150).unwrap();
         // Exactly at expiry (`now >= expires_at_ns` — exclusive on
@@ -450,6 +478,12 @@ mod tests {
         assert_eq!(
             verify_device_cert_at(&cert, 300).unwrap_err(),
             DeviceCertError::Expired
+        );
+
+        cert.expires_at_ns = Some(cert.issued_at_ns);
+        assert_eq!(
+            sign_device_cert(&mut cert, &root_sk).unwrap_err(),
+            DeviceCertError::InvalidValidity
         );
     }
 

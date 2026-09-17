@@ -294,7 +294,7 @@ Containerfile:
 ```
 rootfs  →  bootc container split-kernel-and-rootfs --rootfs / --output /kernel
         →  bootc container ukify --rootfs /target --kernel-dir /kernel/$kver -- \
-             --output /out/$kver.efi --signtool sbsign \
+             --output /out/$kver.efi \
              --secureboot-private-key ... --secureboot-certificate ...
         →  COPY the signed .efi to /boot/EFI/Linux/
 ```
@@ -498,7 +498,7 @@ that boots wrong, but outstanding work either way.
 **bootupd had to go.** A sealed image may not offer its install path, and this was
 listed above as a real conflict because `tilo-secureboot` was built around
 `bootupctl update` rewriting the ESP. It turned out not to be one: with a UKI there
-is exactly one PE binary on the boot path, `sbsign` over it is the whole job, and
+is exactly one PE binary on the boot path, `tilo-crypto sign-efi` over it is the whole job, and
 `tilo-secureboot-sign.path` already watched `/boot/EFI/Linux`.
 
 **`bootc container lint` survives a split-kernel UKI image.** It exits 0 against

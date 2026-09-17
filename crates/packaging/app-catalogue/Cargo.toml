@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 atomic-file = { path = "../../system/atomic-file" }
+bounded-command = { path = "../../system/bounded-command" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
 # Read side of the `tilo-install` registry — the same list the desktop
@@ -32,8 +33,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicit rustls provider — the tree carries both ring + aws-lc-rs and
-# rustls 0.23 won't auto-disambiguate. Matches `store`.
+# Explicitly install the workspace-standard ring provider at startup.
 rustls.workspace = true
 
 [dev-dependencies]

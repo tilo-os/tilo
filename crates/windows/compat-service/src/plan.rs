@@ -104,7 +104,10 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
                         runtime_bind(PROTON_HOST, PROTON_MOUNT),
                     ],
                     sandbox_entrypoint: PathBuf::from("/usr/libexec/tilo-umu-run"),
-                    environment: vec![("PROTONPATH", PROTON_MOUNT.to_string())],
+                    environment: vec![
+                        ("PROTONPATH", PROTON_MOUNT.to_string()),
+                        ("PROTON_USE_NTSYNC", "1".to_string()),
+                    ],
                     needs_nested_runtime: true,
                 })
             }
@@ -277,6 +280,8 @@ pub struct CapsuleCommandPlan {
     pub write_grants: usize,
     pub microphone: bool,
     pub audio_output: bool,
+    /// Tilo-owned game classification, never a package-manifest request.
+    pub latency_sensitive: bool,
     pub lease_id: String,
     // Open directory descriptors backing the prefix/home bind sources. Kept
     // private so a plan cannot be copied after its authority-bearing handles.
@@ -394,6 +399,11 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         landlock_write.push(wayland.sandbox_socket.clone());
         launcher::sandbox::push_gpu_selection(&mut argv, &gpu, true);
         landlock_write.push(self.session.render_node.clone());
+        if route.runtime.layer == Layer::Proton {
+            let ntsync = PathBuf::from("/dev/ntsync");
+            bind(&mut argv, "--dev-bind", &ntsync, &ntsync);
+            landlock_write.push(ntsync);
+        }
         landlock_read.extend(gpu.manifest_files());
         push_audio(&mut argv, lease, self.session.uid, &mut landlock_write);
         if let Some(gate) = &lease.net_gate {
@@ -461,6 +471,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
                 .iter()
                 .any(|device| device == "microphone"),
             audio_output: !lease.audio.is_empty(),
+            latency_sensitive: route.runtime.layer == Layer::Proton,
             lease_id: lease.id.clone(),
             _launch_paths: launch_paths,
         })
@@ -792,7 +803,10 @@ mod tests {
         );
         assert_eq!(
             proton.environment,
-            vec![("PROTONPATH", PROTON_MOUNT.to_string())]
+            vec![
+                ("PROTONPATH", PROTON_MOUNT.to_string()),
+                ("PROTON_USE_NTSYNC", "1".to_string()),
+            ]
         );
         assert!(proton.needs_nested_runtime);
     }
@@ -858,6 +872,7 @@ mod tests {
                 .iter()
                 .any(|arg| arg == "--net-restricted")
         );
+        assert!(!command.latency_sensitive);
         assert!(command.bwrap_argv.iter().any(|arg| arg == "--seccomp"));
         assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
         assert!(command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine"));
@@ -1005,6 +1020,19 @@ mod tests {
                 .windows(3)
                 .any(|args| { args == ["--setenv", "PROTONPATH", PROTON_MOUNT] })
         );
+        assert!(
+            command
+                .bwrap_argv
+                .windows(3)
+                .any(|args| { args == ["--setenv", "PROTON_USE_NTSYNC", "1"] })
+        );
         assert!(command.seccomp_profile.is_none());
+        assert!(command.latency_sensitive);
+        assert!(
+            command
+                .bwrap_argv
+                .windows(3)
+                .any(|args| { args == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+        );
     }
 }

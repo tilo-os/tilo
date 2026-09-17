@@ -11,26 +11,63 @@ set -euo pipefail
 
 CONF=/etc/tilo/install-user.conf
 FULL_NAME_CONF=/etc/tilo/install-user-full-name
-[ -f "$CONF" ] || exit 0
+[ -e "$CONF" ] || [ -L "$CONF" ] || exit 0
 
-line="$(head -n1 "$CONF")"
+valid_seed_file() {
+  path="$1" max_bytes="$2"
+  [ -f "$path" ] && [ ! -L "$path" ] \
+    && [ "$(stat -c '%u:%a:%h' -- "$path" 2>/dev/null)" = '0:600:1' ] \
+    && [ "$(stat -c '%s' -- "$path" 2>/dev/null)" -le "$max_bytes" ]
+}
+
+# These bytes cross from installer-controlled writable /etc into root account
+# management. Revalidate the handoff independently; never follow or shred a
+# link/hardlink supplied in place of the one-use credential.
+if ! valid_seed_file "$CONF" 1024; then
+  echo "tilo-firstboot-user: refusing unsafe credential seed $CONF" >&2
+  rm -f -- "$CONF"
+  exit 1
+fi
+if { [ -e "$FULL_NAME_CONF" ] || [ -L "$FULL_NAME_CONF" ]; } \
+  && ! valid_seed_file "$FULL_NAME_CONF" 256; then
+  echo "tilo-firstboot-user: refusing unsafe full-name seed $FULL_NAME_CONF" >&2
+  rm -f -- "$FULL_NAME_CONF"
+  shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
+  exit 1
+fi
+
+IFS= read -r line < "$CONF" || true
 user="${line%%:*}"
 hash="${line#*:}"
 full_name=""
 if [ -f "$FULL_NAME_CONF" ]; then
-  full_name="$(head -n1 "$FULL_NAME_CONF")"
+  IFS= read -r full_name < "$FULL_NAME_CONF" || true
 fi
 
-if [ -z "$user" ] || [ -z "$hash" ] || [ "$user" = "$hash" ]; then
+case "$user" in
+  ''|*[!a-z0-9_-]*|root|bin|daemon|adm|lp|sync|shutdown|halt|mail|operator|games|ftp|nobody|dbus|polkitd|sshd|chrony|tss|greetd|tilo)
+    valid_user=0 ;;
+  [a-z_]* ) valid_user=1 ;;
+  *) valid_user=0 ;;
+esac
+[ "${#user}" -le 32 ] || valid_user=0
+case "$hash" in
+  '$6$'*) valid_hash=1 ;;
+  *) valid_hash=0 ;;
+esac
+case "$hash" in *[!a-zA-Z0-9./'$']*) valid_hash=0 ;; esac
+[ "${#hash}" -le 512 ] || valid_hash=0
+
+if [ "$valid_user" -ne 1 ] || [ "$valid_hash" -ne 1 ]; then
   echo "tilo-firstboot-user: malformed $CONF (expected name:hash)" >&2
   # Don't leave a bad credential file lying around.
-  shred -u "$CONF" 2>/dev/null || rm -f "$CONF"
+  shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
   exit 1
 fi
 
 if id "$user" >/dev/null 2>&1; then
   echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'" >&2
-  shred -u "$CONF" 2>/dev/null || rm -f "$CONF"
+  shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
   exit 1
 else
   # `tilo-identity` is read access to the machine's device key. The
@@ -52,7 +89,7 @@ fi
 printf '%s:%s\n' "$user" "$hash" | chpasswd -e
 
 # Remove the seed file (best-effort shred; fall back to rm).
-shred -u "$CONF" 2>/dev/null || rm -f "$CONF"
-[ ! -f "$FULL_NAME_CONF" ] || shred -u "$FULL_NAME_CONF" 2>/dev/null || rm -f "$FULL_NAME_CONF"
+shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
+[ ! -f "$FULL_NAME_CONF" ] || shred -u -- "$FULL_NAME_CONF" 2>/dev/null || rm -f -- "$FULL_NAME_CONF"
 
 echo "tilo-firstboot-user: created account '$user'"

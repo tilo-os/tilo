@@ -17,6 +17,67 @@ has_karg() { case " $cmdline " in *" $1 "*) return 0;; *) return 1;; esac; }
 
 echo "=== Tilo security audit ==="
 
+if rpm -q systemd-resolved >/dev/null 2>&1; then
+  warn "redundant OpenSSL-linked systemd-resolved package is installed"
+else
+  ok "systemd-resolved attack surface absent; NetworkManager owns DNS"
+fi
+if rpm -q systemd-networkd >/dev/null 2>&1 \
+   || systemctl is-active --quiet systemd-networkd.service 2>/dev/null; then
+  warn "redundant systemd-networkd surface remains beside NetworkManager"
+else
+  ok "systemd-networkd absent; NetworkManager is the sole network authority"
+fi
+if systemctl is-active --quiet systemd-timesyncd.service 2>/dev/null; then
+  warn "redundant systemd-timesyncd is active beside chronyd"
+else
+  ok "systemd-timesyncd inactive; chronyd is the sole time authority"
+fi
+chrony_config=/etc/chrony.conf
+nts_sources="$(grep -Ec '^server [^ ]+ .*\bnts\b' "$chrony_config" 2>/dev/null || true)"
+if grep -Fqx 'authselectmode require' "$chrony_config" 2>/dev/null \
+   && [ "${nts_sources:-0}" -ge 3 ] \
+   && ! grep -E '^server ' "$chrony_config" 2>/dev/null | grep -Ev '\bnts\b' >/dev/null \
+   && ! grep -Eq '^[[:space:]]*(pool|peer|sourcedir|confdir)[[:space:]]' "$chrony_config" 2>/dev/null; then
+  ok "trusted wall clock requires multiple authenticated NTS sources"
+else
+  warn "Chrony can select an unauthenticated or insufficiently diverse time source"
+fi
+if systemctl is-enabled --quiet systemd-pstore.service 2>/dev/null; then
+  warn "systemd-pstore persistence is enabled; kernel crash records may be copied to disk"
+else
+  ok "persistent pstore crash-record copying is disabled"
+fi
+if rpm -q systemd-coredump >/dev/null 2>&1 \
+   || systemctl is-enabled --quiet systemd-coredump.socket 2>/dev/null; then
+  warn "systemd-coredump collector remains available to persist process memory"
+else
+  ok "systemd-coredump collector is absent and disabled"
+fi
+
+avoidable_crypto_consumers=""
+for package in pesign nss-tools gnutls-utils git git-core openvpn NetworkManager-openvpn openssh openssh-clients openssh-server; do
+  if rpm -q "$package" >/dev/null 2>&1; then
+    avoidable_crypto_consumers="$avoidable_crypto_consumers $package"
+  fi
+done
+if [ -n "$avoidable_crypto_consumers" ]; then
+  warn "avoidable OpenSSL consumers remain installed:$avoidable_crypto_consumers"
+else
+  ok "general signing tools and Git/OpenVPN/OpenSSH consumers absent from the immutable host"
+fi
+case "$(readlink /etc/resolv.conf 2>/dev/null || true)" in
+  ../run/NetworkManager/resolv.conf|/run/NetworkManager/resolv.conf)
+    ok "/etc/resolv.conf follows NetworkManager"
+    ;;
+  *) warn "/etc/resolv.conf is not owned by NetworkManager" ;;
+esac
+if [ -r /etc/pki/tls/certs/ca-bundle.crt ]; then
+  ok "immutable Rustls trust bundle is readable"
+else
+  warn "immutable Rustls trust bundle is missing or unreadable"
+fi
+
 # SELinux
 mode="$(getenforce 2>/dev/null || echo unknown)"
 [ "$mode" = "Enforcing" ] && ok "SELinux: Enforcing" || warn "SELinux: $mode (expected Enforcing)"
@@ -33,6 +94,28 @@ for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsysca
   has_karg "$k" && ok "karg $k" || warn "karg $k MISSING"
 done
 case " $cmdline " in *randomize_kstack_offset=on*|*randomize_kstack_offset=1*) ok "karg randomize_kstack_offset";; *) warn "karg randomize_kstack_offset MISSING";; esac
+
+# Device and user signing keys are deliberately never written to persistent
+# swap. Disk-backed swap would also turn memory pressure into storage-latency
+# spikes; Tilo supports only its ephemeral LZ4 zram device.
+active_swaps="$(swapon --noheadings --raw --show=NAME 2>/dev/null || true)"
+if [ "$active_swaps" = /dev/zram0 ]; then
+  ok "only ephemeral zram swap is active"
+else
+  warn "unexpected swap set (expected only /dev/zram0): ${active_swaps:-none}"
+fi
+
+device_key_dir=/var/lib/tilo/device-private
+device_key="$device_key_dir/keypair.bin"
+device_dir_meta="$(stat -c '%u:%G:%a' "$device_key_dir" 2>/dev/null || echo invalid)"
+device_key_meta="$(stat -c '%u:%G:%a:%h:%s' "$device_key" 2>/dev/null || echo invalid)"
+if [ "$device_dir_meta" = '0:tilo-identity:2750' ] && [ ! -L "$device_key_dir" ] \
+   && [ "$device_key_meta" = '0:tilo-identity:640:1:32' ] \
+   && [ -f "$device_key" ] && [ ! -L "$device_key" ]; then
+  ok "device identity seed is root-owned, group-scoped, private, and unaliased"
+else
+  warn "device identity custody is unsafe (directory=$device_dir_meta key=$device_key_meta)"
+fi
 
 # The kargs above are what we ASKED for. This is what the kernel actually did:
 # it reports the resolved zero-on-alloc / zero-on-free state once at boot, and
@@ -69,7 +152,35 @@ check_sysctl kernel.yama.ptrace_scope 3
 check_sysctl kernel.kptr_restrict 2
 check_sysctl kernel.dmesg_restrict 1
 check_sysctl kernel.unprivileged_bpf_disabled 1
-check_sysctl kernel.kexec_load_disabled 1
+running_kernel_config="/usr/lib/modules/$(uname -r)/config"
+if grep -Fqx '# CONFIG_KEXEC is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "kexec interfaces are not compiled"
+else
+  check_sysctl kernel.kexec_load_disabled 1
+fi
+if grep -Fqx '# CONFIG_HIBERNATION is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "kernel hibernation image parser is not compiled"
+else
+  warn "kernel hibernation remains compiled despite zram-only swap"
+fi
+for interface in \
+  DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
+  FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
+  if grep -Fqx "# CONFIG_${interface} is not set" "$running_kernel_config" 2>/dev/null; then
+    ok "unused privileged kernel interface $interface is not compiled"
+  else
+    warn "unused privileged kernel interface $interface remains compiled"
+  fi
+done
+for protocol in \
+  ATM CAN CAIF HAMRADIO 6LOWPAN AF_RXRPC IEEE802154 IP_DCCP IP_SCTP AF_KCM \
+  LAPB L2TP MCTP MPLS NET_NSH NFC PHONET RDS SMC TIPC X25; do
+  if grep -Fqx "# CONFIG_${protocol} is not set" "$running_kernel_config" 2>/dev/null; then
+    ok "unused kernel protocol $protocol is not compiled"
+  else
+    warn "unused kernel protocol $protocol remains compiled"
+  fi
+done
 check_sysctl kernel.perf_event_paranoid 3
 check_sysctl kernel.io_uring_disabled 2
 check_sysctl kernel.sysrq 16
@@ -120,18 +231,15 @@ if grep -qw user_shstk /proc/cpuinfo 2>/dev/null; then
 else
   note "CPU/kernel report no user shadow-stack support (pre-Tiger Lake / pre-Zen 5); the ELF marking is inert here"
 fi
-# Secure Boot. Read the EFI variable when mokutil is absent — mokutil arrives
-# with the shim stack this image removes, so the tool it reports through must not
-# be the thing that decides whether the check happens.
+# Secure Boot. Read the EFI variable directly; Tilo removes shim and mokutil, and
+# its health result must not depend on a legacy command-line parser reappearing.
 sb_var() {
   local f
   f="$(ls /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | head -1)"
   [ -n "$f" ] || return 1
   od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n'
 }
-if sb="$(mokutil --sb-state 2>/dev/null | head -1)" && [ -n "$sb" ]; then
-  :
-elif v="$(sb_var)"; then
+if v="$(sb_var)"; then
   [ "$v" = "1" ] && sb="SecureBoot enabled" || sb="SecureBoot disabled"
 else
   sb="no Secure Boot variables (not UEFI, or no SB support)"
@@ -144,15 +252,124 @@ esac
 # Owner-enrolled Secure Boot: are the keys there, and will the next deployment's
 # kernel get signed? A machine with keys enrolled and no re-signing is one update
 # away from not booting, so this is worth saying out loud on every boot.
-if [ -f /var/lib/tilo/secureboot/db.key ]; then
-  if systemctl is-enabled tilo-secureboot-sign.path >/dev/null 2>&1 \
-     && systemctl is-enabled tilo-secureboot-sign.service >/dev/null 2>&1; then
-    ok "owner Secure Boot keys present, re-signing armed"
+secureboot_private_file_safe() {
+  local metadata
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  metadata="$(stat -c '%u:%a:%h:%s' "$1" 2>/dev/null)" || return 1
+  case "$metadata" in
+    0:600:1:*|0:400:1:*) ;;
+    *) return 1 ;;
+  esac
+  local size="${metadata##*:}"
+  [ "$size" -gt 0 ] && [ "$size" -le 65536 ]
+}
+secureboot_public_file_safe() {
+  local metadata
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  metadata="$(stat -c '%u:%a:%h:%s' "$1" 2>/dev/null)" || return 1
+  case "$metadata" in
+    0:600:1:*|0:400:1:*|0:644:1:*|0:444:1:*) ;;
+    *) return 1 ;;
+  esac
+  local size="${metadata##*:}"
+  [ "$size" -gt 0 ] && [ "$size" -le 65536 ]
+}
+secureboot_artifact_present() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+secureboot_esl_matches_certificate() {
+  secureboot_public_file_safe "$1" \
+    && secureboot_public_file_safe "$2" \
+    && command -v tilo-crypto >/dev/null 2>&1 \
+    && tilo-crypto verify-exclusive-efi-signature-list "$1" "$2" >/dev/null 2>&1
+}
+secureboot_firmware_contains_certificate() {
+  local variable="$1" certificate="$2" temporary_dir readback result=1
+  temporary_dir="$(mktemp -d)" || return 1
+  readback="$temporary_dir/$variable.esl"
+  if secureboot_public_file_safe "$certificate" \
+     && tilo-crypto firmware-read-esl /sys/firmware/efi/efivars \
+          "$variable" "$readback" >/dev/null 2>&1 \
+     && tilo-crypto verify-efi-signature-list "$certificate" "$readback" \
+          >/dev/null 2>&1; then
+    result=0
+  fi
+  rm -f "$readback"
+  rmdir "$temporary_dir" 2>/dev/null || true
+  return "$result"
+}
+if secureboot_artifact_present /var/lib/tilo/secureboot/db.key \
+   || secureboot_artifact_present /var/lib/tilo/secureboot/db.key.cred \
+   || secureboot_artifact_present /var/lib/tilo/secureboot/db.crt; then
+  secureboot_dir_meta="$(stat -c '%u:%a' /var/lib/tilo/secureboot 2>/dev/null || echo invalid)"
+  if [ "$secureboot_dir_meta" != 0:700 ] \
+     || ! secureboot_public_file_safe /var/lib/tilo/secureboot/db.crt \
+     || ! secureboot_esl_matches_certificate /var/lib/tilo/secureboot/db.crt \
+          /var/lib/tilo/secureboot/db.esl \
+     || { secureboot_artifact_present /var/lib/tilo/secureboot/db.key \
+          && secureboot_artifact_present /var/lib/tilo/secureboot/db.key.cred; }; then
+    warn "owner Secure Boot db key custody is unsafe or ambiguous"
+  elif systemctl is-enabled tilo-secureboot-sign.path >/dev/null 2>&1 \
+     && systemctl is-enabled tilo-secureboot-sign.timer >/dev/null 2>&1 \
+     && systemctl is-enabled tilo-secureboot-sign-shutdown.service >/dev/null 2>&1; then
+    if secureboot_private_file_safe /var/lib/tilo/secureboot/db.key.cred; then
+      ok "owner Secure Boot db key TPM-sealed, re-signing armed"
+    elif secureboot_private_file_safe /var/lib/tilo/secureboot/db.key; then
+      ok "owner Secure Boot plaintext db key present, re-signing armed"
+    else
+      warn "owner Secure Boot db key artifact has unsafe ownership, mode, links, or size"
+    fi
   else
     warn "owner Secure Boot keys present but re-signing is NOT armed — the next update stages an unsigned kernel"
   fi
 else
   note "no owner Secure Boot keys (tilo-secureboot generate-keys)"
+fi
+
+if secureboot_artifact_present /var/lib/tilo/secureboot/db.crt; then
+  if secureboot_firmware_contains_certificate db /var/lib/tilo/secureboot/db.crt \
+     && secureboot_firmware_contains_certificate KEK /var/lib/tilo/secureboot/KEK.crt \
+     && secureboot_firmware_contains_certificate PK /var/lib/tilo/secureboot/PK.crt; then
+    ok "live firmware db/KEK/PK contain the retained owner trust chain"
+  else
+    warn "live firmware db/KEK/PK no longer contain the retained owner trust chain"
+  fi
+fi
+
+pk_present=0
+kek_present=0
+retired_present=0
+secureboot_artifact_present /var/lib/tilo/secureboot/PK.key && pk_present=1
+secureboot_artifact_present /var/lib/tilo/secureboot/KEK.key && kek_present=1
+secureboot_artifact_present /var/lib/tilo/secureboot/enrollment-keys-retired \
+  && retired_present=1
+if [ "$pk_present" -eq 1 ] || [ "$kek_present" -eq 1 ]; then
+  if [ "$pk_present" -eq 1 ] && [ "$kek_present" -eq 1 ] \
+     && [ "$retired_present" -eq 0 ] \
+     && secureboot_private_file_safe /var/lib/tilo/secureboot/PK.key \
+     && secureboot_private_file_safe /var/lib/tilo/secureboot/KEK.key \
+     && secureboot_esl_matches_certificate /var/lib/tilo/secureboot/PK.crt \
+          /var/lib/tilo/secureboot/PK.esl \
+     && secureboot_esl_matches_certificate /var/lib/tilo/secureboot/KEK.crt \
+          /var/lib/tilo/secureboot/KEK.esl \
+     && tilo-crypto key-matches-certificate /var/lib/tilo/secureboot/PK.key \
+          /var/lib/tilo/secureboot/PK.crt >/dev/null 2>&1 \
+     && tilo-crypto key-matches-certificate /var/lib/tilo/secureboot/KEK.key \
+          /var/lib/tilo/secureboot/KEK.crt >/dev/null 2>&1; then
+    note "Secure Boot PK/KEK enrollment authority remains online; retire it after verified enrollment and offline backup"
+  else
+    warn "Secure Boot PK/KEK retirement state is incomplete, unsafe, or ambiguous"
+  fi
+elif [ "$retired_present" -eq 1 ]; then
+  if secureboot_private_file_safe /var/lib/tilo/secureboot/enrollment-keys-retired \
+     && secureboot_esl_matches_certificate /var/lib/tilo/secureboot/PK.crt \
+          /var/lib/tilo/secureboot/PK.esl \
+     && secureboot_esl_matches_certificate /var/lib/tilo/secureboot/KEK.crt \
+          /var/lib/tilo/secureboot/KEK.esl; then
+    ok "Secure Boot PK/KEK online enrollment authority is retired"
+  else
+    warn "Secure Boot retired enrollment authority has an unsafe marker or mismatched public artifacts"
+  fi
 fi
 
 if [ -x /usr/libexec/tilo-verified-boot-install-preflight ]; then
@@ -203,14 +420,42 @@ esac
 # scope and pinned public-key path together: an unrelated sigstore policy must
 # not make this check pass.
 policy=/etc/containers/policy.json
+
+legacy_crypto_tools=""
+for tool in openssl sbsign sbverify efi-updatevar cert-to-efi-sig-list mokutil pesign efikeygen certutil pk12util p11tool gnutls-cli; do
+  command -v "$tool" >/dev/null 2>&1 && legacy_crypto_tools="$legacy_crypto_tools $tool"
+done
+if [ -z "$legacy_crypto_tools" ]; then
+  ok "general-purpose crypto and legacy EFI signing CLIs are absent"
+else
+  warn "legacy cryptographic command-line attack surface remains:$legacy_crypto_tools"
+fi
+
 if [ -r "$policy" ] \
-   && grep -Fq '"code.podesta.ai/qos/tilo"' "$policy" \
+   && grep -Fq '"code.podesta.ai/tilo/tilo"' "$policy" \
    && grep -Fq '"type": "sigstoreSigned"' "$policy" \
    && grep -Fq '"keyPath": "/usr/share/tilo/cosign.pub"' "$policy" \
    && [ -s /usr/share/tilo/cosign.pub ]; then
   ok "container signature policy pins signed Tilo images to the installed verification key"
 else
   warn "Tilo image signature policy or its pinned verification key is missing"
+fi
+
+if [ -e /var/lib/tilo/image-trust/required ]; then
+  trust_meta="$(stat -c '%u:%a' /var/lib/tilo/image-trust 2>/dev/null || echo invalid)"
+  if [ "$trust_meta" = 0:700 ] \
+     && [ -s /var/lib/tilo/image-trust/root.pub ] \
+     && [ -s /var/lib/tilo/image-trust/revocations.bin ] \
+     && [ -s /var/lib/tilo/image-trust/endorsement.bin ] \
+     && [ -s /var/lib/tilo/image-trust/time.state ] \
+     && systemctl cat bootc-fetch-apply-updates.service 2>/dev/null \
+          | grep -Fq 'ExecStart=/usr/libexec/tilo-verified-update --quiet'; then
+    ok "owner identity image-endorsement gate is armed for automatic updates"
+  else
+    warn "owner image trust is required but its root-owned artifacts or update gate are incomplete"
+  fi
+else
+  note "owner identity image-endorsement gate is not enabled; official Cosign policy remains mandatory"
 fi
 
 # systemd-homed available (per-user encrypted homes; homed users get a

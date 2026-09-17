@@ -10,7 +10,9 @@ target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
 selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
+recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 release_workflow="$repo/.forgejo/workflows/build-image.yml"
+shell_main="$repo/shell/src/main.rs"
 
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' "$target"
 grep -Fqx 'After=graphical-session-pre.target' "$target"
@@ -19,14 +21,61 @@ grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.targe
 grep -Fqx 'Before=graphical-session-pre.target' "$identity_unit"
 grep -Fqx 'WantedBy=graphical-session-pre.target' "$identity_unit"
 grep -Fqx 'ExecStart=/usr/bin/shell --provision-identity' "$identity_unit"
+grep -Fqx 'ConditionPathExists=%E/tilo/identity/primary.json' "$identity_unit"
+grep -Fqx 'ConditionPathExists=!%E/tilo/identity/.chain-v1-repaired' "$identity_unit"
+grep -Fqx 'ExecStartPost=/usr/bin/mkdir -p %E/tilo/identity' "$identity_unit"
+grep -Fqx 'ExecStartPost=/usr/bin/touch %E/tilo/identity/.chain-v1-repaired' "$identity_unit"
+grep -Fqx 'LimitCORE=0' "$identity_unit"
+grep -Fqx 'ulimit -c 0' "$wrapper"
+for policy in \
+  'ProtectSystem=strict' \
+  'ProtectHome=read-only' \
+  'ReadWritePaths=-%E/tilo/identity /var/lib/tilo/user-identity /var/lib/tilo/device' \
+  'PrivateDevices=yes' \
+  'PrivateIPC=yes' \
+  'PrivateNetwork=yes' \
+  'RestrictNamespaces=yes' \
+  'MemoryDenyWriteExecute=yes' \
+  'CapabilityBoundingSet=' \
+  'AmbientCapabilities=' \
+  'KeyringMode=private' \
+  'SystemCallFilter=@system-service' \
+  'SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap'; do
+  grep -Fqx "$policy" "$identity_unit"
+done
 grep -Fq 'tilo_session_unit_file_t' "$selinux_policy"
 grep -Fqx '(allow xdm_t tilo_session_unit_file_t (service (start stop status)))' "$selinux_policy"
 if grep -q '^SuccessExitStatus=' "$identity_unit"; then
   echo 'identity migration must not turn failure into successful enrollment' >&2
   exit 1
 fi
+# The pre-session repair helper must not initialize the GPU/font/render stack;
+# the compositor does that once after the helper exits.
+identity_branch_line=$(grep -n 'if provision_identity_requested || portal_only || firstboot_only_requested' "$shell_main" | cut -d: -f1)
+gpu_pin_line=$(grep -n 'let gpu_pin = compositor::render_node::pin_process();' "$shell_main" | cut -d: -f1)
+if [ -z "$identity_branch_line" ] || [ -z "$gpu_pin_line" ] \
+   || [ "$identity_branch_line" -ge "$gpu_pin_line" ]; then
+  echo 'non-compositor helpers still pay GPU/UI warmup before branching' >&2
+  exit 1
+fi
 grep -Fqx 'PartOf=graphical-session.target' "$recipient_unit"
-grep -Fqx 'WantedBy=graphical-session.target' "$recipient_unit"
+grep -Fqx 'PartOf=graphical-session.target' "$recipient_socket"
+grep -Fqx 'WantedBy=graphical-session.target' "$recipient_socket"
+grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
+grep -Fqx 'Service=tilo-fs-recipient.service' "$recipient_socket"
+for policy in \
+  'ProtectSystem=strict' \
+  'ProtectHome=read-only' \
+  'ReadWritePaths=-%h/Shared -%h/.cache/tilo/received-files %t/tilo' \
+  'PrivateIPC=yes' \
+  'ProtectKernelLogs=yes' \
+  'ProtectClock=yes' \
+  'ProtectHostname=yes' \
+  'RestrictRealtime=yes' \
+  'KeyringMode=private' \
+  'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6'; do
+  grep -Fqx "$policy" "$recipient_unit"
+done
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
