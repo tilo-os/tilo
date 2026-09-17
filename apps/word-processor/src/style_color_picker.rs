@@ -40,6 +40,16 @@ pub(super) struct DrawArgs<'a> {
     pub(super) presence: &'a PresenceCtx,
 }
 
+pub(super) struct EventArgs<'a> {
+    pub(super) event: &'a WindowEvent,
+    pub(super) scale: f64,
+    pub(super) modifiers: Modifiers,
+    pub(super) state: &'a mut AutoCommit,
+    pub(super) root: &'a ObjId,
+    pub(super) host: Rect,
+    pub(super) panel: Rect,
+}
+
 /// A shared [`ColorPicker`] hosted in a modal-ish floating card.
 #[derive(Default)]
 pub(super) struct StyleColorPicker {
@@ -144,17 +154,16 @@ impl StyleColorPicker {
         picker.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        host: Rect,
-        panel: Rect,
-    ) -> PickerEvent {
+    pub(super) fn handle_event(&mut self, args: EventArgs<'_>) -> PickerEvent {
+        let EventArgs {
+            event,
+            scale,
+            modifiers,
+            state,
+            root,
+            host,
+            panel,
+        } = args;
         if !self.is_open() {
             return PickerEvent {
                 consumed: false,
