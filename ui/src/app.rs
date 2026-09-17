@@ -5191,11 +5191,15 @@ impl App {
         if any {
             self.invalidate_widget_resource_cache();
         }
-        if action_surface_may_have_changed {
-            // A directed action can change which operations exist without
-            // producing another native window event. Publish from the same
-            // broker event batch so peers do not retain the pre-invocation
-            // surface until incidental keyboard or pointer input arrives.
+        let published_snapshot_was_evicted = self.collab_manager.is_connected()
+            && self.last_published_actions.is_some()
+            && self.action_directory_snapshot.is_none();
+        if action_surface_may_have_changed || published_snapshot_was_evicted {
+            // The normal idle pump also repairs invalidation from a later
+            // model sync or a presence-only batch. Neither necessarily brings
+            // another action event after a terminal operation was published.
+            // Query/resolve remain bounded reads; this refresh runs even with
+            // no directory requests or inbound events, and skips stable idle.
             self.publish_action_surface();
         }
         any
