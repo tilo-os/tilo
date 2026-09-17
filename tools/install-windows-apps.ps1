@@ -5,7 +5,7 @@ param(
     [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor')]
     [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor'),
     [ValidateSet('dev', 'release')]
-    [string]$Profile = 'dev'
+    [string]$Profile = 'release'
 )
 
 $ErrorActionPreference = 'Stop'
