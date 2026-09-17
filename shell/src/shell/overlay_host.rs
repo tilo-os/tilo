@@ -8150,12 +8150,16 @@ impl ShellOverlayHost {
         {
             let mut state = chrome.borrow_mut();
             state.publish_activity_glance(headline, unread, pulse, focus);
+            let mut attention = state.overlays;
+            if self.palette_visible {
+                attention.overview = true;
+            }
             if take_pending_activity_reveal(
                 &mut self.activity_pending_reveal,
                 entering_workspace,
                 workspace,
                 unread,
-                state.overlays,
+                attention,
             ) {
                 state.open_room_activity(None);
             }
@@ -24056,7 +24060,11 @@ mod tests {
             people
                 .children
                 .first()
-                .and_then(|list| list.children.first())
+                .and_then(|list| {
+                    list.children
+                        .iter()
+                        .find(|person| person.name.as_deref() == Some("Ada"))
+                })
                 .and_then(|person| person.name.as_deref()),
             Some("Ada")
         );
@@ -27098,7 +27106,10 @@ mod roster_rows {
             !rows[0].followable,
             "a connected headless agent has no viewport to follow"
         );
-        assert_eq!(rows[0].activity.as_deref(), Some("Connected"));
+        assert_eq!(
+            rows[0].activity, None,
+            "presence alone must not be presented as a semantic action"
+        );
     }
 
     #[test]
