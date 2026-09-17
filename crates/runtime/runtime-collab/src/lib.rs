@@ -2006,8 +2006,8 @@ impl PresenceHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable`] when the collaboration broker rejects the
-    /// request or the local transport is unavailable.
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn publish_status(
         &self,
         key_bytes: &[u8],

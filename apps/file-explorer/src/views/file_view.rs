@@ -429,6 +429,16 @@ impl FileView {
         }
     }
 
+    /// A `Scrollable` can reserve a bottom lane for an app-level status or
+    /// footer affordance. Do not leave a partly clipped row in that lane: it
+    /// looks broken and, more importantly, suggests an item is available
+    /// where pointer and keyboard input cannot reach it. The first partly
+    /// visible row at the top remains useful while scrolling, so only the
+    /// bottom edge is treated as a clean boundary.
+    fn fits_viewport_bottom(rect: Rect, vp: Option<Rect>) -> bool {
+        vp.is_none_or(|viewport| rect.y1 <= viewport.y1)
+    }
+
     /// Republish the visible folder rows into the host's drop-target sink.
     /// A drag cannot be released on a row outside the clipped viewport, so
     /// retaining off-screen folders only turns a directory-sized list into
@@ -454,6 +464,9 @@ impl FileView {
                 ViewMode::List => self.list_row_rect(i),
                 ViewMode::Grid => self.cell_rect(i),
             };
+            if !Self::fits_viewport_bottom(rect, vp) {
+                continue;
+            }
             out.push(FolderDropTarget {
                 path: entry.path.clone(),
                 rect,
@@ -699,6 +712,9 @@ impl FileView {
             .enumerate()
         {
             let i = range.start + offset;
+            if !Self::fits_viewport_bottom(self.list_row_rect(i), vp) {
+                continue;
+            }
             self.draw_list_row(scene, transform, tr, theme, i, entry);
         }
         // Header last so it composites above the rows (and stays put while
@@ -1111,6 +1127,9 @@ impl FileView {
         {
             let i = range.start + offset;
             let cell = self.cell_rect(i);
+            if !Self::fits_viewport_bottom(cell, vp) {
+                continue;
+            }
             let selected = self.selection.is_selected(i);
             let hovered = self.hover == Some(i) && !selected;
             if selected || hovered {
@@ -2415,6 +2434,50 @@ mod tests {
             targets.borrow().len() < 32,
             "the drag registry retains only folders a pointer can reach"
         );
+    }
+
+    #[test]
+    fn list_and_grid_leave_a_reserved_bottom_lane_clear() {
+        // Files reserves a bottom lane for its floating status pill. The
+        // drawing and folder-drop paths use this same predicate, so a partly
+        // clipped item cannot look actionable behind that app-level chrome.
+        for mode in [ViewMode::List, ViewMode::Grid] {
+            let sink = new_sink();
+            let sel = SelectionModel::new();
+            let mut entries = items(20);
+            for entry in &mut entries {
+                entry.is_dir = true;
+            }
+            let targets = Rc::new(RefCell::new(Vec::new()));
+            let mut v = FileView::new(&entries, &sel, &sink)
+                .mode(mode)
+                .with_drop_targets(Rc::clone(&targets));
+            v.rect = Rect::new(0.0, 0.0, 358.0, 1_200.0);
+            v.columns = v.columns_for_width(v.rect.width());
+            let viewport = Rect::new(0.0, 0.0, 358.0, 210.0);
+
+            let first_partial = match mode {
+                ViewMode::List => v.list_row_rect(5),
+                ViewMode::Grid => v.cell_rect(v.columns),
+            };
+            assert!(
+                (first_partial.y0..first_partial.y1).contains(&viewport.y1),
+                "fixture has a partially visible {mode:?} item: {first_partial:?}"
+            );
+            assert!(
+                !FileView::fits_viewport_bottom(first_partial, Some(viewport)),
+                "the shared draw guard defers the partial {mode:?} item"
+            );
+
+            v.publish_drop_targets(Some(viewport));
+            assert!(
+                targets
+                    .borrow()
+                    .iter()
+                    .all(|target| target.rect.y1 <= viewport.y1),
+                "no partial {mode:?} folder remains a drop target in the status lane"
+            );
+        }
     }
 
     #[test]
