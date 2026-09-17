@@ -226,6 +226,9 @@ mod clipboard_manager_tests {
 mod device_fabric_ui_tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
+    use crate::shell::collab_broker_capnp::{
+        RealtimeConsentUiView, RealtimeContinuityUiView, RealtimeSourceUiView,
+    };
     use crate::shell::device_fabric::DeviceKind;
     use crate::shell::personal_continuity::DeviceId;
     use crate::shell::state::WorkspaceTree;
@@ -342,6 +345,61 @@ mod device_fabric_ui_tests {
     }
 
     #[test]
+    fn device_pane_proposes_calls_and_requires_explicit_consent_choice() {
+        let (view, remote) = fixture();
+        let source = RealtimeSourceUiView {
+            session: "source-session".into(),
+            room_label: "Design huddle".into(),
+        };
+        let consent = RealtimeConsentUiView {
+            session: "target-session".into(),
+            room_label: "Support call".into(),
+            source: remote.clone(),
+        };
+        let realtime_view = RealtimeContinuityUiView {
+            sources: vec![source],
+            consents: vec![consent],
+        };
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        host.set_realtime_continuity_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(realtime_view.clone())
+        }));
+
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(Point::new(
+            host.qs_device_row_rect(4).x0 + 44.0,
+            host.qs_device_row_rect(4).center().y,
+        ));
+        let (_, decline) =
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(decline.center());
+        assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::Enter)));
+
+        let actions = actions.borrow();
+        assert!(actions.contains(&RealtimeContinuityUiAction::Propose {
+            session: "source-session".into(),
+            target: remote,
+        }));
+        assert!(
+            actions.contains(&RealtimeContinuityUiAction::ResolveConsent {
+                session: "target-session".into(),
+                approved: false,
+            })
+        );
+        assert!(
+            actions.contains(&RealtimeContinuityUiAction::ResolveConsent {
+                session: "target-session".into(),
+                approved: true,
+            })
+        );
+    }
+
+    #[test]
     fn incompatible_device_row_does_not_emit_a_handoff() {
         let (mut view, _) = fixture();
         view.local_media[0].targets.clear();
@@ -422,7 +480,7 @@ mod device_fabric_ui_tests {
             })
             .collect();
         assert_eq!(
-            device_fabric_pane_rows(&view).len(),
+            device_fabric_pane_rows(&view, &Default::default()).len(),
             view.local_media.len() + view.local_outputs.len() + view.devices.len(),
             "the pane model must not truncate media, outputs, or devices"
         );
@@ -748,18 +806,56 @@ pub type DeviceFabricBridge =
     std::rc::Rc<dyn Fn(DeviceFabricUiAction) -> Result<DeviceFabricView, String>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RealtimeContinuityUiAction {
+    Snapshot,
+    Propose {
+        session: String,
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    ResolveConsent {
+        session: String,
+        approved: bool,
+    },
+}
+
+pub type RealtimeContinuityBridge = std::rc::Rc<
+    dyn Fn(
+        RealtimeContinuityUiAction,
+    ) -> Result<crate::shell::collab_broker_capnp::RealtimeContinuityUiView, String>,
+>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum DeviceFabricPaneRow {
+    RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
+    RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
     Media(FabricMediaView),
     LocalOutput(LocalMediaOutputView),
     Device(FabricDeviceView),
 }
 
-fn device_fabric_pane_rows(view: &DeviceFabricView) -> Vec<DeviceFabricPaneRow> {
-    view.bluetooth_authorizations
+fn device_fabric_pane_rows(
+    view: &DeviceFabricView,
+    realtime: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,
+) -> Vec<DeviceFabricPaneRow> {
+    realtime
+        .consents
         .iter()
         .cloned()
-        .map(DeviceFabricPaneRow::BluetoothAuthorization)
+        .map(DeviceFabricPaneRow::RealtimeConsent)
+        .chain(
+            realtime
+                .sources
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::RealtimeSource),
+        )
+        .chain(
+            view.bluetooth_authorizations
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::BluetoothAuthorization),
+        )
         .chain(
             view.local_media
                 .iter()
@@ -1028,6 +1124,7 @@ pub struct ShellOverlayHost {
     /// The local session selected as the source for a certified-device route.
     /// This is private view state, never convergent fabric state.
     qs_selected_media: Option<String>,
+    qs_selected_realtime: Option<String>,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -1116,6 +1213,7 @@ pub struct ShellOverlayHost {
     /// Certified peer and media-output actions. Remote actions stay on the
     /// exact-target personal lane; local sinks stay inside `PipeWire`.
     device_fabric_bridge: Option<DeviceFabricBridge>,
+    realtime_continuity_bridge: Option<RealtimeContinuityBridge>,
     wifi_secret_bridge: Option<WifiSecretBridge>,
     /// Session-local control path into the typed app broker. Follow never
     /// enters the replicated workspace document or crosses the network.
@@ -2325,6 +2423,7 @@ impl ShellOverlayHost {
             qs_device_fabric_start: 0,
             qs_device_fabric_wheel_remainder: 0.0,
             qs_selected_media: None,
+            qs_selected_realtime: None,
             power_menu: PowerMenu::default(),
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -2349,6 +2448,7 @@ impl ShellOverlayHost {
             peer_sync_bridge: None,
             clipboard_manager_bridge: None,
             device_fabric_bridge: None,
+            realtime_continuity_bridge: None,
             wifi_secret_bridge: None,
             follow_bridge: None,
             follow_presence_bridge: None,
@@ -3167,6 +3267,22 @@ impl ShellOverlayHost {
     /// surface. An absent bridge renders an honest unprovisioned state.
     pub fn set_device_fabric_bridge(&mut self, bridge: DeviceFabricBridge) {
         self.device_fabric_bridge = Some(bridge);
+    }
+
+    /// Attach trusted shell-only call handoff controls. The app sees semantic
+    /// lifecycle edges, never the certified-device picker or raw source IDs.
+    pub fn set_realtime_continuity_bridge(&mut self, bridge: RealtimeContinuityBridge) {
+        self.realtime_continuity_bridge = Some(bridge);
+    }
+
+    fn realtime_continuity_call(
+        &self,
+        action: RealtimeContinuityUiAction,
+    ) -> Result<crate::shell::collab_broker_capnp::RealtimeContinuityUiView, String> {
+        self.realtime_continuity_bridge.as_ref().map_or_else(
+            || Ok(crate::shell::collab_broker_capnp::RealtimeContinuityUiView::default()),
+            |bridge| bridge(action),
+        )
     }
 
     fn device_fabric_call(&self, action: DeviceFabricUiAction) -> Result<DeviceFabricView, String> {
@@ -7157,7 +7273,10 @@ impl ShellOverlayHost {
             QsLevel::Devices => self
                 .device_fabric_call(DeviceFabricUiAction::Snapshot)
                 .map_or(190.0, |view| {
-                    let rows = device_fabric_pane_rows(&view).len();
+                    let realtime = self
+                        .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+                        .unwrap_or_default();
+                    let rows = device_fabric_pane_rows(&view, &realtime).len();
                     (82.0 + 58.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
                         .clamp(190.0, 552.0)
                 }),
@@ -7521,7 +7640,10 @@ impl ShellOverlayHost {
                 if bluetooth_details {
                     view.devices.len().saturating_add(1)
                 } else {
-                    device_fabric_pane_rows(&view).len()
+                    let realtime = self
+                        .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+                        .unwrap_or_default();
+                    device_fabric_pane_rows(&view, &realtime).len()
                 }
             });
         let max_start = row_count.saturating_sub(self.qs_device_fabric_visible_rows());
@@ -7587,6 +7709,32 @@ impl ShellOverlayHost {
     fn handle_qs_device_fabric_keyboard(&mut self, logical_key: &Key) -> bool {
         let page = isize::try_from(self.qs_device_fabric_visible_rows()).unwrap_or(isize::MAX);
         match logical_key {
+            Key::Named(NamedKey::Enter | NamedKey::Space | NamedKey::Delete) => {
+                let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+                    return true;
+                };
+                let realtime = self
+                    .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+                    .unwrap_or_default();
+                let rows = device_fabric_pane_rows(&view, &realtime);
+                let consent = matches!(
+                    rows.get(self.qs_device_fabric_start),
+                    Some(DeviceFabricPaneRow::RealtimeConsent(_))
+                );
+                if consent {
+                    let (allow, decline) =
+                        Self::qs_realtime_consent_actions(self.qs_device_row_rect(0));
+                    self.handle_qs_device_fabric_click(
+                        if matches!(logical_key, Key::Named(NamedKey::Delete)) {
+                            decline.center()
+                        } else {
+                            allow.center()
+                        },
+                    );
+                } else if !matches!(logical_key, Key::Named(NamedKey::Delete)) {
+                    self.handle_qs_device_fabric_click(self.qs_device_row_rect(0).center());
+                }
+            }
             Key::Named(NamedKey::ArrowDown) => {
                 let _ = self.scroll_qs_device_fabric(1);
             }
@@ -10876,7 +11024,10 @@ impl ShellOverlayHost {
             return;
         };
         self.normalise_qs_selected_media(&view);
-        let rows = device_fabric_pane_rows(&view);
+        let realtime = self
+            .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+            .unwrap_or_default();
+        let rows = device_fabric_pane_rows(&view, &realtime);
         let _ = self.clamp_qs_device_fabric_start(rows.len());
         let Some((row_index, item)) = rows
             .iter()
@@ -10894,6 +11045,44 @@ impl ShellOverlayHost {
             return;
         }
         let action = match item {
+            DeviceFabricPaneRow::RealtimeConsent(consent) => {
+                let (allow, decline) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let approved = if allow.contains(point) {
+                    true
+                } else if decline.contains(point) {
+                    false
+                } else {
+                    return;
+                };
+                let result =
+                    self.realtime_continuity_call(RealtimeContinuityUiAction::ResolveConsent {
+                        session: consent.session,
+                        approved,
+                    });
+                if let Some(chrome) = self.chrome.as_ref() {
+                    let mut state = chrome.borrow_mut();
+                    match result {
+                        Ok(_) if approved => state.push_notification(
+                            "Call handoff",
+                            "Approved once; this device is preparing its local media",
+                        ),
+                        Ok(_) => state.push_notification("Call handoff", "Declined on this device"),
+                        Err(error) => state.push_notification("Could not move call", error),
+                    }
+                    state.bump();
+                }
+                return;
+            }
+            DeviceFabricPaneRow::RealtimeSource(source) => {
+                self.qs_selected_realtime = Some(source.session);
+                self.qs_selected_media = None;
+                self.qs_selected_realtime = None;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                return;
+            }
             DeviceFabricPaneRow::BluetoothAuthorization(authorization) => Some((
                 DeviceFabricUiAction::AuthorizeBluetoothHandoff {
                     request_id: authorization.request_id,
@@ -10906,6 +11095,7 @@ impl ShellOverlayHost {
             )),
             DeviceFabricPaneRow::Media(media) => {
                 self.qs_selected_media = Some(media.session_id);
+                self.qs_selected_realtime = None;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -10917,6 +11107,30 @@ impl ShellOverlayHost {
                 },
                 format!("Audio is now routed to {}", output.label),
             )),
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local && device.online && self.qs_selected_realtime.is_some() =>
+            {
+                let session = self.qs_selected_realtime.clone().unwrap_or_default();
+                let result = self.realtime_continuity_call(RealtimeContinuityUiAction::Propose {
+                    session,
+                    target: device.id,
+                });
+                if let Some(chrome) = self.chrome.as_ref() {
+                    let mut state = chrome.borrow_mut();
+                    match result {
+                        Ok(_) => state.push_notification(
+                            "Call handoff",
+                            format!(
+                                "Waiting for explicit approval on {}; this call stays live here",
+                                device.label
+                            ),
+                        ),
+                        Err(error) => state.push_notification("Could not move call", error),
+                    }
+                    state.bump();
+                }
+                return;
+            }
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local && device.online && self.qs_selected_media.is_some() =>
             {
@@ -13668,13 +13882,33 @@ impl Widget for ShellOverlayHost {
                             let selected = selected_id.and_then(|id| {
                                 view.local_media.iter().find(|media| &media.session_id == id)
                             });
-                            let rows = device_fabric_pane_rows(&view);
+                            let realtime = self
+                                .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+                                .unwrap_or_default();
+                            let rows = device_fabric_pane_rows(&view, &realtime);
                             let total = rows.len();
                             let items = rows
                                 .into_iter()
                                 .enumerate()
                                 .map(|(index, item)| {
                                     let (name, description, children) = match item {
+                                        DeviceFabricPaneRow::RealtimeConsent(consent) => (
+                                            format!("Continue call in {}", consent.room_label),
+                                            "Approve this one handoff and its requested local capture sources"
+                                                .into(),
+                                            vec![
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Allow this call handoff once"),
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Decline this call handoff"),
+                                            ],
+                                        ),
+                                        DeviceFabricPaneRow::RealtimeSource(source) => (
+                                            format!("Call in {}", source.room_label),
+                                            "Choose this live call, then choose a certified destination"
+                                                .into(),
+                                            Vec::new(),
+                                        ),
                                         DeviceFabricPaneRow::BluetoothAuthorization(
                                             authorization,
                                         ) => (
@@ -18193,6 +18427,13 @@ impl ShellOverlayHost {
         )
     }
 
+    fn qs_realtime_consent_actions(row: Rect) -> (Rect, Rect) {
+        (
+            Rect::new(row.x1 - 72.0, row.y0 + 10.0, row.x1 - 38.0, row.y1 - 10.0),
+            Rect::new(row.x1 - 34.0, row.y0 + 10.0, row.x1 - 2.0, row.y1 - 10.0),
+        )
+    }
+
     fn normalise_qs_selected_media(&mut self, view: &DeviceFabricView) {
         if self.qs_selected_media.as_ref().is_some_and(|selected| {
             view.local_media
@@ -18423,7 +18664,10 @@ impl ShellOverlayHost {
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 24.0)),
         );
-        let rows = device_fabric_pane_rows(&view);
+        let realtime = self
+            .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+            .unwrap_or_default();
+        let rows = device_fabric_pane_rows(&view, &realtime);
         if rows.is_empty() {
             self.draw_qs_drill_in_empty(
                 scene,
@@ -18444,6 +18688,27 @@ impl ShellOverlayHost {
         {
             let row = self.qs_device_row_rect(index);
             let (title, detail, icon, selected_row, enabled) = match item {
+                DeviceFabricPaneRow::RealtimeConsent(consent) => {
+                    let source_label = view
+                        .devices
+                        .iter()
+                        .find(|device| device.id == consent.source)
+                        .map_or("Another certified device", |device| device.label.as_str());
+                    (
+                        format!("Continue call in {}", consent.room_label),
+                        format!("{source_label} requested this · select to allow once"),
+                        ui::icons::Icon::Camera,
+                        false,
+                        true,
+                    )
+                }
+                DeviceFabricPaneRow::RealtimeSource(source) => (
+                    format!("Call in {}", source.room_label),
+                    "Live here · select a certified destination below".to_string(),
+                    ui::icons::Icon::Camera,
+                    self.qs_selected_realtime.as_ref() == Some(&source.session),
+                    true,
+                ),
                 DeviceFabricPaneRow::BluetoothAuthorization(authorization) => (
                     format!("Pair {}", authorization.accessory_name),
                     format!(
@@ -18488,7 +18753,8 @@ impl ShellOverlayHost {
                 DeviceFabricPaneRow::Device(device) => {
                     let enabled = !device.is_local
                         && device.online
-                        && selected.is_some_and(|media| media.targets.contains(&device.id));
+                        && (self.qs_selected_realtime.is_some()
+                            || selected.is_some_and(|media| media.targets.contains(&device.id)));
                     (
                         device.label.clone(),
                         Self::fabric_device_detail(
@@ -18514,7 +18780,10 @@ impl ShellOverlayHost {
                 face = face.primary();
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
-            let trailing = if matches!(item, DeviceFabricPaneRow::Device(_)) {
+            let trailing = if matches!(
+                item,
+                DeviceFabricPaneRow::Device(_) | DeviceFabricPaneRow::RealtimeConsent(_)
+            ) {
                 86.0
             } else {
                 0.0
@@ -18557,7 +18826,34 @@ impl ShellOverlayHost {
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
             );
-            if let DeviceFabricPaneRow::Device(device) = item {
+            if let DeviceFabricPaneRow::RealtimeConsent(_) = item {
+                let (allow, decline) = Self::qs_realtime_consent_actions(row);
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(allow, "")
+                        .ghost()
+                        .icon(ui::icons::Icon::Check)
+                        .hovered(self.last_cursor.is_some_and(|point| allow.contains(point)))
+                        .accessible_name("Allow this call handoff once"),
+                );
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(decline, "")
+                        .ghost()
+                        .icon(ui::icons::Icon::X)
+                        .hovered(
+                            self.last_cursor
+                                .is_some_and(|point| decline.contains(point)),
+                        )
+                        .accessible_name("Decline this call handoff"),
+                );
+            } else if let DeviceFabricPaneRow::Device(device) = item {
                 let (placements, control) = Self::qs_device_row_actions(row);
                 for (rect, icon, name) in [
                     (

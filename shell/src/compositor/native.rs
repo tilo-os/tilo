@@ -3447,6 +3447,23 @@ fn attach_collab_broker_bridges(
             .host_mut()
             .attach_app_action_broker(action_broker);
     }
+    if let Some(realtime) = broker.realtime_fabric_bridge() {
+        frame_builder
+            .host_mut()
+            .set_realtime_continuity_bridge(std::rc::Rc::new(move |action| {
+                use crate::shell::overlay_host::RealtimeContinuityUiAction;
+                match action {
+                    RealtimeContinuityUiAction::Snapshot => {}
+                    RealtimeContinuityUiAction::Propose { session, target } => {
+                        realtime.propose_to(&session, &target)?;
+                    }
+                    RealtimeContinuityUiAction::ResolveConsent { session, approved } => {
+                        realtime.resolve_consent(&session, approved)?;
+                    }
+                }
+                Ok(realtime.ui_view())
+            }));
+    }
 }
 
 fn attach_peer_presence(
