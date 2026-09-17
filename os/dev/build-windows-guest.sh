@@ -8,6 +8,15 @@ done
 test ! -e /guestroot
 python3 /tilo/windows_guest_contract.py verify --roots /tilo/windows-guest-packages.txt \
     --repo /repo --buildroot-ref "$WINDOWS_GUEST_BUILDROOT_REF"
+if [ "${DEVELOPMENT_WINE_REF:-scratch}" != scratch ]; then
+    test "$(cat /repo/development-wine/reference.txt)" = "$DEVELOPMENT_WINE_REF"
+    python3 /tilo/development-wine-repository.py verify --directory /repo/development-wine \
+        --key-sha256 "${DEVELOPMENT_WINE_KEY_SHA256:?}" --packages /repo \
+        --fedora-key /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary >/dev/null
+else
+    test ! -e /repo/development-wine
+    test -z "${DEVELOPMENT_WINE_KEY_SHA256:-}"
+fi
 python3 /tilo/windows_guest_contract.py roots --roots /tilo/windows-guest-packages.txt > /guest-packages.txt
 mapfile -t packages < /guest-packages.txt
 mkdir /guestroot
@@ -19,6 +28,9 @@ dnf5 --installroot=/guestroot --releasever=44 --use-host-config \
 metadata=/guestroot/usr/lib/tilo/windows-guest
 mkdir -p "$metadata"
 cp /repo/windows-guest-contract.json /repo/windows-guest-roots.txt "$metadata/"
+if [ -d /repo/development-wine ]; then
+    cp -a /repo/development-wine "$metadata/development-wine"
+fi
 printf '%s\n' "$WINDOWS_GUEST_RPMS_REF" > "$metadata/rpms-ref.txt"
 rpm --root /guestroot -qa --qf '%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{LICENSE}\n' \
     | LC_ALL=C sort > "$metadata/installed-packages.tsv"

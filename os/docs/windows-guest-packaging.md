@@ -79,6 +79,41 @@ DNF cache locations are harmless and deduplicated by verified content.
 
 ## Required validation and DXVK activation gap
 
+### Development traditional Wine inputs
+
+The ARM provider requires the separate traditional Wine pair. Its locally built
+RPMs are unsigned; a digest-pinned artifact alone does not satisfy DNF package
+signature checking. For development, `development-wine-repository.py sign`
+checks the pinned pair's package bytes, actual RPM identities and payload digests,
+then signs copies with a fresh development-only GPG key. The private key lives
+in a temporary mode-0700 directory outside the exported artifact and is destroyed
+on success or failure. The original pair remains unchanged.
+
+```sh
+python3 os/dev/development-wine-repository.py sign \
+  --pair /wine-paired --pair-reference "$WINE_PAIR_REF" \
+  --pin os/dev/wine-source.json --output /signed-wine
+```
+
+The output directory must not exist. It contains only signed RPMs, the public
+key, the original paired contract and a development trust receipt. Publish it
+at `/signed-wine` in an immutable artifact and independently record the receipt's
+`public_key_sha256`. Pass both `DEVELOPMENT_WINE_REF` and
+`DEVELOPMENT_WINE_KEY_SHA256` to the resolver and offline guest Containerfiles.
+The signer needs GnuPG and `rpm-sign`; it neither compiles Wine nor executes it.
+
+The resolver exposes the verified pair as a preferred local repository and
+retains its complete RPM inventory even when DNF consumes local files in place.
+Normal package roots still determine what gets installed. Both resolver and
+consumer verify development Wine RPMs against an isolated development keyring
+and every remaining package against an isolated Fedora keyring. Stock packages
+cannot replace the pinned traditional Wine identities. `gpgcheck=True` remains
+enabled throughout; unsigned digest-only packages are rejected.
+
+The frozen snapshot binds the immutable signed-pair reference and hashes of all
+public trust records. The guest preserves those records for audit. These are
+development signing identities, not release trust or execution acceptance.
+
 After installation, the build executes the guest's native x86-64 Python standard
 library import check and actual `localedef` generation of `en_US.UTF-8`. It then
 runs `validate-windows-guest.py`. That gate requires both Wine/server ELF widths,
