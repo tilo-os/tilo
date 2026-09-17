@@ -2315,37 +2315,40 @@ impl App {
         if self.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
-        let actions = descriptors
-            .iter()
-            .map(|descriptor| crate::collaboration::ExportedAction {
-                resource: descriptor.address.resource.clone(),
-                action: descriptor.address.action.clone(),
-                resource_kind: descriptor.resource_kind.clone(),
-                resource_label: descriptor.resource_label.clone(),
-                action_label: descriptor.action_label.clone(),
-                description: descriptor.description.clone(),
-                operation_kind: descriptor.kind.as_str().to_string(),
-                params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-                contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
-                input: match &descriptor.input {
-                    tilo_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
-                    tilo_actions::InputSpec::Text {
-                        prompt,
-                        placeholder,
-                        collects,
-                    } => crate::collaboration::ExportedInput::Text {
-                        prompt: prompt.clone(),
-                        placeholder: placeholder.clone(),
-                        wants_content: *collects == tilo_actions::Collects::Content,
-                    },
-                },
-            })
-            .collect();
+        let actions = descriptors.iter().map(Self::exported_action).collect();
         self.collab_manager.send(CollabRequest::PublishActions {
             app_id: publication_app_id,
             actions,
         });
         self.last_published_actions = Some(descriptors);
+    }
+
+    fn exported_action(
+        descriptor: &tilo_actions::ActionDescriptor,
+    ) -> crate::collaboration::ExportedAction {
+        crate::collaboration::ExportedAction {
+            resource: descriptor.address.resource.clone(),
+            action: descriptor.address.action.clone(),
+            resource_kind: descriptor.resource_kind.clone(),
+            resource_label: descriptor.resource_label.clone(),
+            action_label: descriptor.action_label.clone(),
+            description: descriptor.description.clone(),
+            operation_kind: descriptor.kind.as_str().to_string(),
+            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
+            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
+            input: match &descriptor.input {
+                tilo_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
+                tilo_actions::InputSpec::Text {
+                    prompt,
+                    placeholder,
+                    collects,
+                } => crate::collaboration::ExportedInput::Text {
+                    prompt: prompt.clone(),
+                    placeholder: placeholder.clone(),
+                    wants_content: *collects == tilo_actions::Collects::Content,
+                },
+            },
+        }
     }
 
     fn action_directory_revision(&mut self) -> String {
@@ -17459,7 +17462,7 @@ mod prepared_runner_tests {
 mod card_grid_host_tests {
     use super::*;
     use crate::widget::{Button, Card, CardGrid, Column, Container, Element};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     fn fixture(count: usize) -> (App, Rc<RefCell<Vec<usize>>>) {
@@ -17790,92 +17793,92 @@ mod card_grid_host_tests {
         assert_eq!(app.focusable_order.len(), 2);
     }
 
+    struct GrowingBody {
+        column: Column,
+        requested: Rc<Cell<usize>>,
+        count: usize,
+        dirty: bool,
+        clicks: Rc<RefCell<Vec<usize>>>,
+    }
+    impl Widget for GrowingBody {
+        fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+            if self.count == self.requested.get() {
+                return false;
+            }
+            self.count = self.requested.get();
+            self.column = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(8.0);
+            for index in 0..self.count {
+                let clicks = self.clicks.clone();
+                self.column = std::mem::take(&mut self.column).push(Box::new(
+                    Button::new(&format!("dynamic-{index}"), "Action", None)
+                        .on_click(move || clicks.borrow_mut().push(index)),
+                ));
+            }
+            self.dirty = true;
+            true
+        }
+        fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+            self.column.sync(state, path);
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            theme: &Theme,
+            map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.column.build_layout(tree, theme, map)
+        }
+        fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.column.apply_layout(tree, node, origin);
+        }
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            text: &mut TextRenderer,
+            theme: &Theme,
+            presence: &PresenceCtx,
+        ) {
+            self.column.draw(scene, transform, text, theme, presence);
+        }
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            scale: f64,
+            modifiers: &winit::event::Modifiers,
+            state: &mut automerge::AutoCommit,
+            path: &automerge::ObjId,
+            handled: &mut bool,
+            focus: &mut Option<NodeId>,
+            node: NodeId,
+            tree: &TaffyTree<()>,
+        ) {
+            self.column.handle_event(
+                event, scale, modifiers, state, path, handled, focus, node, tree,
+            );
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.column.children()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.column.children_mut()
+        }
+        fn get_rect(&self) -> KurboRect {
+            self.column.get_rect()
+        }
+        fn name(&self) -> &'static str {
+            "GrowingBody"
+        }
+        fn take_structure_dirty(&mut self) -> bool {
+            std::mem::take(&mut self.dirty)
+        }
+    }
+
     #[test]
     fn card_grid_rebuilt_card_body_has_prepaint_geometry_and_input() {
-        use std::cell::Cell;
-        struct GrowingBody {
-            column: Column,
-            requested: Rc<Cell<usize>>,
-            count: usize,
-            dirty: bool,
-            clicks: Rc<RefCell<Vec<usize>>>,
-        }
-        impl Widget for GrowingBody {
-            fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
-                if self.count == self.requested.get() {
-                    return false;
-                }
-                self.count = self.requested.get();
-                self.column = Column::new()
-                    .with_intrinsic_height()
-                    .with_no_padding()
-                    .with_gap(8.0);
-                for index in 0..self.count {
-                    let clicks = self.clicks.clone();
-                    self.column = std::mem::take(&mut self.column).push(Box::new(
-                        Button::new(&format!("dynamic-{index}"), "Action", None)
-                            .on_click(move || clicks.borrow_mut().push(index)),
-                    ));
-                }
-                self.dirty = true;
-                true
-            }
-            fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-                self.column.sync(state, path);
-            }
-            fn build_layout(
-                &mut self,
-                tree: &mut TaffyTree<()>,
-                theme: &Theme,
-                map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-            ) -> NodeId {
-                self.column.build_layout(tree, theme, map)
-            }
-            fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-                self.column.apply_layout(tree, node, origin);
-            }
-            fn draw(
-                &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                text: &mut TextRenderer,
-                theme: &Theme,
-                presence: &PresenceCtx,
-            ) {
-                self.column.draw(scene, transform, text, theme, presence);
-            }
-            fn handle_event(
-                &mut self,
-                event: &WindowEvent,
-                scale: f64,
-                modifiers: &winit::event::Modifiers,
-                state: &mut automerge::AutoCommit,
-                path: &automerge::ObjId,
-                handled: &mut bool,
-                focus: &mut Option<NodeId>,
-                node: NodeId,
-                tree: &TaffyTree<()>,
-            ) {
-                self.column.handle_event(
-                    event, scale, modifiers, state, path, handled, focus, node, tree,
-                );
-            }
-            fn children(&self) -> Vec<&dyn Widget> {
-                self.column.children()
-            }
-            fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-                self.column.children_mut()
-            }
-            fn get_rect(&self) -> KurboRect {
-                self.column.get_rect()
-            }
-            fn name(&self) -> &str {
-                "GrowingBody"
-            }
-            fn take_structure_dirty(&mut self) -> bool {
-                std::mem::take(&mut self.dirty)
-            }
-        }
         let requested = Rc::new(Cell::new(1));
         let clicks = Rc::new(RefCell::new(Vec::new()));
         let body = GrowingBody {
@@ -17986,7 +17989,7 @@ mod viewport_composition_tests {
                 child.sync(doc, path);
             }
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "ResponsiveRoot"
         }
         fn handle_event(
@@ -18013,7 +18016,7 @@ mod viewport_composition_tests {
             theme: &Theme,
             map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            self.builds.set(self.builds.get() + 1);
+            self.builds.set(self.builds.get().saturating_add(1));
             let count = if self.rect.width() >= 1100.0 {
                 3
             } else if self.rect.width() >= 800.0 {
@@ -18103,7 +18106,7 @@ mod viewport_composition_tests {
                 },
                 &self.nodes,
             );
-            map.insert(node, self as *mut dyn Widget);
+            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(
@@ -18129,7 +18132,7 @@ mod viewport_composition_tests {
             theme: &Theme,
             presence: &PresenceCtx,
         ) {
-            self.paints.set(self.paints.get() + 1);
+            self.paints.set(self.paints.get().saturating_add(1));
             for child in &mut self.children {
                 child.draw(scene, affine, text, theme, presence);
             }
@@ -18138,7 +18141,7 @@ mod viewport_composition_tests {
             self.rect
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            self.children.iter().map(|child| child.as_ref()).collect()
+            self.children.iter().map(AsRef::as_ref).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
             self.children
@@ -18266,13 +18269,13 @@ mod viewport_composition_tests {
         frame(&mut app, 1200);
         app.set_focused_node(Some(app.focusable_order[0]));
         app.mutate_node(app.focused_node.unwrap(), |widget| {
-            widget.set_state("5:b:1")
+            widget.set_state("5:b:1");
         })
         .unwrap();
         for width in [920, 600, 1200] {
             frame(&mut app, width);
             let node = app.focused_node.expect("editor remains focused");
-            let expected_index = if width >= 1100 { 0 } else { 1 };
+            let expected_index = usize::from(width < 1100);
             assert_eq!(
                 node, app.focusable_order[expected_index],
                 "focus follows identity across reordered controls"
