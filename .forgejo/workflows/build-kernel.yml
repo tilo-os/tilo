@@ -42,6 +42,7 @@ concurrency:
 
 jobs:
   build-and-push-kernel:
+    timeout-minutes: 600
     strategy:
       fail-fast: true
       matrix:
@@ -258,6 +259,7 @@ jobs:
     needs: build-and-push-kernel
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     runs-on: runner
+    timeout-minutes: 60
     env:
       KERNEL_SNAPSHOT_INPUTS: |
         os/kernel
