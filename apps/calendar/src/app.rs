@@ -4932,10 +4932,12 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            due_rect,
-            &due,
-            due_rect.contains(self.last_mouse),
-            true,
+            FieldButtonFace {
+                rect: due_rect,
+                label: &due,
+                active: due_rect.contains(self.last_mouse),
+                trailing_caret: true,
+            },
         );
         hits.push((due_rect, Action::OpenTaskPopover(TaskPopover::Due)));
         y += 40.0;
@@ -4946,10 +4948,12 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            priority_rect,
-            &priority,
-            priority_rect.contains(self.last_mouse),
-            true,
+            FieldButtonFace {
+                rect: priority_rect,
+                label: &priority,
+                active: priority_rect.contains(self.last_mouse),
+                trailing_caret: true,
+            },
         );
         hits.push((
             priority_rect,
@@ -4969,10 +4973,12 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            project_rect,
-            &project,
-            project_rect.contains(self.last_mouse),
-            true,
+            FieldButtonFace {
+                rect: project_rect,
+                label: &project,
+                active: project_rect.contains(self.last_mouse),
+                trailing_caret: true,
+            },
         );
         hits.push((project_rect, Action::OpenTaskPopover(TaskPopover::Project)));
         y += 40.0;
@@ -5177,11 +5183,33 @@ impl CalendarApp {
                 None,
             );
             let date_active = date_rect.contains(mouse) || popover == date_pop;
-            draw_field_button(scene, t, tr, theme, date_rect, date_str, date_active, true);
+            draw_field_button(
+                scene,
+                t,
+                tr,
+                theme,
+                FieldButtonFace {
+                    rect: date_rect,
+                    label: date_str,
+                    active: date_active,
+                    trailing_caret: true,
+                },
+            );
             hits.push((date_rect, Action::OpenPopover(date_pop)));
             if time_rect.area() > 0.0 {
                 let time_active = time_rect.contains(mouse) || popover == time_pop;
-                draw_field_button(scene, t, tr, theme, time_rect, time_str, time_active, true);
+                draw_field_button(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    FieldButtonFace {
+                        rect: time_rect,
+                        label: time_str,
+                        active: time_active,
+                        trailing_caret: true,
+                    },
+                );
                 hits.push((time_rect, Action::OpenPopover(time_pop)));
             }
         };
@@ -5437,7 +5465,18 @@ impl CalendarApp {
                     hits.push((rect, action));
                 }
                 let clear = Rect::new(r.x0 + 12.0, r.y1 - 38.0, r.x1 - 12.0, r.y1 - 10.0);
-                draw_field_button(scene, t, tr, theme, clear, "Clear due date", false, false);
+                draw_field_button(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    FieldButtonFace {
+                        rect: clear,
+                        label: "Clear due date",
+                        active: false,
+                        trailing_caret: false,
+                    },
+                );
                 hits.push((clear, Action::SetTaskDue(None)));
             }
             TaskPopover::Priority => {
@@ -7485,17 +7524,26 @@ pub(crate) fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Po
 /// value and an optional trailing disclosure caret. Backs the date/time/
 /// calendar fields, mirroring the `TextInput` chrome so the whole form looks
 /// uniformly editable.
-#[allow(clippy::too_many_arguments)]
+struct FieldButtonFace<'a> {
+    rect: Rect,
+    label: &'a str,
+    active: bool,
+    trailing_caret: bool,
+}
+
 fn draw_field_button(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
     theme: &Theme,
-    r: Rect,
-    label: &str,
-    active: bool,
-    trailing_caret: bool,
+    face: FieldButtonFace<'_>,
 ) {
+    let FieldButtonFace {
+        rect: r,
+        label,
+        active,
+        trailing_caret,
+    } = face;
     let c = &theme.tokens.colors;
     let bg = if active {
         c.lift(0.72)
