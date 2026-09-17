@@ -149,18 +149,51 @@ touch minimum, so the test reads centres at 1× and heights at 2×.
 
 ## Code review (`/code-review medium`)
 
-Addressed: `TopStrip` doc named a consumer it does not have and a no-op
-comment; photos compared two outputs of one pure function with an epsilon and
-spelled the line-height formula twice (`line_h` helper, plain `!=`); camera
-measured a literal `"Photo"` instead of the labels it draws (now the max over
-`items`); music duplicated the tabular duration block three times
-(`draw_duration_right_aligned`). Kept as-is with reasons: `#![allow(dead_code)]`
-on tube's shared test harness (each test binary uses a subset), `eprintln!` in
-the tube probes (they are the measure-first evidence), `min(budget)` on the
-measured photos labels (word-wrap can exceed `max_width`), music's remaining
-`vy()` sites (exact at 1×, literal sizes). Not done: retiring photos'
-`library_details_cards` state in favour of `card_action_controls` — a larger
-refactor of a file with live WIP in the user's checkout.
+Interim findings, addressed before the first commit: `TopStrip` doc named a
+consumer it does not have plus a no-op comment; photos compared two outputs of
+one pure function with an epsilon; camera measured a literal `"Photo"` instead
+of the labels it draws (now the max over `items`); music duplicated the tabular
+duration block three times (`draw_duration_right_aligned`).
+
+Final findings (six), addressed in the follow-up commit:
+
+1. photos `toolbar_width`/`faces_for_width` still sized items at the 1×
+   `BTN_H` while the strip was built at `btn_h(scale)` → for scales in
+   (1.0, 1.25] the fit decision could pick a face set the strip cannot hold.
+   Fixed: `toolbar_width_at(faces, btn_h)` / `faces_for_width(width, btn_h)`;
+   the public `toolbar_width(faces)` keeps its 1× contract for the tests.
+2. video-player library rows elided the title at Regular but `panel_text` now
+   draws Medium (wider) → a just-fitting title could run into Remove/Play.
+   Fixed: `elide_to_width_weighted(…, TextWeight::Medium)`.
+3. tube `card_meta_lines_stack_without_overlap_at_2x` was named for the 2×
+   overlap it cannot observe (NavSplit measures at 1×). Renamed to what it
+   asserts (`card_meta_rects_stay_stacked_in_order_at_2x_layout_pass`); the
+   two bisection probes became permanent, plainly-named regressions for the
+   app-local `Flex`/grid/`Scrollable` measuring at renderer scale; all
+   `eprintln!`s removed — the numbers live in this report. The red-until-F1
+   acceptance check ("2× lines taller than 1×") is stated in the framework
+   section above.
+4. video-player's strip test re-derived the label line with the strip's own
+   formula. Fixed: it measures `"Library"` with a real 2× `TextRenderer`. Both
+   apps' local `RENDERER_LINE_HEIGHT = 1.25` copies replaced by the public
+   `TextStyle::new(size × scale).line_height_px()`.
+5. `panel_text` drew with `max_width: None`, so the 360 px panel's empty-state
+   copy ran past the panel edge (pre-existing, touched). Fixed: measure and
+   draw bounded to the rect width (wraps); the empty-state band is tall enough
+   for the wrapped block.
+6. Open/Library capsule widths scaled the whole authored 84/88 px by the text
+   scale, starving the title on narrow surfaces at 2×, and the Library rect
+   could invert. Fixed: `capsule_w()` scales only the label part beyond the
+   shared Button's 30 px horizontal padding; Library's `x1` is clamped to
+   `>= x0`. A measured-width variant needs a renderer in layout (F2/F1).
+
+Kept as-is with reasons: `#![allow(dead_code)]` on tube's shared test harness
+(each test binary uses a subset); `min(budget)` on the measured photos labels
+(word-wrap can exceed `max_width`); music's remaining `vy()` sites (exact at
+1×, literal sizes). Not done: retiring photos' `library_details_cards` state in
+favour of `card_action_controls` — a larger refactor of a file with live WIP in
+the user's checkout. The reviewer could not run `cargo check` on its host
+(`ring`); every finding was re-verified here by running the suites.
 
 ## Conventions observed
 
@@ -201,7 +234,7 @@ New tests (all run, all pass):
 | photos | `app::tests::toolbar_capsules_and_status_band_contain_their_text_at_any_scale`, `app::tests::library_card_actions_share_one_edge_inset` | 2 passed |
 | video-player | `app::tests::top_strip_is_one_centre_line_that_contains_its_buttons`, `app::tests::library_panel_chrome_shares_one_gutter` | 2 passed |
 | music | `tests::track_context_menu_stays_inside_the_app_rect_from_every_corner` | 1 passed |
-| tube | `tests/large_text_layout.rs`: `card_meta_lines_stack_without_overlap_at_1x`, `…_at_2x`, `probe_text_alone_and_in_flex_at_2x`, `probe_text_in_grid_and_scrollable_at_2x`, `search_header_chips_and_summary_do_not_collide_at_2x` | 5 passed |
+| tube | `tests/large_text_layout.rs`: `card_meta_lines_stack_without_overlap_at_1x`, `card_meta_rects_stay_stacked_in_order_at_2x_layout_pass`, `text_in_flex_measures_at_renderer_scale`, `text_in_grid_and_scrollable_measures_at_renderer_scale`, `search_header_chips_and_summary_do_not_collide_at_2x` | 5 passed |
 
 Compile gates: `cargo check -p {music,photos,video-player,camera,tube} --tests`
 — all five clean (re-run after `rustfmt`).

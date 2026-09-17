@@ -58,21 +58,21 @@ const BTN_H: f32 = 34.0;
 
 /// The shared `Button` face paints its label at this renderer-relative size
 /// (`Button::measure`), and the renderer applies the accessibility text scale
-/// plus its default 1.25 line height (`TextStyle::new`). The toolbar capsules
-/// and the status band keep their authored 1× heights until that measured
-/// line no longer fits, then grow just enough to contain it — so 200% labels
-/// stop colliding with the capsule edge while 1× density is untouched.
+/// plus the default `TextStyle` line height. The toolbar capsules and the
+/// status band keep their authored 1× heights until that measured line no
+/// longer fits, then grow just enough to contain it — so 200% labels stop
+/// colliding with the capsule edge while 1× density is untouched.
 /// (Alignment review 2026-09-16; kept local to this file because the toolbar
 /// is sized in `build_layout`, which sees the theme but no renderer.)
 const BUTTON_LABEL_SIZE: f32 = 14.0;
 const STATUS_TEXT_SIZE: f32 = 13.0;
-const RENDERER_LINE_HEIGHT: f32 = 1.25;
 const BTN_PAD_Y: f32 = 8.0;
 const STATUS_PAD_Y: f32 = 4.0;
 
-/// Line height the renderer will give `size` at `text_scale`.
+/// Line height the renderer will give `size` at `text_scale` — the default
+/// `TextStyle` leading on the scaled size, not a local copy of that factor.
 fn line_h(size: f32, text_scale: f32) -> f32 {
-    size * text_scale * RENDERER_LINE_HEIGHT
+    ui::text_render::TextStyle::new(size * text_scale).line_height_px()
 }
 
 /// Toolbar capsule height at `text_scale`: the authored [`BTN_H`] at 1×.
@@ -431,6 +431,13 @@ fn item_width(face: Face, label: &str, btn_h: f32) -> f32 {
 /// Exposed so a test can assert the strip fits a window rather than
 /// discovering it does not by finding Save missing from a screenshot.
 pub fn toolbar_width(faces: &[Face]) -> f32 {
+    toolbar_width_at(faces, BTN_H)
+}
+
+/// [`toolbar_width`] for capsules `btn_h` tall — the height `refit_toolbar`
+/// builds the buttons with, so the fit decision uses the same widths the strip
+/// will actually lay out at the theme's text scale.
+fn toolbar_width_at(faces: &[Face], btn_h: f32) -> f32 {
     let mut w = PAD * 2.0;
     for (i, slot) in SLOTS.iter().enumerate() {
         if i > 0 {
@@ -440,7 +447,7 @@ pub fn toolbar_width(faces: &[Face]) -> f32 {
             // Unreachable: `faces` and `TOOLBAR` are always built the same
             // length, one entry per `SLOTS::Item` index.
             Slot::Item(n) => match (faces.get(n), TOOLBAR.get(n)) {
-                (Some(&face), Some(item)) => item_width(face, &tr(item.1), BTN_H),
+                (Some(&face), Some(item)) => item_width(face, &tr(item.1), btn_h),
                 _ => 0.0,
             },
             Slot::Separator => SEP_W,
@@ -450,16 +457,16 @@ pub fn toolbar_width(faces: &[Face]) -> f32 {
     w
 }
 
-/// Each item's presentation at a given strip width.
+/// Each item's presentation at a given strip width, for capsules `btn_h` tall.
 ///
 /// The labelled items give up their words rather than the strip giving up an
 /// item: a control that has shrunk to its glyph is still reachable, one that
 /// has fallen off the edge is not.
-fn faces_for_width(width: f32) -> Vec<Face> {
+fn faces_for_width(width: f32, btn_h: f32) -> Vec<Face> {
     let roomy: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
     // Width 0 is the first frame, before a layout has happened. Assume room;
     // the next frame corrects it with a real measurement.
-    if width <= 0.0 || toolbar_width(&roomy) <= width {
+    if width <= 0.0 || toolbar_width_at(&roomy, btn_h) <= width {
         return roomy;
     }
     if width < 600.0 {
@@ -749,7 +756,7 @@ impl PhotosApp {
                 })
                 .collect()
         } else {
-            faces_for_width(width)
+            faces_for_width(width, btn_h)
         };
         // Both heights come from the same pure `btn_h()` on the theme's scale,
         // so exact comparison is the honest one.
