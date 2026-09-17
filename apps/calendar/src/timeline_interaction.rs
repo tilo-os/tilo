@@ -6,20 +6,18 @@
 //! applying those effects to the calendar model and CRDT.
 
 use chrono::{Datelike, NaiveDate};
-use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use ui::dnd::DRAG_START_THRESHOLD_PX;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-
 use crate::date;
-use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{
+    PaintContext, elide_to_width, fill_rect, fill_round, stroke_line, stroke_round,
+};
 use crate::input_context::InputContext;
 use crate::model::{Id, Palette};
 use crate::timeline_viewport::{TimelineGeom, TimelineViewport};
+use ui::dnd::DRAG_START_THRESHOLD_PX;
 
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
 
@@ -389,23 +387,21 @@ impl TimelineInteraction {
     /// emitted directly by pointer gestures.
     pub fn draw_timeline(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
     ) -> Vec<(Rect, TimelineEffect)> {
+        let transform = paint.transform;
+        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, transform, colors.surfaces.base, area);
+        fill_rect(paint.scene, transform, colors.surfaces.base, area);
 
         let geom = Self::geometry(area);
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
-        Self::draw_headers(
-            scene, transform, text, theme, area, model, grid_x0, col_w, &mut hits,
-        );
+        Self::draw_headers(paint, area, model, grid_x0, col_w, &mut hits);
+        let scene = &mut *paint.scene;
         stroke_line(
             scene,
             transform,
@@ -423,28 +419,26 @@ impl TimelineInteraction {
             transform,
             &body,
         );
-        self.draw_grid(scene, transform, text, theme, area, model, geom);
-        self.draw_events(
-            scene, transform, text, theme, area, model, geom, body, &mut hits,
-        );
-        self.draw_drag_ghost(scene, transform, text, theme, area, model, geom);
-        scene.pop_layer();
-        self.viewport.draw(scene, transform, theme);
+        self.draw_grid(paint, area, model, geom);
+        self.draw_events(paint, area, model, geom, body, &mut hits);
+        self.draw_drag_ghost(paint, area, model, geom);
+        paint.scene.pop_layer();
+        self.viewport.draw(paint.scene, transform, theme);
         hits
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_headers(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         grid_x0: f64,
         col_w: f64,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         for (index, day) in model.days.iter().enumerate() {
             let x0 = grid_x0 + col_w * index as f64;
@@ -517,17 +511,17 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_grid(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
     ) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
@@ -589,19 +583,19 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_events(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
         body: Rect,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let moving_id = self.moving_id();
         for (index, day) in model.days.iter().enumerate() {
@@ -670,17 +664,17 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_drag_ghost(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
     ) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let Some(preview) = self.preview(area, model.days) else {
             return;
