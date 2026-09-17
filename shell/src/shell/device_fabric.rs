@@ -396,6 +396,17 @@ pub enum PersonalFabricAction {
     RemoteAudioCancel {
         session_id: [u8; 16],
     },
+    /// Bounded semantic negotiation for a camera, microphone, or document
+    /// scanner. PipeWire/V4L2 identities and local app approvals never appear
+    /// in this payload.
+    RemoteCaptureSignal {
+        signal: crate::shell::remote_capture_device::RemoteCaptureSignal,
+    },
+    /// One bounded media or scanner chunk. The runtime validates it again
+    /// against the exact authenticated peer/session/grant/profile binding.
+    RemoteCaptureChunk {
+        chunk: crate::shell::remote_capture_device::RemoteCaptureChunk,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -711,6 +722,20 @@ impl PersonalFabricActionEnvelope {
             }
             PersonalFabricAction::RemoteAudioCancel { session_id } => {
                 if session_id == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteCaptureSignal { signal } => {
+                if !signal.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteCaptureChunk { chunk } => {
+                use crate::shell::remote_capture_device::RemoteCaptureKind;
+                if !chunk.valid_for(RemoteCaptureKind::Camera)
+                    && !chunk.valid_for(RemoteCaptureKind::Microphone)
+                    && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
+                {
                     return Err(FabricError::InvalidAction);
                 }
             }
