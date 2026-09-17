@@ -487,6 +487,9 @@ fn draw_card(
         scene,
         content.button_label,
         btn_text_size,
+        // `Button`'s tone convention: white is the *candidate* ink, which the
+        // theme resolves against the fill (it walks to dark ink on a bright
+        // fill), so the literal is the request, not the colour painted.
         theme
             .tokens
             .colors
@@ -879,8 +882,8 @@ fn draw_merged_overlay(
         scene,
         bl,
         bsize,
-        // Same tone convention as the pick buttons and `Button`: white ink
-        // resolved against the fill it sits on.
+        // Same tone convention as the pick buttons and `Button`: white is the
+        // candidate ink, resolved by the theme against the fill it sits on.
         colors.ink_on(
             colors.semantic.success,
             vello::peniko::Color::WHITE,
