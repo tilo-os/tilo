@@ -232,6 +232,70 @@ fn native_standard_information_times_preserve_exact_signed_100ns_values() {
 }
 
 #[test]
+fn native_negative_standard_information_images_cross_parser_boundary() {
+    use qos_ntfs_protocol::CopyTimesUnavailableReason as Reason;
+
+    let missing = manifest("times-missing").unwrap();
+    assert_eq!(
+        missing["status"], 5,
+        "missing standard information must fail closed"
+    );
+    assert_eq!(missing["metadata_complete"], false);
+    assert!(missing["native_identity"].is_null());
+
+    for (image, reason, declarations, flags) in [
+        (
+            "times-duplicate",
+            Reason::DuplicateStandardInformation,
+            2,
+            0,
+        ),
+        (
+            "times-invalid-flags",
+            Reason::InvalidStandardInformationCoverage,
+            1,
+            1,
+        ),
+    ] {
+        let raw = manifest(image).unwrap();
+        assert_eq!(raw["status"], 0, "{image}");
+        let facts = raw["facts"].as_array().unwrap();
+        let record = facts
+            .iter()
+            .find(|fact| {
+                fact["kind"] == "entry" && fact["name"] == "680065006c006c006f002e00740078007400"
+            })
+            .unwrap()["record"]
+            .clone();
+        let standard_information: Vec<_> = facts
+            .iter()
+            .filter(|fact| {
+                fact["kind"] == "attribute"
+                    && fact["record"] == record
+                    && fact["type"] == 16
+                    && fact["name"] == ""
+            })
+            .collect();
+        assert_eq!(standard_information.len(), declarations, "{image}");
+        assert!(
+            standard_information
+                .iter()
+                .all(|fact| fact["flags"] == flags)
+        );
+        let report: qos_ntfs_helper::protocol::Report = serde_json::from_value(raw).unwrap();
+        let checked = qos_ntfs_helper::manifest::verify(&report, 5).unwrap();
+        let entry = checked
+            .entries
+            .iter()
+            .find(|entry| entry.path == vec!["hello.txt".encode_utf16().collect::<Vec<_>>()])
+            .unwrap();
+        assert!(entry.content_readable, "{image}");
+        assert_eq!(entry.copy_times, None, "{image}");
+        assert_eq!(entry.copy_times_unavailable_reason, Some(reason), "{image}");
+    }
+}
+
+#[test]
 fn copy_times_unavailability_is_typed_and_does_not_hide_readable_content() {
     use qos_ntfs_protocol::CopyTimesUnavailableReason as Reason;
 
