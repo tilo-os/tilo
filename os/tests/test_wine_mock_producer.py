@@ -18,6 +18,24 @@ IMAGE = 'example.invalid/mock@sha256:' + 'a' * 64
 
 
 class Boundaries(unittest.TestCase):
+    def test_i686_execution_failure_keeps_kernel_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            header = bytearray(20)
+            header[:6] = b'\x7fELF\x01\x01'
+            header[18:20] = (3).to_bytes(2, 'little')
+
+            def invoke(argv, log):
+                if argv[0] == 'gcc':
+                    Path(argv[-1]).write_bytes(header)
+                else:
+                    raise OSError(8, 'Exec format error')
+
+            with patch.object(producer, 'run', side_effect=invoke):
+                with self.assertRaisesRegex(ValueError, 'IA32 execution is required'):
+                    producer.verify_i686_execution(root)
+            self.assertIn('Exec format error', (root / 'i686-execution.log').read_text())
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
