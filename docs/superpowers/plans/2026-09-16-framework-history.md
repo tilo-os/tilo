@@ -25,7 +25,7 @@
 
 **Files:** Create ui/src/history_mode/mod.rs and ui/src/history_mode/tests.rs; add module export to ui/src/lib.rs only.
 
-**Interfaces:** Consume existing HistorySource, HistoryEntryId, group_entries, compare_entries, AutoCommit and RecordId. Produce public HistoryController, HistoryResource, PreviewSide, HistorySnapshot, RestoreReview and HistoryError. Keep UI/host details out of these types. HistoryResource includes app id and record id (and namespace/room identity to prevent cross-workspace reuse); HistorySnapshot exposes immutable bytes and exact heads. RestoreReview binds resource, selection and reviewed live heads. Methods cover new, refresh, select, compare-side selection, snapshot, back_to_live, review_restore and validate_restore. The latter only validates; actual writes and permissions belong to Task 2.
+**Interfaces:** Consume existing HistorySource, HistoryEntryId, group_entries, compare_entries, AutoCommit and RecordId. Produce public HistoryController, HistoryResource, PreviewSide, HistorySnapshot, RestoreReview and HistoryError. Keep UI/host details out of these types. HistoryResource includes app id and record id (and namespace/room identity to prevent cross-workspace reuse); HistorySnapshot exposes immutable bytes and exact heads. RestoreReview binds resource, selection and reviewed live heads. Methods cover new, refresh, select, compare-side selection, snapshot, back_to_live, review_restore and validate_restore. The latter only validates; actual writes and permissions belong to Task 3.
 
 - [ ] Write failing real-Automerge graph tests: create `title=one`, commit, update to `two`, commit; select first authored state; loaded snapshot reads `one`, live reads `two`, live heads unchanged. Add concurrent branch and verify a selected change's causal frontier excludes unrelated concurrent changes.
 - [ ] Run `cargo test -p ui --lib history_mode` and record expected RED.
@@ -34,11 +34,23 @@
 - [ ] Implement review tokens and tests: wrong resource/workspace, no preview, stale live heads, and effect-only activity cannot validate restoration. Review invalidates on selection change. Validate without modifying document. Host will separately recheck authority.
 - [ ] Run focused tests, inspect diff, save exact report and task diff. Commit only new files and the isolated export if safe; otherwise report the diff for controller-owned selective commit.
 
-### Task 2: Shared host surface and enforced preview/restore boundary
+### Task 2: Transactional content-only restoration engine
+
+**Files:** new ui/src/history_mode/restore.rs and focused tests; reuse existing Automerge APIs without changing the old undo helper for unrelated callers.
+
+**Interfaces:** Consume Task 1's immutable snapshot/review and explicit app-owned content root schema. Produce a fallible restore preparation/application interface that does not commit or claim authorization. The host in Task 3 supplies exclusive canonical record action custody and current permissions. It must reject pending edits, unknown schema roots or unsupported patch semantics before touching live state.
+
+- [ ] Add failing real document tests for text/list/map restoration, nested object resurrection, mark changes, preserved record metadata and receipts, and full rollback on failure. Root schema is an explicit app allowlist, never all keys except a guessed reserved prefix.
+- [ ] Implement checked content patch application with every Automerge error propagated. Existing write_revert_patches is not safe to call: it discards write errors and ignores Mark/Conflict. Implement supported types and fail clearly on unsupported cases without partial mutation.
+- [ ] Derive from the exact reviewed current heads to the selected full target heads. Verify content including types, list order, text and marks matches target and all non-content roots remain semantically unchanged. Apply against an isolated fork first; publish only verified changes through the later owned frame. No graph truncation, direct file write or fresh autosave owner.
+- [ ] Test wrong/stale resource review, current pending transaction refusal, and no-op restoration. Leave one pending transaction for host commit with Restore version provenance; ensure failed/no-op restore does not add a synthetic action.
+- [ ] Record focused RED/GREEN evidence and an independent task review. App allowlist declarations and live permission checks remain required in later tasks; engine tests alone cannot establish authorized restoration.
+
+### Task 3: Shared host surface and enforced preview/restore boundary
 
 **Files:** ui/src/application.rs, ui/src/widget/app_widget.rs, new focused ui/src/history_mode host/surface/preview modules, and narrow bound_dispatch integration if necessary. Add focused integration tests beside owning modules.
 
-**Interfaces:** Consume Task 1's controller. Introduce a required explicit preview-rendering contract for registered persistent apps; exact signature is finalized against migration inventory before this task dispatch. The shared host owns the History surface and isolated preview lifetime. No application duplicates controller state. Use current CallbackBinding and owned ActionFrame for restore.
+**Interfaces:** Consume Task 1's controller and Task 2's checked restore engine. Introduce a required explicit preview-rendering contract for registered persistent apps; exact signature is finalized against migration inventory before this task dispatch. The shared host owns the History surface and isolated preview lifetime. No application duplicates controller state. Use current CallbackBinding and owned ActionFrame for restore.
 
 - [ ] Record precise host/preview interface and file ownership in the task brief before implementation, based on current inventory and peer feedback.
 - [ ] Add failing production-path tests for automatic entry point, history selection, mutation/effect refusal, live-update isolation, Back to live, stale confirmation and current authorization.
@@ -47,18 +59,18 @@
 - [ ] Restore only app content through checked canonical owned action frame; preserve runtime metadata, report unsupported patch cases truthfully, refresh stale review and recheck authority at execution.
 - [ ] Verify lifecycle, pending work, nested components and local view persistence; run relevant existing bound dispatch and application tests plus new regressions. Save report/diff for independent review.
 
-### Task 3: Complete application migration
+### Task 4: Complete application migration
 
 **Files:** all managed application registration/root files identified by /tmp/qos-history-migration-inventory.md; existing Writer history_panel/widget and File Explorer history integration; docs explaining the enforced contract.
 
-**Interfaces:** Consume Task 2's finalized preview contract, automatic shared History surface, and host navigation intent. App renderers consume supplied snapshots without live services. Update the task brief with the authoritative complete app checklist before dispatch.
+**Interfaces:** Consume Task 3's finalized preview contract, automatic shared History surface, and host navigation intent. App renderers consume supplied snapshots without live services. Update the task brief with the authoritative complete app checklist before dispatch.
 
 - [ ] Add conformance tests for every registered managed persistent application and native preview tests for at least text, photo and project schemas.
 - [ ] Implement domain previews using normal app rendering and migrate app-owned History buttons/panels to the shared host. Do not treat a generic JSON/text dump as a native domain preview.
 - [ ] Keep external/non-versioned content truthful (browser page/process effects); show recorded managed state/activity without reissuing effects. Check preview resource labels and scope for multi-resource apps.
 - [ ] Verify existing saved records and view restoration remain readable, plus restored content, undo, and reopened persistence for representative schemas. Save coverage checklist and test evidence.
 
-### Task 4: Cross-host interaction proof and final review
+### Task 5: Cross-host interaction proof and final review
 
 **Files:** production-path UI/headless integration tests, visual evidence under task workspace, and docs/shared history usage/migration guide.
 
