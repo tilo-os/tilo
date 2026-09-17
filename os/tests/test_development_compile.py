@@ -55,12 +55,12 @@ class CompileBoundaries(unittest.TestCase):
 
     def test_remote_counter_receipt_rejects_local_cache_and_errors(self):
         for payload in ({'cache_location': 'Local disk: /tmp', 'stats': {}},
-                        {'cache_location': 's3://bucket/' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
+                        {'cache_location': 's3, name: podesta-agent-sccache-125650147312-eu-central-1, prefix: /' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
                          'stats': {'cache_write_errors': 1}}):
             with self.assertRaises(ValueError):
                 driver.cache_counters(json.dumps(payload), CACHE['SCCACHE_S3_KEY_PREFIX'])
 
-    def test_probe_restarts_with_empty_local_caches_and_checks_epoch_output(self):
+    def test_probe_restarts_with_empty_local_caches_and_checks_env_dependency(self):
         for stale_epoch in (False, True):
             with self.subTest(stale_epoch=stale_epoch), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
@@ -68,10 +68,12 @@ class CompileBoundaries(unittest.TestCase):
                 def command(*args, env=None, **kwargs):
                     calls.append((args, dict(env)))
                     if len(args) > 1 and args[1] == 'rustc':
-                        Path(args[args.index('-o') + 1]).write_bytes(
-                            b'1' if stale_epoch else env['SOURCE_DATE_EPOCH'].encode())
+                        self.assertIn('--emit=link,dep-info', args)
+                        self.assertNotIn('-o', args)
+                        (Path(args[args.index('--out-dir') + 1]) / 'libtilo_cache_probe.rlib').write_bytes(
+                            b'1' if stale_epoch else env['TILO_CACHE_PROBE_VALUE'].encode())
                     if '--stats-format=json' in args:
-                        return json.dumps({'cache_location': 's3://bucket/' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
+                        return json.dumps({'cache_location': 's3, name: podesta-agent-sccache-125650147312-eu-central-1, prefix: /' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
                                            'stats': {'cache_hits': {'counts': {'Rust': 1}}}})
                     return ''
                 with patch.object(driver, 'PRIVATE', directory), patch.object(driver, 'EVIDENCE', directory), \
@@ -87,8 +89,10 @@ class CompileBoundaries(unittest.TestCase):
                 receipt = json.loads(receipt_text)
                 self.assertEqual(receipt['status'], 'failed-before-full-compilation' if stale_epoch else 'verified-remote-compile-and-hit')
                 compilations = [env for args, env in calls if len(args) > 1 and args[1] == 'rustc']
-                self.assertEqual(len({env['SCCACHE_DIR'] for env in compilations}), 3)
-                self.assertGreaterEqual(sum('--stop-server' in args for args, env in calls), 3)
+                self.assertEqual(len({env['SCCACHE_DIR'] for env in compilations}), 4)
+                self.assertGreaterEqual(sum('--stop-server' in args for args, env in calls), 4)
+                self.assertEqual([env['SOURCE_DATE_EPOCH'] for env in compilations], ['1', '1', '2', '1'])
+                self.assertEqual([env['TILO_CACHE_PROBE_VALUE'] for env in compilations], ['1', '1', '1', '2'])
 
     def test_installation_discovery_exposes_no_disks_or_network(self):
         image = 'sha256:' + 'a' * 64
