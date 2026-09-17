@@ -62,7 +62,7 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files, Word Processor, Terminal, PDF Viewer and Books have been built and run on Windows. Other apps
+Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks and Image Editor have been built and run on Windows. Other apps
 are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
@@ -191,6 +191,20 @@ drive letters are preserved. Windows imports remain local unless an absolute
 `TILO_WORKSPACE_DIR` explicitly identifies a configured collaborative workspace.
 The installer does not provide that workspace service. Books captures accept an
 EPUB positional argument and wait for its import to finish.
+
+Image Editor is installed as **Image Editor** (`image-editor.exe`). It opens
+PNG, JPEG and WebP through the shared Windows file picker or `--open PATH`.
+Adjustments remain editable in the persisted project; Export writes
+`<source-name>-edited.png` beside the source without changing the original.
+The native verification opens a Unicode path, invokes semantic rotate,
+monochrome and export actions, checks the exported dimensions and verifies
+that the project survives a new process. Its offscreen scenarios support
+`TILO_SHOTS_THEME=dark|light|high-contrast`.
+
+```powershell
+cargo test --locked -p image-editor --all-targets
+./tools/install-windows-apps.ps1 -Apps image-editor
+```
 
 Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on
 Windows (an absolute `XDG_STATE_HOME` overrides that location). Its live startup

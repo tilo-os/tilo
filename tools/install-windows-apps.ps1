@@ -2,8 +2,8 @@
 # Cap'n Proto and the pinned Rust/MSVC toolchain must be available on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks'),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'dev'
 )
@@ -80,6 +80,7 @@ foreach ($application in $applications) {
     $title = switch ($application) {
         'file-explorer' { 'Files' }
         'word-processor' { 'Word Processor' }
+        'image-editor' { 'Image Editor' }
         'pdf-viewer' { 'PDF Viewer' }
         'ebook' { 'Books' }
         default { (Get-Culture).TextInfo.ToTitleCase($application) }
