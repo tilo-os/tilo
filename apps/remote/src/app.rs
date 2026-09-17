@@ -196,11 +196,84 @@ enum StatusTone {
 const RAIL_W: f64 = 64.0;
 /// Header height across the top of every screen.
 const HEADER_H: f64 = 64.0;
-/// Connection-row height in the list.
+/// Connection-row height in the list — the 1× floor of [`RowMetrics::row_h`].
 const ROW_H: f64 = 72.0;
 /// Rows gain a second action line when the content column can no longer keep
-/// identity, metadata, and two 44px-minimum targets side by side.
+/// identity, metadata, and two 44px-minimum targets side by side (1× floor of
+/// [`RowMetrics::compact_row_h`]).
 const COMPACT_ROW_H: f64 = 116.0;
+
+/// Text-derived geometry of a roster row, measured from the renderer by the
+/// list draw and cached for the keyboard scroller (which has no renderer).
+/// Every band floors at the 1× constant the row was drawn for, so the 1×
+/// picture is unchanged and rows only grow once the type does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RowMetrics {
+    /// Text scale the rows were measured at; the compact breakpoint scales
+    /// by it.
+    text_scale: f64,
+    /// Top of the second line (kind badge · address · group) from the row top.
+    line2_y: f64,
+    /// Height of the kind badge (its 11px label + 4).
+    badge_h: f64,
+    /// Action button height, and the two buttons' widths (from the widest
+    /// label each can carry).
+    btn_h: f64,
+    connect_w: f64,
+    edit_w: f64,
+    /// Top of the action line in the compact form.
+    actions_top: f64,
+    row_h: f64,
+    compact_row_h: f64,
+}
+
+impl Default for RowMetrics {
+    /// The unmeasured 1× row.
+    fn default() -> Self {
+        Self {
+            text_scale: 1.0,
+            line2_y: 38.0,
+            badge_h: 17.75,
+            btn_h: 32.0,
+            connect_w: 100.0,
+            edit_w: 76.0,
+            actions_top: 72.0,
+            row_h: ROW_H,
+            compact_row_h: COMPACT_ROW_H,
+        }
+    }
+}
+
+impl RowMetrics {
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let h = |tr: &mut TextRenderer, size: f32| {
+            f64::from(tr.measure_weighted("Hg", size, None, TextWeight::Semibold).1)
+        };
+        let w = |tr: &mut TextRenderer, s: &str, size: f32| {
+            f64::from(tr.measure_weighted(s, size, None, TextWeight::Semibold).0)
+        };
+        let line2_y = 13.0 + h(tr, 16.0) + 5.0;
+        let badge_h = h(tr, 11.0) + 4.0;
+        let btn_h = 32.0_f64.max(h(tr, 13.0) + 12.0);
+        let actions_top = line2_y + badge_h + 16.0;
+        // The connect slot also carries the readiness badge's labels.
+        let connect_label = w(tr, "Connect", 13.0)
+            .max(w(tr, "Needs access", 11.5))
+            .max(w(tr, "Not supported", 11.5))
+            .max(w(tr, "Fix profile", 11.5));
+        Self {
+            text_scale: f64::from(tr.text_scale()),
+            line2_y,
+            badge_h,
+            btn_h,
+            connect_w: 100.0_f64.max(connect_label + 24.0),
+            edit_w: 76.0_f64.max(w(tr, "Edit", 13.0) + 24.0),
+            actions_top,
+            row_h: ROW_H.max(actions_top),
+            compact_row_h: COMPACT_ROW_H.max(actions_top + btn_h + 12.0),
+        }
+    }
+}
 /// Session toolbar height.
 const TOOLBAR_H: f64 = 48.0;
 
@@ -576,6 +649,13 @@ pub struct RemoteApp {
     /// viewport from this so it agrees with the painted list when the header
     /// grows with the text scale.
     list_top_offset: f64,
+    /// Row geometry as the last draw measured it, and whether the rows took
+    /// the compact two-line form; the keyboard scroller reads both.
+    list_rows: RowMetrics,
+    list_rows_compact: bool,
+    /// Text scale `list_rows` was last measured at (`None` before the first
+    /// draw), so a frame at an unchanged scale skips the measurement.
+    list_rows_measured_at: Option<f64>,
     /// Repaint gate.
     dirty: bool,
     /// True once the in-memory workspace has been mirrored into the CRDT.
@@ -862,6 +942,9 @@ impl RemoteApp {
             list_scroll: 0.0,
             list_scroll_max: 0.0,
             list_top_offset: HEADER_H + 56.0,
+            list_rows: RowMetrics::default(),
+            list_rows_compact: false,
+            list_rows_measured_at: None,
             dirty: true,
             seeded: false,
             actions: ui::ActionHost::new(),
@@ -3979,12 +4062,23 @@ impl RemoteApp {
         self.dirty = true;
     }
 
+    /// Whether roster rows take the compact two-line form for a content
+    /// column `content_width` wide at the given text scale (below 620px at
+    /// 1×; a 736px column at 2× carries what 368px does at 1×): one rule for
+    /// the draw and for the keyboard scroller.
+    fn rows_compact(content_width: f64, text_scale: f64) -> bool {
+        content_width < 620.0 * text_scale
+    }
+
     fn scroll_connection_into_view(&mut self, index: usize, count: usize) {
+        // The row height the draw paints (measured), with compactness decided
+        // from the current rect rather than the last painted frame, so a key
+        // press right after a resize scrolls against the rows about to paint.
         let content_width = (self.rect.width() - RAIL_W).max(0.0);
-        let row_h = if content_width < 620.0 {
-            COMPACT_ROW_H
+        let row_h = if Self::rows_compact(content_width, self.list_rows.text_scale) {
+            self.list_rows.compact_row_h
         } else {
-            ROW_H
+            self.list_rows.row_h
         };
         let stride = row_h + 10.0;
         let viewport = (self.rect.height() - self.list_top_offset).max(row_h);
@@ -4355,12 +4449,22 @@ impl RemoteApp {
         }
 
         // Clip rows to the content area so a long list doesn't paint over
-        // the header.
+        // the header. Row bands are measured from the type; the compact
+        // breakpoint follows the text scale (at 2× a 736px column carries
+        // what a 368px one does at 1×).
         let list_clip = Rect::new(content.x0, list_top, content.x1, content.y1);
-        let row_h = if content.width() < 620.0 {
-            COMPACT_ROW_H
+        // Re-measure only when the text scale changed; the metrics depend on
+        // nothing else.
+        let scale = f64::from(text_renderer.text_scale());
+        if self.list_rows_measured_at != Some(scale) {
+            self.list_rows = RowMetrics::measure(text_renderer);
+            self.list_rows_measured_at = Some(scale);
+        }
+        self.list_rows_compact = Self::rows_compact(content.width(), self.list_rows.text_scale);
+        let row_h = if self.list_rows_compact {
+            self.list_rows.compact_row_h
         } else {
-            ROW_H
+            self.list_rows.row_h
         };
         let stride = row_h + 10.0;
         let content_height = rows.len() as f64 * stride - 10.0;
@@ -4598,10 +4702,12 @@ impl RemoteApp {
         c: &Connection,
     ) {
         let tokens = &theme.tokens;
+        let m = self.list_rows;
         let name_x = row.x0 + 44.0;
-        // --- Second line: kind badge · address · group ---
-        let compact = row.height() > ROW_H;
-        let line2_y = row.y0 + 38.0;
+        // --- Second line: kind badge · address · group --- starts under the
+        // name's measured line (38px at 1×).
+        let compact = self.list_rows_compact;
+        let line2_y = row.y0 + m.line2_y;
         // Kind badge first (leftmost), vertically centered on line2.
         let badge_w = Self::draw_kind_badge_at(
             scene,
@@ -4636,15 +4742,21 @@ impl RemoteApp {
             );
         }
 
-        // --- Right-aligned action buttons ---
+        // --- Right-aligned action buttons --- sized from their labels; the
+        // compact action line starts under the badge line.
         let connect = if compact {
-            Rect::new(row.x1 - 108.0, row.y0 + 72.0, row.x1 - 12.0, row.y0 + 104.0)
+            Rect::new(
+                row.x1 - 12.0 - m.connect_w,
+                row.y0 + m.actions_top,
+                row.x1 - 12.0,
+                row.y0 + m.actions_top + m.btn_h,
+            )
         } else {
             Rect::new(
-                row.x1 - 116.0,
-                row.center().y - 16.0,
+                row.x1 - 16.0 - m.connect_w,
+                row.center().y - m.btn_h / 2.0,
                 row.x1 - 16.0,
-                row.center().y + 16.0,
+                row.center().y + m.btn_h / 2.0,
             )
         };
         let readiness = connection_readiness(c);
@@ -4664,7 +4776,12 @@ impl RemoteApp {
             Self::draw_readiness_badge(scene, transform, text_renderer, theme, connect, readiness);
         }
 
-        let edit = Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1);
+        let edit = Rect::new(
+            connect.x0 - 10.0 - m.edit_w,
+            connect.y0,
+            connect.x0 - 10.0,
+            connect.y1,
+        );
         self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
         self.push_hit(edit, Action::EditConnection(c.id));
 
@@ -6594,6 +6711,90 @@ mod tests {
             SplitLayout::Overlay,
             "just below we overlay"
         );
+    }
+
+    /// Draw the demo roster once at `width` × 800 and `scale`, exactly as the
+    /// host does, and return the row hit rects top to bottom.
+    fn drawn_rows(width: f64, scale: f32) -> (RemoteApp, Vec<Rect>) {
+        let mut app = RemoteApp::new_demo();
+        lay_out(&mut app, width, 800.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(scale);
+        let mut scene = Scene::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        let mut rows: Vec<Rect> = app
+            .hits
+            .iter()
+            .filter_map(|h| matches!(h.action, Action::SelectRow(_)).then_some(h.rect))
+            .collect();
+        rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        (app, rows)
+    }
+
+    /// Roster rows keep their 72 / 116px bands at 1× and grow with the
+    /// measured name + badge lines at 2×; the action buttons stay inside
+    /// their row, rows never overlap, and the keyboard scroller reads the
+    /// same row height the draw painted.
+    #[test]
+    fn roster_rows_follow_the_text_scale_without_overlapping() {
+        let (one, rows) = drawn_rows(1920.0, 1.0);
+        assert!(rows.len() > 3);
+        assert!(!one.list_rows_compact);
+        assert!(rows.iter().all(|r| (r.height() - ROW_H).abs() < 1e-6));
+        // The bands measure to their 1× floors (the compact action line sits
+        // a quarter pixel above the old hand offset; the bands do not move).
+        let (m, floors) = (&one.list_rows, RowMetrics::default());
+        for (got, want) in [
+            (m.row_h, floors.row_h),
+            (m.compact_row_h, floors.compact_row_h),
+            (m.line2_y, floors.line2_y),
+            (m.btn_h, floors.btn_h),
+            (m.connect_w, floors.connect_w),
+            (m.edit_w, floors.edit_w),
+        ] {
+            assert!((got - want).abs() < 1e-6, "1× band {got} measures to its floor {want}");
+        }
+
+        // 1920px at 2× is still the wide row form (breakpoint scales to 1240).
+        let (two, rows) = drawn_rows(1920.0, 2.0);
+        assert!(!two.list_rows_compact);
+        let m = two.list_rows.clone();
+        assert!(m.row_h > ROW_H && m.line2_y > 38.0 && m.btn_h > 32.0);
+        assert!(rows.iter().all(|r| (r.height() - m.row_h).abs() < 1e-6));
+        for pair in rows.windows(2) {
+            assert!(pair[1].y0 >= pair[0].y1, "2× rows never overlap");
+        }
+        let row = rows[0];
+        let edit = two
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center()))
+            .map(|h| h.rect)
+            .expect("the first row paints its Edit button inside itself");
+        assert!(edit.y0 >= row.y0 && edit.y1 <= row.y1);
+        assert!((edit.width() - m.edit_w).abs() < 1e-6);
+
+        // A 736px content column at 2× carries what 368px does at 1×: rows
+        // take the compact two-line form, with the action line under the badge.
+        let (compact, rows) = drawn_rows(800.0, 2.0);
+        assert!(compact.list_rows_compact);
+        let m = compact.list_rows.clone();
+        assert!(rows.iter().all(|r| (r.height() - m.compact_row_h).abs() < 1e-6));
+        let row = rows[0];
+        let edit = compact
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center()))
+            .map(|h| h.rect)
+            .unwrap();
+        assert!(edit.y0 >= row.y0 + m.line2_y + m.badge_h, "actions sit under the badge line");
+        assert!(edit.y1 <= row.y1);
     }
 
     #[test]

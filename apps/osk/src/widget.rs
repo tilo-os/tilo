@@ -1480,10 +1480,13 @@ impl Widget for OskWidget {
                     "Suggestions are off"
                 };
                 let font = (self.suggestion_area.height() * 0.38).clamp(12.0, 18.0) as f32;
-                let (width, _) = text_renderer.measure(hint, font, None);
+                // Centre on the measured line, as the key labels and chips
+                // do: the nominal size under-reads the line at 1× and by
+                // half a line at 2×, sinking the hint below the bar's centre.
+                let (width, height) = text_renderer.measure(hint, font, None);
                 let x = self.suggestion_area.center().x - f64::from(width) * 0.5;
                 let y = self.suggestion_area.y0
-                    + (self.suggestion_area.height() - f64::from(font)) * 0.5;
+                    + (self.suggestion_area.height() - f64::from(height)) * 0.5;
                 text_renderer.draw_text(
                     scene,
                     hint,
