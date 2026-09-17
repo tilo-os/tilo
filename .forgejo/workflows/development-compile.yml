@@ -3,6 +3,25 @@ name: Development / cache proof and retained OS compilation
 on:
   workflow_dispatch:
     inputs:
+      architecture:
+        description: Native architecture for this build; select only the next test target
+        required: true
+        type: choice
+        default: x86_64
+        options: [x86_64, aarch64]
+      kernel_candidate:
+        description: Immutable kernel RPM image; required for ARM full-build
+        required: false
+        type: string
+      rpms_candidate:
+        description: Optional reviewed immutable native RPM snapshot override
+        required: false
+        type: string
+      builder_candidate:
+        description: Reviewed immutable native tools and application builder
+        required: true
+        type: string
+        default: code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
       mode:
         description: 'Cache proof only, or explicitly compile every OS component'
         required: true
@@ -12,7 +31,7 @@ on:
           - cache-only
           - full-build
       wpe_candidate:
-        description: 'Full-build only: reviewed native x86-64 tilo-wpe-buildroot@sha256 candidate'
+        description: 'Full-build only: reviewed matching native tilo-wpe-buildroot@sha256 candidate'
         required: false
         type: string
       generation:
@@ -25,7 +44,7 @@ on:
         type: string
 
 concurrency:
-  group: development-compile-${{ github.ref }}
+  group: development-compile-${{ github.ref }}-${{ inputs.architecture }}
   cancel-in-progress: false
 
 jobs:
@@ -33,7 +52,7 @@ jobs:
     if: startsWith(github.ref, 'refs/heads/codex/')
     # An explicit capacity experiment: full browser compilation has not yet
     # been measured. The driver samples space and stops at an 8 GiB reserve.
-    runs-on: runner-disk-100g
+    runs-on: ${{ inputs.architecture == 'aarch64' && 'runner-disk-100g-arm64' || 'runner-disk-100g' }}
     # Leave evidence-cleanup headroom inside the existing 180-minute runner cap.
     # This is a limit, not an estimate of full compilation duration.
     # A literal job bound is required by the repository timeout policy.
@@ -49,12 +68,27 @@ jobs:
           COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
+          ARCHITECTURE: ${{ inputs.architecture }}
+          KERNEL_CANDIDATE: ${{ inputs.kernel_candidate }}
+          RPMS_CANDIDATE: ${{ inputs.rpms_candidate }}
+          BUILDER_CANDIDATE: ${{ inputs.builder_candidate }}
         run: |
           set -euo pipefail
-          bash os/dev/assert-native-arch.sh x86_64
+          bash os/dev/assert-native-arch.sh "$ARCHITECTURE"
           python3 os/tests/test_development_compile.py
           python3 os/tests/test_compile_retention.py
-          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"])'
+          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"])'
+          python3 - <<'PY'
+          import os, re
+          for name in ('KERNEL_CANDIDATE', 'RPMS_CANDIDATE', 'BUILDER_CANDIDATE'):
+              value = os.environ[name]
+              required = name == 'BUILDER_CANDIDATE' or (
+                  name == 'KERNEL_CANDIDATE' and os.environ['ARCHITECTURE'] == 'aarch64'
+                  and os.environ['COMPILE_MODE'] == 'full-build')
+              if (required or value) and not re.fullmatch(
+                  r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', value):
+                  raise ValueError(name + ' requires a reviewed immutable image')
+          PY
           bash os/dev/install-cached-cosign.sh
       - name: Authenticate input pulls
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -69,6 +103,10 @@ jobs:
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
           WPE_STAGE_RECEIPT: ${{ inputs.wpe_stage_receipt }}
+          ARCHITECTURE: ${{ inputs.architecture }}
+          KERNEL_CANDIDATE: ${{ inputs.kernel_candidate }}
+          RPMS_CANDIDATE: ${{ inputs.rpms_candidate }}
+          BUILDER_CANDIDATE: ${{ inputs.builder_candidate }}
         shell: bash
         run: |
           set -euo pipefail
@@ -79,7 +117,7 @@ jobs:
           mkdir "$evidence"
           cleanup() {
             # Export an explicit public allowlist, never the private workspace.
-            for file in inputs.json tools.json workspace.json result.json wpe-stage.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
+            for file in inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
               docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
             done
             mkdir -p "$evidence/public-trust"
@@ -112,7 +150,10 @@ jobs:
           cp "$(command -v cosign)" "$context/cosign"
           cp os/Containerfile.development-compile "$context/Containerfile"
           docker build --file "$context/Containerfile" --tag "$name:tools" \
-            --build-arg BUILDER_REF=code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9 "$context"
+            --build-arg "BUILDER_REF=$BUILDER_CANDIDATE" "$context"
+          expected_platform=linux/amd64
+          if [ "$ARCHITECTURE" = aarch64 ]; then expected_platform=linux/arm64; fi
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$name:tools")" = "$expected_platform"
           docker volume create "$name-work"
           docker volume create "$name-storage"
           docker volume create "$name-cache-secrets"
@@ -126,6 +167,8 @@ jobs:
             --env SCCACHE_S3_USE_SSL --env SCCACHE_S3_KEY_PREFIX \
             --env REGISTRY_AUTH_FILE=/registry-auth.json \
             "$name:tools" --mode "$COMPILE_MODE" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
+              --architecture "$ARCHITECTURE" --kernel-candidate "$KERNEL_CANDIDATE" \
+              --rpms-candidate "$RPMS_CANDIDATE" --builder-candidate "$BUILDER_CANDIDATE" \
               --wpe-stage-receipt /work/wpe-stage.json \
               --revision "$GITHUB_SHA" --branch "$GITHUB_REF"
           docker cp . "$name:/work/repo"
@@ -147,7 +190,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: provisional-os-compilation-${{ github.sha }}
+          name: provisional-os-compilation-${{ inputs.architecture }}-${{ github.sha }}
           path: ${{ runner.temp }}/provisional-evidence/
           if-no-files-found: warn
           retention-days: 14
