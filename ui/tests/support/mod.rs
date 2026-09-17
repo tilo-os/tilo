@@ -10,6 +10,7 @@
 )]
 
 pub mod offscreen;
+pub mod ratchet;
 pub mod typed_collab;
 
 use std::collections::{HashMap, VecDeque};

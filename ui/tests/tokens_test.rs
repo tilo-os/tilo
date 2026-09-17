@@ -129,6 +129,23 @@ fn ui_scale_scales_metrics_with_spacing() {
     );
 }
 
+/// HIG §9.6: the text-growth rule the responsive shells apply to a
+/// text-sized width or breakpoint is `text_scale.max(1.0)`, stated once.
+#[test]
+fn text_growth_follows_larger_text_and_never_shrinks() {
+    assert_eq!(Metrics::text_growth(1.0), 1.0);
+    assert_eq!(Metrics::text_growth(2.0), 2.0);
+    assert_eq!(Metrics::text_growth(1.25), 1.25);
+    assert_eq!(Metrics::text_growth(0.75), 1.0, "text never shrinks a pane");
+    assert_eq!(Metrics::text_growth(f32::NAN), 1.0, "a broken scale is 1×");
+    assert_eq!(Theme::dark().with_text_scale(2.0).text_growth(), 2.0);
+    assert_eq!(
+        Theme::dark().with_text_scale(2.0).responsive_scale(),
+        2.0,
+        "the shells' factor is ui_scale × text_growth"
+    );
+}
+
 use ui::dnd::DragPayload;
 use ui::permissions::{PermissionScope, ResourceRef, Verb};
 use ui::presence::{PresenceCtx, PresenceKey};

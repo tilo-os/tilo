@@ -26,7 +26,7 @@ use crate::theme::Theme;
 use crate::tokens::{Metrics, Spacing};
 use crate::widget::TaffyTreeExt;
 use crate::widget::nav_split::{FlapState, SplitLayout};
-use crate::widget::{Element, Widget};
+use crate::widget::{AuthoredExtent, Element, Widget};
 
 /// The OS-wide genuine-sidebar width (`Metrics::sidebar_width`).
 #[allow(
@@ -49,15 +49,18 @@ const MIN_DETAIL_WIDTH: f64 = 260.0;
 /// Caps the per-frame dt so a stale `Instant` (first frame, or a parked
 /// event loop) can't teleport a slide past its animation.
 const MAX_FRAME_DT: f64 = 0.1;
-/// Menu / Back chip square. `AppShell`'s Back button is 34; neither is a
-/// `Metrics` height yet (see the F1 layout review).
+/// Menu / Back chip square at 1×; grown with the body line by
+/// `text_control_height` when the tree is built. `AppShell`'s Back button
+/// is 34; neither is a `Metrics` height yet (see the F1 layout review, which
+/// proposes `min_pointer_target` + `s3` inset for both).
 const CHIP_SIZE: f64 = 36.0;
-/// `spacing.s3`.
+/// `spacing.s3` at 1×; the live value is read from the theme at build.
 #[allow(
     clippy::cast_lossless,
     reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
 )]
 const CHIP_INSET: f64 = Spacing::BASE.s3 as f64;
+/// Back chip width at 1×: the glyph square plus the "Back" label run.
 const BACK_CHIP_WIDTH: f64 = 104.0;
 
 /// Narrows a screen-space `f64` (rect extent, alpha) to the `f32` taffy/
@@ -124,6 +127,15 @@ pub struct NavShell {
     /// width.
     detail: Option<Element>,
 
+    /// The app's inputs as authored at 1× (HIG §9.6,
+    /// [`AuthoredExtent`]); `None` means the token default
+    /// (`theme.tokens.metrics`). Resolved against the theme in
+    /// `build_layout` into the `breakpoint` / `*_width` fields below.
+    authored_breakpoint: AuthoredExtent,
+    authored_sidebar_width: Option<AuthoredExtent>,
+    authored_narrow_sidebar_width: Option<AuthoredExtent>,
+    authored_overview_width: Option<AuthoredExtent>,
+
     breakpoint: f64,
     sidebar_width: f64,
     /// Optional wider width for the narrow overlay drawer. This lets a
@@ -131,6 +143,16 @@ pub struct NavShell {
     /// its persistent desktop sidebar unnecessarily wide.
     narrow_sidebar_width: Option<f64>,
     overview_width: f64,
+    /// Detail pane's minimum width in the side-by-side layout, resolved
+    /// from [`MIN_DETAIL_WIDTH`].
+    min_detail_width: f64,
+    /// The affordance chip's geometry resolved against the theme: the
+    /// `s3` inset, the square grown with the body line
+    /// ([`crate::widget::text_control_height`]) so a 2× "Back" label still
+    /// fits, and the Back chip's width.
+    chip_inset: f64,
+    chip_size: f64,
+    back_chip_width: f64,
 
     /// Reveal easing for the sidebar (collapse when docked, slide when
     /// overlay); open-when-docked by default.
@@ -168,6 +190,12 @@ pub struct NavShell {
     inner_extents: Option<[(f64, f64); 3]>,
     /// Preserve the outer layout typography for the isolated child tree.
     layout_theme: Theme,
+    /// Set by `adjust_layout_with_measure` once the host solver has solved
+    /// the panes for this pass, consumed by the `apply_layout` that follows:
+    /// a freshly measured child still reports `layout_needs_measure()` until
+    /// it is drawn, and without this the apply would re-solve the very same
+    /// geometry with a throwaway renderer.
+    host_solved: bool,
     sidebar_node: Option<NodeId>,
     overview_node: Option<NodeId>,
     detail_node: Option<NodeId>,
@@ -184,10 +212,18 @@ impl NavShell {
             sidebar: None,
             overview,
             detail: Some(detail),
+            authored_breakpoint: AuthoredExtent::text(DEFAULT_NAVSHELL_BREAKPOINT),
+            authored_sidebar_width: None,
+            authored_narrow_sidebar_width: None,
+            authored_overview_width: None,
             breakpoint: DEFAULT_NAVSHELL_BREAKPOINT,
             sidebar_width: DEFAULT_NAVSHELL_SIDEBAR_WIDTH,
             narrow_sidebar_width: None,
             overview_width: DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
+            min_detail_width: MIN_DETAIL_WIDTH,
+            chip_inset: CHIP_INSET,
+            chip_size: CHIP_SIZE,
+            back_chip_width: BACK_CHIP_WIDTH,
             sidebar_flap: FlapState::open_when_docked(),
             pane: NavPane::Overview,
             push: FlapState::closed_by_default(),
@@ -205,6 +241,7 @@ impl NavShell {
             inner_taffy: None,
             inner_extents: None,
             layout_theme: Theme::dark(),
+            host_solved: false,
             sidebar_node: None,
             overview_node: None,
             detail_node: None,
@@ -235,30 +272,117 @@ impl NavShell {
         self
     }
 
+    /// The width, in logical px **authored at 1×**, at or above which the
+    /// shell is wide. Resolved against the theme when the tree is built
+    /// (`× ui_scale × text_scale.max(1.0)`, [`Theme::responsive_scale`]), so
+    /// at 200 % text the panes stop fitting side by side at twice the
+    /// window width without the app multiplying anything. Read the resolved
+    /// value back with [`Self::breakpoint`].
     #[must_use]
     pub fn with_breakpoint(mut self, px: f64) -> Self {
+        self.authored_breakpoint = AuthoredExtent::text(px);
         self.breakpoint = px;
         self
     }
 
+    /// Docked width of a **text-sized** sidebar (a destination list),
+    /// authored at 1× and scaled like [`Self::with_breakpoint`]. Default:
+    /// `theme.tokens.metrics.sidebar_width`.
     #[must_use]
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
+        self.authored_sidebar_width = Some(AuthoredExtent::text(px));
+        self.sidebar_width = px;
+        self
+    }
+
+    /// Docked width of an **icon rail** sidebar — glyphs, not text — which
+    /// follows `ui_scale` only.
+    #[must_use]
+    pub fn with_icon_sidebar_width(mut self, px: f64) -> Self {
+        self.authored_sidebar_width = Some(AuthoredExtent::icon(px));
         self.sidebar_width = px;
         self
     }
 
     /// Override the sidebar width only while it is an overlay drawer below
     /// the shell breakpoint. The normal docked width remains unchanged.
+    /// Authored at 1× for a text-sized drawer; scaled like
+    /// [`Self::with_breakpoint`].
     #[must_use]
     pub fn with_narrow_sidebar_width(mut self, px: f64) -> Self {
+        self.authored_narrow_sidebar_width = Some(AuthoredExtent::text(px));
         self.narrow_sidebar_width = Some(px);
         self
     }
 
+    /// Width of a **text-sized** overview column, authored at 1× and scaled
+    /// like [`Self::with_breakpoint`]. Default:
+    /// `theme.tokens.metrics.overview_width`.
     #[must_use]
     pub fn with_overview_width(mut self, px: f64) -> Self {
+        self.authored_overview_width = Some(AuthoredExtent::text(px));
         self.overview_width = px;
         self
+    }
+
+    /// Width of an overview collapsed to an **icon rail**; follows
+    /// `ui_scale` only.
+    #[must_use]
+    pub fn with_icon_overview_width(mut self, px: f64) -> Self {
+        self.authored_overview_width = Some(AuthoredExtent::icon(px));
+        self.overview_width = px;
+        self
+    }
+
+    /// The breakpoint the shell currently resolves against — the authored
+    /// value scaled by the theme it was last built with. Compare a window
+    /// width against this, never against the constant handed to
+    /// [`Self::with_breakpoint`].
+    pub fn breakpoint(&self) -> f64 {
+        self.breakpoint
+    }
+
+    /// The docked sidebar width currently laid out (resolved like
+    /// [`Self::breakpoint`]).
+    pub fn sidebar_width(&self) -> f64 {
+        self.sidebar_width
+    }
+
+    /// The overview column width currently laid out (resolved like
+    /// [`Self::breakpoint`]).
+    pub fn overview_width(&self) -> f64 {
+        self.overview_width
+    }
+
+    /// Resolve the authored inputs and the chip geometry against `theme`
+    /// (HIG §9.6, [`AuthoredExtent::resolve`]). A token default is already
+    /// `ui_scale`d and grows with `text_growth`. Identity on a stock theme.
+    fn resolve_inputs(&mut self, theme: &Theme) {
+        let growth = f64::from(theme.text_growth());
+        let metrics = theme.tokens.metrics;
+        self.breakpoint = self.authored_breakpoint.resolve(theme);
+        self.sidebar_width = self.authored_sidebar_width.map_or_else(
+            || f64::from(metrics.sidebar_width) * growth,
+            |extent| extent.resolve(theme),
+        );
+        self.narrow_sidebar_width = self
+            .authored_narrow_sidebar_width
+            .map(|extent| extent.resolve(theme));
+        self.overview_width = self.authored_overview_width.map_or_else(
+            || f64::from(metrics.overview_width) * growth,
+            |extent| extent.resolve(theme),
+        );
+        self.min_detail_width = AuthoredExtent::text(MIN_DETAIL_WIDTH).resolve(theme);
+        self.chip_inset = f64::from(theme.tokens.spacing.s3);
+        self.chip_size = crate::widget::text_control_height(CHIP_SIZE, theme);
+        // Glyph square plus the label run, which grows with the text.
+        self.back_chip_width =
+            self.chip_size + AuthoredExtent::text(BACK_CHIP_WIDTH - CHIP_SIZE).resolve(theme);
+    }
+
+    /// Height of the band the top-left chip occupies: inset, chip, inset.
+    fn chip_band(&self) -> f64 {
+        self.chip_inset * 2.0 + self.chip_size
     }
 
     #[must_use]
@@ -543,7 +667,7 @@ impl NavShell {
                 let content_w = (r.x1 - content_x0).max(0.0);
                 let ow = self
                     .overview_width
-                    .min((content_w - MIN_DETAIL_WIDTH).max(0.0))
+                    .min((content_w - self.min_detail_width).max(0.0))
                     .max(0.0);
                 self.overview_rect = Rect::new(content_x0, r.y0, content_x0 + ow, r.y1);
                 self.detail_rect = Rect::new(content_x0 + ow, r.y0, r.x1, r.y1);
@@ -578,19 +702,17 @@ impl NavShell {
     fn recompute_affordance(&mut self) {
         let r = self.rect;
         self.affordance = self.top_left_affordance();
+        let (inset, chip) = (self.chip_inset, self.chip_size);
         self.affordance_rect = match self.affordance {
             Affordance::None => Rect::ZERO,
-            Affordance::SidebarToggle => Rect::new(
-                r.x0 + CHIP_INSET,
-                r.y0 + CHIP_INSET,
-                r.x0 + CHIP_INSET + CHIP_SIZE,
-                r.y0 + CHIP_INSET + CHIP_SIZE,
-            ),
+            Affordance::SidebarToggle => {
+                Rect::new(r.x0 + inset, r.y0 + inset, r.x0 + inset + chip, r.y0 + inset + chip)
+            }
             Affordance::Back => Rect::new(
-                r.x0 + CHIP_INSET,
-                r.y0 + CHIP_INSET,
-                r.x0 + CHIP_INSET + BACK_CHIP_WIDTH,
-                r.y0 + CHIP_INSET + CHIP_SIZE,
+                r.x0 + inset,
+                r.y0 + inset,
+                r.x0 + inset + self.back_chip_width,
+                r.y0 + inset + chip,
             ),
         };
     }
@@ -605,15 +727,26 @@ impl NavShell {
         self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay
     }
 
-    /// [`Self::sidebar_rect`] with the affordance chip's band reserved so
-    /// the chip doesn't clip the sidebar's first row. The panel fill still
-    /// uses the full rect, so the band reads as sidebar-coloured, not a notch.
+    /// [`Self::sidebar_rect`] less the affordance chip's band while the
+    /// sidebar is an **overlay drawer**: it slides in under the chip, so its
+    /// first row must not start beneath it. The panel fill still uses the
+    /// full rect, so the band reads as sidebar-coloured, not a notch.
+    ///
+    /// **Docked**, the chip sits in the sidebar's own header row, which
+    /// clears it horizontally (the `nav_shell_shots` fixture indents its
+    /// title; mail's sidebar reserves `CHIP_CLEARANCE`), and the sidebar
+    /// keeps its full height — so its header lines up with the overview
+    /// and detail headers beside it instead of starting one chip band
+    /// (60 px at 1×) lower (F1 round one, V-01).
     pub fn sidebar_content_rect(&self) -> Rect {
         let r = self.sidebar_rect;
-        if self.affordance != Affordance::SidebarToggle || r.height() <= 0.0 {
+        if self.affordance != Affordance::SidebarToggle
+            || r.height() <= 0.0
+            || self.sidebar_split_layout() == SplitLayout::Docked
+        {
             return r;
         }
-        let band = CHIP_INSET * 2.0 + CHIP_SIZE;
+        let band = self.chip_band();
         Rect::new(r.x0, (r.y0 + band).min(r.y1), r.x1, r.y1)
     }
 
@@ -630,7 +763,7 @@ impl NavShell {
         if chip.x1 <= r.x0 || chip.x0 >= r.x1 {
             return r;
         }
-        let band = CHIP_INSET * 2.0 + CHIP_SIZE;
+        let band = self.chip_band();
         Rect::new(r.x0, (r.y0 + band).min(r.y1), r.x1, r.y1)
     }
 
@@ -711,6 +844,44 @@ impl NavShell {
             self.sidebar_content_rect(),
         ]
         .map(|rect| (rect.width(), rect.height()))
+    }
+
+    /// Whether the panes need a full solve rather than a re-apply of the
+    /// cached tree: no tree yet, a pane's extent moved, or a pane that is
+    /// actually laid out asks to be re-measured. A pane with no extent
+    /// cannot be solved, so a child parked in a collapsed pane never forces
+    /// a solve — and a font-system load — every frame.
+    fn panes_need_resolve(&self) -> bool {
+        if self.inner_taffy.is_none() || self.overview_node.is_none() {
+            return true;
+        }
+        let extents = self.child_extents();
+        if self.inner_extents != Some(extents) {
+            return true;
+        }
+        let laid_out = |(w, h): (f64, f64)| w > 0.0 && h > 0.0;
+        (laid_out(extents[0]) && self.overview.layout_needs_measure())
+            || (laid_out(extents[1])
+                && self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|pane| pane.layout_needs_measure()))
+            || (laid_out(extents[2])
+                && self
+                    .sidebar
+                    .as_ref()
+                    .is_some_and(|pane| pane.layout_needs_measure()))
+    }
+
+    /// Solve the panes with the theme the outer tree was built with and a
+    /// renderer at its text scale — the path for hosts that solve with plain
+    /// taffy and call `apply_layout` directly. The shared host solver
+    /// reaches `adjust_layout_with_measure` first and never lands here.
+    fn resolve_panes_fallback(&mut self) {
+        let theme = self.layout_theme.clone();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        self.place_children(&theme, &mut tr);
     }
 
     fn apply_child_layout(
@@ -794,7 +965,7 @@ impl NavShell {
         }
         let rect = self.affordance_rect;
 
-        let bg = RoundedRect::from_rect(rect, 8.0);
+        let bg = RoundedRect::from_rect(rect, theme.radius_standard);
         scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &bg);
         scene.stroke(
             &Stroke::new(1.0),
@@ -804,14 +975,22 @@ impl NavShell {
             &bg,
         );
 
-        let glyph_box = Rect::new(rect.x0, rect.y0, rect.x0 + CHIP_SIZE, rect.y1);
+        // The glyph is icon-sized: the 1× chip square grown with `ui_scale`
+        // (never the text), centred on the chip's leading edge however tall
+        // the text has made the chip; the glyph itself fills half that side.
+        let glyph_side = CHIP_SIZE * f64::from(theme.ui_scale);
+        let glyph_box = Rect::from_center_size(
+            (rect.x0 + glyph_side / 2.0, rect.center().y),
+            (glyph_side, glyph_side),
+        );
+        let glyph_inset = glyph_side / 4.0;
         match self.affordance {
             Affordance::None => {}
             Affordance::Back => {
                 draw_icon(
                     scene,
                     transform,
-                    glyph_box.inflate(-9.0, -9.0),
+                    glyph_box.inflate(-glyph_inset, -glyph_inset),
                     Icon::ChevronLeft,
                     theme.text_primary,
                     1.75,
@@ -823,7 +1002,7 @@ impl NavShell {
                     theme.text_primary,
                     transform.pre_translate(Vec2::new(
                         glyph_box.x1 - 2.0,
-                        rect.y0 + CHIP_SIZE / 2.0 - 9.0,
+                        rect.y0 + self.chip_size / 2.0 - 9.0,
                     )),
                     None,
                 );
@@ -833,7 +1012,7 @@ impl NavShell {
                     draw_icon(
                         scene,
                         transform,
-                        glyph_box.inflate(-9.0, -9.0),
+                        glyph_box.inflate(-glyph_inset, -glyph_inset),
                         Icon::ChevronLeft,
                         theme.text_primary,
                         1.75,
@@ -845,11 +1024,13 @@ impl NavShell {
         }
     }
 
+    /// Three bars filling half the glyph box's width (9 px half-width and a
+    /// 5.5 px gap in the 1× 36 px box), so they follow `ui_scale` with it.
     fn draw_hamburger(scene: &mut Scene, transform: Affine, box_rect: Rect, color: Color) {
         let cx = box_rect.center().x;
         let cy = box_rect.center().y;
-        let half_w = 9.0;
-        let gap = 5.5;
+        let half_w = box_rect.width() / 4.0;
+        let gap = box_rect.width() * (5.5 / CHIP_SIZE);
         let stroke = Stroke::new(2.0)
             .with_caps(Cap::Round)
             .with_join(Join::Round);
@@ -891,6 +1072,7 @@ impl Widget for NavShell {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
+        self.resolve_inputs(theme);
         // A rebuilt outer tree carries new typography or child structure.
         self.inner_taffy = None;
         // Children live in an isolated inner tree: their rects escape normal
@@ -935,20 +1117,15 @@ impl Widget for NavShell {
         // Apply them again so descendant scroll offsets and translated origins
         // reach hit testing, without rebuilding trees or loading system fonts.
         // A resize, rebuilt outer tree, swapped pane, or measure-dirty child
-        // takes the existing full measurement path below.
+        // takes the full measurement path below — unless the shared host
+        // solver already ran it with its own renderer in
+        // `adjust_layout_with_measure`, in which case this is a re-apply too.
         // Modal traversal intentionally exposes only the sidebar for input
         // and accessibility, but all retained backdrop panes still sync/draw.
-        let children_need_measure = self.overview.layout_needs_measure()
-            || self
-                .detail
-                .as_ref()
-                .is_some_and(|pane| pane.layout_needs_measure())
-            || self
-                .sidebar
-                .as_ref()
-                .is_some_and(|pane| pane.layout_needs_measure());
-        if !children_need_measure
-            && self.inner_extents == Some(self.child_extents())
+        let host_solved = std::mem::take(&mut self.host_solved);
+        let cached_extents_match =
+            self.inner_taffy.is_some() && self.inner_extents == Some(self.child_extents());
+        if ((host_solved && cached_extents_match) || !self.panes_need_resolve())
             && let Some(o_node) = self.overview_node
             && let Some(taffy) = self.inner_taffy.take()
         {
@@ -956,10 +1133,42 @@ impl Widget for NavShell {
             self.inner_taffy = Some(taffy);
             return;
         }
-        let mut tr = TextRenderer::new();
-        let theme = self.layout_theme.clone();
-        tr.set_text_scale(theme.text_scale);
-        self.place_children(&theme, &mut tr);
+        self.resolve_panes_fallback();
+    }
+
+    /// Solve the panes with the **host's** renderer while the host solver
+    /// still has it in hand: the allocation is known here (only the origin
+    /// is not, and the inner solve depends on extents alone), so the panes
+    /// are measured with the same fonts and text scale as everything else
+    /// on screen and `apply_layout` only re-applies the cached tree. The
+    /// host tree is untouched and no style changes, so this returns `false`.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let Ok(l) = taffy.layout(node) else {
+            return false;
+        };
+        self.rect = Rect::from_origin_size(
+            (self.rect.x0, self.rect.y0),
+            (f64::from(l.size.width), f64::from(l.size.height)),
+        );
+        self.sidebar_flap.reconcile(self.sidebar_split_layout());
+        self.recompute_rects();
+        // The settle loop calls this up to eight times a pass; once the
+        // panes are solved at these extents the later iterations are no-ops
+        // even though the just-measured children still read as dirty.
+        let already_solved_this_pass = self.host_solved
+            && self.inner_taffy.is_some()
+            && self.inner_extents == Some(self.child_extents());
+        if !already_solved_this_pass && self.panes_need_resolve() {
+            let theme = self.layout_theme.clone();
+            self.place_children(&theme, text);
+        }
+        self.host_solved = true;
+        false
     }
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
@@ -2531,6 +2740,169 @@ mod tests {
             &mut focus_target,
             node,
             &taffy,
+        );
+    }
+
+    // --- F1 round two: theme-resolved inputs, host-renderer measuring ------
+
+    fn lay_out_with(ns: &mut NavShell, theme: &Theme, w: f64, h: f64) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = ns.build_layout(&mut taffy, theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(to_f32(w)),
+                    height: taffy::AvailableSpace::Definite(to_f32(h)),
+                },
+            )
+            .unwrap();
+        ns.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    /// F1 round one V-01: docked, the sidebar's header started one chip band
+    /// (60 px) below the overview and detail headers because the band was
+    /// reserved above the sidebar even though the chip sits in its header
+    /// row (which the fixture and mail clear horizontally). Docked keeps the
+    /// sidebar's full height; the overlay drawer still starts under the chip.
+    #[test]
+    fn docked_sidebar_keeps_its_full_height_so_its_header_aligns_with_the_content_panes() {
+        let wide = shell(1200.0, true);
+        assert_eq!(wide.top_left_affordance(), Affordance::SidebarToggle);
+        assert_eq!(
+            wide.sidebar_content_rect(),
+            wide.sidebar_rect(),
+            "the docked sidebar's content starts at the pane top, level with the overview",
+        );
+        assert_eq!(
+            wide.sidebar_content_rect().y0,
+            wide.overview_content_rect().y0,
+            "the three panes' headers share one top edge",
+        );
+        assert!(
+            wide.collapse_button_rect().y1 <= wide.sidebar_rect().y0 + wide.chip_band(),
+            "the chip still lives in the sidebar's header row",
+        );
+
+        let mut narrow = shell(600.0, true);
+        narrow.open_sidebar();
+        narrow.snap();
+        assert_eq!(narrow.sidebar_layout(), Some(SplitLayout::Overlay));
+        let drawer = narrow.sidebar_rect();
+        assert_eq!(
+            narrow.sidebar_content_rect().y0,
+            drawer.y0 + narrow.chip_band(),
+            "an overlay drawer slides in under the chip, so its first row starts below the band",
+        );
+    }
+
+    /// HIG §9.6: breakpoint and text-sized pane widths are authored at 1×
+    /// and resolved by the shell (`× ui_scale × text_scale.max(1.0)`); the
+    /// token defaults follow the `ui_scale`d metrics; an icon rail follows
+    /// `ui_scale` only; the chip grows with the body line, not the scale.
+    #[test]
+    fn authored_inputs_and_chip_follow_the_responsive_scale() {
+        let authored = || {
+            NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
+                .with_sidebar(Box::new(Text::new("s")))
+                .with_breakpoint(860.0)
+                .with_sidebar_width(260.0)
+                .with_overview_width(340.0)
+        };
+        let mut one = authored();
+        lay_out_with(&mut one, &Theme::dark(), 1400.0, 700.0);
+        assert_eq!(
+            (one.breakpoint(), one.sidebar_width(), one.overview_width()),
+            (860.0, 260.0, 340.0),
+            "1× is the authored geometry",
+        );
+        assert_eq!((one.chip_inset, one.chip_size, one.back_chip_width), (12.0, 36.0, 104.0));
+        assert_eq!(one.mode(), ShellMode::Wide);
+
+        let two = Theme::dark().with_text_scale(2.0);
+        let mut large = authored();
+        lay_out_with(&mut large, &two, 1400.0, 700.0);
+        assert_eq!(
+            (large.breakpoint(), large.sidebar_width(), large.overview_width()),
+            (1720.0, 520.0, 680.0),
+        );
+        assert_eq!(
+            large.mode(),
+            ShellMode::Narrow,
+            "a 1400 px window at 2× has the room a 700 px window has at 1×",
+        );
+        let grown = crate::widget::text_control_height(CHIP_SIZE, &two);
+        assert!(grown > CHIP_SIZE && grown < 2.0 * CHIP_SIZE, "chip grows by the line, not 2×");
+        assert_eq!(large.chip_size, grown);
+        assert_eq!(large.chip_inset, 12.0, "the inset is spacing, not text");
+        assert_eq!(large.back_chip_width, grown + (BACK_CHIP_WIDTH - CHIP_SIZE) * 2.0);
+        assert_eq!(large.collapse_button_rect().height(), grown, "the hit rect is the grown chip");
+
+        let mut rail = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
+            .with_icon_overview_width(68.0);
+        lay_out_with(&mut rail, &two, 1400.0, 700.0);
+        assert_eq!(rail.overview_width(), 68.0, "an icon rail never grows with the text");
+
+        let mut defaults = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
+            .with_sidebar(Box::new(Text::new("s")));
+        lay_out_with(&mut defaults, &Theme::dark().with_ui_scale(1.5), 2000.0, 700.0);
+        let metrics = Theme::dark().with_ui_scale(1.5).tokens.metrics;
+        assert!((defaults.sidebar_width() - f64::from(metrics.sidebar_width)).abs() < 1e-6);
+        assert!((defaults.overview_width() - f64::from(metrics.overview_width)).abs() < 1e-6);
+        assert!((defaults.breakpoint() - 1050.0).abs() < 1e-6, "700 authored × ui 1.5");
+        assert!((defaults.chip_inset - 18.0).abs() < 1e-6, "s3 at ui 1.5");
+    }
+
+    /// The panes are solved with the theme the outer tree was built with and
+    /// the host's renderer, so a `Text` in a pane is twice as tall at 2× and
+    /// the shared-host path loads no font system of its own.
+    #[test]
+    fn panes_measure_at_the_host_text_scale_without_loading_fonts() {
+        let height_at = |scale: f32| {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(scale);
+            let mut ns = NavShell::new(
+                Box::new(Text::new("overview")),
+                Box::new(Text::new("detail")),
+            );
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let root = ns.build_layout(&mut taffy, &theme, &mut nodes);
+            let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+            // SAFETY: the tree and maps come from this exact live build and
+            // `ns` is exclusively owned for the whole solve.
+            unsafe {
+                bindings.rebuild(&ns, &taffy, root, &nodes);
+                crate::widget::compute_widget_layout(
+                    &mut taffy,
+                    root,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1200.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                    &nodes,
+                    &bindings,
+                    &mut renderer,
+                )
+                .unwrap();
+            }
+            ns.apply_layout(&taffy, root, Point::ZERO);
+            assert_eq!(
+                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
+                0,
+                "the host path must measure with the host's renderer, not load fonts of its own"
+            );
+            ns.overview.get_rect().height()
+        };
+        let one = height_at(1.0);
+        let two = height_at(2.0);
+        assert!(one > 0.0);
+        assert!(
+            (two / one - 2.0).abs() < 0.05,
+            "an overview Text line is {two} px at 2× against {one} px at 1×; it must double"
         );
     }
 }
