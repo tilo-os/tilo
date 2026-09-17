@@ -391,6 +391,11 @@ pub enum PersonalFabricAction {
         session_id: [u8; 16],
         authorization: [u8; 16],
     },
+    /// Source-side cancellation before target consent has minted an
+    /// authorization. Exact authenticated source/session binding is required.
+    RemoteAudioCancel {
+        session_id: [u8; 16],
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -701,6 +706,11 @@ impl PersonalFabricActionEnvelope {
                 authorization,
             } => {
                 if session_id == &[0; 16] || authorization == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioCancel { session_id } => {
+                if session_id == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2459,6 +2469,20 @@ mod tests {
                 authorization: [5; 16],
                 sequence: 2,
                 pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES + 4],
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioCancel {
+                session_id: [4; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioCancel {
+                session_id: [0; 16],
             })
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)
