@@ -119,6 +119,26 @@ for line in sys.stdin:
         self.assertEqual(target['revision'], '3')
         self.assertEqual(calls, ['qos_query', 'qos_resolve', 'qos_query', 'qos_resolve'])
 
+    def test_waits_for_normal_publication_without_invoking(self):
+        calls = []
+        def tool(name, args):
+            calls.append(name)
+            if name == 'qos_resolve':
+                return {'row': {'descriptor': {'params': []}}}
+            rows = [] if len(calls) == 1 else [{'resource': 'photo', 'action': 'export', 'descriptor': {'params': []}}]
+            return {'revision': 'r', 'rows': rows, 'exhausted': True}
+        target, _ = proof.resolve_action(tool, 1, 'export', interval=0)
+        self.assertEqual(target['action'], 'export')
+        self.assertEqual(calls, ['qos_query', 'qos_query', 'qos_resolve'])
+
+    def test_failure_evidence_includes_shutdown_verification_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / 'evidence'
+            with patch.object(sys, 'argv', ['proof', '--output', str(output)]), patch.object(proof, 'run_proof', side_effect=proof.ProofError('cleanup verification failed')):
+                with self.assertRaises(proof.ProofError):
+                    proof.main()
+            self.assertIn('cleanup verification failed', (output / 'failure.txt').read_text())
+
     def test_protocol_errors_and_mismatched_reply_are_rejected(self):
         with self.assertRaises(proof.ProofError):
             proof.decode_reply({'id': 2, 'result': {}}, 1)
