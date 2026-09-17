@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1.7
+# Native CI tooling only. Target dependencies are frozen separately by Mock.
+ARG BASE_REF
+FROM ${BASE_REF}
+RUN test "$(uname -m)" = x86_64 \
+ && dnf5 install -y mock mock-core-configs dnf5-plugins rpm-build gcc gcc-c++ \
+      sudo util-linux createrepo_c podman python3 tar xz cpio findutils \
+ && dnf5 clean all \
+ && useradd --uid 1000 --create-home --groups mock qos-build \
+ && install -d /usr/lib/qos /wine-inputs \
+ && rpm -qa --qf '%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/qos/wine-tools-rpms.tsv \
+ && mock --version > /usr/lib/qos/wine-tools-mock-version.txt \
+ && command -v mock-hermetic-repo
+COPY os/dev/fetch-wine-source.py os/dev/wine_rpm_contract.py os/dev/wine-source.json /qos/
