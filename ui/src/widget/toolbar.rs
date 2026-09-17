@@ -75,7 +75,9 @@ impl Toolbar {
             font: TextStyle::new(14.0),
             padding: 8.0,
             minimum: 32.0,
-            separator: 9.0,
+            // Replaced by `build_layout`; the default-token value keeps a
+            // renderer-less caller's estimate consistent with the real one.
+            separator: SEPARATOR_HAIRLINE + 2.0 * crate::tokens::Spacing::default().s2,
             overflow_rect: Rect::ZERO,
             hovered: None,
             pointer: None,
@@ -136,7 +138,7 @@ impl Toolbar {
             .iter()
             .map(|item| match item {
                 ToolbarItem::Spacer => 0.0,
-                ToolbarItem::Separator => f64::from(1.0 + 2.0 * theme.tokens.spacing.s2),
+                ToolbarItem::Separator => f64::from(separator_extent(theme)),
                 ToolbarItem::Button { label, .. } => {
                     let text = match self.orientation {
                         Orientation::Horizontal => count_to_f64(label.chars().count()) * 7.0,
@@ -487,6 +489,16 @@ impl Toolbar {
     }
 }
 
+/// The separator's painted rule is a hairline, not a spacing step.
+const SEPARATOR_HAIRLINE: f32 = 1.0;
+
+/// Main-axis extent a separator occupies: the hairline with `s2` breathing
+/// room on each side. One definition for the renderer-less estimate and the
+/// measured layout so the two cannot disagree about where items fall.
+fn separator_extent(theme: &Theme) -> f32 {
+    SEPARATOR_HAIRLINE + 2.0 * theme.tokens.spacing.s2
+}
+
 fn count_to_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
@@ -517,7 +529,7 @@ impl Widget for Toolbar {
         self.font = TextStyle::new(theme.tokens.typography.scale.sm);
         self.padding = theme.tokens.spacing.s3;
         self.minimum = theme.tokens.spacing.s8;
-        self.separator = 1.0 + 2.0 * theme.tokens.spacing.s2;
+        self.separator = separator_extent(theme);
         // Bootstrap only for legacy callers that skip renderer settlement.
         self.extents = self
             .items
