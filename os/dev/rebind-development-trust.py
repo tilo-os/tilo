@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import shutil
 import tempfile
 
 HERE = Path(__file__).resolve().parent
@@ -38,9 +37,15 @@ def replace(image_root, *, disposable, old_bundle, old_manifest, old_target,
     # Snapshot both independently pinned public bundles before any mutation.
     with tempfile.TemporaryDirectory(prefix='tilo-public-rebind-') as temporary:
         work = Path(temporary)
-        for name, source, digest in (('old', old_bundle, old_manifest), ('new', new_bundle, new_manifest)):
-            shutil.copytree(source, work / name, symlinks=True)
-            installer.trust.validate(work / name, digest)
+        bundles = (('old', Path(old_bundle), old_manifest), ('new', Path(new_bundle), new_manifest))
+        for _, source, digest in bundles:
+            installer.trust.validate(source, digest)
+        for name, source, digest in bundles:
+            snapshot = work / name
+            snapshot.mkdir()
+            for filename in (*installer.trust.FILES, 'manifest.json'):
+                (snapshot / filename).write_bytes(installer.trust.read_public(source / filename))
+            installer.trust.validate(snapshot, digest)
         retention.source.mounted_identity(root, old_target, old_manifest, architecture)
         profile = hardware.read_profile(root)
         kver = retention.raw_kernel_pair(root)
