@@ -57,7 +57,8 @@ def acquire(destination, pin_path, key_path):
     key = Path(key_path).read_bytes()
     if hashlib.sha256(key).hexdigest() != pin['fedora_key_sha256']:
         raise ValueError('installed Fedora key does not match pinned identity')
-    stage = Path(tempfile.mkdtemp(prefix=f'.{destination.name}.fetch-', dir=destination.parent))
+    # Non-hidden staging keeps failure evidence visible to CI artifact uploaders.
+    stage = Path(tempfile.mkdtemp(prefix=f'{destination.name}.fetch-', dir=destination.parent))
     command = ['dnf5', 'download', '--source', f'--destdir={stage}', filename.removesuffix('.src.rpm')]
     try:
         (stage / 'fedora-44.asc').write_bytes(key)
