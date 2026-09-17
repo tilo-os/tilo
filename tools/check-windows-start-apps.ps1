@@ -9,13 +9,17 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'windows-app-names.ps1')
 if (-not $IsWindows) { throw 'Run this check from PowerShell on Windows.' }
 $installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Tilo/Applications'
 $expected = @{}
 foreach ($application in ($Apps | Select-Object -Unique)) {
     $path = Join-Path $installDirectory "$application.exe"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing installed executable: $path" }
-    $expected[$application] = (Get-Item -LiteralPath $path).FullName
+    $expected[$application] = [pscustomobject]@{
+        Path = (Get-Item -LiteralPath $path).FullName
+        Name = Get-TiloWindowsAppName -Application $application
+    }
 }
 
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -32,7 +36,9 @@ do {
     $missing = @()
     $verified = @()
     foreach ($application in $expected.Keys) {
-        $entry = $catalog | Where-Object { $_.Target -eq $expected[$application] } | Select-Object -First 1
+        $entry = $catalog | Where-Object {
+            $_.Target -eq $expected[$application].Path -and $_.Name -eq $expected[$application].Name
+        } | Select-Object -First 1
         if (-not $entry -or -not ($startApps | Where-Object { $_.AppID -eq $entry.AppID -and $_.Name -eq $entry.Name })) {
             $missing += $application
         } else {

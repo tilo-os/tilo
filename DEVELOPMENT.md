@@ -63,9 +63,9 @@ Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos, Hex Editor and Code Editor have been built and run on Windows. Other apps
-are still being ported; a
-workspace-wide build currently includes Linux services and is not a Windows
+Photos, Hex Editor, Code Editor and API Tester have been built and run on Windows.
+Other apps are still being ported; a workspace-wide build currently includes
+Linux services and is not a Windows
 application build command.
 
 From PowerShell at the workspace root:
@@ -112,7 +112,7 @@ app; it records font setup, GPU initialization, and the first presented frame.
 Close an installed app before updating its executable. Application documents
 remain in their normal user data locations; the installer does not move them.
 The installer also checks both Windows' application catalog and `Get-StartApps`
-against the installed executable paths. A shortcut on disk alone is insufficient:
+against the installed executable paths and intended app names. A shortcut on disk alone is insufficient:
 Explorer can retain a stale catalog. If this check fails after copying succeeds,
 restart Windows Explorer when no file operations are running, or sign out and
 back in, then run `./tools/check-windows-start-apps.ps1 -Apps hex-editor` (substitute
