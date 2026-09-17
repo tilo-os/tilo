@@ -2885,6 +2885,22 @@ impl Widget for CameraApp {
                         }
                         continue;
                     }
+                    if matches!(self.storage, Storage::Sample) {
+                        self.captures.clear();
+                        self.captures.push(Capture {
+                            id: saved.name.clone(),
+                            kind: CaptureKind::Video,
+                            ts: now_secs(),
+                            w: saved.w,
+                            h: saved.h,
+                            dur_ms: saved.dur_ms,
+                            label: "New clip".into(),
+                            facing: saved.facing,
+                            scene: 0,
+                            path: None,
+                            media_id: Some(saved.media_id.clone()),
+                        });
+                    }
                     let output = tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({
                             "media_id": saved.media_id.clone(),
@@ -6584,7 +6600,16 @@ mod tests {
             app.sync(doc, root);
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(done(app), "bounded camera worker did not settle in time");
+        assert!(
+            done(app),
+            "bounded camera worker did not settle in time: toast={:?}, video_finalizing={}, captures={:?}",
+            app.toast,
+            app.video_finalizing,
+            app.captures
+                .iter()
+                .map(|capture| capture.id.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -6601,7 +6626,7 @@ mod tests {
     fn sample_source_populates_without_touching_disk() {
         let (app, _doc, _root) = sample_app();
         assert_eq!(app.screen, Screen::Camera);
-        assert_eq!(app.captures.len(), 9);
+        assert_eq!(app.captures.len(), 1);
         assert!(app.captures.iter().all(|c| c.path.is_none()));
     }
 
@@ -6766,7 +6791,8 @@ mod tests {
             app.sync(&mut doc, &root);
             std::thread::sleep(Duration::from_millis(1));
         }
-        // A real JPEG landed on disk and a rescan finds it.
+        // A real JPEG landed on disk. Camera publishes the portable identity,
+        // not the private local projection path.
         let files: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
@@ -6775,11 +6801,9 @@ mod tests {
         assert_eq!(files.len(), 1, "shutter wrote exactly one JPEG");
         let bytes = std::fs::read(files[0].path()).unwrap();
         assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "genuine JPEG (SOI marker)");
-        sync_until(&mut app, &mut doc, &root, |app| {
-            app.captures.len() == 1 && app.captures[0].path.is_some()
-        });
+        sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
         assert_eq!(app.captures.len(), 1);
-        assert!(app.captures[0].path.is_some());
+        assert!(app.captures[0].path.is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 

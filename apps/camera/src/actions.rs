@@ -677,7 +677,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
     let mut scanner = Resource::new("camera.scanner", "camera.scanner", "Code scanner");
     if let Ok(spec) = ActionSpec::operation(
         "import-image",
-        "Scan an existing image",
+        "Scan existing image",
         OperationKind::Effect,
         CAMERA_OPERATION_TYPE,
         &CameraOperation::ImportCodeImage,
