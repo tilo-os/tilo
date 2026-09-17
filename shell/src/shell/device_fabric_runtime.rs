@@ -54,6 +54,7 @@ const DISPLAY_SESSION_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_GAMEPAD_FORWARDINGS: usize = 8;
 const MAX_PENDING_NEARBY_CONSENTS: usize = 64;
 const NEARBY_CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
+const DEVICE_HEALTH_SAMPLE_TTL: Duration = Duration::from_secs(10);
 
 struct InboundGamepadForwarding {
     source: crate::shell::personal_continuity::DeviceId,
@@ -772,6 +773,62 @@ fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
     STATE.get_or_init(|| Mutex::new(SpatialInputState::default()))
 }
 
+#[derive(Default)]
+struct DeviceHealthRuntimeState {
+    tracker: crate::shell::spatial_calibration::DeviceHealthTracker,
+    last_probe: Option<Instant>,
+    local_power: Option<(
+        Instant,
+        crate::shell::spatial_calibration::DevicePower,
+        bool,
+    )>,
+}
+
+fn device_health_state() -> &'static Mutex<DeviceHealthRuntimeState> {
+    static STATE: OnceLock<Mutex<DeviceHealthRuntimeState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(DeviceHealthRuntimeState::default()))
+}
+
+fn spatial_calibration_state()
+-> &'static Mutex<crate::shell::spatial_calibration::SpatialCalibrationState> {
+    static STATE: OnceLock<Mutex<crate::shell::spatial_calibration::SpatialCalibrationState>> =
+        OnceLock::new();
+    STATE.get_or_init(|| {
+        Mutex::new(crate::shell::spatial_calibration::SpatialCalibrationState::default())
+    })
+}
+
+fn local_device_power(
+    state: &mut DeviceHealthRuntimeState,
+    now: Instant,
+) -> (crate::shell::spatial_calibration::DevicePower, bool) {
+    if let Some((sampled, power, saver)) = state.local_power
+        && now
+            .checked_duration_since(sampled)
+            .is_some_and(|age| age < DEVICE_HEALTH_SAMPLE_TTL)
+    {
+        return (power, saver);
+    }
+    let battery = os_actions::BatteryInfo::from_system();
+    let power = if !battery.present {
+        crate::shell::spatial_calibration::DevicePower::External
+    } else if battery.on_ac || battery.status.eq_ignore_ascii_case("charging") {
+        crate::shell::spatial_calibration::DevicePower::Charging(
+            u8::try_from(battery.capacity.min(100)).unwrap_or(100),
+        )
+    } else {
+        crate::shell::spatial_calibration::DevicePower::Battery(
+            u8::try_from(battery.capacity.min(100)).unwrap_or(100),
+        )
+    };
+    let saver = matches!(
+        os_actions::get_power_profile(),
+        Ok(os_actions::PowerProfile::Saver)
+    );
+    state.local_power = Some((now, power, saver));
+    (power, saver)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BluetoothHandoffPhase {
     AwaitingReady,
@@ -1005,6 +1062,7 @@ impl DeviceFabricRuntime {
         }
         self.maintain_gamepad_forwarding(network, policy);
         self.handle_fabric_actions(network, policy);
+        pump_device_health(network, policy);
         self.pump_remote_capture_peers(network, policy);
         crate::shell::remote_audio::pump(
             network,
@@ -1151,6 +1209,10 @@ impl DeviceFabricRuntime {
         }
         if newly_disabled(ContinuityCapability::DisplayInput) {
             tear_down_display_and_input(network);
+            if let Ok(mut state) = device_health_state().lock() {
+                state.tracker.clear();
+                state.last_probe = None;
+            }
         }
         if newly_disabled(ContinuityCapability::FileTransfer) {
             tear_down_nearby_transfers(network);
@@ -1238,6 +1300,9 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if crate::shell::remote_audio::handle_action(network, &envelope) {
+                continue;
+            }
+            if handle_device_health_action(network, &envelope) {
                 continue;
             }
             if self
@@ -2478,6 +2543,92 @@ fn handle_nearby_drop_action(
     }
 }
 
+fn handle_device_health_action(
+    network: &ShellNetwork,
+    envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+) -> bool {
+    let now = Instant::now();
+    match &envelope.action {
+        PersonalFabricAction::DeviceHealthProbe { nonce } => {
+            let Some((power, energy_saver)) = device_health_state()
+                .lock()
+                .ok()
+                .map(|mut state| local_device_power(&mut state, now))
+            else {
+                return true;
+            };
+            let _ = network.send_personal_fabric_action(
+                &envelope.source,
+                PersonalFabricAction::DeviceHealthReport {
+                    report: crate::shell::spatial_calibration::DeviceHealthReport {
+                        probe_nonce: *nonce,
+                        power,
+                        energy_saver,
+                    },
+                },
+            );
+            true
+        }
+        PersonalFabricAction::DeviceHealthReport { report } => {
+            if let Ok(mut state) = device_health_state().lock() {
+                let _ = state.tracker.accept_report(&envelope.source, *report, now);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    if !policy.permits(ContinuityCapability::DisplayInput) {
+        return;
+    }
+    let now = Instant::now();
+    let fabric = network.device_fabric();
+    let local = network
+        .local_device_fabric_identity()
+        .map(|(device, _)| device);
+    let snapshots = fabric.snapshots();
+    let all_peers = snapshots.keys().cloned().collect::<BTreeSet<_>>();
+    let online = snapshots
+        .values()
+        .filter(|snapshot| snapshot.presence.online && local.as_ref() != Some(&snapshot.owner))
+        .map(|snapshot| snapshot.owner.clone())
+        .collect::<Vec<_>>();
+    let mut probes = Vec::new();
+    {
+        let Ok(mut state) = device_health_state().lock() else {
+            return;
+        };
+        state.tracker.retain_peers(|peer| all_peers.contains(peer));
+        if state.last_probe.is_some_and(|sampled| {
+            now.checked_duration_since(sampled)
+                .is_some_and(|age| age < crate::shell::spatial_calibration::HEALTH_PROBE_INTERVAL)
+        }) {
+            return;
+        }
+        state.last_probe = Some(now);
+        for peer in online {
+            let mut nonce = [0; 16];
+            while nonce == [0; 16] {
+                OsRng.fill_bytes(&mut nonce);
+            }
+            if state.tracker.begin_probe(peer.clone(), nonce, now) {
+                probes.push((peer, nonce));
+            }
+        }
+    }
+    for (peer, nonce) in probes {
+        if network
+            .send_personal_fabric_action(&peer, PersonalFabricAction::DeviceHealthProbe { nonce })
+            .is_err()
+            && let Ok(mut state) = device_health_state().lock()
+        {
+            state.tracker.forget_peer(&peer);
+        }
+    }
+}
+
 fn handle_spatial_action(
     source: crate::shell::personal_continuity::DeviceId,
     target: &crate::shell::personal_continuity::DeviceId,
@@ -2529,6 +2680,8 @@ fn handle_spatial_action(
         | PersonalFabricAction::RemoteAudioCancel { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
+        | PersonalFabricAction::DeviceHealthProbe { .. }
+        | PersonalFabricAction::DeviceHealthReport { .. }
         | PersonalFabricAction::BluetoothHandoffPrepare { .. }
         | PersonalFabricAction::BluetoothHandoffPrepared { .. }
         | PersonalFabricAction::BluetoothHandoffCommit { .. }
@@ -4205,6 +4358,61 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
     } else {
         Vec::new()
     };
+    let (device_health, calibration_proposals, revertible_calibrations) = if policy
+        .permits(ContinuityCapability::DisplayInput)
+    {
+        let mut route_counts = BTreeMap::<_, u8>::new();
+        for peer in issued_to.iter().chain(received_from.iter()) {
+            let count = route_counts.entry(peer.clone()).or_default();
+            *count = count.saturating_add(1);
+        }
+        for transfer in &transfers {
+            if transfer.status == crate::shell::overlay_host::FabricTransferStatus::Sending {
+                let count = route_counts.entry(transfer.target.clone()).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        if policy.permits(ContinuityCapability::Media) {
+            for route in crate::shell::remote_audio::snapshot(None).routes {
+                let count = route_counts.entry(route.peer).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        let now = Instant::now();
+        let now_unix_ms = unix_ms();
+        let observations = device_health_state().lock().map_or_else(
+            |_| Vec::new(),
+            |state| {
+                fabric
+                    .snapshots()
+                    .values()
+                    .filter(|snapshot| local_id.as_ref() != Some(&snapshot.owner))
+                    .map(|snapshot| {
+                        state.tracker.observation(
+                            &snapshot.owner,
+                            true,
+                            snapshot.presence.online,
+                            route_counts
+                                .get(&snapshot.owner)
+                                .copied()
+                                .unwrap_or_default(),
+                            now,
+                            now_unix_ms,
+                            snapshot.presence.last_seen_unix_ms,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            },
+        );
+        let health = crate::shell::spatial_calibration::summarize_health(observations, now_unix_ms);
+        let proposals = spatial_calibration_proposals(network);
+        let reverts = spatial_calibration_state()
+            .lock()
+            .map_or_else(|_| Vec::new(), |state| state.revertible_peers());
+        (health, proposals, reverts)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new())
+    };
 
     DeviceFabricView {
         bluetooth_authorizations,
@@ -4215,6 +4423,9 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         local_outputs,
         transfers,
         remote_audio: Default::default(),
+        device_health,
+        calibration_proposals,
+        revertible_calibrations,
     }
 }
 
@@ -4236,6 +4447,118 @@ pub fn route_local_audio(node_id: u32) -> Result<(), String> {
     for stream in graph.playback_streams {
         control.route_stream(stream.id, target_serial)?;
     }
+    Ok(())
+}
+
+fn calibration_devices(
+    network: &ShellNetwork,
+) -> Vec<crate::shell::spatial_calibration::CalibrationDevice> {
+    network
+        .device_fabric()
+        .snapshots()
+        .values()
+        .map(
+            |snapshot| crate::shell::spatial_calibration::CalibrationDevice {
+                id: snapshot.owner.clone(),
+                certified: true,
+                online: snapshot.presence.online,
+                display: snapshot.presence.capabilities.display,
+                rect: snapshot.display.as_ref().map(|display| display.rect),
+            },
+        )
+        .collect()
+}
+
+/// Admit locally measured geometry only after its hardware adapter has mapped
+/// the observation to an already certified exact peer. Proximity never enrolls
+/// or authenticates a device.
+pub fn record_spatial_sensor_evidence(
+    network: &ShellNetwork,
+    evidence: crate::shell::spatial_calibration::SpatialEvidence,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let certified = network
+        .device_fabric()
+        .snapshots()
+        .get(&evidence.peer)
+        .is_some_and(|snapshot| snapshot.presence.online && snapshot.presence.capabilities.display);
+    if !certified {
+        return Err("sensor evidence does not name an online certified display".into());
+    }
+    spatial_calibration_state()
+        .lock()
+        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .record_sensor_evidence(evidence)
+        .then_some(())
+        .ok_or_else(|| "sensor evidence is outside the bounded calibration profile".into())
+}
+
+fn spatial_calibration_proposals(
+    network: &ShellNetwork,
+) -> Vec<crate::shell::spatial_calibration::CalibrationProposal> {
+    if require_continuity(ContinuityCapability::DisplayInput).is_err() {
+        return Vec::new();
+    }
+    let Some((local, _)) = network.local_device_fabric_identity() else {
+        return Vec::new();
+    };
+    spatial_calibration_state().lock().map_or_else(
+        |_| Vec::new(),
+        |state| state.proposals(&local, &calibration_devices(network), unix_ms()),
+    )
+}
+
+/// Apply one still-current proposal. The target authors its own placement and
+/// the previous exact rectangle is retained locally for one explicit revert.
+pub fn apply_spatial_calibration(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    let proposal = spatial_calibration_proposals(network)
+        .into_iter()
+        .find(|proposal| &proposal.peer == target)
+        .ok_or_else(|| "that calibration proposal is no longer current".to_string())?;
+    network.send_personal_fabric_action(
+        target,
+        PersonalFabricAction::SetDisplayPlacement {
+            rect: proposal.proposed,
+        },
+    )?;
+    spatial_calibration_state()
+        .lock()
+        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .remember_apply(&proposal);
+    Ok(())
+}
+
+pub fn dismiss_spatial_calibration(
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    spatial_calibration_state()
+        .lock()
+        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .dismiss(target);
+    Ok(())
+}
+
+pub fn revert_spatial_calibration(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let previous = spatial_calibration_state()
+        .lock()
+        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .revert_rect(target)
+        .ok_or_else(|| "there is no applied calibration to revert".to_string())?;
+    network.send_personal_fabric_action(
+        target,
+        PersonalFabricAction::SetDisplayPlacement { rect: previous },
+    )?;
+    spatial_calibration_state()
+        .lock()
+        .map_err(|_| "spatial calibration is unavailable".to_string())?
+        .finish_revert(target);
     Ok(())
 }
 
