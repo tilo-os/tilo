@@ -987,7 +987,7 @@ pub struct DeviceFabricRuntime {
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture: Option<crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime>,
+    remote_capture: Option<crate::shell::remote_capture_runtime::SharedRemoteCaptureRuntime>,
     remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
     gamepad_broker: ProductionGamepadBroker,
@@ -1036,7 +1036,7 @@ impl DeviceFabricRuntime {
 
     pub(crate) fn set_remote_capture_runtime(
         &mut self,
-        runtime: crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime,
+        runtime: crate::shell::remote_capture_runtime::SharedRemoteCaptureRuntime,
     ) {
         self.remote_capture = Some(runtime);
     }
@@ -1231,7 +1231,9 @@ impl DeviceFabricRuntime {
                 state.transactions.clear();
                 while state.result_rx.try_recv().is_ok() {}
             }
-            if let Some(remote_capture) = self.remote_capture.as_mut() {
+            if let Some(remote_capture) = self.remote_capture.as_ref()
+                && let Ok(mut remote_capture) = remote_capture.try_lock()
+            {
                 remote_capture.teardown_all();
             }
             self.remote_capture_online_peers.clear();
@@ -1315,11 +1317,11 @@ impl DeviceFabricRuntime {
             if self.tethering.handle_action(network, &envelope, unix_ms()) {
                 continue;
             }
-            if self
-                .remote_capture
-                .as_mut()
-                .is_some_and(|runtime| runtime.handle_action(&envelope, Instant::now()))
-            {
+            if self.remote_capture.as_ref().is_some_and(|runtime| {
+                runtime
+                    .lock()
+                    .is_ok_and(|mut runtime| runtime.handle_action(&envelope, Instant::now()))
+            }) {
                 continue;
             }
             if self.handle_gamepad_action(network, &envelope) {
@@ -1414,7 +1416,10 @@ impl DeviceFabricRuntime {
         network: &ShellNetwork,
         policy: ContinuityPolicySnapshot,
     ) {
-        let Some(runtime) = self.remote_capture.as_mut() else {
+        let Some(runtime) = self.remote_capture.as_ref() else {
+            return;
+        };
+        let Ok(mut runtime) = runtime.try_lock() else {
             return;
         };
         if !policy.permits(ContinuityCapability::Media) {
@@ -1433,6 +1438,19 @@ impl DeviceFabricRuntime {
             runtime.teardown_peer(peer);
         }
         self.remote_capture_online_peers = online;
+        runtime.pump(Instant::now());
+        let outgoing = runtime.drain_outgoing();
+        drop(runtime);
+        for (peer, action) in outgoing {
+            if network
+                .send_personal_fabric_action(&peer, action.clone())
+                .is_err()
+                && let Some(runtime) = self.remote_capture.as_ref()
+                && let Ok(mut runtime) = runtime.try_lock()
+            {
+                runtime.outgoing_failed(&peer, &action);
+            }
+        }
     }
 
     fn handle_gamepad_action(
