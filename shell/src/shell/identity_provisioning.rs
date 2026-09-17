@@ -453,8 +453,11 @@ fn serve_pairing_request(
             let Some(mac) = mac.into_bytes() else {
                 return PairingBrokerResponse::Denied;
             };
-            authority.publish_host_round2(&n, value, mac);
-            PairingBrokerResponse::Ok
+            if authority.publish_host_round2(&n, value, mac) {
+                PairingBrokerResponse::Ok
+            } else {
+                PairingBrokerResponse::Denied
+            }
         }
         PairingBrokerRequest::TakeHostRound2(n) if matches!(purpose, BrokerPurpose::Pairing(allowed) if n == *allowed) => {
             PairingBrokerResponse::HostRound2(
