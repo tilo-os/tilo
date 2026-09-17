@@ -54,6 +54,13 @@ const MIN_W: f64 = 380.0;
 const MIN_H: f64 = 340.0;
 const RESIZE_GRIP: f64 = 8.0;
 
+struct DrawContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
 /// Where the compose window is parked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DockState {
@@ -540,7 +547,6 @@ impl ComposeWindow {
     }
 
     /// Seed the window as a reply: recipient, subject, and a quoted body.
-    #[allow(clippy::too_many_arguments)]
     pub fn open_reply(&mut self, to: &str, subject: &str, quote: &str) {
         self.open_blank();
         self.to.set_text(to);
@@ -1662,17 +1668,39 @@ impl ComposeWindow {
         self.draw_prompt(scene, t, tr, theme, presence);
 
         // Buttons.
-        self.draw_action_button(scene, t, tr, theme, ComposeHit::Send, "Send", true);
         self.draw_action_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            ComposeHit::Send,
+            "Send",
+            true,
+        );
+        self.draw_action_button(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             ComposeHit::SaveDraft,
             "Save draft",
             false,
         );
-        self.draw_action_button(scene, t, tr, theme, ComposeHit::Discard, "Discard", false);
+        self.draw_action_button(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            ComposeHit::Discard,
+            "Discard",
+            false,
+        );
 
         // Resize affordance (bottom-right grip dots).
         let g = Rect::new(r.x1 - 14.0, r.y1 - 14.0, r.x1 - 4.0, r.y1 - 4.0);
@@ -1699,10 +1727,12 @@ impl ComposeWindow {
         theme: &Theme,
     ) {
         self.draw_field(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             "To",
             &self.to_rect_for(ComposeHit::FieldTo),
             matches!(self.focus, Field::To),
@@ -1711,10 +1741,12 @@ impl ComposeWindow {
         );
         if self.show_cc_bcc {
             self.draw_field(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
                 "Cc",
                 &self.to_rect_for(ComposeHit::FieldCc),
                 matches!(self.focus, Field::Cc),
@@ -1722,10 +1754,12 @@ impl ComposeWindow {
                 "",
             );
             self.draw_field(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
                 "Bcc",
                 &self.to_rect_for(ComposeHit::FieldBcc),
                 matches!(self.focus, Field::Bcc),
@@ -1734,10 +1768,12 @@ impl ComposeWindow {
             );
         }
         self.draw_field(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             "Subject",
             &self.to_rect_for(ComposeHit::FieldSubject),
             matches!(self.focus, Field::Subject),
@@ -1747,19 +1783,23 @@ impl ComposeWindow {
 
         // Cc/Bcc toggle + Attach buttons. The active highlight reflects on/off.
         self.draw_chip_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             ComposeHit::ToggleCcBcc,
             "Cc/Bcc",
             self.show_cc_bcc,
         );
         self.draw_chip_button(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             ComposeHit::Attach,
             "\u{1F4CE} Attach",
             false,
@@ -1961,19 +2001,19 @@ impl ComposeWindow {
             .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_field(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         label: &str,
         fr: &Rect,
         focused: bool,
         empty: bool,
         placeholder: &str,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         tr.draw_text(
             scene,
@@ -2005,20 +2045,17 @@ impl ComposeWindow {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct, independently-meaningful piece of one small button's draw call (the universal scene/t/tr/theme quad plus this button's own identity/state); bundling them would just move the same count into a field list"
-    )]
     fn draw_chip_button(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         hit: ComposeHit,
         label: &str,
         active: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let Some(rect) = self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r) else {
             return;
@@ -2255,7 +2292,16 @@ impl ComposeWindow {
             c.border_focus,
         );
         // Buttons.
-        self.draw_prompt_buttons(scene, t, tr, theme, confirm, cancel);
+        self.draw_prompt_buttons(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            confirm,
+            cancel,
+        );
         if let Some(e) = &error {
             tr.draw_text(
                 scene,
@@ -2273,19 +2319,11 @@ impl ComposeWindow {
 
     /// Draw the inline prompt's Add/Cancel buttons. Part of
     /// [`Self::draw_prompt`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct, independently-meaningful piece of this draw call (the universal scene/t/tr/theme quad plus the two button rects); bundling them would just move the same count into a field list"
-    )]
-    fn draw_prompt_buttons(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        confirm: Rect,
-        cancel: Rect,
-    ) {
+    fn draw_prompt_buttons(&self, ctx: &mut DrawContext<'_>, confirm: Rect, cancel: Rect) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let hov_c = confirm.contains(self.last_mouse);
         fill_round(
@@ -2330,20 +2368,17 @@ impl ComposeWindow {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct, independently-meaningful piece of one small button's draw call (the universal scene/t/tr/theme quad plus this button's own identity/state); bundling them would just move the same count into a field list"
-    )]
     fn draw_action_button(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         hit: ComposeHit,
         label: &str,
         primary: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let Some(rect) = self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r) else {
             return;
