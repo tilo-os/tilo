@@ -159,11 +159,21 @@ impl AddAccountPanel {
             max_scroll: 0.0,
             reveal_advanced: false,
             body_clip: Rect::ZERO,
-            uri: TextInput::local().with_kind(TextInputKind::Url),
+            // Placeholders belong to the shared field so they share its font,
+            // padding and centring with the text the user types.
+            uri: TextInput::local()
+                .with_kind(TextInputKind::Url)
+                .with_placeholder("otpauth://totp/Issuer:account?secret=\u{2026}"),
             uri_expanded: false,
-            issuer: TextInput::local().with_kind(TextInputKind::Name),
-            label: TextInput::local().with_kind(TextInputKind::Name),
-            secret: TextInput::local().with_kind(TextInputKind::Password),
+            issuer: TextInput::local()
+                .with_kind(TextInputKind::Name)
+                .with_placeholder("GitHub"),
+            label: TextInput::local()
+                .with_kind(TextInputKind::Name)
+                .with_placeholder("ada@example.com"),
+            secret: TextInput::local()
+                .with_kind(TextInputKind::Password)
+                .with_placeholder("JBSWY3DPEHPK3PXP"),
             advanced_open: false,
             algorithm: Algorithm::Sha1,
             digits: 6,
@@ -966,16 +976,6 @@ impl AddAccountPanel {
 
         // Paste-link field (disclosed).
         if self.uri_expanded {
-            if self.uri.value().is_empty() {
-                Self::draw_placeholder(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    self.uri_rect,
-                    "otpauth://totp/Issuer:account?secret=\u{2026}",
-                );
-            }
             self.uri
                 .draw(scene, transform, text_renderer, theme, presence);
             let parse_hover = self.parse_rect.contains(self.last_mouse);
@@ -1013,15 +1013,7 @@ impl AddAccountPanel {
         );
 
         // Manual fields.
-        self.draw_text_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            "Issuer",
-            Field::Issuer,
-            "GitHub",
-        );
+        self.draw_text_field(scene, transform, text_renderer, theme, "Issuer", Field::Issuer);
         self.draw_text_field(
             scene,
             transform,
@@ -1029,7 +1021,6 @@ impl AddAccountPanel {
             theme,
             "Account name",
             Field::Label,
-            "ada@example.com",
         );
         self.draw_text_field(
             scene,
@@ -1038,7 +1029,6 @@ impl AddAccountPanel {
             theme,
             "Secret key",
             Field::Secret,
-            "JBSWY3DPEHPK3PXP",
         );
     }
 
@@ -1371,10 +1361,6 @@ impl AddAccountPanel {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one text field is scene + transform + renderer + theme + label + field id + placeholder; grouping into a struct would only move the fields, not reduce them"
-    )]
     fn draw_text_field(
         &mut self,
         scene: &mut Scene,
@@ -1383,7 +1369,6 @@ impl AddAccountPanel {
         theme: &Theme,
         label: &str,
         field: Field,
-        placeholder: &str,
     ) {
         let presence = PresenceCtx::empty();
         let rect = match field {
@@ -1393,31 +1378,10 @@ impl AddAccountPanel {
             _ => return,
         };
         Self::draw_field_label(scene, transform, text_renderer, theme, label, rect);
-        let empty = self.field_mut(field).value().is_empty();
-        if empty {
-            Self::draw_placeholder(scene, transform, text_renderer, theme, rect, placeholder);
-        }
+        // The field paints its own placeholder (set in `new`), so the hint and
+        // the typed text share one font, gutter and centre line.
         self.field_mut(field)
             .draw(scene, transform, text_renderer, theme, &presence);
-    }
-
-    fn draw_placeholder(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        text: &str,
-    ) {
-        let pad = f64::from(theme.padding_standard);
-        text_renderer.draw_text(
-            scene,
-            text,
-            16.0,
-            theme.tokens.colors.text_dim.with_alpha_factor(0.6),
-            transform * Affine::translate((rect.x0 + pad, rect.center().y - 10.0)),
-            Some((rect.width() - pad * 2.0) as f32),
-        );
     }
 
     fn draw_divider(
