@@ -1102,14 +1102,11 @@ impl DisksApp {
     }
 
     // ---- detail header -------------------------------------------------
-    fn draw_header(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        drive: &Drive,
-    ) {
+    fn draw_header(paint: &mut PaintContext<'_>, lay: &Layout, drive: &Drive) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let h = lay.header;
         Self::fill_rr(scene, t, h, 14.0, c.surfaces.raised);
@@ -1156,10 +1153,7 @@ impl DisksApp {
         let chip_y = h.y0 + 62.0;
         let status = drive.smart_status();
         Self::draw_chip(
-            scene,
-            tr,
-            theme,
-            t,
+            paint,
             tx,
             chip_y,
             &format!("● {}", status.label()),
@@ -1170,13 +1164,10 @@ impl DisksApp {
             .clone()
             .unwrap_or_else(|| "—".into())
             .to_uppercase();
-        Self::draw_chip(scene, tr, theme, t, tx + 132.0, chip_y, &tran, c.neutral[5]);
+        Self::draw_chip(paint, tx + 132.0, chip_y, &tran, c.neutral[5]);
         if drive.removable {
             Self::draw_chip(
-                scene,
-                tr,
-                theme,
-                t,
+                paint,
                 tx + 132.0 + 86.0,
                 chip_y,
                 "REMOVABLE",
@@ -1362,21 +1353,14 @@ impl DisksApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     #[allow(
         clippy::many_single_char_names,
-        reason = "t/x/y/w/r are the standard graphics convention: transform, position, measured width, resulting rect"
+        reason = "x/y/w/r are the standard graphics convention: position, measured width, resulting rect"
     )]
-    fn draw_chip(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        _theme: &Theme,
-        t: Affine,
-        x: f64,
-        y: f64,
-        label: &str,
-        color: Color,
-    ) {
+    fn draw_chip(paint: &mut PaintContext<'_>, x: f64, y: f64, label: &str, color: Color) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let t = paint.transform;
         let (w, _) = tr.measure_weighted(label, 12.0, None, TextWeight::Semibold);
         let r = Rect::new(x, y, x + f64::from(w) + 22.0, y + 24.0);
         Self::fill_rr(scene, t, r, 12.0, with_alpha(color, 38));
@@ -3706,7 +3690,16 @@ impl Widget for DisksApp {
 
         // Detail pane (drawn first; in overlay mode the flap sits on top).
         if let Some(drive) = self.drive() {
-            Self::draw_header(scene, tr, theme, transform, &lay, drive);
+            Self::draw_header(
+                &mut PaintContext {
+                    scene,
+                    text: tr,
+                    theme,
+                    transform,
+                },
+                &lay,
+                drive,
+            );
             self.draw_action_bar(scene, tr, theme, transform, &lay, drive);
             self.draw_tabs(scene, tr, theme, transform, &lay);
             // Content scrolls within its own clip so it stays usable when the
