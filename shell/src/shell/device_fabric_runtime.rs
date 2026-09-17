@@ -25,11 +25,11 @@ use crate::compositor::selection::{
 };
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::device_fabric::{
-    ClipboardEntry, ClipboardPayload, DISPLAY_STREAM_PROTOCOL_VERSION, DeviceFabricSnapshot,
-    DeviceKind, DevicePresence, DisplayEdge, DisplayPlacement, DisplayRect, DisplayStreamCodec,
-    DisplayStreamProfile, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricInputEvent, FabricStamp,
-    InputLease, MAX_DISPLAY_SESSIONS, MAX_INPUT_LEASE_MS, MediaSession, MediaSourceLocator,
-    PersonalDisplayMessage, PersonalFabricAction, RoamingSetting,
+    ClipboardEntry, ClipboardPayload, DISPLAY_STREAM_PROTOCOL_VERSION, DeviceFabric,
+    DeviceFabricSnapshot, DeviceKind, DevicePresence, DisplayEdge, DisplayPlacement, DisplayRect,
+    DisplayStreamCodec, DisplayStreamProfile, FABRIC_SCHEMA_VERSION, FabricCapabilities,
+    FabricInputEvent, FabricStamp, InputLease, MAX_DISPLAY_SESSIONS, MAX_INPUT_LEASE_MS,
+    MediaSession, MediaSourceLocator, PersonalDisplayMessage, PersonalFabricAction, RoamingSetting,
 };
 use crate::shell::network::ShellNetwork;
 
@@ -921,6 +921,7 @@ pub struct DeviceFabricRuntime {
     last_publish: Option<Instant>,
     local_fingerprint: Option<[u8; 32]>,
     merged_settings_fingerprint: Option<[u8; 32]>,
+    roaming_provenance_fingerprint: Option<[u8; 32]>,
     applied_remote_settings: BTreeMap<String, Value>,
     settings_origin_initialized: bool,
     pending_incoming_media:
@@ -944,6 +945,7 @@ impl DeviceFabricRuntime {
             last_publish: None,
             local_fingerprint: None,
             merged_settings_fingerprint: None,
+            roaming_provenance_fingerprint: None,
             applied_remote_settings: BTreeMap::new(),
             settings_origin_initialized: false,
             pending_incoming_media: BTreeMap::new(),
@@ -1176,6 +1178,14 @@ impl DeviceFabricRuntime {
         policy: ContinuityPolicySnapshot,
     ) {
         let fabric = network.device_fabric();
+        if let Err(error) = publish_roaming_provenance(
+            &fabric,
+            policy.permits(ContinuityCapability::WifiSettings),
+            &mut self.roaming_provenance_fingerprint,
+            None,
+        ) {
+            tracing::warn!(%error, "could not publish roaming settings provenance");
+        }
         if policy.permits(ContinuityCapability::Clipboard) {
             let history = fabric.merged_clipboard();
             let entries = history.entries().cloned().collect::<Vec<_>>();
@@ -5009,19 +5019,123 @@ fn roaming_setting_values() -> BTreeMap<String, Value> {
 }
 
 fn roaming_setting_values_from(document: &Map<String, Value>) -> BTreeMap<String, Value> {
-    let mut out = BTreeMap::new();
-    for (section, value) in document {
-        let Value::Object(values) = value else {
-            continue;
-        };
-        for (key, value) in values {
-            let fabric_key = format!("tilo.{section}.{key}");
-            if super::device_fabric::valid_setting_key(&fabric_key) {
-                out.insert(fabric_key, value.clone());
-            }
-        }
+    settings_store::continuity::personal_values(document)
+}
+
+fn roaming_provenance(
+    fabric: &DeviceFabric,
+    enabled: bool,
+) -> settings_store::roaming_provenance::RoamingProvenance {
+    use settings_store::roaming_provenance::{
+        Origin, RoamingProvenance, SettingResolution, WifiResolution,
+    };
+
+    if !enabled {
+        return RoamingProvenance::default();
     }
-    out
+    let origin = |stamp: &FabricStamp| Origin {
+        device_id: stamp.device.as_str().to_string(),
+        device_label: fabric.snapshots().get(&stamp.device).map_or_else(
+            || stamp.device.as_str().to_string(),
+            |snapshot| snapshot.presence.label.clone(),
+        ),
+        counter: stamp.counter,
+    };
+    let mut settings_by_key = BTreeMap::<&str, Vec<&RoamingSetting>>::new();
+    for setting in fabric
+        .snapshots()
+        .values()
+        .flat_map(|snapshot| &snapshot.settings)
+        .filter(|setting| settings_store::continuity::is_personal(&setting.key))
+    {
+        settings_by_key
+            .entry(&setting.key)
+            .or_default()
+            .push(setting);
+    }
+    let settings = settings_by_key
+        .into_iter()
+        .filter_map(|(key, records)| {
+            let winner = records
+                .iter()
+                .copied()
+                .max_by(|left, right| left.stamp.cmp(&right.stamp))?;
+            let alternatives = records
+                .into_iter()
+                .filter(|record| {
+                    record.stamp.device != winner.stamp.device && record.value != winner.value
+                })
+                .map(|record| origin(&record.stamp))
+                .collect();
+            Some(SettingResolution {
+                key: key.to_string(),
+                winner: origin(&winner.stamp),
+                alternatives,
+            })
+        })
+        .collect();
+
+    let mut wifi_by_network =
+        BTreeMap::<[u8; 32], Vec<&crate::shell::device_fabric::WifiCredential>>::new();
+    for credential in fabric
+        .snapshots()
+        .values()
+        .flat_map(|snapshot| &snapshot.wifi)
+    {
+        wifi_by_network
+            .entry(credential.network_id)
+            .or_default()
+            .push(credential);
+    }
+    let wifi = wifi_by_network
+        .into_iter()
+        .filter_map(|(network_id, records)| {
+            let winner = records
+                .iter()
+                .copied()
+                .max_by(|left, right| left.stamp.cmp(&right.stamp))?;
+            let alternatives = records
+                .into_iter()
+                .filter(|record| record.stamp.device != winner.stamp.device)
+                .map(|record| origin(&record.stamp))
+                .collect();
+            Some(WifiResolution {
+                network_id: hex::encode(network_id),
+                ssid: winner.ssid.clone(),
+                security: String::from(winner.security),
+                winner: origin(&winner.stamp),
+                alternatives,
+            })
+        })
+        .collect();
+    RoamingProvenance {
+        schema_version: settings_store::roaming_provenance::SCHEMA_VERSION,
+        generated_unix_ms: 0,
+        settings,
+        wifi,
+    }
+}
+
+fn publish_roaming_provenance(
+    fabric: &DeviceFabric,
+    enabled: bool,
+    previous_fingerprint: &mut Option<[u8; 32]>,
+    path: Option<&Path>,
+) -> Result<bool, settings_store::roaming_provenance::ProvenanceError> {
+    let mut projection = roaming_provenance(fabric, enabled);
+    let fingerprint = serde_json::to_vec(&projection)
+        .ok()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes());
+    if fingerprint == *previous_fingerprint {
+        return Ok(false);
+    }
+    projection.generated_unix_ms = unix_ms();
+    match path {
+        Some(path) => projection.save_at(path)?,
+        None => projection.save()?,
+    }
+    *previous_fingerprint = fingerprint;
+    Ok(true)
 }
 
 fn reconcile_roaming_settings(
@@ -5473,6 +5587,43 @@ mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
 
+    fn provenance_snapshot(
+        device: DeviceId,
+        label: &str,
+        counter: u64,
+        setting: Option<Value>,
+    ) -> DeviceFabricSnapshot {
+        let stamp = FabricStamp {
+            counter,
+            device: device.clone(),
+        };
+        DeviceFabricSnapshot {
+            schema_version: FABRIC_SCHEMA_VERSION,
+            owner: device.clone(),
+            presence: DevicePresence {
+                device,
+                label: label.into(),
+                kind: DeviceKind::Laptop,
+                capabilities: FabricCapabilities::default(),
+                online: true,
+                last_seen_unix_ms: counter,
+                stamp: stamp.clone(),
+            },
+            media: Vec::new(),
+            clipboard: Vec::new(),
+            settings: setting
+                .map(|value| RoamingSetting {
+                    key: "tilo.appearance.theme".into(),
+                    value,
+                    stamp,
+                })
+                .into_iter()
+                .collect(),
+            wifi: Vec::new(),
+            display: None,
+        }
+    }
+
     #[test]
     fn nearby_receive_history_is_bounded_and_replaces_transfer_health() {
         let peer = DeviceId::new("history-peer").expect("valid device");
@@ -5738,6 +5889,132 @@ mod tests {
             "tilo.agent_providers.api_key",
         ] {
             assert!(!projected.contains_key(key), "leaked local key {key}");
+        }
+    }
+
+    #[test]
+    fn provenance_reports_the_deterministic_winner_and_only_divergent_origins() {
+        let desktop = DeviceId::new("desktop").unwrap();
+        let laptop = DeviceId::new("laptop").unwrap();
+        let tablet = DeviceId::new("tablet").unwrap();
+        let mut fabric = DeviceFabric::default();
+        fabric
+            .upsert(provenance_snapshot(
+                desktop,
+                "Desktop",
+                4,
+                Some(serde_json::json!("Light")),
+            ))
+            .unwrap();
+        fabric
+            .upsert(provenance_snapshot(
+                laptop,
+                "Laptop",
+                5,
+                Some(serde_json::json!("Dark")),
+            ))
+            .unwrap();
+        fabric
+            .upsert(provenance_snapshot(
+                tablet,
+                "Tablet",
+                3,
+                Some(serde_json::json!("Dark")),
+            ))
+            .unwrap();
+
+        let projection = roaming_provenance(&fabric, true);
+        assert_eq!(projection.settings.len(), 1);
+        assert_eq!(projection.settings[0].winner.device_label, "Laptop");
+        assert_eq!(projection.settings[0].winner.counter, 5);
+        assert_eq!(projection.settings[0].alternatives.len(), 1);
+        assert_eq!(
+            projection.settings[0].alternatives[0].device_label,
+            "Desktop"
+        );
+        assert!(roaming_provenance(&fabric, false).settings.is_empty());
+    }
+
+    #[test]
+    fn unchanged_provenance_is_not_rewritten_and_settings_can_reload_it() {
+        let mut fabric = DeviceFabric::default();
+        fabric
+            .upsert(provenance_snapshot(
+                DeviceId::new("laptop").unwrap(),
+                "Laptop",
+                2,
+                Some(serde_json::json!("Dark")),
+            ))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(settings_store::roaming_provenance::FILE_NAME);
+        let mut fingerprint = None;
+        assert!(publish_roaming_provenance(&fabric, true, &mut fingerprint, Some(&path)).unwrap());
+        let first = settings_store::roaming_provenance::RoamingProvenance::load_at(&path).unwrap();
+        assert_eq!(first.settings[0].winner.device_label, "Laptop");
+        assert!(!publish_roaming_provenance(&fabric, true, &mut fingerprint, Some(&path)).unwrap());
+        let second = settings_store::roaming_provenance::RoamingProvenance::load_at(&path).unwrap();
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn wifi_provenance_exposes_origins_but_neither_envelopes_nor_passwords() {
+        use ed25519_dalek::SigningKey;
+
+        let first_key = SigningKey::from_bytes(&[1; 32]);
+        let second_key = SigningKey::from_bytes(&[2; 32]);
+        let first = DeviceId::new(hex::encode(first_key.verifying_key().to_bytes())).unwrap();
+        let second = DeviceId::new(hex::encode(second_key.verifying_key().to_bytes())).unwrap();
+        let recipients = [first.clone(), second.clone()];
+        let first_stamp = FabricStamp {
+            counter: 3,
+            device: first.clone(),
+        };
+        let second_stamp = FabricStamp {
+            counter: 4,
+            device: second.clone(),
+        };
+        let first_credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            "Home",
+            os_actions::WifiSecurity::Wpa2,
+            "first-secret",
+            &first,
+            recipients.clone(),
+            first_stamp,
+        )
+        .unwrap();
+        let second_credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            "Home",
+            os_actions::WifiSecurity::Wpa2,
+            "second-secret",
+            &second,
+            recipients,
+            second_stamp,
+        )
+        .unwrap();
+        let mut first_snapshot = provenance_snapshot(first, "Desktop", 3, None);
+        first_snapshot.wifi.push(first_credential);
+        let mut second_snapshot = provenance_snapshot(second, "Laptop", 4, None);
+        second_snapshot.wifi.push(second_credential);
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(first_snapshot).unwrap();
+        fabric.upsert(second_snapshot).unwrap();
+
+        let projection = roaming_provenance(&fabric, true);
+        assert_eq!(projection.wifi.len(), 1);
+        assert_eq!(projection.wifi[0].ssid, "Home");
+        assert_eq!(projection.wifi[0].winner.device_label, "Laptop");
+        assert_eq!(projection.wifi[0].alternatives[0].device_label, "Desktop");
+        let encoded = serde_json::to_string(&projection).unwrap();
+        for secret in [
+            "first-secret",
+            "second-secret",
+            "sealed_secret",
+            "ciphertext",
+        ] {
+            assert!(!encoded.contains(secret));
         }
     }
 
