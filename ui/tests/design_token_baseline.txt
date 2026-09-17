@@ -33,8 +33,8 @@ src/app.rs white_or_black 0
 # fill_scrim's soft-light source: black is the `Cb²` identity the two-stage
 # scrim is built on, not a palette choice, so no token can stand in for it.
 src/chrome/shell.rs literal_color 1
-src/chrome/status_bar.rs literal_color 1
-src/chrome/toolbar.rs literal_color 1
+src/chrome/status_bar.rs literal_color 0
+src/chrome/toolbar.rs literal_color 0
 src/overlay/scrim.rs literal_color 2
 src/profiling.rs literal_color 4
 src/warmup.rs literal_color 1
@@ -60,19 +60,23 @@ src/widget/context_menu.rs theme_blind_white 1
 src/widget/data_table.rs theme_blind_white 1
 src/widget/empty_state.rs white_or_black 1
 src/widget/history_scrubber.rs theme_blind_white 10
-src/widget/identity_flow/add_device_host.rs literal_color 3
-src/widget/identity_flow/create_identity.rs literal_color 3
-src/widget/identity_flow/invite_accept.rs literal_color 4
-src/widget/identity_flow/invite_mint.rs literal_color 6
-src/widget/identity_flow/mod.rs literal_color 2
-src/widget/identity_flow/pair_device.rs literal_color 3
-src/widget/identity_flow/recovery_share.rs literal_color 3
-src/widget/identity_flow/recovery_verify.rs literal_color 4
+src/widget/identity_flow/add_device_host.rs literal_color 0
+src/widget/identity_flow/create_identity.rs literal_color 0
+src/widget/identity_flow/invite_accept.rs literal_color 0
+src/widget/identity_flow/invite_mint.rs literal_color 0
+src/widget/identity_flow/mod.rs literal_color 0
+src/widget/identity_flow/pair_device.rs literal_color 0
+src/widget/identity_flow/recovery_share.rs literal_color 0
+src/widget/identity_flow/recovery_verify.rs literal_color 0
+# The QR's black modules on a white field are the scanner's contract, the
+# same two values `qr.rs` fixes for the same reason — moved here from
+# add_device_host.rs when the ceremony screens went onto one shared sheet.
+src/widget/identity_flow/sheet.rs literal_color 2
 src/widget/image.rs literal_color 1
 src/widget/modal_dialog.rs white_or_black 2
 src/widget/nav_shell.rs literal_color 2
 src/widget/nav_split.rs literal_color 2
-src/widget/page_sidebar.rs white_or_black 2
+src/widget/page_sidebar.rs white_or_black 0
 src/widget/permission_prompt.rs white_or_black 1
 src/widget/popover.rs literal_color 1
 src/widget/popover_widget.rs white_or_black 1
@@ -85,6 +89,6 @@ src/widget/sidebar.rs literal_color 2
 src/widget/slider.rs theme_blind_white 5
 src/widget/table.rs theme_blind_white 3
 src/widget/table.rs white_or_black 1
-src/widget/tabs.rs literal_color 5
+src/widget/tabs.rs literal_color 2
 src/widget/video_player.rs literal_color 1
 src/widget/window_group.rs literal_color 1
