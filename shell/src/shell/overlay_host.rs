@@ -762,9 +762,18 @@ pub struct BluetoothHandoffAuthorizationView {
     pub source_label: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GamepadAuthorizationView {
+    pub forwarding_id: [u8; 16],
+    pub controller_label: String,
+    pub source_label: String,
+    pub app_id: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceFabricView {
     pub bluetooth_authorizations: Vec<BluetoothHandoffAuthorizationView>,
+    pub gamepad_authorizations: Vec<GamepadAuthorizationView>,
     pub devices: Vec<FabricDeviceView>,
     pub local_media: Vec<FabricMediaView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
@@ -788,6 +797,10 @@ pub enum DeviceFabricUiAction {
     },
     AuthorizeBluetoothHandoff {
         request_id: [u8; 16],
+        approved: bool,
+    },
+    AuthorizeGamepadForwarding {
+        forwarding_id: [u8; 16],
         approved: bool,
     },
     Place {
@@ -829,6 +842,7 @@ enum DeviceFabricPaneRow {
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
+    GamepadAuthorization(GamepadAuthorizationView),
     Media(FabricMediaView),
     LocalOutput(LocalMediaOutputView),
     Device(FabricDeviceView),
@@ -855,6 +869,12 @@ fn device_fabric_pane_rows(
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::BluetoothAuthorization),
+        )
+        .chain(
+            view.gamepad_authorizations
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::GamepadAuthorization),
         )
         .chain(
             view.local_media
@@ -7719,7 +7739,10 @@ impl ShellOverlayHost {
                 let rows = device_fabric_pane_rows(&view, &realtime);
                 let consent = matches!(
                     rows.get(self.qs_device_fabric_start),
-                    Some(DeviceFabricPaneRow::RealtimeConsent(_))
+                    Some(
+                        DeviceFabricPaneRow::RealtimeConsent(_)
+                            | DeviceFabricPaneRow::GamepadAuthorization(_)
+                    )
                 );
                 if consent {
                     let (allow, decline) =
@@ -11093,6 +11116,30 @@ impl ShellOverlayHost {
                     authorization.accessory_name
                 ),
             )),
+            DeviceFabricPaneRow::GamepadAuthorization(authorization) => {
+                let (allow, decline) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let approved = if allow.contains(point) {
+                    true
+                } else if decline.contains(point) {
+                    false
+                } else {
+                    return;
+                };
+                let action = DeviceFabricUiAction::AuthorizeGamepadForwarding {
+                    forwarding_id: authorization.forwarding_id,
+                    approved,
+                };
+                let success = if approved {
+                    format!(
+                        "Allowed {} from {} for this session",
+                        authorization.controller_label, authorization.source_label
+                    )
+                } else {
+                    format!("Declined controller from {}", authorization.source_label)
+                };
+                Some((action, success))
+            }
             DeviceFabricPaneRow::Media(media) => {
                 self.qs_selected_media = Some(media.session_id);
                 self.qs_selected_realtime = None;
@@ -13918,6 +13965,21 @@ impl Widget for ShellOverlayHost {
                                                 authorization.source_label
                                             ),
                                             Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::GamepadAuthorization(
+                                            authorization,
+                                        ) => (
+                                            format!("Use {}", authorization.controller_label),
+                                            format!(
+                                                "Approve one typed controller session from {} for {}",
+                                                authorization.source_label, authorization.app_id
+                                            ),
+                                            vec![
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Allow this controller once"),
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Decline this controller"),
+                                            ],
                                         ),
                                         DeviceFabricPaneRow::Media(media) => (
                                             media.title,
@@ -18719,6 +18781,16 @@ impl ShellOverlayHost {
                     false,
                     true,
                 ),
+                DeviceFabricPaneRow::GamepadAuthorization(authorization) => (
+                    format!("Use {}", authorization.controller_label),
+                    format!(
+                        "{} requested this for {} · allow once",
+                        authorization.source_label, authorization.app_id
+                    ),
+                    ui::icons::Icon::Mouse,
+                    false,
+                    true,
+                ),
                 DeviceFabricPaneRow::Media(media) => (
                     media.title.clone(),
                     if media.playing {
@@ -18782,7 +18854,9 @@ impl ShellOverlayHost {
             Button::paint(scene, transform, text_renderer, theme, &face);
             let trailing = if matches!(
                 item,
-                DeviceFabricPaneRow::Device(_) | DeviceFabricPaneRow::RealtimeConsent(_)
+                DeviceFabricPaneRow::Device(_)
+                    | DeviceFabricPaneRow::RealtimeConsent(_)
+                    | DeviceFabricPaneRow::GamepadAuthorization(_)
             ) {
                 86.0
             } else {
@@ -18826,7 +18900,11 @@ impl ShellOverlayHost {
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
             );
-            if let DeviceFabricPaneRow::RealtimeConsent(_) = item {
+            if matches!(
+                item,
+                DeviceFabricPaneRow::RealtimeConsent(_)
+                    | DeviceFabricPaneRow::GamepadAuthorization(_)
+            ) {
                 let (allow, decline) = Self::qs_realtime_consent_actions(row);
                 Button::paint(
                     scene,
@@ -18837,7 +18915,12 @@ impl ShellOverlayHost {
                         .ghost()
                         .icon(ui::icons::Icon::Check)
                         .hovered(self.last_cursor.is_some_and(|point| allow.contains(point)))
-                        .accessible_name("Allow this call handoff once"),
+                        .accessible_name(match item {
+                            DeviceFabricPaneRow::GamepadAuthorization(_) => {
+                                "Allow this controller once"
+                            }
+                            _ => "Allow this call handoff once",
+                        }),
                 );
                 Button::paint(
                     scene,
@@ -18851,7 +18934,12 @@ impl ShellOverlayHost {
                             self.last_cursor
                                 .is_some_and(|point| decline.contains(point)),
                         )
-                        .accessible_name("Decline this call handoff"),
+                        .accessible_name(match item {
+                            DeviceFabricPaneRow::GamepadAuthorization(_) => {
+                                "Decline this controller"
+                            }
+                            _ => "Decline this call handoff",
+                        }),
                 );
             } else if let DeviceFabricPaneRow::Device(device) = item {
                 let (placements, control) = Self::qs_device_row_actions(row);
