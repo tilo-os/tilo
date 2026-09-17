@@ -146,7 +146,8 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'TILO_APP_COLLECTION_URL_AARCH64' "$os" \
   && grep -Fq 'enable-openid-connect: true' "$os" \
   && grep -Fq 'TILO_OS_APP_COLLECTION_AUDIENCE' "$os" \
-  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)' "$os")" -eq 2 \
+  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*' "$os")" -eq 2 \
+  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*' "$os")" -eq 2 \
   && test "$(grep -Fc -- "--proto '=https' --proto-redir '=https'" "$os")" -eq 2 \
   && test "$(grep -Fc -- "--proto '=http' --fail --retry 3" "$os")" -eq 2 \
   && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
