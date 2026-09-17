@@ -5,6 +5,7 @@ Provision with setup-development-signer.py. This is not a privileged service:
 it requires an already-root caller and never changes firmware or enrolls keys.
 """
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import stat
@@ -44,6 +45,39 @@ def run(argv, *, pass_fds=()):
     return result.stdout
 
 
+@contextmanager
+def exclusive_output(destination):
+    destination = Path(destination).absolute()
+    if '..' in destination.parts:
+        raise ValueError('output path must be canonical')
+    parent = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # Hold directory descriptors throughout traversal; never follow links.
+        for part in destination.parent.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        info = os.fstat(parent)
+        if info.st_uid != 0 or info.st_mode & 0o077:
+            raise ValueError('output directory must be root-owned and owner-only')
+        descriptor = os.open(destination.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o644, dir_fd=parent)
+        with os.fdopen(descriptor, 'wb') as output:
+            created = os.fstat(output.fileno())
+            try:
+                yield output
+            except BaseException:
+                try:
+                    current = os.stat(destination.name, dir_fd=parent, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                        os.unlink(destination.name, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+                raise
+    finally:
+        os.close(parent)
+
+
 def sign(home, operation, source, destination):
     if operation not in ('export-efi-cert', 'sign-efi', 'sign-sha256-rsa-pkcs1'):
         raise ValueError('unsupported signing operation')
@@ -54,39 +88,32 @@ def sign(home, operation, source, destination):
     if marker.read_bytes() != PURPOSE:
         raise ValueError('missing development-only signer purpose')
     certificate = trusted(home / 'efi-signing.crt')
-    destination = Path(destination)
     # Exclusive output prevents accidental overwrite, including key files.
-    with destination.open('xb') as output:
-        os.fchmod(output.fileno(), 0o644)
+    with exclusive_output(destination) as output:
+        if operation == 'export-efi-cert':
+            output.write(certificate.read_bytes())
+            return
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
-            if operation == 'export-efi-cert':
-                output.write(certificate.read_bytes())
-                return
-            descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            try:
-                info = os.fstat(descriptor)
-                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 1024 * 1024 * 1024:
-                    raise ValueError('signing input must be a bounded nonempty regular file')
-                source_fd = f'/proc/self/fd/{descriptor}'
-                with tempfile.TemporaryDirectory(prefix='operation-', dir=home) as temporary:
-                    signed = Path(temporary) / 'signed'
-                    if operation == 'sign-efi':
-                        key = trusted(home / 'efi-signing.key', private=True)
-                        argv = ['/usr/bin/sbsign', '--key', str(key), '--cert', str(certificate),
-                                '--output', str(signed), source_fd]
-                    else:
-                        key = trusted(home / 'pcr-signing.key', private=True)
-                        argv = ['/usr/bin/openssl', 'dgst', '-sha256', '-sign', str(key),
-                                '-sigopt', 'rsa_padding_mode:pkcs1', '-out', str(signed), source_fd]
-                    run(argv, pass_fds=(descriptor,))
-                    with signed.open('rb') as result:
-                        shutil.copyfileobj(result, output)
-            finally:
-                os.close(descriptor)
-        except BaseException:
-            # Remove only the exclusive output owned by this invocation.
-            destination.unlink()
-            raise
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 1024 * 1024 * 1024:
+                raise ValueError('signing input must be a bounded nonempty regular file')
+            source_fd = f'/proc/self/fd/{descriptor}'
+            with tempfile.TemporaryDirectory(prefix='operation-', dir=home) as temporary:
+                signed = Path(temporary) / 'signed'
+                if operation == 'sign-efi':
+                    key = trusted(home / 'efi-signing.key', private=True)
+                    argv = ['/usr/bin/sbsign', '--key', str(key), '--cert', str(certificate),
+                            '--output', str(signed), source_fd]
+                else:
+                    key = trusted(home / 'pcr-signing.key', private=True)
+                    argv = ['/usr/bin/openssl', 'dgst', '-sha256', '-sign', str(key),
+                            '-sigopt', 'rsa_padding_mode:pkcs1', '-out', str(signed), source_fd]
+                run(argv, pass_fds=(descriptor,))
+                with signed.open('rb') as result:
+                    shutil.copyfileobj(result, output)
+        finally:
+            os.close(descriptor)
 
 
 def main():
