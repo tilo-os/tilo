@@ -307,6 +307,23 @@ pub enum PersonalFabricAction {
         id: crate::notifications::ContinuityNotificationId,
         action_key: String,
     },
+    /// Metadata-only realtime handoff offer. Capture grants, media handles,
+    /// and join URLs are deliberately not representable on this wire.
+    RealtimeOffer {
+        offer: crate::shell::realtime_session::RealtimeFabricOffer,
+    },
+    RealtimeAccept {
+        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+    },
+    RealtimeMediaReady {
+        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+    },
+    RealtimeStopSource {
+        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+    },
+    RealtimeCancel {
+        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -693,6 +710,19 @@ impl PersonalFabricActionEnvelope {
                     || action_key.len() > 128
                     || action_key.chars().any(char::is_control)
                 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RealtimeOffer { offer } => {
+                if !offer.valid_at(now_unix_ms) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RealtimeAccept { session_id }
+            | PersonalFabricAction::RealtimeMediaReady { session_id }
+            | PersonalFabricAction::RealtimeStopSource { session_id }
+            | PersonalFabricAction::RealtimeCancel { session_id } => {
+                if !session_id.valid() {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2340,6 +2370,110 @@ mod tests {
         })
         .unwrap();
         assert_eq!(notification.first(), Some(&21));
+        let realtime_id = crate::shell::realtime_session::RealtimeFabricSessionId {
+            broker: [1; 16],
+            nonce: [2; 16],
+        };
+        for (action, index) in [
+            (
+                PersonalFabricAction::RealtimeOffer {
+                    offer: crate::shell::realtime_session::RealtimeFabricOffer {
+                        session_id: realtime_id,
+                        app_id: "dev.qos.chat".into(),
+                        workspace_id: "room".into(),
+                        provider: "chat".into(),
+                        room_id: "call".into(),
+                        semantic_position: None,
+                        media_bits: 1,
+                        expires_unix_ms: 20_000,
+                    },
+                },
+                24,
+            ),
+            (
+                PersonalFabricAction::RealtimeAccept {
+                    session_id: realtime_id,
+                },
+                25,
+            ),
+            (
+                PersonalFabricAction::RealtimeMediaReady {
+                    session_id: realtime_id,
+                },
+                26,
+            ),
+            (
+                PersonalFabricAction::RealtimeStopSource {
+                    session_id: realtime_id,
+                },
+                27,
+            ),
+            (
+                PersonalFabricAction::RealtimeCancel {
+                    session_id: realtime_id,
+                },
+                28,
+            ),
+        ] {
+            assert_eq!(
+                postcard::to_allocvec(&action).unwrap().first(),
+                Some(&index)
+            );
+        }
+    }
+
+    #[test]
+    fn realtime_offer_rejects_spoofing_urls_and_stale_metadata() {
+        let source = id("source");
+        let target = id("target");
+        let mut offer = crate::shell::realtime_session::RealtimeFabricOffer {
+            session_id: crate::shell::realtime_session::RealtimeFabricSessionId {
+                broker: [1; 16],
+                nonce: [2; 16],
+            },
+            app_id: "dev.qos.chat".into(),
+            workspace_id: "room".into(),
+            provider: "chat".into(),
+            room_id: "call-7".into(),
+            semantic_position: Some("stage".into()),
+            media_bits: 1,
+            expires_unix_ms: 20_000,
+        };
+        let envelope = PersonalFabricActionEnvelope {
+            request_id: [9; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action: PersonalFabricAction::RealtimeOffer {
+                offer: offer.clone(),
+            },
+        };
+        assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
+        assert_eq!(
+            envelope.validate_at(&id("spoof"), &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
+        offer.room_id = "https://secret.example/join?token=x".into();
+        assert_eq!(
+            PersonalFabricActionEnvelope {
+                action: PersonalFabricAction::RealtimeOffer {
+                    offer: offer.clone(),
+                },
+                ..envelope.clone()
+            }
+            .validate_at(&source, &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
+        offer.room_id = "call-7".into();
+        offer.expires_unix_ms = 9_999;
+        assert_eq!(
+            PersonalFabricActionEnvelope {
+                action: PersonalFabricAction::RealtimeOffer { offer },
+                ..envelope
+            }
+            .validate_at(&source, &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
     }
 
     #[test]
