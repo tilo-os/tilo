@@ -12439,21 +12439,23 @@ mod tests {
             report.record_intent().is_none(),
             "an untitled document names no record"
         );
-        report.set_file(PathBuf::from("/work/report.odt"), WpFormat::Markdown);
+        let report_path = std::env::temp_dir().join("report.odt");
+        let minutes_path = std::env::temp_dir().join("minutes.odt");
+        report.set_file(report_path.clone(), WpFormat::Markdown);
 
         let mut minutes = WordProcessorWidget::new();
-        minutes.set_file(PathBuf::from("/work/minutes.odt"), WpFormat::Markdown);
+        minutes.set_file(minutes_path, WpFormat::Markdown);
 
         let a = report
             .record_intent()
             .expect("an open file names its record");
         let b = minutes.record_intent().expect("and so does the other");
-        assert_eq!(a.id, ui::RecordId::for_file("/work/report.odt"));
+        assert_eq!(a.id, ui::RecordId::for_file(&report_path));
         assert_eq!(a.kind, ui::RecordKind::new("document"));
         assert_ne!(a.id, b.id, "two files are never one record");
         assert_eq!(
             a.id.file_path().as_deref(),
-            Some(std::path::Path::new("/work/report.odt")),
+            Some(report_path.as_path()),
             "a file record's identity is the path itself, not a handle to it"
         );
     }
