@@ -366,6 +366,13 @@ pub fn run_app(
     args: &[OsString],
 ) -> io::Result<()> {
     let status = ensure_running(profile)?;
+    let owner = std::process::id().to_string();
+    // Only the bootstrap exec for this exact process can request resumption.
+    // A same-app ordinary child must run its own command handler first.
+    let resume = std::env::var_os("QOS_RUNTIME_CONNECTION_OWNER_PID").as_deref()
+        == Some(std::ffi::OsStr::new(&owner))
+        && std::env::var_os("QOS_RUNTIME_RESUME_LIVE").as_deref()
+            == Some(std::ffi::OsStr::new(app_id));
     let mut command = Command::new(executable);
     command
         .args(args)
@@ -377,6 +384,12 @@ pub fn run_app(
         &profile.join("collab.sock"),
         &profile.join("identity.sock"),
     )?;
+    command
+        .env("QOS_RUNTIME_CONNECTION_OWNER_PID", owner)
+        .env("QOS_RUNTIME_PROFILE", profile);
+    if resume {
+        command.env("QOS_RUNTIME_RESUME_LIVE", app_id);
+    }
     let error = command.exec();
     drop(connections);
     Err(error)

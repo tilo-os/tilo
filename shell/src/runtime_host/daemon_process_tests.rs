@@ -303,3 +303,156 @@ fn public_profile_and_symlinked_session_lock_are_rejected() {
     assert!(!run_true(profile.path(), "dev.qos.test").status.success());
     assert_eq!(std::fs::read_to_string(target).unwrap(), "untouched");
 }
+
+#[test]
+fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
+    const TEST: &str = "runtime_host::daemon_process_tests::ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
+    const APP: &str = "dev.qos.parent-child";
+    if let Ok(stage) = std::env::var("QOS_SDK_FAMILY_STAGE") {
+        runtime_portal::native::ensure_attached(APP).unwrap();
+        let mut manager = ui::collaboration::CollaborationManager::new();
+        assert!(manager.is_connected());
+        manager.publish_action_directory(ui::collaboration::local_app_id());
+        let _child = if stage == "parent" {
+            // No service-environment clearing: this is ordinary Command spawn
+            // after the SDK has adopted both parent's service descriptors.
+            Some(
+                Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", TEST, "--nocapture"])
+                    .env("QOS_SDK_FAMILY_STAGE", "child")
+                    .spawn()
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        loop {
+            let _ = manager.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    use std::os::unix::process::CommandExt;
+    struct Family(Child);
+    impl Drop for Family {
+        fn drop(&mut self) {
+            let group = i32::try_from(self.0.id()).unwrap().checked_neg().unwrap();
+            unsafe {
+                libc::kill(group, libc::SIGKILL);
+            }
+            let _ = self.0.wait();
+        }
+    }
+    let profile = DaemonProfile::new();
+    let log_path = profile.path().join("family.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut command = host(profile.path());
+    command
+        .args(["--run-app", APP, "--"])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", TEST, "--nocapture"])
+        .env("QOS_SDK_FAMILY_STAGE", "parent")
+        .env(
+            "QOS_RUNTIME_BINARY",
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("qos-runtime-mcp"),
+        )
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log));
+    let mut family = Family(command.spawn().unwrap());
+    let deadline = Instant::now().checked_add(Duration::from_secs(15)).unwrap();
+    loop {
+        assert!(
+            family.0.try_wait().unwrap().is_none(),
+            "{}",
+            std::fs::read_to_string(&log_path).unwrap()
+        );
+        if let Ok(mut stream) = UnixStream::connect(profile.path().join("native.sock")) {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"qos_list_apps","arguments":{}}})).unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            let reply: Value = serde_json::from_str(&line).unwrap();
+            let apps = reply["result"]["structuredContent"]["apps"]
+                .as_array()
+                .unwrap();
+            if apps.len() == 2 {
+                assert!(apps.iter().all(|app| app["app_id"] == APP));
+                assert_ne!(apps[0]["peer_id"], apps[1]["peer_id"]);
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "parent/child did not both register: {}",
+            std::fs::read_to_string(&log_path).unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn explicit_profile_overrides_are_propagated_to_app_descendants() {
+    let profile = DaemonProfile::new();
+    let output = host(profile.path())
+        .env("QOS_RUNTIME_PROFILE", "/must-not-be-used")
+        .arg("--profile")
+        .arg(profile.path())
+        .args([
+            "--run-app",
+            "dev.qos.profile",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf '%s' \"$QOS_RUNTIME_PROFILE\"",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        profile.path().to_str().unwrap()
+    );
+}
+
+#[test]
+fn managed_connection_preparation_clears_ancestor_automatic_metadata() {
+    let profile = DaemonProfile::new();
+    let collab_path = profile.path().join("collab.sock");
+    let identity_path = profile.path().join("identity.sock");
+    let _collab = std::os::unix::net::UnixListener::bind(&collab_path).unwrap();
+    let _identity = std::os::unix::net::UnixListener::bind(&identity_path).unwrap();
+    let mut command = Command::new("/usr/bin/true");
+    command
+        .env("QOS_RUNTIME_CONNECTION_OWNER_PID", "1")
+        .env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.parent");
+    let _connections = super::unix::Connections::prepare(
+        &mut command,
+        "dev.qos.child",
+        "workspace",
+        &collab_path,
+        &identity_path,
+    )
+    .unwrap();
+    for key in [
+        "QOS_RUNTIME_CONNECTION_OWNER_PID",
+        "QOS_RUNTIME_RESUME_LIVE",
+    ] {
+        assert_eq!(
+            command.get_envs().find(|(name, _)| *name == key).unwrap().1,
+            None
+        );
+    }
+}

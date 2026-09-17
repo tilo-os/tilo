@@ -2,6 +2,29 @@
 //! mutated: the host supplies connected descriptors when it execs the app again.
 use std::io;
 
+/// The automatic host records which process received its descriptor transfer.
+/// A normal later `Command` child retains environment strings, not that transfer.
+pub(crate) fn connection_owner() -> io::Result<Option<u32>> {
+    std::env::var_os("QOS_RUNTIME_CONNECTION_OWNER_PID")
+        .map(|value| {
+            value
+                .to_str()
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|pid| *pid != 0)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "inherited runtime connection owner must be a nonzero process ID",
+                    )
+                })
+        })
+        .transpose()
+}
+
+pub(crate) fn connection_metadata_is_current() -> bool {
+    connection_owner().is_ok_and(|owner| owner.is_none_or(|pid| pid == std::process::id()))
+}
+
 /// Join the shared native runtime, or retain an inherited launcher connection.
 /// `QOS_RUNTIME_STANDALONE=1` explicitly disables automatic attachment.
 ///
@@ -48,9 +71,13 @@ mod unix {
     }
 
     fn inherited() -> io::Result<bool> {
+        let owner = super::connection_owner()?;
+        if owner.is_some_and(|pid| pid != std::process::id()) {
+            return Ok(false);
+        }
         let collab = env::var_os("QOS_SVC_COLLAB_FD");
         let identity = env::var_os("QOS_SVC_IDENTITY_FD");
-        if collab.is_none() && identity.is_none() {
+        if collab.is_none() && identity.is_none() && owner.is_none() {
             return Ok(false);
         }
         let mut descriptors = Vec::new();
@@ -113,6 +140,10 @@ mod unix {
         let host = locate_host(&executable)?;
         Err(Command::new(host)
             .env("QOS_RUNTIME_RESUME_LIVE", app_id)
+            .env(
+                "QOS_RUNTIME_CONNECTION_OWNER_PID",
+                std::process::id().to_string(),
+            )
             .arg("--run-app")
             .arg(app_id)
             .arg("--")
@@ -203,7 +234,6 @@ mod unix {
         let mut child = Command::new("cargo")
             .args([
                 "build",
-                "--offline",
                 "-p",
                 "shell",
                 "--no-default-features",
