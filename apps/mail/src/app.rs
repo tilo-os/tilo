@@ -3313,6 +3313,288 @@ impl MailApp {
         }
         false
     }
+
+    fn setup_accessibility_fields(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        [
+            "Display name",
+            "Email address",
+            "Username",
+            "Password",
+            "IMAP server",
+            "IMAP port",
+            "SMTP server",
+            "SMTP port",
+        ]
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| self.setup_auth == crate::model::AuthMethod::Password || *index != 3)
+        .filter_map(|(index, label)| {
+            let input = self.setup_inputs.get(index)?;
+            let mut node = AccessNode::new(Role::TextInput)
+                .with_name(*label)
+                .with_action_target(format!("mail.setup:field:{index}"))
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.setup_focus == Some(index),
+                    protected: index == 3,
+                    ..Default::default()
+                });
+            if index != 3 {
+                node = node.with_value(input.value());
+            }
+            if let Some(rect) = self.overlay_hits.iter().find_map(|(rect, hit)| {
+                matches!(hit, OverlayHit::SetupField(i) if *i == index).then_some(*rect)
+            }) {
+                node = node.with_bounds(rect);
+            }
+            Some(node)
+        })
+        .collect()
+    }
+
+    fn setup_accessibility_node(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let mut controls = self.setup_accessibility_fields();
+        controls.extend([
+            AccessNode::new(Role::RadioButton)
+                .with_name("Password sign-in")
+                .with_action_target("mail.setup:auth-password")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.setup_auth == crate::model::AuthMethod::Password),
+                ),
+            AccessNode::new(Role::RadioButton)
+                .with_name("OAuth sign-in")
+                .with_action_target("mail.setup:auth-oauth")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.setup_auth == crate::model::AuthMethod::OAuth),
+                ),
+        ]);
+        if self.setup_auth == crate::model::AuthMethod::OAuth {
+            controls.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Sign in with provider")
+                    .with_action_target("mail.setup:oauth-sign-in")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        controls.extend([
+            AccessNode::new(Role::ToggleButton)
+                .with_name("IMAP TLS")
+                .with_action_target("mail.setup:imap-tls")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.setup_imap_tls),
+                ),
+            AccessNode::new(Role::ToggleButton)
+                .with_name("SMTP TLS")
+                .with_action_target("mail.setup:smtp-tls")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.setup_smtp_tls),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name("Save and verify")
+                .with_action_target("mail.setup:save")
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name("Cancel")
+                .with_action_target("mail.setup:cancel")
+                .with_state(AccessState::new().focusable(true)),
+        ]);
+        if self.setup_editing.is_some() {
+            controls.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Remove account")
+                    .with_action_target("mail.setup:remove")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name("Mail account setup")
+            .with_bounds(self.overlay_panel_rect())
+            .with_state(AccessState::new().modal(true))
+            .with_children(controls)
+    }
+
+    fn folders_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let accounts = state
+            .accounts
+            .accounts
+            .iter()
+            .enumerate()
+            .map(|(account_index, account)| {
+                let folders = if account.collapsed {
+                    Vec::new()
+                } else {
+                    AccountStore::folders_for(account)
+                        .into_iter()
+                        .map(|folder| {
+                            AccessNode::new(Role::TreeItem)
+                                .with_name(folder.title())
+                                .with_action_target(format!(
+                                    "mail.folder:{account_index}:{}",
+                                    folder.as_key()
+                                ))
+                                .with_state(AccessState::new().focusable(true).selected(
+                                    state.accounts.active == account_index
+                                        && state.folder == folder,
+                                ))
+                        })
+                        .collect()
+                };
+                AccessNode::new(Role::TreeItem)
+                    .with_name(account.label())
+                    .with_action_target(format!("mail.account:{account_index}"))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(state.accounts.active == account_index)
+                            .expanded(!account.collapsed),
+                    )
+                    .with_children(folders)
+            })
+            .collect();
+        AccessNode::new(Role::Tree)
+            .with_name("Mail folders")
+            .with_children(accounts)
+    }
+
+    fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let rows = state.list_rows();
+        let total = rows.len();
+        let messages = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (id, thread_len))| {
+                let message = state.mailbox.get(*id)?;
+                let title = if message.folder == Folder::Drafts {
+                    format!("Draft: {}", message.subject)
+                } else {
+                    format!("{}: {}", message.from.display(), message.subject)
+                };
+                let snippet = message.snippet();
+                let mut node = AccessNode::new(Role::ListItem)
+                    .with_name(title)
+                    .with_optional_value((!snippet.is_empty()).then_some(snippet))
+                    .with_action_target(format!("mail.message:{id}"))
+                    .with_position(index + 1, total)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(state.selected == Some(*id)),
+                    );
+                if *thread_len > 1 {
+                    node = node
+                        .with_description(format!("{thread_len} messages in this conversation"));
+                }
+                Some(node)
+            })
+            .collect();
+        let name = if state.search.trim().is_empty() {
+            format!("{} messages", state.folder.title())
+        } else {
+            format!("Search results in {}", state.folder.title())
+        };
+        let mut list = AccessNode::new(Role::List)
+            .with_name(name)
+            .with_children(messages);
+        if total == 0 {
+            list = list.with_description(if state.search.trim().is_empty() {
+                format!("No messages in {}", state.folder.title())
+            } else {
+                "No matching messages".to_string()
+            });
+        }
+        list
+    }
+
+    fn reader_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let thread = state.selected_thread_messages();
+        let Some(current) = state.selected.and_then(|id| state.mailbox.get(id)) else {
+            return AccessNode::new(Role::Group)
+                .with_name("No conversation selected")
+                .with_description("Select a conversation to read");
+        };
+        let message_count = thread.len();
+        let mut children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Message actions")
+                .with_children(
+                    [
+                        ("Reply", "reply"),
+                        ("Archive", "archive"),
+                        ("Delete", "delete"),
+                        ("Toggle star", "star"),
+                        ("Toggle read", "read"),
+                    ]
+                    .into_iter()
+                    .map(|(name, action)| {
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_action_target(format!("mail.reader:{}:{action}", current.id))
+                            .with_state(AccessState::new().focusable(true))
+                    })
+                    .collect(),
+                ),
+        ];
+        children.extend(thread.iter().map(|message| {
+            AccessNode::new(Role::Paragraph)
+                .with_name(format!("From {}", message.from.display()))
+                .with_value(message.body.clone())
+        }));
+        children.extend(
+            current
+                .attachments
+                .iter()
+                .enumerate()
+                .map(|(index, attachment)| {
+                    let downloadable = attachment.is_downloadable();
+                    let mut node = AccessNode::new(Role::Button)
+                        .with_name(format!(
+                            "Save attachment {} ({})",
+                            attachment.filename,
+                            attachment.size_human()
+                        ))
+                        .with_action_target(format!(
+                            "mail.reader:{}:save-attachment:{index}",
+                            current.id
+                        ))
+                        .with_state(AccessState::new().focusable(true).disabled(!downloadable));
+                    if !downloadable {
+                        node = node.with_description("Download this attachment before saving it");
+                    }
+                    node
+                }),
+        );
+        AccessNode::new(Role::Document)
+            .with_name(format!("Reading: {}", current.subject))
+            .with_description(format!(
+                "Current message from {}; {message_count} message{} in this conversation{}",
+                current.from.display(),
+                if message_count == 1 { "" } else { "s" },
+                if state.inspection == Some(current.id) {
+                    "; previewing without changing its read state"
+                } else {
+                    ""
+                },
+            ))
+            .with_children(children)
+    }
 }
 
 impl Widget for MailApp {
@@ -3774,10 +4056,6 @@ impl Widget for MailApp {
     /// the list and drawer.  It also builds only from the loaded mailbox -- a
     /// live account with no fetched mail is described as empty, never filled
     /// with sample content.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the synthetic mailbox tree keeps the sidebar, list, and reader state together so their responsive visibility remains auditable"
-    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
@@ -3785,111 +4063,7 @@ impl Widget for MailApp {
             return Some(self.compose.accessibility_node());
         }
         if self.setup_open {
-            let labels = [
-                "Display name",
-                "Email address",
-                "Username",
-                "Password",
-                "IMAP server",
-                "IMAP port",
-                "SMTP server",
-                "SMTP port",
-            ];
-            let mut controls: Vec<_> = labels
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| {
-                    self.setup_auth == crate::model::AuthMethod::Password || *index != 3
-                })
-                .filter_map(|(index, label)| {
-                    let input = self.setup_inputs.get(index)?;
-                    let mut node = AccessNode::new(Role::TextInput)
-                        .with_name(*label)
-                        .with_action_target(format!("mail.setup:field:{index}"))
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.setup_focus == Some(index),
-                            protected: index == 3,
-                            ..Default::default()
-                        });
-                    if index != 3 {
-                        node = node.with_value(input.value());
-                    }
-                    if let Some(rect) = self.overlay_hits.iter().find_map(|(rect, hit)| {
-                        matches!(hit, OverlayHit::SetupField(i) if *i == index).then_some(*rect)
-                    }) {
-                        node = node.with_bounds(rect);
-                    }
-                    Some(node)
-                })
-                .collect();
-            controls.extend([
-                AccessNode::new(Role::RadioButton)
-                    .with_name("Password sign-in")
-                    .with_action_target("mail.setup:auth-password")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.setup_auth == crate::model::AuthMethod::Password),
-                    ),
-                AccessNode::new(Role::RadioButton)
-                    .with_name("OAuth sign-in")
-                    .with_action_target("mail.setup:auth-oauth")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.setup_auth == crate::model::AuthMethod::OAuth),
-                    ),
-            ]);
-            if self.setup_auth == crate::model::AuthMethod::OAuth {
-                controls.push(
-                    AccessNode::new(Role::Button)
-                        .with_name("Sign in with provider")
-                        .with_action_target("mail.setup:oauth-sign-in")
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-            controls.extend(vec![
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("IMAP TLS")
-                    .with_action_target("mail.setup:imap-tls")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.setup_imap_tls),
-                    ),
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("SMTP TLS")
-                    .with_action_target("mail.setup:smtp-tls")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.setup_smtp_tls),
-                    ),
-                AccessNode::new(Role::Button)
-                    .with_name("Save and verify")
-                    .with_action_target("mail.setup:save")
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name("Cancel")
-                    .with_action_target("mail.setup:cancel")
-                    .with_state(AccessState::new().focusable(true)),
-            ]);
-            if self.setup_editing.is_some() {
-                controls.push(
-                    AccessNode::new(Role::Button)
-                        .with_name("Remove account")
-                        .with_action_target("mail.setup:remove")
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-            return Some(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Mail account setup")
-                    .with_bounds(self.overlay_panel_rect())
-                    .with_state(AccessState::new().modal(true))
-                    .with_children(controls),
-            );
+            return Some(self.setup_accessibility_node());
         }
         if self.is_first_run() {
             // `first_run` remains a real child widget, which supplies the
@@ -3923,186 +4097,15 @@ impl Widget for MailApp {
         }
 
         if drawer_visible {
-            let account_children = st
-                .accounts
-                .accounts
-                .iter()
-                .enumerate()
-                .map(|(account_index, account)| {
-                    let folders = if account.collapsed {
-                        Vec::new()
-                    } else {
-                        AccountStore::folders_for(account)
-                            .into_iter()
-                            .map(|folder| {
-                                AccessNode::new(Role::TreeItem)
-                                    .with_name(folder.title())
-                                    .with_action_target(format!(
-                                        "mail.folder:{account_index}:{}",
-                                        folder.as_key()
-                                    ))
-                                    .with_state(AccessState::new().focusable(true).selected(
-                                        st.accounts.active == account_index && st.folder == folder,
-                                    ))
-                            })
-                            .collect()
-                    };
-                    AccessNode::new(Role::TreeItem)
-                        .with_name(account.label())
-                        .with_action_target(format!("mail.account:{account_index}"))
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .selected(st.accounts.active == account_index)
-                                .expanded(!account.collapsed),
-                        )
-                        .with_children(folders)
-                })
-                .collect();
-            children.push(
-                AccessNode::new(Role::Tree)
-                    .with_name("Mail folders")
-                    .with_children(account_children),
-            );
+            children.push(Self::folders_accessibility_node(&st));
         }
 
         if overview_visible {
-            let rows = st.list_rows();
-            let total = rows.len();
-            let message_children = rows
-                .iter()
-                .enumerate()
-                .filter_map(|(index, (id, thread_len))| {
-                    let message = st.mailbox.get(*id)?;
-                    let sender = message.from.display();
-                    let title = if message.folder == Folder::Drafts {
-                        format!("Draft: {}", message.subject)
-                    } else {
-                        format!("{sender}: {}", message.subject)
-                    };
-                    let snippet = message.snippet();
-                    let mut node = AccessNode::new(Role::ListItem)
-                        .with_name(title)
-                        .with_optional_value((!snippet.is_empty()).then_some(snippet))
-                        .with_action_target(format!("mail.message:{id}"))
-                        .with_position(index + 1, total)
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .selected(st.selected == Some(*id)),
-                        );
-                    if *thread_len > 1 {
-                        node = node.with_description(format!(
-                            "{thread_len} messages in this conversation"
-                        ));
-                    }
-                    Some(node)
-                })
-                .collect();
-            let list_name = if st.search.trim().is_empty() {
-                format!("{} messages", st.folder.title())
-            } else {
-                format!("Search results in {}", st.folder.title())
-            };
-            let mut list = AccessNode::new(Role::List)
-                .with_name(list_name)
-                .with_children(message_children);
-            if total == 0 {
-                let description = if st.search.trim().is_empty() {
-                    format!("No messages in {}", st.folder.title())
-                } else {
-                    "No matching messages".to_string()
-                };
-                list = list.with_description(description);
-            }
-            children.push(list);
+            children.push(Self::overview_accessibility_node(&st));
         }
 
         if reader_visible {
-            let thread = st.selected_thread_messages();
-            if let Some(current) = st.selected.and_then(|id| st.mailbox.get(id)) {
-                let message_count = thread.len();
-                let thread_children: Vec<_> = thread
-                    .iter()
-                    .map(|message| {
-                        AccessNode::new(Role::Paragraph)
-                            .with_name(format!("From {}", message.from.display()))
-                            .with_value(message.body.clone())
-                    })
-                    .collect();
-                children.push(
-                    AccessNode::new(Role::Document)
-                        .with_name(format!("Reading: {}", current.subject))
-                        .with_description(format!(
-                            "Current message from {}; {message_count} message{} in this conversation{}",
-                            current.from.display(),
-                            if message_count == 1 { "" } else { "s" },
-                            if st.inspection == Some(current.id) {
-                                "; previewing without changing its read state"
-                            } else {
-                                ""
-                            },
-                        ))
-                        .with_children({
-                            let mut reader_children = vec![
-                                AccessNode::new(Role::Toolbar)
-                                    .with_name("Message actions")
-                                    .with_children([
-                                        ("Reply", "reply"),
-                                        ("Archive", "archive"),
-                                        ("Delete", "delete"),
-                                        ("Toggle star", "star"),
-                                        ("Toggle read", "read"),
-                                    ]
-                                    .into_iter()
-                                    .map(|(name, action)| {
-                                        AccessNode::new(Role::Button)
-                                            .with_name(name)
-                                            .with_action_target(format!(
-                                                "mail.reader:{}:{action}",
-                                                current.id
-                                            ))
-                                            .with_state(AccessState::new().focusable(true))
-                                    })
-                                    .collect()),
-                            ];
-                            reader_children.extend(thread_children);
-                            reader_children.extend(
-                                current.attachments.iter().enumerate().map(|(index, attachment)| {
-                                    let downloadable = attachment.is_downloadable();
-                                    let mut node = AccessNode::new(Role::Button)
-                                        .with_name(format!(
-                                            "Save attachment {} ({})",
-                                            attachment.filename,
-                                            attachment.size_human()
-                                        ))
-                                        .with_action_target(format!(
-                                            "mail.reader:{}:save-attachment:{index}",
-                                            current.id
-                                        ))
-                                        .with_state(
-                                            AccessState::new()
-                                                .focusable(true)
-                                                .disabled(!downloadable),
-                                        );
-                                    if !downloadable {
-                                        node = node.with_description(
-                                            "Download this attachment before saving it",
-                                        );
-                                    }
-                                    node
-                                }),
-                            );
-                            reader_children
-                        }),
-                );
-            } else {
-                children.push(
-                    AccessNode::new(Role::Group)
-                        .with_name("No conversation selected")
-                        .with_description("Select a conversation to read"),
-                );
-            }
+            children.push(Self::reader_accessibility_node(&st));
         }
 
         let composition = if compact {
@@ -4124,10 +4127,6 @@ impl Widget for MailApp {
         )
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "semantic targets stay centralized so keyboard and assistive-technology paths cannot drift from visible controls"
-    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -4135,210 +4134,27 @@ impl Widget for MailApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
-        use ui::a11y::Action;
-
         if let Some(control) = target.strip_prefix("mail.compose:") {
-            if !self.compose.open {
-                return false;
-            }
-            let format_before = self.compose.format();
-            let compose_action = self.compose.perform_semantic_action(control, action);
-            let lifecycle_boundary = !matches!(&compose_action, Some(ComposeAction::None));
-            match compose_action {
-                Some(ComposeAction::RequestAttachment) => self.request_compose_attachment(),
-                Some(ComposeAction::Send) => self.send_compose(state),
-                Some(ComposeAction::SaveDraft) => self.save_compose_draft(state),
-                Some(ComposeAction::Close) => {
-                    self.dirty = true;
-                }
-                Some(ComposeAction::None) => {}
-                None => return false,
-            }
-            if lifecycle_boundary || self.compose.format() != format_before {
-                self.persist_compose_format_if_changed();
-            }
-            return true;
+            return self.perform_compose_semantic_action(control, action, state);
         }
         if let Some(control) = target.strip_prefix("mail.setup:") {
-            if !self.setup_open {
-                return false;
-            }
-            if let Some(raw) = control.strip_prefix("field:") {
-                let Ok(index) = raw.parse::<usize>() else {
-                    return false;
-                };
-                if index >= self.setup_inputs.len()
-                    || (index == 3 && self.setup_auth != crate::model::AuthMethod::Password)
-                {
-                    return false;
-                }
-                match action {
-                    Action::Focus | Action::Activate => self.focus_setup(Some(index)),
-                    Action::SetValue(value) => {
-                        self.set_setup_input(index, value);
-                        if index == 1 {
-                            self.maybe_autofill();
-                        }
-                    }
-                    _ => return false,
-                }
-                self.dirty = true;
-                return true;
-            }
-            match (control, action) {
-                ("auth-password", Action::Activate | Action::ToggleCheck) => {
-                    self.setup_auth = crate::model::AuthMethod::Password;
-                }
-                ("auth-oauth", Action::Activate | Action::ToggleCheck) => {
-                    self.setup_auth = crate::model::AuthMethod::OAuth;
-                }
-                ("oauth-sign-in", Action::Activate) => self.start_oauth(),
-                ("imap-tls", Action::Activate | Action::ToggleCheck) => {
-                    self.setup_imap_tls = !self.setup_imap_tls;
-                    self.set_setup_input(5, if self.setup_imap_tls { "993" } else { "143" });
-                }
-                ("smtp-tls", Action::Activate | Action::ToggleCheck) => {
-                    self.setup_smtp_tls = !self.setup_smtp_tls;
-                    self.set_setup_input(7, if self.setup_smtp_tls { "465" } else { "587" });
-                }
-                ("save", Action::Activate) => self.save_setup(state),
-                ("cancel", Action::Activate) => self.close_setup(),
-                ("remove", Action::Activate) if self.setup_editing.is_some() => {
-                    self.remove_editing_account(state);
-                }
-                _ => return false,
-            }
-            self.dirty = true;
-            return true;
+            return self.perform_setup_semantic_action(control, action, state);
         }
         if let Some(raw) = target.strip_prefix("mail.reader:") {
-            if !matches!(action, Action::Activate) {
-                return false;
-            }
-            let Some((message_raw, control)) = raw.split_once(':') else {
-                return false;
-            };
-            let Ok(message) = message_raw.parse::<MessageId>() else {
-                return false;
-            };
-            if self.shared.borrow().selected != Some(message) {
-                return false;
-            }
-            if let Some(index) = control
-                .strip_prefix("save-attachment:")
-                .and_then(|index| index.parse::<usize>().ok())
-            {
-                let downloadable = self
-                    .shared
-                    .borrow()
-                    .mailbox
-                    .get(message)
-                    .and_then(|mail| mail.attachments.get(index))
-                    .is_some_and(Attachment::is_downloadable);
-                if !downloadable {
-                    return false;
-                }
-                if let Err(error) = self.begin_attachment_save(message, index) {
-                    self.shared.borrow_mut().status = Some(error);
-                }
-                return true;
-            }
-            let action = match control {
-                "reply" => CtxAction::Reply,
-                "archive" => CtxAction::Archive,
-                "delete" => CtxAction::Delete,
-                "star" => CtxAction::ToggleStar,
-                "read" => CtxAction::ToggleRead,
-                _ => return false,
-            };
-            self.shared
-                .borrow_mut()
-                .apply_message_action(state, message, action);
-            self.process_intents();
-            return true;
+            return self.perform_reader_semantic_action(raw, action, state);
         }
         if let Some(raw) = target.strip_prefix("mail.account:") {
-            let Ok(account_index) = raw.parse::<usize>() else {
-                return false;
-            };
-            let mut st = self.shared.borrow_mut();
-            let Some(account) = st.accounts.accounts.get(account_index) else {
-                return false;
-            };
-            let collapsed = account.collapsed;
-            match action {
-                Action::Activate => {
-                    st.set_active_account(account_index);
-                    st.select_folder(state, Folder::Inbox);
-                    st.push_intent(Intent::CloseDrawer);
-                }
-                Action::Expand if collapsed => {
-                    st.toggle_account_collapsed(account_index);
-                }
-                Action::Collapse if !collapsed => {
-                    st.toggle_account_collapsed(account_index);
-                }
-                _ => return false,
-            }
-            drop(st);
-            self.process_intents();
-            return true;
+            return self.perform_account_semantic_action(raw, action, state);
         }
 
         if let Some(raw) = target.strip_prefix("mail.folder:") {
-            let Some((account_raw, folder_raw)) = raw.split_once(':') else {
-                return false;
-            };
-            let (Ok(account_index), Some(folder)) =
-                (account_raw.parse::<usize>(), Folder::from_key(folder_raw))
-            else {
-                return false;
-            };
-            if !matches!(action, Action::Activate) {
-                return false;
-            }
-            let mut st = self.shared.borrow_mut();
-            let Some(account) = st.accounts.accounts.get(account_index) else {
-                return false;
-            };
-            if account.collapsed || !AccountStore::folders_for(account).contains(&folder) {
-                return false;
-            }
-            st.set_active_account(account_index);
-            st.select_folder(state, folder);
-            st.push_intent(Intent::CloseDrawer);
-            drop(st);
-            self.process_intents();
-            return true;
+            return self.perform_folder_semantic_action(raw, action, state);
         }
 
         let Some(raw) = target.strip_prefix("mail.message:") else {
             return false;
         };
-        if !matches!(action, Action::Activate) {
-            return false;
-        }
-        let Ok(id) = raw.parse::<MessageId>() else {
-            return false;
-        };
-        let mut st = self.shared.borrow_mut();
-        // A stale accessibility row must not open a message that is no longer
-        // visible in the current folder/search result.
-        if !st.list_rows().iter().any(|(row_id, _)| *row_id == id) {
-            return false;
-        }
-        let is_draft = st
-            .mailbox
-            .get(id)
-            .is_some_and(|message| message.folder == Folder::Drafts);
-        if is_draft {
-            st.push_intent(Intent::EditDraft(id));
-        } else {
-            st.select_message(state, id);
-        }
-        drop(st);
-        self.process_intents();
-        true
+        self.perform_message_semantic_action(raw, action, state)
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -4422,6 +4238,241 @@ fn prepare_calendar_invitation_draft(
 }
 
 impl MailApp {
+    fn perform_compose_semantic_action(
+        &mut self,
+        control: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        if !self.compose.open {
+            return false;
+        }
+        let format_before = self.compose.format();
+        let compose_action = self.compose.perform_semantic_action(control, action);
+        let lifecycle_boundary = !matches!(&compose_action, Some(ComposeAction::None));
+        match compose_action {
+            Some(ComposeAction::RequestAttachment) => self.request_compose_attachment(),
+            Some(ComposeAction::Send) => self.send_compose(state),
+            Some(ComposeAction::SaveDraft) => self.save_compose_draft(state),
+            Some(ComposeAction::Close) => self.dirty = true,
+            Some(ComposeAction::None) => {}
+            None => return false,
+        }
+        if lifecycle_boundary || self.compose.format() != format_before {
+            self.persist_compose_format_if_changed();
+        }
+        true
+    }
+
+    fn perform_setup_semantic_action(
+        &mut self,
+        control: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        if !self.setup_open {
+            return false;
+        }
+        if let Some(raw) = control.strip_prefix("field:") {
+            let Ok(index) = raw.parse::<usize>() else {
+                return false;
+            };
+            if index >= self.setup_inputs.len()
+                || (index == 3 && self.setup_auth != crate::model::AuthMethod::Password)
+            {
+                return false;
+            }
+            match action {
+                Action::Focus | Action::Activate => self.focus_setup(Some(index)),
+                Action::SetValue(value) => {
+                    self.set_setup_input(index, value);
+                    if index == 1 {
+                        self.maybe_autofill();
+                    }
+                }
+                _ => return false,
+            }
+            self.dirty = true;
+            return true;
+        }
+        match (control, action) {
+            ("auth-password", Action::Activate | Action::ToggleCheck) => {
+                self.setup_auth = crate::model::AuthMethod::Password;
+            }
+            ("auth-oauth", Action::Activate | Action::ToggleCheck) => {
+                self.setup_auth = crate::model::AuthMethod::OAuth;
+            }
+            ("oauth-sign-in", Action::Activate) => self.start_oauth(),
+            ("imap-tls", Action::Activate | Action::ToggleCheck) => {
+                self.setup_imap_tls = !self.setup_imap_tls;
+                self.set_setup_input(5, if self.setup_imap_tls { "993" } else { "143" });
+            }
+            ("smtp-tls", Action::Activate | Action::ToggleCheck) => {
+                self.setup_smtp_tls = !self.setup_smtp_tls;
+                self.set_setup_input(7, if self.setup_smtp_tls { "465" } else { "587" });
+            }
+            ("save", Action::Activate) => self.save_setup(state),
+            ("cancel", Action::Activate) => self.close_setup(),
+            ("remove", Action::Activate) if self.setup_editing.is_some() => {
+                self.remove_editing_account(state);
+            }
+            _ => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn perform_reader_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some((message_raw, control)) = raw.split_once(':') else {
+            return false;
+        };
+        let Ok(message) = message_raw.parse::<MessageId>() else {
+            return false;
+        };
+        if self.shared.borrow().selected != Some(message) {
+            return false;
+        }
+        if let Some(index) = control
+            .strip_prefix("save-attachment:")
+            .and_then(|index| index.parse::<usize>().ok())
+        {
+            let downloadable = self
+                .shared
+                .borrow()
+                .mailbox
+                .get(message)
+                .and_then(|mail| mail.attachments.get(index))
+                .is_some_and(Attachment::is_downloadable);
+            if !downloadable {
+                return false;
+            }
+            if let Err(error) = self.begin_attachment_save(message, index) {
+                self.shared.borrow_mut().status = Some(error);
+            }
+            return true;
+        }
+        let action = match control {
+            "reply" => CtxAction::Reply,
+            "archive" => CtxAction::Archive,
+            "delete" => CtxAction::Delete,
+            "star" => CtxAction::ToggleStar,
+            "read" => CtxAction::ToggleRead,
+            _ => return false,
+        };
+        self.shared
+            .borrow_mut()
+            .apply_message_action(state, message, action);
+        self.process_intents();
+        true
+    }
+
+    fn perform_account_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        let Ok(account_index) = raw.parse::<usize>() else {
+            return false;
+        };
+        let mut mail = self.shared.borrow_mut();
+        let Some(account) = mail.accounts.accounts.get(account_index) else {
+            return false;
+        };
+        let collapsed = account.collapsed;
+        match action {
+            Action::Activate => {
+                mail.set_active_account(account_index);
+                mail.select_folder(state, Folder::Inbox);
+                mail.push_intent(Intent::CloseDrawer);
+            }
+            Action::Expand if collapsed => {
+                mail.toggle_account_collapsed(account_index);
+            }
+            Action::Collapse if !collapsed => {
+                mail.toggle_account_collapsed(account_index);
+            }
+            _ => return false,
+        }
+        drop(mail);
+        self.process_intents();
+        true
+    }
+
+    fn perform_folder_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        let Some((account_raw, folder_raw)) = raw.split_once(':') else {
+            return false;
+        };
+        let (Ok(account_index), Some(folder)) =
+            (account_raw.parse::<usize>(), Folder::from_key(folder_raw))
+        else {
+            return false;
+        };
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let mut mail = self.shared.borrow_mut();
+        let Some(account) = mail.accounts.accounts.get(account_index) else {
+            return false;
+        };
+        if account.collapsed || !AccountStore::folders_for(account).contains(&folder) {
+            return false;
+        }
+        mail.set_active_account(account_index);
+        mail.select_folder(state, folder);
+        mail.push_intent(Intent::CloseDrawer);
+        drop(mail);
+        self.process_intents();
+        true
+    }
+
+    fn perform_message_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Ok(id) = raw.parse::<MessageId>() else {
+            return false;
+        };
+        let mut mail = self.shared.borrow_mut();
+        if !mail.list_rows().iter().any(|(row_id, _)| *row_id == id) {
+            return false;
+        }
+        let is_draft = mail
+            .mailbox
+            .get(id)
+            .is_some_and(|message| message.folder == Folder::Drafts);
+        if is_draft {
+            mail.push_intent(Intent::EditDraft(id));
+        } else {
+            mail.select_message(state, id);
+        }
+        drop(mail);
+        self.process_intents();
+        true
+    }
+
     fn handle_setup_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
         // Keyboard: Tab/Shift+Tab move between fields, Enter advances (or
         // submits on the last field); everything else routes to the focused
