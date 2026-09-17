@@ -1656,14 +1656,22 @@ impl OnboardingView {
                     theme,
                 ),
             )))
-            .push(paragraph(
+            .push(Box::new(Card::titled(
                 if self.backup_was_verified {
-                    "Your encrypted portable backup was cryptographically verified. Keep its file and passphrase in separate places."
+                    "Backup verified"
                 } else {
-                    "You chose to continue without a portable backup. Create one from Settings before relying on this identity."
+                    "Backup still recommended"
                 },
-                theme,
-            ));
+                paragraph_with_id(
+                    if self.backup_was_verified {
+                        "Keep the encrypted backup file and its passphrase in separate places."
+                    } else {
+                        "Create an encrypted portable backup from Settings before relying on this identity."
+                    },
+                    theme,
+                    "onboarding.done.backup-guidance",
+                ),
+            )));
 
         if self.context == OnboardingContext::FullSystem {
             page = page.push(Box::new(Card::titled(
@@ -1704,12 +1712,17 @@ fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded
 /// one — a dark-theme dim grey on a light background is barely legible.
-fn paragraph(text: &str, theme: &Theme) -> Box<dyn Widget> {
+fn paragraph_with_id(text: &str, theme: &Theme, id: &str) -> Box<dyn Widget> {
     Box::new(
         Text::new(text)
+            .with_id(id)
             .with_role(ui::tokens::typography::TextRole::Body)
             .with_color(theme.text_dim),
     )
+}
+
+fn paragraph(text: &str, theme: &Theme) -> Box<dyn Widget> {
+    paragraph_with_id(text, theme, "onboarding.paragraph")
 }
 
 /// Give status surfaces deliberate breathing room independent of the parent
@@ -4385,6 +4398,19 @@ mod tests {
                         scroll.max_offset_y(),
                         0.0,
                         "the fully visible Ready page must not show a spurious scrollbar"
+                    );
+                }
+
+                if view.flow().screen() == Screen::Done && view.identity_ready_page {
+                    let guidance = widget_rect("onboarding.done.backup-guidance");
+                    let max_offset = f64::from(scroll.max_offset_y());
+                    let earliest_offset = (guidance.y1 - content_viewport.y1).max(0.0);
+                    let latest_offset = (guidance.y0 - content_viewport.y0).min(max_offset);
+                    assert!(
+                        guidance.height() <= content_viewport.height()
+                            && earliest_offset <= latest_offset + 0.5,
+                        "Ready-page backup guidance must be wholly reachable rather than clipped behind the footer at {width}x{height}: guidance={guidance:?}, viewport={content_viewport:?}, max_offset={max_offset}, theme={}",
+                        theme.name,
                     );
                 }
             }
