@@ -162,6 +162,8 @@ fn load_disk_cache_once() -> bool {
 /// Returns immediately: a cold or stale cache schedules a refresh and
 /// answers with whatever it currently holds.
 pub fn available_apps() -> Vec<CatalogueApp> {
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("catalogue available apps");
     let loaded_from_disk = load_disk_cache_once();
     let (apps, needs_refresh) = {
         let cache = lock_catalogue();

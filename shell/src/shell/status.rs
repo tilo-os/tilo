@@ -164,6 +164,8 @@ impl StatusBridge {
     }
 
     pub fn spawn(&self) {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("status worker");
         if self.polling.swap(true, Ordering::SeqCst) {
             return;
         }

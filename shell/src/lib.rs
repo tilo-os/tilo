@@ -33,3 +33,9 @@ pub mod security;
 pub mod shell;
 pub mod wayland;
 pub mod workspace;
+
+// These existing app tests need no Linux adapter. Keep their Linux integration
+// owner and compile the same source for native library-only validation.
+#[cfg(all(test, target_os = "macos"))]
+#[path = "../tests/apps_integration.rs"]
+mod apps_integration;

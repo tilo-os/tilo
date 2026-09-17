@@ -363,3 +363,65 @@ mod tests {
         assert_eq!(preferred_mode(&[a, b]), Some(b));
     }
 }
+
+#[cfg(test)]
+mod runtime_mode_policy_tests {
+    use super::ModeInfo;
+    /// Pure-logic mirror of the policy `enumerate_connectors_on_device`
+    /// implements when projecting DRM modes into `ModeInfo`s: the
+    /// `preferred` flag is honored. The full flow needs a real DRM device,
+    /// so we verify the *policy* end-to-end via `super::devices::preferred_mode`
+    /// instead — pinning the contract that a preferred mode in the list is the one picked.
+    #[test]
+    fn preferred_mode_selection_picks_first_preferred() {
+        use super::preferred_mode;
+        let modes = [
+            ModeInfo {
+                width: 3840,
+                height: 2160,
+                refresh_mhz: 60_000,
+                preferred: false,
+            },
+            ModeInfo {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+                preferred: true,
+            },
+            ModeInfo {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 144_000,
+                preferred: false,
+            },
+        ];
+        let picked = preferred_mode(&modes).expect("non-empty modes");
+        assert!(
+            picked.preferred,
+            "preferred flag must win over higher resolution"
+        );
+        assert_eq!(picked.width, 1920);
+        assert_eq!(picked.height, 1080);
+    }
+    /// And when none of the modes are flagged preferred, the policy falls back to the highest resolution × refresh, matching `enumerate_connectors_on_device`.
+    #[test]
+    fn preferred_mode_selection_falls_back_to_highest_when_no_preferred() {
+        use super::preferred_mode;
+        let modes = [
+            ModeInfo {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+                preferred: false,
+            },
+            ModeInfo {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 60_000,
+                preferred: false,
+            },
+        ];
+        let picked = preferred_mode(&modes).expect("non-empty");
+        assert_eq!(picked.width, 2560);
+    }
+}

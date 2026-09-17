@@ -9090,8 +9090,10 @@ dependencies = [
 name = "notes"
 version = "0.1.0"
 dependencies = [
+ "app-state",
  "atomic-file",
  "automerge",
+ "blake3",
  "dirs 6.0.0",
  "runtime-dylib",
  "serde",
@@ -12183,14 +12185,19 @@ dependencies = [
 name = "runtime-fs"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "cap-std",
  "capnp",
  "capnp-rpc",
  "capnpc",
  "postcard",
  "runtime-portal",
+ "rustix 1.1.4",
  "serde",
+ "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -12222,6 +12229,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
+ "libc",
  "nix 0.30.1",
  "thiserror 2.0.18",
  "tokio",
@@ -14398,6 +14406,7 @@ dependencies = [
  "portable-pty",
  "qdoc",
  "runtime-dylib",
+ "runtime-portal",
  "serde_json",
  "serial_test",
  "taffy",
@@ -14406,7 +14415,6 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "unicode-width 0.2.2",
- "ush",
  "uuid",
  "vello",
  "vte",
@@ -15890,11 +15898,13 @@ dependencies = [
  "tilo-ui-graph",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "tts",
  "unic-langid",
  "unicode-linebreak",
+ "unicode-script",
  "unicode-segmentation",
  "url",
  "uuid",
@@ -16121,6 +16131,7 @@ dependencies = [
  "dirs 6.0.0",
  "landlock",
  "libc",
+ "runtime-portal",
  "seccompiler",
  "serde",
  "serde_json",

@@ -103,6 +103,7 @@ impl std::error::Error for ProbeError {}
 ///
 /// Delegates to [`launcher::gpu::driver_for`]: the launcher answers the same question when
 /// pinning an app's ICDs, and two copies of this lookup disagreeing is exactly how a client ends up on a different GPU than the compositor.
+#[cfg(target_os = "linux")]
 pub fn driver_for(path: &Path) -> Option<String> {
     launcher::gpu::driver_for(path)
 }
@@ -112,6 +113,7 @@ pub fn driver_supports_cpu_map(driver: &str) -> bool {
     MAPPABLE_DRIVERS.contains(&driver)
 }
 
+#[cfg(target_os = "linux")]
 fn dev_of(path: &Path) -> std::io::Result<libc::dev_t> {
     use std::os::unix::fs::MetadataExt as _;
     // `metadata` follows symlinks, which is what we want: a caller may point `TILO_DMABUF_DEVICE` at `/dev/dri/by-path/...`.
@@ -119,6 +121,7 @@ fn dev_of(path: &Path) -> std::io::Result<libc::dev_t> {
 }
 
 /// Can the current process actually open the node? A node we can't open is one the *client* probably can't either (they share the `render` group) — advertising it would strand it as no feedback would.
+#[cfg(target_os = "linux")]
 fn opens(path: &Path) -> std::io::Result<()> {
     std::fs::OpenOptions::new()
         .read(true)
@@ -128,6 +131,7 @@ fn opens(path: &Path) -> std::io::Result<()> {
 }
 
 /// Every `/dev/dri/renderD*` on the system, sorted by name so the selection is deterministic across boots.
+#[cfg(target_os = "linux")]
 fn render_nodes() -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir("/dev/dri") else {
         return Vec::new();
@@ -153,6 +157,7 @@ fn render_nodes() -> Vec<PathBuf> {
 /// but the node it names can't be stat'd or opened; [`ProbeError::NoRenderNodes`]
 /// when `/dev/dri` has no `renderD*` entries; [`ProbeError::NoneUsable`] when
 /// nodes exist but none has a driver on the CPU-mappable allow-list, or opening/stat'ing the ones that do fails.
+#[cfg(target_os = "linux")]
 pub fn probe() -> Result<RenderNode, ProbeError> {
     if let Some(raw) = std::env::var_os(DEVICE_ENV) {
         let path = PathBuf::from(raw);
@@ -263,6 +268,7 @@ pub struct ProcessPin {
 /// `set_var` is only sound while the process is single-threaded, and loaders read these
 /// variables once, at first use. A variable already set in the caller's environment is left
 /// alone and recorded in [`ProcessPin::notes`] — combined with [`DEVICE_ENV`], that's a complete manual escape hatch.
+#[cfg(target_os = "linux")]
 pub fn pin_process() -> Option<ProcessPin> {
     let node = match probe() {
         Ok(node) => node,
@@ -338,6 +344,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn driver_lookup_rejects_paths_without_a_sysfs_entry() {
         assert_eq!(driver_for(Path::new("/dev/null")), None);
         assert_eq!(driver_for(Path::new("/dev/dri/renderD9999")), None);
@@ -345,6 +352,7 @@ mod tests {
 
     /// On a machine with a Mesa GPU the probe must succeed and hand back a node whose `dev` matches `stat(2)` — that number goes on the wire as `main_device`, and a wrong one strands the client.
     #[test]
+    #[cfg(target_os = "linux")]
     fn probe_reports_a_stat_consistent_device_number() {
         // Env-independent: skip when the box genuinely has no mappable GPU rather than asserting hardware into existence.
         let Ok(node) = probe() else {

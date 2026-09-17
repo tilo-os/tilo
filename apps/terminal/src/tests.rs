@@ -3467,3 +3467,25 @@ fn terminal_palette_tracks_the_theme_not_a_hardcoded_green_on_black() {
         "blue and cyan stay distinct"
     );
 }
+
+#[test]
+fn hosted_terminal_requires_ush_before_construction() {
+    let result = crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: None });
+    assert!(matches!(
+        result,
+        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
+    ));
+}
+
+#[test]
+fn hosted_terminal_service_failure_never_falls_back_to_a_login_shell() {
+    use std::os::unix::net::UnixStream;
+    let (client, server) = UnixStream::pair().unwrap();
+    drop(server);
+    let result =
+        crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: Some(client) });
+    assert!(matches!(
+        result,
+        Err(crate::HostedTerminalError::ServiceFailed(_))
+    ));
+}

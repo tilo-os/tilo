@@ -303,6 +303,7 @@ fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
         || !tree.continuation_owned_tabs.is_empty()
         || !tree.continuation_closed_tabs.is_empty()
         || !tree.continuation_file_references.is_empty()
+        || !tree.native_document_tabs.is_empty()
     {
         return false;
     }
@@ -749,7 +750,9 @@ mod tests {
                 width: WindowWidth::Normal,
                 maximized: false,
             });
-        assert!(crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut tree, 92_003));
+        assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
+            &mut tree, 92_003
+        ));
 
         save_tree_to(&tree, &path).expect("save after close");
         let loaded = load_tree_from(&path).expect("restart");

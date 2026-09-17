@@ -9,26 +9,45 @@
 )]
 
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::io;
+#[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd as StdOwnedFd;
+#[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use reis::calloop::{EisRequestSource, EisRequestSourceEvent};
+#[cfg(target_os = "linux")]
 use reis::enumflags2::BitFlags;
+#[cfg(target_os = "linux")]
 use reis::request::{Connection as EisConnection, Device, DeviceCapability, EisRequest, Seat};
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedFd, OwnedValue, Value};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::{ObjectPath, OwnedFd};
+use zbus::zvariant::{OwnedValue, Value};
 
+use super::PortalCaller;
+#[cfg(target_os = "linux")]
 use super::auth::authenticate_call;
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
-use super::{CapabilityKind, PortalCaller, PortalContext, flow};
+#[cfg(target_os = "linux")]
+use super::{CapabilityKind, PortalContext, flow};
+#[cfg(target_os = "linux")]
 use crate::shell::state::{Capability, Expiry};
 
+#[cfg(target_os = "linux")]
 const MAX_SESSIONS: usize = 32;
+#[cfg(target_os = "linux")]
 const MAX_BARRIERS: usize = 64;
 
 pub mod capability {
@@ -79,16 +98,19 @@ impl PointerBarrier {
 }
 
 #[derive(Clone)]
+#[cfg(target_os = "linux")]
 struct EisTransport {
     tx: smithay::reexports::calloop::channel::Sender<EisCommand>,
 }
 #[derive(Clone, Copy)]
+#[cfg(target_os = "linux")]
 enum EisCommand {
     Activate(u32),
     Deactivate,
     Input(CapturedInput),
     Close,
 }
+#[cfg(target_os = "linux")]
 impl EisTransport {
     fn send(&self, command: EisCommand) {
         let _ = self.tx.send(command);
@@ -98,27 +120,81 @@ impl EisTransport {
 #[derive(Clone, Debug)]
 enum PortalSignal {
     Activated {
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                dead_code,
+                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+            )
+        )]
         session: String,
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                dead_code,
+                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+            )
+        )]
         activation_id: u32,
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                dead_code,
+                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+            )
+        )]
         cursor: (f64, f64),
         barrier_id: u32,
     },
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     Deactivated {
         session: String,
         activation_id: u32,
         cursor: (f64, f64),
     },
-    Disabled {
-        session: String,
-    },
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
+    Disabled { session: String },
     ZonesChanged {
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                dead_code,
+                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+            )
+        )]
         session: String,
     },
 }
 #[derive(Clone)]
 struct CaptureSession {
     owner: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     app_id: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     caller: PortalCaller,
     started: bool,
     enabled: bool,
@@ -126,9 +202,17 @@ struct CaptureSession {
     /// Requested through Clipboard before Start. Access itself is live only
     /// while `active` has been armed by a barrier.
     clipboard_requested: bool,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     capabilities: u32,
     zone_set: u32,
     barriers: Vec<PointerBarrier>,
+    #[cfg(target_os = "linux")]
     transport: Option<EisTransport>,
     activation_id: u32,
     cursor: (f64, f64),
@@ -146,6 +230,7 @@ impl CaptureSession {
             capabilities: 0,
             zone_set: 1,
             barriers: vec![],
+            #[cfg(target_os = "linux")]
             transport: None,
             activation_id: 0,
             cursor: (0., 0.),
@@ -198,6 +283,7 @@ impl InputCaptureCompositorHandle {
             session.zone_set = zone_set;
             session.barriers.clear();
             if session.active {
+                #[cfg(target_os = "linux")]
                 if let Some(transport) = &session.transport {
                     transport.send(EisCommand::Deactivate);
                 }
@@ -231,6 +317,7 @@ impl InputCaptureCompositorHandle {
                 if let CapturedInput::PointerMotion { x, y, .. } = input {
                     session.cursor = (x, y);
                 }
+                #[cfg(target_os = "linux")]
                 if let Some(transport) = &session.transport {
                     transport.send(EisCommand::Input(input));
                 }
@@ -267,6 +354,7 @@ impl InputCaptureCompositorHandle {
         };
         session.active = true;
         session.activation_id = session.activation_id.wrapping_add(1).max(1);
+        #[cfg(target_os = "linux")]
         if let Some(transport) = &session.transport {
             transport.send(EisCommand::Activate(session.activation_id));
         }
@@ -287,6 +375,7 @@ impl InputCaptureCompositorHandle {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub struct InputCaptureBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
@@ -299,6 +388,7 @@ pub struct InputCaptureBackend {
 pub struct InputCaptureSessionHandle {
     state: Arc<Mutex<CaptureState>>,
 }
+#[cfg(target_os = "linux")]
 impl InputCaptureBackend {
     pub fn new(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
         Self {
@@ -397,6 +487,7 @@ impl super::clipboard::ClipboardSessionProvider for InputCaptureSessionHandle {
 }
 
 #[interface(name = "org.freedesktop.impl.portal.InputCapture")]
+#[cfg(target_os = "linux")]
 impl InputCaptureBackend {
     #[zbus(property, name = "SupportedCapabilities")]
     fn supported_capabilities(&self) -> u32 {
@@ -789,6 +880,7 @@ impl InputCaptureBackend {
     ) -> zbus::Result<()>;
 }
 
+#[cfg(target_os = "linux")]
 impl InputCaptureBackend {
     async fn create_legacy(
         &self,
@@ -891,6 +983,7 @@ impl InputCaptureBackend {
                     return false;
                 }
                 let deactivated = (!enabled && session.active).then(|| {
+                    #[cfg(target_os = "linux")]
                     if let Some(transport) = &session.transport {
                         transport.send(EisCommand::Deactivate);
                     }
@@ -939,6 +1032,7 @@ impl InputCaptureBackend {
                 {
                     return false;
                 }
+                #[cfg(target_os = "linux")]
                 if let Some(transport) = &session.transport {
                     transport.send(EisCommand::Deactivate);
                 }
@@ -956,6 +1050,7 @@ impl InputCaptureBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn close_session(state: &Arc<Mutex<CaptureState>>, key: &str) {
     if let Ok(mut state) = state.lock()
         && let Some(session) = state.sessions.remove(key)
@@ -964,6 +1059,7 @@ fn close_session(state: &Arc<Mutex<CaptureState>>, key: &str) {
         transport.send(EisCommand::Close);
     }
 }
+#[cfg(target_os = "linux")]
 fn parse_barrier(raw: &HashMap<String, OwnedValue>) -> Option<PointerBarrier> {
     let id = opt_u32(raw, "barrier_id")?;
     if id == 0 {
@@ -1008,6 +1104,7 @@ fn insert_value(values: &mut HashMap<String, OwnedValue>, key: &str, value: Valu
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn emit_signal(connection: &zbus::Connection, signal: PortalSignal) {
     let context = match SignalContext::new(connection, super::OBJECT_PATH) {
         Ok(context) => context,
@@ -1061,6 +1158,7 @@ async fn emit_signal(connection: &zbus::Connection, signal: PortalSignal) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn make_eis_transport() -> io::Result<(EisTransport, StdOwnedFd)> {
     let (server, client) = UnixStream::pair()?;
     let (tx, commands) = smithay::reexports::calloop::channel::channel();
@@ -1070,17 +1168,20 @@ fn make_eis_transport() -> io::Result<(EisTransport, StdOwnedFd)> {
     Ok((EisTransport { tx }, StdOwnedFd::from(client)))
 }
 #[derive(Default)]
+#[cfg(target_os = "linux")]
 struct EisState {
     connection: Option<EisServerConnection>,
     active: bool,
     running: bool,
     sequence: u32,
 }
+#[cfg(target_os = "linux")]
 struct EisServerConnection {
     connection: EisConnection,
     keyboard: Option<Device>,
     pointer: Option<Device>,
 }
+#[cfg(target_os = "linux")]
 fn run_eis(
     stream: UnixStream,
     commands: smithay::reexports::calloop::channel::Channel<EisCommand>,
@@ -1202,6 +1303,7 @@ fn run_eis(
             .is_ok()
     {}
 }
+#[cfg(target_os = "linux")]
 fn add_device(seat: &Seat, name: &str, caps: BitFlags<DeviceCapability>, sequence: u32) -> Device {
     let device = seat.add_device(
         Some(name),
@@ -1215,6 +1317,7 @@ fn add_device(seat: &Seat, name: &str, caps: BitFlags<DeviceCapability>, sequenc
     }
     device
 }
+#[cfg(target_os = "linux")]
 fn send_eis_input(state: &mut EisState, input: CapturedInput) {
     let Some(current) = &state.connection else {
         return;
