@@ -75,15 +75,29 @@ impl RadarSeries {
 }
 
 #[derive(Clone, Debug)]
+pub struct RadarLegendStyle {
+    pub visible: bool,
+    /// Let pointer and assistive activation toggle series from the legend.
+    pub interactive: bool,
+}
+
+impl Default for RadarLegendStyle {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            interactive: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct RadarStyle {
     pub rings: u8,
     pub start_angle: f64,
     pub fill_alpha: u8,
     pub stroke_width: f64,
     pub marker_radius: f64,
-    pub show_legend: bool,
-    /// Let pointer and assistive activation toggle series from the legend.
-    pub interactive_legend: bool,
+    pub legend: RadarLegendStyle,
     pub tooltip: bool,
     pub clamp_values: bool,
 }
@@ -96,8 +110,7 @@ impl Default for RadarStyle {
             fill_alpha: 42,
             stroke_width: 2.0,
             marker_radius: 4.0,
-            show_legend: true,
-            interactive_legend: true,
+            legend: RadarLegendStyle::default(),
             tooltip: true,
             clamp_values: true,
         }
@@ -244,7 +257,7 @@ impl RadarChart {
 
     fn geometry(&self) -> (Point, f64) {
         let top = if self.title.is_empty() { 10.0 } else { 42.0 };
-        let legend_rows = if self.style.show_legend {
+        let legend_rows = if self.style.legend.visible {
             chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
                 self.rect.x0 + 12.0,
@@ -333,6 +346,68 @@ impl RadarChart {
             }
         }
         self.hovered = nearest.map(|(_, hovered)| hovered);
+    }
+}
+
+impl RadarChart {
+    fn toggle_legend_at(&mut self, point: Point) -> bool {
+        if !self.style.legend.interactive {
+            return false;
+        }
+        let Some(id) = self
+            .legend_hits
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+            .map(|(id, _)| id.clone())
+        else {
+            return false;
+        };
+        self.toggle_series(&id)
+    }
+
+    fn activate_hovered(&mut self) -> bool {
+        let Some(hovered) = self.hovered else {
+            return false;
+        };
+        let (Some(series), Some(axis)) =
+            (self.series.get(hovered.series), self.axes.get(hovered.axis))
+        else {
+            return false;
+        };
+        self.activated = Some((series.id.clone(), axis.id.clone()));
+        true
+    }
+
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) {
+        let candidates = self
+            .series
+            .iter()
+            .enumerate()
+            .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+            .flat_map(|(series, values)| {
+                self.axes.iter().enumerate().filter_map(move |(axis, _)| {
+                    values
+                        .values
+                        .get(axis)
+                        .filter(|value| value.is_finite())
+                        .map(|_| Hovered { series, axis })
+                })
+            })
+            .collect::<Vec<_>>();
+        let current = self.hovered.and_then(|hovered| {
+            candidates.iter().position(|candidate| {
+                candidate.series == hovered.series && candidate.axis == hovered.axis
+            })
+        });
+        self.hovered = moved_index(current, candidates.len(), action)
+            .and_then(|index| candidates.get(index).copied());
+        self.keyboard_inspection = self.hovered.is_some();
+        if let Some(hovered) = self.hovered
+            && let Some(series) = self.series.get(hovered.series)
+            && let Some(point) = self.value_point(series, hovered.axis)
+        {
+            self.pointer = point;
+        }
     }
 }
 
@@ -493,7 +568,7 @@ impl Widget for RadarChart {
                 }
             }
         }
-        if self.style.show_legend {
+        if self.style.legend.visible {
             self.legend_hits.clear();
             let rows = chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
@@ -610,21 +685,7 @@ impl Widget for RadarChart {
                 ChartTouchAction::Activate(point) => {
                     self.pointer = point;
                     self.update_hover();
-                    if self.style.interactive_legend
-                        && let Some(id) = self
-                            .legend_hits
-                            .iter()
-                            .find(|(_, rect)| rect.contains(point))
-                            .map(|(id, _)| id.clone())
-                    {
-                        let _ = self.toggle_series(&id);
-                        *handled = true;
-                        *focus_target = Some(node_id);
-                    } else if let Some(hovered) = self.hovered
-                        && let (Some(series), Some(axis)) =
-                            (self.series.get(hovered.series), self.axes.get(hovered.axis))
-                    {
-                        self.activated = Some((series.id.clone(), axis.id.clone()));
+                    if self.toggle_legend_at(point) || self.activate_hovered() {
                         *handled = true;
                         *focus_target = Some(node_id);
                     }
@@ -645,23 +706,7 @@ impl Widget for RadarChart {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.style.interactive_legend
-                    && let Some(id) = self
-                        .legend_hits
-                        .iter()
-                        .find(|(_, rect)| rect.contains(self.pointer))
-                        .map(|(id, _)| id.clone())
-                {
-                    let _ = self.toggle_series(&id);
-                    *handled = true;
-                    *focus_target = Some(node_id);
-                    return;
-                }
-                if let Some(hovered) = self.hovered
-                    && let (Some(series), Some(axis)) =
-                        (self.series.get(hovered.series), self.axes.get(hovered.axis))
-                {
-                    self.activated = Some((series.id.clone(), axis.id.clone()));
+                if self.toggle_legend_at(self.pointer) || self.activate_hovered() {
                     *handled = true;
                     *focus_target = Some(node_id);
                 }
@@ -671,42 +716,9 @@ impl Widget for RadarChart {
                     return;
                 };
                 if action == ChartNavAction::Activate {
-                    if let Some(hovered) = self.hovered
-                        && let (Some(series), Some(axis)) =
-                            (self.series.get(hovered.series), self.axes.get(hovered.axis))
-                    {
-                        self.activated = Some((series.id.clone(), axis.id.clone()));
-                    }
+                    let _ = self.activate_hovered();
                 } else {
-                    let candidates = self
-                        .series
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, series)| !self.hidden_series.contains(&series.id))
-                        .flat_map(|(series, values)| {
-                            self.axes.iter().enumerate().filter_map(move |(axis, _)| {
-                                values
-                                    .values
-                                    .get(axis)
-                                    .filter(|value| value.is_finite())
-                                    .map(|_| Hovered { series, axis })
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    let current = self.hovered.and_then(|hovered| {
-                        candidates.iter().position(|candidate| {
-                            candidate.series == hovered.series && candidate.axis == hovered.axis
-                        })
-                    });
-                    self.hovered = moved_index(current, candidates.len(), action)
-                        .and_then(|index| candidates.get(index).copied());
-                    self.keyboard_inspection = self.hovered.is_some();
-                    if let Some(hovered) = self.hovered
-                        && let Some(series) = self.series.get(hovered.series)
-                        && let Some(point) = self.value_point(series, hovered.axis)
-                    {
-                        self.pointer = point;
-                    }
+                    self.move_keyboard_inspection(action);
                 }
                 *handled = true;
                 *focus_target = Some(node_id);
@@ -743,7 +755,7 @@ impl Widget for RadarChart {
             .chain(
                 self.series
                     .iter()
-                    .filter(|_| self.style.interactive_legend)
+                    .filter(|_| self.style.legend.interactive)
                     .map(|series| {
                         AccessNode::new(Role::Button)
                             .with_action_target(format!("legend:{}", series.id))
@@ -783,7 +795,7 @@ impl Widget for RadarChart {
         let Some(key) = key_path.last() else {
             return false;
         };
-        if self.style.interactive_legend {
+        if self.style.legend.interactive {
             for series in &self.series {
                 let target = format!("legend:{}", series.id);
                 if crate::a11y::hash_key(&target) == *key {

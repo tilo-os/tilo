@@ -480,46 +480,110 @@ pub struct CartesianBrushSelection {
 }
 
 #[derive(Clone, Debug)]
-pub struct CartesianStyle {
-    pub x_axis: PlotAxis,
-    pub y_axis: PlotAxis,
-    pub legend: LegendPosition,
+pub struct CartesianTooltipStyle {
+    pub enabled: bool,
+    pub anchor: CartesianTooltipAnchor,
+    /// Fixed tooltip width. `None` sizes to content within the chart bounds.
+    pub width: Option<f64>,
+    pub min_width: f64,
+    pub offset: f64,
+    pub padding: f64,
+    /// Append formatted x/y coordinates even when a datum has custom detail.
+    pub show_coordinates: bool,
+}
+
+impl Default for CartesianTooltipStyle {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            anchor: CartesianTooltipAnchor::Pointer,
+            width: None,
+            min_width: 140.0,
+            offset: 18.0,
+            padding: 14.0,
+            show_coordinates: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CartesianRenderingStyle {
     pub show_crosshair: bool,
     pub show_markers_on_lines: bool,
-    pub tooltip: bool,
-    pub tooltip_anchor: CartesianTooltipAnchor,
-    /// Fixed tooltip width. `None` sizes to content within the chart bounds.
-    pub tooltip_width: Option<f64>,
-    pub tooltip_min_width: f64,
-    pub tooltip_offset: f64,
-    pub tooltip_padding: f64,
-    /// Append formatted x/y coordinates even when a datum has custom detail.
-    pub tooltip_show_coordinates: bool,
-    pub plot_padding: f64,
-    pub hit_radius: f64,
-    pub zoom: CartesianZoom,
-    /// Require Ctrl/Command for wheel zoom so embedded plots remain
-    /// scroll-friendly. Disable only in a dedicated chart viewport.
-    pub zoom_modifier_required: bool,
-    pub pan: CartesianPan,
-    /// Require Alt while beginning a pointer pan so charts in scrollable
-    /// layouts do not steal ordinary drags.
-    pub pan_modifier_required: bool,
-    /// Smallest visible fraction of the original data domain.
-    pub min_zoom_fraction: f64,
-    /// Let pointer and accessibility activation toggle series from the legend.
-    pub interactive_legend: bool,
-    pub brush: CartesianBrush,
-    /// Require Shift while beginning a pointer brush.
-    pub brush_modifier_required: bool,
     /// Reduce dense connected series to a spike-preserving pixel budget.
     /// Scatter, bubble, bar, and lollipop series are never sampled.
     pub adaptive_sampling: bool,
     /// Approximate connected-series point budget per logical plot pixel.
     pub max_points_per_pixel: f64,
+}
+
+impl Default for CartesianRenderingStyle {
+    fn default() -> Self {
+        Self {
+            show_crosshair: true,
+            show_markers_on_lines: false,
+            adaptive_sampling: true,
+            max_points_per_pixel: 2.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CartesianGesturePolicy {
+    /// Require Ctrl/Command for wheel zoom so embedded plots remain
+    /// scroll-friendly. Disable only in a dedicated chart viewport.
+    pub zoom_modifier_required: bool,
+    /// Require Alt while beginning a pointer pan so charts in scrollable
+    /// layouts do not steal ordinary drags.
+    pub pan_modifier_required: bool,
+    /// Require Shift while beginning a pointer brush.
+    pub brush_modifier_required: bool,
+}
+
+impl Default for CartesianGesturePolicy {
+    fn default() -> Self {
+        Self {
+            zoom_modifier_required: true,
+            pan_modifier_required: true,
+            brush_modifier_required: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CartesianAnimationStyle {
     /// Smoothly interpolate matching stable datum ids after `set_series`.
-    pub animate_changes: bool,
-    pub animation_duration: Duration,
+    pub enabled: bool,
+    pub duration: Duration,
+}
+
+impl Default for CartesianAnimationStyle {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            duration: Duration::from_millis(240),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CartesianStyle {
+    pub x_axis: PlotAxis,
+    pub y_axis: PlotAxis,
+    pub legend: LegendPosition,
+    pub rendering: CartesianRenderingStyle,
+    pub tooltip: CartesianTooltipStyle,
+    pub plot_padding: f64,
+    pub hit_radius: f64,
+    pub zoom: CartesianZoom,
+    pub pan: CartesianPan,
+    pub gestures: CartesianGesturePolicy,
+    /// Smallest visible fraction of the original data domain.
+    pub min_zoom_fraction: f64,
+    /// Let pointer and accessibility activation toggle series from the legend.
+    pub interactive_legend: bool,
+    pub brush: CartesianBrush,
+    pub animation: CartesianAnimationStyle,
 }
 
 impl Default for CartesianStyle {
@@ -528,29 +592,17 @@ impl Default for CartesianStyle {
             x_axis: PlotAxis::default(),
             y_axis: PlotAxis::default(),
             legend: LegendPosition::Top,
-            show_crosshair: true,
-            show_markers_on_lines: false,
-            tooltip: true,
-            tooltip_anchor: CartesianTooltipAnchor::Pointer,
-            tooltip_width: None,
-            tooltip_min_width: 140.0,
-            tooltip_offset: 18.0,
-            tooltip_padding: 14.0,
-            tooltip_show_coordinates: false,
+            rendering: CartesianRenderingStyle::default(),
+            tooltip: CartesianTooltipStyle::default(),
             plot_padding: 12.0,
             hit_radius: 28.0,
             zoom: CartesianZoom::Disabled,
-            zoom_modifier_required: true,
             pan: CartesianPan::Disabled,
-            pan_modifier_required: true,
+            gestures: CartesianGesturePolicy::default(),
             min_zoom_fraction: 0.01,
             interactive_legend: true,
             brush: CartesianBrush::Disabled,
-            brush_modifier_required: true,
-            adaptive_sampling: true,
-            max_points_per_pixel: 2.0,
-            animate_changes: true,
-            animation_duration: Duration::from_millis(240),
+            animation: CartesianAnimationStyle::default(),
         }
     }
 }
@@ -560,8 +612,8 @@ impl CartesianStyle {
     /// clamped to a practical range; pass `false` for exact path rendering.
     #[must_use]
     pub fn with_adaptive_sampling(mut self, enabled: bool, points_per_pixel: f64) -> Self {
-        self.adaptive_sampling = enabled;
-        self.max_points_per_pixel = if points_per_pixel.is_finite() {
+        self.rendering.adaptive_sampling = enabled;
+        self.rendering.max_points_per_pixel = if points_per_pixel.is_finite() {
             points_per_pixel.clamp(0.25, 16.0)
         } else {
             2.0
@@ -574,6 +626,16 @@ impl CartesianStyle {
 struct Domain {
     min: f64,
     max: f64,
+}
+
+struct AnnotationPaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    plot: Rect,
+    x_domain: Domain,
+    y_domain: Domain,
 }
 
 #[derive(Clone, Debug)]
@@ -750,9 +812,9 @@ impl CartesianPlot {
             return;
         }
         let previous = std::mem::replace(&mut self.series, series);
-        if self.style.animate_changes
+        if self.style.animation.enabled
             && !self.reduce_motion
-            && !self.style.animation_duration.is_zero()
+            && !self.style.animation.duration.is_zero()
         {
             self.transition_from = Some(previous);
             self.transition_started = Instant::now();
@@ -779,23 +841,23 @@ impl CartesianPlot {
     }
     pub fn is_animating(&self) -> bool {
         !self.reduce_motion
-            && self.style.animate_changes
+            && self.style.animation.enabled
             && self.transition_from.is_some()
-            && self.transition_started.elapsed() < self.style.animation_duration
+            && self.transition_started.elapsed() < self.style.animation.duration
     }
 
     fn animation_progress_at(&self, now: Instant) -> f64 {
         if self.reduce_motion
-            || !self.style.animate_changes
+            || !self.style.animation.enabled
             || self.transition_from.is_none()
-            || self.style.animation_duration.is_zero()
+            || self.style.animation.duration.is_zero()
         {
             return 1.0;
         }
         let raw = now
             .saturating_duration_since(self.transition_started)
             .as_secs_f64()
-            / self.style.animation_duration.as_secs_f64();
+            / self.style.animation.duration.as_secs_f64();
         crate::animation::ease_out(raw.clamp(0.0, 1.0))
     }
 
@@ -2015,7 +2077,7 @@ impl CartesianPlot {
             }
             let markers = series.show_markers.unwrap_or(
                 matches!(series.kind, SeriesKind::Scatter | SeriesKind::Bubble)
-                    || self.style.show_markers_on_lines,
+                    || self.style.rendering.show_markers_on_lines,
             );
             if markers {
                 for &(datum_index, datum, point) in &projected {
@@ -2063,10 +2125,10 @@ impl CartesianPlot {
                 | SeriesKind::StepArea
         );
         let count = series.data.len();
-        let points_per_pixel = self.style.max_points_per_pixel.clamp(0.25, 16.0);
+        let points_per_pixel = self.style.rendering.max_points_per_pixel.clamp(0.25, 16.0);
         let target = crate::num::usize_of_f64((plot.width().max(1.0) * points_per_pixel).ceil());
         let target = target.max(16);
-        if !self.style.adaptive_sampling || !connected || count <= target || count <= 2 {
+        if !self.style.rendering.adaptive_sampling || !connected || count <= target || count <= 2 {
             return (0..count).collect();
         }
 
@@ -2135,167 +2197,233 @@ impl CartesianPlot {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_annotations(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        plot: Rect,
-        xd: Domain,
-        yd: Domain,
-    ) {
+    fn draw_annotations(&self, context: &mut AnnotationPaintContext<'_>) {
         for (index, annotation) in self.annotations.iter().enumerate() {
             let hovered = self.hovered_annotation == Some(index);
-            let mut label_anchor = None;
-            match annotation.kind {
-                CartesianAnnotationKind::XLine(value) => {
-                    if let Some(x) =
-                        Self::project(value, xd, self.style.x_axis.scale, plot.x0, plot.width())
-                        && x >= plot.x0
-                        && x <= plot.x1
-                    {
-                        scene.stroke(
-                            &Self::annotation_stroke(annotation, hovered),
-                            transform,
-                            annotation.color,
-                            None,
-                            &Line::new((x, plot.y0), (x, plot.y1)),
-                        );
-                        label_anchor = Some(Point::new(x + 6.0, plot.y0 + 6.0));
-                    }
-                }
-                CartesianAnnotationKind::YLine(value) => {
-                    if let Some(y) =
-                        Self::project(value, yd, self.style.y_axis.scale, plot.y1, -plot.height())
-                        && y >= plot.y0
-                        && y <= plot.y1
-                    {
-                        scene.stroke(
-                            &Self::annotation_stroke(annotation, hovered),
-                            transform,
-                            annotation.color,
-                            None,
-                            &Line::new((plot.x0, y), (plot.x1, y)),
-                        );
-                        label_anchor = Some(Point::new(plot.x0 + 6.0, y - 26.0));
-                    }
-                }
-                CartesianAnnotationKind::XBand { start, end } => {
-                    if let (Some(a), Some(b)) = (
-                        Self::project(start, xd, self.style.x_axis.scale, plot.x0, plot.width()),
-                        Self::project(end, xd, self.style.x_axis.scale, plot.x0, plot.width()),
-                    ) {
-                        let x0 = a.min(b).clamp(plot.x0, plot.x1);
-                        let x1 = a.max(b).clamp(plot.x0, plot.x1);
-                        if x1 > x0 {
-                            scene.fill(
-                                Fill::NonZero,
-                                transform,
-                                alpha(
-                                    annotation.color,
-                                    annotation.fill_alpha.saturating_add(if hovered {
-                                        28
-                                    } else {
-                                        0
-                                    }),
-                                ),
-                                None,
-                                &Rect::new(x0, plot.y0, x1, plot.y1),
-                            );
-                            label_anchor = Some(Point::new(x0 + 6.0, plot.y0 + 6.0));
-                        }
-                    }
-                }
-                CartesianAnnotationKind::YBand { start, end } => {
-                    if let (Some(a), Some(b)) = (
-                        Self::project(start, yd, self.style.y_axis.scale, plot.y1, -plot.height()),
-                        Self::project(end, yd, self.style.y_axis.scale, plot.y1, -plot.height()),
-                    ) {
-                        let y0 = a.min(b).clamp(plot.y0, plot.y1);
-                        let y1 = a.max(b).clamp(plot.y0, plot.y1);
-                        if y1 > y0 {
-                            scene.fill(
-                                Fill::NonZero,
-                                transform,
-                                alpha(
-                                    annotation.color,
-                                    annotation.fill_alpha.saturating_add(if hovered {
-                                        28
-                                    } else {
-                                        0
-                                    }),
-                                ),
-                                None,
-                                &Rect::new(plot.x0, y0, plot.x1, y1),
-                            );
-                            label_anchor = Some(Point::new(plot.x0 + 6.0, y0 + 6.0));
-                        }
-                    }
-                }
-                CartesianAnnotationKind::Point { x, y } => {
-                    if let (Some(x), Some(y)) = (
-                        Self::project(x, xd, self.style.x_axis.scale, plot.x0, plot.width()),
-                        Self::project(y, yd, self.style.y_axis.scale, plot.y1, -plot.height()),
-                    ) && plot.contains(Point::new(x, y))
-                    {
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            alpha(annotation.color, 55),
-                            None,
-                            &Circle::new((x, y), if hovered { 12.0 } else { 9.0 }),
-                        );
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            annotation.color,
-                            None,
-                            &Circle::new((x, y), 4.0),
-                        );
-                        label_anchor = Some(Point::new(x + 8.0, y - 28.0));
-                    }
-                }
+            let anchor = self.draw_annotation_shape(context, annotation, hovered);
+            Self::draw_annotation_label(context, annotation, anchor);
+        }
+    }
+
+    fn draw_annotation_shape(
+        &self,
+        context: &mut AnnotationPaintContext<'_>,
+        annotation: &CartesianAnnotation,
+        hovered: bool,
+    ) -> Option<Point> {
+        match annotation.kind {
+            CartesianAnnotationKind::XLine(value) => {
+                self.draw_annotation_line(context, annotation, hovered, value, true)
             }
-            if !annotation.label.is_empty()
-                && let Some(anchor) = label_anchor
-            {
-                let size = theme.tokens.typography.scale.xs;
-                let (width, height) = tr.measure(&annotation.label, size, None);
-                let width = f64::from(width) + 16.0;
-                let height = f64::from(height) + 10.0;
-                let x = anchor
-                    .x
-                    .clamp(plot.x0 + 4.0, (plot.x1 - width - 4.0).max(plot.x0 + 4.0));
-                let y = anchor
-                    .y
-                    .clamp(plot.y0 + 4.0, (plot.y1 - height - 4.0).max(plot.y0 + 4.0));
-                let rect = RoundedRect::from_rect(Rect::new(x, y, x + width, y + height), 5.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.overlay,
-                    None,
-                    &rect,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    alpha(annotation.color, 160),
-                    None,
-                    &rect,
-                );
-                tr.draw_text(
-                    scene,
-                    &annotation.label,
-                    size,
-                    theme.tokens.colors.text_primary,
-                    transform * Affine::translate((x + 8.0, y + 5.0)),
-                    None,
-                );
+            CartesianAnnotationKind::YLine(value) => {
+                self.draw_annotation_line(context, annotation, hovered, value, false)
+            }
+            CartesianAnnotationKind::XBand { start, end } => {
+                self.draw_annotation_band(context, annotation, hovered, (start, end), true)
+            }
+            CartesianAnnotationKind::YBand { start, end } => {
+                self.draw_annotation_band(context, annotation, hovered, (start, end), false)
+            }
+            CartesianAnnotationKind::Point { x, y } => {
+                self.draw_annotation_point(context, annotation, hovered, x, y)
             }
         }
+    }
+
+    fn draw_annotation_line(
+        &self,
+        context: &mut AnnotationPaintContext<'_>,
+        annotation: &CartesianAnnotation,
+        hovered: bool,
+        value: f64,
+        vertical: bool,
+    ) -> Option<Point> {
+        let plot = context.plot;
+        let (domain, scale, origin, extent) = if vertical {
+            (
+                context.x_domain,
+                self.style.x_axis.scale,
+                plot.x0,
+                plot.width(),
+            )
+        } else {
+            (
+                context.y_domain,
+                self.style.y_axis.scale,
+                plot.y1,
+                -plot.height(),
+            )
+        };
+        let coordinate = Self::project(value, domain, scale, origin, extent)?;
+        let within_plot = if vertical {
+            coordinate >= plot.x0 && coordinate <= plot.x1
+        } else {
+            coordinate >= plot.y0 && coordinate <= plot.y1
+        };
+        if !within_plot {
+            return None;
+        }
+        let line = if vertical {
+            Line::new((coordinate, plot.y0), (coordinate, plot.y1))
+        } else {
+            Line::new((plot.x0, coordinate), (plot.x1, coordinate))
+        };
+        context.scene.stroke(
+            &Self::annotation_stroke(annotation, hovered),
+            context.transform,
+            annotation.color,
+            None,
+            &line,
+        );
+        Some(if vertical {
+            Point::new(coordinate + 6.0, plot.y0 + 6.0)
+        } else {
+            Point::new(plot.x0 + 6.0, coordinate - 26.0)
+        })
+    }
+
+    fn draw_annotation_band(
+        &self,
+        context: &mut AnnotationPaintContext<'_>,
+        annotation: &CartesianAnnotation,
+        hovered: bool,
+        range: (f64, f64),
+        vertical: bool,
+    ) -> Option<Point> {
+        let plot = context.plot;
+        let (domain, scale, origin, extent, lower, upper) = if vertical {
+            (
+                context.x_domain,
+                self.style.x_axis.scale,
+                plot.x0,
+                plot.width(),
+                plot.x0,
+                plot.x1,
+            )
+        } else {
+            (
+                context.y_domain,
+                self.style.y_axis.scale,
+                plot.y1,
+                -plot.height(),
+                plot.y0,
+                plot.y1,
+            )
+        };
+        let a = Self::project(range.0, domain, scale, origin, extent)?;
+        let b = Self::project(range.1, domain, scale, origin, extent)?;
+        let start = a.min(b).clamp(lower, upper);
+        let end = a.max(b).clamp(lower, upper);
+        if end <= start {
+            return None;
+        }
+        let rect = if vertical {
+            Rect::new(start, plot.y0, end, plot.y1)
+        } else {
+            Rect::new(plot.x0, start, plot.x1, end)
+        };
+        let fill_alpha = annotation
+            .fill_alpha
+            .saturating_add(if hovered { 28 } else { 0 });
+        context.scene.fill(
+            Fill::NonZero,
+            context.transform,
+            alpha(annotation.color, fill_alpha),
+            None,
+            &rect,
+        );
+        Some(if vertical {
+            Point::new(start + 6.0, plot.y0 + 6.0)
+        } else {
+            Point::new(plot.x0 + 6.0, start + 6.0)
+        })
+    }
+
+    fn draw_annotation_point(
+        &self,
+        context: &mut AnnotationPaintContext<'_>,
+        annotation: &CartesianAnnotation,
+        hovered: bool,
+        x: f64,
+        y: f64,
+    ) -> Option<Point> {
+        let plot = context.plot;
+        let x = Self::project(
+            x,
+            context.x_domain,
+            self.style.x_axis.scale,
+            plot.x0,
+            plot.width(),
+        )?;
+        let y = Self::project(
+            y,
+            context.y_domain,
+            self.style.y_axis.scale,
+            plot.y1,
+            -plot.height(),
+        )?;
+        if !plot.contains(Point::new(x, y)) {
+            return None;
+        }
+        context.scene.fill(
+            Fill::NonZero,
+            context.transform,
+            alpha(annotation.color, 55),
+            None,
+            &Circle::new((x, y), if hovered { 12.0 } else { 9.0 }),
+        );
+        context.scene.fill(
+            Fill::NonZero,
+            context.transform,
+            annotation.color,
+            None,
+            &Circle::new((x, y), 4.0),
+        );
+        Some(Point::new(x + 8.0, y - 28.0))
+    }
+
+    fn draw_annotation_label(
+        context: &mut AnnotationPaintContext<'_>,
+        annotation: &CartesianAnnotation,
+        anchor: Option<Point>,
+    ) {
+        let Some(anchor) = anchor.filter(|_| !annotation.label.is_empty()) else {
+            return;
+        };
+        let size = context.theme.tokens.typography.scale.xs;
+        let (width, height) = context.text.measure(&annotation.label, size, None);
+        let width = f64::from(width) + 16.0;
+        let height = f64::from(height) + 10.0;
+        let plot = context.plot;
+        let x = anchor
+            .x
+            .clamp(plot.x0 + 4.0, (plot.x1 - width - 4.0).max(plot.x0 + 4.0));
+        let y = anchor
+            .y
+            .clamp(plot.y0 + 4.0, (plot.y1 - height - 4.0).max(plot.y0 + 4.0));
+        let rect = RoundedRect::from_rect(Rect::new(x, y, x + width, y + height), 5.0);
+        context.scene.fill(
+            Fill::NonZero,
+            context.transform,
+            context.theme.tokens.colors.surfaces.overlay,
+            None,
+            &rect,
+        );
+        context.scene.stroke(
+            &Stroke::new(1.0),
+            context.transform,
+            alpha(annotation.color, 160),
+            None,
+            &rect,
+        );
+        context.text.draw_text(
+            context.scene,
+            &annotation.label,
+            size,
+            context.theme.tokens.colors.text_primary,
+            context.transform * Affine::translate((x + 8.0, y + 5.0)),
+            None,
+        );
     }
 
     fn draw_legend(
@@ -2365,7 +2493,7 @@ impl CartesianPlot {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(hovered) = self.hovered.filter(|_| self.style.tooltip) else {
+        let Some(hovered) = self.hovered.filter(|_| self.style.tooltip.enabled) else {
             return;
         };
         let Some(series) = self.series.get(hovered.series) else {
@@ -2374,7 +2502,7 @@ impl CartesianPlot {
         let Some(datum) = series.data.get(hovered.datum) else {
             return;
         };
-        if self.style.show_crosshair {
+        if self.style.rendering.show_crosshair {
             let plot = self.plot_rect();
             scene.stroke(
                 &Stroke::new(1.0),
@@ -2403,22 +2531,23 @@ impl CartesianPlot {
         );
         let detail = if datum.detail.is_empty() {
             coordinates
-        } else if self.style.tooltip_show_coordinates {
+        } else if self.style.tooltip.show_coordinates {
             format!("{}  ·  {coordinates}", datum.detail)
         } else {
             datum.detail.clone()
         };
         let (title_width, _) = tr.measure(title, theme.tokens.typography.scale.sm, None);
         let (detail_width, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
-        let padding = self.style.tooltip_padding.clamp(8.0, 32.0);
+        let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
         let content_width = f64::from(title_width.max(detail_width));
         let available_width = (self.rect.width() - 16.0).max(1.0);
         let width = self
             .style
-            .tooltip_width
-            .unwrap_or_else(|| content_width.max(self.style.tooltip_min_width) + padding * 2.0)
+            .tooltip
+            .width
+            .unwrap_or_else(|| content_width.max(self.style.tooltip.min_width) + padding * 2.0)
             .clamp(80.0_f64.min(available_width), available_width);
-        let anchor = match self.style.tooltip_anchor {
+        let anchor = match self.style.tooltip.anchor {
             CartesianTooltipAnchor::Pointer if self.rect.contains(self.pointer) => self.pointer,
             CartesianTooltipAnchor::Pointer | CartesianTooltipAnchor::Datum => hovered.point,
         };
@@ -2427,7 +2556,7 @@ impl CartesianPlot {
             anchor,
             (width, height),
             self.rect,
-            self.style.tooltip_offset.max(0.0),
+            self.style.tooltip.offset.max(0.0),
         );
         let x = rect.x0;
         let y = rect.y0;
@@ -2464,7 +2593,7 @@ impl CartesianPlot {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.hovered.is_some() || !self.style.tooltip {
+        if self.hovered.is_some() || !self.style.tooltip.enabled {
             return;
         }
         let Some(annotation) = self
@@ -2485,13 +2614,14 @@ impl CartesianPlot {
         };
         let (title_width, _) = tr.measure(title, theme.tokens.typography.scale.sm, None);
         let (detail_width, _) = tr.measure(detail, theme.tokens.typography.scale.xs, None);
-        let padding = self.style.tooltip_padding.clamp(8.0, 32.0);
+        let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
         let available_width = (self.rect.width() - 16.0).max(1.0);
         let width = self
             .style
-            .tooltip_width
+            .tooltip
+            .width
             .unwrap_or_else(|| {
-                f64::from(title_width.max(detail_width)).max(self.style.tooltip_min_width)
+                f64::from(title_width.max(detail_width)).max(self.style.tooltip.min_width)
                     + padding * 2.0
             })
             .clamp(80.0_f64.min(available_width), available_width);
@@ -2500,7 +2630,7 @@ impl CartesianPlot {
             self.pointer,
             (width, height),
             self.rect,
-            self.style.tooltip_offset.max(4.0),
+            self.style.tooltip.offset.max(4.0),
         );
         scene.fill(
             Fill::NonZero,
@@ -2533,6 +2663,156 @@ impl CartesianPlot {
             transform * Affine::translate((rect.x0 + padding, rect.y0 + padding + 24.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
         );
+    }
+
+    fn activate_inspected(&mut self) -> bool {
+        if let Some(hovered) = self.hovered
+            && let (Some(series), Some(datum)) = (
+                self.series.get(hovered.series),
+                self.series
+                    .get(hovered.series)
+                    .and_then(|series| series.data.get(hovered.datum)),
+            )
+        {
+            self.activated = Some((series.id.clone(), datum.id.clone()));
+            return true;
+        }
+        if let Some(annotation) = self
+            .hovered_annotation
+            .and_then(|index| self.annotations.get(index))
+        {
+            self.annotation_activated = Some(annotation.id.clone());
+            return true;
+        }
+        false
+    }
+
+    fn begin_pointer_gesture(&mut self, modifiers: winit::event::Modifiers) -> bool {
+        if !self.plot_rect().contains(self.pointer) {
+            return false;
+        }
+        if self.style.pan != CartesianPan::Disabled
+            && (!self.style.gestures.pan_modifier_required || modifiers.state().alt_key())
+        {
+            self.pan_last = Some(self.pointer);
+        } else if self.style.brush != CartesianBrush::Disabled
+            && (!self.style.gestures.brush_modifier_required || modifiers.state().shift_key())
+        {
+            self.brush_start = Some(self.pointer);
+            self.brush_current = self.pointer;
+        } else {
+            return false;
+        }
+        self.hovered = None;
+        self.hovered_annotation = None;
+        true
+    }
+
+    fn finish_pointer_gesture(&mut self) -> bool {
+        if self.pan_last.take().is_some() {
+            return true;
+        }
+        if self.brush_start.is_some() {
+            self.finish_brush();
+            return true;
+        }
+        if self.style.interactive_legend
+            && let Some(id) = self
+                .legend_hits
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .map(|(id, _)| id.clone())
+        {
+            return self.toggle_series(&id);
+        }
+        self.activate_inspected()
+    }
+
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) {
+        let x_scale = self.style.x_axis.scale;
+        let y_scale = self.style.y_axis.scale;
+        let targets = self
+            .series
+            .iter()
+            .enumerate()
+            .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+            .flat_map(|(series_index, series)| {
+                series
+                    .data
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, datum)| {
+                        Self::transform(datum.x, x_scale).is_some()
+                            && Self::transform(datum.y, y_scale).is_some()
+                    })
+                    .map(move |(datum_index, _)| (series_index, datum_index))
+            })
+            .collect::<Vec<_>>();
+        let position = self.hovered.and_then(|hovered| {
+            targets
+                .iter()
+                .position(|target| *target == (hovered.series, hovered.datum))
+        });
+        self.hovered = moved_index(position, targets.len(), action).and_then(|position| {
+            targets.get(position).and_then(|&(series, datum)| {
+                self.map_animated_datum(
+                    series,
+                    datum,
+                    self.plot_rect(),
+                    self.domain(&self.style.x_axis, true),
+                    self.domain(&self.style.y_axis, false),
+                    Instant::now(),
+                )
+                .map(|point| Hovered {
+                    series,
+                    datum,
+                    point,
+                })
+            })
+        });
+        self.hovered_annotation = None;
+        self.keyboard_inspection = self.hovered.is_some();
+    }
+
+    fn handle_touch_action(&mut self, action: ChartTouchAction) -> bool {
+        match action {
+            ChartTouchAction::Inspect(point) => {
+                self.pointer = point;
+                self.update_hover();
+                self.keyboard_inspection = false;
+                false
+            }
+            ChartTouchAction::Activate(point) => {
+                self.pointer = point;
+                self.update_hover();
+                self.activate_inspected()
+            }
+            ChartTouchAction::Clear => {
+                self.clear_inspection();
+                false
+            }
+        }
+    }
+
+    fn update_pointer(&mut self, point: Point) -> bool {
+        self.pointer = point;
+        let consumed = if let Some(previous) = self.pan_last.replace(self.pointer) {
+            let delta = self.pointer - previous;
+            self.pan_view_pixels(delta.x, delta.y, self.plot_rect());
+            true
+        } else if self.brush_start.is_some() {
+            self.brush_current = self.pointer;
+            true
+        } else {
+            self.update_hover();
+            false
+        };
+        if consumed {
+            self.hovered = None;
+            self.hovered_annotation = None;
+        }
+        self.keyboard_inspection = false;
+        consumed
     }
 
     fn tooltip_rect(anchor: Point, size: (f64, f64), bounds: Rect, offset: f64) -> Rect {
@@ -2713,7 +2993,15 @@ impl Widget for CartesianPlot {
         }
         self.draw_axes(scene, transform, tr, theme, plot, xd, yd);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &plot);
-        self.draw_annotations(scene, transform, tr, theme, plot, xd, yd);
+        self.draw_annotations(&mut AnnotationPaintContext {
+            scene,
+            transform,
+            text: tr,
+            theme,
+            plot,
+            x_domain: xd,
+            y_domain: yd,
+        });
         self.draw_series(scene, transform, plot, xd, yd, now);
         if let Some(brush) = self.brush_rect() {
             scene.fill(
@@ -2749,57 +3037,28 @@ impl Widget for CartesianPlot {
         _taffy: &TaffyTree<()>,
     ) {
         if let Some(action) = self.touch.handle(event, scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if let Some(hovered) = self.hovered
-                        && let (Some(series), Some(datum)) = (
-                            self.series.get(hovered.series),
-                            self.series
-                                .get(hovered.series)
-                                .and_then(|series| series.data.get(hovered.datum)),
-                        )
-                    {
-                        self.activated = Some((series.id.clone(), datum.id.clone()));
-                        *handled = true;
-                        *focus_target = Some(node_id);
-                    } else if let Some(annotation) = self
-                        .hovered_annotation
-                        .and_then(|index| self.annotations.get(index))
-                    {
-                        self.annotation_activated = Some(annotation.id.clone());
-                        *handled = true;
-                        *focus_target = Some(node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.clear_inspection(),
+            if self.handle_touch_action(action) {
+                *handled = true;
+                *focus_target = Some(node_id);
             }
+            return;
+        }
+        if let Some(action) = chart_nav_action(event) {
+            if action == ChartNavAction::Activate {
+                let _ = self.activate_inspected();
+            } else {
+                self.move_keyboard_inspection(action);
+            }
+            *handled = true;
+            *focus_target = Some(node_id);
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
-                if let Some(previous) = self.pan_last.replace(self.pointer) {
-                    let delta = self.pointer - previous;
-                    self.pan_view_pixels(delta.x, delta.y, self.plot_rect());
-                    self.hovered = None;
-                    self.hovered_annotation = None;
+                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                if self.update_pointer(point) {
                     *handled = true;
-                } else if self.brush_start.is_some() {
-                    self.brush_current = self.pointer;
-                    self.hovered = None;
-                    self.hovered_annotation = None;
-                    *handled = true;
-                } else {
-                    self.update_hover();
                 }
-                self.keyboard_inspection = false;
             }
             WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => {
                 self.hovered = None;
@@ -2813,7 +3072,7 @@ impl Widget for CartesianPlot {
             }
             WindowEvent::MouseWheel { delta, .. }
                 if self.style.zoom != CartesianZoom::Disabled
-                    && (!self.style.zoom_modifier_required
+                    && (!self.style.gestures.zoom_modifier_required
                         || modifiers.state().control_key()
                         || modifiers.state().super_key()) =>
             {
@@ -2840,7 +3099,8 @@ impl Widget for CartesianPlot {
             WindowEvent::PanGesture { delta, .. }
                 if self.style.pan != CartesianPan::Disabled
                     && self.plot_rect().contains(self.pointer)
-                    && (!self.style.pan_modifier_required || modifiers.state().alt_key()) =>
+                    && (!self.style.gestures.pan_modifier_required
+                        || modifiers.state().alt_key()) =>
             {
                 if self.pan_view_pixels(f64::from(delta.x), f64::from(delta.y), self.plot_rect()) {
                     self.hovered = None;
@@ -2853,28 +3113,7 @@ impl Widget for CartesianPlot {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.style.pan != CartesianPan::Disabled
-                && self.plot_rect().contains(self.pointer)
-                && (!self.style.pan_modifier_required || modifiers.state().alt_key()) =>
-            {
-                self.pan_last = Some(self.pointer);
-                self.hovered = None;
-                self.hovered_annotation = None;
-                *handled = true;
-                *focus_target = Some(node_id);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.style.brush != CartesianBrush::Disabled
-                && self.plot_rect().contains(self.pointer)
-                && (!self.style.brush_modifier_required || modifiers.state().shift_key()) =>
-            {
-                self.brush_start = Some(self.pointer);
-                self.brush_current = self.pointer;
-                self.hovered = None;
-                self.hovered_annotation = None;
+            } if self.begin_pointer_gesture(*modifiers) => {
                 *handled = true;
                 *focus_target = Some(node_id);
             }
@@ -2882,118 +3121,7 @@ impl Widget for CartesianPlot {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.pan_last.take().is_some() {
-                    *handled = true;
-                    *focus_target = Some(node_id);
-                    return;
-                }
-                if self.brush_start.is_some() {
-                    self.finish_brush();
-                    *handled = true;
-                    *focus_target = Some(node_id);
-                    return;
-                }
-                if self.style.interactive_legend
-                    && let Some(id) = self
-                        .legend_hits
-                        .iter()
-                        .find(|(_, rect)| rect.contains(self.pointer))
-                        .map(|(id, _)| id.clone())
-                {
-                    let _ = self.toggle_series(&id);
-                    *handled = true;
-                    *focus_target = Some(node_id);
-                    return;
-                }
-                if let Some(hovered) = self.hovered
-                    && let (Some(series), Some(datum)) = (
-                        self.series.get(hovered.series),
-                        self.series
-                            .get(hovered.series)
-                            .and_then(|series| series.data.get(hovered.datum)),
-                    )
-                {
-                    self.activated = Some((series.id.clone(), datum.id.clone()));
-                    *handled = true;
-                    *focus_target = Some(node_id);
-                    return;
-                }
-                if let Some(annotation) = self
-                    .hovered_annotation
-                    .and_then(|index| self.annotations.get(index))
-                {
-                    self.annotation_activated = Some(annotation.id.clone());
-                    *handled = true;
-                    *focus_target = Some(node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    if let Some(hovered) = self.hovered
-                        && let (Some(series), Some(datum)) = (
-                            self.series.get(hovered.series),
-                            self.series
-                                .get(hovered.series)
-                                .and_then(|series| series.data.get(hovered.datum)),
-                        )
-                    {
-                        self.activated = Some((series.id.clone(), datum.id.clone()));
-                    } else if let Some(annotation) = self
-                        .hovered_annotation
-                        .and_then(|index| self.annotations.get(index))
-                    {
-                        self.annotation_activated = Some(annotation.id.clone());
-                    }
-                } else {
-                    let x_scale = self.style.x_axis.scale;
-                    let y_scale = self.style.y_axis.scale;
-                    let targets = self
-                        .series
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, series)| !self.hidden_series.contains(&series.id))
-                        .flat_map(|(series_index, series)| {
-                            series
-                                .data
-                                .iter()
-                                .enumerate()
-                                .filter(move |(_, datum)| {
-                                    Self::transform(datum.x, x_scale).is_some()
-                                        && Self::transform(datum.y, y_scale).is_some()
-                                })
-                                .map(move |(datum_index, _)| (series_index, datum_index))
-                        })
-                        .collect::<Vec<_>>();
-                    let position = self.hovered.and_then(|hovered| {
-                        targets
-                            .iter()
-                            .position(|target| *target == (hovered.series, hovered.datum))
-                    });
-                    self.hovered =
-                        moved_index(position, targets.len(), action).and_then(|position| {
-                            targets.get(position).and_then(|&(series, datum)| {
-                                self.map_animated_datum(
-                                    series,
-                                    datum,
-                                    self.plot_rect(),
-                                    self.domain(&self.style.x_axis, true),
-                                    self.domain(&self.style.y_axis, false),
-                                    Instant::now(),
-                                )
-                                .map(|point| Hovered {
-                                    series,
-                                    datum,
-                                    point,
-                                })
-                            })
-                        });
-                    self.hovered_annotation = None;
-                    self.keyboard_inspection = self.hovered.is_some();
-                }
+            } if self.finish_pointer_gesture() => {
                 *handled = true;
                 *focus_target = Some(node_id);
             }
@@ -3490,10 +3618,10 @@ mod tests {
     #[test]
     fn sampling_configuration_is_sanitized_and_can_be_disabled() {
         let style = CartesianStyle::default().with_adaptive_sampling(false, f64::NAN);
-        assert!(!style.adaptive_sampling);
-        assert_eq!(style.max_points_per_pixel, 2.0);
+        assert!(!style.rendering.adaptive_sampling);
+        assert_eq!(style.rendering.max_points_per_pixel, 2.0);
         let style = style.with_adaptive_sampling(true, 100.0);
-        assert_eq!(style.max_points_per_pixel, 16.0);
+        assert_eq!(style.rendering.max_points_per_pixel, 16.0);
     }
 
     #[test]
@@ -3619,7 +3747,7 @@ mod tests {
             vec![PlotDatum::new("point", 0.0, 10.0)],
         );
         let mut plot = CartesianPlot::new(vec![old]);
-        plot.style.animation_duration = Duration::from_millis(200);
+        plot.style.animation.duration = Duration::from_millis(200);
         plot.set_series(vec![PlotSeries::new(
             "series",
             "Series",
