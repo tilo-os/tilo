@@ -150,7 +150,7 @@ fn url_encode(s: &str) -> String {
 /// runs it on a worker thread so the UI stays responsive.
 pub fn send_blocking(out: &Outgoing) -> Result<ResponseData, String> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent("qos-api-tester/0.1")
+        .user_agent("tilo-api-tester/0.1")
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -223,7 +223,7 @@ pub fn sample_response() -> ResponseData {
             KeyValue::new("cache-control", "no-cache, private"),
             KeyValue::new("x-request-id", "b1f4c2a9-77de-4e1a-9f0c-1a2b3c4d5e6f"),
             KeyValue::new("vary", "Accept-Encoding"),
-            KeyValue::new("server", "qos-edge/2.4"),
+            KeyValue::new("server", "tilo-edge/2.4"),
         ],
         body: body.to_string(),
         content_type: "application/json; charset=utf-8".into(),

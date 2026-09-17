@@ -87,7 +87,7 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
 pub fn run(_args: &[String]) {
     I18nManager::init("en-US");
     let mut ftl = String::new();
-    ftl.push_str("dash_title = QuickDesktop Dashboard\n");
+    ftl.push_str("dash_title = Tilo Desktop Dashboard\n");
     for i in 0..8 {
         let _ = writeln!(ftl, "dash_p{i} = Panel {i}");
     }

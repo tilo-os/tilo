@@ -1,4 +1,4 @@
-//! qos-app-host daemon entry point.
+//! tilo-app-host daemon entry point.
 //!
 //! Loads the on-disk registry, binds the Cap'n Proto control socket,
 //! and runs the accept loop. Best-effort systemd `READY=1` notify so a
@@ -26,15 +26,15 @@ use app_host::{default_socket_path, default_store_root, gc, store::Store, transp
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "qos-app-host",
-    about = "qOS app host: content-addressed package store + Cap'n Proto control socket."
+    name = "tilo-app-host",
+    about = "Tilo app host: content-addressed package store + Cap'n Proto control socket."
 )]
 struct Cli {
     /// Cap'n Proto control socket path. Default:
-    /// `$XDG_RUNTIME_DIR/qos/services/app-host.sock`.
+    /// `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`.
     #[arg(long)]
     socket: Option<PathBuf>,
-    /// Store root directory. Default: `~/.local/share/qos-apps`.
+    /// Store root directory. Default: `~/.local/share/tilo-apps`.
     #[arg(long)]
     store: Option<PathBuf>,
     /// Soft cap on total disk usage. When exceeded, GC walks
@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
         socket = %socket.display(),
         store  = %root.display(),
         max_store_bytes = cli.max_store_bytes,
-        "qos-app-host starting"
+        "tilo-app-host starting"
     );
 
     // Open / create the store + registry; persistent state lives

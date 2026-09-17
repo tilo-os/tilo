@@ -7,8 +7,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use qos_user_identity::DeviceCert;
 use serde::{Deserialize, Serialize};
+use tilo_user_identity::DeviceCert;
 
 use crate::shell::state::{
     Collaborator, PeerOrigin, RoomId, Workspace, WorkspaceId, WorkspaceTree,
@@ -469,7 +469,7 @@ pub fn make_invite_token_with_recipient(
         ));
     }
     if let Some(cert) = &owner_device_cert {
-        qos_user_identity::verify_device_cert(cert).map_err(std::io::Error::other)?;
+        tilo_user_identity::verify_device_cert(cert).map_err(std::io::Error::other)?;
         if cert.device_public_key != *key.public().as_bytes() {
             return Err(std::io::Error::other(
                 "invite certificate does not belong to the signing device",
@@ -588,7 +588,7 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
         return Err("endpoint id does not match embedded address".into());
     }
     if let Some(cert) = &token.owner_device_cert {
-        qos_user_identity::verify_device_cert(cert)
+        tilo_user_identity::verify_device_cert(cert)
             .map_err(|error| format!("identity -> device certificate invalid: {error}"))?;
         if cert.device_public_key != *endpoint.as_bytes() {
             return Err("device certificate does not name the inviting endpoint".into());
@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn home_host_pin_is_signed_and_tamper_evident() {
-        use qos_user_identity::{DeviceCapabilities, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
         let owner = iroh::SecretKey::from_bytes(&[0x21; 32]);
         let relay = iroh::SecretKey::from_bytes(&[0x22; 32]);
@@ -878,7 +878,7 @@ mod tests {
 
     #[test]
     fn identity_certificate_binds_inviter_person_to_device_endpoint() {
-        use qos_user_identity::{DeviceCapabilities, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
         let device = iroh::SecretKey::from_bytes(&[42; 32]);

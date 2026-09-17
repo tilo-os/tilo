@@ -4,10 +4,10 @@
 //! apps talk to when they need privileged operations the sandbox blocks —
 //! file open/save, screencast, camera access. The host portal proxies
 //! every request to a *backend* implementation that owns the
-//! decision-and-UI side; this is that backend for the Nirios compositor.
+//! decision-and-UI side; this is that backend for the Tilo compositor.
 //!
 //! We expose these D-Bus interfaces under
-//! `org.freedesktop.impl.portal.desktop.qos`:
+//! `org.freedesktop.impl.portal.desktop.tilo`:
 //!
 //! - `org.freedesktop.impl.portal.FileChooser` — `OpenFile` / `SaveFile` / `SaveFiles`.
 //! - `org.freedesktop.impl.portal.ScreenCast` — `CreateSession` /
@@ -517,7 +517,7 @@ pub(crate) fn private_state_root() -> Option<PathBuf> {
 }
 
 fn default_portal_consent_path() -> Option<PathBuf> {
-    private_state_root().map(|root| root.join("qos/portal/consents.json"))
+    private_state_root().map(|root| root.join("tilo/portal/consents.json"))
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
@@ -781,7 +781,7 @@ impl PortalContext {
             file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
             screencast_provisioner: ScreenCastStreamProvisionerHandle::new(Arc::new(
                 UnavailableScreenCastProvisioner::new(
-                    "this qOS session has no PipeWire capture producer",
+                    "this Tilo session has no PipeWire capture producer",
                 ),
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
@@ -948,9 +948,9 @@ pub fn documents_for_session() -> DocumentStoreHandle {
 /// Bus name we register under. xdg-desktop-portal expects backends to
 /// own `org.freedesktop.impl.portal.desktop.<vendor>`; matched against
 /// `portals/<vendor>.portal` (see
-/// `os/usr/share/xdg-desktop-portal/portals/qos.portal`). The compositor is
+/// `os/usr/share/xdg-desktop-portal/portals/tilo.portal`). The compositor is
 /// deliberately the sole owner; there is no competing activation service.
-pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.qos";
+pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.tilo";
 
 /// Object path the portal's frontend dispatches to; xdg-desktop-portal hard-codes `/org/freedesktop/portal/desktop`.
 pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -973,7 +973,7 @@ pub async fn serve(
     connection: zbus::Connection,
     ctx: PortalContext,
 ) -> Result<ServerHandle, zbus::Error> {
-    serve_with_inhibit(connection, ctx, qos_power_mgmt::InhibitRegistry::new()).await
+    serve_with_inhibit(connection, ctx, tilo_power_mgmt::InhibitRegistry::new()).await
 }
 
 /// Serve the portal backend using the compositor's actual inhibitor registry.
@@ -982,7 +982,7 @@ pub async fn serve(
 pub async fn serve_with_inhibit(
     connection: zbus::Connection,
     ctx: PortalContext,
-    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+    inhibit_registry: tilo_power_mgmt::InhibitRegistry,
 ) -> Result<ServerHandle, zbus::Error> {
     serve_with_inhibit_and_clipboard(
         connection,
@@ -999,7 +999,7 @@ pub async fn serve_with_inhibit(
 pub async fn serve_with_inhibit_and_clipboard(
     connection: zbus::Connection,
     mut ctx: PortalContext,
-    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+    inhibit_registry: tilo_power_mgmt::InhibitRegistry,
     clipboard_broker: clipboard::ClipboardBrokerHandle,
 ) -> Result<ServerHandle, zbus::Error> {
     use account::AccountBackend;

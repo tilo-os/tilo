@@ -1,4 +1,4 @@
-//! `qos-agent` — see the crate docs in `lib.rs`.
+//! `tilo-agent` — see the crate docs in `lib.rs`.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -32,15 +32,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use qos_agent::{Config, Session};
+use tilo_agent::{Config, Session};
 
 /// A participant without a window: joins a word-processor document through
 /// the session's collaboration broker and carries out instructions written
 /// to it ("Claude: turn the bullets into a table").
 #[derive(Parser, Debug)]
-#[command(name = "qos-agent")]
+#[command(name = "tilo-agent")]
 struct Cli {
-    /// The room (workspace) the document lives in — the `QOS_WORKSPACE_ID`
+    /// The room (workspace) the document lives in — the `TILO_WORKSPACE_ID`
     /// the app was launched with.
     #[arg(long)]
     workspace: uuid::Uuid,
@@ -49,14 +49,14 @@ struct Cli {
     #[arg(long)]
     record: Option<String>,
     /// The app whose document this is (its manifest package id).
-    #[arg(long, default_value = "dev.qos.word-processor")]
+    #[arg(long, default_value = "dev.tilo.word-processor")]
     app: String,
     /// The agent's name: its caret pill, its history author, and the word
     /// an instruction starts with.
     #[arg(long, default_value = "Claude")]
     name: String,
     /// Explicit typed Cap'n Proto broker socket for headless diagnostics.
-    /// Normal launched sessions inherit `QOS_SVC_COLLAB_FD` instead.
+    /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
     #[arg(long)]
     endpoint: Option<PathBuf>,
     /// Pause between edits, in milliseconds, so the caret can be watched.

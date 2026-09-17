@@ -1,4 +1,4 @@
-//! Video Editor — a CRDT-native non-linear editor for qOS, built on the
+//! Video Editor — a CRDT-native non-linear editor for Tilo, built on the
 //! `ui` toolkit.
 //!
 //! Layers:

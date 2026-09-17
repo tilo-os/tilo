@@ -192,7 +192,7 @@ fn clear_progress(identity_dir: &std::path::Path) -> std::io::Result<()> {
 }
 
 /// Context for the compositor-owned identity ceremony. Both variants keep
-/// the same security gates; the host version only makes clear that qOS is not
+/// the same security gates; the host version only makes clear that Tilo is not
 /// replacing the login/account setup the surrounding Linux system completed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OnboardingContext {
@@ -216,8 +216,8 @@ pub enum OnboardingVisualState {
     RestoreError,
 }
 
-pub const HOST_DESKTOP_INTRO_TITLE: &str = "Set up your qOS identity";
-pub const HOST_DESKTOP_INTRO_BODY: &str = "You are already signed in to this computer. Before the qOS desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.";
+pub const HOST_DESKTOP_INTRO_TITLE: &str = "Set up your Tilo identity";
+pub const HOST_DESKTOP_INTRO_BODY: &str = "You are already signed in to this computer. Before the Tilo Desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.";
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_CONNECT: &str = "onboarding.connect";
@@ -436,7 +436,7 @@ impl OnboardingView {
         Self::new_in_context(identity_dir, OnboardingContext::FullSystem)
     }
 
-    /// Build the reduced identity-only ceremony for qOS installed as a
+    /// Build the reduced identity-only ceremony for Tilo installed as a
     /// desktop session on an existing Linux host.
     pub fn new_for_host_desktop(identity_dir: PathBuf) -> Self {
         Self::new_in_context(identity_dir, OnboardingContext::HostDesktop)
@@ -473,7 +473,7 @@ impl OnboardingView {
                 let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
                 let profile = if passphrase.is_empty() {
                     // Explicit compatibility path for schema-1 exports from
-                    // older qOS builds. New backups always require a
+                    // older Tilo builds. New backups always require a
                     // passphrase and never expose plaintext JSON.
                     store.import(source).map_err(|error| error.to_string())?
                 } else {
@@ -749,7 +749,7 @@ impl OnboardingView {
         self.tour_page = None;
         let minted = MintedIdentity {
             fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
-            path: PathBuf::from("/var/lib/qos/identities/primary.json"),
+            path: PathBuf::from("/var/lib/tilo/identities/primary.json"),
         };
         match state {
             OnboardingVisualState::Intro => {}
@@ -773,7 +773,7 @@ impl OnboardingView {
                 let _ = self.flow.complete(minted);
                 self.backup_was_verified = state == OnboardingVisualState::BackupVerified;
                 self.backup_saved = self.backup_was_verified.then(|| {
-                    PathBuf::from("/home/user/Documents/qos-identity-backup.qos-identity")
+                    PathBuf::from("/home/user/Documents/tilo-identity-backup.tilo-identity")
                 });
                 self.identity_ready_page = state == OnboardingVisualState::Ready;
             }
@@ -819,7 +819,7 @@ impl OnboardingView {
                     // should not visually collide with the panel outline.
                     .with_padding(spacing.s3, 0.0)
                     .push(Box::new(
-                        Text::new("qOS identity setup")
+                        Text::new("Tilo identity setup")
                             .with_id("onboarding.progress.eyebrow")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
@@ -1045,7 +1045,7 @@ impl OnboardingView {
             .push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Text::new("qOS  •  DESKTOP TOUR")
+                        Text::new("Tilo  •  DESKTOP TOUR")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     ))
@@ -1101,12 +1101,12 @@ impl OnboardingView {
         let (title, intro, cards): (&str, &str, &[(&str, &str)]) = match page {
             TourPage::Navigate => (
                 "Everything is close at hand",
-                "qOS keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.",
+                "Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.",
                 NAVIGATE_CARDS,
             ),
             TourPage::Organise => (
                 "A place for each kind of work",
-                "The layout is simple once its four levels have names. qOS remembers the arrangement for you.",
+                "The layout is simple once its four levels have names. Tilo remembers the arrangement for you.",
                 ORGANISE_CARDS,
             ),
             TourPage::Collaborate => (
@@ -1123,7 +1123,7 @@ impl OnboardingView {
                     ),
                     (
                         "Undo and permissions are system features",
-                        "History follows authorship, and apps ask qOS for capabilities instead of receiving ambient access.",
+                        "History follows authorship, and apps ask Tilo for capabilities instead of receiving ambient access.",
                     ),
                 ],
             ),
@@ -1148,7 +1148,7 @@ impl OnboardingView {
     /// Sticky tour navigation, kept outside the scrollable lesson body.
     fn tour_actions(page: TourPage) -> Box<dyn Widget> {
         let (primary_label, primary_key) = if page == TourPage::Start {
-            ("Enter qOS", KEY_FINISH)
+            ("Enter Tilo", KEY_FINISH)
         } else {
             ("Continue", KEY_TOUR_NEXT)
         };
@@ -1307,7 +1307,7 @@ impl OnboardingView {
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_gap(spacing.s3)
-                    .push(heading("Protect your qOS identity", theme))
+                    .push(heading("Protect your Tilo identity", theme))
                     .push(spaced_banner(
                         Banner::warning(NO_RECOVERY_TITLE)
                             .with_message(
@@ -1376,7 +1376,7 @@ impl OnboardingView {
                 theme.tokens.spacing.s3
             })
             .push(paragraph(
-                "Save an encrypted copy somewhere other than this device. Keep the file and its passphrase separately; together they can restore this identity. qOS verifies the finished file before reporting success.",
+                "Save an encrypted copy somewhere other than this device. Keep the file and its passphrase separately; together they can restore this identity. Tilo verifies the finished file before reporting success.",
                 theme,
             ))
             .push(Box::new(backup_fields));
@@ -1433,7 +1433,7 @@ impl OnboardingView {
             } else {
                 theme.tokens.spacing.s4
             })
-            .push(heading("Back up your qOS identity", theme))
+            .push(heading("Back up your Tilo identity", theme))
             .push(spaced_banner(
                 Banner::success("Your local identity was created")
                     .with_icon(ui::icons::Icon::Check),
@@ -1446,7 +1446,7 @@ impl OnboardingView {
 
         if !self.backup_was_verified {
             page = page.push(paragraph(
-                "No recovery words are shown because they could not restore this single-device identity. The encrypted backup is the real recovery material, and qOS verifies it before accepting it.",
+                "No recovery words are shown because they could not restore this single-device identity. The encrypted backup is the real recovery material, and Tilo verifies it before accepting it.",
                 theme,
             ));
         }
@@ -1456,12 +1456,12 @@ impl OnboardingView {
     fn done(&self, theme: &Theme) -> Box<dyn Widget> {
         let system_care = match self.context {
             OnboardingContext::FullSystem => {
-                "qOS checks signed system updates automatically after setup when the machine is \
+                "Tilo checks signed system updates automatically after setup when the machine is \
                  online. You can check, stage, and roll back releases in Settings."
             }
             OnboardingContext::HostDesktop => {
                 "Your Linux distribution remains responsible for OS updates and system time. \
-                 This host-session package does not install or run qOS bootc update services."
+                 This host-session package does not install or run Tilo bootc update services."
             }
         };
         let (title, body, ready) = match self.context {
@@ -1469,9 +1469,9 @@ impl OnboardingView {
                 (DONE_TITLE, DONE_BODY, "Identity stored on this device")
             }
             OnboardingContext::HostDesktop => (
-                "Your qOS identity is ready",
-                "qOS will use this local identity when you collaborate or invite peers. It remains separate from your Linux login and is not an online account.",
-                "Ready for qOS collaboration",
+                "Your Tilo identity is ready",
+                "Tilo will use this local identity when you collaborate or invite peers. It remains separate from your Linux login and is not an online account.",
+                "Ready for Tilo collaboration",
             ),
         };
         let mut page = Column::new()
@@ -1859,7 +1859,7 @@ fn terminate_nearby_pairing(child: &mut Option<Child>) {
         let leader_finished = child.try_wait().ok().flatten().is_some();
         // Signal 0 only checks whether any descendant still occupies the
         // dedicated group. Do not return just because pkexec itself exited:
-        // qos-home-peer-control or qos-enroll may still be winding down.
+        // tilo-home-peer-control or tilo-enroll may still be winding down.
         let group_gone = unsafe { libc::kill(group, 0) } != 0
             && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
         if leader_finished && group_gone {
@@ -1972,10 +1972,10 @@ impl Widget for OnboardingView {
                 let (initial, roots) = onboarding_picker_scope();
                 self.picker = Some((
                     PickerPurpose::ImportIdentity,
-                    FilePicker::new("Choose a qOS identity", initial, roots).with_filters(vec![
+                    FilePicker::new("Choose a Tilo identity", initial, roots).with_filters(vec![
                         ui::widget::file_picker::FileFilter::new(
-                            "qOS identity",
-                            &["qos-identity", "qos-identity-backup", "json"],
+                            "Tilo identity",
+                            &["tilo-identity", "tilo-identity-backup", "json"],
                         ),
                         ui::widget::file_picker::FileFilter::all(),
                     ]),
@@ -1994,17 +1994,17 @@ impl Widget for OnboardingView {
                     (Some(identity_dir), Some(status_path)) => {
                         let _ = std::fs::remove_file(status_path);
                         let label =
-                            std::env::var("HOSTNAME").unwrap_or_else(|_| "qOS device".into());
-                        let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
-                            .map_or_else(|| PathBuf::from("/var/lib/qos"), PathBuf::from);
-                        let requester = qos_relay::ProcessLease::capture(std::process::id());
+                            std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
+                        let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
+                            .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
+                        let requester = tilo_relay::ProcessLease::capture(std::process::id());
                         let spawn =
                             requester
                                 .map_err(|error| error.to_string())
                                 .and_then(|lease| {
                                     Command::new("pkexec")
                                         .args([
-                                            "/usr/libexec/qos-home-peer-control",
+                                            "/usr/libexec/tilo-home-peer-control",
                                             "pair-device",
                                             "--identity-root",
                                         ])
@@ -2020,7 +2020,7 @@ impl Widget for OnboardingView {
                                         .stdin(Stdio::null())
                                         .stdout(Stdio::piped())
                                         .stderr(Stdio::piped())
-                                        // pkexec, the privileged broker and qos-enroll must
+                                        // pkexec, the privileged broker and tilo-enroll must
                                         // share a revocable lifetime.  A dedicated process
                                         // group lets Cancel, Back and compositor teardown
                                         // stop the whole transaction instead of merely
@@ -2152,10 +2152,10 @@ impl Widget for OnboardingView {
                         FilePicker::new("Save encrypted identity backup", initial, roots)
                             .with_mode(FilePickerMode::Save)
                             .with_filters(vec![ui::widget::file_picker::FileFilter::new(
-                                "Encrypted qOS identity",
-                                &["qos-identity"],
+                                "Encrypted Tilo identity",
+                                &["tilo-identity"],
                             )])
-                            .with_filename("qos-identity-backup.qos-identity"),
+                            .with_filename("tilo-identity-backup.tilo-identity"),
                     ));
                     self.invalidation.focus();
                 } else {
@@ -2218,7 +2218,7 @@ impl Widget for OnboardingView {
                         clear_secret(&self.connect_passphrase);
                     }
                     Err(error) => {
-                        tracing::error!(target: "qos::onboarding", %error, "identity import failed");
+                        tracing::error!(target: "tilo::onboarding", %error, "identity import failed");
                         self.error = Some(error);
                         self.invalidation.structure();
                     }
@@ -2251,7 +2251,7 @@ impl Widget for OnboardingView {
                         let _ = self.persist_progress(PersistedStage::IdentityReady);
                     }
                     Err(e) => {
-                        tracing::error!(target: "qos::onboarding", error = %e, "identity minting failed");
+                        tracing::error!(target: "tilo::onboarding", error = %e, "identity minting failed");
                         self.error = Some(e);
                         // Stay on the protected step. A failed write is not a
                         // completed identity and must never release the desktop.
@@ -2730,7 +2730,7 @@ mod tests {
             c.fetch_add(1, Ordering::SeqCst);
             Ok(MintedIdentity {
                 fingerprint: "ab".repeat(32),
-                path: PathBuf::from("/home/user/.config/qos/identity/primary.json"),
+                path: PathBuf::from("/home/user/.config/tilo/identity/primary.json"),
             })
         }));
         (v, calls)
@@ -3588,7 +3588,7 @@ mod tests {
                 assert_eq!(path, &PathBuf::from("/media/backup/primary.json"));
                 Ok(MintedIdentity {
                     fingerprint: "cd".repeat(32),
-                    path: PathBuf::from("/home/user/.config/qos/identity/cd.json"),
+                    path: PathBuf::from("/home/user/.config/tilo/identity/cd.json"),
                 })
             }),
         );
@@ -3659,7 +3659,7 @@ mod tests {
     fn failed_connect_stays_on_connect_screen_and_shows_error() {
         let mut view = OnboardingView::with_handlers(
             Box::new(|| Err("create should not run".to_string())),
-            Box::new(|_, _| Err("not a qOS identity".to_string())),
+            Box::new(|_, _| Err("not a Tilo identity".to_string())),
         );
         let mut doc = AutoCommit::new();
         press(&mut doc, KEY_CONNECT);
@@ -3667,12 +3667,12 @@ mod tests {
         let _ = doc.put(
             &automerge::ROOT,
             KEY_CONNECT_PATH,
-            ScalarValue::Str("/media/identity.qos-identity".into()),
+            ScalarValue::Str("/media/identity.tilo-identity".into()),
         );
         press(&mut doc, KEY_IMPORT);
         view.sync(&mut doc, &automerge::ROOT);
         assert_eq!(view.flow().screen(), Screen::Connect);
-        assert_eq!(view.error(), Some("not a qOS identity"));
+        assert_eq!(view.error(), Some("not a Tilo identity"));
     }
 
     #[test]
@@ -3705,7 +3705,7 @@ mod tests {
         let _ = doc.put(
             &automerge::ROOT,
             KEY_CONNECT_PATH,
-            ScalarValue::Str("/media/identity.qos-identity".into()),
+            ScalarValue::Str("/media/identity.tilo-identity".into()),
         );
         view.sync(&mut doc, &automerge::ROOT);
         let enabled = accessibility_for_id(
@@ -3747,7 +3747,7 @@ mod tests {
                 assert_eq!(identity, &PathBuf::from("/identity/primary.json"));
                 assert_eq!(
                     destination.file_name().and_then(|name| name.to_str()),
-                    Some("qos-identity-backup.qos-identity")
+                    Some("tilo-identity-backup.tilo-identity")
                 );
                 assert_eq!(passphrase, b"correct horse battery staple");
                 exports_for_handler.fetch_add(1, Ordering::SeqCst);

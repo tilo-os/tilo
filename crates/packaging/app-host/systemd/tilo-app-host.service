@@ -1,0 +1,15 @@
+[Unit]
+Description=Tilo app host (content-addressed package store)
+After=default.target
+
+[Service]
+ExecStart=/usr/libexec/tilo-app-host --socket %t/tilo/services/app-host.sock --store %S/tilo-app-host
+Type=notify
+Restart=on-failure
+RuntimeDirectory=tilo/services
+RuntimeDirectoryPreserve=yes
+StateDirectory=tilo-app-host
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=default.target

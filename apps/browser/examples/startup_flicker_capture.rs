@@ -15,7 +15,7 @@ use ui::webview::wpe::WpeEngine;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
 
 fn output_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("qos-browser-flicker-{}", std::process::id()))
+    std::env::temp_dir().join(format!("tilo-browser-flicker-{}", std::process::id()))
 }
 
 fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {

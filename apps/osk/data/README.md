@@ -1,6 +1,6 @@
 # OSK language data
 
-Compact, embedded, **offline** language data for the qOS on-screen keyboard's
+Compact, embedded, **offline** language data for the Tilo on-screen keyboard's
 swipe-to-type decoder and next-word predictor (workstream **W9**). All files
 here are `include_str!`-bundled into the `osk` binary at build time, so the
 keyboard works with no network and no model download.

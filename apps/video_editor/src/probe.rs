@@ -1293,7 +1293,7 @@ mod tests {
     fn the_same_bytes_on_disk_are_refused_through_probe_file() {
         // Prove it through the production entry point the importer calls, not
         // just the pure byte path.
-        let f = std::env::temp_dir().join(format!("qos-ve-fake-{}.mp4", std::process::id()));
+        let f = std::env::temp_dir().join(format!("tilo-ve-fake-{}.mp4", std::process::id()));
         std::fs::write(&f, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
         let err = probe_file(&f).expect_err("probe_file refuses an HTML page named .mp4");
         assert_eq!(

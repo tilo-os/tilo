@@ -106,7 +106,7 @@ impl NotificationPortalHandle {
         {
             parameter.push(target);
         }
-        // platform-data is always present. qOS does not claim an activation
+        // platform-data is always present. Tilo does not claim an activation
         // token until xdg-activation is actually implemented.
         let platform_data: HashMap<String, OwnedValue> = HashMap::new();
         if let Ok(value) = OwnedValue::try_from(Value::new(platform_data)) {

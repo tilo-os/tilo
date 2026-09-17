@@ -1,4 +1,4 @@
-//! Typst — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Typst — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A split-view Typst editor: a monospace, syntax-highlighted source pane on
 //! the left, a live rendered preview of the compiled document on the right,

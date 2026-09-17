@@ -1,7 +1,7 @@
 //! Iroh-gossip actor for workspace collaboration.
 //!
 //! Direct paths, NAT traversal and stateless relay fallback are selected by
-//! iroh. qOS only names authenticated endpoint ids and workspace topics.
+//! iroh. Tilo only names authenticated endpoint ids and workspace topics.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -15,8 +15,8 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
-use qos_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
-use qos_user_identity::{DeviceCert, RevocationList};
+use tilo_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
+use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
@@ -31,8 +31,8 @@ const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
 const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
-const SURFACE_STREAM_ALPN: &[u8] = b"qos-surface-stream/1";
-const PERSONAL_FABRIC_ALPN: &[u8] = b"qos-personal-fabric/1";
+const SURFACE_STREAM_ALPN: &[u8] = b"tilo-surface-stream/1";
+const PERSONAL_FABRIC_ALPN: &[u8] = b"tilo-personal-fabric/1";
 pub const PERSONAL_MEDIA_CHUNK_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -119,7 +119,7 @@ pub struct HomePeerExpectation {
     pub device_public_key: [u8; 32],
 }
 
-/// Device certificate chain used to authenticate to a qOS workspace host.
+/// Device certificate chain used to authenticate to a Tilo workspace host.
 #[derive(Clone)]
 pub struct HostIdentity {
     pub device_cert: DeviceCert,
@@ -129,18 +129,18 @@ pub struct HostIdentity {
     /// unbound workspaces.
     pub workspace_device_certs: HashMap<WorkspaceId, DeviceCert>,
     /// Root-signed revocations advertised beside each workspace certificate.
-    pub workspace_revocations: HashMap<WorkspaceId, Vec<qos_user_identity::RevocationEntry>>,
+    pub workspace_revocations: HashMap<WorkspaceId, Vec<tilo_user_identity::RevocationEntry>>,
     /// System device-key/certificate paths. Production actors use these to
     /// refresh workspace identity material on every heartbeat; tests may use
     /// the in-memory maps alone.
-    pub identity_paths: Option<qos_user_identity::IdentityPaths>,
+    pub identity_paths: Option<tilo_user_identity::IdentityPaths>,
 }
 
 impl HostIdentity {
     pub(crate) fn material_for(
         &self,
         ws: WorkspaceId,
-    ) -> (DeviceCert, Vec<qos_user_identity::RevocationEntry>) {
+    ) -> (DeviceCert, Vec<tilo_user_identity::RevocationEntry>) {
         let fallback_cert = self
             .workspace_device_certs
             .get(&ws)
@@ -173,12 +173,12 @@ impl HostIdentity {
         let Some(profile) = registry.identities.get(&identity_id) else {
             return (fallback_cert, fallback_revocations);
         };
-        let Ok(cert) = qos_user_identity::persist::read_device_cert(
+        let Ok(cert) = tilo_user_identity::persist::read_device_cert(
             &paths.device_cert_for_user(&profile.user_public_key),
         ) else {
             return (fallback_cert, fallback_revocations);
         };
-        if qos_user_identity::verify_device_cert(&cert).is_err()
+        if tilo_user_identity::verify_device_cert(&cert).is_err()
             || cert.user_public_key != profile.user_public_key
             || cert.device_public_key != self.device_signing_key.verifying_key().to_bytes()
         {
@@ -260,7 +260,7 @@ pub enum NetCmd {
     Connect {
         addr: EndpointAddr,
     },
-    /// Connect to an always-on qOS host. Messages continue to use the
+    /// Connect to an always-on Tilo host. Messages continue to use the
     /// direct gossip path too; the host adds persistence and offline delivery.
     ConnectHost {
         addr: EndpointAddr,
@@ -910,7 +910,7 @@ impl ActorState {
                 )
                 .await
                 else {
-                    // An older qOS peer simply does not negotiate this ALPN.
+                    // An older Tilo peer simply does not negotiate this ALPN.
                     continue;
                 };
                 self.personal_fabric_connections
@@ -2174,17 +2174,17 @@ fn schedule_host_topic(
     clippy::items_after_statements,
     reason = "the async write extension is local to the detached filesystem-registration worker and kept beside its only use"
 )]
-async fn register_content_peer(registration: qos_relay::ContentPeerRegistration) -> bool {
-    if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
+async fn register_content_peer(registration: tilo_relay::ContentPeerRegistration) -> bool {
+    if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }
-    let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
+    let publisher = std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || std::path::PathBuf::from("/usr/bin/fs"),
             std::path::PathBuf::from,
         );
-    let cache_dir = std::env::var_os("QOS_FS_CONTENT_PEER_CACHE_DIR")
+    let cache_dir = std::env::var_os("TILO_FS_CONTENT_PEER_CACHE_DIR")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || std::path::PathBuf::from("/var/cache/quick-fs"),
@@ -2245,16 +2245,16 @@ async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(relay);
-    if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
+    if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }
-    let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
+    let publisher = std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || std::path::PathBuf::from("/usr/bin/fs"),
             std::path::PathBuf::from,
         );
-    let cache_dir = std::env::var_os("QOS_FS_CONTENT_PEER_CACHE_DIR")
+    let cache_dir = std::env::var_os("TILO_FS_CONTENT_PEER_CACHE_DIR")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || std::path::PathBuf::from("/var/cache/quick-fs"),
@@ -2346,7 +2346,7 @@ fn spawn_host_pump(
 }
 
 fn topic_id(ws: WorkspaceId) -> TopicId {
-    let mut hasher = blake3::Hasher::new_derive_key("qos-workspace-gossip-v1");
+    let mut hasher = blake3::Hasher::new_derive_key("tilo-workspace-gossip-v1");
     hasher.update(&ws.to_le_bytes());
     TopicId::from_bytes(*hasher.finalize().as_bytes())
 }
@@ -2355,10 +2355,10 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 mod tests {
     use super::*;
     use iroh::endpoint::presets;
-    use qos_relay::{
+    use tilo_relay::{
         Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
     };
-    use qos_user_identity::{
+    use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
         sign_revocation_entry,
     };
@@ -3199,45 +3199,46 @@ mod tests {
             .await
             .unwrap();
 
-        let attempt = |expectation: HomePeerExpectation,
-                       revocations: Vec<qos_user_identity::RevocationEntry>| {
-            let relay_addr = relay.node_addr();
-            let client_key = client_key.clone();
-            let client_cert = client_cert.clone();
-            async move {
-                let (endpoint, _) = identified_endpoint(&client_key).await;
-                let identity = HostIdentity {
-                    device_cert: client_cert,
-                    device_signing_key: client_key,
-                    workspace_device_certs: HashMap::new(),
-                    workspace_revocations: HashMap::from([(42, revocations)]),
-                    identity_paths: None,
-                };
-                let (tx, mut rx) = mpsc::channel(2);
-                let mut connecting = HashSet::new();
-                let mut discoveries = HashMap::new();
-                schedule_host_topic(
-                    &endpoint,
-                    &identity,
-                    42,
-                    relay_addr,
-                    Some(expectation),
-                    &tx,
-                    &HashMap::new(),
-                    &mut connecting,
-                    &mut discoveries,
-                );
-                let rejected = matches!(
-                    timeout(Duration::from_secs(5), rx.recv()).await,
-                    Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
-                );
-                for (_, task) in discoveries {
-                    task.abort();
+        let attempt =
+            |expectation: HomePeerExpectation,
+             revocations: Vec<tilo_user_identity::RevocationEntry>| {
+                let relay_addr = relay.node_addr();
+                let client_key = client_key.clone();
+                let client_cert = client_cert.clone();
+                async move {
+                    let (endpoint, _) = identified_endpoint(&client_key).await;
+                    let identity = HostIdentity {
+                        device_cert: client_cert,
+                        device_signing_key: client_key,
+                        workspace_device_certs: HashMap::new(),
+                        workspace_revocations: HashMap::from([(42, revocations)]),
+                        identity_paths: None,
+                    };
+                    let (tx, mut rx) = mpsc::channel(2);
+                    let mut connecting = HashSet::new();
+                    let mut discoveries = HashMap::new();
+                    schedule_host_topic(
+                        &endpoint,
+                        &identity,
+                        42,
+                        relay_addr,
+                        Some(expectation),
+                        &tx,
+                        &HashMap::new(),
+                        &mut connecting,
+                        &mut discoveries,
+                    );
+                    let rejected = matches!(
+                        timeout(Duration::from_secs(5), rx.recv()).await,
+                        Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
+                    );
+                    for (_, task) in discoveries {
+                        task.abort();
+                    }
+                    endpoint.close().await;
+                    rejected
                 }
-                endpoint.close().await;
-                rejected
-            }
-        };
+            };
         let host_device = host_cert.device_public_key;
         assert!(
             attempt(

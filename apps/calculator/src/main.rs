@@ -71,7 +71,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_clicks_bench(shots_viewport(), n);
     }
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.calculator", calculator::app_root)
+        &LaunchSpec::new("dev.tilo.calculator", calculator::app_root)
             .shot_handler(render_shot)
             .configure_app(configure_app),
     )?;
@@ -89,16 +89,16 @@ fn configure_app(app: &mut ui::App) {
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     // The live app starts empty; screenshots default to a populated state.
-    let root: Box<dyn Widget> = if std::env::var_os("QOS_CALC_EMPTY").is_some() {
+    let root: Box<dyn Widget> = if std::env::var_os("TILO_CALC_EMPTY").is_some() {
         calculator::app_root()
     } else {
         let mut app = calculator::CalculatorApp::seeded();
-        match std::env::var("QOS_CALC_MODE").ok().as_deref() {
+        match std::env::var("TILO_CALC_MODE").ok().as_deref() {
             Some("2d" | "graph2d") => app.shots_set_mode(calculator::model::Mode::Graph2d),
             Some("3d" | "graph3d") => app.shots_set_mode(calculator::model::Mode::Graph3d),
             _ => {}
         }
-        match std::env::var("QOS_CALC_HISTORY").ok().as_deref() {
+        match std::env::var("TILO_CALC_HISTORY").ok().as_deref() {
             Some("open") => app.shots_set_history_open(true),
             Some("closed" | "collapsed") => app.shots_set_history_open(false),
             _ => {}
@@ -392,10 +392,10 @@ fn bench_run_click_loop(
 }
 
 /// Viewport for the headless screenshot. Defaults to a wide desktop frame;
-/// `QOS_CALC_SHOTS_SIZE=WxH` overrides it (e.g. to capture the compact keypad
+/// `TILO_CALC_SHOTS_SIZE=WxH` overrides it (e.g. to capture the compact keypad
 /// + overlay-history behaviour at a narrow size).
 fn shots_viewport() -> (u32, u32) {
-    if let Some(s) = std::env::var_os("QOS_CALC_SHOTS_SIZE") {
+    if let Some(s) = std::env::var_os("TILO_CALC_SHOTS_SIZE") {
         let s = s.to_string_lossy();
         if let Some((w, h)) = s.split_once(['x', 'X', '*'])
             && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
@@ -415,9 +415,9 @@ fn render_shot_to_png(
     text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
-    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -427,7 +427,7 @@ fn render_shot_to_png(
     // the environment form too: it is useful for the per-app visual harness
     // and matches the other first-party app renderers.
     let shot_scale = text_scale.or_else(|| {
-        std::env::var("QOS_SHOTS_TEXT_SCALE")
+        std::env::var("TILO_SHOTS_TEXT_SCALE")
             .ok()
             .and_then(|raw| raw.parse::<f32>().ok())
             .filter(|scale| scale.is_finite())
@@ -438,7 +438,7 @@ fn render_shot_to_png(
     let mut presence = PresenceCtx::empty();
     // Shots-only: seed a remote collaborator's cursor at `x,y` so the headless
     // frame shows a peer caret mapped into the active math field's 2D layout.
-    if let Some(spec) = std::env::var_os("QOS_CALC_REMOTE_CURSOR") {
+    if let Some(spec) = std::env::var_os("TILO_CALC_REMOTE_CURSOR") {
         let spec = spec.to_string_lossy();
         if let Some((sx, sy)) = spec.split_once(',')
             && let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>())

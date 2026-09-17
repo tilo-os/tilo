@@ -1,0 +1,59 @@
+#!/usr/bin/bash
+# Resolve the one Tilo root on the disk whose ESP systemd-stub booted from.
+set -euo pipefail
+
+TILO_ROOT_TYPE=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
+sysroot="${TILO_ROOT_SYSROOT:-/sys}"
+devroot="${TILO_ROOT_DEVROOT:-/dev}"
+runtime="${TILO_ROOT_RUNTIME:-/run}"
+lsblk_bin="${TILO_ROOT_LSBLK:-lsblk}"
+cryptsetup_bin="${TILO_ROOT_CRYPTSETUP:-systemd-cryptsetup}"
+cryptsetup_probe="${TILO_ROOT_CRYPTSETUP_PROBE:-cryptsetup}"
+unlock_bin="${TILO_ROOT_UNLOCK:-/usr/libexec/tilo-rollback-initrd-unlock}"
+
+die() { printf 'tilo-root: %s\n' "$*" >&2; exit 1; }
+
+loader_var="${TILO_ROOT_LOADER_PARTUUID:-}"
+if [ -z "$loader_var" ]; then
+  var="$(find "$sysroot/firmware/efi/efivars" -maxdepth 1 -type f \
+    -name 'LoaderDevicePartUUID-*' -print -quit 2>/dev/null || true)"
+  [ -n "$var" ] || die "systemd-stub did not identify the boot ESP"
+  loader_var="$(dd if="$var" bs=1 skip=4 status=none | tr -d '\000' | tr '[:upper:]' '[:lower:]')"
+fi
+case "$loader_var" in
+  ????????-????-????-????-????????????) ;;
+  *) die "invalid LoaderDevicePartUUID" ;;
+esac
+
+esp="$devroot/disk/by-partuuid/$loader_var"
+for _ in $(seq 1 100); do [ -e "$esp" ] && break; udevadm settle 2>/dev/null || true; sleep .05; done
+[ -e "$esp" ] || die "boot ESP $loader_var did not appear"
+esp="$(readlink -f "$esp")"
+mapfile -t parents < <("$lsblk_bin" -dno PKNAME "$esp")
+[ "${#parents[@]}" -eq 1 ] \
+  || die "could not identify exactly one physical disk for the boot ESP"
+read -r parent extra <<<"${parents[0]}"
+[ -n "$parent" ] && [ -z "${extra:-}" ] \
+  || die "could not identify the boot ESP's physical disk"
+case "$parent" in /*) disk="$parent" ;; *) disk="$devroot/$parent" ;; esac
+
+mapfile -t roots < <("$lsblk_bin" -lnpo NAME,TYPE,PARTTYPE "$disk" \
+  | awk -v t="$TILO_ROOT_TYPE" 'tolower($2)=="part" && tolower($3)==t {print $1}')
+[ "${#roots[@]}" -eq 1 ] \
+  || die "expected exactly one Tilo root on the boot ESP's disk; found ${#roots[@]}"
+root="${roots[0]}"
+
+install -d -m 0700 "$runtime/tilo-root" "$runtime/cryptsetup-keys.d"
+if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
+  "$unlock_bin" "$root" root || true
+  "$cryptsetup_bin" attach root "$root" - 'tpm2-device=auto,fido2-device=auto' \
+    || die "encrypted Tilo root did not unlock"
+  target="$devroot/mapper/root"
+else
+  target="$root"
+fi
+if [ "${TILO_ROOT_ALLOW_NONBLOCK:-0}" != 1 ]; then
+  [ -b "$target" ] || die "resolved Tilo root is not a block device"
+fi
+ln -sfn "$target" "$runtime/tilo-root/device"
+printf '%s\n' "$root" > "$runtime/tilo-root/source"

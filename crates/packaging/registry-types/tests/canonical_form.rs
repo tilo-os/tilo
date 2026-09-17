@@ -22,17 +22,17 @@ use registry_types::{
 
 fn sample_entry(pubkey_hex: String) -> RegistryEntry {
     RegistryEntry {
-        package_id: "dev.qos.editor".into(),
+        package_id: "dev.tilo.editor".into(),
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
         categories: vec!["Productivity".into(), "Text".into()],
-        icon_url: Some("https://apps.qos.dev/editor/icon.png".into()),
+        icon_url: Some("https://apps.tilo.dev/editor/icon.png".into()),
         source_url: None,
         homepage: None,
         publisher_pubkey_hex: pubkey_hex,
         versions: vec![RegistryVersion {
             version: "2026.06".into(),
-            qpkg_url: "https://apps.qos.dev/editor/2026.06.qpkg".into(),
+            qpkg_url: "https://apps.tilo.dev/editor/2026.06.qpkg".into(),
             qpkg_root_hash_hex: "cd".repeat(32),
             qpkg_size_bytes: 12_345,
             released_at_unix: 1_800_000_000,

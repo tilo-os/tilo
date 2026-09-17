@@ -148,7 +148,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.tube", live_root)
+        &LaunchSpec::new("dev.tilo.tube", live_root)
             .shot_root(shot_root)
             // `--narrow` is a complete responsive-shot preset, not merely a
             // request to open the rail.  Keeping the render canvas narrow as
@@ -1648,9 +1648,9 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -1742,7 +1742,7 @@ fn checksum(rgba: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::ActionInput;
+    use tilo_actions::ActionInput;
 
     /// Regression for the live-launch boundary: an action emitted by Tube's
     /// production resource provider must be decodable by the registry installed
@@ -1754,7 +1754,7 @@ mod tests {
         let video_id = model.videos[0].id.clone();
         model.route = tube::model::Route::Watch(video_id);
         let resources = tube::actions::provide_resources(&model);
-        let published = qos_actions::flatten(&resources)
+        let published = tilo_actions::flatten(&resources)
             .into_iter()
             .find(|flat| {
                 flat.resource_id.0.starts_with("tube.current:") && flat.action.id == "like"

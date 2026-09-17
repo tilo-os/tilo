@@ -19,7 +19,7 @@ use crate::layer::{Layer, LayerKind};
 
 /// Environment override for the store root; set by tests or to run two
 /// independent runtimes on one machine.
-pub const STORE_ENV: &str = "QOS_USH_HOME";
+pub const STORE_ENV: &str = "TILO_USH_HOME";
 
 /// The layer store.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -76,7 +76,7 @@ impl SandboxExecutor for BwrapExecutor {
 }
 
 fn create_memfd() -> Result<File, ExecutionError> {
-    let name = CString::new("qos-compat-seccomp")
+    let name = CString::new("tilo-compat-seccomp")
         .map_err(|_| ExecutionError::Seccomp("invalid memfd name".to_string()))?;
     // SAFETY: `name` is a valid NUL-terminated C string. On success this call
     // returns a new owned file descriptor, transferred immediately to `File`.
@@ -98,7 +98,7 @@ fn create_memfd() -> Result<File, ExecutionError> {
 
 #[derive(Debug, Error)]
 pub enum ExecutionError {
-    #[error("could not compile the qOS seccomp profile: {0}")]
+    #[error("could not compile the Tilo seccomp profile: {0}")]
     Seccomp(String),
     #[error("could not create the private seccomp memfd: {0}")]
     Memfd(std::io::Error),

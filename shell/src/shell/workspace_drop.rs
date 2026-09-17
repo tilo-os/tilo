@@ -285,12 +285,12 @@ mod tests {
     #[test]
     fn from_path_extracts_filename_for_existing_file() {
         let tmp = std::env::temp_dir();
-        let path = tmp.join("nirios-drop-test.md");
+        let path = tmp.join("tilo-drop-test.md");
         // Create the file so is_dir() resolves correctly; fail-open if
         // the temp write doesn't work (e.g. in a read-only sandbox).
         let _ = std::fs::write(&path, b"hello");
         let item = DraggedItem::from_path(&path).expect("filename");
-        assert_eq!(item.name, "nirios-drop-test.md");
+        assert_eq!(item.name, "tilo-drop-test.md");
         assert!(!item.is_folder);
         let _ = std::fs::remove_file(&path);
     }

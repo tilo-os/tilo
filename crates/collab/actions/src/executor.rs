@@ -131,7 +131,7 @@ fn apply_under_envelope(
 /// actor table, so no ghost can survive either way.
 ///
 /// The reset only discards an *incremental diff index* (a rendering
-/// optimization nothing in qOS currently arms on an app document);
+/// optimization nothing in Tilo currently arms on an app document);
 /// document content and history are untouched, so replay stays
 /// byte-identical. Runs only on this abandon path — a change-producing
 /// dispatch keeps its patch log intact.

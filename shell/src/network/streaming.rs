@@ -16,10 +16,10 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 /// Damage-aware encode throttle, living in the standalone
-/// [`qos_callstream`] crate so surface streaming and the chat call app
+/// [`tilo_callstream`] crate so surface streaming and the chat call app
 /// share one copy: `should_encode(now)` gates the 30-fps cap,
 /// `mark_encoded(now)` stamps a successful encode.
-pub use qos_callstream::throttle::StreamingThrottle;
+pub use tilo_callstream::throttle::StreamingThrottle;
 
 /// Wire-format input event a peer publishes to drive the owner's seat:
 /// pointer motion/button + a single keysym (richer events are a
@@ -292,7 +292,7 @@ mod tests {
         ));
     }
 
-    // `StreamingThrottle` unit tests moved into the `qos_callstream` crate's `throttle` module.
+    // `StreamingThrottle` unit tests moved into the `tilo_callstream` crate's `throttle` module.
 
     /// A synthesised `RemoteInput` reaches the seat when read/write; dropped when the owner flips `read_only`.
     #[test]

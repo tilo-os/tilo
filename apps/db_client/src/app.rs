@@ -33,7 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use qos_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource};
+use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -155,7 +155,7 @@ pub struct DbClientApp {
     pending_connect_id: Option<Uuid>,
     /// Active resource invocation plus whether its effect can be retried
     /// safely without duplicating a database write.
-    resource_operation: Option<(qos_actions::InvocationId, bool)>,
+    resource_operation: Option<(tilo_actions::InvocationId, bool)>,
     export_rx: Option<ui::portal::PortalChannel>,
     export_snapshot: Option<crate::model::QueryResult>,
 
@@ -675,7 +675,7 @@ impl DbClientApp {
             doc,
             crate::actions::DB_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Database", "Database", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Database", "Database", &action),
         );
         self.pending_connect_id = Some(id);
     }
@@ -697,7 +697,7 @@ impl DbClientApp {
             doc,
             crate::actions::DB_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Database", "Database", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Database", "Database", &action),
         );
     }
 
@@ -1215,7 +1215,7 @@ impl Widget for DbClientApp {
                     "Save current query",
                     "Query name",
                     "Saved query",
-                    qos_actions::ExecutionLocus::ClientLocal,
+                    tilo_actions::ExecutionLocus::ClientLocal,
                     move |name| {
                         crate::actions::encode(&crate::actions::save_query_action(
                             Uuid::new_v4(),
@@ -1283,7 +1283,7 @@ impl Widget for DbClientApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -1301,7 +1301,7 @@ impl Widget for DbClientApp {
                 .map(|handled| {
                     handled.then(|| {
                         ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )
                     })
                 });
@@ -1328,20 +1328,20 @@ impl Widget for DbClientApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let (pending, retryable) = self.resource_operation?;
         if pending != invocation {
             return None;
         }
         if cancellation_requested {
             if !self.session.cancel_in_flight_query() {
-                return Some(qos_actions::InvocationUpdate::Failed {
+                return Some(tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "db_client.cancel_not_active".into(),
                         message:
                             "The requested query already completed; no newer query was cancelled"
@@ -1352,7 +1352,7 @@ impl Widget for DbClientApp {
                 });
             }
             self.resource_operation = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("Cancellation requested for this query".into()),
             });
@@ -1364,18 +1364,18 @@ impl Widget for DbClientApp {
         }
         self.resource_operation = None;
         Some(match &self.session.status {
-            RunStatus::Error(message) => qos_actions::InvocationUpdate::Failed {
+            RunStatus::Error(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "db_client.operation_failed".into(),
                     message: message.clone(),
                     details: None,
                     retryable,
                 },
             },
-            _ => qos_actions::InvocationUpdate::Succeeded {
+            _ => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
         })
     }
@@ -3364,7 +3364,7 @@ mod honesty_tests {
 mod behavior_tests {
     use super::*;
     use automerge::ROOT;
-    use qos_actions::Action;
+    use tilo_actions::Action;
     use ui::a11y::Role;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
@@ -3643,7 +3643,7 @@ mod behavior_tests {
     #[test]
     fn resource_query_is_pending_until_the_database_worker_finishes() {
         let (mut app, doc) = synced();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&DbClientOperation::RunQuery {
             connection_id: app.session.active_connection_id().unwrap().to_string(),
             sql: "SELECT 1".into(),
@@ -3664,7 +3664,7 @@ mod behavior_tests {
         app.session.block_until_idle();
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -3690,10 +3690,10 @@ mod behavior_tests {
             .iter()
             .find(|action| action.id == "query")
             .expect("Run SQL is an exported action");
-        assert_eq!(run_sql.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(run_sql.contract.risk, tilo_actions::RiskLevel::Destructive);
         assert_eq!(
             run_sql.contract.confirmation,
-            qos_actions::ConfirmationPolicy::Confirm,
+            tilo_actions::ConfirmationPolicy::Confirm,
             "an arbitrary SQL envelope is never advertised as harmless"
         );
         assert!(

@@ -22,7 +22,7 @@
 //!
 //! Runtime-optional, not a build dependency: invoked as a subprocess, so if
 //! `yt-dlp` is missing or disabled, resolution falls back to the proxy and
-//! then the direct (truncating) URL. Set `QOS_MUSIC_YTDLP` to the binary path
+//! then the direct (truncating) URL. Set `TILO_MUSIC_YTDLP` to the binary path
 //! to override, or to an empty string to disable it.
 
 use crate::backend::ResolvedStream;
@@ -65,11 +65,11 @@ pub fn parse_stream(video_id: &str, url: &str) -> Option<ResolvedStream> {
     })
 }
 
-/// The `yt-dlp` binary to use: the `QOS_MUSIC_YTDLP` override (empty string
+/// The `yt-dlp` binary to use: the `TILO_MUSIC_YTDLP` override (empty string
 /// disables it), else `yt-dlp` from `PATH`. `None` when disabled.
 #[cfg(feature = "live")]
 fn ytdlp_bin() -> Option<String> {
-    match std::env::var_os("QOS_MUSIC_YTDLP") {
+    match std::env::var_os("TILO_MUSIC_YTDLP") {
         Some(v) => {
             let s = v.to_string_lossy().trim().to_string();
             if s.is_empty() { None } else { Some(s) }

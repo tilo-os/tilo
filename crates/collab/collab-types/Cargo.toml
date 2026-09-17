@@ -10,7 +10,7 @@ license.workspace = true
 name = "collab_types"
 path = "src/lib.rs"
 
-# Cryptographic foundation for qOS Spaces and Channels:
+# Cryptographic foundation for Tilo Spaces and Channels:
 # Identity, Attestation, Role/OpClass permission tables, SignedOp
 # envelope, ChannelEvent governance log, deterministic
 # canonical-bytes serialisation, Ed25519 signing primitives, and the

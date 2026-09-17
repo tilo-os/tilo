@@ -19,14 +19,14 @@ EOF
 chmod +x "$work/bin/sccache"
 
 export PATH="$work/bin:$PATH"
-export QOS_SCCACHE_KEY_PREFIX=qos/test
+export TILO_SCCACHE_KEY_PREFIX=tilo/test
 export GITHUB_ENV="$work/github-env"
 export RUSTC=/fixture/rustc
 
 FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=0 \
   bash "$repo/tools/ci-sccache.sh" prepare > "$work/healthy.log"
 grep -Fxq "RUSTC_WRAPPER=$work/bin/sccache" "$GITHUB_ENV"
-grep -Fxq 'SCCACHE_S3_KEY_PREFIX=qos/test' "$GITHUB_ENV"
+grep -Fxq 'SCCACHE_S3_KEY_PREFIX=tilo/test' "$GITHUB_ENV"
 grep -Fq 'remote compiler cache enabled: sccache 0.test' "$work/healthy.log"
 
 : > "$GITHUB_ENV"

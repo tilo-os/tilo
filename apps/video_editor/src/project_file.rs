@@ -47,7 +47,7 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic          b"qOSVEPRJ"
+//! 0       8     magic          b"TiloVEPRJ"
 //! 8       2     version        u16 LE — what wrote this file
 //! 10      2     min_reader     u16 LE — the oldest reader that may open it
 //! 12      4     payload_len    u32 LE — length of the Automerge document
@@ -77,7 +77,7 @@ use crate::doc::VideoDoc;
 use crate::model::Project;
 
 /// First eight bytes of every project file.
-pub const MAGIC: &[u8; 8] = b"qOSVEPRJ";
+pub const MAGIC: &[u8; 8] = b"TiloVEPRJ";
 
 /// The format version this build writes.
 pub const FORMAT_VERSION: u16 = 1;
@@ -289,10 +289,10 @@ pub mod recents {
     /// is a new crate dependency for one path join; if that resolver moves,
     /// this is the sibling that has to move with it.
     fn dir() -> Option<PathBuf> {
-        let id = std::env::var("QOS_PACKAGE_ID")
+        let id = std::env::var("TILO_PACKAGE_ID")
             .ok()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "dev.qos.video-editor".to_string());
+            .unwrap_or_else(|| "dev.tilo.video-editor".to_string());
         // Reject an id that is not a plain directory name, exactly as the
         // store does: an id carrying a separator would escape the data home.
         if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn saving_and_loading_a_real_file_round_trips() {
         let path =
-            std::env::temp_dir().join(format!("qos-ve-proj-{}.{EXTENSION}", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-ve-proj-{}.{EXTENSION}", std::process::id()));
         let p = rich_project();
         save(&path, &p).expect("saves");
         let back = load(&path).expect("loads");
@@ -652,12 +652,12 @@ mod tests {
     fn recents_survive_a_restart_and_drop_files_that_are_gone() {
         // Drives the real on-disk path, not just `promote`: a recents list
         // that is only ever held in memory is exactly the bug this replaces.
-        let tmp = std::env::temp_dir().join(format!("qos-ve-recents-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tilo-ve-recents-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         // Safety: single-threaded test mutation of process env.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", &tmp);
-            std::env::set_var("QOS_PACKAGE_ID", "dev.qos.video-editor-test");
+            std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.video-editor-test");
         }
 
         let present = tmp.join("Present.qvp");
@@ -680,7 +680,7 @@ mod tests {
 
         unsafe {
             std::env::remove_var("XDG_DATA_HOME");
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -688,7 +688,7 @@ mod tests {
     #[test]
     fn missing_sources_separate_absent_bytes_from_titles_and_present_files() {
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::remove_var("QOS_VE_MEDIA_DIR") };
+        unsafe { std::env::remove_var("TILO_VE_MEDIA_DIR") };
 
         let mut p = Project::new("moved");
         // A reference whose bytes are nowhere on this box.
@@ -709,7 +709,7 @@ mod tests {
             ..Default::default()
         });
         // A source that really is here.
-        let here = std::env::temp_dir().join(format!("qos-ve-here-{}.mp4", std::process::id()));
+        let here = std::env::temp_dir().join(format!("tilo-ve-here-{}.mp4", std::process::id()));
         std::fs::write(&here, b"bytes").unwrap();
         p.media.push(MediaItem {
             id: Uuid::new_v4(),

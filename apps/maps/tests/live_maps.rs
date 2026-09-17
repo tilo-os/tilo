@@ -13,7 +13,7 @@
 //! build and are trivially runnable:
 //!
 //!   `MAPS_LIVE=1` \
-//!   qos-build test -p maps --test `live_maps` -- --nocapture --test-threads 1
+//!   tilo-build test -p maps --test `live_maps` -- --nocapture --test-threads 1
 //!
 //! Set `MAPS_LIVE_OUT=/some/dir` to control where the inspection PNGs are
 //! written (default: `apps/maps/live-out/`).
@@ -56,7 +56,7 @@ fn live_enabled() -> bool {
 fn skip(name: &str) {
     eprintln!(
         "[SKIP] {name}: live network test. Run with:\n  \
-         MAPS_LIVE=1 qos-build test -p maps --test live_maps -- --nocapture --test-threads 1"
+         MAPS_LIVE=1 tilo-build test -p maps --test live_maps -- --nocapture --test-threads 1"
     );
 }
 
@@ -67,7 +67,7 @@ fn unique_cache() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    std::env::temp_dir().join(format!("qos-maps-live-{}-{}", std::process::id(), n))
+    std::env::temp_dir().join(format!("tilo-maps-live-{}-{}", std::process::id(), n))
 }
 
 fn out_dir() -> PathBuf {

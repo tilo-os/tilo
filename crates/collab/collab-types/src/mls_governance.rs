@@ -143,7 +143,7 @@ impl MlsGovernanceFrameV1 {
 
     fn signing_view(&self) -> SigningView<'_> {
         SigningView {
-            domain: b"qos.mls-governance.v1",
+            domain: b"tilo.mls-governance.v1",
             version: self.version,
             transaction_id: self.transaction_id,
             channel: self.channel,

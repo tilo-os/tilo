@@ -4,10 +4,10 @@
   ],
   "transports": {
     "docker": {
-      "code.sandbox.example/qos/qos": [
+      "code.sandbox.example/tilo/tilo": [
         {
           "type": "sigstoreSigned",
-          "keyPath": "/usr/share/qos/cosign.pub",
+          "keyPath": "/usr/share/tilo/cosign.pub",
           "signedIdentity": { "type": "matchRepository" }
         }
       ]

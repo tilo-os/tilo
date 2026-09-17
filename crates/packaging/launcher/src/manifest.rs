@@ -35,8 +35,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// Minimal manifest needed by the launcher, lives in-tree pending full
-/// `qos-pkg` integration. Accepts both the top-level `package_id =
-/// "..."` form and qos-pkg's canonical `[package] id = "..."` nested
+/// `tilo-pkg` integration. Accepts both the top-level `package_id =
+/// "..."` form and tilo-pkg's canonical `[package] id = "..."` nested
 /// table, normalised into `MinimalManifest::package_id` (same for
 /// `version`).
 #[derive(Debug, Clone, Deserialize)]
@@ -49,7 +49,7 @@ pub struct MinimalManifest {
     /// `[package].category` — freedesktop-style menu category.
     pub category: Option<String>,
     /// `[package].icon` — payload-relative icon path, resolved to the
-    /// in-sandbox payload mount and exported as `QOS_APP_ICON`. `None`
+    /// in-sandbox payload mount and exported as `TILO_APP_ICON`. `None`
     /// draws a generated default.
     pub icon: Option<String>,
     pub version: String,
@@ -59,7 +59,7 @@ pub struct MinimalManifest {
     /// package can draw and still not belong in a launcher (the on-screen
     /// keyboard). Defaults to `app`.
     pub kind: String,
-    /// Optional `[package].runtime` reference (`qos-runtime/<version>`);
+    /// Optional `[package].runtime` reference (`tilo-runtime/<version>`);
     /// when present the launcher mounts the bundle so the app doesn't need
     /// `--minimal-libs`.
     pub runtime: Option<String>,
@@ -80,7 +80,7 @@ pub struct MinimalManifest {
 }
 
 impl MinimalManifest {
-    /// Split `runtime = "qos-runtime/<v>"` into `(name, version)`; `None`
+    /// Split `runtime = "tilo-runtime/<v>"` into `(name, version)`; `None`
     /// if unset or shaped wrong.
     pub fn runtime_ref(&self) -> Option<(&str, &str)> {
         let raw = self.runtime.as_deref()?;
@@ -322,7 +322,7 @@ impl Entrypoint {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Sandbox {
     /// `[sandbox] seccomp = "…"` — the named syscall profile requested.
-    /// `qos-default` enforces write-xor-execute; `qos-jit` is the same
+    /// `tilo-default` enforces write-xor-execute; `tilo-jit` is the same
     /// policy without that rule, for code genuinely compiled at run time.
     ///
     /// A **request**, not a setting: [`Sandbox::seccomp_profile`] treats an
@@ -347,7 +347,7 @@ pub struct Sandbox {
 }
 
 fn default_seccomp_profile() -> String {
-    crate::seccomp::SeccompProfile::QosDefault
+    crate::seccomp::SeccompProfile::TiloDefault
         .as_str()
         .to_string()
 }
@@ -455,7 +455,7 @@ pub enum FsPolicyViolation {
 /// Refuse a manifest that names filesystem paths.
 ///
 /// Called at launch and at install: an install-time check alone would
-/// be bypassed by `qos-launcher run --manifest` or a package installed
+/// be bypassed by `tilo-launcher run --manifest` or a package installed
 /// before this rule existed.
 ///
 /// **No first-party exception.** Every manifest in the tree asked for
@@ -583,12 +583,12 @@ mod tests {
             .ancestors()
             .nth(3)
             .expect("workspace root above crates/packaging/launcher");
-        let path = repo.join("apps/word-processor/qos-app.toml");
+        let path = repo.join("apps/word-processor/tilo-app.toml");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let m: MinimalManifest =
             toml::from_str(&text).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
-        assert_eq!(m.package_id, "dev.qos.word-processor");
+        assert_eq!(m.package_id, "dev.tilo.word-processor");
         for ext in ["odt", "docx", "md", "rtf"] {
             assert!(
                 m.opens_ext.iter().any(|e| e == ext),
@@ -628,7 +628,7 @@ mod tests {
             .ancestors()
             .nth(3)
             .expect("workspace root above crates/packaging/launcher");
-        let manifest = read_manifest(&repo.join("apps/browser/qos-app.toml"))
+        let manifest = read_manifest(&repo.join("apps/browser/tilo-app.toml"))
             .expect("shipped browser manifest parses through installed-app schema");
         assert_eq!(
             manifest.continuity.required,
@@ -696,7 +696,7 @@ collab = "required@1"
     #[test]
     fn parses_a_cli_manifest() {
         let toml_text = r#"
-package_id = "dev.qos.notes-cli"
+package_id = "dev.tilo.notes-cli"
 version    = "0.1.0"
 
 [entrypoint]
@@ -722,7 +722,7 @@ commands = ["notes", "notes-import"]
     #[test]
     fn parses_a_both_manifest_with_split_bins() {
         let toml_text = r#"
-package_id = "dev.qos.notes"
+package_id = "dev.tilo.notes"
 version    = "0.2.0"
 
 [entrypoint]
@@ -749,7 +749,7 @@ commands = ["notes"]
         // draws, but the shell decides when to show it), so it survives decoding.
         let service = r#"
 [package]
-id      = "dev.qos.osk"
+id      = "dev.tilo.osk"
 version = "0.1.0"
 kind    = "service"
 
@@ -776,7 +776,7 @@ type = "gui"
             ),
         ] {
             let toml_text = format!(
-                "[package]\nid = \"dev.qos.x\"\nversion = \"0.1.0\"\n{src}\n\
+                "[package]\nid = \"dev.tilo.x\"\nversion = \"0.1.0\"\n{src}\n\
                  [entrypoint]\nbin = \"bin/x\"\n"
             );
             let m: MinimalManifest = toml::from_str(&toml_text).expect("parse");
@@ -792,7 +792,7 @@ type = "gui"
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
         let mut checked = 0;
         for entry in std::fs::read_dir(&root).expect("apps/ readable") {
-            let path = entry.expect("dir entry").path().join("qos-app.toml");
+            let path = entry.expect("dir entry").path().join("tilo-app.toml");
             if !path.exists() {
                 continue;
             }
@@ -813,10 +813,10 @@ type = "gui"
     #[test]
     fn parses_name_and_icon_from_package_block() {
         // The human name and icon path both come off `[package]`, forwarded as
-        // QOS_APP_NAME / QOS_APP_ICON.
+        // TILO_APP_NAME / TILO_APP_ICON.
         let toml_text = r#"
 [package]
-id      = "dev.qos.notes"
+id      = "dev.tilo.notes"
 name    = "Notes"
 icon    = "assets/notes.png"
 version = "0.1.0"
@@ -835,7 +835,7 @@ bin = "bin/notes"
         // generated default.
         let without = r#"
 [package]
-id      = "dev.qos.notes"
+id      = "dev.tilo.notes"
 version = "0.1.0"
 
 [entrypoint]
@@ -846,7 +846,7 @@ bin = "bin/notes"
 
         let blank = r#"
 [package]
-id      = "dev.qos.notes"
+id      = "dev.tilo.notes"
 icon    = "   "
 version = "0.1.0"
 
@@ -861,21 +861,21 @@ bin = "bin/notes"
     fn parses_runtime_field_from_package_block() {
         let toml_text = r#"
 [package]
-id       = "dev.qos.hello"
+id       = "dev.tilo.hello"
 version  = "0.1.0"
-runtime  = "qos-runtime/2026.07"
+runtime  = "tilo-runtime/2026.07"
 
 [entrypoint]
-bin = "bin/qos-hello"
+bin = "bin/tilo-hello"
 
 [sandbox.net]
 mode = "off"
 "#;
         let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
-        assert_eq!(m.package_id, "dev.qos.hello");
-        assert_eq!(m.runtime.as_deref(), Some("qos-runtime/2026.07"));
+        assert_eq!(m.package_id, "dev.tilo.hello");
+        assert_eq!(m.runtime.as_deref(), Some("tilo-runtime/2026.07"));
         let (name, ver) = m.runtime_ref().expect("runtime ref");
-        assert_eq!(name, "qos-runtime");
+        assert_eq!(name, "tilo-runtime");
         assert_eq!(ver, "2026.07");
     }
 
@@ -952,8 +952,8 @@ bin = "bin/notes"
             "/",
             "~/.ssh",
             "~/../../etc",
-            "~/.local/share/dev.qos.totp",
-            "$XDG_DATA_HOME/dev.qos.totp",
+            "~/.local/share/dev.tilo.totp",
+            "$XDG_DATA_HOME/dev.tilo.totp",
         ] {
             let m = manifest_with(&format!("[sandbox.fs]\nwrite = [{entry:?}]\n"));
             let Err(err) = enforce_fs_policy(&m) else {
@@ -1007,7 +1007,7 @@ bin = "bin/notes"
         let apps = repo.join("apps");
         let mut checked = 0usize;
         for entry in std::fs::read_dir(&apps).expect("apps/ is readable") {
-            let path = entry.expect("dir entry").path().join("qos-app.toml");
+            let path = entry.expect("dir entry").path().join("tilo-app.toml");
             if !path.exists() {
                 continue;
             }

@@ -115,7 +115,7 @@ impl TileStyle {
     }
 }
 
-const USER_AGENT: &str = "qOS-Maps/0.1 (https://qos.example; native maps app)";
+const USER_AGENT: &str = "Tilo-Maps/0.1 (https://tilo.example; native maps app)";
 
 /// A tile coordinate in the slippy-map scheme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -944,19 +944,19 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
 }
 
 /// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the
-/// bootc-friendly `/var/cache/qos-maps` location and finally a temp dir.
+/// bootc-friendly `/var/cache/tilo-maps` location and finally a temp dir.
 fn default_cache_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
         && !xdg.is_empty()
     {
-        return PathBuf::from(xdg).join("qos-maps/tiles");
+        return PathBuf::from(xdg).join("tilo-maps/tiles");
     }
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
     {
-        return PathBuf::from(home).join(".cache/qos-maps/tiles");
+        return PathBuf::from(home).join(".cache/tilo-maps/tiles");
     }
-    std::env::temp_dir().join("qos-maps/tiles")
+    std::env::temp_dir().join("tilo-maps/tiles")
 }
 
 /// Recursively sum file sizes under `dir` (bytes). Cheap enough for the
@@ -1213,7 +1213,7 @@ mod tests {
     fn temp_cache() -> PathBuf {
         let mut dir = std::env::temp_dir();
         let uniq = format!(
-            "qos-maps-test-{}-{}",
+            "tilo-maps-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

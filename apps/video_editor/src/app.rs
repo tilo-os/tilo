@@ -1669,11 +1669,11 @@ pub struct VideoEditorApp {
     /// sources this device cannot read says which. Carries its own severity —
     /// see [`NoticeLevel`].
     project_notice: Option<Notice>,
-    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
     resource_operation: Option<crate::actions::VideoEditorOperation>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
     resource_pending_operation: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         crate::actions::VideoEditorOperation,
     )>,
     /// The project menu (Open / Save / Save As / recents), on the shared
@@ -1788,9 +1788,9 @@ impl VideoEditorApp {
             seed: SeedState::default(),
             playback: PlaybackState::default(),
             presentation: PresentationState {
-                // Dev aid: `QOS_VE_EXPORT=1` opens straight into the export
+                // Dev aid: `TILO_VE_EXPORT=1` opens straight into the export
                 // dialog so its layout can be screenshotted headlessly.
-                export_open: std::env::var_os("QOS_VE_EXPORT").is_some(),
+                export_open: std::env::var_os("TILO_VE_EXPORT").is_some(),
                 ..PresentationState::default()
             },
             navigation: NavigationState::default(),
@@ -5788,13 +5788,13 @@ impl VideoEditorApp {
         };
         self.resource_operation = None;
         self.resource_result = Some(match outcome {
-            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
-            Err(message) => qos_actions::InvocationUpdate::Failed {
+            Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "video_editor.operation_failed".into(),
                     message,
                     details: None,
@@ -5841,7 +5841,7 @@ impl VideoEditorApp {
                 self.import_notice = None;
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_operation = None;
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
                         message: Some("media selection was cancelled".into()),
                     });
@@ -7147,10 +7147,10 @@ impl VideoEditorApp {
             }
             ShotScenario::ExportFailed => {
                 // The normal failure capture exercises the persistent chip;
-                // `QOS_VE_EXPORT=1` is the existing headless modal harness,
+                // `TILO_VE_EXPORT=1` is the existing headless modal harness,
                 // and keeps this same failure visible in the full details
                 // surface for visual review.
-                let review_dialog = std::env::var_os("QOS_VE_EXPORT").is_some();
+                let review_dialog = std::env::var_os("TILO_VE_EXPORT").is_some();
                 self.presentation.export_open = review_dialog;
                 self.export_status = ExportStatus::Failed {
                     reason: if review_dialog {
@@ -9466,21 +9466,21 @@ impl Widget for VideoEditorApp {
 
     /// Publish the open project + its tracks and clips so the host's Ctrl+K
     /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -9498,8 +9498,8 @@ impl Widget for VideoEditorApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -9520,7 +9520,7 @@ impl Widget for VideoEditorApp {
         ) {
             self.invoke_resource_operation(kind, type_id, payload, doc, path)?;
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )));
         }
         if matches!(
@@ -9541,11 +9541,11 @@ impl Widget for VideoEditorApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.poll_export();
         self.finish_resource_file_operation_if_ready();
         if self
@@ -9559,7 +9559,7 @@ impl Widget for VideoEditorApp {
         }
     }
 
-    /// Fold the open project into qOS global search: every marker, title and
+    /// Fold the open project into Tilo global search: every marker, title and
     /// bin source becomes a findable *place*, and choosing one seeks there.
     ///
     /// A snapshot rather than a borrow, because the host queries the provider
@@ -13796,7 +13796,7 @@ impl VideoEditorApp {
                 self.project_notice = None;
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_operation = None;
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
                         message: Some("project file selection was cancelled".into()),
                     });
@@ -13976,7 +13976,7 @@ impl VideoEditorApp {
                 self.export_notice = None;
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_operation = None;
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
                         message: Some("export destination selection was cancelled".into()),
                     });
@@ -20856,7 +20856,7 @@ mod tests {
         png.extend_from_slice(&h.to_be_bytes());
         png.extend_from_slice(&[8, 2, 0, 0, 0]);
         let f = std::env::temp_dir().join(format!(
-            "qos-ve-import-app-{}-{}.png",
+            "tilo-ve-import-app-{}-{}.png",
             std::process::id(),
             w
         ));
@@ -20873,7 +20873,7 @@ mod tests {
         // this test deletes the file, which would pull it out from under any
         // sibling test that happened to pick the same size.
         let src = write_real_png(640, 360);
-        let f = std::env::temp_dir().join(format!("qos-ve-absent-{}.png", std::process::id()));
+        let f = std::env::temp_dir().join(format!("tilo-ve-absent-{}.png", std::process::id()));
         std::fs::copy(&src, &f).unwrap();
         let mut app = VideoEditorApp::new_import(vec![f.clone()]);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -20925,7 +20925,7 @@ mod tests {
     #[test]
     fn a_loaded_document_says_unknown_rather_than_inventing_zeroes() {
         // Real bytes on disk that are not media — the actual failure mode.
-        let f = std::env::temp_dir().join(format!("qos-ve-notmedia-{}.mp4", std::process::id()));
+        let f = std::env::temp_dir().join(format!("tilo-ve-notmedia-{}.mp4", std::process::id()));
         std::fs::write(&f, b"<!doctype html><html><body>not a video</body></html>").unwrap();
 
         // Seed the document directly: this is a LOAD, not an import.
@@ -21815,7 +21815,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
                 &reveal,
                 &doc,
@@ -21833,8 +21833,8 @@ mod tests {
         assert!(
             Widget::start_resource_operation(
                 &mut app,
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::View,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
                 crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
                 &import,
                 &doc,
@@ -21862,7 +21862,7 @@ mod tests {
     /// A scratch directory of this test's own, so nothing here can collide
     /// with another test's file or leave one behind.
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("qos-ve-app-{}-{tag}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("tilo-ve-app-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -22198,7 +22198,7 @@ mod tests {
         // opening a project somewhere else — and it must be disclosed in the
         // same vocabulary the bin and the timeline use, not a third phrasing.
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::remove_var("QOS_VE_MEDIA_DIR") };
+        unsafe { std::env::remove_var("TILO_VE_MEDIA_DIR") };
         let dir = scratch("moved");
         let path = dir.join("Moved.qvp");
         let mut p = Project::new("Moved");
@@ -25357,7 +25357,7 @@ mod tests {
     #[test]
     fn a_refused_import_tells_the_user_what_the_file_actually_is() {
         let (mut app, mut doc) = app_and_doc();
-        let dir = std::env::temp_dir().join(format!("qos-ve-import-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("tilo-ve-import-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("not-a-video.mp4");
         std::fs::write(&path, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
@@ -25585,7 +25585,7 @@ mod tests {
         v.extend_from_slice(b"data");
         v.extend_from_slice(&(data.len() as u32).to_le_bytes());
         v.extend_from_slice(&data);
-        let f = std::env::temp_dir().join(format!("qos-ve-appwave-{}.wav", std::process::id()));
+        let f = std::env::temp_dir().join(format!("tilo-ve-appwave-{}.wav", std::process::id()));
         std::fs::write(&f, v).unwrap();
         f
     }
@@ -30486,14 +30486,14 @@ mod tests {
             .find(|h| h.action_address() == Some(crate::actions::reveal_clip_address(clip.id)))
             .expect("the exact clip is findable by source name");
         let address = hit.action_address().expect("canonical search address");
-        let encoded = qos_actions::door::encode(&app.resources(&doc), &address, None)
+        let encoded = tilo_actions::door::encode(&app.resources(&doc), &address, None)
             .expect("the address resolves through the live resource tree");
 
         app.playback.playing = true;
         app.playhead = 0.0;
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 &doc,
@@ -30527,10 +30527,10 @@ mod tests {
         let clip = app.project.clip(cid).expect("clip").clone();
         let resources = crate::actions::provide_resources(&app.video_resource_ctx().unwrap());
         let address = crate::actions::reveal_marker_address(marker_id);
-        let encoded = qos_actions::door::encode(&resources, &address, None)
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("marker action is exported");
         app.invoke_resource_operation(
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &doc,
@@ -30557,7 +30557,7 @@ mod tests {
 
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -30573,7 +30573,7 @@ mod tests {
             .remove_effect_id(effect_id);
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
                 &payload,
                 &doc,

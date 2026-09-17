@@ -2,9 +2,9 @@
 //!
 //! Three steps in one blocking call: find the entry in the catalogue,
 //! download the `.qpkg` to a staging file, hand the path to
-//! `qos-install`.
+//! `tilo-install`.
 //!
-//! Trust is decided there, not here: `qos-install` recomputes the
+//! Trust is decided there, not here: `tilo-install` recomputes the
 //! content-addressed package id and checks the publisher signature
 //! fail-closed before extracting, so a tampered download fails at
 //! install rather than becoming an installed app. Nothing in this
@@ -19,11 +19,11 @@ use std::time::Duration;
 use crate::CatalogueApp;
 
 /// How long a .qpkg download may take before it's abandoned;
-/// overridable via `QOS_CATALOGUE_DOWNLOAD_TIMEOUT` (seconds).
+/// overridable via `TILO_CATALOGUE_DOWNLOAD_TIMEOUT` (seconds).
 const DEFAULT_DOWNLOAD_TIMEOUT_SECS: u64 = 120;
 
 fn download_timeout() -> Duration {
-    std::env::var("QOS_CATALOGUE_DOWNLOAD_TIMEOUT")
+    std::env::var("TILO_CATALOGUE_DOWNLOAD_TIMEOUT")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map_or(
@@ -41,9 +41,9 @@ pub enum InstallError {
     NoStagingDir,
     /// The download itself failed.
     Download { detail: String },
-    /// `qos-install` could not be run at all.
+    /// `tilo-install` could not be run at all.
     InstallerMissing { detail: String },
-    /// `qos-install` ran and refused; `detail` is its own output — usually the signature or hash complaint.
+    /// `tilo-install` ran and refused; `detail` is its own output — usually the signature or hash complaint.
     Refused { code: i32, detail: String },
     /// Downloaded bytes did not match the signed registry metadata.
     Integrity { detail: String },
@@ -59,14 +59,14 @@ impl InstallError {
             InstallError::NoStagingDir => "there is nowhere writable to download it to".to_string(),
             InstallError::Download { detail } => format!("the download failed: {detail}"),
             InstallError::InstallerMissing { detail } => {
-                format!("qos-install could not be run: {detail}")
+                format!("tilo-install could not be run: {detail}")
             }
             InstallError::Refused { code, detail } => {
                 let trimmed = detail.trim();
                 if trimmed.is_empty() {
-                    format!("qos-install refused it (exit {code})")
+                    format!("tilo-install refused it (exit {code})")
                 } else {
-                    format!("qos-install refused it: {trimmed}")
+                    format!("tilo-install refused it: {trimmed}")
                 }
             }
             InstallError::Integrity { detail } => {
@@ -90,12 +90,12 @@ pub fn staging_dir() -> Option<PathBuf> {
     Some(staged)
 }
 
-/// The installer binary; `QOS_INSTALL_BIN` overrides, matching the store app and compositor launcher resolution.
-pub fn qos_install_bin() -> String {
-    std::env::var("QOS_INSTALL_BIN").unwrap_or_else(|_| "qos-install".to_string())
+/// The installer binary; `TILO_INSTALL_BIN` overrides, matching the store app and compositor launcher resolution.
+pub fn tilo_install_bin() -> String {
+    std::env::var("TILO_INSTALL_BIN").unwrap_or_else(|_| "tilo-install".to_string())
 }
 
-/// The exact `qos-install` invocation [`install`] runs. Split out so a
+/// The exact `tilo-install` invocation [`install`] runs. Split out so a
 /// test can assert on argv without a network or real installer — in
 /// particular, that --allow-self-signed is not in it.
 pub fn install_argv(
@@ -185,7 +185,7 @@ pub fn download_reporting(
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<u64, String> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent("qos-catalogue/0.1")
+        .user_agent("tilo-catalogue/0.1")
         .timeout(download_timeout())
         .build()
         .map_err(|e| format!("http client: {e}"))?;
@@ -243,7 +243,7 @@ pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
     download_reporting(url, dest, &mut |_| {})
 }
 
-/// Download and install `app`, blocking until `qos-install` exits.
+/// Download and install `app`, blocking until `tilo-install` exits.
 /// The staged file is removed either way: on success the bytes now
 /// live in the installed payload tree; on failure a half-written
 /// download isn't worth keeping.
@@ -256,13 +256,13 @@ pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
 }
 
 /// [`install_app`], reporting download progress. Reporting stops at
-/// the download — `qos-install` verifies+extracts as one opaque step,
+/// the download — `tilo-install` verifies+extracts as one opaque step,
 /// and inventing a fraction for it would be a bar that lies.
 ///
 /// # Errors
 ///
 /// Returns an error if there's nowhere writable to stage the
-/// download, the download itself fails, `qos-install` can't be run,
+/// download, the download itself fails, `tilo-install` can't be run,
 /// or it runs and refuses the package.
 pub fn install_app_reporting(
     app: &CatalogueApp,
@@ -297,7 +297,7 @@ pub fn install_app_reporting(
         return Err(error);
     }
 
-    let output = Command::new(qos_install_bin())
+    let output = Command::new(tilo_install_bin())
         .args(install_argv(
             &dest,
             &app.publisher_pubkey_hex,
@@ -365,7 +365,7 @@ const DETAIL_MAX_CHARS: usize = 110;
 /// The installer's actual complaint, reduced to one readable line.
 ///
 /// Only the **last** non-empty line survives (the lines above are
-/// context the card has no room for); a leading `qos-install:` is
+/// context the card has no room for); a leading `tilo-install:` is
 /// stripped (the caller already says who refused it); anything still
 /// over [`DETAIL_MAX_CHARS`] is elided rather than cut off mid-word.
 fn installer_complaint(text: &str) -> String {
@@ -373,7 +373,7 @@ fn installer_complaint(text: &str) -> String {
         return String::new();
     };
     let line = line
-        .strip_prefix("qos-install:")
+        .strip_prefix("tilo-install:")
         .unwrap_or(line)
         .trim()
         .to_string();
@@ -390,7 +390,7 @@ mod tests {
 
     fn registry_app_for(bytes: &[u8]) -> CatalogueApp {
         CatalogueApp {
-            package_id: "dev.qos.test".into(),
+            package_id: "dev.tilo.test".into(),
             display_name: "Test".into(),
             description: String::new(),
             category: None,
@@ -456,7 +456,7 @@ mod tests {
     fn errors_render_something_a_person_can_act_on() {
         let cases = [
             InstallError::NotOffered {
-                package_id: "dev.qos.ghost".into(),
+                package_id: "dev.tilo.ghost".into(),
             },
             InstallError::NoStagingDir,
             InstallError::Download {
@@ -494,7 +494,7 @@ mod tests {
         );
     }
 
-    /// An empty installer complaint must still say *something* — "qos-install refused it" with a code beats a blank line.
+    /// An empty installer complaint must still say *something* — "tilo-install refused it" with a code beats a blank line.
     #[test]
     fn a_silent_refusal_still_reports_the_exit_code() {
         let msg = InstallError::Refused {
@@ -519,15 +519,15 @@ mod tests {
     fn the_installers_own_name_prefix_is_stripped() {
         let msg = InstallError::Refused {
             code: 1,
-            detail: installer_complaint("qos-install: qpkg parse: unexpected EOF during skip"),
+            detail: installer_complaint("tilo-install: qpkg parse: unexpected EOF during skip"),
         }
         .user_message();
         assert_eq!(
             msg,
-            "qos-install refused it: qpkg parse: unexpected EOF during skip"
+            "tilo-install refused it: qpkg parse: unexpected EOF during skip"
         );
         assert!(
-            !msg.contains("qos-install: "),
+            !msg.contains("tilo-install: "),
             "the sentence must not name the installer twice: {msg:?}"
         );
     }

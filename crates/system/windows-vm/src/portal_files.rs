@@ -1,7 +1,7 @@
 //! Descriptor-backed portal documents for the RAIL drive redirector.
 //!
 //! The public capability is an opaque [`PortalDocumentGrant`], never a host
-//! path.  This broker owns the descriptor selected by the qOS portal and makes
+//! path.  This broker owns the descriptor selected by the Tilo portal and makes
 //! a short-lived copy below the RAIL lease root.  `FreeRDP` receives only that
 //! directory.  Revocation removes it, and a read/write projection is copied
 //! back through the already-open descriptor before it is removed.
@@ -26,7 +26,7 @@ use crate::{
 const MAX_PORTAL_DOCUMENTS_PER_LAUNCH: usize = 32;
 const MAX_PORTAL_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
-/// A broker-owned descriptor selected by qOS's file portal.
+/// A broker-owned descriptor selected by Tilo's file portal.
 ///
 /// There is intentionally no constructor from a path.  The portal/opening
 /// component has already opened a regular file and supplies that descriptor.
@@ -46,7 +46,7 @@ struct LeaseDocument {
     projection: PathBuf,
 }
 
-/// qOS's host-side mapping from opaque portal IDs to opened document handles.
+/// Tilo's host-side mapping from opaque portal IDs to opened document handles.
 ///
 /// A store may be shared by the portal bridge and the RAIL capability broker;
 /// neither Windows, `FreeRDP`, nor an untrusted manager client can resolve a
@@ -69,11 +69,11 @@ impl Default for PortalDocumentStore {
 ///
 /// The compositor and `FreeRDP` helper are unprivileged session processes.
 /// Keeping their private 0700 lease tree under the logind-owned runtime
-/// directory is deliberate: a root-owned `/run/qos/windows-vm/leases` cannot
+/// directory is deliberate: a root-owned `/run/tilo/windows-vm/leases` cannot
 /// be safely made writable by the desktop user without broadening it to other
 /// sessions. If logind did not export `XDG_RUNTIME_DIR`, use that same user's
 /// conventional `/run/user/<uid>` root; never fall back into the root-owned
-/// appliance-control namespace below `/run/qos/windows-vm`.
+/// appliance-control namespace below `/run/tilo/windows-vm`.
 #[must_use]
 pub fn portal_lease_root() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -87,7 +87,7 @@ pub fn portal_lease_root() -> PathBuf {
             },
             PathBuf::from,
         )
-        .join("qos/windows-vm/leases")
+        .join("tilo/windows-vm/leases")
 }
 
 impl PortalDocumentStore {
@@ -101,7 +101,7 @@ impl PortalDocumentStore {
         }
     }
 
-    /// Registers the file descriptor returned by qOS's file portal.
+    /// Registers the file descriptor returned by Tilo's file portal.
     ///
     /// The caller identity is retained with the descriptor, so a handle picked
     /// in one workspace/app cannot be projected into another.  `ReadWrite`
@@ -201,7 +201,7 @@ impl PortalDocumentStore {
                     ));
                 }
                 let drive_number = index.saturating_add(1);
-                let drive_name = format!("QOS{drive_number:02}");
+                let drive_name = format!("TILO{drive_number:02}");
                 let directory = lease_dir.join(&drive_name);
                 fs::create_dir(&directory).map_err(|error| {
                     portal_error(format!("could not create portal drive projection: {error}"))
@@ -371,7 +371,7 @@ impl CapabilityBroker for PortalRailCapabilityBroker {
             leases.remove(lease_id);
         }
         if let Err(error) = self.documents.revoke_checked(lease_id) {
-            eprintln!("qOS Windows portal lease {lease_id} revoke failed: {error}");
+            eprintln!("Tilo Windows portal lease {lease_id} revoke failed: {error}");
         }
     }
 }

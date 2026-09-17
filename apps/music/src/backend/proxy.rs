@@ -23,7 +23,7 @@ use crate::backend::ResolvedStream;
 
 /// Public Invidious instances tried in order until one's `local` media proxy
 /// actually serves bytes. Operators can prepend their own via
-/// `QOS_MUSIC_INVIDIOUS` (comma-separated) for reliability / self-hosting.
+/// `TILO_MUSIC_INVIDIOUS` (comma-separated) for reliability / self-hosting.
 ///
 /// Ordering matters: instances whose media proxy is reliably up come first, so
 /// the common case resolves on the first probe.
@@ -162,12 +162,12 @@ pub fn best_audio(list: &[InvAudio]) -> Option<&InvAudio> {
         .or_else(|| list.iter().max_by_key(|a| a.bitrate))
 }
 
-/// The instances to try, honouring the `QOS_MUSIC_INVIDIOUS` override (a
+/// The instances to try, honouring the `TILO_MUSIC_INVIDIOUS` override (a
 /// comma-separated list prepended to the built-in defaults).
 #[cfg(feature = "live")]
 fn instances() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    if let Some(env) = std::env::var_os("QOS_MUSIC_INVIDIOUS") {
+    if let Some(env) = std::env::var_os("TILO_MUSIC_INVIDIOUS") {
         for s in env.to_string_lossy().split(',') {
             let s = s.trim();
             if !s.is_empty() {

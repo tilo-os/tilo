@@ -64,7 +64,7 @@ fn safe_web_target(target: &str) -> bool {
 
 /// Decodes only the `GBytesIcon` representation produced by
 /// `g_icon_serialize`: `('bytes', <ay>)`.  Paths, themed names and Unix FDs
-/// are deliberately not accepted: qOS neither reads app paths nor passes an
+/// are deliberately not accepted: Tilo neither reads app paths nor passes an
 /// inherited FD to the compositor.
 fn icon_bytes(icon: &OwnedValue) -> Option<Vec<u8>> {
     if icon.value_signature().to_string().contains('h') {
@@ -158,19 +158,19 @@ fn valid_icon(icon: &OwnedValue) -> bool {
     icon_bytes(icon).is_some_and(|bytes| valid_icon_payload(&bytes))
 }
 
-const QOS_MONOGRAM_ICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#2d6cdf"/><path fill="white" d="M27 38h74v16H43v20h45v16H43v16h58v16H27z"/></svg>"##;
-const QOS_WEB_ICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#087f5b"/><circle cx="64" cy="64" r="36" fill="none" stroke="white" stroke-width="8"/><path fill="none" stroke="white" stroke-width="8" d="M28 64h72M64 28c14 16 14 56 0 72M64 28c-14 16-14 56 0 72"/></svg>"##;
+const TILO_MONOGRAM_ICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#2d6cdf"/><path fill="white" d="M27 38h74v16H43v20h45v16H43v16h58v16H27z"/></svg>"##;
+const TILO_WEB_ICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#087f5b"/><circle cx="64" cy="64" r="36" fill="none" stroke="white" stroke-width="8"/><path fill="none" stroke="white" stroke-width="8" d="M28 64h72M64 28c14 16 14 56 0 72M64 28c-14 16-14 56 0 72"/></svg>"##;
 
-fn qos_icon(choice: usize) -> OwnedValue {
+fn tilo_icon(choice: usize) -> OwnedValue {
     let bytes = match choice {
-        1 => QOS_MONOGRAM_ICON.as_bytes(),
-        _ => QOS_WEB_ICON.as_bytes(),
+        1 => TILO_MONOGRAM_ICON.as_bytes(),
+        _ => TILO_WEB_ICON.as_bytes(),
     }
     .to_vec();
     // GBytesIcon's serialized wire form is (`bytes`, <ay>), exactly the
     // format produced by GLib.  It contains no path or file descriptor.
     OwnedValue::try_from(Value::new(("bytes", Value::new(bytes))))
-        .expect("a static qOS SVG is a valid zvariant value")
+        .expect("a static Tilo SVG is a valid zvariant value")
 }
 #[interface(name = "org.freedesktop.impl.portal.DynamicLauncher")]
 impl DynamicLauncherBackend {
@@ -261,8 +261,8 @@ impl DynamicLauncherBackend {
             icon_choices: if editable_icon {
                 vec![
                     "Supplied image (validated)".into(),
-                    "qOS monogram".into(),
-                    "qOS web compass".into(),
+                    "Tilo monogram".into(),
+                    "Tilo web compass".into(),
                 ]
             } else {
                 vec!["Supplied image (validated)".into()]
@@ -291,7 +291,7 @@ impl DynamicLauncherBackend {
             return (1, HashMap::new());
         }
         let selected_icon = if editable_icon && decision.icon_choice > 0 {
-            qos_icon(decision.icon_choice)
+            tilo_icon(decision.icon_choice)
         } else {
             icon_v
         };
@@ -314,8 +314,8 @@ impl DynamicLauncherBackend {
                     editable_name,
                     editable_icon,
                     icon_kind: match decision.icon_choice {
-                        1 if editable_icon => "qos-monogram".into(),
-                        2 if editable_icon => "qos-web".into(),
+                        1 if editable_icon => "tilo-monogram".into(),
+                        2 if editable_icon => "tilo-web".into(),
                         _ => "supplied".into(),
                     },
                     icon_bytes: selected_icon_bytes,
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn generated_icons_are_bounded_gbytes_icons() {
-        let icon = qos_icon(1);
+        let icon = tilo_icon(1);
         assert!(valid_icon(&icon));
         assert!(icon_bytes(&icon).is_some_and(|bytes| bytes.starts_with(b"<svg")));
     }

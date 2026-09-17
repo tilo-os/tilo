@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Linux-only syntax and publication contracts for qOS guest PowerShell.
+"""Linux-only syntax and publication contracts for Tilo guest PowerShell.
 
 This deliberately does not execute guest scripts: they access Windows-only
 cmdlets and registry providers.  It does parse PowerShell's structural syntax
@@ -165,16 +165,16 @@ def require(condition: bool, message: str) -> None:
 
 
 def check_publication_contract(guest_root: pathlib.Path) -> None:
-    bridge = (guest_root / "Start-qOSGuestBridge.ps1").read_text(encoding="utf-8-sig")
-    install = (guest_root / "Install-qOSRemoteApp.ps1").read_text(encoding="utf-8-sig")
+    bridge = (guest_root / "Start-TiloGuestBridge.ps1").read_text(encoding="utf-8-sig")
+    install = (guest_root / "Install-TiloRemoteApp.ps1").read_text(encoding="utf-8-sig")
     start = bridge.index("function Set-RemoteAppRegistry")
     end = bridge.index("function Publish-DiscoveredCandidate", start)
     dynamic_publication = bridge[start:end]
 
     require("$env:WINDIR\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" in dynamic_publication,
             "dynamic publication must publish powershell.exe, never the discovered executable")
-    require("$root\\Start-qOSRemoteApp.ps1" in dynamic_publication,
-            "dynamic publication must use Start-qOSRemoteApp.ps1")
+    require("$root\\Start-TiloRemoteApp.ps1" in dynamic_publication,
+            "dynamic publication must use Start-TiloRemoteApp.ps1")
     require("-ApplicationId $($app.id)" in dynamic_publication,
             "dynamic publication wrapper must receive only its fixed application id")
     require("-Value ([string]$app.path)" not in dynamic_publication,
@@ -186,7 +186,7 @@ def check_publication_contract(guest_root: pathlib.Path) -> None:
 
 
 def main() -> int:
-    guest_root = pathlib.Path(sys.argv[1]) if len(sys.argv) == 2 else pathlib.Path(__file__).resolve().parents[1] / "usr/share/qos/windows/guest"
+    guest_root = pathlib.Path(sys.argv[1]) if len(sys.argv) == 2 else pathlib.Path(__file__).resolve().parents[1] / "usr/share/tilo/windows/guest"
     scripts = sorted(guest_root.glob("*.ps1"))
     require(bool(scripts), f"no guest PowerShell scripts found under {guest_root}")
     for script in scripts:

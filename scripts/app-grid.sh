@@ -131,7 +131,7 @@ for a in $APPS; do
   # Offscreen: no Wayland socket, so the app takes its own headless path.
   # Keep the output: when an app fails to produce a frame its own complaint is
   # the only thing that explains why, and discarding it leaves a bare "noshot".
-  WAYLAND_DISPLAY= QOS_SHOTS_THEME="$THEME" timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" \
+  WAYLAND_DISPLAY= TILO_SHOTS_THEME="$THEME" timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" \
     > "$SHOTS/$a.log" 2>&1
   if [ ! -s "$raw" ]; then
     missing="$missing $a(noshot)"

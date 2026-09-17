@@ -25,7 +25,7 @@ use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::compositor::foreign::ForeignSurfaceWidget;
-use crate::shell::build_nirios_overlay_host_with_chrome;
+use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::overlay_host::ShellOverlayHost;
 use crate::shell::state::WorkspaceTree;
@@ -377,17 +377,17 @@ impl FrameBuilder {
         reason = "taking &WorkspaceTree would ripple into bin/shots/driver.rs's ShellDriver::with_tree, out of scope for this change; its only caller already owns a tree it discards right after this call"
     )]
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
-        Self::from_parts(build_nirios_overlay_host_with_chrome(&tree), viewport)
+        Self::from_parts(build_tilo_overlay_host_with_chrome(&tree), viewport)
     }
 
     /// Optional presentation overrides for offscreen `shots` capture:
-    /// `QOS_SHOTS_THEME=light|high-contrast|dark` and
-    /// `QOS_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
+    /// `TILO_SHOTS_THEME=light|high-contrast|dark` and
+    /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
     /// a theme-driven chrome change be proven in high contrast and at large
     /// text, not just its comfortable default density.
     fn shots_theme_override() -> Option<Theme> {
-        let requested_theme = std::env::var("QOS_SHOTS_THEME").ok();
-        let requested_scale = std::env::var("QOS_SHOTS_TEXT_SCALE")
+        let requested_theme = std::env::var("TILO_SHOTS_THEME").ok();
+        let requested_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| value.is_finite());
@@ -423,7 +423,7 @@ impl FrameBuilder {
         viewport: (u32, u32),
     ) -> Self {
         Self::from_parts(
-            Self::with_live_status(crate::shell::build_nirios_overlay_host_with_handle(
+            Self::with_live_status(crate::shell::build_tilo_overlay_host_with_handle(
                 tree,
                 enable_peer_sync,
             )),
@@ -441,7 +441,7 @@ impl FrameBuilder {
         records: ui::record::RecordStore,
     ) -> Self {
         Self::from_parts(
-            Self::with_live_status(crate::shell::build_nirios_overlay_host_with_records(
+            Self::with_live_status(crate::shell::build_tilo_overlay_host_with_records(
                 tree,
                 enable_peer_sync,
                 records,
@@ -1335,8 +1335,8 @@ impl FrameBuilder {
 
     fn refresh_configured_theme(&mut self) {
         if !self.watch_configured_theme
-            || std::env::var_os("QOS_SHOTS_THEME").is_some()
-            || std::env::var_os("QOS_SHOTS_TEXT_SCALE").is_some()
+            || std::env::var_os("TILO_SHOTS_THEME").is_some()
+            || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
             || self.last_theme_store_check.elapsed() < Duration::from_millis(750)
         {
             return;
@@ -1816,7 +1816,10 @@ impl FrameBuilder {
                 .unwrap_or_else(|| {
                     self.transient_overlays.push((
                         *surface_id,
-                        ForeignSurfaceWidget::new_floating(*surface_id, "dev.qos.transient".into()),
+                        ForeignSurfaceWidget::new_floating(
+                            *surface_id,
+                            "dev.tilo.transient".into(),
+                        ),
                     ));
                     self.transient_overlays.len().saturating_sub(1)
                 });
@@ -1988,7 +1991,7 @@ impl FrameBuilder {
     /// native shell has no application window, so its AT-SPI bridge calls this
     /// equivalent projection directly after layout. Keeping the projection in
     /// [`ui::accesskit_bridge`] means first-use surfaces expose the same roles,
-    /// names, state and stable node ids as every other qOS UI.
+    /// names, state and stable node ids as every other Tilo UI.
     pub fn build_a11y_tree_update(
         &self,
         focus: Option<NodeId>,
@@ -2473,7 +2476,7 @@ mod tests {
             "an external focus request must update the compositor's real focus cursor"
         );
 
-        let probe = "qos-atspi-edit-probe";
+        let probe = "tilo-atspi-edit-probe";
         assert!(fb.dispatch_a11y_action(
             field_id,
             &ui::a11y::Action::SetValue(probe.into()),

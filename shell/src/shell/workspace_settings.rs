@@ -30,8 +30,8 @@ use crate::shell::state::{
     WorkspaceId,
 };
 
-pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "qos.workspace.ownership-transfer.v1";
-pub const PERMISSION_PROFILE_ACTION_TYPE: &str = "qos.workspace.permission-profile.v1";
+pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "tilo.workspace.ownership-transfer.v1";
+pub const PERMISSION_PROFILE_ACTION_TYPE: &str = "tilo.workspace.permission-profile.v1";
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
@@ -49,10 +49,12 @@ pub enum PermissionProfileOperation {
     },
 }
 
-fn encoded_profile_operation(operation: &PermissionProfileOperation) -> qos_actions::EncodedAction {
-    qos_actions::EncodedAction::encode_operation(PERMISSION_PROFILE_ACTION_TYPE, operation)
-        .unwrap_or_else(|error| qos_actions::EncodedAction {
-            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+fn encoded_profile_operation(
+    operation: &PermissionProfileOperation,
+) -> tilo_actions::EncodedAction {
+    tilo_actions::EncodedAction::encode_operation(PERMISSION_PROFILE_ACTION_TYPE, operation)
+        .unwrap_or_else(|error| tilo_actions::EncodedAction {
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
             payload: error.to_string().into_bytes(),
         })
 }
@@ -60,7 +62,7 @@ fn encoded_profile_operation(operation: &PermissionProfileOperation) -> qos_acti
 /// Searchable and agent-addressable governance surface for reusable roles.
 /// Profile resources are workspace state; assigning one writes capabilities,
 /// which remain the only values consulted by enforcement.
-pub fn permission_profile_resource(ws: &Workspace, local_user: &UserId) -> qos_actions::Resource {
+pub fn permission_profile_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
     permission_profile_resource_with_access(ws, ws.may_administer(local_user))
 }
 
@@ -71,13 +73,13 @@ pub fn permission_profile_resource(ws: &Workspace, local_user: &UserId) -> qos_a
 pub(crate) fn permission_profile_resource_with_access(
     ws: &Workspace,
     can_administer: bool,
-) -> qos_actions::Resource {
-    use qos_actions::{
+) -> tilo_actions::Resource {
+    use tilo_actions::{
         ActionContract, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
         PermissionRequirement, RiskLevel,
     };
 
-    let mut root = qos_actions::Resource::new(
+    let mut root = tilo_actions::Resource::new(
         format!("workspace.permissions:{}", ws.room),
         "workspace.permissions",
         format!("{} permission roles", ws.name),
@@ -93,7 +95,7 @@ pub(crate) fn permission_profile_resource_with_access(
         ..ActionContract::default()
     };
     root.actions.push(
-        qos_actions::ActionSpec::typed_operation(
+        tilo_actions::ActionSpec::typed_operation(
             "profile.save",
             "Create or update permission role",
             "Role name",
@@ -109,7 +111,7 @@ pub(crate) fn permission_profile_resource_with_access(
                 ActionParam::required_owned(
                     "rules",
                     ParamType::Array,
-                    "Least-privilege rules. Scope examples: {\"App\":\"dev.qos.notes\"}, {\"Action\":{\"app\":\"dev.qos.notes\",\"action\":\"note.open\"}}, {\"FsPath\":\"/shared/design\"}, {\"FsRecord\":\"stable-record-id\"}, or \"Workspace\".",
+                    "Least-privilege rules. Scope examples: {\"App\":\"dev.tilo.notes\"}, {\"Action\":{\"app\":\"dev.tilo.notes\",\"action\":\"note.open\"}}, {\"FsPath\":\"/shared/design\"}, {\"FsRecord\":\"stable-record-id\"}, or \"Workspace\".",
                 )
                 .with_schema(serde_json::json!({
                     "minItems": 1,
@@ -142,8 +144,8 @@ pub(crate) fn permission_profile_resource_with_access(
                     arguments.array("rules").unwrap_or_default().to_vec(),
                 ));
                 let Ok(rules) = rules else {
-                    return qos_actions::EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    return tilo_actions::EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"permission rules do not match a supported scope".to_vec(),
                     };
                 };
@@ -164,7 +166,7 @@ pub(crate) fn permission_profile_resource_with_access(
     );
 
     root.actions.push(
-        qos_actions::ActionSpec::typed_operation(
+        tilo_actions::ActionSpec::typed_operation(
             "profile.assign",
             "Assign permission role",
             "Role and collaborator",
@@ -211,7 +213,7 @@ pub(crate) fn permission_profile_resource_with_access(
 
     for profile in &ws.permission_profiles {
         let profile_name = profile.name.clone();
-        let mut resource = qos_actions::Resource::new(
+        let mut resource = tilo_actions::Resource::new(
             format!(
                 "workspace.permission-profile:{}:{}",
                 ws.room,
@@ -221,7 +223,7 @@ pub(crate) fn permission_profile_resource_with_access(
             profile.name.clone(),
         );
         resource.actions.push(
-            qos_actions::ActionSpec::typed_operation(
+            tilo_actions::ActionSpec::typed_operation(
                 "profile.assign",
                 format!("Assign {}", profile.name),
                 "Collaborator identity",
@@ -295,10 +297,10 @@ pub enum OwnershipTransferOperation {
 
 fn encoded_ownership_operation(
     operation: &OwnershipTransferOperation,
-) -> qos_actions::EncodedAction {
-    qos_actions::EncodedAction::encode_operation(OWNERSHIP_TRANSFER_ACTION_TYPE, operation)
-        .unwrap_or_else(|error| qos_actions::EncodedAction {
-            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+) -> tilo_actions::EncodedAction {
+    tilo_actions::EncodedAction::encode_operation(OWNERSHIP_TRANSFER_ACTION_TYPE, operation)
+        .unwrap_or_else(|error| tilo_actions::EncodedAction {
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
             payload: error.to_string().into_bytes(),
         })
 }
@@ -306,8 +308,8 @@ fn encoded_ownership_operation(
 /// Publish the active workspace and its ownership ceremony as typed,
 /// resource-addressed operations for search, automation, and assistive tools.
 /// Generic member-role actions remain separate and never include Owner.
-pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> qos_actions::Resource {
-    let mut resource = qos_actions::Resource::new(
+pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
+    let mut resource = tilo_actions::Resource::new(
         format!("workspace:{}", ws.room),
         "workspace.governance",
         format!("{} ownership", ws.name),
@@ -327,13 +329,13 @@ pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> qos_a
     resource
 }
 
-fn ownership_proposal_action() -> qos_actions::ActionSpec {
-    use qos_actions::{
+fn ownership_proposal_action() -> tilo_actions::ActionSpec {
+    use tilo_actions::{
         ActionContract, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
         PermissionRequirement, RiskLevel,
     };
 
-    qos_actions::ActionSpec::typed_operation(
+    tilo_actions::ActionSpec::typed_operation(
         "ownership.propose",
         "Propose ownership transfer",
         "Recipient identity",
@@ -374,15 +376,15 @@ fn ownership_proposal_action() -> qos_actions::ActionSpec {
     })
 }
 
-fn ownership_accept_action(digest: &str) -> qos_actions::ActionSpec {
-    use qos_actions::{
+fn ownership_accept_action(digest: &str) -> tilo_actions::ActionSpec {
+    use tilo_actions::{
         ActionContract, ConfirmationPolicy, OperationKind, PermissionRequirement, RiskLevel,
     };
 
     let operation = OwnershipTransferOperation::Accept {
         proposal_digest: digest.to_string(),
     };
-    qos_actions::ActionSpec::operation(
+    tilo_actions::ActionSpec::operation(
         "ownership.accept",
         "Accept workspace ownership",
         OperationKind::Effect,
@@ -390,10 +392,10 @@ fn ownership_accept_action(digest: &str) -> qos_actions::ActionSpec {
         &operation,
     )
     .unwrap_or_else(|_| {
-        qos_actions::ActionSpec::immediate_encoded(
+        tilo_actions::ActionSpec::immediate_encoded(
             "ownership.accept",
             "Accept workspace ownership",
-            qos_actions::ExecutionLocus::ClientLocal,
+            tilo_actions::ExecutionLocus::ClientLocal,
             encoded_ownership_operation(&operation),
         )
     })
@@ -411,15 +413,15 @@ fn ownership_accept_action(digest: &str) -> qos_actions::ActionSpec {
     })
 }
 
-fn ownership_cancel_action(digest: &str) -> qos_actions::ActionSpec {
-    use qos_actions::{
+fn ownership_cancel_action(digest: &str) -> tilo_actions::ActionSpec {
+    use tilo_actions::{
         ActionContract, ConfirmationPolicy, OperationKind, PermissionRequirement, RiskLevel,
     };
 
     let operation = OwnershipTransferOperation::Cancel {
         proposal_digest: digest.to_string(),
     };
-    qos_actions::ActionSpec::operation(
+    tilo_actions::ActionSpec::operation(
         "ownership.cancel",
         "Cancel ownership transfer",
         OperationKind::Effect,
@@ -427,10 +429,10 @@ fn ownership_cancel_action(digest: &str) -> qos_actions::ActionSpec {
         &operation,
     )
     .unwrap_or_else(|_| {
-        qos_actions::ActionSpec::immediate_encoded(
+        tilo_actions::ActionSpec::immediate_encoded(
             "ownership.cancel",
             "Cancel ownership transfer",
-            qos_actions::ExecutionLocus::ClientLocal,
+            tilo_actions::ExecutionLocus::ClientLocal,
             encoded_ownership_operation(&operation),
         )
     })
@@ -4298,7 +4300,7 @@ mod members_pane_tests {
         let owner_resource = ownership_transfer_resource(&ws, &owner);
         assert!(owner_resource.actions.iter().any(|action| {
             action.id == "ownership.propose"
-                && action.contract.confirmation == qos_actions::ConfirmationPolicy::Confirm
+                && action.contract.confirmation == tilo_actions::ConfirmationPolicy::Confirm
         }));
         assert!(
             owner_resource
@@ -4314,7 +4316,7 @@ mod members_pane_tests {
             .unwrap();
         assert!(matches!(
             accept.contract.confirmation,
-            qos_actions::ConfirmationPolicy::Phrase { .. }
+            tilo_actions::ConfirmationPolicy::Phrase { .. }
         ));
         assert!(
             ownership_transfer_status(&ws, &recipient)
@@ -4336,7 +4338,7 @@ mod members_pane_tests {
                 description: "Read Builds and approve releases".into(),
                 rules: vec![collab_types::PermissionProfileRule::grant(
                     Scope::Action {
-                        app: "org.qos.Builds".into(),
+                        app: "org.tilo.Builds".into(),
                         action: "release.approve".into(),
                     },
                     Verb::Write,
@@ -4353,14 +4355,14 @@ mod members_pane_tests {
             .unwrap();
         assert_eq!(
             save.contract.permission,
-            qos_actions::PermissionRequirement::Admin
+            tilo_actions::PermissionRequirement::Admin
         );
         let rules = save
             .params()
             .iter()
             .find(|parameter| parameter.name == "rules")
             .expect("agent-visible rules parameter");
-        assert_eq!(rules.ty, qos_actions::ParamType::Array);
+        assert_eq!(rules.ty, tilo_actions::ParamType::Array);
         assert!(
             rules.schema.is_some(),
             "rule wire shapes must be discoverable"
@@ -4369,7 +4371,7 @@ mod members_pane_tests {
             "name": "Notes opener",
             "description": "Can open notes but cannot edit them",
             "rules": [{
-                "scope": {"Action": {"app": "dev.qos.notes", "action": "note.open"}},
+                "scope": {"Action": {"app": "dev.tilo.notes", "action": "note.open"}},
                 "effect": "Grant",
                 "verb": "Read"
             }]
@@ -4387,7 +4389,7 @@ mod members_pane_tests {
             PermissionProfileOperation::Save { rules, .. }
                 if rules == vec![collab_types::PermissionProfileRule::grant(
                     Scope::Action {
-                        app: "dev.qos.notes".into(),
+                        app: "dev.tilo.notes".into(),
                         action: "note.open".into(),
                     },
                     Verb::Read,
@@ -4399,7 +4401,7 @@ mod members_pane_tests {
             .iter()
             .find(|action| action.id == "profile.assign")
             .unwrap();
-        assert_eq!(assign.kind, qos_actions::OperationKind::Effect);
+        assert_eq!(assign.kind, tilo_actions::OperationKind::Effect);
         assert_eq!(
             assign.operation_type.as_deref(),
             Some(PERMISSION_PROFILE_ACTION_TYPE)
@@ -4534,7 +4536,7 @@ mod agents_pane_tests {
             &OWNER.to_string(),
             CapOverride::grant(
                 Subject::agent(AGENT),
-                Scope::App("dev.qos.notes".into()),
+                Scope::App("dev.tilo.notes".into()),
                 Verb::Write,
             ),
         )
@@ -4576,7 +4578,7 @@ mod agents_pane_tests {
         assert!(
             !ws.allows(
                 &ws.actor_for_agent(AGENT),
-                &ResourceRef::App("dev.qos.notes".into()),
+                &ResourceRef::App("dev.tilo.notes".into()),
                 Verb::Read,
             ),
             "admission must never turn the Observer label into ambient app access"
@@ -4636,13 +4638,13 @@ mod agents_pane_tests {
         let ws = ws_with_agent();
         assert!(ws.allows(
             &ws.actor_for_agent(AGENT),
-            &ResourceRef::App("dev.qos.notes".into()),
+            &ResourceRef::App("dev.tilo.notes".into()),
             Verb::Write,
         ));
         assert!(
             !ws.allows(
                 &ws.actor_for_agent(AGENT),
-                &ResourceRef::App("dev.qos.sheets".into()),
+                &ResourceRef::App("dev.tilo.sheets".into()),
                 Verb::Write,
             ),
             "an Editor admission pass must not become ambient human-role authority",
@@ -4657,7 +4659,7 @@ mod agents_pane_tests {
         assert!(ws.agent_members().is_empty());
         assert!(!ws.allows(
             &ws.actor_for_agent(AGENT),
-            &ResourceRef::App("dev.qos.notes".into()),
+            &ResourceRef::App("dev.tilo.notes".into()),
             Verb::Write,
         ));
     }
@@ -5317,7 +5319,7 @@ mod permissions_pane_tests {
         );
 
         let candidates = [desktop_policy::AppCandidate {
-            package_id: "dev.qos.viewer".into(),
+            package_id: "dev.tilo.viewer".into(),
             display_name: "Viewer".into(),
             resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
         }];
@@ -5401,7 +5403,7 @@ mod default_app_authority_tests {
 
     #[test]
     fn admin_policy_and_personal_escape_hatch_are_separately_authorized() {
-        let candidates = [candidate("dev.qos.viewer"), candidate("dev.qos.other")];
+        let candidates = [candidate("dev.tilo.viewer"), candidate("dev.tilo.other")];
         let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
         let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
         let mut ws = Workspace::new(WorkspaceId::from(7), "Docs");
@@ -5411,7 +5413,7 @@ mod default_app_authority_tests {
             ws.set_default_app_policy_as(
                 &"member".into(),
                 pdf.clone(),
-                desktop_policy::WorkspaceDefaultPolicy::App("dev.qos.viewer".into()),
+                desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into()),
                 &resolver
             )
             .is_err()
@@ -5419,7 +5421,7 @@ mod default_app_authority_tests {
         ws.set_default_app_policy_as(
             &"owner".into(),
             pdf.clone(),
-            desktop_policy::WorkspaceDefaultPolicy::App("dev.qos.viewer".into()),
+            desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into()),
             &resolver,
         )
         .unwrap();
@@ -5438,23 +5440,23 @@ mod default_app_authority_tests {
             &"member".into(),
             &"member".into(),
             pdf.clone(),
-            desktop_policy::UserWorkspaceChoice::App("dev.qos.other".into()),
+            desktop_policy::UserWorkspaceChoice::App("dev.tilo.other".into()),
             &resolver,
         )
         .unwrap();
         assert_eq!(
             ws.default_apps.user_choices["member"][&pdf],
-            desktop_policy::UserWorkspaceChoice::App("dev.qos.other".into())
+            desktop_policy::UserWorkspaceChoice::App("dev.tilo.other".into())
         );
     }
 
     #[test]
     fn controls_cycle_through_inheritance_before_apps() {
-        let candidates = [candidate("dev.qos.viewer")];
+        let candidates = [candidate("dev.tilo.viewer")];
         let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
         assert_eq!(
             next_workspace_default(None, &pdf, &candidates),
-            desktop_policy::WorkspaceDefaultPolicy::App("dev.qos.viewer".into())
+            desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into())
         );
         assert_eq!(
             next_user_default(None, &pdf, &candidates),

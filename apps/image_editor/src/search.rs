@@ -11,7 +11,7 @@ use crate::{
     },
     model::{Operation, Project},
 };
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::{
     icons::Icon,
     search::{

@@ -1,6 +1,6 @@
 //! Blocking facade over the typed collaboration client.
 //!
-//! Production connects through the launcher-inherited `QOS_SVC_COLLAB_FD`
+//! Production connects through the launcher-inherited `TILO_SVC_COLLAB_FD`
 //! capability. Headless diagnostics use the same protocol through an
 //! explicit Cap'n Proto endpoint.
 
@@ -34,7 +34,7 @@ impl Link {
     ///
     /// # Errors
     ///
-    /// Returns an error when `QOS_SVC_COLLAB_FD` is missing or the launcher's
+    /// Returns an error when `TILO_SVC_COLLAB_FD` is missing or the launcher's
     /// inherited capability cannot be turned into a typed collaboration
     /// client (wrong fd type, broker not listening, handshake rejected).
     pub fn connect(
@@ -45,7 +45,7 @@ impl Link {
     ) -> Result<Self> {
         let agent_id = handle.ok_or_else(|| anyhow::anyhow!("agent connection needs an id"))?;
         let manager = CollaborationManager::for_agent_route(app_id, cluster_id, record, agent_id)
-            .context("connect through QOS_SVC_COLLAB_FD")?;
+            .context("connect through TILO_SVC_COLLAB_FD")?;
         Ok(Self {
             manager,
             pending: VecDeque::new(),

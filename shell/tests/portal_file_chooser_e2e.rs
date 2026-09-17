@@ -141,7 +141,7 @@ fn host_with_portal(
         t.adopt_ownerless_workspaces(&owner);
     }
     let (mut host, _chrome) =
-        shell::shell::build_nirios_overlay_host_with_handle(handle.clone(), false);
+        shell::shell::build_tilo_overlay_host_with_handle(handle.clone(), false);
     layout(&mut host, VIEW_W, VIEW_H);
     host.set_portal_queues(prompts, pickers);
     (host, GrantStoreHandle::new(handle), id)
@@ -202,7 +202,7 @@ async fn portal_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'sta
         .expect("p2p connection pair");
     let proxy = Proxy::new(
         &client,
-        "org.freedesktop.impl.portal.desktop.qos",
+        "org.freedesktop.impl.portal.desktop.tilo",
         OBJECT_PATH,
         "org.freedesktop.impl.portal.FileChooser",
     )

@@ -103,14 +103,14 @@ fn spawn_at(
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let thread = std::thread::Builder::new()
-        .name("qos-tool-intents".into())
+        .name("tilo-tool-intents".into())
         .spawn(move || {
             while !worker_shutdown.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let handler = Arc::clone(&handler);
                         let _ = std::thread::Builder::new()
-                            .name("qos-tool-client".into())
+                            .name("tilo-tool-client".into())
                             .spawn(move || serve_client(stream, &handler));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

@@ -1,11 +1,11 @@
 //! Discoverable effect/view operations for the local video player.
 
 use automerge::AutoCommit;
-use qos_actions::{
+use serde::{Deserialize, Serialize};
+use tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
     ExecutionMode, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::shared::SharedAction;
 
@@ -296,7 +296,7 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
         .with_contract(ActionContract {
             execution: ExecutionMode::Background { cancellable: false },
             result: ResultSpec::Job,
-            permission: qos_actions::PermissionRequirement::Read,
+            permission: tilo_actions::PermissionRequirement::Read,
             ..open_contract
         }),
     );
@@ -949,7 +949,7 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
             "create",
             "Create shared playlist",
             "name",
-            qos_actions::ExecutionLocus::ClientLocal,
+            tilo_actions::ExecutionLocus::ClientLocal,
             vec![
                 ActionParam::required_owned(
                     "id",
@@ -989,7 +989,7 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
                 "rename",
                 "Rename playlist",
                 "name",
-                qos_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::ExecutionLocus::ClientLocal,
                 vec![ActionParam::required_owned(
                     "name",
                     ParamType::Text,
@@ -1026,7 +1026,7 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
                 "add-item",
                 "Add media to playlist",
                 "title",
-                qos_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::ExecutionLocus::ClientLocal,
                 vec![
                     ActionParam::required_owned(
                         "id",
@@ -1078,7 +1078,7 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
                     "move",
                     "Move playlist item",
                     "position",
-                    qos_actions::ExecutionLocus::ClientLocal,
+                    tilo_actions::ExecutionLocus::ClientLocal,
                     vec![ActionParam::required_owned(
                         "position",
                         ParamType::Number,
@@ -1118,7 +1118,7 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
             "create",
             "Add timestamp annotation",
             "text",
-            qos_actions::ExecutionLocus::ClientLocal,
+            tilo_actions::ExecutionLocus::ClientLocal,
             vec![
                 ActionParam::required_owned(
                     "id",
@@ -1179,7 +1179,7 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
                 "edit",
                 "Edit annotation",
                 "text",
-                qos_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::ExecutionLocus::ClientLocal,
                 vec![ActionParam::required_owned(
                     "text",
                     ParamType::Text,
@@ -1202,7 +1202,7 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
                 "move",
                 "Move annotation",
                 "time_ms",
-                qos_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::ExecutionLocus::ClientLocal,
                 vec![ActionParam::required_owned(
                     "time_ms",
                     ParamType::Number,
@@ -1341,7 +1341,7 @@ pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<PlayerOperation>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::Action;
+    use tilo_actions::Action;
 
     fn ctx(has_media: bool) -> PlayerResourceCtx<'static> {
         PlayerResourceCtx {
@@ -1374,10 +1374,10 @@ mod tests {
         let open = actions.iter().find(|a| a.id == "open").unwrap();
         assert_eq!(
             open.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: false }
+            tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(open.contract.result, qos_actions::ResultSpec::Job);
-        assert_eq!(open.locus, qos_actions::ExecutionLocus::ClientLocal);
+        assert_eq!(open.contract.result, tilo_actions::ResultSpec::Job);
+        assert_eq!(open.locus, tilo_actions::ExecutionLocus::ClientLocal);
         assert!(open.contract.tags.iter().any(|tag| tag == "device-local"));
         assert!(
             open.contract.tags.iter().any(|tag| tag == "sensitive-path"),
@@ -1510,7 +1510,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "play")
             .unwrap();
-        assert_eq!(play.locus, qos_actions::ExecutionLocus::ClientLocal);
+        assert_eq!(play.locus, tilo_actions::ExecutionLocus::ClientLocal);
         assert_eq!(
             play.contract.execution,
             ExecutionMode::Background { cancellable: false }

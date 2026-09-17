@@ -1337,7 +1337,7 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn an_unreadable_source_gives_up_long_before_the_deadline() {
-        let junk = std::env::temp_dir().join(format!("qos-ve-junk-{}.mp4", std::process::id()));
+        let junk = std::env::temp_dir().join(format!("tilo-ve-junk-{}.mp4", std::process::id()));
         std::fs::write(&junk, b"not a container, not even close").expect("write the fixture");
         let uri = crate::media::engine_source(&junk).to_uri();
 

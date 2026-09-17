@@ -494,11 +494,11 @@ impl PdfApp {
             }
 
             // Touchpad pinch: zoom toward the cursor. Upstream winit emits
-            // `PinchGesture` only on its macOS/iOS backends; qOS ships a
+            // `PinchGesture` only on its macOS/iOS backends; Tilo ships a
             // vendored winit fork whose Wayland backend binds
             // `zwp_pointer_gestures_v1` and delivers the same event, so a bare
             // two-finger pinch reaches this arm on Wayland too (wherever the
-            // compositor advertises the protocol — Mutter does; the qOS
+            // compositor advertises the protocol — Mutter does; the Tilo
             // compositor advertises it as well). Ctrl + two-finger scroll,
             // which arrives as the `MouseWheel` PixelDelta handled above,
             // remains a fallback for stacks without the gesture protocol.
@@ -1399,7 +1399,7 @@ mod event_tests {
     /// carries — one source of truth, proven on the real affordance path.
     #[test]
     fn annotation_delete_affordance_matches_palette_action() {
-        use qos_actions::ActionInput;
+        use tilo_actions::ActionInput;
         let (mut app, mut st) = app();
         let anno = app
             .annotations

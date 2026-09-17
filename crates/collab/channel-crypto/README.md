@@ -1,12 +1,12 @@
-# qos-channel-crypto
+# tilo-channel-crypto
 
-Per-channel MLS group encryption for qOS. Implements **Phase 7** of
+Per-channel MLS group encryption for Tilo. Implements **Phase 7** of
 the `2026-06-29-spaces-channels-and-cryptographic-roles.md` design
 spec.
 
 ## What this crate does
 
-Each qOS channel maps to one MLS group. The group key rotates on every
+Each Tilo channel maps to one MLS group. The group key rotates on every
 membership change. Application
 payloads on the wire ride encrypted under the current epoch key; the
 `SignedOp` envelope's metadata (author, artifact, op class, timestamp,
@@ -16,8 +16,8 @@ can route by artifact and filter by op class without decrypting.
 The public surface is intentionally narrow:
 
 ```rust
-use qos_channel_crypto::{ChannelGroup, MemberKey};
-use qos_collab_types::ChannelId;
+use tilo_channel_crypto::{ChannelGroup, MemberKey};
+use tilo_collab_types::ChannelId;
 
 // Alice creates a fresh one-member channel.
 let cid = ChannelId::new();
@@ -137,7 +137,7 @@ identity service supplies/restores the exact route's group.
 `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` — the canonical MLS
 small-suite. Picked because:
 
-- Ed25519 aligns with the rest of qOS (identity, FROST, Iroh).
+- Ed25519 aligns with the rest of Tilo (identity, FROST, Iroh).
 - X25519 / AES-128-GCM / SHA-256 are universally implemented; no
   P-384 dependency for human-scale groups.
 - Single fixed suite eliminates downgrade attacks and keeps the test
@@ -215,8 +215,8 @@ integration tests in `tests/`):
   they're at the same MLS epoch or within openmls's
   out-of-order-tolerance window).
 - The `SignedOp.signature` must verify (the outer envelope's bind
-  to a qos-collab-types `Identity` + attestation).
-- `qos-collab-types::validator::validate_inbound_op` must pass on
+  to a tilo-collab-types `Identity` + attestation).
+- `tilo-collab-types::validator::validate_inbound_op` must pass on
   the metadata (correct role, attestation, replay seq). Phase 3's
   pipeline runs *before* the decrypt; the decrypt runs only if all
   checks pass.
@@ -232,10 +232,10 @@ governance primitives it must call are implemented and restart-tested.
 
 ```bash
 distrobox enter my-distrobox -- \
-    bash -c 'cargo build -p qos-channel-crypto --release'
+    bash -c 'cargo build -p tilo-channel-crypto --release'
 distrobox enter my-distrobox -- \
-    bash -c 'cargo test -p qos-channel-crypto'
+    bash -c 'cargo test -p tilo-channel-crypto'
 ```
 
 Both must run inside `my-distrobox`; the host lacks crypto build deps
-in the standard qOS layout.
+in the standard Tilo layout.

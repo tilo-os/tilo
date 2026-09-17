@@ -1,4 +1,4 @@
-//! Binary shim for the qOS `store` — mirrors the sibling native apps.
+//! Binary shim for the Tilo `store` — mirrors the sibling native apps.
 //!
 //! Two modes:
 //!
@@ -49,11 +49,11 @@ fn main() {
     // was already declared for this — the call was not there, so every
     // https registry and every Flathub request failed at the TLS
     // handshake rather than anywhere a reader would look. Same line the
-    // maps app and `qos-catalogue` run.
+    // maps app and `tilo-catalogue` run.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.store", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.store", live_root)
             .max_positionals(1)
             .scenarios(&[
                 "wide",
@@ -94,7 +94,7 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchErr
     let store_target = args
         .positionals()
         .first()
-        .filter(|value| value.starts_with("qos-store:"))
+        .filter(|value| value.starts_with("tilo-store:"))
         .map(|value| parse_store_uri(value))
         .transpose()?;
     Ok(Box::new(LiveStore::new(
@@ -107,7 +107,7 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchErr
 /// scheme claim; this second check keeps malformed or argument-like values
 /// from becoming a catalogue identity inside the app.
 fn parse_store_uri(uri: &str) -> Result<String, LaunchError> {
-    let Some(id) = uri.strip_prefix("qos-store:app/") else {
+    let Some(id) = uri.strip_prefix("tilo-store:app/") else {
         return Err(LaunchError::Operation("unsupported App Store link".into()));
     };
     if id.is_empty()
@@ -140,7 +140,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 fn shot_reduce_motion() -> bool {
-    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| {
@@ -171,13 +171,13 @@ impl ui::widget::Widget for LiveStore {
         self.inner.local_resource_operation_handlers()
     }
 
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::qos_actions::Resource> {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
         self.inner.resources(doc)
     }
 
     fn invoke_resource_operation(
         &mut self,
-        kind: ui::qos_actions::OperationKind,
+        kind: ui::tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &automerge::AutoCommit,
@@ -189,8 +189,8 @@ impl ui::widget::Widget for LiveStore {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: ui::qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: ui::tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &automerge::AutoCommit,
@@ -202,11 +202,11 @@ impl ui::widget::Widget for LiveStore {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         doc: &automerge::AutoCommit,
         path: &automerge::ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.inner
             .poll_resource_operation(invocation, cancellation_requested, doc, path)
     }
@@ -417,7 +417,7 @@ impl ui::widget::Widget for LiveStore {
     fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {
         self.inner.children_mut()
     }
-    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.inner.take_control_invocation()
     }
     fn name(&self) -> &'static str {
@@ -444,13 +444,13 @@ mod tests {
     #[test]
     fn store_deep_link_accepts_only_a_stable_app_identity() {
         assert_eq!(
-            parse_store_uri("qos-store:app/dev.qos.notes").unwrap(),
-            "dev.qos.notes"
+            parse_store_uri("tilo-store:app/dev.tilo.notes").unwrap(),
+            "dev.tilo.notes"
         );
         for invalid in [
-            "qos-store:app/",
-            "qos-store:app/dev.qos.notes?install=true",
-            "qos-store:remote/dev.qos.notes",
+            "tilo-store:app/",
+            "tilo-store:app/dev.tilo.notes?install=true",
+            "tilo-store:remote/dev.tilo.notes",
         ] {
             assert!(parse_store_uri(invalid).is_err(), "{invalid}");
         }

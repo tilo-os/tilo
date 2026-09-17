@@ -10,7 +10,7 @@
 //! workspace's composed scene at the negotiated dimensions, and returns
 //! the real node id, which the compositor's frame loop pushes buffers into.
 //!
-//! Pipewire is a C-library system dependency. qOS's native image includes it;
+//! Pipewire is a C-library system dependency. Tilo's native image includes it;
 //! tests inject the mock and hosted mode remains explicitly unavailable.
 //!
 //! Frames come from the compositor's final composed scene, so local apps,
@@ -303,7 +303,7 @@ impl ScreenCastStreamProvisioner for RealPipewireProvisioner {
         let request = req.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
-            .name("qos-pipewire-screen".into())
+            .name("tilo-pipewire-screen".into())
             .spawn(move || {
                 run_pipewire_stream(request, latest, worker_stop, ready_tx);
             })
@@ -371,7 +371,7 @@ impl ScreenCastStreamProvisioner for RealPipewireProvisioner {
     }
 
     fn available_source_types(&self) -> u32 {
-        // qOS produces exactly one node from the compositor's composed
+        // Tilo produces exactly one node from the compositor's composed
         // desktop scene.  Do not label that node as a window or a virtual
         // monitor: xdg-desktop-portal uses this bit to describe what the
         // user actually approved.
@@ -411,7 +411,7 @@ fn pipewire_socket() -> Result<UnixStream, ProvisioningError> {
 }
 
 /// Copy the most recent compositor scene into a negotiated PipeWire buffer.
-/// PipeWire stream dimensions are negotiated per consumer, whereas qOS paints
+/// PipeWire stream dimensions are negotiated per consumer, whereas Tilo paints
 /// one physical desktop-sized frame.  Nearest-neighbour is deliberately
 /// allocation-free in the realtime callback; the producer's shared input slot
 /// stays bounded to one full-resolution frame.
@@ -506,12 +506,12 @@ fn run_pipewire_stream(
     };
     let stream = match pw::stream::StreamBox::new(
         &core,
-        "qOS ScreenCast",
+        "Tilo ScreenCast",
         properties! {
             *pw::keys::MEDIA_TYPE => "Video",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Screen",
-            *pw::keys::NODE_DESCRIPTION => "qOS screen share",
+            *pw::keys::NODE_DESCRIPTION => "Tilo screen share",
             *pw::keys::APP_NAME => request.caller.app_id.as_str(),
         },
     ) {

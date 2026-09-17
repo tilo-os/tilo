@@ -11,14 +11,14 @@ name = "app_catalogue"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-catalogue"
+name = "tilo-catalogue"
 path = "src/main.rs"
 
 [dependencies]
 atomic-file = { path = "../../system/atomic-file" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
-# Read side of the `qos-install` registry — the same list the desktop
+# Read side of the `tilo-install` registry — the same list the desktop
 # enumerates installed apps from, so "available" is exactly "not in
 # there".
 launcher = { path = "../launcher" }

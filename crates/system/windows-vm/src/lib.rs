@@ -1,7 +1,7 @@
-//! The security boundary around qOS's one Windows fallback appliance.
+//! The security boundary around Tilo's one Windows fallback appliance.
 //!
 //! This crate deliberately contains no permission UI and no compatibility
-//! routing policy. Its caller resolves the ordinary qOS workspace grants and
+//! routing policy. Its caller resolves the ordinary Tilo workspace grants and
 //! passes an immutable projection to [`WindowsAppliance::launch`]. A
 //! [`CapabilityBroker`] turns that projection into short-lived host resources;
 //! neither libvirt nor `FreeRDP` is allowed to infer broader access.

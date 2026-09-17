@@ -19,7 +19,7 @@ const W: u32 = 1000;
 const H: u32 = 700;
 
 fn output_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join("quickdesktop-wpe-scroll-repro")
+    std::env::temp_dir().join("tilo-wpe-scroll-repro")
 }
 
 fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {

@@ -1,4 +1,4 @@
-//! Calculator — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Calculator — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! An everyday scientific calculator that also does proper 2D and 3D
 //! graphing. Durable artifacts (history and plotted functions) live in an

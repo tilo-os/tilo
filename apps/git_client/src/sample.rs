@@ -238,7 +238,7 @@ fn sample_remotes() -> Vec<Remote> {
     vec![
         Remote {
             name: "origin".into(),
-            url: "git@code.sandbox.example:qos/renderer.git".into(),
+            url: "git@code.sandbox.example:tilo/renderer.git".into(),
         },
         Remote {
             name: "upstream".into(),

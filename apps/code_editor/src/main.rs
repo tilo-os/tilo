@@ -75,7 +75,7 @@ extern crate runtime_dylib;
 /// the process directly rather than returning an error.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.code-editor", code_editor::app_root)
+        &LaunchSpec::new("dev.tilo.code-editor", code_editor::app_root)
             .live_root_with_args(live_root)
             .shot_handler(render_shot)
             .allowed_flags(&["--sidebar-open"])
@@ -144,9 +144,9 @@ fn render_scenario_to_png(
     text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -179,7 +179,7 @@ fn render_scenario_to_png(
         scenario,
         Some("find" | "conflict" | "indexing" | "goto" | "close-prompt")
     ) {
-        if let Some(path) = std::env::var_os("QOS_SHOTS_OPEN") {
+        if let Some(path) = std::env::var_os("TILO_SHOTS_OPEN") {
             app.shots_open_path(std::path::Path::new(&path));
         } else if app.project_root().is_some() {
             app.shots_open_first_file();
@@ -307,7 +307,7 @@ fn stage_scenario(
             // drive the real shell and pump `sync` to collect its output.
             let _ = draw_frame(app, text_renderer, theme, presence, permission);
             app.shots_terminal_input(
-                "echo 'qOS embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
+                "echo 'Tilo embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
                  echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n",
             );
             for _ in 0..24 {
@@ -318,19 +318,19 @@ fn stage_scenario(
         Some("selection") => app.shots_select_words(),
         Some("completion") => app.shots_completion_demo(&state.doc),
         Some("find") => {
-            // `QOS_SHOTS_FIND` overrides the query so a shot of a real project
+            // `TILO_SHOTS_FIND` overrides the query so a shot of a real project
             // can search for something that is actually in it.
-            let q = std::env::var("QOS_SHOTS_FIND").unwrap_or_else(|_| "primes".to_string());
+            let q = std::env::var("TILO_SHOTS_FIND").unwrap_or_else(|_| "primes".to_string());
             app.shots_open_find(&q, true, &state.doc);
         }
         Some("search") => {
-            let q = std::env::var("QOS_SHOTS_SEARCH").unwrap_or_else(|_| "fn main".to_string());
+            let q = std::env::var("TILO_SHOTS_SEARCH").unwrap_or_else(|_| "fn main".to_string());
             app.shots_project_search(&q);
             app.sync(&mut state.doc, &state.root);
         }
         Some("conflict") => app.shots_conflict(),
         Some("goto") => {
-            let n = std::env::var("QOS_SHOTS_GOTO").unwrap_or_else(|_| "42".to_string());
+            let n = std::env::var("TILO_SHOTS_GOTO").unwrap_or_else(|_| "42".to_string());
             app.shots_open_goto(&n);
         }
         Some("close-prompt") => app.shots_close_prompt(),

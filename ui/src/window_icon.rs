@@ -1,15 +1,15 @@
-//! Resolves the raster icon named by the launcher's `QOS_APP_ICON`, falling
-//! back to a generated qOS icon when it is missing or invalid.
+//! Resolves the raster icon named by the launcher's `TILO_APP_ICON`, falling
+//! back to a generated Tilo icon when it is missing or invalid.
 //!
 //! On Wayland, most compositors ignore a client-set toplevel icon (sourced
 //! from the `app_id` and a `.desktop` file instead).
 
 use winit::window::Icon;
 
-pub const ICON_ENV: &str = "QOS_APP_ICON";
+pub const ICON_ENV: &str = "TILO_APP_ICON";
 
 /// The app's own icon when [`ICON_ENV`] names a decodable raster image,
-/// otherwise the generated qOS default. `None` only if even the default
+/// otherwise the generated Tilo default. `None` only if even the default
 /// fails to build (it never should).
 pub fn resolve() -> Option<Icon> {
     from_env().or_else(default_icon)
@@ -118,7 +118,7 @@ mod tests {
     fn default_icon_builds() {
         assert!(
             default_icon().is_some(),
-            "generated qOS default icon must build"
+            "generated Tilo default icon must build"
         );
     }
 
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn load_path_of_missing_file_is_none() {
         assert!(
-            load_path(std::path::Path::new("/nonexistent/qos-icon.png")).is_none(),
+            load_path(std::path::Path::new("/nonexistent/tilo-icon.png")).is_none(),
             "a missing icon file must not panic and must yield None"
         );
     }

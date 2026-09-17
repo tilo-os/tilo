@@ -1,5 +1,5 @@
-# Resolve the qOS root by its dedicated GPT type on the physical disk that owns
+# Resolve the Tilo root by its dedicated GPT type on the physical disk that owns
 # the ESP which booted this UKI. No target partition UUID enters the signed UKI,
 # so one release prediction applies to every device while dual-boot disks still
-# fail closed on zero or ambiguous qOS roots.
-kargs = ["root=qos-auto", "rd.luks.options=tpm2-device=auto,fido2-device=auto"]
+# fail closed on zero or ambiguous Tilo roots.
+kargs = ["root=tilo-auto", "rd.luks.options=tpm2-device=auto,fido2-device=auto"]

@@ -1,4 +1,4 @@
-//! Backups — qOS native snapshot & backup manager (CRDT-native, built on the
+//! Backups — Tilo native snapshot & backup manager (CRDT-native, built on the
 //! `ui` toolkit).
 //!
 //! Layers:

@@ -6,7 +6,7 @@
 //! the same way display, network, and Bluetooth settings do, and the same way
 //! the Mail app consumes its accounts. The canonical store is the shared
 //! [`accounts`] crate: a single JSON document under
-//! `$XDG_CONFIG_HOME/qos/accounts/` holding every account of every type, with
+//! `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
 //! credentials sealed in the encrypted [`accounts::SecretVault`], never in the
 //! plaintext store.
 //!
@@ -269,7 +269,7 @@ impl AccountStore {
     ///
     /// # Errors
     ///
-    /// Returns `Err` when no qOS config root is available or persistence fails.
+    /// Returns `Err` when no Tilo config root is available or persistence fails.
     pub fn persist(&self) -> std::io::Result<()> {
         let root = accounts::config_root()
             .ok_or_else(|| std::io::Error::other("no config dir for calendar accounts"))?;
@@ -398,7 +398,7 @@ mod tests {
     }
 
     fn temp_root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("qos-cal-accounts-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tilo-cal-accounts-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]

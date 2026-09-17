@@ -1,0 +1,20 @@
+// Let the graphical login greeter ask fprintd whether the account typed on a
+// multi-user device has an enrolled fingerprint.
+//
+// fprintd protects selecting a username other than the D-Bus caller behind
+// `net.reactivated.fprint.device.setusername`. tilo-greeter runs as `greetd`,
+// not as the account being selected, and a pre-login screen cannot service the
+// default administrator prompt. Without this rule `fprintd-list <username>`
+// fails before PAM is even allowed to authenticate that user's fingerprint.
+//
+// Scope is intentionally one action and one service account. This does NOT
+// grant `net.reactivated.fprint.device.enroll` (enroll/delete) or
+// `net.reactivated.fprint.device.verify`; actual verification remains in the
+// root-owned greetd PAM conversation.
+polkit.addRule(function (action, subject) {
+    if (subject.user === "greetd" &&
+        action.id === "net.reactivated.fprint.device.setusername") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

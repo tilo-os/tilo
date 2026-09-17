@@ -87,7 +87,7 @@ content.
 
 ## Bundle model
 
-- **As a qapp** (on qOS): the search UI lives in the **shell**, not the bundle.
+- **As a qapp** (on Tilo): the search UI lives in the **shell**, not the bundle.
   The app ships only its resource/action **registration** (a manifest + provider
   entry points). Small bundles; the shell renders the overlay.
 - **As a legacy-linux build**: compile the in-app overlay behind a `legacy`

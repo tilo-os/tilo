@@ -146,14 +146,14 @@ fn click_at(
             let control = intent
                 .address
                 .resource
-                .strip_prefix("qos.control:")
+                .strip_prefix("tilo.control:")
                 .expect("Settings control actions use the toolkit control resource");
             let payload = serde_json::to_vec(control).expect("control id is valid JSON");
             let started = app
                 .start_resource_operation(
-                    qos_actions::InvocationId::new(),
-                    qos_actions::OperationKind::View,
-                    "qos.ui.control.invoke",
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    "tilo.ui.control.invoke",
                     &payload,
                     doc,
                     &root,

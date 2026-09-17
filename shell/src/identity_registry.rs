@@ -475,14 +475,14 @@ fn resolve_identity_dir() -> io::Result<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
         && !xdg.is_empty()
     {
-        return Ok(PathBuf::from(xdg).join("qos").join("identity"));
+        return Ok(PathBuf::from(xdg).join("tilo").join("identity"));
     }
     if let Some(home) = std::env::var_os("HOME")
         && !home.is_empty()
     {
         return Ok(PathBuf::from(home)
             .join(".config")
-            .join("qos")
+            .join("tilo")
             .join("identity"));
     }
     Err(io::Error::new(
@@ -550,7 +550,7 @@ mod tests {
             .expect("clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "qos-identity-registry-{label}-{}-{nonce}",
+            "tilo-identity-registry-{label}-{}-{nonce}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp dir");

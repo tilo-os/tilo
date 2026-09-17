@@ -6,7 +6,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source_json="$repo/crates/agent/local-model-service/tests/fixtures/catalog-source.example.json"
 runtime="$repo/crates/agent/local-model-service/tests/fixtures/example-runtime.bin"
 model="$repo/crates/agent/local-model-service/tests/fixtures/example-model.bin"
-tool="$repo/crates/agent/local-model-service/src/bin/qos-model-catalog.rs"
+tool="$repo/crates/agent/local-model-service/src/bin/tilo-model-catalog.rs"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -38,7 +38,7 @@ jq -e --arg hash "$model_hash" --argjson size "$model_size" \
     '.models[0].artifact.sha256 == $hash and .models[0].artifact.size_bytes == $size' \
     "$source_json" >/dev/null || bad 'model fixture receipt drifted'
 
-grep -Fq 'qos.local-model.catalog.v1' "$tool" \
+grep -Fq 'tilo.local-model.catalog.v1' "$tool" \
     || bad 'catalog signature domain is not pinned in release tooling'
 grep -Fq 'signing_key.verifying_key()' "$tool" \
     || bad 'release tooling does not derive public image trust from the signer'

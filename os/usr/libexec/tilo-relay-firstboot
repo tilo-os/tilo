@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Complete host enrollment and provisioning with the trusted nearby Tilo device.
+set -euo pipefail
+
+token=/etc/tilo/enrollment-token.txt
+cert=/var/lib/tilo/device/cert.bin
+home_peer=/etc/tilo/home-peer.toml
+
+if [[ -e /var/lib/tilo-relay/decommissioned ]]; then
+    exit 0
+fi
+
+if [[ -s "$cert" && -s "$home_peer" ]]; then
+    exit 0
+fi
+label="$(hostnamectl --static 2>/dev/null || hostname 2>/dev/null || echo 'Home server')"
+if [[ -s "$token" ]] && ! grep -q '^# Replace' "$token"; then
+    /usr/bin/tilo-enroll join --token-file "$token" --identity-root /var/lib/tilo \
+        --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
+    rm -f "$token"
+else
+    /usr/bin/tilo-enroll pair --identity-root /var/lib/tilo \
+        --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
+fi
+echo "tilo-relay-firstboot: enrollment and full-sync setup complete"

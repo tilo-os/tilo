@@ -103,7 +103,7 @@ impl DavConnection {
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(8))
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent("qOS-Files/0.2")
+            .user_agent("Tilo-Files/0.2")
             .build()
             .map_err(|_| DavError::RemoteFailure)?;
         Ok(Self {

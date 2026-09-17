@@ -119,7 +119,7 @@ impl windows_vm::RemoteAppLauncher for SessionPresentationLauncher {
 }
 
 fn native_rail_surface_available() -> bool {
-    std::process::Command::new("/usr/libexec/qos-windows-rail")
+    std::process::Command::new("/usr/libexec/tilo-windows-rail")
         .arg("--probe")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -129,7 +129,7 @@ fn native_rail_surface_available() -> bool {
 }
 
 fn live_vm_delegate() -> Result<Arc<dyn VmDelegate>, String> {
-    const ROOT: &str = "/var/lib/qos/windows";
+    const ROOT: &str = "/var/lib/tilo/windows";
     let domain_uuid = std::fs::read_to_string(format!("{ROOT}/domain.uuid"))
         .map_err(|error| format!("could not read singleton VM identity: {error}"))?;
     let domain_uuid = domain_uuid.trim();
@@ -302,7 +302,7 @@ fn spawn_entry_registry_refresh(
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let worker = std::thread::Builder::new()
-        .name("qos-windows-registry".to_string())
+        .name("tilo-windows-registry".to_string())
         .spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 std::thread::park_timeout(Duration::from_secs(2));
@@ -364,7 +364,7 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
         );
     }
 
-    let store = CapsuleStore::new(cli::data_home().join("qos/windows-compat"))
+    let store = CapsuleStore::new(cli::data_home().join("tilo/windows-compat"))
         .map_err(|error| error.to_string())?;
     let vm: Arc<dyn VmDelegate> = Arc::new(SessionVmDelegate::default());
     let allowed_entries = store

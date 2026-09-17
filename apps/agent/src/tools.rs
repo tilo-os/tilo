@@ -471,7 +471,7 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         }
         revealed.reveal(o.id());
         let _ = write!(s, "  {} — {}", o.id(), o.descriptor.action_label);
-        if let qos_actions::Availability::Unavailable { reason, .. } =
+        if let tilo_actions::Availability::Unavailable { reason, .. } =
             &o.descriptor.contract.availability
         {
             let _ = write!(s, "; currently unavailable: {reason}");
@@ -525,8 +525,8 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
     }
     let c = &d.contract;
     match &c.availability {
-        qos_actions::Availability::Available => s.push_str("  availability: available\n"),
-        qos_actions::Availability::Unavailable { code, reason } => {
+        tilo_actions::Availability::Available => s.push_str("  availability: available\n"),
+        tilo_actions::Availability::Unavailable { code, reason } => {
             let _ = writeln!(s, "  availability: unavailable ({code}) — {reason}");
         }
     }
@@ -671,8 +671,8 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
 mod tests {
     use super::*;
     use crate::surface::ResourceFacts;
-    use qos_actions::door::{ActionAddress, ActionDescriptor};
-    use qos_actions::{Collects, ExecutionLocus, InputSpec};
+    use tilo_actions::door::{ActionAddress, ActionDescriptor};
+    use tilo_actions::{Collects, ExecutionLocus, InputSpec};
 
     const STEPS: usize = 4;
 
@@ -686,9 +686,9 @@ mod tests {
     ) -> Offer {
         let params = matches!(&input, InputSpec::Text { .. })
             .then(|| {
-                vec![qos_actions::ActionParam::required(
+                vec![tilo_actions::ActionParam::required(
                     "value",
-                    qos_actions::ParamType::Text,
+                    tilo_actions::ParamType::Text,
                     "value",
                 )]
             })
@@ -703,8 +703,8 @@ mod tests {
                 action_label: label.to_string(),
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
-                kind: qos_actions::OperationKind::Document,
-                contract: qos_actions::ActionContract::default(),
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract::default(),
                 params,
                 input,
             },
@@ -776,8 +776,8 @@ mod tests {
                     action_label: "open the conversation".to_string(),
                     description: None,
                     locus: ExecutionLocus::ServerPreferred,
-                    kind: qos_actions::OperationKind::Effect,
-                    contract: qos_actions::ActionContract::default(),
+                    kind: tilo_actions::OperationKind::Effect,
+                    contract: tilo_actions::ActionContract::default(),
                     params: Vec::new(),
                     input: InputSpec::None,
                 },

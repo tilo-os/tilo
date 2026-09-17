@@ -81,7 +81,7 @@ fn scratch_dir() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!(
-        "qos-vp-real-decode-{}-{}-{}",
+        "tilo-vp-real-decode-{}-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed),
         nanos

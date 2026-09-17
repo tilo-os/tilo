@@ -1,6 +1,6 @@
 //! Headless relay mode — a music library server with no GUI.
 //!
-//! The qOS self-hosting model: a **home server** runs this same app headless
+//! The Tilo self-hosting model: a **home server** runs this same app headless
 //! (`music --relay`) holding the authoritative library replica, and the user's
 //! GUI clients (phone, laptop) sync to it. No window, no compositor — just the
 //! Automerge document, on-disk persistence ([`crate::storage`]), and the sync
@@ -106,16 +106,16 @@ mod tests {
     /// counter) so tests running in parallel never share a path or race on
     /// removing each other's dir. Returns the relay, its dir, and the explicit
     /// library path (so callers don't re-read the process-global
-    /// `QOS_MUSIC_DATA`, which other parallel tests are also mutating).
+    /// `TILO_MUSIC_DATA`, which other parallel tests are also mutating).
     fn isolated_relay() -> (Relay, std::path::PathBuf, std::path::PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let dir =
-            std::env::temp_dir().join(format!("qos-music-relay-{}-{}", std::process::id(), n));
+            std::env::temp_dir().join(format!("tilo-music-relay-{}-{}", std::process::id(), n));
         let path = dir.join("library.automerge");
         unsafe {
-            std::env::set_var("QOS_MUSIC_DATA", &path);
+            std::env::set_var("TILO_MUSIC_DATA", &path);
         }
         let relay = Relay::new();
         (relay, dir, path)
@@ -144,7 +144,7 @@ mod tests {
     fn relay_persists_on_run_start() {
         let (mut relay, dir, path) = isolated_relay();
         // Use the test's own explicit path — never the process-global
-        // `QOS_MUSIC_DATA` that a concurrently-running test may have re-pointed.
+        // `TILO_MUSIC_DATA` that a concurrently-running test may have re-pointed.
         let _ = storage::save_to(&path, &mut relay.doc);
         assert!(
             storage::load_from(&path).is_some(),

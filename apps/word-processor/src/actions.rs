@@ -26,7 +26,7 @@ use qdoc::{Containers, DocMut};
 
 use crate::num;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec,
@@ -2531,7 +2531,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                 let target = args.text("target").unwrap_or_default().trim();
                 if !valid_hyperlink_target(target) {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"hyperlink target must use https:, mailto:, or #bookmark"
                             .to_vec(),
                     };
@@ -2557,7 +2557,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             move |args: &ActionArgs| {
                 let Some(text) = args.text("text") else {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"replacement text is required".to_vec(),
                     };
                 };
@@ -2596,7 +2596,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             move |args: &ActionArgs| {
                 let Some(text) = args.text("text") else {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"replacement text is required".to_vec(),
                     };
                 };
@@ -2638,7 +2638,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                 let text = args.text("text").unwrap_or_default();
                 if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"comment author is required and comment text is too long"
                             .to_vec(),
                     };
@@ -2718,7 +2718,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             move |hash| {
                 let Some(bytes) = qdoc::blobstore::get(hash) else {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: format!("content `{hash}` is not available on this machine")
                             .into_bytes(),
                     };
@@ -2847,7 +2847,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                     let text = args.text("text").unwrap_or_default();
                     if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
                         return EncodedAction {
-                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                             payload: b"reply author is required and reply text is too long"
                                 .to_vec(),
                         };
@@ -3195,8 +3195,8 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::ActionInput;
-    use qos_actions::LocalTransport;
+    use tilo_actions::ActionInput;
+    use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -3237,12 +3237,12 @@ mod tests {
         qdoc::model::block_text(doc, &c, block).unwrap_or_default()
     }
 
-    /// Dispatch an action through the qOS executor with a discarding transport
+    /// Dispatch an action through the Tilo executor with a discarding transport
     /// (the local, single-peer path the affordances take).
     fn dispatch(doc: &mut AutoCommit, action: &WordProcessorAction) {
         let encoded = encode(action);
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
     }
 
     /// A text splice through an action mutates the document, and replays
@@ -3263,8 +3263,8 @@ mod tests {
         // Replace "world" with "there".
         let action = splice_text_action(RegionKind::Body, &block, 6, 11, "there");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(text_of(&a.doc, &block), "Hello there", "the splice landed");
         assert_eq!(
@@ -3296,8 +3296,8 @@ mod tests {
             vec![],
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -3334,8 +3334,8 @@ mod tests {
             None,
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -3366,8 +3366,8 @@ mod tests {
 
         let action = insert_table_action(&after, 2, 3);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -3399,8 +3399,8 @@ mod tests {
         // Break in the middle: "one" | "two".
         let action = insert_page_break_action(&block, 3);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -3433,8 +3433,8 @@ mod tests {
 
         let action = replace_body_action("# Fresh\n\nBrand new body\n");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -3575,7 +3575,7 @@ mod tests {
         let replacement = replace
             .build_args([(
                 "text".to_string(),
-                qos_actions::ArgValue::Text("guide".into()),
+                tilo_actions::ArgValue::Text("guide".into()),
             )])
             .unwrap();
         assert_eq!(
@@ -3600,7 +3600,7 @@ mod tests {
         let encoded = link
             .build_args([(
                 "target".to_string(),
-                qos_actions::ArgValue::Text("https://example.com/guide".into()),
+                tilo_actions::ArgValue::Text("https://example.com/guide".into()),
             )])
             .unwrap();
         let action: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
@@ -3668,12 +3668,12 @@ mod tests {
         let encoded = link
             .build_args([(
                 "target".to_string(),
-                qos_actions::ArgValue::Text("javascript:alert(1)".into()),
+                tilo_actions::ArgValue::Text("javascript:alert(1)".into()),
             )])
             .unwrap();
         assert_eq!(
             encoded.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "the prompt reports invalid input before dispatch"
         );
 
@@ -3738,17 +3738,17 @@ mod tests {
         let bytes = b"content supplied by a preceding action";
         let hash = qdoc::blobstore::put(bytes).expect("test fixture fits blob quota");
         let resources = provide_resources(&ctx, &state.doc);
-        let descriptor = qos_actions::door::survey(&resources)
+        let descriptor = tilo_actions::door::survey(&resources)
             .into_iter()
             .find(|descriptor| descriptor.address.action == "place-image")
             .expect("the document publishes its content hand-off action");
         assert!(descriptor.input.wants_content());
 
         let arguments = serde_json::Map::from_iter([(
-            qos_actions::PROMPTED_PARAM.to_string(),
+            tilo_actions::PROMPTED_PARAM.to_string(),
             serde_json::Value::String(hash.clone()),
         )]);
-        qos_actions::door::invoke_json(
+        tilo_actions::door::invoke_json(
             &mut state.doc,
             &resources,
             &descriptor.address,
@@ -3880,9 +3880,9 @@ mod tests {
             set_image_placement_action(&image, "page", "none", 24, 36, 0),
         ];
         for action in &actions {
-            let envelope = qos_actions::apply_local(&mut a.doc, action, encode(action))
+            let envelope = tilo_actions::apply_local(&mut a.doc, action, encode(action))
                 .expect("apply object action");
-            qos_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
+            tilo_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
         }
         assert_eq!(
             a.doc.get_heads(),
@@ -3973,8 +3973,8 @@ mod tests {
                 .unwrap(),
         );
         let action: WordProcessorAction = serde_json::from_slice(&accept.payload).unwrap();
-        let envelope = qos_actions::apply_local(&mut a.doc, &action, accept).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(a.doc.get_heads(), b.doc.get_heads());
         let snap = qdoc::model::materialize(
             &a.doc,
@@ -4003,8 +4003,8 @@ mod tests {
         let mut b = ui::State::load(&bytes).unwrap();
 
         let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-07", "Will do.");
-        let envelope = qos_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(
             a.doc.get_heads(),
             b.doc.get_heads(),
@@ -4017,8 +4017,8 @@ mod tests {
         assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
 
         let resolve = WordProcessorAction::ResolveComment { id: comment };
-        let envelope = qos_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(
             a.doc.get_heads(),
             b.doc.get_heads(),
@@ -4047,8 +4047,8 @@ mod tests {
             id: comment.clone(),
         };
         let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-08", "Will do");
-        qos_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
-        qos_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
+        tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+        tilo_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
         a.doc.merge(&mut b.doc).unwrap();
 
         let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
@@ -4161,8 +4161,8 @@ mod tests {
         let mut b = ui::State::load(&bytes).unwrap();
         let action = replace_selection_action(RegionKind::Body, &ids[0], 2, &ids[2], 3, "X");
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(a.doc.get_heads(), b.doc.get_heads());
         let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
         let blocks = qdoc::model::materialize(&a.doc, &c).blocks;
@@ -4182,13 +4182,13 @@ mod tests {
         let encoded_split = encode(&split);
         let decoded_split: WordProcessorAction =
             serde_json::from_slice(&encoded_split.payload).unwrap();
-        qos_actions::apply_local(&mut a.doc, &decoded_split, encoded_split).unwrap();
+        tilo_actions::apply_local(&mut a.doc, &decoded_split, encoded_split).unwrap();
 
         let splice = splice_text_action(RegionKind::Body, &block, 0, 0, "Shared ");
         let encoded_splice = encode(&splice);
         let decoded_splice: WordProcessorAction =
             serde_json::from_slice(&encoded_splice.payload).unwrap();
-        qos_actions::apply_local(&mut b.doc, &decoded_splice, encoded_splice).unwrap();
+        tilo_actions::apply_local(&mut b.doc, &decoded_splice, encoded_splice).unwrap();
 
         let mut merged_a = a.doc.clone();
         let mut b_for_a = b.doc.clone();
@@ -4230,8 +4230,8 @@ mod tests {
             set_style_property_action("custom1", qdoc::schema::STYLE_BOLD, AttrVal::Bool(true));
         let size =
             set_style_property_action("custom1", qdoc::schema::STYLE_SIZE, AttrVal::Float(28.0));
-        qos_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
-        qos_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
+        tilo_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
+        tilo_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
         a.doc.merge(&mut b.doc).unwrap();
         let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
         let properties = qdoc::model::style_props(&a.doc, &c, "custom1");
@@ -4254,8 +4254,8 @@ mod tests {
             qdoc::schema::STYLE_NAME,
             AttrVal::Str("Late rename".into()),
         );
-        qos_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
-        qos_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
+        tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+        tilo_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
         deleted.doc.merge(&mut divergent.doc).unwrap();
         let c = qdoc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
         assert!(qdoc::model::style_is_tombstoned(
@@ -4300,8 +4300,8 @@ mod tests {
         for action in actions {
             let encoded = encode(&action);
             let decoded: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
-            let envelope = qos_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
-            qos_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+            let envelope = tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+            tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
         }
         let table = body_blocks(&origin.doc)
             .iter()
@@ -4319,8 +4319,8 @@ mod tests {
             let action = edit_table_action(&table, edit);
             let encoded = encode(&action);
             let decoded: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
-            let envelope = qos_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
-            qos_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+            let envelope = tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+            tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
         }
         assert_eq!(origin.doc.get_heads(), replay.doc.get_heads());
         assert_eq!(body_blocks(&origin.doc), body_blocks(&replay.doc));
@@ -4343,8 +4343,8 @@ mod tests {
 
         let remove = edit_table_action(&table, TableEdit::Delete);
         let late_edit = splice_text_action(RegionKind::Body, &cell.id, 0, 0, "late");
-        qos_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
-        qos_actions::apply_local(&mut divergent.doc, &late_edit, encode(&late_edit)).unwrap();
+        tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+        tilo_actions::apply_local(&mut divergent.doc, &late_edit, encode(&late_edit)).unwrap();
 
         let mut merged_a = deleted.doc.clone();
         let mut divergent_for_a = divergent.doc.clone();

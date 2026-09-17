@@ -1,6 +1,6 @@
 //! Display-scale plumbing shared by the render loop.
 //!
-//! qOS separates **two** scale factors, multiplied at composite time:
+//! Tilo separates **two** scale factors, multiplied at composite time:
 //! **device scale** — the per-output fractional factor the compositor
 //! reports via `wp_fractional_scale_v1` (a true fraction, not rounded to an
 //! integer) — and **user UI scale**, the "make everything bigger"

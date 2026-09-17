@@ -1,4 +1,4 @@
-//! Calendar — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Calendar — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A calendar that is also a task manager, inspired by GNOME Planify:
 //! month / week / day / agenda views, a Planify-style sidebar of smart

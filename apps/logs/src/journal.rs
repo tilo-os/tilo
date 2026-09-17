@@ -369,7 +369,7 @@ const ROWS_SESSION: &[Row] = &[
         Priority::Notice,
         Some(very(820)),
         "stdout",
-        "workspace snapshot persisted: 3 clusters → ~/.local/state/qos/wheel.json",
+        "workspace snapshot persisted: 3 clusters → ~/.local/state/tilo/wheel.json",
         &[("CODE_FILE", "shell/src/persist.rs")],
     ),
 ];
@@ -562,7 +562,7 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
 // Bundled sample journal
 // ===================================================================
 
-/// A realistic offline journal: a qOS boot sequence across the shell
+/// A realistic offline journal: a Tilo boot sequence across the shell
 /// compositor, the FUSE filesystem, the kernel, networking, audio, and a
 /// collaboration session — seeded with a scatter of warnings and errors
 /// so the severity colouring and filters have something to bite on.
@@ -572,7 +572,7 @@ pub fn sample_entries() -> Vec<LogEntry> {
         let days: u64 = 20_634; // days from 1970-01-01 to 2026-06-30
         (days * 86_400 + 14 * 3_600 + 20 * 60) * 1_000_000
     };
-    let host = "qos-station";
+    let host = "tilo-station";
     let boot_a = "9f2c1e7b4a6d4c0fb1e3a8d5c2f70a11";
     let boot_b = "5a1d8c3e2b9f4710a6c4e0d7b385f922";
 
@@ -724,7 +724,7 @@ mod tests {
     fn export_writes_json_lines_to_the_selected_target() {
         let entries = sample_entries();
         let path = std::env::temp_dir().join(format!(
-            "qos-logs-export-{}-{}.jsonl",
+            "tilo-logs-export-{}-{}.jsonl",
             std::process::id(),
             entries[0].realtime_us
         ));

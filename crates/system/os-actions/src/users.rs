@@ -1,6 +1,6 @@
 //! Narrow `AccountsService` administration for local login accounts.
 //!
-//! `AccountsService` is the authority and performs the polkit challenge.  qOS
+//! `AccountsService` is the authority and performs the polkit challenge.  Tilo
 //! never invokes `useradd` with UI strings, edits `/etc/passwd`, or stores a
 //! login password in the Settings document.  Password bytes travel only over
 //! an anonymous stdin pipe to `openssl passwd`, then as a salted hash in the

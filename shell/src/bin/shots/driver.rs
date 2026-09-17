@@ -1,4 +1,4 @@
-//! `ShellDriver` — programmable, headless-friendly driver for the nirios
+//! `ShellDriver` — programmable, headless-friendly driver for the tilo
 //! shell tree. Owns a `ShellOverlayHost` plus everything the layout +
 //! draw + event passes need (taffy tree, text renderer, theme, viewport,
 //! Automerge doc), and exposes a small API the three modes (window,
@@ -133,14 +133,14 @@ impl ShellDriver {
         self.fb.host_mut()
     }
 
-    /// Show the same reduced first-login ceremony used when qOS is installed
+    /// Show the same reduced first-login ceremony used when Tilo is installed
     /// as an additional session on an existing Linux desktop. The path is
     /// deliberately read-only/nonexistent: this visual scenario never mints
     /// an identity, and cannot touch the developer's real first-login state.
     pub fn show_host_desktop_onboarding(&mut self) {
         self.fb
             .enable_host_desktop_onboarding(std::path::PathBuf::from(
-                "/var/empty/qos-shots-identity",
+                "/var/empty/tilo-shots-identity",
             ));
     }
 
@@ -655,34 +655,34 @@ impl ShellDriver {
         self.fb.apply_remote_presence_for_shots(
             actor.clone(),
             ui::presence::PresenceKey::Resource {
-                app: "org.qos.Sheets".to_string(),
+                app: "org.tilo.Sheets".to_string(),
                 id: resource_id.clone(),
                 kind: "sheet".to_string(),
             },
             ui::collaboration::PresencePayload::Interaction(Box::new(
-                qos_actions::SemanticInteraction {
-                    version: qos_actions::INTERACTION_VERSION,
-                    invocation: qos_actions::InvocationId::new(),
+                tilo_actions::SemanticInteraction {
+                    version: tilo_actions::INTERACTION_VERSION,
+                    invocation: tilo_actions::InvocationId::new(),
                     sequence: 1,
-                    actor: qos_actions::InteractionActor {
+                    actor: tilo_actions::InteractionActor {
                         id: actor,
-                        kind: qos_actions::InteractionActorKind::Person,
+                        kind: tilo_actions::InteractionActorKind::Person,
                     },
-                    phase: qos_actions::InteractionPhase::Applying,
-                    action: qos_actions::InteractionAction {
+                    phase: tilo_actions::InteractionPhase::Applying,
+                    action: tilo_actions::InteractionAction {
                         id: "reconciling".to_string(),
                         label: "Reconciling".to_string(),
-                        app: Some(qos_actions::ActionApp {
-                            id: "org.qos.Sheets".to_string(),
+                        app: Some(tilo_actions::ActionApp {
+                            id: "org.tilo.Sheets".to_string(),
                             label: "Sheets".to_string(),
                         }),
                     },
-                    resource: qos_actions::ActionResource {
+                    resource: tilo_actions::ActionResource {
                         id: resource_id,
                         kind: "sheet".to_string(),
                         label: "Q3 forecast".to_string(),
                     },
-                    anchor: qos_actions::InteractionAnchor::Resource,
+                    anchor: tilo_actions::InteractionAnchor::Resource,
                     group: None,
                 },
             )),
@@ -862,31 +862,31 @@ impl ShellDriver {
             self.fb.apply_remote_presence_for_shots(
                 "ada".to_string(),
                 ui::presence::PresenceKey::Resource {
-                    app: "qos-shell-shots".to_string(),
+                    app: "tilo-shell-shots".to_string(),
                     id: resource_id.clone(),
                     kind: "workspace.resource".to_string(),
                 },
                 ui::collaboration::PresencePayload::Interaction(Box::new(
-                    qos_actions::SemanticInteraction {
-                        version: qos_actions::INTERACTION_VERSION,
-                        invocation: qos_actions::InvocationId::new(),
+                    tilo_actions::SemanticInteraction {
+                        version: tilo_actions::INTERACTION_VERSION,
+                        invocation: tilo_actions::InvocationId::new(),
                         sequence: 1,
-                        actor: qos_actions::InteractionActor {
+                        actor: tilo_actions::InteractionActor {
                             id: "ada".to_string(),
-                            kind: qos_actions::InteractionActorKind::Person,
+                            kind: tilo_actions::InteractionActorKind::Person,
                         },
-                        phase: qos_actions::InteractionPhase::Applying,
-                        action: qos_actions::InteractionAction {
+                        phase: tilo_actions::InteractionPhase::Applying,
+                        action: tilo_actions::InteractionAction {
                             id: action.to_ascii_lowercase(),
                             label: action.to_string(),
                             app: None,
                         },
-                        resource: qos_actions::ActionResource {
+                        resource: tilo_actions::ActionResource {
                             id: resource_id,
                             kind: "workspace.resource".to_string(),
                             label: resource.to_string(),
                         },
-                        anchor: qos_actions::InteractionAnchor::Resource,
+                        anchor: tilo_actions::InteractionAnchor::Resource,
                         group: None,
                     },
                 )),
@@ -905,29 +905,29 @@ impl ShellDriver {
                 kind: "workspace.resource".to_string(),
             },
             ui::collaboration::PresencePayload::Interaction(Box::new(
-                qos_actions::SemanticInteraction {
-                    version: qos_actions::INTERACTION_VERSION,
-                    invocation: qos_actions::InvocationId::new(),
+                tilo_actions::SemanticInteraction {
+                    version: tilo_actions::INTERACTION_VERSION,
+                    invocation: tilo_actions::InvocationId::new(),
                     sequence: 1,
-                    actor: qos_actions::InteractionActor {
+                    actor: tilo_actions::InteractionActor {
                         id: "ada".to_string(),
-                        kind: qos_actions::InteractionActorKind::Person,
+                        kind: tilo_actions::InteractionActorKind::Person,
                     },
-                    phase: qos_actions::InteractionPhase::Applying,
-                    action: qos_actions::InteractionAction {
+                    phase: tilo_actions::InteractionPhase::Applying,
+                    action: tilo_actions::InteractionAction {
                         id: action.to_ascii_lowercase().replace(' ', "-"),
                         label: action.to_string(),
-                        app: Some(qos_actions::ActionApp {
+                        app: Some(tilo_actions::ActionApp {
                             id: app_id.to_string(),
                             label: app_id.to_string(),
                         }),
                     },
-                    resource: qos_actions::ActionResource {
+                    resource: tilo_actions::ActionResource {
                         id: resource_id,
                         kind: "workspace.resource".to_string(),
                         label: resource.to_string(),
                     },
-                    anchor: qos_actions::InteractionAnchor::Resource,
+                    anchor: tilo_actions::InteractionAnchor::Resource,
                     group: None,
                 },
             )),
@@ -1181,7 +1181,7 @@ impl ShellDriver {
         self.fb.host_mut().set_palette_visible(true);
         self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
-        self.fb.host_mut().set_palette_query("nirios");
+        self.fb.host_mut().set_palette_query("tilo");
         self.fb
             .host_mut()
             .refresh_search_results_for_shots(&mut self.state, &root);
@@ -1524,7 +1524,7 @@ impl ShellDriver {
         self.scene_room_activity();
         if !explore {
             use collab_types::{ArtifactKind, OpClass};
-            use ui::qos_actions::ActionContext;
+            use ui::tilo_actions::ActionContext;
             use ui::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 
             let local = shell::shell::state::local_user_id();
@@ -1552,7 +1552,7 @@ impl ShellDriver {
                             "spreadsheet",
                             "Q2 finance report",
                         )
-                        .with_app("org.qos.Sheets", "Sheets")
+                        .with_app("org.tilo.Sheets", "Sheets")
                         .with_purpose("Preparing the board review"),
                     ),
                 });
@@ -1641,20 +1641,20 @@ impl ShellDriver {
                 ("Sarah", "onboarding", "Onboard Sarah", "Open welcome notes"),
                 ("Ada", "onboarding", "Onboard Sarah", "Assign mentor"),
             ] {
-                let context = qos_actions::ActionContext::for_resource(
+                let context = tilo_actions::ActionContext::for_resource(
                     action,
                     format!("shots:{group_id}"),
                     "document",
                     group_label,
                 )
-                .with_app("org.qos.Writer", "Writer")
+                .with_app("org.tilo.Writer", "Writer")
                 .with_group(group_id, group_label, "work-session");
                 let _ = tree.append_workspace_effect_receipt_for_shots(
                     workspace,
-                    qos_actions::InvocationId::new(),
+                    tilo_actions::InvocationId::new(),
                     actor,
                     context,
-                    qos_actions::EffectReceiptStatus::Succeeded,
+                    tilo_actions::EffectReceiptStatus::Succeeded,
                 );
             }
         }

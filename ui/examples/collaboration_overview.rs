@@ -1,7 +1,7 @@
 //! Interactive and headless visual fixture for the universal collaboration rail.
 
 use collab_types::{ArtifactKind, OpClass};
-use qos_actions::ActionContext;
+use tilo_actions::ActionContext;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -38,7 +38,7 @@ fn entry(id: u8, author: &str, at: u64, summary: &str) -> HistoryEntry {
                 "finance.report",
                 "Q2 finance report",
             )
-            .with_app("org.qos.Sheets", "Sheets")
+            .with_app("org.tilo.Sheets", "Sheets")
             .with_group("q2-close", "Prepare Q2 close", "project"),
         ),
     }

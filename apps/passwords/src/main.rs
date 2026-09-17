@@ -27,7 +27,7 @@ extern crate runtime_dylib;
 
 fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.passwords", passwords::app_root)
+        &LaunchSpec::new("dev.tilo.passwords", passwords::app_root)
             .shot_root(shot)
             .allowed_options(&["--screen"]),
     );

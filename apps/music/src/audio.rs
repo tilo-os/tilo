@@ -98,7 +98,7 @@ impl OfflineDownload {
             let fetched_thread = fetched.clone();
             let expected_thread = expected.clone();
             std::thread::Builder::new()
-                .name("qos-music-offline-dl".into())
+                .name("tilo-music-offline-dl".into())
                 .spawn(move || {
                     use std::sync::atomic::Ordering::Relaxed;
                     let outcome = (|| -> Result<(), String> {
@@ -824,7 +824,7 @@ impl AudioEngine {
     fn begin_stream_download(&mut self, uri: &str, fallback: Option<String>) {
         self.clear_pending();
         let path = std::env::temp_dir().join(format!(
-            "qos-music-stream-{}-{}.bin",
+            "tilo-music-stream-{}-{}.bin",
             std::process::id(),
             next_stream_id()
         ));
@@ -933,7 +933,7 @@ fn spawn_stream_download(
 ) {
     use std::sync::atomic::Ordering::Relaxed;
     let _ = std::thread::Builder::new()
-        .name("qos-music-stream-dl".into())
+        .name("tilo-music-stream-dl".into())
         .spawn(move || {
             let finish = || {
                 ready.store(true, Relaxed);
@@ -1154,11 +1154,11 @@ fn build_audio_sink(
     // playbin can feed decoded audio into the chain (same idiom as the video
     // sink bin in `apps/tube`). `autoaudiosink` plugs the real system sink.
     let bin = gstreamer::parse::bin_from_description(
-        "audioconvert ! audioresample ! autoaudiosink name=qos_audiosink sync=true",
+        "audioconvert ! audioresample ! autoaudiosink name=tilo_audiosink sync=true",
         true,
     )
     .ok()?;
-    let sink = bin.by_name("qos_audiosink")?;
+    let sink = bin.by_name("tilo_audiosink")?;
     // Count decoded PCM buffers arriving at the real sink.
     if let Some(pad) = sink.static_pad("sink") {
         let frames = frames.clone();
@@ -1202,7 +1202,7 @@ mod tests {
             .expect("nonblocking listener");
         let address = listener.local_addr().expect("address");
         let path =
-            std::env::temp_dir().join(format!("qos-music-cancel-{}.part", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-music-cancel-{}.part", std::process::id()));
         let mut file = std::fs::File::create(&path).expect("partial");
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1246,7 +1246,7 @@ mod tests {
             stream.write_all(&body).expect("body");
         });
         let path =
-            std::env::temp_dir().join(format!("qos-music-oversize-{}.part", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-music-oversize-{}.part", std::process::id()));
         let mut file = std::fs::File::create(&path).expect("partial");
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1330,7 +1330,8 @@ mod tests {
         }
 
         // Write ~1s of quiet 16-bit-mono PCM sine (44.1 kHz) as a real WAV.
-        let path = std::env::temp_dir().join(format!("qos-music-audio-{}.wav", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("tilo-music-audio-{}.wav", std::process::id()));
         std::fs::write(&path, sine_wav(1, 44_100)).expect("write test wav");
         let uri = format!("file://{}", path.display());
 
@@ -1412,7 +1413,7 @@ mod tests {
         }
 
         // ~6 s of audio so a 50% seek lands at a clear ~3 s offset.
-        let path = std::env::temp_dir().join(format!("qos-music-seek-{}.wav", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tilo-music-seek-{}.wav", std::process::id()));
         std::fs::write(&path, sine_wav(6, 44_100)).expect("write test wav");
         let uri = format!("file://{}", path.display());
 

@@ -1,4 +1,4 @@
-//! Dynamic provider backed by the resource/action surfaces live qOS apps
+//! Dynamic provider backed by the resource/action surfaces live Tilo apps
 //! publish through the session collaboration broker.
 
 use std::cell::{Cell, RefCell};
@@ -214,7 +214,7 @@ struct PeerInvocation<'a> {
     action: &'a str,
     argument: Option<&'a str>,
     actor: &'a str,
-    confirmation: &'a qos_actions::ConfirmationPolicy,
+    confirmation: &'a tilo_actions::ConfirmationPolicy,
     confirmed: bool,
     phrase: Option<&'a str>,
 }
@@ -224,14 +224,14 @@ fn start_on_peer(
     invocation: &PeerInvocation<'_>,
 ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
     match invocation.confirmation {
-        qos_actions::ConfirmationPolicy::None => broker.start(
+        tilo_actions::ConfirmationPolicy::None => broker.start(
             invocation.peer_id,
             invocation.resource,
             invocation.action,
             invocation.argument,
             invocation.actor,
         ),
-        qos_actions::ConfirmationPolicy::Confirm => {
+        tilo_actions::ConfirmationPolicy::Confirm => {
             if !invocation.confirmed {
                 return Err("explicit confirmation is required".into());
             }
@@ -252,7 +252,7 @@ fn start_on_peer(
                 &token,
             )
         }
-        qos_actions::ConfirmationPolicy::Phrase { .. } => {
+        tilo_actions::ConfirmationPolicy::Phrase { .. } => {
             let token = broker.prepare_confirmation(
                 invocation.peer_id,
                 invocation.resource,
@@ -282,11 +282,12 @@ fn receipt_for_job(
     broker: &AppActionBroker,
     job: crate::shell::collab_broker_capnp::InvocationJob,
 ) -> ActionReceipt {
-    let update = broker
-        .status(job.id)
-        .unwrap_or_else(|| qos_actions::InvocationUpdate::Accepted {
-            invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job.id))),
-        });
+    let update =
+        broker
+            .status(job.id)
+            .unwrap_or_else(|| tilo_actions::InvocationUpdate::Accepted {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job.id))),
+            });
     drop(job.completion);
     ActionReceipt {
         broker_invocation_id: Some(job.id),
@@ -305,7 +306,7 @@ fn invocation_argument(
         application_args.remove("confirmation_phrase");
         format!(
             "{}{}",
-            qos_actions::ARGUMENTS_JSON_PREFIX,
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(application_args)
         )
     });
@@ -458,7 +459,7 @@ impl LiveAppActionsProvider {
             let broker = self.broker.clone();
             let (sender, receiver) = mpsc::sync_channel(1);
             if std::thread::Builder::new()
-                .name("qos-live-action-index".into())
+                .name("tilo-live-action-index".into())
                 .spawn({
                     #[cfg(test)]
                     let probe = Arc::clone(&self.build_probe);
@@ -679,12 +680,12 @@ impl LiveAppActionsProvider {
                     break;
                 }
                 let state = match update {
-                    qos_actions::InvocationUpdate::Accepted { .. } => "accepted",
-                    qos_actions::InvocationUpdate::Progress { .. } => "running",
-                    qos_actions::InvocationUpdate::Item { .. } => "streaming",
-                    qos_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
-                    qos_actions::InvocationUpdate::Failed { .. } => "failed",
-                    qos_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
+                    tilo_actions::InvocationUpdate::Accepted { .. } => "accepted",
+                    tilo_actions::InvocationUpdate::Progress { .. } => "running",
+                    tilo_actions::InvocationUpdate::Item { .. } => "streaming",
+                    tilo_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
+                    tilo_actions::InvocationUpdate::Failed { .. } => "failed",
+                    tilo_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
                 };
                 entries.push(AuxiliaryEntry::Job {
                     id,
@@ -1095,15 +1096,17 @@ impl LiveAppActionsProvider {
             .then_some((app, permission, cluster, record, resource, action))
     }
 
-    pub fn capability_target(id: &str) -> Option<(&str, qos_actions::PermissionRequirement, &str)> {
+    pub fn capability_target(
+        id: &str,
+    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str)> {
         let (app, permission, _cluster, _record, _resource, action) = Self::result_parts(id)?;
         let permission = match permission {
-            "none" => qos_actions::PermissionRequirement::None,
-            "read" => qos_actions::PermissionRequirement::Read,
-            "comment" => qos_actions::PermissionRequirement::Comment,
-            "write" => qos_actions::PermissionRequirement::Write,
-            "invite" => qos_actions::PermissionRequirement::Invite,
-            "admin" => qos_actions::PermissionRequirement::Admin,
+            "none" => tilo_actions::PermissionRequirement::None,
+            "read" => tilo_actions::PermissionRequirement::Read,
+            "comment" => tilo_actions::PermissionRequirement::Comment,
+            "write" => tilo_actions::PermissionRequirement::Write,
+            "invite" => tilo_actions::PermissionRequirement::Invite,
+            "admin" => tilo_actions::PermissionRequirement::Admin,
             _ => return None,
         };
         Some((app, permission, action))
@@ -1128,12 +1131,12 @@ impl LiveAppActionsProvider {
             surface.app_id,
             ID_SEPARATOR,
             match action.contract.permission {
-                qos_actions::PermissionRequirement::None => "none",
-                qos_actions::PermissionRequirement::Read => "read",
-                qos_actions::PermissionRequirement::Comment => "comment",
-                qos_actions::PermissionRequirement::Write => "write",
-                qos_actions::PermissionRequirement::Invite => "invite",
-                qos_actions::PermissionRequirement::Admin => "admin",
+                tilo_actions::PermissionRequirement::None => "none",
+                tilo_actions::PermissionRequirement::Read => "read",
+                tilo_actions::PermissionRequirement::Comment => "comment",
+                tilo_actions::PermissionRequirement::Write => "write",
+                tilo_actions::PermissionRequirement::Invite => "invite",
+                tilo_actions::PermissionRequirement::Admin => "admin",
             },
             ID_SEPARATOR,
             surface.route.cluster_id,
@@ -1168,13 +1171,13 @@ impl LiveAppActionsProvider {
             action.params.clone()
         };
         match &action.contract.confirmation {
-            qos_actions::ConfirmationPolicy::None => {}
-            qos_actions::ConfirmationPolicy::Confirm => params.push(ActionParam::required(
+            tilo_actions::ConfirmationPolicy::None => {}
+            tilo_actions::ConfirmationPolicy::Confirm => params.push(ActionParam::required(
                 "confirm",
                 ParamType::Boolean,
                 "Explicitly confirm this consequential action",
             )),
-            qos_actions::ConfirmationPolicy::Phrase { .. } => {
+            tilo_actions::ConfirmationPolicy::Phrase { .. } => {
                 params.push(ActionParam::required(
                     "confirmation_phrase",
                     ParamType::Text,
@@ -1209,16 +1212,16 @@ impl LiveAppActionsProvider {
             return None;
         };
         let contract =
-            serde_json::from_str::<qos_actions::ActionContract>(&descriptor.contract_json).ok()?;
+            serde_json::from_str::<tilo_actions::ActionContract>(&descriptor.contract_json).ok()?;
         let mut params = serde_json::from_str::<Vec<ActionParam>>(&descriptor.params_json).ok()?;
         match &contract.confirmation {
-            qos_actions::ConfirmationPolicy::None => {}
-            qos_actions::ConfirmationPolicy::Confirm => params.push(ActionParam::required(
+            tilo_actions::ConfirmationPolicy::None => {}
+            tilo_actions::ConfirmationPolicy::Confirm => params.push(ActionParam::required(
                 "confirm",
                 ParamType::Boolean,
                 "Explicitly confirm this consequential action",
             )),
-            qos_actions::ConfirmationPolicy::Phrase { .. } => params.push(ActionParam::required(
+            tilo_actions::ConfirmationPolicy::Phrase { .. } => params.push(ActionParam::required(
                 "confirmation_phrase",
                 ParamType::Text,
                 "Type the action's confirmation phrase exactly",
@@ -1258,7 +1261,7 @@ impl LiveAppActionsProvider {
                     values.remove("confirmation_phrase");
                     Some(format!(
                         "{}{}",
-                        qos_actions::ARGUMENTS_JSON_PREFIX,
+                        tilo_actions::ARGUMENTS_JSON_PREFIX,
                         serde_json::Value::Object(values)
                     ))
                 } else {
@@ -1415,12 +1418,12 @@ impl SearchProvider for LiveAppActionsProvider {
         {
             for (id, update) in self.broker.statuses(&actor) {
                 let state = match &update {
-                    qos_actions::InvocationUpdate::Accepted { .. } => "accepted",
-                    qos_actions::InvocationUpdate::Progress { .. } => "running",
-                    qos_actions::InvocationUpdate::Item { .. } => "streaming",
-                    qos_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
-                    qos_actions::InvocationUpdate::Failed { .. } => "failed",
-                    qos_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
+                    tilo_actions::InvocationUpdate::Accepted { .. } => "accepted",
+                    tilo_actions::InvocationUpdate::Progress { .. } => "running",
+                    tilo_actions::InvocationUpdate::Item { .. } => "streaming",
+                    tilo_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
+                    tilo_actions::InvocationUpdate::Failed { .. } => "failed",
+                    tilo_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
                 };
                 let status_broker = self.broker.clone();
                 results.push(SearchResult {
@@ -1484,8 +1487,8 @@ impl SearchProvider for LiveAppActionsProvider {
             {
                 let action = &owned_action;
                 let unavailable_reason = match &action.contract.availability {
-                    qos_actions::Availability::Available => None,
-                    qos_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
+                    tilo_actions::Availability::Available => None,
+                    tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
                 };
                 let searchable = format!(
                     "{} {} {} {} {}",
@@ -1567,7 +1570,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             application_args.remove("confirmation_phrase");
                             format!(
                                 "{}{}",
-                                qos_actions::ARGUMENTS_JSON_PREFIX,
+                                tilo_actions::ARGUMENTS_JSON_PREFIX,
                                 serde_json::Value::Object(application_args)
                             )
                         });
@@ -1586,12 +1589,12 @@ impl SearchProvider for LiveAppActionsProvider {
                             // grant to the reconnected peer immediately before
                             // delivery.
                             match &confirmation {
-                                qos_actions::ConfirmationPolicy::Confirm if !confirmed => {
+                                tilo_actions::ConfirmationPolicy::Confirm if !confirmed => {
                                     return Err(ActionError::Refused(
                                         "explicit confirmation is required".into(),
                                     ));
                                 }
-                                qos_actions::ConfirmationPolicy::Phrase { phrase: expected }
+                                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected }
                                     if phrase.as_deref() != Some(expected.as_str()) =>
                                 {
                                     return Err(ActionError::Refused(
@@ -1613,7 +1616,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             let cluster_id = cluster_id.clone();
                             let action_label = action_label.clone();
                             std::thread::Builder::new()
-                                .name("qos-deferred-action".into())
+                                .name("tilo-deferred-action".into())
                                 .spawn(move || {
                                     let deadline =
                                         deadline_after(std::time::Duration::from_secs(30));
@@ -1698,12 +1701,12 @@ impl SearchProvider for LiveAppActionsProvider {
                             invocation_argument(args, typed_arguments, wants_content);
                         if !surface_live {
                             match &invoke_confirmation {
-                                qos_actions::ConfirmationPolicy::Confirm if !confirmed => {
+                                tilo_actions::ConfirmationPolicy::Confirm if !confirmed => {
                                     return Err(ActionError::Refused(
                                         "explicit confirmation is required".into(),
                                     ));
                                 }
-                                qos_actions::ConfirmationPolicy::Phrase { phrase: expected }
+                                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected }
                                     if phrase.as_deref() != Some(expected.as_str()) =>
                                 {
                                     return Err(ActionError::Refused(
@@ -2100,7 +2103,7 @@ mod tests {
             description: None,
             operation_kind: "view".into(),
             params_json: "[]".into(),
-            contract_json: serde_json::to_string(&qos_actions::ActionContract::view())
+            contract_json: serde_json::to_string(&tilo_actions::ActionContract::view())
                 .expect("view contract JSON"),
             input: runtime_collab::ExportedInput::None,
         }
@@ -2114,9 +2117,9 @@ mod tests {
             resource_label: "Fixture".into(),
             action_label: label.into(),
             description: None,
-            operation_kind: qos_actions::OperationKind::View,
+            operation_kind: tilo_actions::OperationKind::View,
             params: Vec::new(),
-            contract: qos_actions::ActionContract::view(),
+            contract: tilo_actions::ActionContract::view(),
             input: PublishedInput::None,
         }
     }
@@ -2268,7 +2271,7 @@ mod tests {
         let scope = LiveAppActionsProvider::surface_scope(&ctx);
         let root = ActionDirectoryRoot {
             peer_id: 7,
-            app_id: "dev.qos.fixture".into(),
+            app_id: "dev.tilo.fixture".into(),
             cluster_id: "room".into(),
             record_id: "record".into(),
         };
@@ -2351,7 +2354,7 @@ mod tests {
         let actor = chrome.local_user_for_room(&chrome.tree().workspaces[0].room);
         let root = ActionDirectoryRoot {
             peer_id: 9,
-            app_id: "dev.qos.remote".into(),
+            app_id: "dev.tilo.remote".into(),
             cluster_id,
             record_id: "root".into(),
         };
@@ -2418,8 +2421,8 @@ mod tests {
         let ctx = context("tailtoken", &chrome, &doc);
         let surface = PublishedSurface {
             peer_id: 1,
-            app_id: "dev.qos.fixture".into(),
-            route: CrdtRoute::app("dev.qos.fixture", "room"),
+            app_id: "dev.tilo.fixture".into(),
+            route: CrdtRoute::app("dev.tilo.fixture", "room"),
             actions: Vec::new(),
             live: true,
         };
@@ -2490,8 +2493,8 @@ mod tests {
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
             peer_id: 1,
-            app_id: "dev.qos.fixture".into(),
-            route: CrdtRoute::app("dev.qos.fixture", "room"),
+            app_id: "dev.tilo.fixture".into(),
+            route: CrdtRoute::app("dev.tilo.fixture", "room"),
             actions: (0..100_001)
                 .map(|index| {
                     local_action(
@@ -2581,7 +2584,7 @@ mod tests {
     fn auxiliary_cursor_is_self_contained_for_more_than_128_pages() {
         let root = ActionDirectoryRoot {
             peer_id: 42,
-            app_id: "dev.qos.remote".into(),
+            app_id: "dev.tilo.remote".into(),
             cluster_id: "room\u{1f}with-separator".into(),
             record_id: "record".into(),
         };
@@ -2610,7 +2613,7 @@ mod tests {
     #[test]
     fn hierarchy_decodes_the_address_shape_minted_by_the_provider() {
         let id = [
-            "dev.qos.files",
+            "dev.tilo.files",
             "write",
             "room-7",
             "file:/Brief.md",
@@ -2622,7 +2625,7 @@ mod tests {
         assert_eq!(
             LiveAppActionsProvider::hierarchy(&id),
             Some((
-                "dev.qos.files",
+                "dev.tilo.files",
                 "room-7",
                 "file:/Brief.md",
                 "files.entry:/Brief.md",

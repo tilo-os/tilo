@@ -87,7 +87,7 @@ pub fn deterministic_narrative(request: &NarrativeRequest) -> GroundedNarrative 
     GroundedNarrative {
         text: request.deterministic_text.clone(),
         source_ids: request.source_ids.clone(),
-        generator: "qos-deterministic".to_string(),
+        generator: "tilo-deterministic".to_string(),
     }
 }
 

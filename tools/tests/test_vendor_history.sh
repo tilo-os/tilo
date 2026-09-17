@@ -5,10 +5,10 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
-test_root=$(mktemp -d "${TMPDIR:-/tmp}/qos-vendor-history-test.XXXXXX")
+test_root=$(mktemp -d "${TMPDIR:-/tmp}/tilo-vendor-history-test.XXXXXX")
 trap 'chmod -R u+w "$test_root" 2>/dev/null || true; rm -rf -- "$test_root"' EXIT
 
-# The real repository check covers byte equivalence and the documented qOS
+# The real repository check covers byte equivalence and the documented Tilo
 # overlay. The artificial repository below exercises remote-ref resolution.
 "$repo_root/tools/vendor-history.sh" verify
 

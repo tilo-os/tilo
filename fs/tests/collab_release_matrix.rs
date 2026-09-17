@@ -18,12 +18,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ed25519_dalek::SigningKey;
 use fs::{Namespace, ROOT_INO};
 use iroh_blobs::Hash;
-use qos_user_identity::{
+use rand::rngs::OsRng;
+use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
     sign_device_cert,
 };
-use rand::rngs::OsRng;
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -196,8 +196,8 @@ fn spawn_fs(
     let mut command = Command::new(binary);
     command
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
-        .env("QOS_AUTHORITY_SOCKET_DIR", authority_sockets)
-        .env("QOS_FS_FUSE_OWNER_ONLY", "1")
+        .env("TILO_AUTHORITY_SOCKET_DIR", authority_sockets)
+        .env("TILO_FS_FUSE_OWNER_ONLY", "1")
         .env(fs::transport_gate::TRANSPORT_GATE_SOCKET_ENV, gate)
         .args(mode)
         .arg("--mount-point")
@@ -259,7 +259,7 @@ fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl
     let status = Command::new(binary)
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
         .env(
-            "QOS_AUTHORITY_SOCKET_DIR",
+            "TILO_AUTHORITY_SOCKET_DIR",
             workspace_cache.join("authority-sockets"),
         )
         .args([
@@ -355,7 +355,7 @@ fn real_fuse_available(scenario: &str) -> bool {
         return true;
     }
     assert_ne!(
-        std::env::var("QOS_FS_FUSE_REQUIRED").as_deref(),
+        std::env::var("TILO_FS_FUSE_REQUIRED").as_deref(),
         Ok("1"),
         "mandatory real-FUSE scenario {scenario} has no usable /dev/fuse"
     );
@@ -1259,7 +1259,7 @@ fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
         AuthenticatedFsPeer, AvailabilityRegistry, ReplicaAckError, ReplicaAckRequestV1,
         ReplicaAckV1, ShareAuthority, ShareGrantStatus,
     };
-    use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
     let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
     let device = ed25519_dalek::SigningKey::generate(&mut OsRng);
