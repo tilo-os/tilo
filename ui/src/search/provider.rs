@@ -447,6 +447,37 @@ pub struct SearchCursor {
     normalized_query: String,
 }
 
+impl SearchCursor {
+    /// Construct an opaque cursor for a provider which keeps its own compact
+    /// index rather than a [`SearchCatalog`].  The payload is intentionally
+    /// only meaningful to that provider; hosts must pass it back unchanged.
+    #[must_use]
+    pub fn opaque(
+        generation: u64,
+        normalized_query: impl Into<String>,
+        after_resource_id: Option<String>,
+        after_browse_ordinal: Option<u64>,
+    ) -> Self {
+        Self {
+            after_resource_id,
+            after_browse_ordinal,
+            generation,
+            normalized_query: normalized_query.into(),
+        }
+    }
+
+    /// Return the opaque fields for the provider that created this cursor.
+    #[must_use]
+    pub fn opaque_parts(&self) -> (u64, &str, Option<&str>, Option<u64>) {
+        (
+            self.generation,
+            &self.normalized_query,
+            self.after_resource_id.as_deref(),
+            self.after_browse_ordinal,
+        )
+    }
+}
+
 /// One bounded page returned by [`SearchCatalog::query_page`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPage {

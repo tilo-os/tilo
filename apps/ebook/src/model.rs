@@ -300,7 +300,7 @@ pub struct AnnotationAnchor {
 /// [`AnnoKind::Bookmark`]), and `excerpt` (a text snapshot so the sidebar
 /// renders without re-resolving and a reflow can re-locate the anchor).
 /// Payload is `kind` + `color` + `note`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Annotation {
     pub id: Uuid,
     pub doc_id: String,
