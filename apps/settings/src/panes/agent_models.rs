@@ -501,6 +501,9 @@ pub struct AgentModelsPane {
     needs_seed: bool,
     structure_dirty: bool,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
     /// API keys are deliberately process-local masked-input buffers. They are
     /// not Automerge text, never enter the settings document, and are erased
     /// as soon as the gateway accepts or rejects submission.
@@ -518,6 +521,15 @@ impl AgentModelsPane {
         status: &ui::LocalState<crate::actions::LocalOperationStatus>,
     ) -> Self {
         self.operation_status = status.clone();
+        self
+    }
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
         self
     }
 
@@ -551,6 +563,9 @@ impl AgentModelsPane {
             needs_seed: true,
             structure_dirty: false,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
             provider_key_buffers: Arc::new(Mutex::new(HashMap::new())),
             provider_field_buffers: Arc::new(Mutex::new(HashMap::new())),
             provider_notice: ui::LocalState::new(None),
@@ -1351,16 +1366,52 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AgentModelsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
         if let Some(notice) = self.provider_notice.get() {
             self.provider_notice.set(None);
             self.notice = Some(notice);
             self.structure_dirty = true;
         }
-        self.seed(state, root);
-        self.sync_actions(state, root);
+        self.seed(&mut state, &root);
+        if let Some(crate::actions::LocalPaneCommand::AgentModel(operation)) =
+            self.command_state.get()
+        {
+            self.command_state.set(None);
+            let key = match operation {
+                crate::actions::AgentModelOperation::StageAccelerator => {
+                    ACCELERATOR_SETUP_KEY.into()
+                }
+                crate::actions::AgentModelOperation::Install { .. } => CONFIRM_KEY.into(),
+                crate::actions::AgentModelOperation::Start { id } => {
+                    model_key(&id, ModelAction::Start)
+                }
+                crate::actions::AgentModelOperation::Stop { id } => {
+                    model_key(&id, ModelAction::Stop)
+                }
+                crate::actions::AgentModelOperation::Retry { id, .. } => {
+                    model_key(&id, ModelAction::Retry)
+                }
+                crate::actions::AgentModelOperation::Remove { id } => {
+                    model_key(&id, ModelAction::Remove)
+                }
+            };
+            let _ = state.put(&root, key, true);
+        }
+        self.sync_actions(&mut state, &root);
         if let Some(composed) = &mut self.composed {
-            composed.sync(state, root);
+            composed.sync(&mut state, &root);
+        }
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 

@@ -208,6 +208,9 @@ pub struct UsersPane {
     confirm_remove_identity: Option<String>,
     error: Option<String>,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -233,6 +236,9 @@ impl UsersPane {
             confirm_remove_identity: None,
             error: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
@@ -257,6 +263,9 @@ impl UsersPane {
             confirm_remove_identity: None,
             error: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
@@ -334,6 +343,15 @@ impl UsersPane {
         status: &ui::LocalState<crate::actions::LocalOperationStatus>,
     ) -> Self {
         self.operation_status = status.clone();
+        self
+    }
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
         self
     }
 
@@ -701,12 +719,73 @@ fn clear_form(state: &mut AutoCommit, root: &ObjId) {
 }
 
 impl Widget for UsersPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.sync_form(state, root);
-        self.sync_users(state, root);
-        self.sync_identities(state, root);
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        if let Some(crate::actions::LocalPaneCommand::User(operation)) = self.command_state.get() {
+            self.command_state.set(None);
+            let expected_token = crate::actions::local_operation_token_for(
+                crate::actions::USER_OPERATION_TYPE,
+                &operation,
+            );
+            let token_matches = matches!(
+                self.operation_status.get(),
+                crate::actions::LocalOperationStatus::Running { token }
+                    if token == expected_token
+            );
+            let username = match &operation {
+                crate::actions::UserOperation::SetAdmin { username, .. }
+                | crate::actions::UserOperation::SetAutologin { username, .. }
+                | crate::actions::UserOperation::Remove { username, .. } => username,
+            };
+            let user = self
+                .users
+                .iter()
+                .find(|user| user.username == *username && !user.current)
+                .cloned();
+            if !token_matches {
+                self.error = Some("Ignored a stale user-management command.".into());
+                self.structure_dirty = true;
+            } else if let Some(user) = user {
+                let result = match operation {
+                    crate::actions::UserOperation::SetAdmin { admin, .. } => {
+                        if user.admin == admin {
+                            Ok(())
+                        } else {
+                            self.user_admin.set_admin(&user.username, admin)
+                        }
+                    }
+                    crate::actions::UserOperation::SetAutologin { enabled, .. } => {
+                        if user.automatic_login == enabled {
+                            Ok(())
+                        } else {
+                            self.user_admin.set_autologin(&user.username, enabled)
+                        }
+                    }
+                    crate::actions::UserOperation::Remove { remove_files, .. } => {
+                        self.user_admin.delete(&user, remove_files)
+                    }
+                };
+                self.apply(result);
+            } else {
+                self.apply(Err("User account is no longer available.".into()));
+            }
+        }
+        self.sync_form(&mut state, &root);
+        self.sync_users(&mut state, &root);
+        self.sync_identities(&mut state, &root);
         if let Some(c) = &mut self.composed {
-            c.sync(state, root);
+            c.sync(&mut state, &root);
+        }
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 
