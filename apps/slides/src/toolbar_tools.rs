@@ -10,6 +10,7 @@ use ui::theme::Theme;
 use crate::app::{ButtonKind, Hit, UiButton};
 use crate::chrome;
 use crate::render;
+use crate::strings::tr;
 
 /// Gap between insert pills and the overflow menu's panel padding (the `s2`
 /// token; the toolbar is renderer-free here so the value is spelled out).
@@ -22,6 +23,8 @@ const MENU_MIN_WIDTH: f64 = 150.0;
 /// fills never merge into one block.
 const MENU_ROW_SEAM: f64 = 4.0;
 
+/// One insert tool. `bar` / `menu` are the fluent keys of the label it
+/// paints on the toolbar and in the overflow menu.
 struct Tool {
     bar: &'static str,
     menu: &'static str,
@@ -194,38 +197,38 @@ impl ToolbarTools {
 fn tools() -> [Tool; 6] {
     [
         Tool {
-            bar: "Slide",
-            menu: "New slide",
+            bar: "slides-tool-slide",
+            menu: "slides-tool-new-slide",
             icon: Some(Icon::Plus),
             hit: Hit::NewSlide,
         },
         Tool {
-            bar: "Text",
-            menu: "Text box",
+            bar: "slides-tool-text",
+            menu: "slides-tool-text-box",
             icon: Some(Icon::FileText),
             hit: Hit::Insert(crate::model::ElementKind::Text),
         },
         Tool {
-            bar: "Rect",
-            menu: "Rectangle",
+            bar: "slides-tool-rect",
+            menu: "slides-tool-rectangle",
             icon: None,
             hit: Hit::Insert(crate::model::ElementKind::Rect),
         },
         Tool {
-            bar: "Ellipse",
-            menu: "Ellipse",
+            bar: "slides-tool-ellipse",
+            menu: "slides-tool-ellipse",
             icon: None,
             hit: Hit::Insert(crate::model::ElementKind::Ellipse),
         },
         Tool {
-            bar: "Line",
-            menu: "Line",
+            bar: "slides-tool-line",
+            menu: "slides-tool-line",
             icon: None,
             hit: Hit::Insert(crate::model::ElementKind::Line),
         },
         Tool {
-            bar: "Image",
-            menu: "Image",
+            bar: "slides-tool-image",
+            menu: "slides-tool-image",
             icon: None,
             hit: Hit::Insert(crate::model::ElementKind::Image),
         },
@@ -234,13 +237,13 @@ fn tools() -> [Tool; 6] {
 
 /// The labels the insert tools paint on the bar, so the app can pre-measure
 /// them with the style they are painted in.
-pub(super) fn bar_labels() -> [&'static str; 6] {
-    tools().map(|tool| tool.bar)
+pub(super) fn bar_labels() -> [String; 6] {
+    tools().map(|tool| tr(tool.bar))
 }
 
 /// The labels the overflow menu paints, likewise pre-measured by the app.
-pub(super) fn menu_labels() -> [&'static str; 6] {
-    tools().map(|tool| tool.menu)
+pub(super) fn menu_labels() -> [String; 6] {
+    tools().map(|tool| tr(tool.menu))
 }
 
 fn tool_width(
@@ -248,21 +251,23 @@ fn tool_width(
     text_pill_w: &dyn Fn(&str) -> f64,
     icon_pill_w: &dyn Fn(&str) -> f64,
 ) -> f64 {
+    let label = tr(tool.bar);
     match tool.icon {
-        Some(_) => icon_pill_w(tool.bar),
-        None => text_pill_w(tool.bar),
+        Some(_) => icon_pill_w(&label),
+        None => text_pill_w(&label),
     }
 }
 
 fn bar_button(tool: &Tool, rect: Rect) -> UiButton {
+    let label = tr(tool.bar);
     let kind = match tool.icon {
         Some(icon) => ButtonKind::IconText {
             icon,
-            label: tool.bar.into(),
+            label: label.clone(),
             accent: false,
         },
         None => ButtonKind::Text {
-            label: tool.bar.into(),
+            label,
             active: false,
             danger: false,
         },
@@ -290,7 +295,7 @@ fn menu_layout(
     let menu_w = hidden
         .iter()
         .filter_map(|&index| tools.get(index))
-        .map(|tool| text_pill_w(tool.menu) + 2.0 * pad)
+        .map(|tool| text_pill_w(&tr(tool.menu)) + 2.0 * pad)
         .fold(MENU_MIN_WIDTH, f64::max)
         .min(toolbar.width() - 2.0 * pad);
     let mx1 = overflow
@@ -308,7 +313,7 @@ fn menu_layout(
             UiButton {
                 rect: Rect::new(mx0 + pad, y, mx1 - pad, y + menu_row_h),
                 kind: ButtonKind::Text {
-                    label: tool.menu.into(),
+                    label: tr(tool.menu),
                     active: false,
                     danger: false,
                 },
