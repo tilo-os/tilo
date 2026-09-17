@@ -8,7 +8,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace};
@@ -24,6 +23,13 @@ const ROW_INSET: f64 = 12.0;
 )]
 fn usize_to_f64_lossy(value: usize) -> f64 {
     value as f64
+}
+
+/// Theme typography tokens already carry the user's text scale, and the
+/// renderer scales every authored size again; divide once so the scale is
+/// applied exactly once (HIG §7a). Identity while the renderer is at 1×.
+fn type_size(text: &TextRenderer, resolved: f32) -> f32 {
+    resolved / text.text_scale()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,11 +116,11 @@ impl DrillInList {
                 .hovered(cursor.is_some_and(|point| self.back.contains(point)))
                 .accessible_name("Back"),
         );
-        let (width, height) = text.measure(title, theme.tokens.typography.scale.sm, None);
+        let (width, height) = text.measure(title, type_size(text, theme.tokens.typography.scale.sm), None);
         text.draw_text_weighted(
             scene,
             title,
-            theme.tokens.typography.scale.sm,
+            type_size(text, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             transform.pre_translate(
                 (
@@ -136,11 +142,11 @@ impl DrillInList {
         panel: Rect,
         message: &str,
     ) {
-        let (width, height) = text.measure(message, theme.tokens.typography.scale.sm, None);
+        let (width, height) = text.measure(message, type_size(text, theme.tokens.typography.scale.sm), None);
         text.draw_text(
             scene,
             message,
-            theme.tokens.typography.scale.sm,
+            type_size(text, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             transform.pre_translate(
                 (
@@ -173,17 +179,24 @@ impl DrillInList {
         label: &str,
     ) -> Rect {
         let hovered = cursor.is_some_and(|point| row.contains(point));
+        // Control role (HIG §9.1/§9.2): the row's surface is a lift measured
+        // against the panel ground, never a ramp slot, and its radius is the
+        // Control radius rather than a literal that happens to equal it.
+        let colors = &theme.tokens.colors;
         let row_fill = if hovered {
-            theme.tokens.colors.neutral[3].with_alpha_factor(0.72)
+            colors.lift(ui::chrome::shell::HOVER_LIFT_T)
         } else {
-            theme.tokens.colors.neutral[2].with_alpha_factor(0.42)
+            colors.lift(0.35)
         };
         scene.fill(
             Fill::NonZero,
             transform,
             row_fill,
             None,
-            &RoundedRect::from_rect(row, 12.0),
+            &RoundedRect::from_rect(
+                row,
+                ui::chrome::ChromeRole::Control.radius(theme, row.height()),
+            ),
         );
         let glyph = Rect::new(
             row.x0 + 12.0,
@@ -200,17 +213,17 @@ impl DrillInList {
             reason = "the bounded quick-settings row width is represented as f32 by the text shaper"
         )]
         let label =
-            text.elide_to_width(label, theme.tokens.typography.scale.sm, label_width as f32);
+            text.elide_to_width(label, type_size(text, theme.tokens.typography.scale.sm), label_width as f32);
         let (_, label_height) = text.measure_weighted(
             &label,
-            theme.tokens.typography.scale.sm,
+            type_size(text, theme.tokens.typography.scale.sm),
             None,
             TextWeight::Medium,
         );
         text.draw_text_weighted(
             scene,
             &label,
-            theme.tokens.typography.scale.sm,
+            type_size(text, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             transform.pre_translate(
                 (
