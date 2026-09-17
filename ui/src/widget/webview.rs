@@ -58,14 +58,21 @@ fn round_to_u32_px(v: f64) -> u32 {
     v.round().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
-/// CEF exposes an integer logical view rect, then allocates the paint buffer
-/// at device scale. Match the native host's two outward-rounding steps.
-fn cef_paint_extent(requested: u32, scale_factor: f32) -> u32 {
+/// Backends may render the exact physical request or quantize it through an
+/// integer logical viewport. Allow rounding in either direction (WPE rounds
+/// logical dimensions to nearest; CEF rounds outward). Integer device scales
+/// need at most scale - 1 pixels; fractional scales can add a final pixel when
+/// converting the logical viewport back to an integer physical buffer.
+fn frame_quantization_slack(scale_factor: f32) -> u32 {
     let scale = f64::from(scale_factor);
-    if requested == 0 || !scale.is_finite() || scale <= 0.0 {
-        return requested;
+    if !scale.is_finite() || scale <= 0.0 {
+        return 0;
     }
-    round_to_u32_px(((f64::from(requested) / scale).ceil() * scale).ceil())
+    round_to_u32_px(if scale.fract() == 0.0 {
+        scale - 1.0
+    } else {
+        scale.ceil()
+    })
 }
 
 /// See module docs.
@@ -180,11 +187,12 @@ impl WebView {
             self.stale_resize_retry = None;
             return true;
         }
-        let native_expected = (
-            cef_paint_extent(expected.0, self.scale_factor),
-            cef_paint_extent(expected.1, self.scale_factor),
-        );
-        let matches = observed == native_expected;
+        // This shared check rejects stale density/viewport frames without
+        // requiring every engine to use CEF's exact allocation geometry.
+        // Chromium additionally enforces its exact paint size in the host.
+        let slack = frame_quantization_slack(self.scale_factor);
+        let matches =
+            observed.0.abs_diff(expected.0) <= slack && observed.1.abs_diff(expected.1) <= slack;
         if matches {
             self.stale_resize_retry = None;
             return true;
@@ -821,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn fractional_dpr_uses_the_same_double_rounding_as_cef() {
+    fn fractional_dpr_accepts_exact_and_cef_rounded_frames() {
         let engine = TestEngine::new();
         let (mut view, _, _) = laid_out(engine.clone());
         view.rect = Rect::new(0.0, 0.0, 802.0 / 1.75, 451.0 / 1.75);
@@ -833,10 +841,136 @@ mod tests {
         );
         assert_eq!(engine.commands().len(), initial);
         assert!(
-            !view.retry_resize_for_stale_frame((802, 451)),
-            "the pre-rounding size is not the native paint for this request"
+            view.retry_resize_for_stale_frame((802, 451)),
+            "engines that render the exact physical request are also valid"
         );
-        assert_eq!(engine.commands().len(), initial + 1);
+        assert_eq!(engine.commands().len(), initial);
+    }
+
+    #[test]
+    fn exact_engine_frames_draw_at_fractional_and_odd_physical_sizes() {
+        for (width, height, scale) in [(802, 451, 1.75), (801, 451, 2.0), (800, 600, 2.0)] {
+            let engine = TestEngine::new();
+            let mut view = WebView::new(engine.clone());
+            view.set_viewport(
+                Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(width) / scale,
+                    f64::from(height) / scale,
+                ),
+                scale as f32,
+            );
+            engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
+            let initial = engine.commands().len();
+            let mut scene = Scene::new();
+            view.draw(
+                &mut scene,
+                Affine::scale(scale),
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(
+                scene
+                    .encoding()
+                    .draw_tags
+                    .contains(&vello_encoding::DrawTag::IMAGE),
+                "exact {width}x{height} frame at {scale} must draw"
+            );
+            assert_eq!((view.cached_key.1, view.cached_key.2), (width, height));
+            assert_eq!(
+                engine.commands().len(),
+                initial,
+                "valid paint must not retry resize"
+            );
+        }
+    }
+
+    #[test]
+    fn quantized_engine_frames_draw_on_either_side_of_requested_size() {
+        // CEF rounds outward twice; WPE rounds the logical size to nearest.
+        // At 3x WPE's 802x451 request becomes 267x150 logical / 801x450 physical.
+        for (requested, painted, scale) in [
+            ((802, 451), (804, 452), 1.75),
+            ((802, 451), (801, 450), 3.0),
+            ((801, 451), (802, 452), 2.0),
+        ] {
+            let engine = TestEngine::new();
+            let mut view = WebView::new(engine.clone());
+            view.set_viewport(
+                Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(requested.0) / scale,
+                    f64::from(requested.1) / scale,
+                ),
+                scale as f32,
+            );
+            *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                rgba: Arc::new(vec![255; painted.0 as usize * painted.1 as usize * 4]),
+                width: painted.0,
+                height: painted.1,
+            });
+            let initial = engine.commands().len();
+            let mut scene = Scene::new();
+            view.draw(
+                &mut scene,
+                Affine::scale(scale),
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(
+                scene
+                    .encoding()
+                    .draw_tags
+                    .contains(&vello_encoding::DrawTag::IMAGE),
+                "{painted:?} paint for {requested:?} at {scale} must draw"
+            );
+            assert_eq!((view.cached_key.1, view.cached_key.2), painted);
+            assert_eq!(engine.commands().len(), initial);
+        }
+    }
+
+    #[test]
+    fn old_density_frames_are_not_drawn_and_recovery_is_bounded() {
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone());
+        view.set_viewport(Rect::new(0.0, 0.0, 400.0, 300.0), 2.0);
+        engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
+        let current = engine.frames().lock().unwrap().clone().unwrap();
+        let stale = crate::webview::Frame {
+            rgba: Arc::new(vec![255; 400 * 300 * 4]),
+            width: 400,
+            height: 300,
+        };
+        let initial = engine.commands().len();
+        for (frame, should_draw, retries) in [
+            (current.clone(), true, 0),
+            (stale.clone(), false, 1),
+            (stale.clone(), false, 1),
+            (current, true, 1),
+            (stale, false, 2),
+        ] {
+            *engine.frames().lock().unwrap() = Some(frame);
+            let mut scene = Scene::new();
+            view.draw(
+                &mut scene,
+                Affine::scale(2.0),
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert_eq!(
+                scene
+                    .encoding()
+                    .draw_tags
+                    .contains(&vello_encoding::DrawTag::IMAGE),
+                should_draw
+            );
+            assert_eq!(engine.commands().len(), initial + retries);
+        }
     }
 
     #[test]
