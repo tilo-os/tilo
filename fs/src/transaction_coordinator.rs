@@ -80,6 +80,27 @@ where
     A: RecordAuthorizer + ?Sized,
     F: FnMut(Vec<u8>) -> Result<(), std::io::Error>,
 {
+    if matches!(
+        entry.transaction.manifest.operation,
+        collab_types::FileMutationOperationV1::RestoreContent { .. }
+    ) {
+        if journal
+            .get(entry.transaction_id())
+            .is_some_and(|value| value.phase == RecordTransactionPhase::BroadcastCommitted)
+        {
+            return Ok(());
+        }
+        repository.apply_transaction(journal, entry, authorizer)?;
+        return complete_checked_restore_after_repository(
+            repository,
+            journal,
+            history,
+            namespace,
+            namespace_path,
+            entry,
+            broadcast,
+        );
+    }
     repository.apply_transaction(journal, entry, authorizer)?;
 
     complete_replacement_transaction_after_repository(
@@ -90,6 +111,118 @@ where
         entry,
         broadcast,
     )
+}
+
+/// Recover a bounded record delta against current converged repository state.
+/// Later valid binding/content changes survive; the receipt remains the exact
+/// admitted manifest rather than whichever revision now wins projection.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn complete_checked_restore_after_repository<F>(
+    repository: &RecordRepository,
+    journal: &mut RecordTransactionJournal,
+    history: &FileHistoryStore,
+    namespace: &Arc<Mutex<Namespace>>,
+    namespace_path: &Path,
+    entry: &RecordTransactionJournalEntry,
+    mut broadcast: F,
+) -> Result<(), RecordTransactionCoordinatorError>
+where
+    F: FnMut(Vec<u8>) -> Result<(), std::io::Error>,
+{
+    let id = entry.transaction_id();
+    let participant = entry
+        .transaction
+        .manifest
+        .participants
+        .first()
+        .ok_or(RecordTransactionCoordinatorError::InvalidKeepBothTransaction)?;
+    if journal
+        .get(id)
+        .is_some_and(|value| value.phase == RecordTransactionPhase::Prepared)
+    {
+        repository.complete_admitted_restore_participation(journal, entry)?;
+    }
+    if journal
+        .get(id)
+        .is_some_and(|value| value.phase <= RecordTransactionPhase::HistoryCommitted)
+    {
+        let mut namespace = namespace
+            .lock()
+            .map_err(|_| RecordTransactionCoordinatorError::NamespacePoisoned)?;
+        let mut history = history.lease()?;
+        let repository = repository.lease()?;
+        let snapshot = repository.snapshot(crate::record_repository::RecordRepositoryKey {
+            workspace_id: entry.transaction.manifest.workspace_id,
+            record_id: participant.record_id,
+        })?;
+        history.append_batch(std::slice::from_ref(&participant.proposed_version))?;
+        if journal
+            .get(id)
+            .is_some_and(|value| value.phase == RecordTransactionPhase::ParticipantRecordsCommitted)
+        {
+            journal.advance(id, RecordTransactionPhase::HistoryCommitted, None)?;
+        }
+        let mut candidate = namespace.clone();
+        let _ = candidate.save_incremental();
+        let staged = journal
+            .get(id)
+            .and_then(|value| value.namespace_delta.clone());
+        let projection_actor = candidate.begin_restore_projection(
+            entry.transaction.manifest.workspace_id,
+            participant.record_id,
+            id,
+        );
+        if let Some(delta) = &staged {
+            candidate
+                .apply_incremental(delta)
+                .map_err(|_| RecordTransactionCoordinatorError::NamespaceDeltaMismatch)?;
+        }
+        let binding = snapshot
+            .binding
+            .as_ref()
+            .ok_or(RecordTransactionCoordinatorError::MissingNamespaceDelta)?;
+        candidate
+            .apply_signed_binding(binding)
+            .map_err(|_| RecordTransactionCoordinatorError::NamespaceDeltaMismatch)?;
+        if !binding.tombstoned {
+            let revision = snapshot
+                .content_revision
+                .ok_or(RecordTransactionCoordinatorError::MissingNamespaceDelta)?;
+            let ino = candidate
+                .ensure_ino_for_record_id(participant.record_id)
+                .ok_or(RecordTransactionCoordinatorError::MissingNamespaceDelta)?;
+            if candidate.content_revision_for(ino) != Some(revision) {
+                let timestamp = snapshot
+                    .versions
+                    .iter()
+                    .find(|v| v.id == revision.version_id)
+                    .map_or(0, |v| v.timestamp_ms);
+                if !candidate.set_content_revision(ino, &revision, timestamp) {
+                    return Err(RecordTransactionCoordinatorError::MissingNamespaceDelta);
+                }
+            }
+        }
+        let delta = staged.unwrap_or_else(|| candidate.save_incremental());
+        candidate.end_restore_projection(projection_actor);
+        journal.stage_namespace_delta(id, delta.clone())?;
+        crate::durable_backup::write(namespace_path, &candidate.save(), |bytes| {
+            Namespace::from_bytes("checked-restore-recovery", bytes).is_ok()
+        })?;
+        *namespace = candidate;
+        journal.advance(id, RecordTransactionPhase::NamespaceCommitted, Some(delta))?;
+    }
+    if journal
+        .get(id)
+        .is_some_and(|value| value.phase == RecordTransactionPhase::NamespaceCommitted)
+    {
+        let delta = journal
+            .get(id)
+            .and_then(|value| value.namespace_delta.clone())
+            .ok_or(RecordTransactionCoordinatorError::MissingNamespaceDelta)?;
+        broadcast(delta.clone())?;
+        journal.advance(id, RecordTransactionPhase::BroadcastCommitted, Some(delta))?;
+    }
+    Ok(())
 }
 
 /// Resume the durable projection phases after the repository has already
@@ -155,7 +288,8 @@ where
                     collab_types::ConflictStrategy::Merge,
                     collab_types::FileMutationParticipantRoleV1::MergeSource,
                 )),
-                collab_types::FileMutationOperationV1::ReplacementRename { .. } => None,
+                collab_types::FileMutationOperationV1::ReplacementRename { .. }
+                | collab_types::FileMutationOperationV1::RestoreContent { .. } => None,
             }
         {
             let source = entry

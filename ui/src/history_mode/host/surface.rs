@@ -26,7 +26,7 @@ impl HistoryHost {
         self.live_node = None;
         self.unavailable_node = None;
         let mut body_children = vec![];
-        if self.show_timeline() && self.controller.is_none() {
+        if self.show_timeline() && self.controller.is_none() && self.files.is_none() {
             let message = self.unavailable.build_layout(tree, theme, nodes);
             self.unavailable_node = Some(message);
             body_children.push(message);
@@ -74,6 +74,18 @@ impl HistoryHost {
             &body_children,
         );
         self.body_node = Some(body);
+        let mut composition_children = vec![toolbar, body];
+        self.review_node = None;
+        if let Some(panel) = &mut self.review {
+            let node = panel.dialog.build_layout(tree, theme, nodes);
+            if let Ok(style) = tree.style(node) {
+                let mut style = style.clone();
+                style.position = taffy::Position::Absolute;
+                let _ = tree.set_style(node, style);
+            }
+            self.review_node = Some(node);
+            composition_children.push(node);
+        }
         let root = tree.parent_node(
             Style {
                 flex_direction: FlexDirection::Column,
@@ -83,7 +95,7 @@ impl HistoryHost {
                 },
                 ..Default::default()
             },
-            &[toolbar, body],
+            &composition_children,
         );
         self.chrome_node = Some(root);
         // This is a structural composition node, not an actionable widget.
@@ -114,6 +126,7 @@ impl HistoryHost {
             live.apply_layout(tree, node, self.body_origin(tree));
         }
     }
+    pub(crate) fn live_layout_node(&self) -> Option<NodeId> { self.live_node }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn route_event(
         &mut self,
@@ -146,6 +159,9 @@ impl HistoryHost {
     }
 }
 impl Widget for HistoryHost {
+    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+        self.live_node.filter(|_| !self.live_interactive())
+    }
     fn name(&self) -> &str {
         "History"
     }
@@ -171,6 +187,9 @@ impl Widget for HistoryHost {
         if let Some(toolbar) = self.toolbar_node {
             self.toolbar.apply_layout(tree, toolbar, origin);
         }
+        if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
+            panel.dialog.apply_layout(tree, node, origin);
+        }
         let body = self.body_origin(tree);
         if let Some(timeline) = self.timeline_node {
             self.timeline.apply_layout(tree, timeline, body);
@@ -191,7 +210,7 @@ impl Widget for HistoryHost {
         presence: &PresenceCtx,
     ) {
         self.toolbar.draw(scene, transform, text, theme, presence);
-        if self.show_timeline() && self.controller.is_none() {
+        if self.show_timeline() && self.controller.is_none() && self.files.is_none() {
             self.unavailable
                 .draw(scene, transform, text, theme, presence);
         } else if self.show_timeline() {
@@ -200,6 +219,9 @@ impl Widget for HistoryHost {
         if self.show_preview() {
             self.canvas_mut()
                 .draw(scene, transform, text, theme, presence);
+        }
+        if let Some(panel) = &mut self.review {
+            panel.dialog.draw(scene, transform, text, theme, presence);
         }
     }
     fn handle_event(
@@ -214,6 +236,11 @@ impl Widget for HistoryHost {
         _: NodeId,
         tree: &TaffyTree<()>,
     ) {
+        if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
+            panel.dialog.handle_event(event, scale, mods, doc, path, handled, focus, node, tree);
+            *handled = true;
+            return;
+        }
         if let Some(toolbar) = self.toolbar_node {
             self.toolbar
                 .handle_event(event, scale, mods, doc, path, handled, focus, toolbar, tree);
@@ -234,9 +261,10 @@ impl Widget for HistoryHost {
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some(panel) = &self.review { return vec![&panel.dialog]; }
         let mut children: Vec<&dyn Widget> = vec![&self.toolbar];
         if self.show_timeline() {
-            if self.controller.is_some() {
+            if self.controller.is_some() || self.files.is_some() {
                 children.push(&self.timeline);
             } else {
                 children.push(&self.unavailable);

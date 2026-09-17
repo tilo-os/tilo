@@ -561,6 +561,85 @@ impl SettingsApp {
 }
 
 impl Widget for SettingsApp {
+    fn native_input_snapshot(
+        &self,
+        state: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<serde_json::Value> {
+        use automerge::transaction::Transactable;
+        fn rect(value: vello::kurbo::Rect) -> [f64; 4] {
+            [value.x0, value.y0, value.x1, value.y1]
+        }
+        fn inspect(
+            widget: &dyn Widget,
+            search: &mut Option<serde_json::Value>,
+            categories: &mut Vec<&'static str>,
+        ) {
+            if widget.test_id() == Some("settings.search") {
+                let review = widget.text_review();
+                *search = Some(serde_json::json!({
+                    "rect": rect(widget.get_rect()),
+                    "focused": widget.is_focused(),
+                    "caret_byte": review.as_ref().map(|(caret, _)| *caret),
+                    "text": review.map(|(_, text)| text),
+                }));
+            }
+            if widget.name() == "SidebarRow"
+                && let Some(category) = Category::ALL
+                    .iter()
+                    .find(|category| widget.test_id() == Some(category.label()))
+            {
+                categories.push(category.slug());
+            }
+            widget.for_each_child(&mut |child| inspect(child, search, categories));
+        }
+        let mut search = None;
+        let mut categories = Vec::new();
+        inspect(self, &mut search, &mut categories);
+        // get_heads closes pending transactions. Only a disposable clone may
+        // perform that operation: the original document stays untouched.
+        let mut witness = state.clone();
+        let mut heads = witness
+            .get_heads()
+            .into_iter()
+            .map(|head| head.to_string())
+            .collect::<Vec<_>>();
+        heads.sort();
+        let valid = |value: vello::kurbo::Rect| {
+            value.is_finite() && value.width() > 0.0 && value.height() > 0.0
+        };
+        let search_rect = search.as_ref().and_then(|value| value.get("rect")).cloned();
+        let search_ready = search_rect
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|r| {
+                r.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
+                    && r[2].as_f64() > r[0].as_f64()
+                    && r[3].as_f64() > r[1].as_f64()
+            });
+        Some(serde_json::json!({
+            "app": "dev.qos.settings",
+            "search_id": "settings.search",
+            "ready": valid(self.rect) && search_ready,
+            "local_search_text": self.search_state.with(Clone::clone),
+            "synchronized_search_query": self.search_query,
+            "search_widget_text": search.as_ref().and_then(|value| value.get("text")),
+            "search_caret_byte": search.as_ref().and_then(|value| value.get("caret_byte")),
+            "search_focused": search.as_ref().and_then(|value| value.get("focused")),
+            "search_rect": search_rect,
+            "root_rect": rect(self.rect),
+            "selected_category": self.selected.slug(),
+            "rendered_result_count": categories.len(),
+            "rendered_category_ids": categories,
+            "narrow": self.is_narrow(),
+            "sidebar_open": self.sidebar_open(),
+            "document_root": format!("{path:?}"),
+            "document_actor": state.get_actor().to_hex_string(),
+            "document_witness_kind": "effective_heads_on_disposable_clone",
+            "effective_document_heads": heads,
+            "original_pending_ops": state.pending_ops(),
+        }))
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::actions::OPEN_PANE_OPERATION_TYPE,
@@ -584,7 +663,13 @@ impl Widget for SettingsApp {
         if query != self.search_query {
             self.search_query = query;
             self.structure_dirty = true;
-            self.refresh_shell_children();
+            // Filtering changes only navigation. Reconstructing the active
+            // pane here would discard its transient state and reseed its
+            // document bindings on every search character.
+            let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+            if let Some(shell) = &mut self.shell {
+                shell.set_nav(nav);
+            }
         }
 
         if let Some(shell) = &mut self.shell {
@@ -1704,3 +1789,7 @@ mod tests {
         assert_eq!(narrow.semantic_key, wide.semantic_key);
     }
 }
+
+#[cfg(test)]
+#[path = "native_observer_tests.rs"]
+mod native_observer_tests;

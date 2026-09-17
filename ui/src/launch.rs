@@ -72,6 +72,8 @@ impl LaunchArgs {
 
 /// Configuration for an app using the standard lifecycle.
 pub struct LaunchSpec {
+    history_definition: Option<&'static crate::history_mode::HistoryDefinition>,
+    history_app_global_storage: bool,
     definition: Option<&'static crate::application::ApplicationDefinition>,
     component_host: Option<ComponentHostPreparer>,
     legacy_setup_override: bool,
@@ -98,6 +100,40 @@ pub struct LaunchSpec {
 }
 
 impl LaunchSpec {
+    /// Managed runners require an explicit History policy, including external
+    /// reasons. Canonical components retain their actual record custody.
+    #[must_use]
+    pub fn history(mut self, definition: &'static crate::history_mode::HistoryDefinition) -> Self {
+        self.history_definition = Some(definition);
+        self
+    }
+    /// Check the explicit declaration without constructing a widget or opening storage.
+    /// Production runners will call this gate once all installed adapters are migrated.
+    /// Detached test construction does not require a declaration.
+    ///
+    /// # Errors
+    /// Reports a missing declaration or one belonging to a different app.
+    pub fn validate_history_declaration(
+        &self,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        let history = self
+            .history_definition
+            .ok_or(crate::history_mode::HistoryRegistrationError::Missing)?;
+        if history.app_id != self.app_id {
+            return Err(crate::history_mode::HistoryRegistrationError::ForeignSource);
+        }
+        Ok(())
+    }
+
+    /// Explicit provenance for a custom app-global preferences/state opener.
+    /// User-file documents use a real owned-record adapter instead.
+    #[must_use]
+    pub fn open_app_global_state(mut self, open: OpenState) -> Self {
+        self = self.open_state(open);
+        self.history_app_global_storage = true;
+        self
+    }
+
     /// Adapt one common application definition. A runner must install an explicit host.
     pub fn from_definition(definition: &'static crate::application::ApplicationDefinition) -> Self {
         let mut spec = Self::new_with_args(definition.app_id, |_| {
@@ -131,11 +167,18 @@ impl LaunchSpec {
         let definition = self
             .definition
             .ok_or(LaunchError::IncompatibleComponentSetup)?;
-        definition.instantiate(context, target, restore)
+        let mut component = definition.instantiate(context, target, restore)?;
+        if let Some(history) = self.history_definition
+            && let Err(error) = component.register_document_history(history) {
+            return Err(component.setup_error(LaunchError::Operation(error.to_string())));
+        }
+        Ok(component)
     }
 
     pub fn new(app_id: &'static str, live_root: RootFactory) -> Self {
         Self {
+            history_definition: None,
+            history_app_global_storage: true,
             definition: None,
             component_host: None,
             legacy_setup_override: false,
@@ -164,6 +207,8 @@ impl LaunchSpec {
     /// depends on validated arguments.
     pub fn new_with_args(app_id: &'static str, live_root: ArgsRootFactory) -> Self {
         Self {
+            history_definition: None,
+            history_app_global_storage: true,
             definition: None,
             component_host: None,
             legacy_setup_override: false,
@@ -270,6 +315,7 @@ impl LaunchSpec {
     /// the live event loop.
     #[must_use]
     pub fn open_state(mut self, open: OpenState) -> Self {
+        self.history_app_global_storage = false;
         self.legacy_setup_override = true;
         self.open_state = open;
         self.open_state_with_args = None;
@@ -280,6 +326,7 @@ impl LaunchSpec {
     /// document must seed the persisted CRDT before the root's first sync.
     #[must_use]
     pub fn open_state_with_args(mut self, open: OpenStateWithArgs) -> Self {
+        self.history_app_global_storage = false;
         self.legacy_setup_override = true;
         self.open_state_with_args = Some(open);
         self
@@ -604,7 +651,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         }
         let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
-        let harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme(&args));
+        let harness = build_history_capture(spec, &args, root, viewport)?;
         harness.render_png(out);
         println!("{}: wrote shot to {}", spec.app_id, out.display());
         return Ok(());
@@ -627,12 +674,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
                 handler(&matrix_args)?;
             } else {
                 let root = spec.screenshot_root(&matrix_args)?;
-                let harness = FrameHarness::new_with_theme(
-                    State::new(),
-                    root,
-                    viewport,
-                    shot_theme(&matrix_args),
-                );
+                let harness = build_history_capture(spec, &matrix_args, root, viewport)?;
                 harness.render_png(&out);
             }
             println!(
@@ -645,17 +687,20 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     }
 
     if let Some(headless) = &args.headless {
-        std::process::exit(headless::run(headless, spec.live_root(&args)?, spec.app_id));
+        let root = spec.live_root(&args)?;
+        let code = if let Some(history) = spec.history_definition {
+            if !spec.history_app_global_storage { return Err(LaunchError::Operation("History requires explicit storage provenance for a custom opener".into())); }
+            let (state, autosave) = spec.open_state_with_args.map_or_else(|| (spec.open_state)(spec.app_id), |open| open(spec.app_id, &args));
+            let registration = crate::history_mode::HistoryRegistration::installed_app_state(history, Some(&autosave), uuid::Uuid::new_v4())
+                .map_err(|error| LaunchError::Operation(error.to_string()))?;
+            headless::run_opened(headless, root, spec.app_id, state, autosave, Some(registration))
+        } else { headless::run(headless, root, spec.app_id) };
+        std::process::exit(code);
     }
 
     if args.native_audit {
         let viewport = args.viewport.unwrap_or(DEFAULT_VIEWPORT);
-        let harness = FrameHarness::new_with_theme(
-            State::new(),
-            spec.live_root(&args)?,
-            viewport,
-            shot_theme(&args),
-        );
+        let harness = build_history_capture(spec, &args, spec.live_root(&args)?, viewport)?;
         let audit = harness.native_app_audit();
         let report = serde_json::to_string_pretty(&audit).map_err(|error| {
             LaunchError::Operation(format!("could not serialize native audit: {error}"))
@@ -768,6 +813,22 @@ fn dispatch_definition(
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
+fn build_history_capture(spec: &LaunchSpec, args: &LaunchArgs, root: Box<dyn Widget>, viewport: (u32, u32)) -> Result<FrameHarness, LaunchError> {
+    let registration = root.history_registration().map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let mut harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme(args));
+    if let Some(registration) = registration {
+        if registration.definition.app_id != spec.app_id { return Err(LaunchError::Operation("History source belongs to another application".into())); }
+        harness.install_history(registration).map_err(|error| LaunchError::Operation(error.to_string()))?;
+    } else if let Some(history) = spec.history_definition {
+        // Capture owns a fresh in-memory State, truthfully scoped to this
+        // harness lifetime. It never aliases a native runner's document.
+        let registration = crate::history_mode::HistoryRegistration::installed_app_state(history, None, uuid::Uuid::new_v4())
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        harness.install_history(registration).map_err(|error| LaunchError::Operation(error.to_string()))?;
+    }
+    Ok(harness)
+}
+
 fn build_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchError> {
     build_native_app_with_constructor(spec, args, App::from_scoped_parts)
 }
@@ -784,13 +845,24 @@ fn build_native_app_with_constructor(
         |open| open(spec.app_id, args),
     );
     let root = spec.live_root(args)?;
+    let root_history = root.history_registration().map_err(|error| LaunchError::Operation(error.to_string()))?;
     let mut app = construct(scope, state, root).with_autosave(autosave);
+    let installed_storage = app.history_storage_generation();
     if let Some(text_scale) = args.text_scale {
         app.set_text_scale(text_scale);
     }
     if let Some(configure) = spec.configure_app {
         let _configure_entry = app.enter_wake_scope();
         configure(&mut app);
+    }
+    if let Some(registration) = root_history {
+        if registration.definition.app_id != spec.app_id { return Err(LaunchError::Operation("History source belongs to another application".into())); }
+        app.install_history(registration).map_err(|error| LaunchError::Operation(error.to_string()))?;
+    } else if let Some(history) = spec.history_definition {
+        if history.app_id != spec.app_id || !spec.history_app_global_storage || app.history_storage_generation() != installed_storage {
+            return Err(LaunchError::Operation("History requires the final installed document's explicit storage provenance".into()));
+        }
+        app.install_app_state_history(history).map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
     Ok(app)
 }
@@ -801,6 +873,9 @@ fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchErro
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if spec.history_definition.is_some_and(|history| history.app_id != spec.app_id) {
+        return Err(LaunchError::Operation("History belongs to a different installed application".into()));
+    }
     if args.headless.is_some() && !spec.headless_enabled {
         return Err(LaunchError::HeadlessUnsupported);
     }
@@ -1293,6 +1368,98 @@ mod tests {
             .command_handler(custom_command);
         run_with_args(&spec, &strings(&["app", "--utility"])).unwrap();
         assert!(CUSTOM_COMMAND_RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn history_declaration_gate_rejects_omission_for_standard_and_custom_specs() {
+        fn custom(_: &LaunchArgs) -> Result<(), LaunchError> {
+            panic!("validation cannot launch");
+        }
+        for spec in [
+            LaunchSpec::new("dev.qos.test", dummy_root),
+            LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom),
+            LaunchSpec::new_with_args("dev.qos.test", |_| panic!("validation cannot construct")),
+            LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition()),
+        ] {
+            assert_eq!(
+                spec.validate_history_declaration(),
+                Err(crate::history_mode::HistoryRegistrationError::Missing)
+            );
+        }
+    }
+
+    #[test]
+    fn history_declaration_gate_accepts_matching_external_policy_and_refuses_foreign_identity() {
+        static HISTORY: crate::history_mode::HistoryDefinition =
+            crate::history_mode::HistoryDefinition {
+                app_id: "dev.qos.test",
+                scopes: &[crate::history_mode::HistoryScopeDefinition {
+                    key: "process",
+                    title: "Process",
+                    presentation: crate::history_mode::HistoryPresentation::External {
+                        reason: "The live process is not versioned.",
+                    },
+                    content_schema: None,
+                }],
+            };
+        assert!(
+            LaunchSpec::new(HISTORY.app_id, dummy_root)
+                .history(&HISTORY)
+                .validate_history_declaration()
+                .is_ok()
+        );
+        assert_eq!(
+            LaunchSpec::new("dev.qos.other", dummy_root)
+                .history(&HISTORY)
+                .validate_history_declaration(),
+            Err(crate::history_mode::HistoryRegistrationError::ForeignSource)
+        );
+    }
+
+    #[test]
+    fn managed_standard_native_launch_installs_history_without_detaching_wake_scope() {
+        static HISTORY: crate::history_mode::HistoryDefinition = crate::history_mode::HistoryDefinition {
+            app_id: "dev.qos.wake-test", scopes: &[crate::history_mode::HistoryScopeDefinition {
+                key: "preferences", title: "Preferences", presentation: crate::history_mode::HistoryPresentation::Domain { create: crate::history_mode::test_preview }, content_schema: None,
+            }],
+        };
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
+        let mut spec = LaunchSpec::new(HISTORY.app_id, scoped_root).open_app_global_state(scoped_open_state).configure_app(scoped_configure);
+        spec.history_definition = Some(&HISTORY);
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let app = build_native_app_with_constructor(&spec, &args, App::from_scoped_parts_with_controlled_inputs).unwrap();
+        assert!(app.build_a11y_tree_update(1.0).nodes.iter().any(|(_, node)| node.label() == Some("History")), "production constructor must consume managed History metadata");
+        let captures = LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
+        assert!(captures.iter().all(crate::WakeHandle::is_active));
+        drop(app);
+        assert!(captures.iter().all(|handle| !handle.is_active()));
+    }
+
+    #[test]
+    fn managed_launch_refuses_undeclared_custom_storage_and_post_configuration_replacement() {
+        static HISTORY: crate::history_mode::HistoryDefinition = crate::history_mode::HistoryDefinition {
+            app_id: "dev.qos.wake-test", scopes: &[crate::history_mode::HistoryScopeDefinition {
+                key: "preferences", title: "Preferences", presentation: crate::history_mode::HistoryPresentation::Domain { create: crate::history_mode::test_preview }, content_schema: None,
+            }],
+        };
+        fn replace_storage(app: &mut App) {
+            let owned = std::mem::replace(app, App::from_scoped_parts_with_controlled_inputs(crate::WakeScope::new(), State::new(), dummy_root()));
+            *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
+        }
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        for spec in [
+            LaunchSpec::new(HISTORY.app_id, scoped_root).open_state(scoped_open_state).history(&HISTORY),
+            LaunchSpec::new(HISTORY.app_id, scoped_root).open_app_global_state(scoped_open_state).configure_app(replace_storage).history(&HISTORY),
+        ] {
+            let result = build_native_app_with_constructor(&spec, &args, App::from_scoped_parts_with_controlled_inputs);
+            assert!(matches!(result, Err(LaunchError::Operation(message)) if message.contains("storage provenance")));
+        }
+        let spec = LaunchSpec::new(HISTORY.app_id, scoped_root).history(&HISTORY);
+        assert!(spec.history_app_global_storage, "the standard app-global opener is known by the runner");
+        let mut capture = build_history_capture(&spec, &args, scoped_root(), (900, 650)).unwrap();
+        assert!(capture.targets().contains_key("history-open"));
+        capture.click_named("history-open").unwrap();
+        assert!(capture.targets().contains_key("activity_timeline"));
     }
 
     #[test]

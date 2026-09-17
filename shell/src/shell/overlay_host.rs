@@ -26,6 +26,8 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::shell::qs_actions::QsActions as _;
+
 #[cfg(test)]
 #[path = "../../tests/support/offscreen.rs"]
 mod overlay_test_offscreen;
@@ -654,7 +656,8 @@ struct OverlayInputs {
     desktop_controls: DesktopControlsSource,
     qs_root: QuickSettingsRoot,
     qs_refresh: crate::shell::qs_refresh::QsRefresh,
-    qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    qs_actions: std::rc::Rc<dyn crate::shell::qs_actions::QsActions>,
+    qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
     room_activity: crate::shell::room_activity::RoomActivityPane,
     projection_overlay: ProjectionOverlay,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
@@ -765,6 +768,7 @@ pub struct ShellOverlayHost {
     /// Host width the palette's taffy style was last computed against.
     /// See the sizing comment in `build_layout`.
     palette_layout_host_w: f64,
+    palette_layout_host_h: f64,
     content_node: Option<NodeId>,
     palette_node: Option<NodeId>,
     sidebar_node: Option<NodeId>,
@@ -915,7 +919,11 @@ pub struct ShellOverlayHost {
     /// Side-effect dispatcher for quick-settings actions. Production
     /// uses [`crate::shell::qs_actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
-    qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    qs_actions: std::rc::Rc<dyn crate::shell::qs_actions::QsActions>,
+    /// Mutable provider handle shared with the shell action catalogue. Replacing
+    /// a test dispatcher updates the existing provider rather than registering
+    /// a duplicate action source.
+    qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
     /// Wi-Fi network-list layout, painting and join hit-testing. The
     /// specialised ephemeral password editor remains host-owned.
     qs_wifi_pane: QuickSettingsWifiPane,
@@ -1015,6 +1023,12 @@ pub struct ShellSceneSections {
 /// runtime thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncAction {
+    /// A palette invocation owns this request until the overlay has applied
+    /// the inner presentation action and publishes its terminal result.
+    Tracked {
+        request_id: u64,
+        action: Box<PeerSyncAction>,
+    },
     /// User invoked `/invite`. The compositor calls
     /// `ShellNetwork::issue_invite` and puts the token on the clipboard.
     IssueInvite,
@@ -1712,17 +1726,28 @@ impl ShellOverlayHost {
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
-    fn build_search_registry() -> (
+    fn build_search_registry(
+        qs_actions: std::rc::Rc<dyn crate::shell::qs_actions::QsActions>,
+    ) -> (
         crate::shell::search::SearchRegistry,
         std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
+        crate::shell::search::providers::actions::SharedQsActions,
     ) {
         // Start the remote-app refresh with the shell, not with the user's
         // first Win+K query. A persisted metadata snapshot makes search
         // useful immediately; this refresh quietly makes it current.
         let _ = crate::shell::catalogue::available_apps();
         let mut search_registry = crate::shell::search::SearchRegistry::new();
+        let qs_action_slot = std::rc::Rc::new(
+            crate::shell::search::providers::actions::SharedQsDispatcher::new(
+                qs_actions,
+                crate::shell::qs_actions::QsActionAvailability::detect(),
+            ),
+        );
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ActionsProvider::new(),
+            crate::shell::search::providers::ActionsProvider::with_shared_qs_actions(
+                qs_action_slot.clone(),
+            ),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
@@ -1747,7 +1772,7 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::FilesProvider::new(),
         ));
-        (search_registry, room_records)
+        (search_registry, room_records, qs_action_slot)
     }
 
     #[allow(
@@ -1757,7 +1782,10 @@ impl ShellOverlayHost {
     pub fn new(content: Box<dyn Widget>) -> Self {
         #[cfg(test)]
         crate::shell::test_support::ambient_start("overlay production inputs");
-        let (search_registry, room_records) = Self::build_search_registry();
+        let qs_actions: std::rc::Rc<dyn crate::shell::qs_actions::QsActions> =
+            std::rc::Rc::new(crate::shell::qs_actions::RealQsActions);
+        let (search_registry, room_records, qs_action_slot) =
+            Self::build_search_registry(qs_actions.clone());
         Self::from_inputs(
             content,
             OverlayInputs {
@@ -1767,7 +1795,8 @@ impl ShellOverlayHost {
                 desktop_controls: DesktopControlsSource::Persisted,
                 qs_root: QuickSettingsRoot::load_persisted(),
                 qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
-                qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+                qs_actions,
+                qs_action_slot,
                 room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
                 projection_overlay: ProjectionOverlay::default(),
                 portal_dialogs: PortalDialogController::default(),
@@ -1779,7 +1808,20 @@ impl ShellOverlayHost {
     }
 
     pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
+        let qs_actions: std::rc::Rc<dyn crate::shell::qs_actions::QsActions> =
+            std::rc::Rc::new(crate::shell::qs_actions::UnavailableQsActions);
+        let qs_action_slot = std::rc::Rc::new(
+            crate::shell::search::providers::actions::SharedQsDispatcher::new(
+                qs_actions.clone(),
+                crate::shell::qs_actions::QsActionAvailability::default(),
+            ),
+        );
         let mut search_registry = crate::shell::search::SearchRegistry::new();
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::ActionsProvider::with_shared_qs_actions(
+                qs_action_slot.clone(),
+            ),
+        ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NotesProvider::new(),
         ));
@@ -1802,7 +1844,8 @@ impl ShellOverlayHost {
                     settings_store::hardware::QuickSettingsConfig::default(),
                 ),
                 qs_refresh: crate::shell::qs_refresh::QsRefresh::without_os_reads(),
-                qs_actions: Box::new(crate::shell::qs_actions::UnavailableQsActions),
+                qs_actions,
+                qs_action_slot,
                 room_activity: crate::shell::room_activity::RoomActivityPane::with_local_user(
                     "shell-fixture".into(),
                 ),
@@ -1864,6 +1907,7 @@ impl ShellOverlayHost {
             room_records: inputs.room_records,
             palette_layout_dirty: false,
             palette_layout_host_w: f64::NAN,
+            palette_layout_host_h: f64::NAN,
             content_node: None,
             palette_node: None,
             sidebar_node: None,
@@ -1913,6 +1957,7 @@ impl ShellOverlayHost {
             // root directly still receive deterministic defaults.
             qs_root: inputs.qs_root,
             qs_actions: inputs.qs_actions,
+            qs_action_slot: inputs.qs_action_slot,
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
             qs_aux_drill_in: DrillInList::default(),
@@ -2565,7 +2610,13 @@ impl ShellOverlayHost {
         mut self,
         actions: Box<dyn crate::shell::qs_actions::QsActions>,
     ) -> Self {
-        self.qs_actions = actions;
+        let actions: std::rc::Rc<dyn crate::shell::qs_actions::QsActions> =
+            std::rc::Rc::from(actions);
+        self.qs_actions = actions.clone();
+        self.qs_action_slot.replace(
+            actions,
+            crate::shell::qs_actions::QsActionAvailability::all(),
+        );
         // Replacing where quick settings writes means this host is not
         // driving the real machine, so it must not read from it either.
         self.qs_refresh.disable_os_reads();
@@ -2824,6 +2875,10 @@ impl ShellOverlayHost {
             return;
         }
         for action in actions {
+            let (request_id, action) = match action {
+                PeerSyncAction::Tracked { request_id, action } => (Some(request_id), *action),
+                action => (None, action),
+            };
             match action {
                 PeerSyncAction::IssueInvite => {
                     let request = self.peer_sync_overlay.issue_invite_request();
@@ -2836,6 +2891,12 @@ impl ShellOverlayHost {
                 }
                 PeerSyncAction::PromptInvite => self.open_invite_manager(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
+                PeerSyncAction::Tracked { .. } => unreachable!("tracked requests are unwrapped"),
+            }
+            if let (Some(request_id), Some(chrome)) = (request_id, self.chrome.as_ref()) {
+                chrome
+                    .borrow_mut()
+                    .complete_peer_sync_request(request_id, Ok(()));
             }
         }
     }
@@ -3427,6 +3488,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        chrome.borrow_mut().retry_new_tab_records();
         let current_rev = chrome.borrow().revision;
         if current_rev == self.last_chrome_revision {
             return false;
@@ -3439,6 +3501,7 @@ impl ShellOverlayHost {
         let st = chrome.borrow();
         let records = st.records().clone();
         let tree = st.tree();
+        let creation_failures = st.record_creation_errors(&tree);
         if let Some(ws) = tree.active_workspace() {
             for strip in &ws.strips {
                 let Some(&row_ptr) = self.group_row_ptrs.get(&strip.id) else {
@@ -3464,6 +3527,10 @@ impl ShellOverlayHost {
                         );
                         // Same spawn fade the row's own splice paths use,
                         // so an opened window arrives the same way.
+                        crate::shell::tab_documents::apply_creation_failures(
+                            &mut fresh,
+                            &creation_failures,
+                        );
                         fresh.start_spawn_animation();
                         row.insert_group(fresh, idx);
                         any_change = true;
@@ -3505,7 +3572,11 @@ impl ShellOverlayHost {
                             // surface has drawn, so a swap doesn't replace
                             // an "opening" card with a blank frame — the
                             // signature is left unrecorded so it retries.
-                            if tab_tiles.get(&tab.id) != Some(&signature)
+                            let resource_replaced = !creation_failures.contains_key(&tab.id)
+                                && live
+                                    .host_for_tab_mut(tab.id)
+                                    .is_some_and(|host| host.record_creation_refused());
+                            if (tab_tiles.get(&tab.id) != Some(&signature) || resource_replaced)
                                 && !window_is_still_starting(&tab.tile)
                                 && let Some(host) = live.host_for_tab_mut(tab.id)
                             {
@@ -3514,8 +3585,24 @@ impl ShellOverlayHost {
                                     tab.id,
                                     &chrome.borrow().hosted_inputs,
                                 ));
+                                host.bind_record(
+                                    records.clone(),
+                                    crate::shell::tab_documents::scratch_tab_record(tab.id),
+                                );
                                 tab_tiles.insert(tab.id, signature);
                                 any_change = true;
+                            }
+                            if let Some(host) = live.host_for_tab_mut(tab.id) {
+                                if let Some(reason) = creation_failures.get(&tab.id) {
+                                    host.refuse_record_binding(reason.clone());
+                                } else {
+                                    // Owner replacement invalidates an old pending binding too.
+                                    // This is always Existing-only, never a creation retry.
+                                    host.bind_record(
+                                        records.clone(),
+                                        crate::shell::tab_documents::scratch_tab_record(tab.id),
+                                    );
+                                }
                             }
                             continue;
                         }
@@ -3537,6 +3624,9 @@ impl ShellOverlayHost {
                             records.clone(),
                             crate::shell::tab_documents::scratch_tab_record(tab.id),
                         );
+                        if let Some(reason) = creation_failures.get(&tab.id) {
+                            host.refuse_record_binding(reason.clone());
+                        }
                         live.insert_detached_tab(idx.min(live.tab_count()), desc, host);
                         tab_tiles.insert(tab.id, signature);
                         any_change = true;
@@ -5423,6 +5513,7 @@ impl ShellOverlayHost {
             .unwrap_or_default();
         if self.palette_visible && current_scope == effective {
             self.palette_visible = false;
+            self.palette.close();
             return;
         }
         if let Some(chrome) = self.chrome.clone() {
@@ -5532,6 +5623,7 @@ impl ShellOverlayHost {
             Self::report_launchpad_action_failure(display_name, &error);
         } else {
             self.palette_visible = false;
+            self.palette.close();
         }
     }
 
@@ -5956,6 +6048,7 @@ impl ShellOverlayHost {
                 return;
             }
             self.palette_visible = false;
+            self.palette.close();
             return;
         }
         let Some(id) = self
@@ -6007,6 +6100,7 @@ impl ShellOverlayHost {
                 }
             }
             self.palette_visible = false;
+            self.palette.close();
             return;
         }
         // Legacy id-based dispatch for peer-sync rows, which enqueue an
@@ -6022,6 +6116,7 @@ impl ShellOverlayHost {
                 _ => {}
             }
             self.palette_visible = false;
+            self.palette.close();
         }
     }
 
@@ -6187,6 +6282,31 @@ impl ShellOverlayHost {
         crate::shell::search::action_api::ActionCatalog::build(
             &self.search_registry,
             query,
+            scope,
+            active_provider.as_deref(),
+            chrome,
+            doc,
+            root,
+            visibility,
+        )
+    }
+
+    /// Resolve a previously enumerated action by its stable address. Dynamic
+    /// providers can preserve their retained discovery page while
+    /// revalidating the route used to invoke it.
+    pub fn action_catalog_for_resource(
+        &self,
+        resource: &crate::shell::search::action_api::ResourceRef,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &automerge::AutoCommit,
+        root: &ObjId,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        let scope = chrome.search_scope;
+        let active_provider = active_tab_provider_id(chrome, &self.search_registry);
+        crate::shell::search::action_api::ActionCatalog::build_for_resource(
+            &self.search_registry,
+            resource,
             scope,
             active_provider.as_deref(),
             chrome,
@@ -6464,11 +6584,13 @@ impl ShellOverlayHost {
                 "peer.invite" => {
                     self.peer_sync_actions.push(PeerSyncAction::IssueInvite);
                     self.palette_visible = false;
+                    self.palette.close();
                     return true;
                 }
                 "peer.connect" => {
                     self.peer_sync_actions.push(PeerSyncAction::PromptConnect);
                     self.palette_visible = false;
+                    self.palette.close();
                     return true;
                 }
                 _ => {}
@@ -6512,6 +6634,7 @@ impl ShellOverlayHost {
             false
         };
         self.palette_visible = false;
+        self.palette.close();
         matched
     }
 
@@ -7124,9 +7247,11 @@ impl ShellOverlayHost {
             return Rect::ZERO;
         }
         let count = self.search_scope_list().len().max(1);
-        let w = (Self::SCOPE_SEGMENT_WIDTH_PX * usize_to_f64_lossy(count) + 2.0 * SEGMENT_INSET_PX)
-            .min(b.width() * 0.55);
-        let h = Self::FILTER_CONTROL_HEIGHT_PX;
+        let w =
+            (Self::SCOPE_SEGMENT_WIDTH_PX * self.palette.text_scale() * usize_to_f64_lossy(count)
+                + 2.0 * SEGMENT_INSET_PX)
+                .min(b.width() * 0.75);
+        let h = Self::FILTER_CONTROL_HEIGHT_PX * self.palette.text_scale();
         // Anchored to the *first* row of the band, not to the middle of
         // it: when the kind chips wrap to a second row the switch must
         // stay where it was, beside the row it shares, rather than
@@ -7517,15 +7642,23 @@ impl ShellOverlayHost {
                     .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
                 match commit {
                     Some(SliderCommit::Brightness(value_pct)) => {
+                        let actions =
+                            crate::shell::search::providers::actions::ValidatedQsActions::new(
+                                self.qs_actions.as_ref(),
+                            );
                         crate::shell::qs_actions::log_qs_result(
                             "set_brightness",
-                            self.qs_actions.set_brightness(value_pct),
+                            actions.set_brightness(value_pct),
                         );
                     }
                     Some(SliderCommit::Volume(value_pct)) => {
+                        let actions =
+                            crate::shell::search::providers::actions::ValidatedQsActions::new(
+                                self.qs_actions.as_ref(),
+                            );
                         crate::shell::qs_actions::log_qs_result(
                             "set_volume",
-                            self.qs_actions.set_volume(value_pct),
+                            actions.set_volume(value_pct),
                         );
                     }
                     None => {}
@@ -8165,6 +8298,7 @@ impl ShellOverlayHost {
     /// permission prompt, or credential error and then return to it intact.
     fn dismiss_transient_chrome_for_capture(&mut self) {
         self.palette_visible = false;
+        self.palette.close();
         if self.shortcut_rebind.is_none() {
             self.shortcut_rebind_message = None;
         }
@@ -9089,7 +9223,9 @@ impl ShellOverlayHost {
         let mut needs_bump = true;
         match logical_key {
             Key::Named(NamedKey::ArrowLeft) => {
-                let new_pos = if ctrl {
+                let new_pos = if !ctrl && !shift && !sel.is_collapsed() {
+                    sel.range().start
+                } else if ctrl {
                     prev_word_boundary(buf, sel.cursor)
                 } else {
                     prev_char_boundary(buf, sel.cursor)
@@ -9100,7 +9236,9 @@ impl ShellOverlayHost {
                 }
             }
             Key::Named(NamedKey::ArrowRight) => {
-                let new_pos = if ctrl {
+                let new_pos = if !ctrl && !shift && !sel.is_collapsed() {
+                    sel.range().end
+                } else if ctrl {
                     next_word_boundary(buf, sel.cursor)
                 } else {
                     next_char_boundary(buf, sel.cursor)
@@ -9192,7 +9330,6 @@ impl ShellOverlayHost {
             "a" | "A" => {
                 sel.anchor = 0;
                 sel.cursor = buf.len();
-                needs_bump = false;
             }
             "c" | "C" => {
                 let r = sel.range();
@@ -9256,7 +9393,10 @@ impl ShellOverlayHost {
             return false;
         };
         let help_open = self.overlay_flags().shortcut_help;
-        if help_open || self.shortcut_help_button_rect().contains(p) {
+        if help_open
+            || (!self.shortcut_help_button_is_suppressed()
+                && self.shortcut_help_button_rect().contains(p))
+        {
             if help_open
                 && let Some(action) = self
                     .shortcut_binding_rects
@@ -9415,6 +9555,7 @@ impl ShellOverlayHost {
         }
         if !self.palette.get_rect().contains(p) {
             self.palette_visible = false;
+            self.palette.close();
             return true;
         }
         false
@@ -9622,12 +9763,12 @@ impl ShellOverlayHost {
             if let Some(chrome) = self.chrome.clone() {
                 let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
-                let outcome = self.qs_wifi_pane.handle_click(
-                    p,
-                    panel,
-                    &mut st.quick_settings,
+                let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
                     self.qs_actions.as_ref(),
                 );
+                let outcome =
+                    self.qs_wifi_pane
+                        .handle_click(p, panel, &mut st.quick_settings, &actions);
                 match outcome {
                     DrillInOutcome::Back => st.quick_settings.pop_level(),
                     DrillInOutcome::Changed => {}
@@ -9656,12 +9797,12 @@ impl ShellOverlayHost {
             if let Some(chrome) = self.chrome.clone() {
                 let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
-                let outcome = self.qs_vpn_pane.handle_click(
-                    p,
-                    panel,
-                    &mut st.quick_settings.vpns,
+                let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
                     self.qs_actions.as_ref(),
                 );
+                let outcome =
+                    self.qs_vpn_pane
+                        .handle_click(p, panel, &mut st.quick_settings.vpns, &actions);
                 match outcome {
                     DrillInOutcome::Back => st.quick_settings.pop_level(),
                     DrillInOutcome::Changed => {}
@@ -9805,15 +9946,17 @@ impl ShellOverlayHost {
             }
             commit
         };
+        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+            self.qs_actions.as_ref(),
+        );
         match commit {
             Some(SliderCommit::Brightness(value_pct)) => crate::shell::qs_actions::log_qs_result(
                 "set_brightness",
-                self.qs_actions.set_brightness(value_pct),
+                actions.set_brightness(value_pct),
             ),
-            Some(SliderCommit::Volume(value_pct)) => crate::shell::qs_actions::log_qs_result(
-                "set_volume",
-                self.qs_actions.set_volume(value_pct),
-            ),
+            Some(SliderCommit::Volume(value_pct)) => {
+                crate::shell::qs_actions::log_qs_result("set_volume", actions.set_volume(value_pct))
+            }
             None => return false,
         }
         *handled = true;
@@ -9943,8 +10086,11 @@ impl ShellOverlayHost {
         pending_night_light: Option<bool>,
         pending_power: Option<crate::shell::quick_settings::PowerProfile>,
     ) {
+        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+            self.qs_actions.as_ref(),
+        );
         if let Some(v) = pending_wifi {
-            crate::shell::qs_actions::log_qs_result("set_wifi", self.qs_actions.set_wifi(v));
+            crate::shell::qs_actions::log_qs_result("set_wifi", actions.set_wifi(v));
         }
         if let Some(v) = pending_bt {
             crate::shell::qs_actions::log_qs_result(
@@ -9987,7 +10133,7 @@ impl ShellOverlayHost {
             };
             crate::shell::qs_actions::log_qs_result(
                 "set_power_profile",
-                self.qs_actions.set_power_profile(mapped),
+                actions.set_power_profile(mapped),
             );
         }
     }
@@ -11042,7 +11188,11 @@ impl Widget for ShellOverlayHost {
             // 70% of viewport clamped to [560, 640]; 560 is the minimum
             // that still fits the filter strip's eight pills without the
             // last one bleeding into the close glyph.
-            let palette_target_w = (self.rect.width() * 0.7).clamp(560.0, 640.0);
+            let palette_target_w = ((self.rect.width() * 0.7).clamp(560.0, 640.0)
+                * f64::from(theme.text_scale))
+            .min((self.rect.width() - 32.0).max(320.0));
+            palette_style.max_size.height =
+                Dimension::length(f64_to_f32_lossy((self.rect.height() - 112.0).max(200.0)));
             palette_style.size = Size {
                 width: Dimension::length(f64_to_f32_lossy(palette_target_w)),
                 height: palette_style.size.height,
@@ -11065,6 +11215,7 @@ impl Widget for ShellOverlayHost {
         // host and lands on the 560 floor; remembering what it sized
         // against lets `apply_layout` re-dirty and converge.
         self.palette_layout_host_w = self.rect.width();
+        self.palette_layout_host_h = self.rect.height();
 
         self.content_node = Some(content_node);
         self.palette_node = Some(palette_node);
@@ -11166,9 +11317,11 @@ impl Widget for ShellOverlayHost {
             }
             return;
         }
-        // One more pass if the card sized against a stale host width;
+        // One more pass if the card sized against stale host dimensions;
         // settles in a single extra frame.
-        if (self.palette_layout_host_w - self.rect.width()).abs() > f64::EPSILON {
+        if (self.palette_layout_host_w - self.rect.width()).abs() > f64::EPSILON
+            || (self.palette_layout_host_h - self.rect.height()).abs() > f64::EPSILON
+        {
             self.palette_layout_dirty = true;
         }
         // Wheel-disc slot width plus a gap, reserved so the strip leaves
@@ -11830,6 +11983,7 @@ impl Widget for ShellOverlayHost {
                                 AccessNode::new(Role::TextInput)
                                     .with_name("Workspace name")
                                     .with_optional_value(value)
+                                    .with_text_selection(state.editing_workspace_name_selection.anchor, state.editing_workspace_name_selection.cursor)
                                     .with_bounds(self.workspace_settings_overlay.name_rect())
                                     .with_state(AccessState {
                                         focusable: true,
@@ -13289,7 +13443,20 @@ impl ShellOverlayHost {
     /// input.
     fn shortcut_help_button_is_suppressed(&self) -> bool {
         let flags = self.overlay_flags();
+        let has_app_content = self.chrome.as_ref().is_some_and(|chrome| {
+            chrome
+                .borrow()
+                .tree()
+                .active_workspace()
+                .is_some_and(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .any(|strip| !strip.window_groups.is_empty())
+                })
+        });
         self.onboarding.is_some()
+            || has_app_content
             || flags.shortcut_help
             || flags.desktop_tour
             || flags.overview
@@ -15443,12 +15610,14 @@ impl ShellOverlayHost {
             return;
         }
 
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
         let chip_text_size = (tokens.typography.scale.xs).max(10.0);
         let idle_fill = colors.lift(0.35);
         let active_fill = colors.accent[5];
         let active_text = colors.text_primary;
         let idle_text = colors.text_dim;
-        let control_h = Self::FILTER_CONTROL_HEIGHT_PX;
+        let control_h = Self::FILTER_CONTROL_HEIGHT_PX * self.palette.text_scale();
 
         self.draw_search_banner_scope_switch(
             scene,
@@ -15525,6 +15694,7 @@ impl ShellOverlayHost {
                 self.palette_layout_dirty = true;
             }
         }
+        text_renderer.set_text_scale(renderer_scale);
     }
 
     /// The right-anchored scope switch (a pill track) in the search
@@ -16607,6 +16777,125 @@ mod overview_panel_tests {
     }
 
     #[test]
+    fn rename_arrows_collapse_selection_to_its_directional_edge() {
+        for (key, expected) in [(NamedKey::ArrowLeft, 0), (NamedKey::ArrowRight, 4)] {
+            for selection in [
+                ui::text_selection::Selection {
+                    anchor: 0,
+                    cursor: 4,
+                },
+                ui::text_selection::Selection {
+                    anchor: 4,
+                    cursor: 0,
+                },
+            ] {
+                let mut name = "Home".to_string();
+                let (_, _, actual) = ShellOverlayHost::apply_workspace_rename_key(
+                    &Key::Named(key),
+                    false,
+                    false,
+                    &mut name,
+                    selection,
+                );
+                assert_eq!(actual, ui::text_selection::Selection::collapsed(expected));
+            }
+        }
+        let mut name = "Home".to_string();
+        let (_, _, shifted) = ShellOverlayHost::apply_workspace_rename_key(
+            &Key::Named(NamedKey::ArrowLeft),
+            false,
+            true,
+            &mut name,
+            ui::text_selection::Selection {
+                anchor: 0,
+                cursor: 4,
+            },
+        );
+        assert_eq!(
+            shifted,
+            ui::text_selection::Selection {
+                anchor: 0,
+                cursor: 3
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_select_all_invalidates_painted_selection() {
+        let mut name = "Home".to_string();
+        let (_, bump, selection) = ShellOverlayHost::apply_workspace_rename_ctrl_chord(
+            "a",
+            &mut name,
+            ui::text_selection::Selection::collapsed(4),
+        );
+        assert_eq!(selection.range(), 0..4);
+        assert!(bump, "selection changes need a fresh frame");
+    }
+
+    #[test]
+    fn app_content_has_no_floating_help_hit_target() {
+        let mut h = host_with(WorkspaceTree::bootstrap_default());
+        let chrome = h.chrome.clone().unwrap();
+        crate::shell::window_actions::open_hosted(
+            &mut chrome.borrow_mut(),
+            crate::shell::state::AppKind::FileExplorer,
+            "Files",
+            crate::shell::window_actions::Destination::Beside,
+        );
+        chrome.borrow_mut().overlays = Default::default();
+        assert!(h.shortcut_help_button_is_suppressed());
+        h.last_cursor = Some(h.shortcut_help_button_rect().center());
+        let mut handled = false;
+        h.handle_shell_mouse_click_event(
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            &mut handled,
+        );
+        assert!(!chrome.borrow().overlays.shortcut_help);
+    }
+
+    #[test]
+    fn dismissed_palette_command_closes_focus_and_semantics() {
+        let mut h = host();
+        h.palette.open();
+        h.palette_visible = true;
+        h.dispatch_palette_command("unknown");
+        assert!(!h.palette_visible);
+        assert!(!h.palette.is_open());
+        assert!(h.palette.accessibility().unwrap().state.hidden);
+    }
+
+    #[test]
+    fn workspace_name_accessibility_exposes_current_selection() {
+        let h = host_with(WorkspaceTree::bootstrap_default());
+        {
+            let mut state = h.chrome.as_ref().unwrap().borrow_mut();
+            state.overlays.ws_settings = true;
+            state.editing_workspace_name = Some("Home".into());
+            state.editing_workspace_name_selection = ui::text_selection::Selection {
+                anchor: 0,
+                cursor: 4,
+            };
+        }
+        let node = h.accessibility().unwrap();
+        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some("Workspace name") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        let selection = find(&node)
+            .unwrap()
+            .text_selection
+            .as_ref()
+            .expect("selection must be exposed");
+        assert_eq!((selection.anchor, selection.focus), (0, 4));
+    }
+
+    #[test]
     fn desktop_palette_owns_keys_above_an_active_rename_field() {
         let mut h = host_with(WorkspaceTree::bootstrap_default());
         {
@@ -17530,6 +17819,104 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn palette_false_confirmation_cannot_select_an_identity_or_grant_admin() {
+        use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
+
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = tree.active_workspace_mut().expect("active workspace");
+            workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        }
+        let mut document = AutoCommit::new();
+        let action = {
+            let state = chrome.borrow();
+            crate::shell::search::providers::ActionsProvider::new()
+                .query(SearchContext {
+                    needle: "use identity",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &document,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|result| result.id == "identity.select")
+                .expect("identity action")
+        };
+        let before = chrome.borrow().tree().workspaces[0].capabilities.clone();
+        host.pending_palette_action = Some(action);
+        host.palette
+            .set_query(r#"{"id":"does-not-exist","confirm":false}"#);
+        host.activate_selected_result(&mut document, &automerge::ROOT);
+
+        assert!(
+            host.pending_palette_action.is_some(),
+            "refused palette action remains editable"
+        );
+        assert_eq!(
+            chrome.borrow().tree().workspaces[0].capabilities,
+            before,
+            "false confirmation cannot create an Admin grant"
+        );
+    }
+
+    #[test]
+    fn palette_peer_prompt_stays_pending_until_overlay_applies_it() {
+        use crate::shell::search::action_api::ActionArgs;
+        use crate::shell::search::{
+            InvocationDisposition, ResourceKind, SearchContext, SearchProvider,
+        };
+
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = tree.active_workspace_mut().expect("active workspace");
+            workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        }
+        chrome.borrow_mut().peer_sync_enabled = true;
+        let mut document = AutoCommit::new();
+        let action = {
+            let state = chrome.borrow();
+            crate::shell::search::providers::ActionsProvider::new()
+                .query(SearchContext {
+                    needle: "invite collaborator",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &document,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|result| result.id == "peer.invite")
+                .expect("peer prompt action")
+        };
+        let args = ActionArgs::bind(
+            &action.params,
+            std::iter::empty::<(String, crate::shell::search::action_api::ArgValue)>(),
+        )
+        .expect("prompt has no arguments");
+        let ticket = match action.on_begin_invoke.expect("prompt owns a lifecycle")(
+            &mut document,
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .expect("prompt admission")
+        {
+            InvocationDisposition::Pending(ticket) => ticket,
+            InvocationDisposition::Accepted(_) => panic!("queued prompt completed too early"),
+        };
+        assert!(ticket().expect("first poll").is_none());
+        assert!(!host.peer_sync_overlay.visible());
+
+        host.pump_peer_sync();
+
+        assert!(host.peer_sync_overlay.visible());
+        assert!(ticket().expect("completed poll").is_some());
+    }
+
+    #[test]
     fn configurable_shortcut_matcher_handles_named_keys_and_exact_modifiers() {
         let chord = settings_store::hardware::KeyChord::parse("Super+Shift+Left").unwrap();
         let matching = winit::event::Modifiers::from(
@@ -17549,7 +17936,11 @@ mod palette_dispatch_tests {
 
     #[test]
     fn persistent_shortcut_hint_is_suppressed_by_modal_and_popover_surfaces() {
-        let (mut host, chrome) = host_with_chrome();
+        // The floating hint belongs to the empty desktop; app workspaces
+        // now suppress it to keep content and pointer targets unobscured.
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         assert!(
             !host.shortcut_help_button_is_suppressed(),
             "the desktop affordance is visible with no transient shell surface"
@@ -19338,6 +19729,7 @@ mod overlay_event_absorb_tests {
             }
             vec![crate::shell::search::SearchResult {
                 kind: crate::shell::search::ResourceKind::Action,
+                operation_kind: qos_actions::OperationKind::View,
                 provider_id: "directory-fixture".into(),
                 id: "directory\u{1f}7\u{1f}r1\u{1f}code.project\u{1f}open".into(),
                 title: "Open project workspace".into(),
@@ -19816,6 +20208,78 @@ mod overlay_event_absorb_tests {
     /// it — at 1600px five kinds exactly filled the row, hiding a sixth.
     /// Asserts on the rects production `draw` cached, since that's what a
     /// click is hit-tested against.
+    #[test]
+    fn palette_height_only_resize_requests_a_corrected_layout() {
+        let mut h = build_harness_sized(800.0, 900.0);
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        let theme = Theme::dark().with_text_scale(2.0);
+        settle_with_theme(&mut h, 800.0, 900.0, &theme);
+        h.host.palette_layout_dirty = false;
+        let _ = lay_out_host_with_theme(&mut h.host, 800.0, 500.0, &theme);
+        assert!(
+            h.host.palette_layout_dirty,
+            "height-only resize must recompute palette cap from new viewport"
+        );
+        let _ = lay_out_host_with_theme(&mut h.host, 800.0, 500.0, &theme);
+        assert!(h.host.palette.get_rect().y1 <= 484.0);
+    }
+
+    #[test]
+    fn compact_large_text_launcher_chips_fit_full_labels_and_viewport() {
+        let mut h = build_harness_sized(800.0, 700.0);
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        for _ in 0..4 {
+            let (tree, root) = lay_out_host_with_theme(&mut h.host, 800.0, 700.0, &theme);
+            h.taffy = tree;
+            h.root_node = root;
+            h.host.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+        }
+        assert!(h.host.palette.get_rect().y1 <= 684.0);
+        let size = theme.tokens.typography.scale.xs / tr.text_scale();
+        for (kind, rect) in h
+            .host
+            .search_registry
+            .registered_kinds()
+            .iter()
+            .zip(&h.host.search_chip_rects)
+        {
+            let (w, height) = tr.measure(kind.label(), size, None);
+            assert!(
+                f64::from(w) + CHIP_PAD_PX / 2.0 <= rect.width(),
+                "{} needs readable width: {:?}",
+                kind.label(),
+                rect
+            );
+            assert!(
+                f64::from(height) <= rect.height(),
+                "{} needs text height: {:?}",
+                kind.label(),
+                rect
+            );
+        }
+        for (i, scope) in h.host.search_scope_list().iter().enumerate() {
+            let label = h.host.search_scope_pill_label(*scope);
+            let (w, height) = tr.measure(&label, size, None);
+            let rect = h.host.search_scope_pill_rect(i);
+            assert!(
+                f64::from(w) + 10.0 <= rect.width(),
+                "{label} scope truncated"
+            );
+            assert!(f64::from(height) <= rect.height());
+        }
+    }
+
     #[test]
     fn every_kind_is_reachable_at_every_width() {
         // 800 is the narrowest viewport `shots --sweep` renders, where the
@@ -22887,6 +23351,315 @@ mod resync_strips_tests {
             width: StateWidth::Normal,
             maximized: false,
         }
+    }
+
+    #[test]
+    fn history_nested_open_retries_exact_new_record_after_the_parent_loan() {
+        let (tree, _, _) = one_group_seed();
+        let store = ui::record::RecordStore::in_memory();
+        let parent_record = crate::shell::tab_documents::scratch_tab_record(1);
+        store.create_record(&parent_record).unwrap();
+        let (mut host, chrome) = crate::shell::build_nirios_overlay_host_with_records(
+            tree.shared(),
+            false,
+            store.clone(),
+        );
+        let new_id = store
+            .with(&parent_record.id, |_| {
+                crate::shell::window_actions::open_hosted(
+                    &mut chrome.borrow_mut(),
+                    AppKind::Other("Notes".into()),
+                    "Nested note",
+                    crate::shell::window_actions::Destination::Here,
+                )
+            })
+            .unwrap();
+        assert!(store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_none());
+        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(
+            store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_some(),
+            "normal update must finish this exact action-owned creation after the loan ends"
+        );
+        assert!(store.read(&parent_record.id, |_| ()).is_some());
+    }
+
+    #[test]
+    fn history_nested_busy_burst_retains_overflow_and_cancels_closed_or_changed_tabs() {
+        let (tree, _, _) = one_group_seed();
+        let store = ui::record::RecordStore::in_memory();
+        let parent = crate::shell::tab_documents::scratch_tab_record(1);
+        store.create_record(&parent).unwrap();
+        let (mut host, chrome) = crate::shell::build_nirios_overlay_host_with_records(
+            tree.shared(),
+            false,
+            store.clone(),
+        );
+        let ids = store
+            .with(&parent.id, |_| {
+                let mut state = chrome.borrow_mut();
+                let ids: Vec<_> = (0..132)
+                    .map(|_| {
+                        crate::shell::window_actions::open_hosted(
+                            &mut state,
+                            AppKind::Other("Test".into()),
+                            "Nested",
+                            crate::shell::window_actions::Destination::Here,
+                        )
+                    })
+                    .collect();
+                {
+                    let mut tree = state.tree_mut();
+                    for group in tree
+                        .workspaces
+                        .iter_mut()
+                        .flat_map(|workspace| &mut workspace.strips)
+                        .flat_map(|strip| &mut strip.window_groups)
+                    {
+                        group
+                            .tabs
+                            .retain(|tab| tab.id != ids[0] && tab.id != ids[100]);
+                        for tab in &mut group.tabs {
+                            if tab.id == ids[1] || tab.id == ids[101] {
+                                tab.tile = TileContent::AppPlaceholder {
+                                    kind: AppKind::Other("Changed".into()),
+                                    label: "Changed".into(),
+                                };
+                            }
+                        }
+                    }
+                }
+                // A full busy drain must retain authorization and rotate fairly.
+                state.retry_new_tab_records();
+                ids
+            })
+            .unwrap();
+        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        let ready_after_first = ids
+            .iter()
+            .filter(|id| store.is_ready(&ui::RecordId::for_tab(**id)))
+            .count();
+        assert_eq!(
+            ready_after_first, 64,
+            "one ordinary update has a bounded creation budget"
+        );
+        for _ in 0..3 {
+            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        }
+        for (index, id) in ids.iter().enumerate() {
+            assert_eq!(
+                store.is_ready(&ui::RecordId::for_tab(*id)),
+                ![0, 1, 100, 101].contains(&index),
+                "valid overflow ticket {index} must eventually create; canceled tickets must stay absent"
+            );
+        }
+    }
+
+    #[test]
+    fn history_nested_creation_collision_stays_unavailable_without_touching_saved_content() {
+        let (tree, strip, _) = one_group_seed();
+        let store = ui::record::RecordStore::in_memory();
+        let parent = crate::shell::tab_documents::scratch_tab_record(1);
+        store.create_record(&parent).unwrap();
+        let (mut host, chrome) = crate::shell::build_nirios_overlay_host_with_records(
+            tree.shared(),
+            false,
+            store.clone(),
+        );
+        let new_id = store
+            .with(&parent.id, |_| {
+                crate::shell::window_actions::open_hosted(
+                    &mut chrome.borrow_mut(),
+                    AppKind::Other("Notes".into()),
+                    "New note",
+                    crate::shell::window_actions::Destination::Here,
+                )
+            })
+            .unwrap();
+        let collision = crate::shell::tab_documents::scratch_tab_record(new_id);
+        store.create_record(&collision).unwrap();
+        let before = store
+            .with(&collision.id, |doc| {
+                use automerge::transaction::Transactable;
+                doc.put(automerge::ROOT, "body", "existing private content")
+                    .unwrap();
+                doc.get_heads()
+            })
+            .unwrap();
+        for pass in 0..2 {
+            if pass == 1 {
+                let mut state = chrome.borrow_mut();
+                state.tree_mut().workspaces[0]
+                    .strips
+                    .push(Strip::new(StripId::new(), "Rebuild"));
+                state.bump();
+            }
+            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            let group = host.group_at_for_tests(strip, 0).unwrap();
+            group.bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
+            let tile = group.host_for_tab_mut(new_id).unwrap();
+            assert!(
+                tile.history_owner().is_none(),
+                "failed creation cannot attach the colliding saved record"
+            );
+            assert!(
+                matches!(tile.content(), ui::widget::TileContent::Notice { .. }),
+                "failed creation must not display an app over collided content"
+            );
+            assert_eq!(
+                store.with(&collision.id, AutoCommit::get_heads).unwrap(),
+                before
+            );
+        }
+        let (mut reopened, _) = crate::shell::build_nirios_overlay_host_with_records(
+            chrome.borrow().tree_handle(),
+            false,
+            store.clone(),
+        );
+        reopened.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(
+            reopened
+                .group_at_for_tests(strip, 0)
+                .unwrap()
+                .host_for_tab_mut(new_id)
+                .unwrap()
+                .history_owner()
+                .is_some(),
+            "a separately reopened existing resource is not globally blacklisted"
+        );
+    }
+
+    #[test]
+    fn history_nested_creation_pins_final_setup_and_cancels_changed_tickets() {
+        for cancellation in ["none", "closed", "reference", "owner", "room", "app"] {
+            let (tree, _, _) = one_group_seed();
+            let store = ui::record::RecordStore::in_memory();
+            let parent = crate::shell::tab_documents::scratch_tab_record(1);
+            store.create_record(&parent).unwrap();
+            let (mut host, chrome) = crate::shell::build_nirios_overlay_host_with_records(
+                tree.shared(),
+                false,
+                store.clone(),
+            );
+            let new_id = store
+                .with(&parent.id, |_| {
+                    let id = crate::shell::window_actions::open_hosted_after_setup(
+                        &mut chrome.borrow_mut(),
+                        AppKind::Other("Notes".into()),
+                        "Nested",
+                        crate::shell::window_actions::Destination::Here,
+                        |state, tab| {
+                            state.tree_mut().native_document_tabs.insert(
+                                tab,
+                                crate::shell::state::NativeDocumentReference {
+                                    provider_id: "dev.qos.notes".into(),
+                                    path: "/untouched/original.txt".into(),
+                                },
+                            );
+                        },
+                    );
+                    // Even a premature bounded retry cannot acquire the loaned store.
+                    chrome.borrow_mut().retry_new_tab_records();
+                    id
+                })
+                .unwrap();
+            let replacement = ui::record::RecordStore::in_memory();
+            {
+                let mut state = chrome.borrow_mut();
+                if cancellation == "owner" {
+                    state.set_records(replacement.clone());
+                }
+                let mut tree = state.tree_mut();
+                if cancellation == "closed" {
+                    for workspace in &mut tree.workspaces {
+                        for strip in &mut workspace.strips {
+                            for group in &mut strip.window_groups {
+                                group.tabs.retain(|tab| tab.id != new_id);
+                            }
+                        }
+                    }
+                }
+                if cancellation == "reference" {
+                    tree.native_document_tabs.get_mut(&new_id).unwrap().path =
+                        "/untouched/different.txt".into();
+                }
+                if cancellation == "room" {
+                    tree.workspaces[0].room = crate::shell::state::RoomId::new();
+                }
+                if cancellation == "app" {
+                    for tab in tree
+                        .workspaces
+                        .iter_mut()
+                        .flat_map(|workspace| &mut workspace.strips)
+                        .flat_map(|strip| &mut strip.window_groups)
+                        .flat_map(|group| &mut group.tabs)
+                    {
+                        if tab.id == new_id {
+                            tab.tile = TileContent::AppPlaceholder {
+                                kind: AppKind::Other("Editor".into()),
+                                label: "Different app".into(),
+                            };
+                        }
+                    }
+                }
+            }
+            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            assert_eq!(
+                store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_some(),
+                cancellation == "none",
+                "ticket case {cancellation}"
+            );
+            assert!(
+                replacement
+                    .read(&ui::RecordId::for_tab(new_id), |_| ())
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn history_nested_owner_replacement_retires_an_already_mounted_pending_binding() {
+        let (tree, strip, _) = one_group_seed();
+        let old_store = ui::record::RecordStore::in_memory();
+        let parent = crate::shell::tab_documents::scratch_tab_record(1);
+        old_store.create_record(&parent).unwrap();
+        let (mut host, chrome) = crate::shell::build_nirios_overlay_host_with_records(
+            tree.shared(),
+            false,
+            old_store.clone(),
+        );
+        let new_id = old_store
+            .with(&parent.id, |_| {
+                let id = crate::shell::window_actions::open_hosted(
+                    &mut chrome.borrow_mut(),
+                    AppKind::Other("Notes".into()),
+                    "Nested",
+                    crate::shell::window_actions::Destination::Here,
+                );
+                host.take_structure_dirty();
+                id
+            })
+            .unwrap();
+        let replacement = ui::record::RecordStore::in_memory();
+        chrome.borrow_mut().set_records(replacement.clone());
+        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        old_store
+            .create_record(&crate::shell::tab_documents::scratch_tab_record(new_id))
+            .unwrap();
+        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(
+            host.group_at_for_tests(strip, 0)
+                .unwrap()
+                .host_for_tab_mut(new_id)
+                .unwrap()
+                .history_owner()
+                .is_none(),
+            "late old-store hydration cannot revive a replaced pending owner"
+        );
+        assert!(
+            replacement
+                .read(&ui::RecordId::for_tab(new_id), |_| ())
+                .is_none()
+        );
     }
 
     #[test]

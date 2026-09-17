@@ -1319,6 +1319,9 @@ async fn serve(
     let share_authority = open_share_authority(cache_dir.as_deref())?;
     let mut record_services = open_record_services(cache_dir.as_deref(), share_authority.clone())?;
     if let Some(records) = record_services.as_mut() {
+        if let Some((journal, _)) = &replacement_transactions {
+            records.repository.restore_admission_fences(&*journal.lock().map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?)?;
+        }
         records.availability.clone_from(&availability);
     }
     let history = open_history(cache_dir.as_deref())?;
@@ -1702,6 +1705,7 @@ async fn serve(
         .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     let mount_outcome = run_mount(
+        workspace_id,
         mount_point,
         namespace.clone(),
         hydrator,
@@ -1809,6 +1813,9 @@ async fn mount(
     let share_authority = open_share_authority(cache_dir.as_deref())?;
     let mut record_services = open_record_services(cache_dir.as_deref(), share_authority.clone())?;
     if let Some(records) = record_services.as_mut() {
+        if let Some((journal, _)) = &replacement_transactions {
+            records.repository.restore_admission_fences(&*journal.lock().map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?)?;
+        }
         records.availability.clone_from(&availability);
     }
     let history = open_history(cache_dir.as_deref())?;
@@ -1923,6 +1930,7 @@ async fn mount(
         .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
+        workspace_id,
         mount_point,
         namespace.clone(),
         hydrator,
@@ -2201,6 +2209,7 @@ async fn mount_share(
     let mut recipient_acl = fs::WorkspaceAcl::new();
     recipient_acl.grant_read(recipient_identity, "/");
     run_mount(
+        credential.invite().workspace_id,
         mount_point,
         Arc::clone(&namespace),
         hydrator,
@@ -2824,6 +2833,7 @@ async fn open_namespace_mount(
 /// Mount the FUSE filesystem and run until interrupted (or the mount exits).
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // CLI assembly mirrors independent mount options.
 async fn run_mount(
+    checked_history_workspace: uuid::Uuid,
     mount_point: PathBuf,
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
@@ -2856,7 +2866,7 @@ async fn run_mount(
     let storage_availability = availability.clone();
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
-    let fs = QuickFS::new(namespace, hydrator, heuristics);
+    let fs = QuickFS::new(namespace, hydrator, heuristics).with_checked_history_workspace(checked_history_workspace);
     let fs = if allow_legacy_record_migration {
         fs
     } else {

@@ -98,7 +98,6 @@ pub fn draw(
 
     let white = Color::from_rgb8(0xff, 0xff, 0xff);
     let cy = rect.y0 + rect.height() / 2.0;
-    let bh = 34.0;
     let mut x = rect.x0 + 14.0;
     let mut rects = Vec::with_capacity(items.len());
     for item in items {
@@ -113,6 +112,13 @@ pub fn draw(
             );
             x += 14.0;
         }
+        let weight = if item.cue == LabelCue::Bold {
+            TextWeight::Bold
+        } else {
+            TextWeight::Regular
+        };
+        let (lw, lh) = tr.measure_weighted(&item.label, 15.0, None, weight);
+        let bh = 34.0_f64.max(f64::from(lh) + 12.0);
         let r = Rect::new(x, cy - bh / 2.0, x + item.width, cy + bh / 2.0);
         if item.active {
             scene.fill(
@@ -128,48 +134,37 @@ pub fn draw(
         } else {
             theme.text_primary
         };
-        let (lw, _) = tr.measure(&item.label, 15.0, None);
         let lx = x + (item.width - f64::from(lw)) / 2.0;
-        let ly = cy - 9.0;
-        if item.cue == LabelCue::Bold {
-            tr.draw_text_weighted(
-                scene,
-                &item.label,
-                15.0,
-                color,
-                translated(transform, lx, ly),
-                None,
-                TextWeight::Bold,
-            );
-        } else {
-            tr.draw_text(
-                scene,
-                &item.label,
-                15.0,
-                color,
-                translated(transform, lx, ly),
-                None,
-            );
-        }
+        let ly = cy - f64::from(lh) / 2.0;
+        tr.draw_text_weighted(
+            scene,
+            &item.label,
+            15.0,
+            color,
+            translated(transform, lx, ly),
+            None,
+            weight,
+        );
+        let cue_thickness = 1.5 * f64::from(tr.text_scale());
         match item.cue {
             LabelCue::Underline => {
-                let uy = ly + 18.0;
+                let uy = ly + f64::from(lh);
                 scene.fill(
                     Fill::NonZero,
                     transform,
                     color,
                     None,
-                    &Rect::new(lx, uy, lx + f64::from(lw), uy + 1.5),
+                    &Rect::new(lx, uy, lx + f64::from(lw), uy + cue_thickness),
                 );
             }
             LabelCue::Strike => {
-                let sy = ly + 9.0;
+                let sy = ly + f64::from(lh) / 2.0;
                 scene.fill(
                     Fill::NonZero,
                     transform,
                     color,
                     None,
-                    &Rect::new(lx, sy, lx + f64::from(lw), sy + 1.5),
+                    &Rect::new(lx, sy, lx + f64::from(lw), sy + cue_thickness),
                 );
             }
             _ => {}
@@ -188,6 +183,40 @@ pub fn hit(rects: &[Rect], point: Point) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaled_toolbar_labels_fit_inside_their_hit_rects_and_row() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        let items = [
+            ToolbarItem::new("More", 100.0),
+            ToolbarItem::new("Bold", 100.0).cue(LabelCue::Bold),
+            ToolbarItem::new("U", 60.0).cue(LabelCue::Underline),
+            ToolbarItem::new("S", 60.0).cue(LabelCue::Strike),
+        ];
+        let row = Rect::new(20.0, 40.0, 440.0, 104.0);
+        let rects = draw(&mut scene, Affine::IDENTITY, &mut text, &theme, row, &items);
+        for (item, button) in items.iter().zip(&rects) {
+            let weight = if item.cue == LabelCue::Bold {
+                TextWeight::Bold
+            } else {
+                TextWeight::Regular
+            };
+            let (_, height) = text.measure_weighted(&item.label, 15.0, None, weight);
+            assert!(
+                button.height() >= f64::from(height),
+                "{} label ({height}px) overflows its {}px hit target",
+                item.label,
+                button.height()
+            );
+            assert!(
+                button.y0 >= row.y0 && button.y1 <= row.y1,
+                "scaled button must stay inside its allocated toolbar row"
+            );
+        }
+    }
 
     #[test]
     fn draw_returns_a_rect_per_item_and_hit_tests() {

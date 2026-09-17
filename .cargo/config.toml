@@ -4,7 +4,7 @@
 #
 # Jobs are memory-bound, not core-bound: rustc peaks ~7 GB here. The shim derives
 # CARGO_BUILD_JOBS from RAM; this is the floor when it is bypassed (CI).
-jobs = 4
+jobs = 6
 # CPU floor is `x86-64-v3` — Haswell/Excavator (2013+), the intersection
 # of "vast majority of installed hardware" and "enough SIMD to matter"
 # (AVX2, BMI2, FMA). NOT `native` — that pins to the current build

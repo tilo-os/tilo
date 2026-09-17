@@ -187,6 +187,16 @@ impl Column {
 }
 
 impl Widget for Column {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = child.has_action_control_bindings();
+            }
+        });
+        found
+    }
+
     fn start_resource_operation_with_document(
         &mut self,
         invocation: qos_actions::InvocationId,
@@ -258,9 +268,7 @@ impl Widget for Column {
                 // Column taller than its content. Pack implicit Grid rows at
                 // the start so surplus block space does not inflate the
                 // requested gap between them.
-                align_content: self
-                    .intrinsic_height
-                    .then_some(taffy::AlignContent::Start),
+                align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0_f32),

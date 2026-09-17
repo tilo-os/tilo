@@ -385,7 +385,44 @@ struct RevisionStamp {
     sequence: u64,
 }
 
+impl BindingStamp {
+    fn for_binding(binding: &FileBindingV1, sequence: u64) -> Self {
+        Self { observed_at_ms: binding.observed_at_ms, sequence,
+            person: *binding.actor.person.as_bytes(), device: *binding.actor.device.as_bytes() }
+    }
+}
+
+impl RevisionStamp {
+    fn for_version(version: &FileVersionV1, actor: FileActor, sequence: u64) -> Self {
+        Self { timestamp_ms: version.timestamp_ms,
+            person: *actor.person.as_bytes(), device: *actor.device.as_bytes(),
+            version: *version.id.0.as_bytes(), sequence }
+    }
+}
+
 impl RecordReplica {
+    /// Apply a repository-verified complete participant using exactly the same
+    /// signed field ordering as ordinary operations. This mutates a projection
+    /// clone only; incomplete transactions never enter the live replica fields.
+    pub(crate) fn project_completed_participant(
+        &mut self,
+        participant: &collab_types::FileMutationParticipantV1,
+        commit_sequence: u64,
+    ) {
+        let binding = &participant.proposed_binding;
+        let stamp = BindingStamp::for_binding(binding, commit_sequence);
+        if participant.role != collab_types::FileMutationParticipantRoleV1::RestoreContent
+            && self.binding.as_ref().is_none_or(|(current, _)| stamp > *current) {
+            self.binding = Some((stamp, binding.clone()));
+        }
+        if let Some(revision) = participant.proposed_content_revision {
+            let stamp = RevisionStamp::for_version(&participant.proposed_version, participant.proposed_version.actor, commit_sequence);
+            if self.content_revision.as_ref().is_none_or(|(current, _)| stamp > *current) {
+                self.content_revision = Some((stamp, revision));
+            }
+        }
+    }
+
     /// Start an empty replica scoped to `record_id`.
     #[must_use]
     pub fn new(record_id: FileRecordId) -> Self {
@@ -475,12 +512,7 @@ impl RecordReplica {
 
         match &envelope.operation {
             RecordOperationV1::SetBinding(binding) => {
-                let stamp = BindingStamp {
-                    observed_at_ms: binding.observed_at_ms,
-                    sequence: envelope.sequence,
-                    person: *envelope.actor.person.as_bytes(),
-                    device: *envelope.actor.device.as_bytes(),
-                };
+                let stamp = BindingStamp::for_binding(binding, envelope.sequence);
                 if self
                     .binding
                     .as_ref()
@@ -564,13 +596,7 @@ impl RecordReplica {
                 {
                     return Err(RecordReplicationError::ContentRevisionMismatch);
                 }
-                let stamp = RevisionStamp {
-                    timestamp_ms: version.timestamp_ms,
-                    person: *envelope.actor.person.as_bytes(),
-                    device: *envelope.actor.device.as_bytes(),
-                    version: *revision.version_id.0.as_bytes(),
-                    sequence: envelope.sequence,
-                };
+                let stamp = RevisionStamp::for_version(version, envelope.actor, envelope.sequence);
                 if self
                     .content_revision
                     .as_ref()

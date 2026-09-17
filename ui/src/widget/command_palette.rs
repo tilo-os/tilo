@@ -439,6 +439,7 @@ pub struct CommandPalette {
     visible: Vec<usize>,
     cursor: usize,
     rect: Rect,
+    text_scale: f64,
     is_focused: bool,
     search_filter: SearchFilter,
     mode: PaletteMode,
@@ -506,6 +507,7 @@ impl CommandPalette {
             visible: Vec::new(),
             cursor: 0,
             rect: Rect::ZERO,
+            text_scale: 1.0,
             is_focused: false,
             search_filter: SearchFilter::default(),
             mode: PaletteMode::Search,
@@ -662,24 +664,29 @@ impl CommandPalette {
         self.rect = rect;
     }
 
+    /// Text scale used by layout and host-painted filter controls.
+    pub fn text_scale(&self) -> f64 {
+        self.text_scale
+    }
+
     /// Matches the size [`build_layout`] requests from taffy.
     pub fn desired_size(&self) -> (f64, f64) {
         // Sized off the row plan, not a row count, since headers and entries
         // have different heights; clamped so a big hit count doesn't grow
         // the card taller than the screen.
         let list = if self.rows.is_empty() {
-            EMPTY_STATE_HEIGHT
+            EMPTY_STATE_HEIGHT * self.text_scale
         } else {
             self.rows_height()
                 .clamp(self.row_height(), self.max_list_height())
         };
         let height = PADDING * 2.0
-            + INPUT_HEIGHT
+            + (INPUT_HEIGHT * self.text_scale)
             + PADDING
             + self.filter_block()
             + list
             + PADDING
-            + FOOTER_HEIGHT;
+            + (FOOTER_HEIGHT * self.text_scale);
         (self.card_width(), height)
     }
 
@@ -709,7 +716,7 @@ impl CommandPalette {
 
     fn visual_row_height(&self, row: &VisualRow) -> f64 {
         match row {
-            VisualRow::Header { .. } => HEADER_HEIGHT,
+            VisualRow::Header { .. } => HEADER_HEIGHT * self.text_scale,
             VisualRow::Entry(_) => self.row_height(),
         }
     }
@@ -729,7 +736,8 @@ impl CommandPalette {
             .filter(|r| matches!(r, VisualRow::Header { .. }))
             .count()
             .min(MAX_HEADERS_IN_VIEW);
-        Self::max_visible_rows() as f64 * self.row_height() + headers as f64 * HEADER_HEIGHT
+        Self::max_visible_rows() as f64 * self.row_height()
+            + headers as f64 * (HEADER_HEIGHT * self.text_scale)
     }
 
     fn filter_block(&self) -> f64 {
@@ -742,7 +750,7 @@ impl CommandPalette {
             return self.filter_strip_height() + PADDING;
         }
         match self.mode {
-            PaletteMode::Search => FILTER_STRIP_HEIGHT + PADDING,
+            PaletteMode::Search => (FILTER_STRIP_HEIGHT * self.text_scale) + PADDING,
             PaletteMode::Commands => 0.0,
         }
     }
@@ -755,15 +763,15 @@ impl CommandPalette {
             .iter()
             .any(|&i| self.entries.get(i).is_some_and(|e| e.description.is_some()));
         match self.mode {
-            PaletteMode::Search if !any_subtitle => ROW_HEIGHT,
-            _ => TWO_LINE_ROW_HEIGHT,
+            PaletteMode::Search if !any_subtitle => ROW_HEIGHT * self.text_scale,
+            _ => TWO_LINE_ROW_HEIGHT * self.text_scale,
         }
     }
 
     fn card_width(&self) -> f64 {
         match self.mode {
-            PaletteMode::Search => SEARCH_CARD_WIDTH,
-            PaletteMode::Commands => CMD_CARD_WIDTH,
+            PaletteMode::Search => SEARCH_CARD_WIDTH * self.text_scale,
+            PaletteMode::Commands => CMD_CARD_WIDTH * self.text_scale,
         }
     }
 
@@ -1035,6 +1043,7 @@ impl CommandPalette {
             {
                 // Pull the header back in rather than stranding its rows.
                 if start > 0
+                    && used + HEADER_HEIGHT * self.text_scale <= budget
                     && self
                         .rows
                         .get(start.saturating_sub(1))
@@ -1074,7 +1083,7 @@ impl CommandPalette {
 
     /// Shared by `row_rect` and `draw`.
     fn list_top_y(&self) -> f64 {
-        self.rect.y0 + PADDING + INPUT_HEIGHT + PADDING + self.filter_block()
+        self.rect.y0 + PADDING + (INPUT_HEIGHT * self.text_scale) + PADDING + self.filter_block()
     }
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
@@ -1168,7 +1177,7 @@ impl CommandPalette {
             self.rect.x0 + PADDING,
             self.rect.y0 + PADDING,
             self.rect.x1 - PADDING,
-            self.rect.y0 + PADDING + INPUT_HEIGHT,
+            self.rect.y0 + PADDING + (INPUT_HEIGHT * self.text_scale),
         )
     }
 
@@ -1181,7 +1190,7 @@ impl CommandPalette {
     }
 
     pub fn filter_strip_row_height(&self) -> f64 {
-        FILTER_STRIP_HEIGHT
+        FILTER_STRIP_HEIGHT * self.text_scale
     }
 
     pub fn host_filter_strip_rows(&self) -> usize {
@@ -1198,13 +1207,13 @@ impl CommandPalette {
                   handful of rows, far below f64's exact-integer range"
     )]
     fn filter_strip_height(&self) -> f64 {
-        FILTER_STRIP_HEIGHT * self.host_filter_strip_rows() as f64
+        (FILTER_STRIP_HEIGHT * self.text_scale) * self.host_filter_strip_rows() as f64
     }
 
     pub fn footer_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0 + PADDING,
-            self.rect.y1 - PADDING - FOOTER_HEIGHT,
+            self.rect.y1 - PADDING - (FOOTER_HEIGHT * self.text_scale),
             self.rect.x1 - PADDING,
             self.rect.y1 - PADDING,
         )
@@ -1531,7 +1540,8 @@ impl CommandPalette {
         for row in window {
             match row {
                 VisualRow::Header { label, total } => {
-                    let hy = y + (HEADER_HEIGHT - f64::from(header_size)) / 2.0 + 2.0;
+                    let (_, height) = text_renderer.measure(label, header_size, None);
+                    let hy = y + (HEADER_HEIGHT * self.text_scale - f64::from(height)) / 2.0;
                     let upper = label.to_uppercase();
                     text_renderer.draw_text(
                         scene,
@@ -1551,7 +1561,7 @@ impl CommandPalette {
                         transform.pre_translate(Vec2::new(x1 - 12.0 - f64::from(cw), hy)),
                         None,
                     );
-                    y += HEADER_HEIGHT;
+                    y += HEADER_HEIGHT * self.text_scale;
                 }
                 VisualRow::Entry(entry_i) => {
                     let row_rect = Rect::new(x0, y, x1, y + rh);
@@ -1778,7 +1788,10 @@ impl CommandPalette {
         if let Some(desc) = &entry.description {
             let label = text_renderer.elide_to_width(&entry.label, label_size, px(avail));
             let sub = elide_middle(text_renderer, desc, desc_size, avail);
-            let block = f64::from(label_size) + 3.0 + f64::from(desc_size);
+            let (_, label_height) = text_renderer.measure(&label, label_size, None);
+            let (_, desc_height) = text_renderer.measure(&sub, desc_size, None);
+            let gap = 3.0 * f64::from(theme.text_scale);
+            let block = f64::from(label_height + desc_height) + gap;
             let ly = row.y0 + (row.height() - block) / 2.0;
             text_renderer.draw_text(
                 scene,
@@ -1793,12 +1806,13 @@ impl CommandPalette {
                 &sub,
                 desc_size,
                 subtitle_ink,
-                transform.pre_translate(Vec2::new(text_x, ly + f64::from(label_size) + 3.0)),
+                transform.pre_translate(Vec2::new(text_x, ly + f64::from(label_height) + gap)),
                 None,
             );
         } else {
             let label = text_renderer.elide_to_width(&entry.label, label_size, px(avail));
-            let ly = row.y0 + (row.height() - f64::from(label_size)) / 2.0;
+            let (_, height) = text_renderer.measure(&label, label_size, None);
+            let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &label,
@@ -1842,13 +1856,9 @@ impl CommandPalette {
             1.5,
         );
         let title_size = theme.tokens.typography.scale.sm;
-        let title = if self.query.is_empty() {
-            "Nothing to show".to_string()
-        } else {
-            format!("No results for \u{201c}{}\u{201d}", self.query)
-        };
+        let title = self.empty_results_title();
         let title = text_renderer.elide_to_width(&title, title_size, px(self.rect.width() - 48.0));
-        let (tw, _) = text_renderer.measure(&title, title_size, None);
+        let (tw, title_height) = text_renderer.measure(&title, title_size, None);
         text_renderer.draw_text(
             scene,
             &title,
@@ -1867,10 +1877,27 @@ impl CommandPalette {
             colors.text_dim,
             transform.pre_translate(Vec2::new(
                 cx - f64::from(hw) / 2.0,
-                cy + f64::from(title_size) + 6.0,
+                cy + f64::from(title_height) + 6.0,
             )),
             None,
         );
+    }
+
+    fn empty_results_title(&self) -> String {
+        if self.query.is_empty() {
+            "Nothing to show".to_string()
+        } else {
+            format!("No results for “{}”", self.query)
+        }
+    }
+
+    fn empty_results_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + PADDING,
+            self.list_top_y(),
+            self.rect.x1 - PADDING,
+            self.footer_rect().y0,
+        )
     }
 
     fn rebuild(&mut self) {
@@ -1972,9 +1999,10 @@ impl Widget for CommandPalette {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         // `desired_size` is the single source of truth so a hand-placed
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
@@ -2007,6 +2035,11 @@ impl Widget for CommandPalette {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // Theme typography is already scaled. Keep all legacy text paint and
+        // metric calls in that same space, restoring the child renderer after.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        self.text_scale = f64::from(theme.text_scale);
         let colors = &theme.tokens.colors;
         let shape = RoundedRect::from_rect(self.rect, self.surface_radius_px());
         scene.fill(
@@ -2074,6 +2107,7 @@ impl Widget for CommandPalette {
         }
 
         self.draw_footer(scene, transform, text_renderer, theme);
+        text_renderer.set_text_scale(renderer_scale);
     }
 
     fn handle_event(
@@ -2275,7 +2309,7 @@ impl Widget for CommandPalette {
             });
 
         let total = self.visible.len();
-        let result_children = (0..total)
+        let mut result_children: Vec<AccessNode> = (0..total)
             .filter_map(|visible_index| {
                 let rect = self.row_rect(visible_index)?;
                 let entry = self
@@ -2299,6 +2333,14 @@ impl Widget for CommandPalette {
                 Some(item)
             })
             .collect();
+        if total == 0 && self.arg_state.is_none() {
+            result_children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.empty_results_title())
+                    .with_description("Try fewer words, or widen the scope")
+                    .with_bounds(self.empty_results_rect()),
+            );
+        }
         node = node.with_children(vec![
             query_node,
             AccessNode::new(Role::List)
@@ -2323,6 +2365,9 @@ impl Widget for CommandPalette {
                 self.rect.x1 - PADDING,
                 self.footer_rect().y0,
             )),
+            [1, 0] if self.visible.is_empty() && self.arg_state.is_none() => {
+                Some(self.empty_results_rect())
+            }
             [1, ordinal] => self
                 .painted_entry_at(*ordinal)
                 .and_then(|visible_index| self.row_rect(visible_index)),
@@ -2456,6 +2501,89 @@ mod tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn large_text_palette_reserves_painted_rows_and_scales_fonts_once() {
+        let mut p = CommandPalette::new();
+        p.push(
+            CommandEntry::new("files", "Open Files")
+                .description("Opens beside")
+                .group("Applications"),
+        );
+        p.push(
+            CommandEntry::new("editor", "Open Editor")
+                .description("Opens beside")
+                .group("Applications"),
+        );
+        p.open();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tree = TaffyTree::new();
+        p.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+        let (_, height) = p.desired_size();
+        p.set_rect(Rect::new(16.0, 96.0, 784.0, 96.0 + height));
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let (_, label_h) = tr.measure("Open Files", theme.tokens.typography.scale.sm / 2.0, None);
+        let (_, desc_h) = tr.measure("Opens beside", theme.tokens.typography.scale.xs / 2.0, None);
+        assert!(p.row_height() >= f64::from(label_h + desc_h) + 6.0);
+        let mut scene = Scene::new();
+        p.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(
+            runs.iter()
+                .all(|run| run.font_size <= theme.tokens.typography.scale.base)
+        );
+        assert!(
+            runs.iter()
+                .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01)
+        );
+        assert!(p.row_rect(1).unwrap().y1 <= p.footer_rect().y0);
+        tr.set_text_scale(1.0); // palette paint's already-scaled theme space
+        let mut rows_scene = Scene::new();
+        p.draw_result_rows(&mut rows_scene, Affine::IDENTITY, &mut tr, &theme);
+        let first = p.row_rect(0).unwrap();
+        let second = p.row_rect(1).unwrap();
+        let header = Rect::new(first.x0, p.list_top_y(), first.x1, first.y0);
+        for run in &rows_scene.encoding().resources.glyph_runs {
+            let top = f64::from(run.transform.translation[1]);
+            let (_, height) = tr.measure("Ag", run.font_size, None);
+            assert!(
+                [header, first, second]
+                    .iter()
+                    .any(|band| top >= band.y0 - 0.01 && top + f64::from(height) <= band.y1 + 0.01),
+                "painted glyph line escapes row/header: y={top}, h={height}"
+            );
+        }
+        let mut footer_scene = Scene::new();
+        p.draw_footer(&mut footer_scene, Affine::IDENTITY, &mut tr, &theme);
+        for run in &footer_scene.encoding().resources.glyph_runs {
+            let top = f64::from(run.transform.translation[1]);
+            let (_, height) = tr.measure("Ag", run.font_size, None);
+            assert!(
+                top >= p.footer_rect().y0 - 0.01
+                    && top + f64::from(height) <= p.footer_rect().y1 + 0.01
+            );
+        }
+    }
+
+    #[test]
+    fn empty_search_exposes_feedback_and_recovery() {
+        let mut p = CommandPalette::new();
+        p.open();
+        p.set_rect(Rect::new(20.0, 30.0, 380.0, 310.0));
+        p.set_query("missing");
+        let node = Widget::accessibility(&p).unwrap();
+        let results = &node.children[1];
+        assert!(results.children.iter().any(|child| child.name.as_deref()
+            == Some("No results for “missing”")
+            && child.description.as_deref() == Some("Try fewer words, or widen the scope")));
     }
 
     #[test]

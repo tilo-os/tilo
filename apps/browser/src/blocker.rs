@@ -293,7 +293,11 @@ pub(crate) fn cache_dir() -> Option<PathBuf> {
 pub(crate) fn read_cached_list(path: &std::path::Path) -> Option<String> {
     use std::io::Read as _;
     let mut text = String::new();
-    std::fs::File::open(path).ok()?.take(8 * 1024 * 1024 + 1).read_to_string(&mut text).ok()?;
+    std::fs::File::open(path)
+        .ok()?
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_string(&mut text)
+        .ok()?;
     (text.len() <= 8 * 1024 * 1024).then_some(text)
 }
 
@@ -317,11 +321,17 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
 
     let fetch = || -> Result<String, Box<dyn std::error::Error>> {
         use std::io::Read as _;
-        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build()?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()?;
         let response = client.get(url).send()?.error_for_status()?;
         let mut text = String::new();
-        response.take(8 * 1024 * 1024 + 1).read_to_string(&mut text)?;
-        if text.len() > 8 * 1024 * 1024 { return Err("filter list exceeds 8 MiB".into()); }
+        response
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_string(&mut text)?;
+        if text.len() > 8 * 1024 * 1024 {
+            return Err("filter list exceeds 8 MiB".into());
+        }
         Ok(text)
     };
     match fetch() {

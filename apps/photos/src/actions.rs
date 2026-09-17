@@ -52,6 +52,7 @@ pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
 /// The resource `kind` an open photograph publishes under.
 pub const IMAGE_KIND: &str = "photos.image";
 pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
+pub const EXPORT_EDITED_CONTENT_ACTION_ID: &str = "export-edited-content";
 /// Contextual enumeration is intentionally small; callers resolve any stable
 /// id outside this window through `ResourceProvider::resource`.
 const LIBRARY_CONTEXT_LIMIT: usize = 48;
@@ -98,6 +99,14 @@ pub enum PhotosOperation {
     ShareReference {
         resource_id: String,
     },
+    /// Render the exact addressed source/edit snapshot into immutable PNG
+    /// content. The runtime returns the resulting `qos.content:<hash>` only
+    /// after the configured content provider can retrieve those bytes.
+    ExportEditedContent {
+        resource_id: String,
+        source_content: String,
+        edits: Edits,
+    },
     Save {
         path: Option<String>,
     },
@@ -118,6 +127,47 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PhotosOp
         .map_err(|e| e.to_string())
 }
 
+/// Render one exact addressed source/edit snapshot into immutable content.
+/// Both the windowed lifecycle host and headless/test hosts call this same
+/// producer, so no caller may substitute a later mutable Photos replica for
+/// the output of the admitted export operation.
+pub fn export_edited_content(
+    expected_resource_id: &str,
+    source_content: &str,
+    expected_edits: Edits,
+    doc: &AutoCommit,
+) -> Result<qos_actions::ActionOutput, String> {
+    let open = PhotosDoc::image(doc).ok_or_else(|| "no photograph is open".to_string())?;
+    if resource_id(&open) != expected_resource_id
+        || open.content.as_deref() != Some(source_content)
+        || PhotosDoc::edits(doc) != expected_edits
+    {
+        return Err("the addressed photograph or its edit snapshot is no longer current".into());
+    }
+    let source = qdoc::blobstore::get(source_content)
+        .ok_or_else(|| "the addressed photograph bytes are unavailable".to_string())?;
+    let original = crate::pixels::decode(&source)
+        .ok_or_else(|| "the addressed photograph bytes are not a supported image".to_string())?;
+    let rendered = crate::pixels::render(
+        &original,
+        expected_edits.crop,
+        expected_edits.rotate_quarters,
+    );
+    let encoded = crate::pixels::encode_png(&rendered)
+        .ok_or_else(|| "the edited photograph could not be encoded".to_string())?;
+    let hash = qdoc::blobstore::put(&encoded)
+        .ok_or_else(|| "the edited photograph could not be stored".to_string())?;
+    if qdoc::blobstore::get(&hash).as_deref() != Some(encoded.as_slice()) {
+        return Err("the stored edited photograph is unavailable".into());
+    }
+    let address = qos_actions::content_resource(&hash)
+        .ok_or_else(|| "the content provider returned an invalid address".to_string())?;
+    Ok(qos_actions::ActionOutput {
+        value: None,
+        resources: vec![address],
+    })
+}
+
 fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> {
     let spec =
         ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, op).ok()?;
@@ -130,6 +180,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::Open { .. }
         | PhotosOperation::Copy
         | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
+        PhotosOperation::ExportEditedContent { .. } => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Save { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
     })
 }
@@ -597,6 +648,26 @@ impl ResourceProvider for PhotosResources {
             },
         ) {
             resource = resource.with_action(spec);
+        }
+        if let Some(source_content) = image.content.clone()
+            && let Some(spec) = operation(
+                EXPORT_EDITED_CONTENT_ACTION_ID,
+                "Produce edited image content",
+                &PhotosOperation::ExportEditedContent {
+                    resource_id: id.clone(),
+                    source_content,
+                    edits,
+                },
+            )
+        {
+            resource = resource.with_action(
+                spec.returns(ResultSpec::Resource {
+                    resource_kind: qos_actions::CONTENT_RESOURCE_KIND.into(),
+                })
+                .with_description(
+                    "Render this photograph's current crop and rotation into immutable PNG content",
+                ),
+            );
         }
         resource = resource.with_action(file_operation("save", "Save edited photograph", false));
 

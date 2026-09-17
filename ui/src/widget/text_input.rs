@@ -223,6 +223,7 @@ pub struct TextInput {
     single_attributes: Option<SingleLineAttributes>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    shaped_layout_epoch: Option<Arc<()>>,
     /// In-progress IME composition. It is inserted only in the display
     /// layout and never exposed through value, clipboard, CRDT, or a11y.
     preedit: String,
@@ -386,6 +387,7 @@ impl TextInput {
             single_attributes: None,
             single_origin: Point::ZERO,
             shaped_layout_signature: u64::MAX,
+            shaped_layout_epoch: None,
             preedit: String::new(),
             preedit_cursor: None,
             scroll_x: 0.0,
@@ -1695,6 +1697,15 @@ impl TextInput {
         }
     }
 
+    fn refresh_layout_epoch(&mut self, renderer: &TextRenderer) {
+        if self.shaped_layout_epoch.as_ref()
+            .is_none_or(|epoch| !Arc::ptr_eq(epoch, renderer.layout_epoch()))
+        {
+            self.single_layout = None;
+            self.shaped_layout_epoch = Some(Arc::clone(renderer.layout_epoch()));
+        }
+    }
+
     /// Every unmasked multiline input—including attributed source code—uses
     /// the same shaped paragraph for paint, wrapping, carets, selection,
     /// hit-testing, vertical movement, and IME composition.
@@ -1707,6 +1718,7 @@ impl TextInput {
         style: &TextStyle,
         available_width: f32,
     ) {
+        self.refresh_layout_epoch(tr);
         self.refresh_highlight();
         let display = self.layout_display_text();
         let spans = self.highlighted_display_spans(theme);
@@ -1722,7 +1734,7 @@ impl TextInput {
             &spans,
         );
         if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-            let mut layout = RichTextLayout::shape_styled(
+            let mut layout = RichTextLayout::shape_styled_reusing(
                 &mut tr.font_system,
                 &spans,
                 &style,
@@ -1730,6 +1742,7 @@ impl TextInput {
                 TextAlign::Left,
                 Vec::new(),
                 Vec::new(),
+                self.single_layout.take(),
             );
             if !self.preedit.is_empty() {
                 let start = self.cursor_pos.min(self.text.len());
@@ -3725,6 +3738,7 @@ impl Widget for TextInput {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        self.refresh_layout_epoch(text_renderer);
         if !self.multiline {
             if !self.masked() && self.single_attributes.is_some() {
                 let scale = self
@@ -4447,6 +4461,7 @@ impl TextInput {
         text_size: f32,
         text_scale: f32,
     ) -> f32 {
+        self.refresh_layout_epoch(text_renderer);
         self.char_x_positions.clear();
         self.char_x_positions
             .resize(self.text.len().saturating_add(1), 0.0);
@@ -7293,6 +7308,35 @@ mod tests {
         tr.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
         Widget::draw(ti, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    }
+
+    #[test]
+    fn multiline_reuse_refreshes_unchanged_paragraphs_after_font_generation() {
+        let mut input = TextInput::local().multiline(true)
+            .with_initial_value("first\nWWW iii unchanged");
+        let mut tr = TextRenderer::new();
+        tr.font_system = crate::font_catalog::fixture_font_system();
+        let theme = Theme::dark();
+        let style = input.multiline_style(theme.text_scale);
+        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
+        let before = input.single_layout.as_ref().unwrap().caret_geometry(input.text.len());
+        tr.font_system.db_mut().set_sans_serif_family(crate::text_render::UI_MONOSPACE_FAMILY);
+        tr.bump_generation();
+        // No edit must also refresh cached geometry when fonts change.
+        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
+        let fresh = RichTextLayout::shape_styled(&mut tr.font_system,
+            &input.highlighted_display_spans(&theme), &style, Some(300.0),
+            TextAlign::Left, vec![], vec![]);
+        let after = input.single_layout.as_ref().unwrap().caret_geometry(input.text.len());
+        assert_ne!(before, fresh.caret_geometry(input.text.len()), "fixture fonts must differ");
+        assert_eq!(after, fresh.caret_geometry(input.text.len()));
+        input.text.insert(0, 'x');
+        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
+        let fresh = RichTextLayout::shape_styled(&mut tr.font_system,
+            &input.highlighted_display_spans(&theme), &style, Some(300.0),
+            TextAlign::Left, vec![], vec![]);
+        assert_eq!(input.single_layout.as_ref().unwrap().caret_geometry(input.text.len()),
+            fresh.caret_geometry(input.text.len()));
     }
 
     #[test]

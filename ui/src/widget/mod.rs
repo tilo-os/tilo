@@ -434,6 +434,42 @@ pub enum WindowCloseAdmission {
 }
 
 pub trait Widget {
+    /// Explicit root-owned History custody, including selected external resources.
+    /// Runners consume this bundle; preview renderers never receive the root.
+    fn history_registration(&self) -> Result<Option<crate::history_mode::HistoryRegistration>,crate::history_mode::HistoryRegistrationError> { Ok(None) }
+
+    /// Framework lifecycle traversal, independent of visible presentation children.
+    /// Borrowed surfaces and retained children cannot escape this callback.
+    #[doc(hidden)]
+    fn visit_framework_history(&self, visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget)) {
+        for child in self.children() { child.visit_framework_history(visitor); }
+    }
+    #[doc(hidden)]
+    fn visit_framework_history_mut(&mut self, visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget)) {
+        for child in self.children_mut() { child.visit_framework_history_mut(visitor); }
+    }
+    /// Structural chrome can explicitly leave an inherited document callback.
+    #[doc(hidden)]
+    fn resets_callback_binding(&self) -> bool { false }
+    /// A legacy owner's actual live layout boundary, never framework chrome.
+    #[doc(hidden)]
+    fn legacy_callback_boundary(&self) -> Option<(NodeId, crate::history_mode::HistoryOwner)> { None }
+    /// Drawn live content whose input is suspended by a framework surface.
+    #[doc(hidden)]
+    fn inactive_callback_boundary(&self) -> Option<NodeId> { None }
+
+    /// Read-only state evidence for opt-in scheduled native input diagnostics.
+    /// Called only around diagnostic inputs, never during ordinary input or paint.
+    /// Keep this inexpensive and root-local; snapshots may be logged verbatim.
+    /// This verifies widget state, not rendered pixels or display presentation.
+    fn native_input_snapshot(
+        &self,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Admit or defer the primary native window's ordinary close request.
     /// Roots that defer must later produce a one-shot close intent.
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
@@ -472,6 +508,11 @@ pub trait Widget {
     /// or authority for history access or restore.
     fn has_separate_document_owner(&self) -> bool {
         self.callback_binding().is_some() || self.record_intent().is_some()
+    }
+
+    /// Opaque actual custody for framework History source registration.
+    fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
+        self.callback_binding().map(crate::history_mode::HistoryOwner::component)
     }
 
     #[doc(hidden)]
@@ -1091,6 +1132,16 @@ pub trait Widget {
         self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
         bindings
     }
+    /// Whether this exposed subtree contains controls consuming action availability.
+    /// The inventory fallback preserves custom widgets that publish their own emitters.
+    /// Overrides must match whether `control_action_bindings` contains an `Action`,
+    /// including the same modal child exposure, regardless of current availability.
+    /// Transparent containers may query their children without building semantics.
+    fn has_action_control_bindings(&self) -> bool {
+        self.control_action_bindings().iter().any(|binding| {
+            matches!(binding.kind, ControlBindingKind::Action(_))
+        })
+    }
     /// Push the fresh local permission-filtered action surface into every
     /// retained control. Custom widgets should refresh their own emitter and
     /// then recurse into children.
@@ -1378,8 +1429,10 @@ pub trait Widget {
     /// is exactly where the disabled state has to be honest.
     ///
     /// The host sweeps its `node_map`, so this reaches a widget at any depth
-    /// with no container forwarding. Default: ignore it.
-    fn set_undo_status(&mut self, _status: &crate::undo::UndoStatus) {}
+    /// with no container forwarding. Call the provider only when the widget
+    /// consumes status; deriving historical summaries can require a document
+    /// diff. Default: ignore the provider without evaluating it.
+    fn set_undo_status(&mut self, _status: &mut dyn FnMut() -> crate::undo::UndoStatus) {}
 
     /// Widget → host: an undo or redo the user asked for.
     ///
@@ -2077,6 +2130,97 @@ mod tests {
             WindowCloseAdmission::Allow
         );
         assert!(!spacer.take_window_close_intent());
+    }
+
+    #[test]
+    fn native_input_snapshot_defaults_to_none() {
+        let state = crate::State::new();
+        assert!(
+            Spacer::new()
+                .native_input_snapshot(&state.doc, &state.root)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn native_input_snapshot_root_fallback_and_explicit_probe_precedence() {
+        struct Observed(std::rc::Rc<std::cell::Cell<usize>>);
+        impl Widget for Observed {
+            fn native_input_snapshot(
+                &self,
+                doc: &AutoCommit,
+                path: &ObjId,
+            ) -> Option<serde_json::Value> {
+                use automerge::ReadDoc;
+                self.0.set(self.0.get() + 1);
+                Some(serde_json::json!({"keys": doc.keys(path).collect::<Vec<_>>() }))
+            }
+            fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+            fn build_layout(
+                &mut self,
+                _: &mut TaffyTree<()>,
+                _: &Theme,
+                _: &mut HashMap<NodeId, *mut dyn Widget>,
+            ) -> NodeId {
+                unreachable!()
+            }
+            fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {
+                unreachable!()
+            }
+            fn draw(
+                &mut self,
+                _: &mut Scene,
+                _: vello::kurbo::Affine,
+                _: &mut TextRenderer,
+                _: &Theme,
+                _: &PresenceCtx,
+            ) {
+                unreachable!()
+            }
+            fn handle_event(
+                &mut self,
+                _: &WindowEvent,
+                _: f64,
+                _: &winit::event::Modifiers,
+                _: &mut AutoCommit,
+                _: &ObjId,
+                _: &mut bool,
+                _: &mut Option<NodeId>,
+                _: NodeId,
+                _: &TaffyTree<()>,
+            ) {
+                unreachable!()
+            }
+            fn name(&self) -> &str {
+                "Observed"
+            }
+            fn get_rect(&self) -> vello::kurbo::Rect {
+                vello::kurbo::Rect::ZERO
+            }
+        }
+        use automerge::transaction::Transactable;
+        let mut state = crate::State::new();
+        state
+            .doc
+            .put(&state.root, "fixture", "actual state")
+            .unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut app = crate::App::new(state, Box::new(Observed(calls.clone())));
+        assert_eq!(
+            app.native_input_snapshot().unwrap()["keys"],
+            serde_json::json!(["fixture"])
+        );
+        assert_eq!(calls.get(), 1);
+        app.set_native_input_probe(|| serde_json::json!({"explicit": true}));
+        assert_eq!(
+            app.native_input_snapshot().unwrap(),
+            serde_json::json!({"explicit": true})
+        );
+        assert_eq!(
+            calls.get(),
+            1,
+            "explicit probe must suppress root observation"
+        );
     }
 
     /// Pinned so a future edit that removes the default blanket-breaks

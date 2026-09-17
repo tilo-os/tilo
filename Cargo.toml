@@ -33,6 +33,7 @@ default-members = [
 members = [
     "crates/session/qos-ntfs-helper",
     "crates/browser/chromium-blocker",
+    "apps/scratchpad",
     "crates/app/qos-app",
     "crates/windows/compat-catalogue",
     "crates/windows/compat-service",
@@ -283,6 +284,7 @@ taffy = "0.10.1"
 winit = "0.30.13"
 automerge = "0.8.0"
 pollster = "0.4.0"
+rustc-hash = "2.1"
 
 # ---------------------------------------------------------------------------
 # Async runtime and networking
@@ -552,6 +554,8 @@ debug-assertions = true
 # begin/update/end into the same `PinchGesture` event shape the Apple
 # backends emit, giving every `ui` app touchpad pinch-to-zoom for free.
 [patch.crates-io]
+# Opt-in Metal presentation feedback; original renderer path when disabled.
+wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 winit = { path = "vendor/winit" }
 # vello reserves its scratch buffers for a 30,000-path stress scene, per
