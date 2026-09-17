@@ -1,3 +1,7 @@
+#[path = "ipc.rs"]
+mod ipc;
+#[path = "session.rs"]
+mod session;
 use crate::limits;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -246,6 +250,9 @@ pub(super) fn command(args: &[String]) -> io::Result<()> {
             serde_json::json!({"schema":1,"inventory":entries,"unavailable":unavailable,"diagnostic_only":true})
         );
         return Ok(());
+    }
+    if args.first().is_some_and(|s| s == "serve-read-selected") {
+        return session::serve(args);
     }
     let (id, root) = selection(args)?;
     let identity = credentials()?;

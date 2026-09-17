@@ -175,3 +175,117 @@ QOS_NTFS_RANLIB, QOS_NTFS_NM and QOS_NTFS_HOST plus Cargo's target linker. Use
 fresh output directories when configuration changes. In particular, a host BSD
 ranlib must never rewrite a Linux archive; positive parser-symbol verification
 catches empty or incompatible archives before linking.
+
+## Stage 2 administrative retained read session (native acceptance UNRUN)
+
+`qos-ntfs-probe serve-read-selected --inventory-id ID --root-mft RECORD --client-uid UID`
+uses fresh production inventory and two agreeing metadata-only native passes. It
+retains all selected/nonselected O_EXCL claims continuously; it never mounts an
+NTFS filesystem. The root command requires the existing dedicated `qos-ntfs`
+parser account. This source adds no account, service, policy or installer action.
+The locator printed after admission names one root-owned `/run/qos-ntfs-*/read.sock`
+SOCK_SEQPACKET socket. Socket ownership/mode permits the selected client UID;
+SO_PEERCRED is checked in both directions. There is one connection and no reconnect.
+The parser-free `qos-ntfs-protocol` crate contains portable wire types and a Linux
+client, with no native reader/helper dependency or build script. Imager links only
+that crate. Serializable facts and locators cannot create a device claim.
+
+Schema 2 has Hello, BeginObservation, NextManifestPage, ReadChunk,
+FinishObservation, Cancel and Close operations. Requests carry the nonce and
+strictly increasing IDs beginning at zero. Frames are at most 64 KiB. Unknown
+operations/fields, ancillary FDs, truncation and replay invalidate the session.
+The client sends one request at a time and consumes its complete reply. Any
+pipelined request, cancellation or disconnect observed during a native worker
+invalidates the operation; the parent kills/reaps the worker before dropping its
+claims. The worker never inherits an active request socket after sandbox setup.
+
+The metadata manifest omits ordinary unnamed DATA payloads, retains native UTF-16
+and actual UpCase evidence, and requires positive per-record attribute/directory
+completion. Its bounded verifier keeps content readability, enumeration and
+metadata fidelity separate. ACL fidelity remains pending without an audited
+Windows baseline policy. ADS, reparse, hard-link/external alias closure, sparse,
+encrypted, compressed and custom metadata remain explicit pending scopes.
+Known over-budget metadata remains scoped while enumeration continues; malformed
+structure or unknown scope refuses the observation. This does not preserve or
+apply a migration metadata capsule and does not authorize silent metadata loss.
+
+Native range requests return at most 1 MiB, including unaligned/arbitrary ranges.
+The broker only accepts tokens issued for its selected manifest generation.
+Before/after native metadata must match the token, and root/object/serial and
+retained kernel identity are rechecked. Full strict health runs at manifest and
+content transaction boundaries. Random ranges are useful administrative reads;
+a jump, overlap or switch discards the interrupted provisional whole-file hash.
+Only a fresh contiguous offset-zero-to-EOF assembly is a complete hash. Every
+unfinished file remains explicitly incomplete at Finish. Final observation
+publication requires full postflight; individual chunks are provisional.
+
+Limits: 4096 entries, 64 components, 255 UTF-16 units/component, 4096 path units,
+1 MiB metadata/entry, 4 MiB manifest payload, 4 MiB worker output, 1 MiB logical
+chunk, 1 GiB logical content/observation, 16 GiB physical reads/session, 4096
+content requests/session. Acquisition and each operation have a 20-second wall
+watchdog; children retain the existing 10-second CPU/256 MiB Linux address-space
+limits. Connected idle timeout is 30 seconds; an observation has 10 minutes and a
+session 30 minutes. Fresh observations do not extend session expiry. A stalled
+consumer expires. Orderly close cleans the runtime path; SIGKILL/SIGALRM release
+FDs and trigger child parent-death handling but may leave a nonaccepting runtime
+pathname until administrative/boot cleanup. It is never reusable session authority.
+
+The context-owned Imager read adapter runs actual protocol reads/observations,
+uses Windows paths and native canonical keys, and refuses NTFS write access before
+any trial. Public safe_read is still Refused(Unverified); safe_write and durable
+transactions remain Refused(ReadOnly). No caller flag or environment variable
+promotes those capabilities. Copy's retained File source and journals are unchanged;
+Copy UI integration and full two-way Windows/Linux fidelity remain later work.
+
+### Running the source-complete opt-in fixture entrypoints
+
+Generate host diagnostic images with `tests/build_native_fixtures.py --output NEW`
+and set QOS_NTFS_FIXTURES for native_images/native_session. The 12 MiB file uses
+chunk-distinct deterministic bytes; tests compare independent hashes and every
+complete image before/after. No generated image is committed. Host execution is
+not Linux claim/sandbox acceptance; macOS retains its approved diagnostic-only
+memory-limit exception.
+
+The Linux coordinator is `tests/native_session_coordinator.py` (deploy beside
+`native_coordinator.py`). It requires:
+
+- QOS_NTFS_NATIVE_AUTHORIZATION=DISPOSABLE_FIXTURE_ONLY and root invocation;
+- QOS_NTFS_NATIVE_DEVICE naming an already prepared direct physical partition,
+  with the generated `large.bin` fixture and no unresolved inventory candidates;
+- QOS_NTFS_NATIVE_CLIENT_UID naming an existing nonroot client account;
+- QOS_NTFS_NATIVE_FILE_SHA256 from the independently generated 12 MiB content;
+- deployed helper and parser-free example `read_session` paths passed as
+  `--probe PATH --client PATH --mode MODE`.
+
+Modes are positive, ranges, transport, aliases, parent-before-child, parent-after-child,
+parser-death, client-death, cancel, cancel-manifest, cancel-postflight, watchdog,
+idle, stalled-client, detach and replace. Every mode first proves an actual
+production session plus the Rust client's full native 12 MiB hash/postflight,
+checks retained read-only descriptors, and checks complete device nonmutation
+except where explicit detach/replacement removes the device. Fresh exclusive
+acquisition proves claim release. Ranges checks arbitrary offsets, interrupted
+hash incompleteness and fresh contiguous restart completion. Transport includes wrong UID/nonce/IDs,
+SCM_RIGHTS, malformed/oversized/unknown packets, reconnect and a real nonroot fake
+broker rejected by the Rust client's kernel credential check. Alias mode performs
+explicit temporary RO NTFS3 mounts in this/another namespace and concurrent Busy
+attempts for each chunk; no alias mode has been run in this task.
+
+Detach/replace require QOS_NTFS_NATIVE_ACTION, the same external action receipt
+contract documented above. The coordinator independently checks changed sysfs
+inode/disk sequence and rejects no-op actions. Ptrace holds the actual range-child
+fork after its transaction preflight, then detaches before credentials/seccomp.
+The parent-after-child fixture also inspects exact dedicated credentials, cleared
+groups/capabilities, no_new_privs, seccomp, 10-second CPU/256 MiB memory limits and
+absence of inherited socket FDs. Existing native sandbox attack tests remain
+required alongside these new-operation lifecycle cases.
+
+Rust ignored entrypoint `production_retained_read_session` uses
+QOS_NTFS_SESSION_COORDINATOR_SCRIPT, QOS_NTFS_SESSION_CLIENT and
+QOS_NTFS_SESSION_TEST_MODE. The exact-source Imager fixture
+`native_session_context_reads_windows_names_and_refuses_write_trial` requires an
+already admitted locator in QOS_NTFS_SESSION_LOCATOR and the independent file hash.
+It proves actual context registration/read dispatch, Windows encoding, scoped
+pending entries, full native hash, candidate-name keys and refusal before a write
+trial. Deploy/run it as the selected UID. All Linux session/alias/credential/death/
+detach/endpoint execution, all Windows runtime evidence and public capability
+promotion remain UNRUN/open. Cross-linking these entrypoints is not native proof.

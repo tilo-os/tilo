@@ -185,3 +185,28 @@ fn production_detach_replacement_invalidates_evidence() {
     assert!(mode == "detach" || mode == "replace");
     native_coordinator(&mode).unwrap();
 }
+
+#[test]
+#[ignore = "actual disposable Linux retained session: credentials, native chunks, aliases and lifecycle; mode required"]
+fn production_retained_read_session() {
+    authorized().unwrap();
+    let script = std::env::var("QOS_NTFS_SESSION_COORDINATOR_SCRIPT").unwrap();
+    let mode = std::env::var("QOS_NTFS_SESSION_TEST_MODE").unwrap();
+    let client = std::env::var("QOS_NTFS_SESSION_CLIENT").unwrap();
+    let probe = std::env::var("QOS_NTFS_NATIVE_PROBE")
+        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_qos-ntfs-probe").to_owned());
+    let output = Command::new("python3")
+        .args([
+            &script, "--probe", &probe, "--client", &client, "--mode", &mode,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["accepted"], true);
+    assert_eq!(receipt["positive"]["large_file_verified"], true);
+}

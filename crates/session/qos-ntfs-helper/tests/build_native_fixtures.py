@@ -19,8 +19,12 @@ run(src/'ntfsprogs/mkntfs', '-F', '-Q', '-T', '-L', 'QOS_FIXTURE', clean)
 content = out/'content'; content.write_bytes(b'Connected NTFS fixture\n')
 run(src/'ntfsprogs/ntfscp', clean, content, '/hello.txt')
 run(exe, clean, 'serial')
-for name, mode in [('restart-clean','restart-clean'), ('restart-bad-first','restart-bad-first'), ('restart-bad-second','restart-bad-second'), ('restart-v2','restart-v2'), ('dirty','dirty'), ('badlog','badlog'), ('generation','generation'), ('metadata','metadata'), ('upcase','upcase'), ('oversize','oversize'), ('attrlist-cycle','attrlist-cycle'), ('acl','acl'), ('hardlink','hardlink')]:
+for name, mode in [('dos-alias','dos-alias'), ('large-metadata','large-metadata'), ('restart-clean','restart-clean'), ('restart-bad-first','restart-bad-first'), ('restart-bad-second','restart-bad-second'), ('restart-v2','restart-v2'), ('dirty','dirty'), ('badlog','badlog'), ('generation','generation'), ('metadata','metadata'), ('upcase','upcase'), ('oversize','oversize'), ('attrlist-cycle','attrlist-cycle'), ('acl','acl'), ('hardlink','hardlink')]:
     dest=out/(name+'.img'); shutil.copyfile(clean,dest); run(exe,dest,mode)
+large = out/'large.img'; shutil.copyfile(clean, large)
+content.write_bytes(b''.join(bytes((j+block)%256 for j in range(256)) * 4096 for block in range(12))); run(src/'ntfsprogs/ntfscp', large, content, '/large.bin')
+content.write_bytes(bytes(range(251))*17); run(src/'ntfsprogs/ntfscp', large, content, '/tail.bin')
+content.write_bytes(b''); run(src/'ntfsprogs/ntfscp', large, content, '/empty.bin')
 for name, data in [('zero-hiber',bytes(4096)), ('hiber',b'hibr'+bytes(4092)), ('nonzero-hiber',bytes(4095)+b'x'), ('short-hiber',bytes(32))]:
     dest=out/(name+'.img'); shutil.copyfile(clean,dest)
     content.write_bytes(data); run(src/'ntfsprogs/ntfscp',dest,content,'/hiberfil.sys')
@@ -34,6 +38,9 @@ for name in ['bitlocker','truncated','corrupt']:
 manifest={'fixture_builder_sha256':hashlib.sha256((ROOT/'tests/fixture_builder.c').read_bytes()).hexdigest(),'source_sha256':SHA, 'format':'mkntfs -F -Q -T; serial set through NTFS_BOOT_SECTOR', 'expected':{'serial':'1122334455667788','root_record':5,'hello_content_hex':b'Connected NTFS fixture\n'.hex()},'images':{}}
 for f in sorted(out.glob('*.img')):
     manifest['images'][f.name]={'sha256':hashlib.sha256(f.read_bytes()).hexdigest(),'bytes':f.stat().st_size}
+manifest['expected']['large_bytes']=12*1024*1024
+manifest['expected']['large_sha256']=hashlib.sha256(b''.join(bytes((j+block)%256 for j in range(256))*4096 for block in range(12))).hexdigest()
+manifest['expected']['large_pattern']='byte=(offset%256 + offset//1048576)%256'
 manifest['expected_by_image']={
  'restart-clean.img':{'status':0,'paired_restart_pages':'1.1'},
  'restart-bad-first.img':{'status':3,'invalid_page':0},

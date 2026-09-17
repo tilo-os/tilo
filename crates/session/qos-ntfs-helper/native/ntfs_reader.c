@@ -32,7 +32,7 @@
 #define MAX_ENTRIES 4096
 #define MAX_METADATA (1024 * 1024)
 struct state {
-  int fd, failure;
+  int fd, failure, mode;
   uint64_t capacity, cursor, limit, output;
   struct qos_stats *stats;
   qos_emit emit;
@@ -246,6 +246,12 @@ static int sds_security(struct state *s, ntfs_inode *ni, uint64_t *raw) {
   memcpy(&header, (char *)entry + offset, sizeof header);
   uint64_t pos = le64_to_cpu(header.offset);
   uint32_t total = le32_to_cpu(header.length);
+  if (s->mode && header.security_id == ni->security_id && total > sizeof header &&
+      total > MAX_METADATA - *raw) {
+    rc = event(s, "{\"kind\":\"incomplete\",\"record\":%" PRIu64
+                  ",\"reason\":\"metadata-budget\"}", ni->mft_no);
+    goto out;
+  }
   if (header.security_id != ni->security_id || total <= sizeof header ||
       total > MAX_METADATA - *raw) {
     fail(s, 6, EFBIG);
@@ -431,6 +437,14 @@ static int attributes(struct state *s, ntfs_inode *ni) {
       }
       continue;
     }
+    if (s->mode && a->type == AT_DATA && !a->name_length &&
+        !(ni->mrec->flags & MFT_RECORD_IS_DIRECTORY))
+      continue;
+    if (s->mode && (uint64_t)size > MAX_METADATA - raw) {
+      if (event(s, "{\"kind\":\"incomplete\",\"record\":%" PRIu64
+                   ",\"reason\":\"metadata-budget\"}", ni->mft_no)) { rc = -1; break; }
+      continue;
+    }
     if ((uint64_t)size > MAX_METADATA - raw) {
       rc = fail(s, 6, EFBIG);
       break;
@@ -495,6 +509,9 @@ static int attributes(struct state *s, ntfs_inode *ni) {
                  ",\"reason\":\"security-descriptor-absent\"}",
                  ni->mft_no);
   }
+  if (!rc && s->mode)
+    rc = event(s, "{\"kind\":\"attributes_end\",\"record\":%" PRIu64
+                  ",\"sequence\":%u}", ni->mft_no, le16_to_cpu(ni->mrec->sequence_number));
   return rc;
 }
 static int tree(struct state *s, ntfs_volume *v, uint64_t root) {
@@ -545,6 +562,9 @@ static int tree(struct state *s, ntfs_volume *v, uint64_t root) {
         s64 position = 0;
         if (ntfs_readdir(ni, &position, &w, found))
           rc = fail(s, 5, EIO);
+        if (!rc && s->mode)
+          rc = event(s, "{\"kind\":\"directory_end\",\"record\":%" PRIu64
+                       ",\"sequence\":%u}", ni->mft_no, le16_to_cpu(ni->mrec->sequence_number));
       }
     }
     if (ntfs_inode_close(ni) && !rc)
@@ -555,11 +575,77 @@ static int tree(struct state *s, ntfs_volume *v, uint64_t root) {
   free(items);
   return rc;
 }
-int qos_ntfs_probe(int fd, uint64_t capacity, uint64_t root,
+
+/* Every read reopens native full MFT references. No pointer survives the worker. */
+static int read_identity(struct state *s, ntfs_volume *v,
+                         const struct qos_ntfs_read_request *r,
+                         ntfs_inode **object) {
+  ntfs_inode *root = ntfs_inode_open(v, r->root_record | ((uint64_t)r->root_sequence << 48));
+  int ok = root && root->mft_no == r->root_record &&
+      le16_to_cpu(root->mrec->sequence_number) == r->root_sequence &&
+      (root->mrec->flags & MFT_RECORD_IS_DIRECTORY) &&
+      le64_to_cpu(root->creation_time) == r->root_creation &&
+      !(root->flags & FILE_ATTR_REPARSE_POINT);
+  if (root && ntfs_inode_close(root)) ok = 0;
+  if (!ok) return fail(s, 5, EIO);
+  *object = ntfs_inode_open(v, r->object_record | ((uint64_t)r->object_sequence << 48));
+  ntfs_inode *ni = *object;
+  if (!ni || ni->mft_no != r->object_record ||
+      le16_to_cpu(ni->mrec->sequence_number) != r->object_sequence ||
+      (ni->mrec->flags & MFT_RECORD_IS_DIRECTORY) ||
+      (ni->flags & (FILE_ATTR_REPARSE_POINT | FILE_ATTR_ENCRYPTED | FILE_ATTR_COMPRESSED | FILE_ATTR_SPARSE_FILE)))
+    return fail(s, 5, EIO);
+  return 0;
+}
+static int read_range(struct state *s, ntfs_volume *v, const NTFS_BOOT_SECTOR *boot,
+                      const struct qos_ntfs_read_request *r) {
+  if (!r || r->reserved || !r->length || r->length > 1048576 ||
+      r->size > INT64_MAX || r->offset > r->size || r->length > r->size - r->offset ||
+      !r->root_sequence || !r->object_sequence ||
+      r->root_record > 0xffffffffffffULL || r->object_record > 0xffffffffffffULL ||
+      le64_to_cpu(boot->volume_serial_number) != r->serial)
+    return fail(s, 5, EINVAL);
+  ntfs_inode *ni = NULL;
+  ntfs_attr *a = NULL;
+  int rc = read_identity(s, v, r, &ni);
+  if (!rc) {
+    a = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    if (!a || a->data_size < 0 || (uint64_t)a->data_size != r->size ||
+        a->initialized_size < 0 || a->initialized_size > a->data_size ||
+        a->allocated_size < a->data_size ||
+        (a->data_flags & (ATTR_IS_COMPRESSED | ATTR_IS_ENCRYPTED | ATTR_IS_SPARSE)))
+      rc = fail(s, 5, EIO);
+  }
+  if (!rc) rc = attributes(s, ni);
+  unsigned char b[4096]; char encoded[8193];
+  for (uint64_t offset = 0; !rc && offset < r->length;) {
+    uint64_t n = r->length - offset;
+    if (n > sizeof b) n = sizeof b;
+    if (ntfs_attr_pread(a, (s64)(r->offset + offset), (s64)n, b) != (s64)n) {
+      rc = fail(s, 5, EIO); break;
+    }
+    hex(b, (size_t)n, encoded);
+    rc = event(s, "{\"kind\":\"data\",\"offset\":%" PRIu64 ",\"hex\":\"%s\"}", offset, encoded);
+    offset += n;
+  }
+  if (a) ntfs_attr_close(a);
+  if (ni && ntfs_inode_close(ni)) rc = fail(s, 5, EIO);
+  ni = NULL;
+  if (!rc) rc = read_identity(s, v, r, &ni);
+  if (!rc) rc = attributes(s, ni);
+  if (ni && ntfs_inode_close(ni)) rc = fail(s, 5, EIO);
+  NTFS_BOOT_SECTOR after;
+  if (!rc && (dev_pread(v->dev, &after, sizeof after, 0) < 0 || memcmp(boot, &after, sizeof after)))
+    rc = fail(s, 5, EIO);
+  return rc;
+}
+
+static int probe(int fd, uint64_t capacity, uint64_t root,
                    uint64_t read_limit, qos_emit emit, void *context,
-                   struct qos_stats *stats) {
+                   struct qos_stats *stats, int mode,
+                   const struct qos_ntfs_read_request *request) {
   ntfs_log_set_handler(ntfs_log_handler_null);
-  struct state s = {.fd = fd,
+  struct state s = {.fd = fd, .mode = mode,
                     .capacity = capacity,
                     .limit = read_limit < 256 * 1024 * 1024 ? read_limit
                                                             : 256 * 1024 * 1024,
@@ -601,11 +687,11 @@ int qos_ntfs_probe(int fd, uint64_t capacity, uint64_t root,
           le64_to_cpu(boot.volume_serial_number), v->sector_size,
           v->cluster_size, v->mft_record_size, le16_to_cpu(v->flags),
           v->major_ver, v->minor_ver);
-  if (!s.failure)
+  if (!s.failure && mode != 2)
     check_log(&s, v);
-  if (!s.failure)
+  if (!s.failure && mode != 2)
     check_hiber(&s, v);
-  if (!s.failure) {
+  if (!s.failure && mode != 2) {
     ntfs_inode *ni = ntfs_inode_open(v, FILE_UpCase);
     ntfs_attr *a = ni ? ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0) : NULL;
     s.upcase = malloc(131072);
@@ -619,10 +705,25 @@ int qos_ntfs_probe(int fd, uint64_t capacity, uint64_t root,
     if (ni && ntfs_inode_close(ni))
       fail(&s, 5, EIO);
   }
-  if (!s.failure)
+  if (!s.failure && mode != 2)
     tree(&s, v, root);
+  if (!s.failure && mode == 2)
+    read_range(&s, v, &boot, request);
   if (ntfs_umount(v, 0))
     fail(&s, 5, EIO);
   free(s.upcase);
   return s.failure;
+}
+
+int qos_ntfs_probe(int fd, uint64_t capacity, uint64_t root, uint64_t read_limit,
+                   qos_emit emit, void *context, struct qos_stats *stats) {
+  return probe(fd, capacity, root, read_limit, emit, context, stats, 0, NULL);
+}
+int qos_ntfs_manifest(int fd, uint64_t capacity, uint64_t root, uint64_t read_limit,
+                      qos_emit emit, void *context, struct qos_stats *stats) {
+  return probe(fd, capacity, root, read_limit, emit, context, stats, 1, NULL);
+}
+int qos_ntfs_read_chunk(int fd, uint64_t capacity, const struct qos_ntfs_read_request *request,
+                       uint64_t read_limit, qos_emit emit, void *context, struct qos_stats *stats) {
+  return probe(fd, capacity, 0, read_limit, emit, context, stats, 2, request);
 }
