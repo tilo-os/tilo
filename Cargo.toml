@@ -72,6 +72,7 @@ members = [
     "apps/photos",
     "apps/print-centre",
     "apps/remote",
+    "apps/scratchpad",
     "apps/settings",
     "apps/sheets",
     "apps/slides",
