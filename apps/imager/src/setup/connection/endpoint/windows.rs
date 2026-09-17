@@ -386,51 +386,349 @@ pub(super) fn same_mount(a: &File, b: &File) -> Result<(), EndpointError> {
     }
     Ok(())
 }
+struct SecurityDescriptor {
+    allocation: *mut std::ffi::c_void,
+    owner: windows_sys::Win32::Security::PSID,
+    dacl: *mut windows_sys::Win32::Security::ACL,
+}
+impl Drop for SecurityDescriptor {
+    fn drop(&mut self) {
+        // SAFETY: owns the LocalAlloc-family output from GetSecurityInfo.
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(self.allocation);
+        }
+    }
+}
+impl SecurityDescriptor {
+    fn query(file: &File) -> Result<Self, EndpointError> {
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, IsValidAcl, IsValidSid, OWNER_SECURITY_INFORMATION,
+        };
+        let mut result = Self {
+            allocation: ptr::null_mut(),
+            owner: ptr::null_mut(),
+            dacl: ptr::null_mut(),
+        };
+        // SAFETY: live read-control-capable handle and initialized SDK outputs.
+        let status = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &raw mut result.owner,
+                ptr::null_mut(),
+                &raw mut result.dacl,
+                ptr::null_mut(),
+                &raw mut result.allocation,
+            )
+        };
+        if status != 0 {
+            return Err(std::io::Error::from_raw_os_error(status.cast_signed()).into());
+        }
+        // SAFETY: successful query owns the complete descriptor and pointers.
+        if result.allocation.is_null()
+            || result.owner.is_null()
+            || result.dacl.is_null()
+            || unsafe { IsValidAcl(result.dacl) } == 0
+            || unsafe { IsValidSid(result.owner) } == 0
+        {
+            return Err(EndpointError::Unsupported);
+        }
+        Ok(result)
+    }
+}
+fn baseline_acl(file: &File) -> Result<bool, EndpointError> {
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACE_HEADER, EqualSid, GENERIC_MAPPING, GetAce, GetLengthSid,
+        GetSecurityDescriptorControl, INHERITED_ACE, IsValidSid, IsWellKnownSid, MapGenericMask,
+        SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, WinBuiltinAdministratorsSid, WinCreatorOwnerSid,
+        WinLocalSystemSid,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    };
+    let security = SecurityDescriptor::query(file)?;
+    let mut control = 0;
+    let mut revision = 0;
+    // SAFETY: live queried descriptor and correctly typed output scalars.
+    if unsafe {
+        GetSecurityDescriptorControl(security.allocation, &raw mut control, &raw mut revision)
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if control & SE_DACL_PROTECTED != 0 || control & SE_DACL_AUTO_INHERITED == 0 {
+        return Ok(false);
+    }
+    // SAFETY: IsValidAcl verified this live descriptor-owned ACL.
+    let count = unsafe { (*security.dacl).AceCount };
+    if count == 0 || count > 128 {
+        return Ok(false);
+    }
+    for index in 0..count {
+        let mut ace = ptr::null_mut();
+        // SAFETY: index within validated ACL and writable pointer output.
+        if unsafe { GetAce(security.dacl, u32::from(index), &raw mut ace) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        // SAFETY: GetAce returns a native ACE_HEADER inside the live ACL.
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        if header.AceType != 0
+            || u32::from(header.AceFlags) & INHERITED_ACE == 0
+            || header.AceFlags & !0x1b != 0
+            || header.AceSize < 16
+        {
+            return Ok(false);
+        }
+        // SAFETY: ordinary allow ACE with validated minimum header/mask/SID size.
+        let allow = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let sid = ptr::addr_of!(allow.SidStart).cast_mut().cast();
+        // SAFETY: SID is within an OS-validated ACL; verify native size before use.
+        if unsafe { IsValidSid(sid) } == 0
+            || unsafe { GetLengthSid(sid) } > u32::from(header.AceSize).saturating_sub(8)
+        {
+            return Ok(false);
+        }
+        // SAFETY: all SID pointers are valid within retained SDK allocations.
+        let standard_principal = unsafe { EqualSid(sid, security.owner) } != 0
+            || unsafe { IsWellKnownSid(sid, WinLocalSystemSid) } != 0
+            || unsafe { IsWellKnownSid(sid, WinBuiltinAdministratorsSid) } != 0
+            || (header.AceFlags & 8 != 0
+                && unsafe { IsWellKnownSid(sid, WinCreatorOwnerSid) } != 0);
+        let mut rights = allow.Mask;
+        let mapping = GENERIC_MAPPING {
+            GenericRead: FILE_GENERIC_READ,
+            GenericWrite: FILE_GENERIC_WRITE,
+            GenericExecute: FILE_GENERIC_EXECUTE,
+            GenericAll: FILE_ALL_ACCESS,
+        };
+        // SAFETY: initialized mask and exact SDK generic-rights mapping.
+        unsafe {
+            MapGenericMask(&raw mut rights, &raw const mapping);
+        }
+        if !standard_principal || rights != FILE_ALL_ACCESS {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+fn named_stream(file: &File, directory: bool) -> Result<bool, EndpointError> {
+    use windows_sys::Win32::Foundation::{ERROR_HANDLE_EOF, SetLastError};
+    let mut stream = [0_u64; 128];
+    // SAFETY: clear stale thread error before querying a live handle into an
+    // aligned 1024-byte output. ERROR_HANDLE_EOF means a directory has no streams.
+    unsafe {
+        SetLastError(0);
+    }
+    let success = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStreamInfo,
+            stream.as_mut_ptr().cast(),
+            1024,
+        )
+    };
+    // SAFETY: read the error from the immediately preceding SDK call.
+    let error = unsafe { GetLastError() };
+    if directory && error == ERROR_HANDLE_EOF {
+        return Ok(false);
+    }
+    if success == 0 {
+        return Err(std::io::Error::from_raw_os_error(error.cast_signed()).into());
+    }
+    // SAFETY: byte view of initialized integer storage, exactly its length.
+    let bytes = unsafe { std::slice::from_raw_parts(stream.as_ptr().cast::<u8>(), 1024) };
+    // A directory reporting any stream has data the portable model omits.
+    if directory {
+        return Ok(true);
+    }
+    let expected = "::$DATA"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    Ok(bytes.get(..4) != Some(&[0, 0, 0, 0])
+        || bytes.get(4..8) != Some(&14_u32.to_le_bytes())
+        || bytes.get(24..38) != Some(expected.as_slice()))
+}
 pub(super) fn check_metadata(file: &File, directory: bool) -> Result<bool, EndpointError> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo};
     let basic: FILE_BASIC_INFO = info(file, FileBasicInfo)?;
     if basic.FileAttributes & (0x400 | 0x1000 | 0x4000 | 0x40000 | 0x0040_0000) != 0 {
         return Err(EndpointError::Unsupported);
     }
+    let standard: FILE_STANDARD_INFO = info(file, FileStandardInfo)?;
+    if standard.Directory != directory || standard.DeletePending {
+        return Err(EndpointError::Unstable);
+    }
     if directory {
-        // Mixed case-sensitive descendants invalidate whole-endpoint key policy.
         let case: FILE_CASE_SENSITIVE_INFO = info(file, FileCaseSensitiveInfo)?;
         if case.Flags != 0 {
             return Err(EndpointError::Unsupported);
         }
-    } else {
-        // FILE_STREAM_INFO list: next DWORD, name-length DWORD, two LARGE_INTEGERs,
-        // UTF-16 name. A second/nondefault stream cannot be represented by model.
-        let mut stream = [0_u64; 128];
-        // SAFETY: aligned 1024-byte output buffer, native FileStreamInfo class.
-        if unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileStreamInfo,
-                stream.as_mut_ptr().cast(),
-                1024,
-            )
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        // SAFETY: byte view of initialized integer storage, exactly its length.
-        let bytes = unsafe { std::slice::from_raw_parts(stream.as_ptr().cast::<u8>(), 1024) };
-        let header = bytes.get(..8).ok_or(EndpointError::Unsupported)?;
-        let expected = "::$DATA"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>();
-        if header.get(..4) != Some(&[0, 0, 0, 0])
-            || header.get(4..8) != Some(&14_u32.to_le_bytes())
-            || bytes.get(24..38) != Some(expected.as_slice())
-        {
-            return Err(EndpointError::Unsupported);
-        }
     }
+    super::windows_metadata_policy(
+        directory,
+        standard.NumberOfLinks,
+        named_stream(file, directory)?,
+        baseline_acl(file)?,
+    )?;
     Ok(false)
 }
 
 pub(super) fn change_token(file: &File) -> Result<Vec<u8>, EndpointError> {
     let basic: FILE_BASIC_INFO = info(file, FileBasicInfo)?;
     Ok(basic.ChangeTime.to_le_bytes().to_vec())
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
+    use windows_sys::Win32::Security::{
+        ACL, ACL_REVISION, AddAccessAllowedAceEx, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+        InitializeAcl, OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ALL_ACCESS, FILE_GENERIC_READ, WRITE_DAC};
+
+    fn set_acl(file: &File, flags: u32, mask: u32, protected: bool) {
+        let security = SecurityDescriptor::query(file).unwrap();
+        let mut storage = [0_u64; 128];
+        let acl = storage.as_mut_ptr().cast::<ACL>();
+        // SAFETY: aligned disposable ACL buffer; valid descriptor-owned SID.
+        assert_ne!(unsafe { InitializeAcl(acl, 1024, ACL_REVISION) }, 0);
+        assert_ne!(
+            unsafe { AddAccessAllowedAceEx(acl, ACL_REVISION, flags, mask, security.owner) },
+            0
+        );
+        let information = DACL_SECURITY_INFORMATION
+            | if protected {
+                PROTECTED_DACL_SECURITY_INFORMATION
+            } else {
+                0
+            };
+        // SAFETY: fixture-owned handle; valid ACL and optional null SID outputs.
+        assert_eq!(
+            unsafe {
+                SetSecurityInfo(
+                    file.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    information,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    acl,
+                    ptr::null_mut(),
+                )
+            },
+            0
+        );
+    }
+    fn file(path: &std::path::Path) -> File {
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_GENERIC_READ | WRITE_DAC)
+            .share_mode(1 | 2 | 4)
+            .open(path)
+            .unwrap()
+    }
+    fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = std::env::var_os("QOS_ENDPOINT_FIXTURE").unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let parent = std::fs::OpenOptions::new()
+            .access_mode(FILE_GENERIC_READ | WRITE_DAC)
+            .share_mode(1 | 2 | 4)
+            .custom_flags(0x0200_0000)
+            .open(temp.path())
+            .unwrap();
+        set_acl(
+            &parent,
+            OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+            FILE_ALL_ACCESS,
+            true,
+        );
+        let selected = temp.path().join("selected");
+        std::fs::create_dir(&selected).unwrap();
+        (temp, selected)
+    }
+    fn assert_scope_unsupported(selected: &std::path::Path, name: &str) {
+        use std::collections::BTreeMap;
+        use std::sync::atomic::AtomicBool;
+        let cancelled = AtomicBool::new(false);
+        let mut scan = super::super::Scan {
+            cancelled: &cancelled,
+            entries: BTreeMap::new(),
+            issues: Vec::new(),
+            bytes: 0,
+            visited: 0,
+            snapshots: Vec::new(),
+        };
+        let pin = super::super::Pin::open(selected).unwrap();
+        scan.directory(&pin, std::path::Path::new(""), 0).unwrap();
+        let key =
+            super::super::RelativePath::windows(&name.encode_utf16().collect::<Vec<_>>()).unwrap();
+        assert!(
+            scan.issues
+                .iter()
+                .any(|issue| issue.path.as_ref() == Some(&key)
+                    && issue.reason == super::super::PendingReason::Unsupported)
+        );
+    }
+    #[test]
+    #[ignore = "disposable native Windows NTFS fixture required; validates actual inherited ACL admission"]
+    fn native_windows_inherited_baseline_and_hardlink_refusal() {
+        let (_temp, selected) = fixture();
+        let path = selected.join("content");
+        std::fs::write(&path, b"content").unwrap();
+        let opened = file(&path);
+        assert_eq!(check_metadata(&opened, false), Ok(false));
+        std::fs::hard_link(&path, selected.join("alias")).unwrap();
+        assert_eq!(
+            check_metadata(&opened, false),
+            Err(EndpointError::Unsupported)
+        );
+        assert_scope_unsupported(&selected, "content");
+    }
+    #[test]
+    #[ignore = "disposable native Windows NTFS fixture required; writes a named directory data stream"]
+    fn native_windows_directory_stream_is_unsupported() {
+        let (_temp, selected) = fixture();
+        let path = selected.join("folder");
+        std::fs::create_dir(&path).unwrap();
+        let pin = super::super::Pin::open(&path).unwrap();
+        let opened = super::super::readable_directory(&pin.file).unwrap();
+        assert_eq!(check_metadata(&opened, true), Ok(false));
+        std::fs::write(
+            path.with_file_name("folder:qos-metadata-fixture"),
+            b"stream",
+        )
+        .unwrap();
+        assert_eq!(
+            check_metadata(&opened, true),
+            Err(EndpointError::Unsupported)
+        );
+        assert_scope_unsupported(&selected, "folder");
+    }
+    #[test]
+    #[ignore = "disposable native Windows NTFS fixture required; changes only fixture-owned DACLs"]
+    fn native_windows_explicit_protected_and_unknown_rights_acls_are_unsupported() {
+        let (_temp, selected) = fixture();
+        // Unknown mask bit is preserved by the ACL API and must never be treated
+        // as the admitted baseline. Runtime verifies that native assumption.
+        for (name, flags, rights, protected) in [
+            ("explicit", 0, FILE_ALL_ACCESS, false),
+            ("protected", 16, FILE_ALL_ACCESS, true),
+            ("unknown-rights", 16, FILE_ALL_ACCESS | 0x0040_0000, false),
+        ] {
+            let path = selected.join(name);
+            std::fs::write(&path, b"content").unwrap();
+            let opened = file(&path);
+            assert_eq!(check_metadata(&opened, false), Ok(false));
+            set_acl(&opened, flags, rights, protected);
+            assert_eq!(
+                check_metadata(&opened, false),
+                Err(EndpointError::Unsupported),
+                "{name}"
+            );
+            assert_scope_unsupported(&selected, name);
+        }
+    }
 }

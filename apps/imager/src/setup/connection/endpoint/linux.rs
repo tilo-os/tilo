@@ -49,6 +49,38 @@ fn btrfs_uuid(file: &File) -> Result<([u8; 16], u64), EndpointError> {
     Ok((uuid, number(&info, 0)?))
 }
 
+// Clone identification deliberately does not admit filesystem health. A dirty
+// duplicate still creates ambiguity, and an unreadable UUID is not evidence of
+// a different volume. Health is checked only for the selected endpoint below.
+fn clone_uuid(file: &File) -> Result<[u8; 16], EndpointError> {
+    let bytes = if let Ok(fsuuid) = ioctl(file, 0x8011_1500, [0; 17]) {
+        if fsuuid.first() != Some(&16) {
+            return Err(EndpointError::Unsupported);
+        }
+        slice(&fsuuid, 1, 17)?.to_vec()
+    } else if let Ok(info) = ioctl(file, 0x8400_941f, [0; 1024]) {
+        slice(&info, 16, 32)?.to_vec()
+    } else {
+        let geometry = ioctl(file, 0x8100_587e, [0; 256])?;
+        slice(&geometry, 64, 80)?.to_vec()
+    };
+    let uuid: [u8; 16] = bytes.try_into().map_err(|_| EndpointError::Unsupported)?;
+    if uuid == [0; 16] {
+        return Err(EndpointError::Unsupported);
+    }
+    Ok(uuid)
+}
+fn inspect_clone_candidate(mount: &Mount) -> Result<[u8; 16], EndpointError> {
+    let pin = super::Pin::open(&mount.path)?;
+    let file = readable_directory(&pin.file)?;
+    if mount_id(&file)? != mount.id {
+        return Err(EndpointError::IdentityChanged);
+    }
+    let uuid = clone_uuid(&file)?;
+    pin.validate()?;
+    Ok(uuid)
+}
+
 fn native_volume(file: &File) -> Result<([u8; 16], bool), EndpointError> {
     if let Ok((uuid, device)) = btrfs_uuid(file) {
         device_health(file, device)?;
@@ -387,21 +419,18 @@ fn device_identity(device: u64, depth: usize) -> Result<Vec<u8>, EndpointError> 
         for attribute in ["wwid", "device/wwid", "serial", "device/serial"] {
             if let Ok(value) = bounded_text(&path.join(attribute)) {
                 let mut identity = if attribute.ends_with("wwid") {
-                    b"wwid".to_vec()
+                    let mut identity = b"wwid\0".to_vec();
+                    identity.extend_from_slice(&value);
+                    identity
                 } else {
-                    b"serial".to_vec()
+                    let vendor = bounded_text(&path.join("vendor"))
+                        .or_else(|_| bounded_text(&path.join("device/vendor")))
+                        .ok();
+                    let model = bounded_text(&path.join("model"))
+                        .or_else(|_| bounded_text(&path.join("device/model")))
+                        .ok();
+                    super::serial_identity(&value, vendor.as_deref(), model.as_deref())?
                 };
-                identity.push(0);
-                identity.extend_from_slice(&value);
-                if attribute.ends_with("serial") {
-                    // Serial namespaces are manufacturer/model-specific.
-                    for field in ["model", "device/model", "vendor", "device/vendor"] {
-                        if let Ok(value) = bounded_text(&path.join(field)) {
-                            identity.push(0);
-                            identity.extend_from_slice(&value);
-                        }
-                    }
-                }
                 if let Ok(start) = bounded_text(&sys.join("start")) {
                     identity.push(0);
                     identity.extend_from_slice(&start);
@@ -439,17 +468,8 @@ pub(super) fn inspect(file: &File) -> Result<NativeEvidence, EndpointError> {
         if other.device == current.device || other.kernel_type != current.kernel_type {
             continue;
         }
-        let opened = match super::Pin::open(&other.path) {
-            Ok(pin) => pin,
-            // An inaccessible mount could hide a clone; refuse uncertainty.
-            Err(EndpointError::PermissionDenied) => return Err(EndpointError::AmbiguousIdentity),
-            Err(_) => continue,
-        };
-        if let Ok(candidate) = readable_directory(&opened.file).and_then(|f| native_volume(&f))
-            && candidate.0 == volume
-        {
-            return Err(EndpointError::AmbiguousIdentity);
-        }
+        let candidate = inspect_clone_candidate(other);
+        super::reject_clone_candidate(&volume, candidate)?;
     }
     let mut mount = id.to_le_bytes().to_vec();
     mount.extend_from_slice(current.device.as_bytes());
@@ -527,4 +547,42 @@ pub(super) fn check_metadata(file: &File, directory: bool) -> Result<bool, Endpo
         return Err(EndpointError::Unsupported);
     }
     Ok(!directory && meta.mode() & 0o111 != 0)
+}
+
+#[cfg(test)]
+mod clone_tests {
+    use super::*;
+    #[test]
+    fn native_unresolved_clone_queries_and_paths_require_reselection() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("target");
+        std::fs::create_dir(&selected).unwrap();
+        std::os::unix::fs::symlink(&selected, root.path().join("link")).unwrap();
+        for name in ["missing", "link"] {
+            let mount = Mount {
+                id: 0,
+                device: "0:0".to_owned(),
+                path: root.path().join(name),
+                readonly: false,
+                kernel_type: "ext4".to_owned(),
+                unsafe_options: false,
+            };
+            let candidate = inspect_clone_candidate(&mount);
+            assert!(candidate.is_err());
+            assert_eq!(
+                super::super::reject_clone_candidate(&[1; 16], candidate),
+                Err(EndpointError::AmbiguousIdentity)
+            );
+        }
+        // Native ioctl failure on a real unsupported descriptor must not count
+        // as evidence of a different UUID. This is no substitute for the
+        // separately coordinated same-filesystem mounted-clone fixture.
+        let device = File::open("/dev/null").unwrap();
+        let candidate = clone_uuid(&device);
+        assert!(candidate.is_err());
+        assert_eq!(
+            super::super::reject_clone_candidate(&[1; 16], candidate),
+            Err(EndpointError::AmbiguousIdentity)
+        );
+    }
 }
