@@ -3,6 +3,46 @@
 Settings is a client of system authorities; it is not a second implementation
 of them.
 
+## Ownership and roaming
+
+Every leaf in the shared `settings.json` contract has an explicit entry in
+`settings_store::continuity`. The registry is the boundary, not a section-name
+convention. A new leaf that has not been reviewed is readable by its owner but
+is excluded from personal-device continuity.
+
+The scopes are deliberately distinct:
+
+| Scope | Owner and transport |
+| --- | --- |
+| Personal | Converges only between devices certified to the same identity. |
+| Workspace | Lives in the workspace record plane and follows its collaborators and permissions, never the personal settings file. |
+| Device-local | Remains on the machine whose hardware or local environment gives it meaning. |
+| Secret | Uses a purpose-built sealed transport or local credential vault; never ordinary settings sync. |
+| Derived | Recomputed/runtime history and never treated as durable personal intent. |
+
+Examples matter more than the section name. Theme, locale, accessibility,
+shortcuts, text assistance, and Quick Settings arrangement are personal.
+Connector layout/scale, audio node selections, tablet mapping, calibration,
+power policy, update channel, portal-granted paths, loopback model endpoints,
+and Continuity privacy toggles are device-local. Workspace roles, default-app
+policy, and permissions remain workspace state. API keys, local credentials,
+Wi-Fi passwords, and NetworkManager secrets are secret.
+
+The device fabric projects settings through the typed registry and resolves a
+key by `(counter, device identity)`, giving the same winner regardless of
+arrival order. The shell writes a bounded mode-`0600`
+`continuity-provenance.json` projection for Settings. It contains canonical
+keys, certified device labels/ids and revisions. Wi-Fi rows contain only keyed
+network id, SSID, security kind, and origin. Ciphertext envelopes and plaintext
+passwords are not representable in the projection.
+
+Settings presents the winner and any devices still advertising a different
+value. This is explanatory UI, not a second merge engine. Editing the ordinary
+setting creates a new local revision through the existing owner. A malformed
+or future-version provenance file is refused rather than partially displayed.
+Version 1 provenance (settings origins only) migrates on read to version 2;
+version 2 adds conflict alternatives and sealed Wi-Fi profile provenance.
+
 ## Updates
 
 - `bootc` owns image deployments and rollback targets. The update pane starts
