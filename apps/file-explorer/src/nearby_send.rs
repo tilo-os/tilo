@@ -11,8 +11,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ui::collaboration::{
-    CollabEvent, CollabRequest, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferPhase,
-    NearbyTransferReply, NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
+    CollabEvent, CollabRequest, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferHandle,
+    NearbyTransferPhase, NearbyTransferReply, NearbyTransferSnapshot, NearbyTransferStatus,
+    NearbyTransferTarget,
 };
 
 const APP_ID: &str = "dev.tilo.file-explorer";
@@ -33,7 +34,7 @@ pub enum NearbyUiEffect {
     Offer(NearbyTransferStatus),
     Failed(NearbyTransferStatus),
     Status(String),
-    SendResult(Result<[u8; 16], String>),
+    SendResult(Result<NearbyTransferHandle, String>),
 }
 
 pub struct NearbySendState {
@@ -42,8 +43,8 @@ pub struct NearbySendState {
     requests: VecDeque<CollabRequest>,
     snapshot: NearbyTransferSnapshot,
     next_poll: Instant,
-    shown_offer: Option<[u8; 16]>,
-    observed_phases: BTreeMap<[u8; 16], NearbyTransferPhase>,
+    shown_offer: Option<NearbyTransferHandle>,
+    observed_phases: BTreeMap<NearbyTransferHandle, NearbyTransferPhase>,
 }
 
 impl Default for NearbySendState {
@@ -91,26 +92,20 @@ impl NearbySendState {
         );
     }
 
-    pub fn decide(&mut self, transfer_id: [u8; 16], accept: bool) {
+    pub fn decide(&mut self, handle: NearbyTransferHandle, accept: bool) {
         self.shown_offer = None;
         self.queue(
-            NearbyTransferCommand::Decide {
-                transfer_id,
-                accept,
-            },
+            NearbyTransferCommand::Decide { handle, accept },
             Pending::Decide,
         );
     }
 
-    pub fn cancel(&mut self, transfer_id: [u8; 16]) {
-        self.queue(
-            NearbyTransferCommand::Cancel { transfer_id },
-            Pending::Cancel,
-        );
+    pub fn cancel(&mut self, handle: NearbyTransferHandle) {
+        self.queue(NearbyTransferCommand::Cancel { handle }, Pending::Cancel);
     }
 
-    pub fn retry(&mut self, transfer_id: [u8; 16]) {
-        self.queue(NearbyTransferCommand::Retry { transfer_id }, Pending::Retry);
+    pub fn retry(&mut self, handle: NearbyTransferHandle) {
+        self.queue(NearbyTransferCommand::Retry { handle }, Pending::Retry);
     }
 
     pub fn poll_if_due(&mut self, now: Instant) {
@@ -165,20 +160,33 @@ impl NearbySendState {
         match (pending, reply) {
             (Pending::Snapshot { open_picker }, NearbyTransferReply::Snapshot { snapshot }) => {
                 self.snapshot = snapshot.clone();
+                self.observed_phases.retain(|handle, _| {
+                    self.snapshot
+                        .transfers
+                        .iter()
+                        .any(|transfer| transfer.handle == *handle)
+                });
+                if self.shown_offer.is_some_and(|handle| {
+                    !self
+                        .snapshot
+                        .transfers
+                        .iter()
+                        .any(|transfer| transfer.handle == handle)
+                }) {
+                    self.shown_offer = None;
+                }
                 let mut effects = Vec::new();
                 if open_picker {
                     effects.push(NearbyUiEffect::OpenPicker(self.snapshot.targets.clone()));
                 }
                 for transfer in &self.snapshot.transfers {
                     if transfer.phase == NearbyTransferPhase::AwaitingConsent
-                        && self.shown_offer != Some(transfer.transfer_id)
+                        && self.shown_offer != Some(transfer.handle)
                     {
-                        self.shown_offer = Some(transfer.transfer_id);
+                        self.shown_offer = Some(transfer.handle);
                         effects.push(NearbyUiEffect::Offer(transfer.clone()));
                     }
-                    let old = self
-                        .observed_phases
-                        .insert(transfer.transfer_id, transfer.phase);
+                    let old = self.observed_phases.insert(transfer.handle, transfer.phase);
                     if old == Some(transfer.phase) {
                         continue;
                     }
@@ -216,9 +224,9 @@ impl NearbySendState {
                 }
                 effects
             }
-            (Pending::Send, NearbyTransferReply::Queued { transfer_id }) => {
+            (Pending::Send, NearbyTransferReply::Queued { handle }) => {
                 vec![
-                    NearbyUiEffect::SendResult(Ok(*transfer_id)),
+                    NearbyUiEffect::SendResult(Ok(*handle)),
                     NearbyUiEffect::Status("Nearby Send queued securely".into()),
                 ]
             }
@@ -253,7 +261,7 @@ mod tests {
             panic!("wrong request");
         };
         let offer = NearbyTransferStatus {
-            transfer_id: [8; 16],
+            handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
             name: "Photos".into(),
             device_label: "Travel laptop".into(),
             direction: NearbyTransferDirection::Receiving,
