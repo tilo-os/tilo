@@ -48,7 +48,10 @@ CACHE_CREDENTIALS = {'AWS_ACCESS_KEY_ID': 'aws_access_key_id',
 def validate_inputs(wpe, generation, revision, branch, mode='full-build',
                     architecture='x86_64', kernel_candidate='', wpe_stage_receipt=None,
                     wpe_adoption_receipt=None, wpe_adoption_sha256='',
-                    fex_payload_candidate='', windows_guest_candidate='', hardware_profile='generic'):
+                    fex_payload_candidate='', windows_guest_candidate='', hardware_profile='generic',
+                    firmware_candidate='', firmware_manifest_sha256='', require_firmware_artifact=False):
+    validate_firmware_selection(mode, hardware_profile, firmware_candidate, firmware_manifest_sha256,
+                                require_firmware_artifact)
     hardware_definition(hardware_profile, architecture)
     if architecture not in ARCHITECTURES:
         raise ValueError('unsupported native architecture')
@@ -76,6 +79,24 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
         raise ValueError('full committed source revision required')
     if not branch.startswith('refs/heads/codex/'):
         raise ValueError('provisional full compilation is restricted to codex branches')
+
+
+def validate_firmware_selection(mode, profile, reference, manifest_sha256, required=False):
+    if required and mode == 'full-build' and profile != 'generic' and not reference:
+        raise ValueError('board CI builds require an explicit immutable firmware candidate')
+    if reference or manifest_sha256:
+        if mode != 'full-build' or profile == 'generic':
+            raise ValueError('firmware artifacts require an explicit board full-build')
+        immutable_candidate(reference)
+        if not re.fullmatch(r'[0-9a-f]{64}', manifest_sha256):
+            raise ValueError('firmware artifact requires an independent manifest SHA256')
+
+
+def import_hardware_inputs(reference, manifest_sha256, profile, architecture):
+    """Import inert firmware data before starting any compiler or signer."""
+    return json.loads(run('python3', 'os/dev/hardware-firmware-artifact.py', 'import',
+        '--reference', reference, '--manifest-sha256', manifest_sha256,
+        '--profile', profile, '--architecture', architecture, '--repo', str(REPO)))
 
 
 def hardware_definition(profile, architecture):
@@ -589,6 +610,8 @@ def main(argv=None):
     parser.add_argument('--architecture', choices=tuple(ARCHITECTURES), default='x86_64')
     parser.add_argument('--hardware-profile', default='generic',
                         help='Hardware definition; firmware must already be staged locally in os/hardware/firmware/PROFILE')
+    parser.add_argument('--firmware-candidate', default='')
+    parser.add_argument('--firmware-manifest-sha256', default='')
     parser.add_argument('--kernel-candidate', default='')
     parser.add_argument('--fex-payload-candidate', default='')
     parser.add_argument('--windows-guest-candidate', default='')
@@ -601,7 +624,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate,
                     args.wpe_stage_receipt, args.wpe_adoption_receipt, args.wpe_adoption_sha256,
-                    args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile)
+                    args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile,
+                    args.firmware_candidate, args.firmware_manifest_sha256)
     for candidate in (args.rpms_candidate, args.builder_candidate):
         if candidate:
             immutable_candidate(candidate)
@@ -609,6 +633,10 @@ def main(argv=None):
         raise ValueError('already-root matching native Linux guest required')
     if run('git', 'rev-parse', 'HEAD') != args.revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
         raise ValueError('checkout must be clean and match the requested revision')
+    firmware_import = None
+    if args.firmware_candidate:
+        firmware_import = import_hardware_inputs(args.firmware_candidate, args.firmware_manifest_sha256,
+                                                  args.hardware_profile, args.architecture)
     firmware = local_hardware_inputs(args.hardware_profile, args.architecture) if args.mode == 'full-build' else {}
     stage = adopted = adoption_raw = None
     if args.mode == 'full-build':
@@ -619,6 +647,8 @@ def main(argv=None):
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700)
     EVIDENCE.mkdir(mode=0o755)
+    if firmware_import is not None:
+        write_receipt('firmware-import.json', firmware_import)
     cache = cache_configuration(os.environ)
     verify_remote_cache(cache)
     if args.mode == 'cache-only':
@@ -643,6 +673,8 @@ def main(argv=None):
     write_receipt('inputs.json', {'purpose': 'retained-full-source-compilation',
         'installable': False, 'revision': args.revision, 'architecture': args.architecture,
         'hardware_profile': args.hardware_profile, 'firmware_sha256': firmware,
+        'firmware_candidate': args.firmware_candidate or None,
+        'firmware_manifest_sha256': args.firmware_manifest_sha256 or None,
         'generation': args.generation, 'wpe_candidate': args.wpe or None, 'builder': args.builder_candidate,
         'wpe_input_mode': 'adopted-development' if adopted is not None else 'current-producer',
         'wpe_adoption_sha256': args.wpe_adoption_sha256 or None,

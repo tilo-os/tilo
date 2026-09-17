@@ -9,6 +9,19 @@ on:
         type: choice
         default: x86_64
         options: [x86_64, aarch64]
+      hardware_profile:
+        description: Explicit hardware definition; generic uses standard firmware boot
+        required: true
+        type: string
+        default: generic
+      firmware_candidate:
+        description: Immutable firmware-only artifact; required for board full-build
+        required: false
+        type: string
+      firmware_manifest_sha256:
+        description: Independently reviewed SHA256 of the firmware manifest
+        required: false
+        type: string
       kernel_candidate:
         description: Immutable kernel RPM image; required for ARM full-build
         required: false
@@ -85,6 +98,9 @@ jobs:
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
           ARCHITECTURE: ${{ inputs.architecture }}
+          HARDWARE_PROFILE: ${{ inputs.hardware_profile }}
+          FIRMWARE_CANDIDATE: ${{ inputs.firmware_candidate }}
+          FIRMWARE_MANIFEST_SHA256: ${{ inputs.firmware_manifest_sha256 }}
           KERNEL_CANDIDATE: ${{ inputs.kernel_candidate }}
           RPMS_CANDIDATE: ${{ inputs.rpms_candidate }}
           BUILDER_CANDIDATE: ${{ inputs.builder_candidate }}
@@ -97,7 +113,7 @@ jobs:
           bash os/dev/assert-native-arch.sh "$ARCHITECTURE"
           python3 os/tests/test_development_compile.py
           python3 os/tests/test_compile_retention.py
-          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"], wpe_adoption_receipt=os.environ["WPE_ADOPTION_RECEIPT"] or None, wpe_adoption_sha256=os.environ["WPE_ADOPTION_SHA256"], fex_payload_candidate=os.environ["FEX_PAYLOAD_CANDIDATE"], windows_guest_candidate=os.environ["WINDOWS_GUEST_CANDIDATE"])'
+          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"], wpe_adoption_receipt=os.environ["WPE_ADOPTION_RECEIPT"] or None, wpe_adoption_sha256=os.environ["WPE_ADOPTION_SHA256"], fex_payload_candidate=os.environ["FEX_PAYLOAD_CANDIDATE"], windows_guest_candidate=os.environ["WINDOWS_GUEST_CANDIDATE"], hardware_profile=os.environ["HARDWARE_PROFILE"], firmware_candidate=os.environ["FIRMWARE_CANDIDATE"], firmware_manifest_sha256=os.environ["FIRMWARE_MANIFEST_SHA256"], require_firmware_artifact=True)'
           python3 - <<'PY'
           import os, re
           for name in ('KERNEL_CANDIDATE', 'RPMS_CANDIDATE', 'BUILDER_CANDIDATE'):
@@ -124,6 +140,9 @@ jobs:
           TEST_GENERATION: ${{ inputs.generation }}
           WPE_STAGE_RECEIPT: ${{ inputs.wpe_stage_receipt }}
           ARCHITECTURE: ${{ inputs.architecture }}
+          HARDWARE_PROFILE: ${{ inputs.hardware_profile }}
+          FIRMWARE_CANDIDATE: ${{ inputs.firmware_candidate }}
+          FIRMWARE_MANIFEST_SHA256: ${{ inputs.firmware_manifest_sha256 }}
           KERNEL_CANDIDATE: ${{ inputs.kernel_candidate }}
           RPMS_CANDIDATE: ${{ inputs.rpms_candidate }}
           BUILDER_CANDIDATE: ${{ inputs.builder_candidate }}
@@ -141,7 +160,7 @@ jobs:
           mkdir "$evidence"
           cleanup() {
             # Export an explicit public allowlist, never the private workspace.
-            for file in inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json wpe-adoption.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
+            for file in firmware-import.json inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json wpe-adoption.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
               docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
             done
             mkdir -p "$evidence/public-trust"
@@ -199,6 +218,8 @@ jobs:
             --env SCCACHE_S3_USE_SSL --env SCCACHE_S3_KEY_PREFIX \
             --env REGISTRY_AUTH_FILE=/registry-auth.json \
             "$name:tools" --mode "$COMPILE_MODE" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
+              --hardware-profile "$HARDWARE_PROFILE" --firmware-candidate "$FIRMWARE_CANDIDATE" \
+              --firmware-manifest-sha256 "$FIRMWARE_MANIFEST_SHA256" \
               --architecture "$ARCHITECTURE" --kernel-candidate "$KERNEL_CANDIDATE" \
               --rpms-candidate "$RPMS_CANDIDATE" --builder-candidate "$BUILDER_CANDIDATE" \
               --fex-payload-candidate "$FEX_PAYLOAD_CANDIDATE" --windows-guest-candidate "$WINDOWS_GUEST_CANDIDATE" \
