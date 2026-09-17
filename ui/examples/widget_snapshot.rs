@@ -70,6 +70,23 @@ fn stamp(
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root = widget.build_layout(&mut taffy, theme, &mut node_map);
+    // A leaf that fills its slot with `flex_grow` (VideoPlayer, ImageViewer)
+    // has no flex parent here, so it would resolve to a zero rect and paint
+    // its chrome at the cell origin. Give such a root the cell itself, as a
+    // parent Row or Column would.
+    if let Ok(style) = taffy.style(root) {
+        let fills_slot = style.flex_grow > 0.0
+            && style.size.width.into_option().is_none()
+            && style.size.height.into_option().is_none();
+        if fills_slot {
+            let mut style = style.clone();
+            style.size = Size {
+                width: taffy::style_helpers::length(size.0),
+                height: taffy::style_helpers::length(size.1),
+            };
+            let _ = taffy.set_style(root, style);
+        }
+    }
 
     let _ = taffy.compute_layout_with_measure(
         root,
