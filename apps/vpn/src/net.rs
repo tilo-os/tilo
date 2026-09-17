@@ -15,9 +15,16 @@
 //! behind the `TILO_VPN_ALLOW_EXEC` write-gate. The *app* only polls them for a
 //! tunnel it actually connected, which keeps unit tests free of subprocesses.
 
-use std::process::Command;
+use std::time::Duration;
 
 use crate::model::{ConnKind, Connection};
+
+const PROBE_OUTPUT_LIMIT: usize = 64 * 1024;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn run_probe(program: &str, args: &[&str]) -> Option<bounded_command::Output> {
+    bounded_command::run(program, args, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT).ok()
+}
 
 /// Cumulative interface byte counters, as read from the kernel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,10 +141,7 @@ pub fn read_wg_transfer(iface: &str) -> Option<Transfer> {
     if !is_valid_iface(iface) {
         return None;
     }
-    let out = Command::new("wg")
-        .args(["show", iface, "transfer"])
-        .output()
-        .ok()?;
+    let out = run_probe("wg", &["show", iface, "transfer"])?;
     if !out.status.success() {
         return None;
     }
@@ -155,10 +159,7 @@ pub fn probe_interface_up(iface: &str) -> Option<bool> {
     if !is_valid_iface(iface) {
         return Some(false);
     }
-    let out = Command::new("ip")
-        .args(["link", "show", iface])
-        .output()
-        .ok()?;
+    let out = run_probe("ip", &["link", "show", iface])?;
     if !out.status.success() {
         // `ip` ran but the interface does not exist → it is not up.
         return Some(false);
@@ -186,7 +187,7 @@ pub fn read_transfer(conn: &Connection) -> Option<Transfer> {
 /// reconciled through `NetworkManager` instead.
 pub fn openvpn_running(conn: &Connection) -> Option<bool> {
     let needle = format!("{}.ovpn", conn.name);
-    let out = Command::new("pgrep").args(["-f", &needle]).output().ok()?;
+    let out = run_probe("pgrep", &["-f", "--", &needle])?;
     match out.status.code() {
         Some(0) => Some(true),  // at least one matching process
         Some(1) => Some(false), // pgrep ran, found nothing
@@ -209,6 +210,7 @@ pub fn probe_status(conn: &Connection) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     // Real `wg show wg0 transfer` output — two peers, tab-separated.
     const WG_TRANSFER: &str = "\
