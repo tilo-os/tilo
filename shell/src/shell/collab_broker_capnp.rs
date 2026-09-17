@@ -4181,6 +4181,7 @@ impl CapnpBrokerState {
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::Realtime(_) => {
                 // Invocation delivery and cooperative cancellation are
