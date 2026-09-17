@@ -127,9 +127,27 @@ fn begin_refresh(status: &std::sync::Mutex<Status>) -> bool {
     status.message = "Updating filter lists…".into();
     true
 }
+fn last_successful_update(directory: &Path) -> Option<u64> {
+    let path = directory.join("native-filter-updated.json");
+    std::fs::metadata(&path)
+        .ok()
+        .filter(|m| m.len() <= 256)
+        .and_then(|_| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
 pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
     if !begin_refresh(state()) {
         return;
+    }
+    // Restore independently of cache freshness or network success. A failed
+    // startup refresh must not erase the previous successful download time.
+    if let Some(directory) = crate::blocker::cache_dir() {
+        let mut status = state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        status.updated = status
+            .updated
+            .or_else(|| last_successful_update(&directory));
     }
     let engine = Arc::downgrade(engine);
     let wake = ui::WakeHandle::new();
@@ -191,15 +209,6 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
                             }
                             let _ = std::fs::remove_file(temporary);
                         }
-                    } else if let Some(path) = directory
-                        .as_ref()
-                        .map(|d| d.join("native-filter-updated.json"))
-                    {
-                        status.updated = std::fs::metadata(&path)
-                            .ok()
-                            .filter(|m| m.len() <= 256)
-                            .and_then(|_| std::fs::read(path).ok())
-                            .and_then(|v| serde_json::from_slice(&v).ok());
                     }
                     status.message = if downloaded {
                         "Filter lists updated"
@@ -292,6 +301,78 @@ mod tests {
         assert!(refreshed.0.contains("fresh.test"));
         server.join().unwrap();
     }
+    #[test]
+    fn offline_restart_restores_last_successful_update() {
+        const LAST_SUCCESS: u64 = 1_700_000_123;
+        if std::env::var_os("QOS_TEST_FILTER_RESTART_CHILD").is_some() {
+            crate::storage::configure(None).unwrap();
+            let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+            start(engine.clone());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while status().busy && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let result = status();
+            assert!(!result.busy);
+            assert!(result.message.starts_with("Update failed:"), "{result:?}");
+            assert_eq!(
+                result.updated,
+                Some(LAST_SUCCESS),
+                "offline restart must retain persisted success time"
+            );
+            let directory = crate::blocker::cache_dir().unwrap();
+            assert!(cached_rules(&directory).contains("cached.fixture.test"));
+            return;
+        }
+        use std::io::{Read, Write};
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("cache/filters");
+        std::fs::create_dir_all(&directory).unwrap();
+        for (name, _) in crate::blocker::LISTS {
+            let path = directory.join(name);
+            std::fs::write(&path, "||cached.fixture.test^").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+                .unwrap();
+        }
+        std::fs::write(
+            directory.join("native-filter-updated.json"),
+            LAST_SUCCESS.to_string(),
+        )
+        .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/offline", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 503 Offline\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_blocker::tests::offline_restart_restores_last_successful_update",
+                "--nocapture",
+            ])
+            .env("QOS_TEST_FILTER_RESTART_CHILD", "1")
+            .env("QOS_BROWSER_APP_ROOT", root.path())
+            .env("QOS_BROWSER_FILTER_ENDPOINT", endpoint)
+            .output()
+            .unwrap();
+        server.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn concurrent_refresh_requests_admit_only_one_worker() {
         let state = Arc::new(std::sync::Mutex::new(Status::default()));

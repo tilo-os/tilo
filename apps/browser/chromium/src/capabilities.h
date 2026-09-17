@@ -1,6 +1,8 @@
 #pragma once
 #include "include/cef_download_handler.h"
 #include "include/cef_permission_handler.h"
+#include "include/cef_request_context.h"
+#include "site_policy.h"
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
 #include <filesystem>
@@ -88,7 +90,8 @@ class Downloads final : public CefDownloadHandler {
   std::map<int,CefRefPtr<CefDownloadItemCallback>> downloads_active_;
   IMPLEMENT_REFCOUNTING(Downloads);
 };
-// Permissions remain scoped to one live page and are denied when it closes.
+// Pending prompts belong to one live page. Device grants and revocation use
+// the same exact-origin content settings reported by site information.
 class Capabilities final : public CefPermissionHandler {
  public:
   using Emit=std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
@@ -98,9 +101,16 @@ class Capabilities final : public CefPermissionHandler {
     int id=++sequence_;permissions_[id]={callback,nullptr,permissions,prompt};
     Prompt(id,origin,PermissionNames(permissions,false));return true;
   }
-  bool OnRequestMediaAccessPermission(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,const CefString& origin,uint32_t permissions,CefRefPtr<CefMediaAccessCallback> callback) override {
+  bool OnRequestMediaAccessPermission(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,const CefString& requesting_origin,uint32_t permissions,CefRefPtr<CefMediaAccessCallback> callback) override {
+    const auto origin=Origin(requesting_origin);auto context=browser->GetHost()->GetRequestContext();
+    if(origin.empty() || MediaBlocked(context,origin,permissions)) {callback->Cancel();return true;}
+    constexpr auto devices=CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE|CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE;
+    bool granted=permissions && !(permissions & ~devices);
+    for(const auto& device:kMediaSettings) if(permissions & device.mask)
+      granted=granted && context->GetContentSetting(origin,origin,device.type)==CEF_CONTENT_SETTING_VALUE_ALLOW;
+    if(granted) {callback->Continue(permissions);return true;}
     if(permissions_.size()>=32) {callback->Cancel();return true;}
-    int id=++sequence_;permissions_[id]={nullptr,callback,permissions,0};
+    int id=++sequence_;permissions_[id]={nullptr,callback,permissions,0,context,origin};
     Prompt(id,origin,PermissionNames(permissions,true));return true;
   }
   void OnDismissPermissionPrompt(CefRefPtr<CefBrowser>,uint64_t prompt,cef_permission_request_result_t) override {
@@ -110,13 +120,29 @@ class Capabilities final : public CefPermissionHandler {
     auto it=permissions_.find(id);if(it==permissions_.end()) return;
     auto p=it->second;permissions_.erase(it);
     if(p.permission) p.permission->Continue(allow?CEF_PERMISSION_RESULT_ACCEPT:CEF_PERMISSION_RESULT_DENY);
-    if(p.media) { if(allow) p.media->Continue(p.mask);else p.media->Cancel(); }
+    if(p.media) {
+      // A different tab may revoke the origin while this prompt is pending.
+      allow=allow && !MediaBlocked(p.context,p.origin,p.mask);
+      if(allow) {
+        for(const auto& device:kMediaSettings) if(p.mask & device.mask)
+          p.context->SetContentSetting(p.origin,p.origin,device.type,CEF_CONTENT_SETTING_VALUE_ALLOW);
+        p.media->Continue(p.mask);
+      } else p.media->Cancel();
+    }
     Closed(id);
   }
   void Close() {
     while(!permissions_.empty()) PermissionDecision(permissions_.begin()->first,false);
   }
  private:
+  struct MediaSetting {uint32_t mask;cef_content_setting_types_t type;};
+  inline static constexpr MediaSetting kMediaSettings[]={
+    {CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE,CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_MIC},
+    {CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE,CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA}};
+  static bool MediaBlocked(CefRefPtr<CefRequestContext> context,const std::string& origin,uint32_t mask) {
+    for(const auto& device:kMediaSettings) if((mask & device.mask) && context->GetContentSetting(origin,origin,device.type)==CEF_CONTENT_SETTING_VALUE_BLOCK) return true;
+    return false;
+  }
   static std::string PermissionNames(uint32_t mask,bool media) {
     const char* names[]={"augmented reality","camera pan/tilt/zoom","camera","captured surface control","clipboard","top-level storage","disk quota","local fonts","location","hand tracking","identity provider","idle detection","microphone","MIDI","multiple downloads","notifications","keyboard lock","pointer lock","protected media identifier","protocol handler","storage access","virtual reality","web app installation","window management","file system access","local network access","local network","loopback network","sensors"};
     const char* media_names[]={"microphone","camera","desktop audio","screen capture"};
@@ -127,7 +153,7 @@ class Capabilities final : public CefPermissionHandler {
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Capabilities> self,int id){self->PermissionDecision(id,false);},CefRefPtr<Capabilities>(this),id),60000);
   }
   void Closed(int id) {auto d=CefDictionaryValue::Create();d->SetInt("id",id);emit_("permission_closed",d);}
-  struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;};
+  struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;CefRefPtr<CefRequestContext> context;std::string origin;};
   Emit emit_;int sequence_=0;
   std::map<int,Permission> permissions_;
   IMPLEMENT_REFCOUNTING(Capabilities);
