@@ -51,7 +51,7 @@ use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{EmptyState, NavPane, NavShell, TextInput, Toggle, ToggleFace, Widget};
 
 use crate::account::{Account, AccountStore};
-use crate::compose::{ComposeAction, ComposeWindow};
+use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
 use crate::draw::{fill_rect, fill_round, stroke_round};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
@@ -3083,9 +3083,17 @@ impl MailApp {
         taffy: &TaffyTree<()>,
     ) -> bool {
         let format_before = self.compose.format();
-        let (consumed, action) =
-            self.compose
-                .handle_event(event, scale_factor, &modifiers, state, path, node_id, taffy);
+        let (consumed, action) = self.compose.handle_event(
+            event,
+            &mut ComposeEventContext {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                node_id,
+                taffy,
+            },
+        );
         let lifecycle_boundary = !matches!(&action, ComposeAction::None);
         match action {
             ComposeAction::RequestAttachment => self.request_compose_attachment(),

@@ -61,13 +61,13 @@ struct DrawContext<'a> {
     theme: &'a Theme,
 }
 
-struct EventContext<'a> {
-    scale_factor: f64,
-    modifiers: winit::event::Modifiers,
-    state: &'a mut automerge::AutoCommit,
-    path: &'a automerge::ObjId,
-    node_id: taffy::NodeId,
-    taffy: &'a taffy::TaffyTree<()>,
+pub(crate) struct ComposeEventContext<'a> {
+    pub(crate) scale_factor: f64,
+    pub(crate) modifiers: winit::event::Modifiers,
+    pub(crate) state: &'a mut automerge::AutoCommit,
+    pub(crate) path: &'a automerge::ObjId,
+    pub(crate) node_id: taffy::NodeId,
+    pub(crate) taffy: &'a taffy::TaffyTree<()>,
 }
 
 /// Where the compose window is parked.
@@ -282,10 +282,6 @@ impl ComposeWindow {
     /// Semantic mirror of the immediate-mode compose surface. Bounds come from
     /// the same hit map as pointer input and values come from the retained text
     /// fields, so screen readers and automation operate the editor users see.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the dialog's complete semantic tree is kept beside its visual control inventory to prevent drift"
-    )]
     pub fn accessibility_node(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         let rect_for = |hit| {
@@ -358,9 +354,39 @@ impl ComposeWindow {
                 ),
             );
         }
+        for (hit, name, target, checked) in self.accessibility_control_specs() {
+            let Some(rect) = rect_for(hit) else { continue };
+            let role = if checked.is_some() {
+                Role::ToggleButton
+            } else {
+                Role::Button
+            };
+            children.push(
+                AccessNode::new(role)
+                    .with_name(name)
+                    .with_bounds(rect)
+                    .with_action_target(format!("mail.compose:{target}"))
+                    .with_state(AccessState {
+                        focusable: true,
+                        checked,
+                        ..Default::default()
+                    }),
+            );
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name("Compose email")
+            .with_description("Email composer")
+            .with_bounds(self.rect)
+            .with_state(AccessState::new().modal(true))
+            .with_children(children)
+    }
+
+    fn accessibility_control_specs(
+        &self,
+    ) -> Vec<(ComposeHit, &'static str, &'static str, Option<bool>)> {
         let marks = self.editor.active_marks();
         let block = self.editor.active_block_kind();
-        for (hit, name, target, checked) in [
+        vec![
             (ComposeHit::Send, "Send", "send", None),
             (ComposeHit::SaveDraft, "Save draft", "save", None),
             (ComposeHit::Discard, "Discard", "discard", None),
@@ -416,31 +442,7 @@ impl ComposeWindow {
                 Some(matches!(block, BlockKind::Quote)),
             ),
             (ComposeHit::Link, "Insert link", "link", None),
-        ] {
-            let Some(rect) = rect_for(hit) else { continue };
-            let role = if checked.is_some() {
-                Role::ToggleButton
-            } else {
-                Role::Button
-            };
-            children.push(
-                AccessNode::new(role)
-                    .with_name(name)
-                    .with_bounds(rect)
-                    .with_action_target(format!("mail.compose:{target}"))
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked,
-                        ..Default::default()
-                    }),
-            );
-        }
-        AccessNode::new(Role::Dialog)
-            .with_name("Compose email")
-            .with_description("Email composer")
-            .with_bounds(self.rect)
-            .with_state(AccessState::new().modal(true))
-            .with_children(children)
+        ]
     }
 
     pub fn perform_semantic_action(
@@ -998,7 +1000,7 @@ impl ComposeWindow {
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
         event: &WindowEvent,
-        ctx: &mut EventContext<'_>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> (bool, ComposeAction) {
         let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         self.last_mouse = pt;
@@ -1060,35 +1062,17 @@ impl ComposeWindow {
         (self.rect.contains(pt), ComposeAction::None)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "deliberately shaped to match Widget::handle_event's own parameter list (event/scale_factor/modifiers/state/path/node_id/taffy), the convention every host call site in this codebase already expects"
-    )]
-    pub fn handle_event(
+    pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> (bool, ComposeAction) {
         if !self.open {
             return (false, ComposeAction::None);
         }
-        let mut ctx = EventContext {
-            scale_factor,
-            modifiers: *modifiers,
-            state,
-            path,
-            node_id,
-            taffy,
-        };
-
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, event, &mut ctx)
+                self.handle_cursor_moved(*position, event, ctx)
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1118,7 +1102,7 @@ impl ComposeWindow {
                     .find(|(r, _)| r.contains(pt))
                     .map(|(_, h)| *h);
                 if let Some(hit) = hit {
-                    return (true, self.dispatch_hit(hit, event, pt, &mut ctx));
+                    return (true, self.dispatch_hit(hit, event, pt, ctx));
                 }
                 (true, ComposeAction::None)
             }
@@ -1132,7 +1116,7 @@ impl ComposeWindow {
                 }
                 (self.rect.contains(self.last_mouse), ComposeAction::None)
             }
-            WindowEvent::KeyboardInput { .. } => self.handle_keyboard_input(event, &mut ctx),
+            WindowEvent::KeyboardInput { .. } => self.handle_keyboard_input(event, ctx),
             _ => (self.rect.contains(self.last_mouse), ComposeAction::None),
         }
     }
@@ -1144,7 +1128,7 @@ impl ComposeWindow {
     fn handle_keyboard_input(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut EventContext<'_>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> (bool, ComposeAction) {
         // The inline prompt captures keys while open: Esc cancels it (not the
         // window), Enter confirms, everything else edits the field.
@@ -1173,7 +1157,7 @@ impl ComposeWindow {
     fn handle_prompt_key(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut EventContext<'_>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> (bool, ComposeAction) {
         use winit::event::KeyEvent as WKeyEvent;
         use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
@@ -1236,7 +1220,7 @@ impl ComposeWindow {
     /// Route a key to the HTML editor or the plain-text body input,
     /// depending on the active compose format. Part of
     /// [`Self::handle_keyboard_input`].
-    fn handle_body_key(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
+    fn handle_body_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         let shift = ctx.modifiers.state().shift_key();
         let ctrl = ctx.modifiers.state().control_key();
         match self.format {
@@ -1264,7 +1248,7 @@ impl ComposeWindow {
 
     /// Forward a key to whichever header field (To/Cc/Bcc/Subject) has focus.
     /// Part of [`Self::handle_keyboard_input`].
-    fn handle_header_key(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
+    fn handle_header_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
@@ -1288,7 +1272,7 @@ impl ComposeWindow {
         hit: ComposeHit,
         event: &WindowEvent,
         pt: Point,
-        ctx: &mut EventContext<'_>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> ComposeAction {
         match hit {
             ComposeHit::TitleBar => {
@@ -1362,7 +1346,12 @@ impl ComposeWindow {
     /// (HTML mode), or forward the real press so the plain-text body places
     /// its own caret at the click point (the preceding `CursorMoved` already
     /// set its hover). Part of [`Self::dispatch_hit`].
-    fn dispatch_body_press(&mut self, pt: Point, event: &WindowEvent, ctx: &mut EventContext<'_>) {
+    fn dispatch_body_press(
+        &mut self,
+        pt: Point,
+        event: &WindowEvent,
+        ctx: &mut ComposeEventContext<'_>,
+    ) {
         self.set_focus(Field::Body);
         match self.format {
             ComposeFormat::Html => {
@@ -1427,7 +1416,12 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    fn focus_and_forward(&mut self, field: Field, event: &WindowEvent, ctx: &mut EventContext<'_>) {
+    fn focus_and_forward(
+        &mut self,
+        field: Field,
+        event: &WindowEvent,
+        ctx: &mut ComposeEventContext<'_>,
+    ) {
         self.set_focus(field);
         // Forward the *real* press the host just received so the input places
         // its caret at the click point. The input only acts on a press while
@@ -2426,7 +2420,17 @@ mod tests {
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
         let mut send = |ev: &WindowEvent| {
-            w.handle_event(ev, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy);
+            w.handle_event(
+                ev,
+                &mut ComposeEventContext {
+                    scale_factor: 1.0,
+                    modifiers: m,
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
         };
         send(&key(Key::Character(SmolStr::new("H")), Some("H")));
         send(&key(Key::Character(SmolStr::new("i")), Some("i")));
@@ -2491,13 +2495,33 @@ mod tests {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
-        w.handle_event(&mv, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy);
+        w.handle_event(
+            &mv,
+            &mut ComposeEventContext {
+                scale_factor: 1.0,
+                modifiers: m,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
         let pr = WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        w.handle_event(&pr, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy)
+        w.handle_event(
+            &pr,
+            &mut ComposeEventContext {
+                scale_factor: 1.0,
+                modifiers: m,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                node_id: node,
+                taffy: &taffy,
+            },
+        )
     }
 
     fn hit_rect(w: &ComposeWindow, hit: ComposeHit) -> Rect {
@@ -2561,12 +2585,14 @@ mod tests {
         };
         let (consumed, action) = w.handle_event(
             &press,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            taffy::NodeId::new(0),
-            &taffy,
+            &mut ComposeEventContext {
+                scale_factor: 1.0,
+                modifiers,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                node_id: taffy::NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         assert!(
             consumed,
