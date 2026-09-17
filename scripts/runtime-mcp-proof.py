@@ -23,6 +23,10 @@ class StaleDiscovery(ProofError):
     pass
 
 
+class PublicationPending(ProofError):
+    pass
+
+
 def square_region(width, height):
     if width <= 0 or height <= 0:
         raise ValueError('positive dimensions required')
@@ -85,8 +89,8 @@ def resolve_action(tool, peer_id, action, timeout=10, interval=.1):
                 if row.get('action') == action and row.get('descriptor'):
                     target = dict(peer_id=peer_id, revision=revision, resource=row['resource'], action=action)
                     return target, tool('qos_resolve', target)['row']['descriptor']
-            raise ProofError(f'Action absent: {action}')
-        except StaleDiscovery:
+            raise PublicationPending(f'Action absent: {action}')
+        except (StaleDiscovery, PublicationPending):
             # Only query/resolve have happened here. Never catch an uncertain
             # invocation or resubmit it in this read-only discovery loop.
             if time.monotonic() >= deadline:
@@ -218,8 +222,12 @@ def main():
     args = parser.parse_args()
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    with short_profile() as profile:
-        run_proof(args, root, profile)
+    try:
+        with short_profile() as profile:
+            run_proof(args, root, profile)
+    except Exception:
+        (root / 'failure.txt').write_text(traceback.format_exc())
+        raise
 
 
 def run_proof(args, root, profile):
@@ -305,9 +313,17 @@ def run_proof(args, root, profile):
         target, descriptor = resolve_action(client.tool, calc, 'add-function')
         formula = 'sin(x) + 0.314159'
         invoke(client.tool, target, single_argument(descriptor, formula))
-        page = {'rows': [row for _, row in browse_rows(client.tool, calc)]}
-        if not any(row['resource_kind'] == 'calculator.graph' and formula in row['resource_label'] for row in page['rows']):
-            raise ProofError(f'Fresh graph discovery failed: {page}')
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                page = {'rows': [row for _, row in browse_rows(client.tool, calc)]}
+                if any(row['resource_kind'] == 'calculator.graph' and formula in row['resource_label'] for row in page['rows']):
+                    break
+                raise PublicationPending(f'Fresh graph discovery missing expected formula: {page}')
+            except (StaleDiscovery, PublicationPending):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.1)
         save(root / 'calculator-fresh-query.json', page)
         deadline = time.monotonic() + 30
         while True:
@@ -322,9 +338,6 @@ def run_proof(args, root, profile):
         if {p['pid'] for p in final_processes} != {p['pid'] for p in processes} or any('Z' in p['state'] for p in final_processes):
             raise ProofError('Native child liveness changed during proof')
         proof = {'passed': True, 'source': fixture, 'image': image, 'document': document, 'calculator_formula': formula, 'processes': final_processes, 'dispatch': 'external MCP stdio tools/call only'}
-    except Exception:
-        (root / 'failure.txt').write_text(traceback.format_exc())
-        raise
     finally:
         if client:
             owned_pids.update(process['pid'] for process in child_processes(client.process.pid))

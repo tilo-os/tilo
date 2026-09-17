@@ -104,3 +104,62 @@ for all 47 apps. The headless Agent is a consumer rather than a GUI publisher.
 Building or running this binary does not install or configure an MCP client,
 change an account, enable a cloud relay, or add remote federation. Client setup
 and the app manifest remain explicit user configuration.
+
+## Native acceptance proof
+
+Build the host, three apps and test-only evidence inspector, then run:
+
+```sh
+cargo build -p shell --bin qos-runtime-mcp --example runtime-mcp-inspect \
+  -p photos --bin photos -p word-processor --bin word-processor \
+  -p calculator --bin calculator --no-default-features
+python3 scripts/runtime-mcp-proof.py --output /absolute/path/to/new-evidence
+```
+
+This opens real Photos, Writer and Calculator windows. The runner copies the
+executables into the evidence directory and records their SHA256 hashes before
+and after execution. It uses a separate short private temporary profile for the
+Unix sockets, retaining logs and public workspace evidence without copying the
+profile's private identity material.
+
+Every crop, export, image insertion and Calculator mutation is an external MCP
+`tools/call`. Discovery is refreshed between operations, and accepted invocations
+are observed to a terminal result without replay. Read-only discovery may retry
+an explicitly stale revision. The fixture is a patterned 48×32 PNG; the centered
+square crop is checked against source pixels `(x + 8, y)` in every RGBA channel.
+The exported BLAKE3 content resource is converted using `qos_actions::content_hash`
+and passed to Writer's freshly discovered `place-image` action.
+
+A test-only observer is launched through the same manifest with Writer's app
+identity and ordinary authenticated SDK subscription. It publishes no directory
+and sends no document or action mutation. A bounded readiness wrapper starts
+real Writer after subscription; the inspector independently checks the signed
+envelopes' signatures and exact app/workspace/empty-record route, reconstructs
+Automerge, and verifies the image block's exported hash and dimensions. Native
+untitled Writer does not have a persistent record id, so the proof does not
+invent one or bypass the confirmation required for `save-as`.
+
+The proof also invokes Calculator's declared `add-function` operation and
+checks fresh graph-resource discovery. Negative evidence distinguishes malformed
+typed arguments, an explicitly stale revision, and an unavailable instance id;
+the last is not a previously connected peer-disconnect test. Retained evidence
+includes the transcript, terminal outputs, source/result images, signed events,
+reconstructed document, logs, binary provenance and exact owned-PID cleanup.
+`proof.json` appears only after all checks and shutdown succeed; failed attempts
+retain `failure.txt` instead. This is three-app macOS behavioral evidence when
+run successfully, separate from the 47-app source audit, and does not qualify
+Windows or install an external ChatGPT/Claude client.
+
+Verified on macOS on 2026-09-17: the retained run at
+`target/runtime-proof/mcp-native9/proof.json` passed crop → export → Writer,
+checked all 1,024 result pixels, and reconstructed the Writer image block from
+two verified signed envelopes. The actual exported BLAKE3 hash was
+`9efff46c8f9248809cb22f7ad61bcb71bf5fa54995d2e67af8342f70aceb739e`;
+Writer referenced that same hash with width and height 32. Calculator's fresh
+`calculator.graph` resource contained `sin(x) + 0.314159`. All four workflow
+invocations reached `succeeded`; malformed arguments reached `failed`, and the
+stale revision and unavailable instance were refused. The host exited zero,
+all five known process IDs were absent after cleanup, and retained binary hashes
+were unchanged. The Mac was locked: this verifies background native behavior,
+content and signed document state, not visible presentation or frame rate.
+Earlier failed attempts remain alongside this run and are not passing evidence.
