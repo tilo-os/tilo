@@ -30,7 +30,7 @@ use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{TextInput, TextInputKind, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, TextInput, TextInputKind, Widget};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
 
 use crate::WpFormat;
@@ -3619,7 +3619,14 @@ struct PanelDrawCtx<'a> {
     transform: Affine,
     tr: &'a mut TextRenderer,
     cc: ChromeColors,
+    theme: &'a Theme,
 }
+
+/// Inspector commands use this as their exact painted and activation height.
+/// Keeping one comfortable minimum prevents dense canvas panels from quietly
+/// shrinking below the rest of the toolkit's controls.
+const PANEL_CONTROL_H: f64 = 32.0;
+const PANEL_CONTROL_STEP: f64 = 38.0;
 
 impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click.
@@ -4411,6 +4418,7 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         panel: Rect,
     ) {
         let cc = self.chrome;
@@ -4443,11 +4451,12 @@ impl WordProcessorWidget {
         // A visible dismissal affordance matters on narrow screens: the
         // inspector overlays the document there, so relying only on a tap in
         // the dimmed background makes the way back needlessly undiscoverable.
-        let close = Rect::new(right - 62.0, y, right, y + 24.0);
+        let close = Rect::new(right - 72.0, y, right, y + PANEL_CONTROL_H);
         draw_btn(
             scene,
             transform,
             tr,
+            theme,
             &cc,
             close,
             &t("panel-close"),
@@ -4455,12 +4464,12 @@ impl WordProcessorWidget {
             true,
         );
         self.panel_hits.push((close, PanelHit::Close));
-        y += 30.0;
+        y += PANEL_CONTROL_STEP;
 
         // When an image is selected, the panel becomes an image inspector
         // (resize + flip) instead of the paragraph editor.
         if self.selected_image_id().is_some() {
-            self.draw_image_inspector(scene, transform, tr, x0, right, y);
+            self.draw_image_inspector(scene, transform, tr, theme, x0, right, y);
             scene.pop_layer();
             return;
         }
@@ -4486,6 +4495,7 @@ impl WordProcessorWidget {
             transform,
             tr,
             cc,
+            theme,
         };
         y = self.draw_panel_this_paragraph(&mut ctx, x0, right, y);
         y = self.draw_panel_style_header(&mut ctx, x0, right, y, &key, &st);
@@ -4503,13 +4513,14 @@ impl WordProcessorWidget {
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
+                ctx.theme,
                 field,
                 field.get(&st),
                 x0,
                 right,
                 y,
             );
-            y += 30.0;
+            y += PANEL_CONTROL_STEP;
         }
 
         panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
@@ -4517,11 +4528,12 @@ impl WordProcessorWidget {
 
         // New style from this.
         {
-            let r = Rect::new(x0, y, right, y + 26.0);
+            let r = Rect::new(x0, y, right, y + PANEL_CONTROL_H);
             draw_btn(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
+                ctx.theme,
                 &ctx.cc,
                 r,
                 &t("panel-new-style"),
@@ -4543,10 +4555,11 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         panel: Rect,
     ) {
         if self.text_scale <= 1.01 {
-            self.draw_styles_panel(scene, transform, tr, panel);
+            self.draw_styles_panel(scene, transform, tr, theme, panel);
             return;
         }
         let scale = self.text_scale;
@@ -4555,7 +4568,7 @@ impl WordProcessorWidget {
             transform * Affine::translate((panel.x0, panel.y0)) * Affine::scale(scale);
         let previous_text_scale = tr.text_scale();
         tr.set_text_scale(1.0);
-        self.draw_styles_panel(scene, scaled_transform, tr, logical);
+        self.draw_styles_panel(scene, scaled_transform, tr, theme, logical);
         tr.set_text_scale(previous_text_scale);
         self.panel_rect = panel;
         for (rect, _) in &mut self.panel_hits {
@@ -4596,7 +4609,7 @@ impl WordProcessorWidget {
             // Compact single-glyph buttons: a long localized label ("Ausrichtung"
             // in German) must not collide with the L button, so the four glyphs are
             // narrow — moving the strip right to open a gap after the label.
-            let bw = 28.0;
+            let bw = 32.0;
             let gap = 6.0;
             let strip_left = right - 4.0 * bw - 3.0 * gap;
             ctx.tr.draw_text(
@@ -4617,11 +4630,12 @@ impl WordProcessorWidget {
             .enumerate()
             {
                 let rx = strip_left + num::f64_of_usize(i) * (bw + gap);
-                let r = Rect::new(rx, y, rx + bw, y + 24.0);
+                let r = Rect::new(rx, y, rx + bw, y + PANEL_CONTROL_H);
                 draw_btn(
                     ctx.scene,
                     ctx.transform,
                     ctx.tr,
+                    ctx.theme,
                     &ctx.cc,
                     r,
                     label,
@@ -4630,7 +4644,7 @@ impl WordProcessorWidget {
                 );
                 self.panel_hits.push((r, PanelHit::ParaAlign(val)));
             }
-            y += 30.0;
+            y += PANEL_CONTROL_STEP;
         }
 
         // Line spacing: a cycling chip (1.0 → 1.15 → 1.5 → 2.0) on the current
@@ -4645,11 +4659,12 @@ impl WordProcessorWidget {
                 None,
             );
             let label = line_spacing_label(self.current_line_spacing());
-            let r = Rect::new(right - 96.0, y, right, y + 24.0);
+            let r = Rect::new(right - 96.0, y, right, y + PANEL_CONTROL_H);
             draw_btn(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
+                ctx.theme,
                 &ctx.cc,
                 r,
                 &label,
@@ -4657,7 +4672,7 @@ impl WordProcessorWidget {
                 true,
             );
             self.panel_hits.push((r, PanelHit::ParaLineSpacing));
-            y += 30.0;
+            y += PANEL_CONTROL_STEP;
         }
 
         panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
@@ -4717,7 +4732,7 @@ impl WordProcessorWidget {
         let order = self.sheet.order();
         let gap = 6.0;
         let col_w = (inner_w - gap) / 2.0;
-        let chip_h = 24.0;
+        let chip_h = PANEL_CONTROL_H;
         for (i, id) in order.iter().enumerate() {
             let col = num::f64_of_usize(i % 2);
             let row = num::f64_of_usize(i / 2);
@@ -4729,6 +4744,7 @@ impl WordProcessorWidget {
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
+                ctx.theme,
                 &ctx.cc,
                 r,
                 &name,
@@ -4774,11 +4790,12 @@ impl WordProcessorWidget {
                 "mono" => "panel-font-mono",
                 _ => "panel-font-sans",
             });
-            let r = Rect::new(right - 96.0, y, right, y + 24.0);
+            let r = Rect::new(right - 96.0, y, right, y + PANEL_CONTROL_H);
             draw_btn(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
+                ctx.theme,
                 &ctx.cc,
                 r,
                 &fl,
@@ -4786,7 +4803,7 @@ impl WordProcessorWidget {
                 true,
             );
             self.panel_hits.push((r, PanelHit::CycleFont));
-            y += 30.0;
+            y += PANEL_CONTROL_STEP;
         }
 
         // Weight: Bold / Italic toggles.
@@ -4800,12 +4817,18 @@ impl WordProcessorWidget {
                 None,
             );
             let bw = 60.0;
-            let rb = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 24.0);
-            let ri = Rect::new(right - bw, y, right, y + 24.0);
+            let rb = Rect::new(
+                right - bw * 2.0 - 6.0,
+                y,
+                right - bw - 6.0,
+                y + PANEL_CONTROL_H,
+            );
+            let ri = Rect::new(right - bw, y, right, y + PANEL_CONTROL_H);
             draw_btn(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
+                ctx.theme,
                 &ctx.cc,
                 rb,
                 &t("panel-bold"),
@@ -4816,6 +4839,7 @@ impl WordProcessorWidget {
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
+                ctx.theme,
                 &ctx.cc,
                 ri,
                 &t("panel-italic"),
@@ -4824,7 +4848,7 @@ impl WordProcessorWidget {
             );
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
-            y += 30.0;
+            y += PANEL_CONTROL_STEP;
         }
         y
     }
@@ -4849,18 +4873,20 @@ impl WordProcessorWidget {
                 &t("panel-colour"),
                 12.5,
                 ctx.cc.text,
-                ctx.transform * Affine::translate((x0, y + 5.0)),
+                ctx.transform * Affine::translate((x0, y)),
                 None,
             );
+            y += 20.0;
             let n = STYLE_PALETTE.len();
-            let sw_gap = 5.0;
-            // Leave room on the left for the "Colour" label.
-            let strip_w = (inner_w - 54.0).clamp(120.0, 196.0);
-            let sw = (strip_w - sw_gap * (num::f64_of_usize(n) - 1.0)) / num::f64_of_usize(n);
-            let sx0 = right - strip_w;
+            let columns = 4_usize;
+            let sw_gap = 6.0;
+            let sw = (inner_w - 3.0 * sw_gap) / 4.0;
             for (i, c) in STYLE_PALETTE.iter().enumerate() {
-                let sx = sx0 + num::f64_of_usize(i) * (sw + sw_gap);
-                let r = Rect::new(sx, y, sx + sw, y + 22.0);
+                let col = num::f64_of_usize(i % columns);
+                let row = num::f64_of_usize(i / columns);
+                let sx = x0 + col * (sw + sw_gap);
+                let sy = y + row * (PANEL_CONTROL_H + sw_gap);
+                let r = Rect::new(sx, sy, sx + sw, sy + PANEL_CONTROL_H);
                 let col = Color::from_rgb8(c[0], c[1], c[2]);
                 ctx.scene.fill(
                     Fill::NonZero,
@@ -4880,9 +4906,10 @@ impl WordProcessorWidget {
                 }
                 self.panel_hits.push((r, PanelHit::SetColor(*c)));
             }
-            y += 30.0;
+            let rows = num::f64_of_usize(n.div_ceil(columns));
+            y += rows * (PANEL_CONTROL_H + sw_gap);
             // "Custom…" — shows the current colour chip and opens the full picker.
-            let chip = Rect::new(x0, y, x0 + 22.0, y + 22.0);
+            let chip = Rect::new(x0, y, x0 + PANEL_CONTROL_H, y + PANEL_CONTROL_H);
             let cur = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
             ctx.scene.fill(
                 Fill::NonZero,
@@ -4898,11 +4925,12 @@ impl WordProcessorWidget {
                 None,
                 &vello::kurbo::RoundedRect::from_rect(chip, 4.0),
             );
-            let btn = Rect::new(chip.x1 + 8.0, y, right, y + 22.0);
+            let btn = Rect::new(chip.x1 + 8.0, y, right, y + PANEL_CONTROL_H);
             draw_btn(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
+                ctx.theme,
                 &ctx.cc,
                 btn,
                 &t("panel-colour-custom"),
@@ -4911,7 +4939,7 @@ impl WordProcessorWidget {
             );
             self.panel_hits.push((btn, PanelHit::OpenColorPicker));
             self.panel_hits.push((chip, PanelHit::OpenColorPicker));
-            y += 30.0;
+            y += PANEL_CONTROL_STEP;
         }
         y
     }
@@ -4930,6 +4958,7 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         x0: f64,
         right: f64,
         y0: f64,
@@ -4978,12 +5007,18 @@ impl WordProcessorWidget {
             None,
         );
         let bw = ((inner_w - 60.0) / 2.0 - 6.0).clamp(48.0, 92.0);
-        let rs = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let rl = Rect::new(right - bw, y, right, y + 26.0);
+        let rs = Rect::new(
+            right - bw * 2.0 - 6.0,
+            y,
+            right - bw - 6.0,
+            y + PANEL_CONTROL_H,
+        );
+        let rl = Rect::new(right - bw, y, right, y + PANEL_CONTROL_H);
         draw_btn(
             scene,
             transform,
             tr,
+            theme,
             &cc,
             rs,
             &t("panel-image-smaller"),
@@ -4994,6 +5029,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
+            theme,
             &cc,
             rl,
             &t("panel-image-larger"),
@@ -5002,10 +5038,10 @@ impl WordProcessorWidget {
         );
         self.panel_hits.push((rs, PanelHit::ImageScale(0.9)));
         self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
-        y += 34.0;
+        y += PANEL_CONTROL_STEP;
 
-        self.draw_panel_image_flip(scene, transform, tr, x0, right, y, bw);
-        y += 38.0;
+        self.draw_panel_image_flip(scene, transform, tr, theme, x0, right, y, bw);
+        y += PANEL_CONTROL_STEP;
 
         // ---- Crop ---------------------------------------------------------
         // Cropping keeps the object's display frame, while changing the source
@@ -5020,12 +5056,18 @@ impl WordProcessorWidget {
             transform * Affine::translate((x0, y + 5.0)),
             None,
         );
-        let crop = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let reset = Rect::new(right - bw, y, right, y + 26.0);
+        let crop = Rect::new(
+            right - bw * 2.0 - 6.0,
+            y,
+            right - bw - 6.0,
+            y + PANEL_CONTROL_H,
+        );
+        let reset = Rect::new(right - bw, y, right, y + PANEL_CONTROL_H);
         draw_btn(
             scene,
             transform,
             tr,
+            theme,
             &cc,
             crop,
             &t("panel-image-crop-inset"),
@@ -5036,6 +5078,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
+            theme,
             &cc,
             reset,
             &t("panel-image-crop-reset"),
@@ -5044,7 +5087,7 @@ impl WordProcessorWidget {
         );
         self.panel_hits.push((crop, PanelHit::ImageCropInset));
         self.panel_hits.push((reset, PanelHit::ImageCropReset));
-        y += 38.0;
+        y += PANEL_CONTROL_STEP;
 
         // ---- Object placement --------------------------------------------
         // Keep Position as a real heading, rather than competing with three
@@ -5061,18 +5104,19 @@ impl WordProcessorWidget {
         y += 20.0;
         let placement_gap = 6.0;
         let placement_w = ((inner_w - placement_gap * 2.0) / 3.0).max(48.0);
-        let free = Rect::new(x0, y, x0 + placement_w, y + 26.0);
+        let free = Rect::new(x0, y, x0 + placement_w, y + PANEL_CONTROL_H);
         let left = Rect::new(
             free.x1 + placement_gap,
             y,
             free.x1 + placement_gap + placement_w,
-            y + 26.0,
+            y + PANEL_CONTROL_H,
         );
-        let right_wrap = Rect::new(left.x1 + placement_gap, y, right, y + 26.0);
+        let right_wrap = Rect::new(left.x1 + placement_gap, y, right, y + PANEL_CONTROL_H);
         draw_btn(
             scene,
             transform,
             tr,
+            theme,
             &cc,
             free,
             &t("panel-image-free"),
@@ -5083,6 +5127,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
+            theme,
             &cc,
             left,
             &t("panel-image-wrap-left"),
@@ -5093,6 +5138,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
+            theme,
             &cc,
             right_wrap,
             &t("panel-image-wrap-right"),
@@ -5114,6 +5160,7 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         x0: f64,
         right: f64,
         y: f64,
@@ -5139,12 +5186,18 @@ impl WordProcessorWidget {
             transform * Affine::translate((x0, y + 5.0)),
             None,
         );
-        let rh = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let rv = Rect::new(right - bw, y, right, y + 26.0);
+        let rh = Rect::new(
+            right - bw * 2.0 - 6.0,
+            y,
+            right - bw - 6.0,
+            y + PANEL_CONTROL_H,
+        );
+        let rv = Rect::new(right - bw, y, right, y + PANEL_CONTROL_H);
         draw_btn(
             scene,
             transform,
             tr,
+            theme,
             &cc,
             rh,
             &t("panel-image-flip-h"),
@@ -5155,6 +5208,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
+            theme,
             &cc,
             rv,
             &t("panel-image-flip-v"),
@@ -5173,6 +5227,7 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         field: NumField,
         value: f32,
         x0: f64,
@@ -5188,11 +5243,11 @@ impl WordProcessorWidget {
             transform * Affine::translate((x0, y + 5.0)),
             None,
         );
-        let plus = Rect::new(right - 24.0, y, right, y + 24.0);
-        let vb = Rect::new(plus.x0 - 60.0, y, plus.x0 - 2.0, y + 24.0);
-        let minus = Rect::new(vb.x0 - 26.0, y, vb.x0 - 2.0, y + 24.0);
-        draw_btn(scene, transform, tr, &cc, minus, "−", false, true);
-        draw_btn(scene, transform, tr, &cc, plus, "+", false, true);
+        let plus = Rect::new(right - 32.0, y, right, y + PANEL_CONTROL_H);
+        let vb = Rect::new(plus.x0 - 64.0, y, plus.x0 - 6.0, y + PANEL_CONTROL_H);
+        let minus = Rect::new(vb.x0 - 38.0, y, vb.x0 - 6.0, y + PANEL_CONTROL_H);
+        draw_btn(scene, transform, tr, theme, &cc, minus, "−", false, true);
+        draw_btn(scene, transform, tr, theme, &cc, plus, "+", false, true);
         // Value box.
         let editing = self.editing_field == Some(field);
         let scrubbing = self.scrub.is_some_and(|s| s.field == field);
@@ -5379,42 +5434,35 @@ fn panel_divider(
     );
 }
 
-/// A panel chip / button: rounded rect + label. `center` centers the label
-/// (approximate), else left-pads it.
+/// A panel chip / button using the toolkit's canonical immediate-mode face.
+/// The inspector retains pointer routing, while the shared face owns metrics,
+/// contrast and state styling just like ordinary widget-tree buttons.
 #[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
 fn draw_btn(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
-    cc: &ChromeColors,
+    theme: &Theme,
+    _cc: &ChromeColors,
     r: Rect,
     label: &str,
     active: bool,
-    center: bool,
+    _center: bool,
 ) {
-    let bg = if active { cc.accent } else { cc.chip };
-    let fg = if active { cc.on_accent } else { cc.text };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        bg,
-        None,
-        &vello::kurbo::RoundedRect::from_rect(r, 6.0),
-    );
-    let approx = num::f64_of_usize(label.chars().count()) * 6.6;
-    let tx = if center {
-        (f64::midpoint(r.x0, r.x1) - approx / 2.0).max(r.x0 + 4.0)
+    let style = if active {
+        ButtonStyle::Primary
     } else {
-        r.x0 + 8.0
+        ButtonStyle::Neutral
     };
-    let ty = f64::midpoint(r.y0, r.y1) - 8.0;
-    tr.draw_text(
+    Button::paint(
         scene,
-        label,
-        12.5,
-        fg,
-        transform * Affine::translate((tx, ty)),
-        Some(num::f32_of_f64(r.width() - 6.0)),
+        transform,
+        tr,
+        theme,
+        &ButtonFace::new(r, label)
+            .style(style)
+            .radius(f64::from(theme.tokens.radii.md))
+            .text_size(12.5),
     );
 }
 
@@ -9660,7 +9708,7 @@ impl Widget for WordProcessorWidget {
                 full.x1,
                 fg.layout_bar_top,
             );
-            self.draw_styles_panel_responsive(scene, transform, text_renderer, panel);
+            self.draw_styles_panel_responsive(scene, transform, text_renderer, theme, panel);
         } else {
             self.panel_rect = Rect::ZERO;
             self.panel_hits.clear();
@@ -10328,6 +10376,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
+            theme,
             &cc,
             self.thread_cancel,
             &t("review-cancel-reply"),
@@ -10338,6 +10387,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
+            theme,
             &cc,
             self.thread_submit,
             &t("review-send-reply"),
@@ -13621,6 +13671,34 @@ mod tests {
                 .any(|(_, h)| matches!(h, PanelHit::Num(NumField::Size))),
             "the style Size field stays"
         );
+    }
+
+    #[test]
+    fn paragraph_inspector_targets_are_comfortable_and_non_overlapping() {
+        for (width, height) in [(390, 844), (1440, 900)] {
+            let mut state = ui::State::new();
+            let mut wp = WordProcessorWidget::new();
+            wp.sync(&mut state.doc, &state.root);
+            wp.model_mut().insert_str(&mut state.doc, "paragraph");
+            wp.set_styles_panel_open(true);
+            pipeline_draw(&mut wp, &mut state, width, height);
+
+            assert!(!wp.panel_hits.is_empty());
+            for (rect, hit) in &wp.panel_hits {
+                assert!(
+                    rect.width() >= PANEL_CONTROL_H && rect.height() >= PANEL_CONTROL_H,
+                    "{hit:?} is smaller than the inspector target minimum at {width}×{height}: {rect:?}"
+                );
+            }
+            for (index, (a, ah)) in wp.panel_hits.iter().enumerate() {
+                for (b, bh) in wp.panel_hits.iter().skip(index + 1) {
+                    assert!(
+                        a.intersect(*b).area() <= f64::EPSILON,
+                        "inspector targets overlap at {width}×{height}: {ah:?} {a:?} and {bh:?} {b:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// The panel's style picker is the authoritative paragraph-style control.
@@ -18095,6 +18173,28 @@ mod tests {
             "flip-horizontal control present"
         );
         assert!(has(&PanelHit::ImageFlipV), "flip-vertical control present");
+    }
+
+    #[test]
+    fn image_inspector_targets_are_comfortable_and_non_overlapping() {
+        let (mut wp, mut state, _id) = doc_with_selected_image();
+        for (width, height) in [(390, 844), (1440, 900)] {
+            pipeline_draw(&mut wp, &mut state, width, height);
+            for (rect, hit) in &wp.panel_hits {
+                assert!(
+                    rect.width() >= PANEL_CONTROL_H && rect.height() >= PANEL_CONTROL_H,
+                    "{hit:?} is smaller than the image-inspector target minimum at {width}×{height}: {rect:?}"
+                );
+            }
+            for (index, (a, ah)) in wp.panel_hits.iter().enumerate() {
+                for (b, bh) in wp.panel_hits.iter().skip(index + 1) {
+                    assert!(
+                        a.intersect(*b).area() <= f64::EPSILON,
+                        "image-inspector targets overlap at {width}×{height}: {ah:?} {a:?} and {bh:?} {b:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// Position keeps a dedicated heading above its three controls. The same

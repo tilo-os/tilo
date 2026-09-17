@@ -61,7 +61,7 @@ const RULE_ROW_H_NARROW: f64 = 58.0;
 const SVC_ROW_H: f64 = 46.0;
 /// Dense but still two-line-readable rows let every catalog service fit in the
 /// compact Services route without making the window scroll-dependent.
-const SVC_ROW_H_NARROW: f64 = 30.0;
+const SVC_ROW_H_NARROW: f64 = 34.0;
 const CTRL_H: f64 = 34.0;
 const TOGGLE_SIZE: f64 = 44.0;
 
@@ -688,10 +688,10 @@ impl FirewallApp {
                 rect.y0 + (rect.height() - 22.0) / 2.0 + 22.0,
             );
             let delete = Rect::new(
-                rect.x1 - 30.0,
-                rect.y0 + (rect.height() - 26.0) / 2.0,
+                rect.x1 - 32.0,
+                rect.y0 + (rect.height() - 32.0) / 2.0,
                 rect.x1,
-                rect.y0 + (rect.height() - 26.0) / 2.0 + 26.0,
+                rect.y0 + (rect.height() - 32.0) / 2.0 + 32.0,
             );
             l.rule_rows.push(RuleRow {
                 id: rule.id,
@@ -721,9 +721,9 @@ impl FirewallApp {
         if self.form.is_service {
             // service cycle selector: [<] name [>]
             let sel_w = 188.0;
-            l.service_prev = Rect::new(x, y1, x + 30.0, y1 + CTRL_H);
-            l.service_sel = Rect::new(x + 30.0, y1, x + sel_w - 30.0, y1 + CTRL_H);
-            l.service_next = Rect::new(x + sel_w - 30.0, y1, x + sel_w, y1 + CTRL_H);
+            l.service_prev = Rect::new(x, y1, x + 34.0, y1 + CTRL_H);
+            l.service_sel = Rect::new(x + 34.0, y1, x + sel_w - 34.0, y1 + CTRL_H);
+            l.service_next = Rect::new(x + sel_w - 34.0, y1, x + sel_w, y1 + CTRL_H);
             x += sel_w + 12.0;
         } else {
             // port field + proto segmented
@@ -1305,6 +1305,7 @@ impl Widget for FirewallApp {
                 } else {
                     "Stopped"
                 })
+                .with_action_target("firewall.set-enabled")
                 .with_bounds(self.layout.enable_pill)
                 .with_state(
                     AccessState::new()
@@ -1316,6 +1317,7 @@ impl Widget for FirewallApp {
             AccessNode::new(Role::ToggleButton)
                 .with_name("Panic mode")
                 .with_value(if self.config.panic_mode { "On" } else { "Off" })
+                .with_action_target("firewall.set-panic")
                 .with_bounds(self.layout.panic_btn)
                 .with_state(
                     AccessState::new()
@@ -1326,6 +1328,7 @@ impl Widget for FirewallApp {
         root.children.push(
             AccessNode::new(Role::Button)
                 .with_name("Apply firewall configuration")
+                .with_action_target("firewall.apply")
                 .with_bounds(self.layout.apply_btn)
                 .with_state(AccessState::new().focusable(true)),
         );
@@ -1334,6 +1337,7 @@ impl Widget for FirewallApp {
             zones.children.push(
                 AccessNode::new(Role::ListItem)
                     .with_name(zone.name())
+                    .with_action_target(format!("firewall.zone:{}", zone.name()))
                     .with_bounds(*bounds)
                     .with_position(index + 1, ZoneKind::ALL.len())
                     .with_state(
@@ -1355,6 +1359,11 @@ impl Widget for FirewallApp {
                 route.children.push(
                     AccessNode::new(Role::ToggleButton)
                         .with_name(if services { "Services" } else { "Rules" })
+                        .with_action_target(if services {
+                            "firewall.view:services"
+                        } else {
+                            "firewall.view:rules"
+                        })
                         .with_bounds(*bounds)
                         .with_state(AccessState::new().focusable(true).checked(
                             self.compact_view
@@ -1379,6 +1388,11 @@ impl Widget for FirewallApp {
                         AccessNode::new(Role::Switch)
                             .with_name(service.name)
                             .with_description(format!("{}/{}", service.ports, service.proto))
+                            .with_action_target(format!(
+                                "firewall.service:{}:{}",
+                                self.selected_zone.name(),
+                                service.id
+                            ))
                             .with_bounds(*row)
                             .with_state(
                                 AccessState::new()
@@ -1550,11 +1564,55 @@ impl Widget for FirewallApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
-        if target == "firewall.retry" && matches!(action, A11yAction::Activate) {
-            self.retry_connect(state);
-            return true;
+        if !matches!(action, A11yAction::Activate) {
+            return false;
         }
-        false
+        match target {
+            "firewall.retry" => self.retry_connect(state),
+            "firewall.set-enabled" => self.toggle_enabled(state),
+            "firewall.set-panic" => self.toggle_panic(state),
+            "firewall.apply" => {
+                let _ = self.apply();
+            }
+            "firewall.view:rules" => self.compact_view = CompactView::Rules,
+            "firewall.view:services" => self.compact_view = CompactView::Services,
+            _ => {
+                if let Some(name) = target.strip_prefix("firewall.zone:")
+                    && let Some(zone) = ZoneKind::from_name(name)
+                {
+                    self.select_zone(zone);
+                    self.rail.close();
+                } else if let Some(rest) = target.strip_prefix("firewall.service:")
+                    && let Some((zone_name, service_id)) = rest.split_once(':')
+                    && let Some(zone) = ZoneKind::from_name(zone_name)
+                    && ServiceCatalog::ALL
+                        .iter()
+                        .any(|service| service.id == service_id)
+                {
+                    let on = !self
+                        .config
+                        .zone(zone)
+                        .is_some_and(|current| current.has_service(service_id));
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_service_action(zone, service_id, on),
+                    );
+                    self.status = format!(
+                        "{} {} in {}",
+                        ServiceCatalog::ALL
+                            .iter()
+                            .find(|service| service.id == service_id)
+                            .map_or(service_id, |service| service.name),
+                        if on { "enabled" } else { "disabled" },
+                        zone.name()
+                    );
+                } else {
+                    return false;
+                }
+            }
+        }
+        self.relayout();
+        true
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -3496,6 +3554,141 @@ mod tests {
                 .iter()
                 .any(|child| child.name.as_deref() == Some("Rules applied"))
         );
+    }
+
+    fn collect_action_targets<'a>(node: &'a AccessNode, out: &mut Vec<&'a str>) {
+        if let Some(target) = node.action_target.as_deref() {
+            out.push(target);
+        }
+        for child in &node.children {
+            collect_action_targets(child, out);
+        }
+    }
+
+    #[test]
+    fn primary_accessibility_controls_are_semantically_invokable() {
+        let mut app = app_with_rect();
+        app.rect = Rect::new(0.0, 0.0, 640.0, 800.0);
+        app.compact_view = CompactView::Services;
+        app.relayout();
+        let semantics = app.accessibility().expect("firewall semantics");
+        let mut targets = Vec::new();
+        collect_action_targets(&semantics, &mut targets);
+        for expected in [
+            "firewall.set-enabled",
+            "firewall.set-panic",
+            "firewall.apply",
+            "firewall.zone:home",
+            "firewall.view:rules",
+            "firewall.view:services",
+            "firewall.service:public:ssh",
+        ] {
+            assert!(
+                targets.contains(&expected),
+                "missing semantic target {expected}"
+            );
+        }
+
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "firewall.view:rules",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.compact_view, CompactView::Rules);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "firewall.view:services",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.compact_view, CompactView::Services);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "firewall.zone:home",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.selected_zone, ZoneKind::Home);
+
+        let was_enabled = app.config.enabled;
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "firewall.set-enabled",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.config.enabled, !was_enabled);
+        let was_panic = app.config.panic_mode;
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "firewall.set-panic",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.config.panic_mode, !was_panic);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "firewall.apply",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+
+        let ssh_was_enabled = app
+            .config
+            .zone(ZoneKind::Home)
+            .is_some_and(|zone| zone.has_service("ssh"));
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "firewall.service:home:ssh",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.config
+                .zone(ZoneKind::Home)
+                .is_some_and(|zone| zone.has_service("ssh")),
+            !ssh_was_enabled
+        );
+    }
+
+    #[test]
+    fn compact_interactive_targets_remain_at_least_32_px() {
+        for width in [640.0, 1280.0] {
+            let mut app = app_with_rect();
+            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            app.compact_view = CompactView::Rules;
+            app.form.is_service = true;
+            app.relayout();
+            assert!(app.layout.service_prev.width() >= 32.0);
+            assert!(app.layout.service_next.width() >= 32.0);
+            assert!(app.layout.service_prev.height() >= 32.0);
+            assert!(app.layout.service_next.height() >= 32.0);
+            assert!(
+                app.layout
+                    .rule_rows
+                    .iter()
+                    .all(|row| { row.delete.width() >= 32.0 && row.delete.height() >= 32.0 })
+            );
+
+            app.compact_view = CompactView::Services;
+            app.relayout();
+            assert!(
+                app.layout
+                    .service_rows
+                    .iter()
+                    .all(|(_, row, _)| { row.width() >= 32.0 && row.height() >= 32.0 })
+            );
+        }
     }
 
     #[test]

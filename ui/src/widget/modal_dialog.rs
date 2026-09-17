@@ -39,6 +39,8 @@ const ACTION_BUTTON_HEIGHT: f64 = 40.0;
 pub struct DialogAction {
     pub label: String,
     pub on_click: Box<dyn FnMut()>,
+    rect: Rect,
+    focused: bool,
 }
 
 impl std::fmt::Debug for DialogAction {
@@ -46,7 +48,111 @@ impl std::fmt::Debug for DialogAction {
         f.debug_struct("DialogAction")
             .field("label", &self.label)
             .field("on_click", &"<callback>")
+            .field("rect", &self.rect)
+            .field("focused", &self.focused)
             .finish()
+    }
+}
+
+impl Widget for DialogAction {
+    fn name(&self) -> &'static str {
+        "DialogAction"
+    }
+
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(ACTION_BUTTON_WIDTH as f32),
+                height: Dimension::length(ACTION_BUTTON_HEIGHT as f32),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
+        // The dialog owns absolute footer placement; `recompute_layout` keeps
+        // this semantic child's geometry identical to the painted target.
+    }
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Button)
+                .with_name(crate::i18n!(&self.label))
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.focused,
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        match action {
+            crate::a11y::Action::Focus => {
+                self.focused = true;
+                true
+            }
+            crate::a11y::Action::Activate => {
+                (self.on_click)();
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -132,6 +238,8 @@ impl<C: Widget> ModalDialog<C> {
         self.primary_action = Some(DialogAction {
             label: label.into(),
             on_click: Box::new(on_click),
+            rect: self.primary_rect,
+            focused: false,
         });
         self
     }
@@ -147,6 +255,8 @@ impl<C: Widget> ModalDialog<C> {
         self.secondary_action = Some(DialogAction {
             label: label.into(),
             on_click: Box::new(on_click),
+            rect: self.secondary_rect,
+            focused: false,
         });
         self
     }
@@ -243,6 +353,12 @@ impl<C: Widget> ModalDialog<C> {
                 self.primary_rect = left;
                 self.secondary_rect = right;
             }
+        }
+        if let Some(action) = self.primary_action.as_mut() {
+            action.rect = self.primary_rect;
+        }
+        if let Some(action) = self.secondary_action.as_mut() {
+            action.rect = self.secondary_rect;
         }
     }
 
@@ -361,6 +477,7 @@ fn draw_action_button(
     label: &str,
     is_primary: bool,
     destructive: bool,
+    focused: bool,
 ) {
     let radius = f64::from(theme.tokens.radii.sm);
     let shape = RoundedRect::from_rect(rect, radius);
@@ -375,9 +492,13 @@ fn draw_action_button(
     };
     scene.fill(Fill::NonZero, transform, bg, None, &shape);
     scene.stroke(
-        &Stroke::new(1.0),
+        &Stroke::new(if focused { 2.0 } else { 1.0 }),
         transform,
-        theme.tokens.colors.border_standard,
+        if focused {
+            theme.tokens.colors.border_focus
+        } else {
+            theme.tokens.colors.border_standard
+        },
         None,
         &shape,
     );
@@ -466,6 +587,13 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // join the host's keyboard focus order (and the focus trap), even
         // though `place_content` re-lays it out separately for drawing.
         let content_node = self.content.build_layout(taffy, theme, node_map);
+        let mut children = vec![content_node];
+        if let Some(action) = self.secondary_action.as_mut() {
+            children.push(action.build_layout(taffy, theme, node_map));
+        }
+        if let Some(action) = self.primary_action.as_mut() {
+            children.push(action.build_layout(taffy, theme, node_map));
+        }
         let node = taffy.parent_node(
             Style {
                 size: Size {
@@ -474,7 +602,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 },
                 ..Default::default()
             },
-            &[content_node],
+            &children,
         );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -559,6 +687,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 &action.label,
                 true,
                 self.destructive,
+                action.focused,
             );
         }
         if let Some(action) = &self.secondary_action {
@@ -571,6 +700,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 &action.label,
                 false,
                 false,
+                action.focused,
             );
         }
     }
@@ -623,16 +753,65 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     },
                 ..
             } => {
-                let content_handled = self.forward_to_content(
-                    event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    focus_target,
-                );
-                if !content_handled && let Some(action) = self.primary_action.as_mut() {
+                if self
+                    .secondary_action
+                    .as_ref()
+                    .is_some_and(|action| action.focused)
+                {
+                    if let Some(action) = self.secondary_action.as_mut() {
+                        (action.on_click)();
+                    }
+                } else if self
+                    .primary_action
+                    .as_ref()
+                    .is_some_and(|action| action.focused)
+                {
+                    if let Some(action) = self.primary_action.as_mut() {
+                        (action.on_click)();
+                    }
+                } else {
+                    let content_handled = self.forward_to_content(
+                        event,
+                        scale_factor,
+                        *modifiers,
+                        state,
+                        path,
+                        focus_target,
+                    );
+                    if !content_handled && let Some(action) = self.primary_action.as_mut() {
+                        (action.on_click)();
+                    }
+                }
+                *handled = true;
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Space),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(action) = self
+                    .secondary_action
+                    .as_mut()
+                    .filter(|action| action.focused)
+                {
                     (action.on_click)();
+                } else if let Some(action) =
+                    self.primary_action.as_mut().filter(|action| action.focused)
+                {
+                    (action.on_click)();
+                } else {
+                    self.forward_to_content(
+                        event,
+                        scale_factor,
+                        *modifiers,
+                        state,
+                        path,
+                        focus_target,
+                    );
                 }
                 *handled = true;
             }
@@ -698,7 +877,14 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
     fn children(&self) -> Vec<&dyn Widget> {
         if self.open {
-            vec![&self.content]
+            let mut children: Vec<&dyn Widget> = vec![&self.content];
+            if let Some(action) = self.secondary_action.as_ref() {
+                children.push(action);
+            }
+            if let Some(action) = self.primary_action.as_ref() {
+                children.push(action);
+            }
+            children
         } else {
             Vec::new()
         }
@@ -707,12 +893,25 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         if self.open {
             visitor(&self.content);
+            if let Some(action) = self.secondary_action.as_ref() {
+                visitor(action);
+            }
+            if let Some(action) = self.primary_action.as_ref() {
+                visitor(action);
+            }
         }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.open {
-            vec![&mut self.content]
+            let mut children: Vec<&mut dyn Widget> = vec![&mut self.content];
+            if let Some(action) = self.secondary_action.as_mut() {
+                children.push(action);
+            }
+            if let Some(action) = self.primary_action.as_mut() {
+                children.push(action);
+            }
+            children
         } else {
             Vec::new()
         }
@@ -1125,6 +1324,8 @@ mod tests {
         d.primary_action = Some(DialogAction {
             label: "Save".into(),
             on_click: Box::new(move || fired_clone.set(fired_clone.get() + 1)),
+            rect: d.primary_rect,
+            focused: false,
         });
 
         dispatch(&mut d, &key_press_event(NamedKey::Enter));
@@ -1137,6 +1338,21 @@ mod tests {
             1,
             "an editor that consumes Enter suppresses the dialog default"
         );
+    }
+
+    #[test]
+    fn focused_secondary_action_activates_with_enter_and_space() {
+        let fired = Rc::new(Cell::new(0usize));
+        let fired_clone = Rc::clone(&fired);
+        let mut d = ModalDialog::new("Title", TestContent)
+            .secondary_action("Cancel", move || fired_clone.set(fired_clone.get() + 1))
+            .primary_action("Save", || {})
+            .open(true);
+        d.secondary_action.as_mut().unwrap().set_focus(true);
+
+        dispatch(&mut d, &key_press_event(NamedKey::Enter));
+        dispatch(&mut d, &key_press_event(NamedKey::Space));
+        assert_eq!(fired.get(), 2);
     }
 
     #[test]
@@ -1244,6 +1460,45 @@ mod tests {
     }
 
     #[test]
+    fn footer_actions_are_named_focusable_accessibility_children() {
+        use crate::a11y::Role;
+
+        let d = ModalDialog::new("Confirm", TestContent)
+            .secondary_action("Cancel", || {})
+            .primary_action("Save", || {})
+            .open(true);
+        let children = Widget::children(&d);
+        assert_eq!(children.len(), 3);
+        let secondary = children[1].accessibility().unwrap();
+        let primary = children[2].accessibility().unwrap();
+        assert_eq!(secondary.role, Role::Button);
+        assert_eq!(secondary.name.as_deref(), Some("Cancel"));
+        assert!(secondary.state.focusable);
+        assert_eq!(primary.role, Role::Button);
+        assert_eq!(primary.name.as_deref(), Some("Save"));
+        assert!(primary.state.focusable);
+    }
+
+    #[test]
+    fn accessibility_activation_uses_the_footer_callback() {
+        let invoked = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&invoked);
+        let mut d = ModalDialog::new("Confirm", TestContent)
+            .secondary_action("Cancel", move || observed.set(observed.get() + 1))
+            .open(true);
+        let action = Widget::children_mut(&mut d)
+            .get_mut(1)
+            .expect("secondary action child")
+            .perform_action(
+                &crate::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            );
+        assert!(action);
+        assert_eq!(invoked.get(), 1);
+    }
+
+    #[test]
     fn closed_dialog_prunes_content_from_the_production_accessibility_tree() {
         use crate::accesskit_bridge::build_tree_update;
         use crate::widget::Button;
@@ -1279,6 +1534,30 @@ mod tests {
             Widget::children_mut(&mut d).is_empty(),
             "closed modal content must also be pruned from mutable propagation",
         );
+    }
+
+    #[test]
+    fn production_accessibility_tree_exports_footer_buttons() {
+        use crate::accesskit_bridge::build_tree_update;
+        use accesskit::Role as AccessKitRole;
+
+        let mut d = ModalDialog::new("Confirm", TestContent)
+            .secondary_action("Cancel", || {})
+            .primary_action("Save", || {})
+            .open(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        d.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+
+        let update = build_tree_update(&d, &node_map, None, 1.0);
+        let labels: Vec<_> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == AccessKitRole::Button)
+            .filter_map(|(_, node)| node.label())
+            .collect();
+        assert!(labels.contains(&"Cancel"));
+        assert!(labels.contains(&"Save"));
     }
 
     /// An OPEN dialog reports its box rect via `modal_capture`; a closed

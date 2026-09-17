@@ -240,11 +240,7 @@ fn is_focus_search_chord(ctrl: bool, key: &Key) -> bool {
     matches!(key, Key::Character(s) if matches!(s.as_str(), "k" | "K" | "/"))
 }
 
-/// Placeholder hint shown in an empty, unfocused form field. The `ui`
-/// `TextInput` in this toolkit build has no `with_placeholder` builder, so —
-/// matching the convention used by the search box, dropdown, and command
-/// palette — the parent draws the dim hint itself when the field is empty
-/// and unfocused. Centralised here so every field gets one.
+/// Placeholder hint shown in an empty form field by the shared `TextInput`.
 fn placeholder_for(slot: Slot) -> &'static str {
     match slot {
         Slot::First => "First name",
@@ -557,7 +553,9 @@ fn best_field_in_direction(
 
 /// Build a single form field input seeded with `value`.
 fn field(slot: Slot, value: &str) -> FieldInput {
-    let mut input = TextInput::local().with_initial_value(value);
+    let mut input = TextInput::local()
+        .with_initial_value(value)
+        .with_placeholder(placeholder_for(slot));
     input.set_multiline(slot == Slot::Notes);
     FieldInput { slot, ti: input }
 }
@@ -3686,8 +3684,8 @@ impl ContactsApp {
         }
     }
 
-    /// Draw each embedded form input, with its dim placeholder hint when
-    /// empty and unfocused.
+    /// Draw each embedded form input. Placeholder clipping, typography and
+    /// focus behavior belong to the shared `TextInput`.
     fn draw_form_inputs(
         &mut self,
         scene: &mut Scene,
@@ -3696,28 +3694,11 @@ impl ContactsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
         let Some(form) = self.form.as_mut() else {
             return;
         };
         for f in &mut form.inputs {
             f.ti.draw(scene, t, tr, theme, presence);
-            if f.ti.value().is_empty() && !f.ti.is_focused() {
-                let r = f.ti.get_rect();
-                if r.width() > 0.0 {
-                    let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
-                    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
-                    tr.draw_text(
-                        scene,
-                        placeholder_for(f.slot),
-                        14.0,
-                        c.text_dim,
-                        t * Affine::translate((r.x0 + 12.0, r.center().y - 9.0)),
-                        Some((r.width() - 20.0) as f32),
-                    );
-                    scene.pop_layer();
-                }
-            }
         }
     }
 
