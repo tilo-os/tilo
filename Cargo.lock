@@ -484,7 +484,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
-name = "api_tester"
+name = "api-tester"
 version = "0.1.0"
 dependencies = [
  "automerge",
@@ -2261,7 +2261,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "code_editor"
+name = "code-editor"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
@@ -3142,7 +3142,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
-name = "db_client"
+name = "db-client"
 version = "0.1.0"
 dependencies = [
  "automerge",
@@ -5015,7 +5015,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "git_client"
+name = "git-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -5701,7 +5701,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
-name = "hex_editor"
+name = "hex-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
@@ -6592,7 +6592,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "image_editor"
+name = "image-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
@@ -10194,7 +10194,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pdf_viewer"
+name = "pdf-viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -15779,7 +15779,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "typst_editor"
+name = "typst-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
@@ -16291,7 +16291,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "video_editor"
+name = "video-editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",

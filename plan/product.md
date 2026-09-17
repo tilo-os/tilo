@@ -1,8 +1,8 @@
 # Tilo product focus
 
 The **main-focus apps** below are the priority — for building, fixing, and
-demoing. Everything else in `apps/` (dev/system tools: disks, hex_editor,
-db_client, logs, api_tester, snippets, firewall, vpn, containers, backups,
+demoing. Everything else in `apps/` (dev/system tools: disks, hex-editor,
+db-client, logs, api-tester, snippets, firewall, vpn, containers, backups,
 permissions, remote, imager, themes, store, monitor…) is secondary for
 now: keep them working, but do not prioritize them over the focus list.
 
