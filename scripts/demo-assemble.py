@@ -19,8 +19,8 @@ silently shorter video: the whole point of the piece being separate is
 that nobody notices when it goes missing.
 
 Usage:
-  ./demo-assemble.py --out final.mp4 boot.mp4 qos-demo.mp4
-  ./demo-assemble.py --out final.mp4 --dry-run boot.mp4 qos-demo.mp4
+  ./demo-assemble.py --out final.mp4 boot.mp4 tilo-demo.mp4
+  ./demo-assemble.py --out final.mp4 --dry-run boot.mp4 tilo-demo.mp4
 """
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ def main() -> int:
     # it in one filter_complex would work too, but a per-segment pass means a
     # segment that fails to encode names itself instead of collapsing the
     # whole graph into one opaque error.
-    tmp = pathlib.Path(tempfile.mkdtemp(prefix="qos-assemble-"))
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="tilo-assemble-"))
     try:
         parts: list[pathlib.Path] = []
         for n, c in enumerate(clips):

@@ -1,7 +1,7 @@
 //! Pure data model for the Themes app.
 //!
 //! A [`ThemeSpec`] is the editable, serialisable description of a single
-//! qOS theme: a set of colour tokens plus shape / spacing / typography
+//! Tilo theme: a set of colour tokens plus shape / spacing / typography
 //! knobs. It round-trips to JSON (for CRDT persistence and `Export`) and
 //! materialises into a live [`ui::theme::Theme`] via [`ThemeSpec::to_theme`]
 //! so the preview pane can render real widgets under it.
@@ -397,8 +397,8 @@ type PresetEntry = (
 );
 
 const PRESET_ENTRIES: &[PresetEntry] = &[
-    ("qos-dark", "qOS Dark", Theme::dark, true, "Inter"),
-    ("qos-blue", "qOS Blue", Theme::qos_blue, true, "Inter"),
+    ("tilo-dark", "Tilo Dark", Theme::dark, true, "Inter"),
+    ("tilo-blue", "Tilo Blue", Theme::tilo_blue, true, "Inter"),
     (
         "catppuccin-mocha",
         "Catppuccin Mocha",
@@ -610,8 +610,8 @@ mod tests {
         // blue, and the canonical presets the picker offers.
         let cat = default_catalog();
         for id in [
-            "qos-dark",
-            "qos-blue",
+            "tilo-dark",
+            "tilo-blue",
             "catppuccin-mocha",
             "catppuccin-latte",
             "dracula",

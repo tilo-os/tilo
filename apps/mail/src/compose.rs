@@ -20,12 +20,12 @@
 //! Geometry is clamped to a minimum size and kept on-screen. This works in any
 //! environment (it's all in-app drawing), so it's fully exercised by `--shots`.
 //!
-//! ## Detach (qOS pop-out)
+//! ## Detach (Tilo pop-out)
 //! [`DockState`] models two placements: `Docked` (centred in-app modal) and
 //! `Detached` (parked beside the app content, simulating a separate window).
 //! Both are movable + resizable. The Pop-out button toggles between them, so it
 //! performs a real, visible placement change. **True OS-window detach** — a real
-//! second top-level surface beside the app — needs the qOS compositor's
+//! second top-level surface beside the app — needs the Tilo compositor's
 //! window-group / multi-window support (`shell`), which is not available through
 //! the single-window `ui::App`; when that lands, a detached draft is handed back
 //! via [`ComposeWindow::reattach`].
@@ -2636,11 +2636,11 @@ mod tests {
             .as_mut()
             .unwrap()
             .input
-            .set_text("https://qos.example/docs");
+            .set_text("https://tilo.example/docs");
         w.confirm_prompt();
         let html = w.editor.to_html();
         assert!(
-            html.contains("href=\"https://qos.example/docs\""),
+            html.contains("href=\"https://tilo.example/docs\""),
             "got: {html}"
         );
         assert!(

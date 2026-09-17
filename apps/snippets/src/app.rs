@@ -127,7 +127,7 @@ pub struct SnippetsApp {
     /// [`SnippetsAction`] through this: the host brackets the undo boundary,
     /// applies the action through the executor (so it replays byte-identically on
     /// peers, exactly as the Ctrl+K palette does), and records the last one so a
-    /// test can prove a button and its [`qos_actions::ActionSpec`] build the
+    /// test can prove a button and its [`tilo_actions::ActionSpec`] build the
     /// identical action.
     actions: ui::ActionHost,
 }
@@ -213,27 +213,27 @@ impl Action {
         }
     }
 
-    fn canonical_address(&self) -> Option<qos_actions::ActionAddress> {
+    fn canonical_address(&self) -> Option<tilo_actions::ActionAddress> {
         match self {
             Self::OpenSnippet(id) => Some(actions::open_snippet_address(*id)),
             Self::Select(Selection::Tag(tag)) => Some(actions::reveal_tag_address(tag)),
-            Self::NewSnippet => Some(qos_actions::ActionAddress::new(
+            Self::NewSnippet => Some(tilo_actions::ActionAddress::new(
                 "snippets.library",
                 "new-snippet",
             )),
-            Self::FocusSearch => Some(qos_actions::ActionAddress::new(
+            Self::FocusSearch => Some(tilo_actions::ActionAddress::new(
                 "snippets.library",
                 "search",
             )),
-            Self::ToggleFavorite(id) => Some(qos_actions::ActionAddress::new(
+            Self::ToggleFavorite(id) => Some(tilo_actions::ActionAddress::new(
                 actions::snippet_resource_id(*id),
                 "toggle-favorite",
             )),
-            Self::Delete(id) => Some(qos_actions::ActionAddress::new(
+            Self::Delete(id) => Some(tilo_actions::ActionAddress::new(
                 actions::snippet_resource_id(*id),
                 "delete",
             )),
-            Self::SetLanguage(id, _) => Some(qos_actions::ActionAddress::new(
+            Self::SetLanguage(id, _) => Some(tilo_actions::ActionAddress::new(
                 actions::snippet_resource_id(*id),
                 "set-language",
             )),
@@ -348,7 +348,7 @@ impl SnippetsApp {
     }
 
     /// Dispatch one [`SnippetsAction`] — the single mutation path shared with the
-    /// Ctrl+K palette. The action runs through the qOS executor (a pinned actor +
+    /// Ctrl+K palette. The action runs through the Tilo executor (a pinned actor +
     /// committed change, so it replays byte-identically on peers), the shared
     /// document being authoritative; the in-memory library is then re-projected
     /// from it so the panes reflect the change this frame. The heads captured
@@ -359,7 +359,7 @@ impl SnippetsApp {
             doc,
             actions::SNIPPETS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Snippets", "Snippets", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Snippets", "Snippets", action),
         );
         self.refresh_from_doc(doc);
     }
@@ -676,7 +676,7 @@ impl SnippetsApp {
     }
 
     #[doc(hidden)]
-    pub fn last_dispatched_for_test(&self) -> Option<qos_actions::EncodedAction> {
+    pub fn last_dispatched_for_test(&self) -> Option<tilo_actions::EncodedAction> {
         self.actions.last_dispatched().cloned()
     }
 
@@ -776,13 +776,13 @@ impl ui::widget::Widget for SnippetsApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
@@ -817,13 +817,13 @@ impl ui::widget::Widget for SnippetsApp {
 
     /// Publish the library + its snippets so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if id == "snippets.library" {
             return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
                 .pop();
@@ -3052,8 +3052,8 @@ mod tests {
             Widget::resource(&app, &doc, &resource_id).expect("a resource for the target snippet");
         let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
         let spec_encoded = match &spec.input {
-            qos_actions::ActionInput::Immediate(e) => e.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("delete is immediate"),
+            tilo_actions::ActionInput::Immediate(e) => e.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("delete is immediate"),
         };
 
         app.delete_for_test(id, &mut doc);
@@ -3097,8 +3097,8 @@ mod tests {
             .find(|a| a.id == "toggle-favorite")
             .unwrap();
         let spec_encoded = match &spec.input {
-            qos_actions::ActionInput::Immediate(e) => e.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("toggle-favorite is immediate"),
+            tilo_actions::ActionInput::Immediate(e) => e.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("toggle-favorite is immediate"),
         };
 
         app.toggle_favorite_for_test(id, &mut doc);

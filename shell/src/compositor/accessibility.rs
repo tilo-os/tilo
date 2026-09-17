@@ -1,6 +1,6 @@
 //! AT-SPI export for compositor-owned UI.
 //!
-//! Normal qOS applications are winit windows and use `ui::App`'s
+//! Normal Tilo applications are winit windows and use `ui::App`'s
 //! `accesskit_winit` adapter. Native compositor chrome is painted straight to
 //! an output and has no application window to attach that adapter to. This
 //! bridge therefore owns AccessKit's Unix adapter directly, while retaining

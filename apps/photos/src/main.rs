@@ -5,7 +5,7 @@
 //!   * `--open PATH`        — start with that photograph open.
 //!   * `--shots PATH`       — render one offscreen frame to a PNG and exit.
 //!     `--scenario NAME` picks the pose (see [`photos::SHOT_SCENARIOS`]),
-//!     `--size WxH` the viewport, and `QOS_SHOTS_THEME=light|dark|
+//!     `--size WxH` the viewport, and `TILO_SHOTS_THEME=light|dark|
 //!     high-contrast` the palette.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -57,7 +57,7 @@ extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.photos", photos::app_root)
+        &LaunchSpec::new("dev.tilo.photos", photos::app_root)
             .open_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
@@ -121,7 +121,7 @@ fn render_scenario(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let base_theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let base_theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -231,7 +231,7 @@ fn render_scenario(
 /// The headless handler builds a theme directly, so it does not pass through
 /// `ui::App`'s startup gate where this setting is normally applied.
 fn shot_motion_reduced() -> bool {
-    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| {

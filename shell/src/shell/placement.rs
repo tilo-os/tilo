@@ -405,7 +405,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.qos.seamfixture",
+            "dev.tilo.seamfixture",
             "seamfixture",
             9101,
             Some(&view),
@@ -433,7 +433,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.qos.nextseamfixture",
+            "dev.tilo.nextseamfixture",
             "nextseamfixture",
             9102,
             Some(&view),
@@ -463,7 +463,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.qos.besidefixture",
+            "dev.tilo.besidefixture",
             "besidefixture",
             9103,
             Some(&view),
@@ -491,7 +491,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.qos.tabbedfixture",
+            "dev.tilo.tabbedfixture",
             "tabbedfixture",
             9104,
             Some(&view),

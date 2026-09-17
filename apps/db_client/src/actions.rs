@@ -1,6 +1,6 @@
 //! The database client's action model.
 //!
-//! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
+//! The Tilo action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
 //! becomes an [`Action`] — a serializable value that deterministically changes
 //! the shared Automerge document, so undo and multi-peer replay come for free —
@@ -52,7 +52,7 @@ use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
+use tilo_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
 use ui::doc::put_if_changed;
 
 use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY};

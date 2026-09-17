@@ -12,7 +12,7 @@
 //! - [`ThumbnailService::request_file`] — generate from a file on disk
 //!   (image/PDF/ebook/video by category; a badge category returns immediately).
 //! - [`ThumbnailService::request_encoded`] — adopt an already-encoded PNG the
-//!   host handed over (the FUSE `user.qos.thumb` xattr), decoding + caching it
+//!   host handed over (the FUSE `user.tilo.thumb` xattr), decoding + caching it
 //!   without ever touching the source content.
 
 use std::collections::HashMap;
@@ -128,7 +128,7 @@ impl ThumbnailService {
             let rx = rx.clone();
             let shared = shared.clone();
             let _ = std::thread::Builder::new()
-                .name(format!("qos-thumb-{i}"))
+                .name(format!("tilo-thumb-{i}"))
                 .spawn(move || worker_loop(&rx, &shared));
         }
         Self { shared, tx, edge }
@@ -157,7 +157,7 @@ impl ThumbnailService {
     }
 
     /// Adopt an already-encoded PNG thumbnail the host provided (e.g. read from
-    /// the `user.qos.thumb` xattr). `png` is a closure so it is only invoked on
+    /// the `user.tilo.thumb` xattr). `png` is a closure so it is only invoked on
     /// a genuine miss — a warm slot never re-reads the xattr.
     pub fn request_encoded(
         &self,

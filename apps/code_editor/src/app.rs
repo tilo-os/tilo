@@ -190,7 +190,7 @@ pub struct CodeApp {
     panel: BottomPanel,
     palette: CommandPalette,
 
-    /// Framework-owned action dispatch (the qOS resource + action model). The
+    /// Framework-owned action dispatch (the Tilo resource + action model). The
     /// only doc-mutating operation Code exports beyond raw text is materialising
     /// a buffer (New file); it is dispatched through this host so it brackets one
     /// undo boundary and replays byte-identically on peers, the same path a
@@ -327,9 +327,9 @@ pub struct CodeApp {
     /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
     portal_intent: Option<PortalIntent>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    pending_resource_file: Option<(qos_actions::InvocationId, ResourceFileOperation)>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    pending_resource_file: Option<(tilo_actions::InvocationId, ResourceFileOperation)>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
 
     /// A save that stopped because the file changed on disk. Holds the buffer
     /// it was for, so the user's choice applies to the right one.
@@ -1068,7 +1068,7 @@ impl CodeApp {
         name: &str,
         base: &str,
         next: &str,
-    ) -> Result<(), qos_actions::ActionError> {
+    ) -> Result<(), tilo_actions::ActionError> {
         let action = actions::text_edit_action(file_id, base, next);
         let context = actions::history_context(&action, name, &self.project_id);
         self.actions.try_dispatch_with_context(
@@ -1292,7 +1292,7 @@ impl CodeApp {
     /// Refresh the command palette's entry set (files + commands).
     fn refresh_palette_entries(&mut self) {
         let resources = actions::provide_resources(&self.code_resource_ctx(), &AutoCommit::new());
-        let mut native_rows = qos_actions::flatten(&resources)
+        let mut native_rows = tilo_actions::flatten(&resources)
             .into_iter()
             .map(|flat| {
                 (
@@ -1886,7 +1886,7 @@ impl CodeApp {
             PortalOutcome::Opened(p) => p,
             PortalOutcome::Cancelled => {
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
                         message: Some("file selection cancelled".into()),
                     });
@@ -1935,13 +1935,13 @@ impl CodeApp {
             return;
         };
         self.resource_result = Some(match result {
-            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
-            Err(message) => qos_actions::InvocationUpdate::Failed {
+            Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "code_editor.io_failed".into(),
                     message,
                     details: None,
@@ -2744,7 +2744,7 @@ impl CodeApp {
     ///
     /// For a disk-backed node this is the real file's URI, which is the whole
     /// point: a server told about `file:///project-name/src/main.rs` when the
-    /// file is at `/home/me/qos/shell/src/main.rs` has been told about a
+    /// file is at `/home/me/tilo/shell/src/main.rs` has been told about a
     /// document that does not exist, and answers accordingly. The synthetic
     /// form survives only for the in-memory demo tree, which has no path.
     fn node_uri(&self, node: TreeId) -> String {
@@ -2781,14 +2781,14 @@ impl CodeApp {
 
     /// Whether live language servers are wanted. On by default — an IDE whose
     /// diagnostics are behind an environment variable is an IDE without
-    /// diagnostics. `QOS_CODE_LSP=0` is the opt-out.
+    /// diagnostics. `TILO_CODE_LSP=0` is the opt-out.
     ///
     /// A server is only ever started for a project that is a real directory,
     /// which is also what keeps `--shots`, the demo project and the test suite
     /// from ever launching rust-analyzer: they have no path to root it at.
     fn lsp_enabled(&self) -> bool {
         if matches!(
-            std::env::var("QOS_CODE_LSP").as_deref(),
+            std::env::var("TILO_CODE_LSP").as_deref(),
             Ok("0" | "off" | "false")
         ) {
             return false;
@@ -3053,7 +3053,7 @@ impl CodeApp {
         } else {
             Some(0)
         });
-        if std::env::var_os("QOS_SHOTS_FIND_OPTIONS").is_some() {
+        if std::env::var_os("TILO_SHOTS_FIND_OPTIONS").is_some() {
             self.find.show_options_for_shots();
         }
     }
@@ -3112,7 +3112,7 @@ impl CodeApp {
         self.lsp_status = LspStatus::Busy {
             server: "rust-analyzer".to_string(),
             title: "Indexing".to_string(),
-            detail: Some("qos-shell".to_string()),
+            detail: Some("tilo-shell".to_string()),
             percentage: Some(37),
         };
     }
@@ -3837,13 +3837,13 @@ impl Widget for CodeApp {
                 }
             };
             self.resource_result = Some(match result {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "code_editor.io_failed".into(),
                         message,
                         details: None,
@@ -4349,7 +4349,7 @@ impl Widget for CodeApp {
         )
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.palette.take_control_invocation().or_else(|| {
             self.children_mut()
                 .into_iter()
@@ -4399,10 +4399,10 @@ impl Widget for CodeApp {
     /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
     /// palette. Any omitted file/symbol/result resolves lazily below through
     /// its canonical address. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -4426,8 +4426,8 @@ impl Widget for CodeApp {
     /// Resolve a searched file, symbol, or result through the current widget
     /// state. This is deliberately lazy: a palette row carries only an inert
     /// canonical address until activation.
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -4439,7 +4439,7 @@ impl Widget for CodeApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -4458,7 +4458,7 @@ impl Widget for CodeApp {
         }
         match (kind, operation) {
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CodeEditorOperation::Open { file_id },
             ) => {
                 let node = self
@@ -4469,7 +4469,7 @@ impl Widget for CodeApp {
                 self.open_node(node);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CodeEditorOperation::RevealLocation {
                     file_id,
                     path,
@@ -4498,7 +4498,7 @@ impl Widget for CodeApp {
                 }
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::CodeEditorOperation::Save { file_id, .. },
             ) => {
                 let node = self
@@ -4520,8 +4520,8 @@ impl Widget for CodeApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -4608,11 +4608,11 @@ impl Widget for CodeApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .pending_resource_file
@@ -4620,7 +4620,7 @@ impl Widget for CodeApp {
                 .is_some_and(|(id, _)| *id == invocation)
         {
             self.pending_resource_file = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("cancelled before file I/O".into()),
             });
@@ -4629,7 +4629,7 @@ impl Widget for CodeApp {
             self.resource_invocation = None;
             self.portal = None;
             self.portal_intent = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file selection cancelled".into()),
             });
@@ -4715,15 +4715,15 @@ mod tests {
     fn direct_open_is_accepted_then_reports_the_exact_failure() {
         let mut app = CodeApp::new();
         let mut doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
-            path: Some("/definitely/missing/qos-code-file".into()),
+            path: Some("/definitely/missing/tilo-code-file".into()),
         })
         .unwrap();
         let started = Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::CODE_EDITOR_OPERATION_TYPE,
             &payload,
             &doc,
@@ -4735,7 +4735,7 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
@@ -4758,7 +4758,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::CODE_EDITOR_OPERATION_TYPE,
                 &open,
                 &doc,
@@ -4775,8 +4775,8 @@ mod tests {
         assert!(
             Widget::start_resource_operation(
                 &mut app,
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::View,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
                 crate::actions::CODE_EDITOR_OPERATION_TYPE,
                 &open_file,
                 &doc,
@@ -4823,12 +4823,12 @@ mod tests {
         let address = hit.action_address().expect("canonical address");
         let resource = Widget::resource(app, doc, &address.resource)
             .expect("address resolves through current widget authority");
-        let encoded = qos_actions::door::encode(&[resource], &address, None)
+        let encoded = tilo_actions::door::encode(&[resource], &address, None)
             .expect("lazy resource exports the searched action");
         assert!(
             Widget::invoke_resource_operation(
                 app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 doc,
@@ -5011,17 +5011,17 @@ mod tests {
 
         let address = crate::actions::open_file_address(&late_id);
         assert!(
-            qos_actions::door::resolve(&snapshot, &address).is_none(),
+            tilo_actions::door::resolve(&snapshot, &address).is_none(),
             "the late file must not be eagerly materialized"
         );
         let resource = Widget::resource(&app, &doc, &address.resource)
             .expect("late file is still current widget authority");
-        let encoded = qos_actions::door::encode(&[resource], &address, None)
+        let encoded = tilo_actions::door::encode(&[resource], &address, None)
             .expect("the lazy resource retains its open action");
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 &doc,
@@ -5337,7 +5337,7 @@ mod tests {
                     .cloned()
             })
             .expect("active file publishes Replace text")
-            .build_args([("text".to_string(), qos_actions::ArgValue::Text(next))])
+            .build_args([("text".to_string(), tilo_actions::ArgValue::Text(next))])
             .expect("valid replace text argument");
         app.dispatch_editor_text_edits(&mut doc);
         let actual = app
@@ -5380,8 +5380,8 @@ mod tests {
             .find(|a| a.id == "new-file")
             .unwrap();
         let from_spec = match &spec.input {
-            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("new-file is an immediate action"),
+            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("new-file is an immediate action"),
         };
 
         app.apply_command(Command::NewFile, &mut doc);
@@ -5746,9 +5746,9 @@ mod tests {
     }
 
     fn find_resource<'a>(
-        resource: &'a qos_actions::Resource,
+        resource: &'a tilo_actions::Resource,
         id: &str,
-    ) -> Option<&'a qos_actions::Resource> {
+    ) -> Option<&'a tilo_actions::Resource> {
         (resource.id.as_str() == id)
             .then_some(resource)
             .or_else(|| {

@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn cache_warm_blocking_reads_a_real_file() {
         let dir = std::env::temp_dir();
-        let f = dir.join(format!("qos-ve-wave-{}.wav", std::process::id()));
+        let f = dir.join(format!("tilo-ve-wave-{}.wav", std::process::id()));
         let samples: Vec<f32> = (0..4000).map(|i| 0.7 * (i as f32 * 0.1).sin()).collect();
         std::fs::write(&f, wav_16(&samples, 8000)).unwrap();
 
@@ -626,7 +626,7 @@ mod tests {
         // A real file that is not WAV and holds no decodable audio. With no
         // decoder linked this is immediate; with one, the pipeline finds no
         // audio stream. Either way the answer is absence, never a shape.
-        let f = std::env::temp_dir().join(format!("qos-ve-noaudio-{}.bin", std::process::id()));
+        let f = std::env::temp_dir().join(format!("tilo-ve-noaudio-{}.bin", std::process::id()));
         std::fs::write(&f, vec![0x5Au8; 4096]).unwrap();
         let mut cache = WaveformCache::new();
         let id = uuid::Uuid::new_v4();
@@ -646,7 +646,7 @@ mod tests {
     fn a_queued_compute_reaches_a_terminal_state_and_goes_quiet() {
         // Drive the real queue + worker, not a stub: a readable WAV must land
         // as Ready and `has_pending` must fall back to false.
-        let f = std::env::temp_dir().join(format!("qos-ve-queue-{}.wav", std::process::id()));
+        let f = std::env::temp_dir().join(format!("tilo-ve-queue-{}.wav", std::process::id()));
         let samples: Vec<f32> = (0..6000).map(|i| 0.8 * (i as f32 * 0.05).sin()).collect();
         std::fs::write(&f, wav_16(&samples, 8000)).unwrap();
         let mut cache = WaveformCache::new();

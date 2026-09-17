@@ -22,7 +22,7 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec, RetryPolicy,
@@ -437,7 +437,7 @@ impl ResourceProvider for crate::view::HexView {
 mod tests {
     use super::*;
     use crate::view::HexView;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -467,7 +467,7 @@ mod tests {
             assert_eq!(spec.contract.result, ResultSpec::Job);
             assert!(!matches!(
                 spec.contract.confirmation,
-                qos_actions::ConfirmationPolicy::None
+                tilo_actions::ConfirmationPolicy::None
             ));
             let args = serde_json::json!({"path": "/tmp/x.bin"})
                 .as_object()
@@ -584,7 +584,9 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        assert!(qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).is_err());
+        assert!(
+            tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).is_err()
+        );
     }
 
     /// A raw-byte action cannot be replayed to another device.
@@ -596,7 +598,7 @@ mod tests {
         let action = insert_bytes_action(2, vec![0xCA, 0xFE]);
         let encoded = encode(&action);
 
-        assert!(qos_actions::apply_local(&mut a, &action, encoded).is_err());
+        assert!(tilo_actions::apply_local(&mut a, &action, encoded).is_err());
     }
 
     /// Deletes are likewise local-only operations.
@@ -606,7 +608,7 @@ mod tests {
 
         let action = delete_bytes_action(3, 4); // drop 3,4,5,6
         let encoded = encode(&action);
-        assert!(qos_actions::apply_local(&mut a, &action, encoded).is_err());
+        assert!(tilo_actions::apply_local(&mut a, &action, encoded).is_err());
     }
 
     /// Palette effects and keyboard edits use the same local edit shape.

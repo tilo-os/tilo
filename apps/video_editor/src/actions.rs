@@ -41,7 +41,7 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
@@ -4318,7 +4318,7 @@ mod tests {
 
     use super::*;
     use crate::app::VideoEditorApp;
-    use qos_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -4434,7 +4434,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let after = VideoDoc::load_project(&doc);
         assert_eq!(after.clips.len(), before - 1);
@@ -4472,7 +4472,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let after = VideoDoc::load_project(&doc);
         assert!(after.clip(id).is_none(), "the rippled clip is gone");
@@ -4507,7 +4507,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let after = VideoDoc::load_project(&doc);
         assert!(
@@ -4546,8 +4546,8 @@ mod tests {
         let action = clip_field_patch_action(project.clip(clip.id).unwrap(), &clip);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -4639,7 +4639,7 @@ mod tests {
     #[test]
     fn an_action_on_a_keyframed_clip_moves_what_it_plays() {
         use crate::param::{Interp, Param};
-        use qos_actions::params::ArgValue;
+        use tilo_actions::params::ArgValue;
 
         // Built straight from a project, so this needs no widget.
         let mut project = crate::doc::sample_project();
@@ -4711,7 +4711,7 @@ mod tests {
 
     #[test]
     fn a_word_is_refused_where_the_grade_declares_a_number() {
-        use qos_actions::params::ArgValue;
+        use tilo_actions::params::ArgValue;
 
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
@@ -5181,7 +5181,7 @@ mod tests {
     /// convincing edit and reported success.
     #[test]
     fn a_word_never_reaches_a_key_or_mask_knob() {
-        use qos_actions::params::ArgValue;
+        use tilo_actions::params::ArgValue;
 
         let (ctx, _cid) = ctx_fixture();
         for (id, param) in [
@@ -5223,7 +5223,7 @@ mod tests {
     /// call a refusal, before the document is touched.
     #[test]
     fn a_word_is_refused_wherever_a_number_is_declared() {
-        use qos_actions::params::ArgValue;
+        use tilo_actions::params::ArgValue;
 
         let ctx = ctx_with_title();
         for (id, params) in declared() {
@@ -5288,7 +5288,7 @@ mod tests {
     /// list a caller can read *and* be held to.
     #[test]
     fn a_name_outside_the_declared_choices_is_refused() {
-        use qos_actions::params::ArgValue;
+        use tilo_actions::params::ArgValue;
 
         let ctx = ctx_with_title();
         for (id, name, never_offered) in [
@@ -5510,7 +5510,7 @@ mod tests {
         let encoded = prompted_encode(spec, "sepia");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         let after = VideoDoc::load_project(&doc)
             .clip(cid)
             .unwrap()
@@ -5835,7 +5835,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -6103,10 +6103,10 @@ mod tests {
             .iter()
             .find(|(_, action)| action.id == "delete")
             .expect("fixture clip exports deletion");
-        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
         assert_eq!(
             delete.contract.confirmation,
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::Confirm
         );
     }
 

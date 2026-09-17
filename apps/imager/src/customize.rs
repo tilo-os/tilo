@@ -1,6 +1,6 @@
 //! The **shared guided-customization panel** — the one component that collects
-//! a qOS install profile (identity, region, options) for *both* imager flows:
-//! writing a pre-configured image to a stick, and installing qOS onto a disk.
+//! a Tilo install profile (identity, region, options) for *both* imager flows:
+//! writing a pre-configured image to a stick, and installing Tilo onto a disk.
 //!
 //! ## Why a self-contained component
 //!
@@ -1230,7 +1230,7 @@ impl CustomizePanel {
             doc,
             IMAGER_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Imager", "Imager", action),
         );
     }
 

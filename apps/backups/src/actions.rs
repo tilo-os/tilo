@@ -18,11 +18,11 @@
 
 use automerge::{AutoCommit, ROOT};
 
-use qos_actions::{
+use serde::{Deserialize, Serialize};
+use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::RetentionPolicy;
@@ -93,17 +93,17 @@ fn operation_spec(
             .retry_policy(RetryPolicy::AtMostOnce),
         BackupOperation::BackupNow => spec
             .with_description("Create one new checksummed local snapshot.")
-            .requiring(qos_actions::PermissionRequirement::Write)
+            .requiring(tilo_actions::PermissionRequirement::Write)
             .retry_policy(RetryPolicy::AtMostOnce),
         BackupOperation::Verify { .. } => spec
             .with_description("Read every file in this stored snapshot and verify its checksum.")
-            .requiring(qos_actions::PermissionRequirement::Read)
+            .requiring(tilo_actions::PermissionRequirement::Read)
             .retry_policy(RetryPolicy::Idempotent),
         BackupOperation::Restore { .. } => spec
             .with_description(
                 "Choose a new or empty local folder, then restore and verify the whole snapshot.",
             )
-            .requiring(qos_actions::PermissionRequirement::Write)
+            .requiring(tilo_actions::PermissionRequirement::Write)
             .retry_policy(RetryPolicy::AtMostOnce),
         BackupOperation::OpenSource { .. }
         | BackupOperation::OpenDestination { .. }
@@ -127,7 +127,7 @@ pub enum BackupsAction {
     SetRetention { field: PolicyField, count: u32 },
 }
 
-impl qos_actions::Action for BackupsAction {
+impl tilo_actions::Action for BackupsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             BackupsAction::SetRetention { field, count } => {
@@ -550,7 +550,7 @@ mod tests {
     use super::*;
     use crate::app::BackupsApp;
     use crate::model::Catalog;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -615,7 +615,7 @@ mod tests {
         assert!(d_actions.contains(&"decrement"), "{d_actions:?}");
 
         // The flattened tree exports every action across all four classes.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -728,7 +728,7 @@ mod tests {
             .expect("backup action");
         assert_eq!(
             backup_now.contract.permission,
-            qos_actions::PermissionRequirement::Write
+            tilo_actions::PermissionRequirement::Write
         );
         let snapshot = snapshots.children.first().expect("sample snapshot");
         let verify = snapshot
@@ -739,17 +739,17 @@ mod tests {
         assert_eq!(verify.contract.retry, RetryPolicy::Idempotent);
         assert_eq!(
             verify.contract.permission,
-            qos_actions::PermissionRequirement::Read
+            tilo_actions::PermissionRequirement::Read
         );
         let restore = snapshot
             .actions
             .iter()
             .find(|action| action.id == "restore")
             .expect("restore action");
-        assert_eq!(restore.contract.risk, qos_actions::RiskLevel::Low);
+        assert_eq!(restore.contract.risk, tilo_actions::RiskLevel::Low);
         assert_eq!(
             restore.contract.permission,
-            qos_actions::PermissionRequirement::Write
+            tilo_actions::PermissionRequirement::Write
         );
         assert!(
             restore.contract.validate_declaration().is_empty(),
@@ -785,7 +785,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -824,8 +824,8 @@ mod tests {
         let action = set_retention_action(PolicyField::Monthly, was + 6);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -855,7 +855,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         assert_eq!(doc.get_heads(), before, "a no-change set changed nothing");
     }

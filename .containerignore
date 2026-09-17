@@ -22,8 +22,8 @@ os/shell
 os/fs
 os/terminal
 os/file-explorer
-os/qos-greeter
-os/qos-installer
+os/tilo-greeter
+os/tilo-installer
 os/browser
 # build-custom-installer.sh assembles this one-shot overlay in a temporary
 # context; it is a declared staged input for Containerfile.installer, not a

@@ -1,4 +1,4 @@
-//! Thin binary entry point for the qOS on-screen keyboard.
+//! Thin binary entry point for the Tilo on-screen keyboard.
 //!
 //! Two modes, mirroring the other `ui` apps (e.g. file-explorer):
 //!   * default — build an [`OskWidget`], hand it to `ui::App`, run the live
@@ -7,7 +7,7 @@
 //!     `<PATH>` and exit. No window, no event loop. Used for headless
 //!     screenshot tests and CI snapshots.
 //!
-//! ## qOS integration
+//! ## Tilo integration
 //!
 //! The session compositor supervises this signed service when the persisted
 //! accessibility preference is enabled. It gives the service a dedicated,
@@ -27,7 +27,7 @@
 //! narrowly gated virtual keyboard handles Backspace because winit's current
 //! `text-input-v3` client does not consume `delete_surrounding_text`. On other
 //! compositors, the binary may use its standalone virtual-keyboard fallback;
-//! qOS never advertises that privileged global on its public display.
+//! Tilo never advertises that privileged global on its public display.
 //!
 //! Swipe decoding and prediction are live: the real FUTO model is selected
 //! when its runtime assets are available, otherwise the in-tree geometric
@@ -88,7 +88,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.osk", shot_root)
+        &LaunchSpec::new_with_args("dev.tilo.osk", shot_root)
             .shot_root(shot_root)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
             .allowed_live_flags(&["--input-method", "--no-input-method"])
@@ -168,7 +168,7 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
     // focus in the live session — driving it from a test harness would inject
     // keystrokes into the user's desktop.
 
-    let (state, autosave) = ui::persist::open("dev.qos.osk");
+    let (state, autosave) = ui::persist::open("dev.tilo.osk");
     let app = ui::App::new(state, Box::new(widget))
         .with_autosave(autosave)
         .with_window_app_id(osk::KEYBOARD_APP_ID);

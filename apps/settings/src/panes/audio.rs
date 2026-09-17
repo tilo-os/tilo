@@ -297,7 +297,7 @@ pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
 }
 
 /// Enumerate the audio devices via `wpctl status`. Best-effort: an empty set
-/// when `wpctl` is missing or fails, so a non-qOS host with no `PipeWire` shows
+/// when `wpctl` is missing or fails, so a non-Tilo host with no `PipeWire` shows
 /// no device pickers rather than fabricated devices.
 fn list_audio_devices() -> AudioDevices {
     let Ok(out) = Command::new("wpctl").arg("status").output() else {
@@ -1020,7 +1020,7 @@ impl AudioPane {
                         Ok("Audio stream route changed.".into()),
                     ),
                     Err(error) => {
-                        warn!(target: "qos::settings", op = "route_stream", stream = s.id, error = %error, "audio pane stream route failed");
+                        warn!(target: "tilo::settings", op = "route_stream", stream = s.id, error = %error, "audio pane stream route failed");
                         self.finish_local_operation(
                             operation,
                             Err(format!("Audio stream route could not be changed: {error}")),
@@ -1028,7 +1028,7 @@ impl AudioPane {
                     }
                 }
             } else if let Err(error) = result {
-                warn!(target: "qos::settings", op = "route_stream", stream = s.id, error = %error, "audio pane stream route failed");
+                warn!(target: "tilo::settings", op = "route_stream", stream = s.id, error = %error, "audio pane stream route failed");
             }
         }
         // Per-app volume.
@@ -1037,7 +1037,7 @@ impl AudioPane {
             if (v - self.last_stream_vol.get(&s.id).copied().unwrap_or(v)).abs() > 0.001 {
                 self.last_stream_vol.insert(s.id, v);
                 if let Err(e) = self.gctl.set_node_volume(s.id, v.clamp(0.0, 1.0)) {
-                    warn!(target: "qos::settings", op = "stream_volume", stream = s.id, error = %e, "audio pane stream volume failed");
+                    warn!(target: "tilo::settings", op = "stream_volume", stream = s.id, error = %e, "audio pane stream volume failed");
                 }
             }
         }
@@ -1047,7 +1047,7 @@ impl AudioPane {
         {
             self.last_stream_mute.insert(s.id, b);
             if let Err(e) = self.gctl.set_node_mute(s.id, b) {
-                warn!(target: "qos::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
+                warn!(target: "tilo::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
             }
         }
     }
@@ -1102,7 +1102,7 @@ impl AudioPane {
         let mut p = SystemPrefs::load();
         f(&mut p.audio);
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "audio_prefs_save", error = %e, "failed to persist audio prefs");
+            warn!(target: "tilo::settings", op = "audio_prefs_save", error = %e, "failed to persist audio prefs");
         }
     }
 
@@ -1199,7 +1199,7 @@ impl AudioPane {
                         let _ = state.put(root, VOLUME_KEY, f64::from(self.last_volume));
                         self.runtime_notice = Some(format!("Volume could not be changed: {e}"));
                         self.structure_dirty = true;
-                        warn!(target: "qos::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
+                        warn!(target: "tilo::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
                     }
                 }
             }
@@ -1214,7 +1214,7 @@ impl AudioPane {
                         self.runtime_notice =
                             Some(format!("Input level could not be changed: {e}"));
                         self.structure_dirty = true;
-                        warn!(target: "qos::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
+                        warn!(target: "tilo::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
                     }
                 }
             }
@@ -1228,7 +1228,7 @@ impl AudioPane {
                     let _ = state.put(root, MUTED_KEY, self.last_muted);
                     self.runtime_notice = Some(format!("Mute could not be changed: {e}"));
                     self.structure_dirty = true;
-                    warn!(target: "qos::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
+                    warn!(target: "tilo::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
                 }
             }
         }
@@ -1362,7 +1362,7 @@ impl AudioPane {
                         crate::actions::AudioOperation::SelectOutput { device_id: id },
                         Err(format!("Output device could not be changed: {e}")),
                     );
-                    warn!(target: "qos::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
+                    warn!(target: "tilo::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
                 }
             }
         }
@@ -1393,7 +1393,7 @@ impl AudioPane {
                         crate::actions::AudioOperation::SelectInput { device_id: id },
                         Err(format!("Input device could not be changed: {e}")),
                     );
-                    warn!(target: "qos::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
+                    warn!(target: "tilo::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
                 }
             }
         }
@@ -1442,7 +1442,7 @@ impl AudioPane {
                     }
                     self.runtime_notice = Some(format!("Device profile could not be changed: {e}"));
                     self.structure_dirty = true;
-                    warn!(target: "qos::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed");
+                    warn!(target: "tilo::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed");
                 }
             }
         }

@@ -83,14 +83,14 @@ class Session:
         self.dir = os.path.join(root, name)
         os.makedirs(self.dir, exist_ok=True)
         self.socket = os.path.join(self.dir, "control.sock")
-        # Every home an app or the shell might persist into. `QOS_STATE_PATH`
+        # Every home an app or the shell might persist into. `TILO_STATE_PATH`
         # alone moves only the workspace tree; records live under
         # XDG_DATA_HOME, and a relative XDG_CONFIG_HOME is ignored outright
         # by `dirs::config_dir`, so all of these are absolute.
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
@@ -102,8 +102,8 @@ class Session:
             # point of view: the only visible symptom is that the peer.*
             # actions are never exported, which reads as a capability
             # refusal rather than a missing prerequisite.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_HEADLESS_SIZE": "1280x800",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -229,7 +229,7 @@ def main() -> int:
         print("      run: cargo build -p shell --bin shell", file=sys.stderr)
         return 1
 
-    root = tempfile.mkdtemp(prefix="qos-agent-collab-")
+    root = tempfile.mkdtemp(prefix="tilo-agent-collab-")
     sessions: list[Session] = []
     try:
         print("\n[1] three real sessions, isolated from this machine and each other")

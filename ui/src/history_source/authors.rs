@@ -58,8 +58,8 @@ impl AuthorDirectory {
         self.by_actor.insert(actor_hex.to_lowercase(), author);
     }
 
-    /// Bind `actor_hex` to the local user, read from the qOS identity on disk.
-    /// A `false` return is not an error: an app run outside a qOS session has
+    /// Bind `actor_hex` to the local user, read from the Tilo identity on disk.
+    /// A `false` return is not an error: an app run outside a Tilo session has
     /// no identity, and the caller should leave the actor to resolve through
     /// the handle path.
     pub fn register_local_identity(&mut self, actor_hex: &str) -> bool {
@@ -128,7 +128,7 @@ pub fn participant_display_label(principal: &str) -> String {
     format!("{name} · Agent")
 }
 
-/// Build a [`HistoryAuthor`] from the qOS identity on disk, if there is one.
+/// Build a [`HistoryAuthor`] from the Tilo identity on disk, if there is one.
 /// Public because the shell wants the same answer for its own chrome without
 /// having to own an [`AuthorDirectory`].
 pub fn local_identity_author() -> Option<HistoryAuthor> {
@@ -156,15 +156,15 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
     }
 }
 
-/// `$XDG_CONFIG_HOME/qos/identity/primary.json`, else
-/// `$HOME/.config/qos/identity/primary.json`. Mirrors the resolution in
+/// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
+/// `$HOME/.config/tilo/identity/primary.json`. Mirrors the resolution in
 /// `shell::firstboot::resolve_identity_dir`, which is what writes the file.
 fn config_identity_path() -> Option<PathBuf> {
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(v) if !v.is_empty() => PathBuf::from(v),
         _ => PathBuf::from(std::env::var("HOME").ok()?).join(".config"),
     };
-    let p = base.join("qos").join("identity").join("primary.json");
+    let p = base.join("tilo").join("identity").join("primary.json");
     p.is_file().then_some(p)
 }
 
@@ -446,10 +446,10 @@ mod tests {
     /// Bound every source `local_identity_author` consults to the test's own
     /// temp dir, and put the environment back afterwards, panic or not.
     ///
-    /// Both variables matter: `QOS_USER_IDENTITY` is the launcher-provided
+    /// Both variables matter: `TILO_USER_IDENTITY` is the launcher-provided
     /// path tried first; `XDG_CONFIG_HOME` is the fallback tried second, and
     /// leaving it alone would let a developer's real
-    /// `~/.config/qos/identity/primary.json` decide the result.
+    /// `~/.config/tilo/identity/primary.json` decide the result.
     struct IdentityEnvGuard {
         saved: Vec<(&'static str, Option<String>)>,
     }
@@ -465,7 +465,7 @@ mod tests {
                 .map(|(name, value)| {
                     let previous = std::env::var(name).ok();
                     // SAFETY: every test that touches these variables is
-                    // serialised on the `qos_user_identity` key, so no other
+                    // serialised on the `tilo_user_identity` key, so no other
                     // thread reads them between here and the restore in
                     // `drop`.
                     unsafe { std::env::set_var(name, value) };
@@ -499,7 +499,7 @@ mod tests {
     /// only a fixture that came out of the writer proves the reader still
     /// accepts what the writer emits.
     #[test]
-    #[serial_test::serial(qos_user_identity)]
+    #[serial_test::serial(tilo_user_identity)]
     fn local_identity_is_read_from_the_firstboot_json_shape() {
         let (bytes, public_key) = firstboot_identity_bytes("Quinten", [0, 255, 0]);
 
@@ -538,7 +538,7 @@ mod tests {
     /// must render as the honest unknown-participant label rather than as a
     /// blank row.
     #[test]
-    #[serial_test::serial(qos_user_identity)]
+    #[serial_test::serial(tilo_user_identity)]
     fn a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank() {
         let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
 
@@ -555,10 +555,10 @@ mod tests {
     }
 
     /// With no identity anywhere, the chrome gets `None` and falls through to
-    /// the handle/unknown ladder — an app run outside a qOS session is not an
+    /// the handle/unknown ladder — an app run outside a Tilo session is not an
     /// error.
     #[test]
-    #[serial_test::serial(qos_user_identity)]
+    #[serial_test::serial(tilo_user_identity)]
     fn a_missing_identity_file_is_not_an_author() {
         let dir = tempfile::tempdir().expect("temp dir");
         let _env = IdentityEnvGuard::pointing_at(&dir.path().join("absent.json"), dir.path());

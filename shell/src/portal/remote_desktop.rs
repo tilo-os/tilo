@@ -50,7 +50,7 @@ use super::{CapabilityKind, PortalCaller, PortalContext, auth::authenticate_call
 
 const MAX_LIVE_SESSIONS: usize = 64;
 const MAX_RESTORE_RECORDS: usize = 256;
-const RESTORE_VENDOR: &str = "qos";
+const RESTORE_VENDOR: &str = "tilo";
 const RESTORE_DATA_VERSION: u32 = 1;
 
 /// Device-type bitmask (`RemoteDesktop.AvailableDeviceTypes`).
@@ -230,7 +230,7 @@ impl RemoteRestoreStore {
         let path = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .or_else(dirs::state_dir)
-            .map(|root| root.join("qos/portal/remote-desktop-restore.json"));
+            .map(|root| root.join("tilo/portal/remote-desktop-restore.json"));
         let durable = path
             .as_ref()
             .and_then(|path| std::fs::read(path).ok())
@@ -1029,7 +1029,7 @@ fn spawn_remote_eis(
     use reis::enumflags2::BitFlag as _;
     let (server, client) = UnixStream::pair()?;
     std::thread::Builder::new()
-        .name("qos-remote-desktop-eis".into())
+        .name("tilo-remote-desktop-eis".into())
         .spawn(move || {
             let Ok(context) = reis::eis::Context::new(server) else {
                 return;
@@ -1053,7 +1053,7 @@ fn spawn_remote_eis(
                                     | reis::request::DeviceCapability::Button
                                     | reis::request::DeviceCapability::Scroll;
                             }
-                            let _seat = connection.add_seat(Some("qos"), advertised);
+                            let _seat = connection.add_seat(Some("tilo"), advertised);
                             let _ = connection.flush();
                         }
                         Ok(reis::calloop::EisRequestSourceEvent::Request(request)) => {
@@ -1068,7 +1068,7 @@ fn spawn_remote_eis(
                                             | reis::request::DeviceCapability::Button
                                             | reis::request::DeviceCapability::Scroll);
                                     let device = bind.seat.add_device(
-                                        Some("qos remote input"),
+                                        Some("tilo remote input"),
                                         reis::eis::device::DeviceType::Virtual,
                                         capabilities,
                                         |_| {},

@@ -12,7 +12,7 @@ repo.
 * In production, a `MediaItem.path` like `media/Drone_Coastline.mov` resolves
   to `/var/workspace/media/Drone_Coastline.mov` on the P2P FUSE — the bytes
   hydrate on demand from peers.
-* In `--shots` / dev, the binary sets `QOS_VE_MEDIA_DIR` to **this directory**
+* In `--shots` / dev, the binary sets `TILO_VE_MEDIA_DIR` to **this directory**
   (see `main.rs`), so `media::resolve("media/Drone_Coastline.mov")` finds the
   stand-in here and reports `Hydration::Local`. That exercises the hydration
   branch deterministically.

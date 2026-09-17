@@ -1049,7 +1049,7 @@ mod tests {
         // and a real RGBA frame keyed to the right clip. The gst backend runs
         // the identical `update` path under `--features decode`.
         let dir = std::env::temp_dir();
-        let f = dir.join(format!("qos-ve-dec-{}.mp4", std::process::id()));
+        let f = dir.join(format!("tilo-ve-dec-{}.mp4", std::process::id()));
         std::fs::write(&f, b"pretend-bytes").unwrap();
         let (project, mid) = project_referencing(&f);
 
@@ -1143,7 +1143,7 @@ mod tests {
 
         gst::init().expect("gstreamer init");
         let dir = std::env::temp_dir();
-        let f = dir.join(format!("qos-ve-realdec-{}.mp4", std::process::id()));
+        let f = dir.join(format!("tilo-ve-realdec-{}.mp4", std::process::id()));
         let desc = format!(
             "videotestsrc pattern=smpte num-buffers=60 ! \
              video/x-raw,width=192,height=108,framerate=30/1 ! videoconvert ! \

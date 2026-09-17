@@ -6,11 +6,11 @@
 //! primary-action footer for creating a verified USB/SD installation medium.
 //!
 //! * **Source** — pick a local `.iso` / `.img` through the host XDG portal
-//!   (never a bespoke picker, per HIG §5), or a known qOS release.
+//!   (never a bespoke picker, per HIG §5), or a known Tilo release.
 //! * **Drive** — choose external media from the *real* block devices (`lsblk`);
 //!   internal and system disks are never eligible. Installation onto those is
-//!   handled after boot by the live qOS installer.
-//! * **Customize** (qOS only) — the shared guided-customization step, delegated
+//!   handled after boot by the live Tilo installer.
+//! * **Customize** (Tilo only) — the shared guided-customization step, delegated
 //!   in full to [`CustomizePanel`](crate::customize); a plain ISO skips it.
 //! * **Confirm** — a read-only review of every choice, an erase warning, and
 //!   the typed device-name gate.
@@ -52,8 +52,8 @@ use crate::customize::{CustomizePanel, CzField};
 use crate::doc::ImagerDoc;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
-    Action, InstallProfile, JobPhase, Progress, QosRelease, Source, SourceKind, Step, TargetDrive,
-    TargetKind, fmt_eta, fmt_rate, fmt_size,
+    Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TargetKind,
+    TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
 use crate::write::{JobControl, WriteRequest, spawn_job};
 
@@ -65,7 +65,7 @@ const CRUMB_TOP: f64 = 26.0;
 const CRUMB_H: f64 = 34.0;
 const FOOTER_H: f64 = 78.0;
 const CONTENT_MAX_W: f64 = 900.0;
-/// Height of the Source step's "no qOS releases" card. Shared by the draw and
+/// Height of the Source step's "no Tilo releases" card. Shared by the draw and
 /// layout passes so the two stay in step.
 const RELEASE_ZERO_H: f64 = 84.0;
 
@@ -114,11 +114,11 @@ pub struct ImagerApp {
     profile: InstallProfile,
     // ---- local machine/window state ----
     targets: Vec<TargetDrive>,
-    /// qOS releases offered on the Source step are a bounded local catalogue;
+    /// Tilo releases offered on the Source step are a bounded local catalogue;
     /// they are never collaborative state. An offered release is a
     /// write source for a job that erases the target, so one that does not
     /// exist on this machine must not be clickable.
-    releases: Vec<QosRelease>,
+    releases: Vec<TiloRelease>,
     selected: Option<usize>,
     action: Action,
     progress: Progress,
@@ -225,12 +225,12 @@ impl ImagerApp {
 
     /// The releases the document actually knows about — empty on the live
     /// path, seeded content under `--demo` / `--shots`.
-    fn releases(&self) -> &[QosRelease] {
+    fn releases(&self) -> &[TiloRelease] {
         &self.releases
     }
 
     /// Only external installation media is shown. Internal installation and
-    /// dual boot belong to the installer on the booted qOS medium.
+    /// dual boot belong to the installer on the booted Tilo medium.
     fn visible_targets(&self) -> Vec<(usize, &TargetDrive)> {
         self.targets
             .iter()
@@ -291,7 +291,7 @@ impl ImagerApp {
         }
     }
 
-    /// Only a qOS image authenticated by the bundled release catalog can be
+    /// Only a Tilo image authenticated by the bundled release catalog can be
     /// pre-configured; every arbitrary local image is written as-is.
     fn customizable(&self) -> bool {
         self.source
@@ -300,7 +300,7 @@ impl ImagerApp {
     }
 
     fn source_is_official(&self, source: &Source) -> bool {
-        source.kind == SourceKind::QosImage
+        source.kind == SourceKind::TiloImage
             && source.installable
             && source.expected_sha256.as_deref().is_some_and(|digest| {
                 digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -325,11 +325,11 @@ impl ImagerApp {
         &self.progress
     }
 
-    /// The last profile [`EncodedAction`](qos_actions::EncodedAction) an
+    /// The last profile [`EncodedAction`](tilo_actions::EncodedAction) an
     /// on-screen control dispatched, for the affordance == `ActionSpec` covenant
     /// test.
     #[doc(hidden)]
-    pub fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -364,12 +364,12 @@ impl ImagerApp {
             "customize" | "customize-timezone-open" | "export" => {
                 self.selected = Some(0);
                 self.step = Step::Customize;
-                self.status = "Pre-configuring qOS 1.0".into();
+                self.status = "Pre-configuring Tilo 1.0".into();
             }
             "confirm" => {
                 self.selected = Some(0);
                 self.step = Step::Confirm;
-                self.status = "Ready to write qOS 1.0 → /dev/sdb".into();
+                self.status = "Ready to write Tilo 1.0 → /dev/sdb".into();
             }
             "progress" => {
                 self.selected = Some(0);
@@ -381,7 +381,7 @@ impl ImagerApp {
                     rate_bps: 176_000_000,
                     error: None,
                 };
-                self.status = "Writing qOS 1.0 → /dev/sdb".into();
+                self.status = "Writing Tilo 1.0 → /dev/sdb".into();
             }
             "done" => {
                 self.selected = Some(0);
@@ -393,7 +393,7 @@ impl ImagerApp {
                     rate_bps: 0,
                     error: None,
                 };
-                self.status = "Done — qOS 1.0 written and verified".into();
+                self.status = "Done — Tilo 1.0 written and verified".into();
             }
             "done-failed" => {
                 self.selected = Some(0);
@@ -446,7 +446,7 @@ impl ImagerApp {
                 if self.releases().is_empty() {
                     "Pick a local ISO or IMG file to write.".into()
                 } else {
-                    "Pick a local ISO or IMG file, or choose a qOS release.".into()
+                    "Pick a local ISO or IMG file, or choose a Tilo release.".into()
                 },
             ),
             Step::Drive => (
@@ -647,7 +647,7 @@ impl ImagerApp {
                 Hit::Release(index) => self.releases.get(index).map(|release| {
                     self.a11y_control(
                         ui::a11y::Role::Button,
-                        format!("Download qOS {}", release.version),
+                        format!("Download Tilo {}", release.version),
                         *rect,
                         *hit,
                         false,
@@ -658,7 +658,7 @@ impl ImagerApp {
                 Hit::CancelDownload => Some(
                     self.a11y_control(
                         ui::a11y::Role::Button,
-                        "Cancel qOS installer download",
+                        "Cancel Tilo installer download",
                         *rect,
                         *hit,
                         self.release_control
@@ -842,7 +842,7 @@ impl ImagerApp {
                                 source.name,
                                 fmt_size(source.size),
                                 if self.source_is_official(source) {
-                                    "Official qOS release — catalog verified"
+                                    "Official Tilo release — catalog verified"
                                 } else {
                                     "Local image — unverified, written as-is"
                                 }
@@ -871,7 +871,7 @@ impl ImagerApp {
             ),
             Step::Customize => children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_value("Pre-configuration is only available for qOS images.")
+                    .with_value("Pre-configuration is only available for Tilo images.")
                     .with_hashed_key("profile-unavailable"),
             ),
             Step::Confirm => {
@@ -994,7 +994,7 @@ fn with_alpha(c: Color, a: u8) -> Color {
 fn source_color(theme: &Theme, kind: SourceKind) -> Color {
     let c = &theme.tokens.colors;
     match kind {
-        SourceKind::QosImage => c.accent[5],
+        SourceKind::TiloImage => c.accent[5],
         SourceKind::IsoFile => c.semantic.info,
     }
 }
@@ -1399,7 +1399,7 @@ impl ImagerApp {
         if self.source.is_some() {
             y += if compact { 108.0 } else { 92.0 } + 24.0; // selected card
         }
-        // qOS releases list. With none known, the zero-state card takes the
+        // Tilo releases list. With none known, the zero-state card takes the
         // space and there is nothing here to click.
         y += 22.0; // section label
         if self.releases().is_empty() {
@@ -1822,7 +1822,7 @@ impl ImagerApp {
         let sub = if self.releases().is_empty() {
             "The image to write. Pick a local .iso or .img file."
         } else {
-            "The image to write. Pick a local .iso or .img file, or a qOS release below."
+            "The image to write. Pick a local .iso or .img file, or a Tilo release below."
         };
         Self::draw_step_title(scene, tr, theme, content, "Choose the source image", sub);
         let browse = self.draw_source_dropzone(scene, tr, theme, t, content);
@@ -2019,7 +2019,7 @@ impl ImagerApp {
             Self::txt(
                 scene,
                 tr,
-                "● Official qOS release · catalog verified",
+                "● Official Tilo release · catalog verified",
                 11.5,
                 c.semantic.success,
                 detail_x,
@@ -2043,7 +2043,7 @@ impl ImagerApp {
         card.y1 + 24.0
     }
 
-    /// Draws the "qOS release" heading, its zero-state, and the list of known
+    /// Draws the "Tilo release" heading, its zero-state, and the list of known
     /// releases, returning the y for the next section.
     fn draw_source_releases(
         &self,
@@ -2054,12 +2054,12 @@ impl ImagerApp {
         content: Rect,
         mut y: f64,
     ) -> f64 {
-        // qOS releases. With none to choose between, the heading names the
+        // Tilo releases. With none to choose between, the heading names the
         // section rather than offering a choice that is not there.
         let heading = if self.releases().is_empty() {
-            "qOS RELEASES"
+            "Tilo RELEASES"
         } else {
-            "OR CHOOSE A qOS RELEASE"
+            "OR CHOOSE A Tilo RELEASE"
         };
         Self::section_label(scene, tr, theme, heading, content.x0, y);
         y += 22.0;
@@ -2093,7 +2093,7 @@ impl ImagerApp {
         Self::txt_center(
             scene,
             tr,
-            "No qOS releases found",
+            "No Tilo releases found",
             14.0,
             c.text_primary,
             cx,
@@ -2129,12 +2129,12 @@ impl ImagerApp {
         content: Rect,
         y: f64,
         index: usize,
-        rel: &QosRelease,
+        rel: &TiloRelease,
     ) -> f64 {
         let c = &theme.tokens.colors;
         let r = Rect::new(content.x0, y, content.x1, y + 54.0);
         let selected = self.source.as_ref().is_some_and(|s| {
-            s.kind == SourceKind::QosImage && s.name == format!("{} {}", rel.name, rel.version)
+            s.kind == SourceKind::TiloImage && s.name == format!("{} {}", rel.name, rel.version)
         });
         let hov = r.contains(self.last_mouse);
         Self::fill_rr(
@@ -2172,7 +2172,7 @@ impl ImagerApp {
         Self::txt_center(
             scene,
             tr,
-            "qOS",
+            "Tilo",
             11.0,
             Color::WHITE,
             f64::midpoint(badge.x0, badge.x1),
@@ -2182,7 +2182,7 @@ impl ImagerApp {
         Self::txt(
             scene,
             tr,
-            &format!("qOS {}", rel.version),
+            &format!("Tilo {}", rel.version),
             14.5,
             c.text_primary,
             r.x0 + 68.0,
@@ -2657,7 +2657,7 @@ impl ImagerApp {
             Self::txt_center(
                 scene,
                 tr,
-                "Pre-configuration (hostname, user, region) is available for qOS",
+                "Pre-configuration (hostname, user, region) is available for Tilo",
                 13.0,
                 c.text_dim,
                 f64::midpoint(card.x0, card.x1),
@@ -2678,7 +2678,7 @@ impl ImagerApp {
         }
         let installing = self.action == Action::Install;
         let sub = if installing {
-            "Set up the machine qOS will install — you can change any of this later."
+            "Set up the machine Tilo will install — you can change any of this later."
         } else {
             "These choices travel with the installer, so setup on the device is shorter."
         };
@@ -2870,11 +2870,11 @@ impl ImagerApp {
         }
         let act = match self.action {
             Action::Install => format!(
-                "Install qOS with your settings (host {}, user {})",
+                "Install Tilo with your settings (host {}, user {})",
                 self.profile.hostname, self.profile.user.username
             ),
             Action::Flash if self.customizable() => format!(
-                "Write qOS, pre-configured (host {}, user {})",
+                "Write Tilo, pre-configured (host {}, user {})",
                 self.profile.hostname, self.profile.user.username
             ),
             Action::Flash => "Write the image, then read-back verify".to_string(),
@@ -3357,7 +3357,7 @@ impl ImagerApp {
         );
         let (headline, sub): (&str, &str) = if install {
             (
-                "qOS is installed",
+                "Tilo is installed",
                 "The disk was written and verified — remove the media and reboot.",
             )
         } else {
@@ -3578,7 +3578,7 @@ impl ImagerApp {
             state,
             crate::actions::IMAGER_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Imager", "Imager", &action),
         );
         self.source = Some(src.clone());
         self.set_status(
@@ -3645,14 +3645,14 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn download_release(&mut self, state: &AutoCommit, index: usize, release: QosRelease) {
+    fn download_release(&mut self, state: &AutoCommit, index: usize, release: TiloRelease) {
         if self.release_rx.is_some() {
-            self.set_status(state, "A qOS installer download is already in progress.");
+            self.set_status(state, "A Tilo installer download is already in progress.");
             return;
         }
         self.set_status(
             state,
-            &format!("Downloading and verifying qOS {}…", release.version),
+            &format!("Downloading and verifying Tilo {}…", release.version),
         );
         let job = crate::release::spawn_download(release);
         self.release_rx = Some(job.events);
@@ -3676,7 +3676,7 @@ impl ImagerApp {
                         .any(|event| matches!(event, crate::release::DownloadEvent::Finished(_)))
                     {
                         events.push(crate::release::DownloadEvent::Finished(Err(
-                            "The qOS installer download stopped unexpectedly.".into(),
+                            "The Tilo installer download stopped unexpectedly.".into(),
                         )));
                     }
                     break;
@@ -3692,17 +3692,17 @@ impl ImagerApp {
                     self.release_download_progress = Some((received, total));
                     self.release_download_stage = Some("downloading");
                     let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
-                    self.set_status(state, &format!("Downloading qOS installer… {percent}%"));
+                    self.set_status(state, &format!("Downloading Tilo installer… {percent}%"));
                 }
                 crate::release::DownloadEvent::Verifying => {
                     self.release_download_progress = None;
                     self.release_download_stage = Some("verifying");
-                    self.set_status(state, "Cryptographically verifying the qOS installer…");
+                    self.set_status(state, "Cryptographically verifying the Tilo installer…");
                 }
                 crate::release::DownloadEvent::Expanding { written, total } => {
                     self.release_download_progress = Some((written, total));
                     self.release_download_stage = Some("preparing image");
-                    self.set_status(state, "Preparing the verified qOS installer image…");
+                    self.set_status(state, "Preparing the verified Tilo installer image…");
                 }
                 crate::release::DownloadEvent::Finished(result) => {
                     self.release_rx = None;
@@ -3720,7 +3720,7 @@ impl ImagerApp {
                             self.select_source(state, &source);
                             self.set_status(
                                 state,
-                                "qOS installer downloaded and cryptographically verified.",
+                                "Tilo installer downloaded and cryptographically verified.",
                             );
                         }
                         Err(error) => self.set_status(state, &error),
@@ -3741,7 +3741,7 @@ impl ImagerApp {
         if !drive.is_media_target() {
             self.set_status(
                 state,
-                "Internal and system disks can only be installed from the booted qOS medium.",
+                "Internal and system disks can only be installed from the booted Tilo medium.",
             );
             self.dirty = true;
             return;
@@ -3917,7 +3917,7 @@ impl ImagerApp {
             }
             crate::write::JobStart::UnsafeTarget => {
                 return Err(
-                    "Internal and system disks can only be installed from the booted qOS medium."
+                    "Internal and system disks can only be installed from the booted Tilo medium."
                         .into(),
                 );
             }
@@ -4474,10 +4474,10 @@ impl Widget for ImagerApp {
     }
 
     /// The resource tree the shell's Ctrl+K palette walks — delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
-    /// [`crate::actions`]. Empty unless an installable qOS image is selected.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         let available = self.source.is_some() && self.target().is_some();
         let mut job = crate::actions::operation_resource(
             self.target().map(TargetDrive::dev_path).as_deref(),
@@ -4489,23 +4489,23 @@ impl Widget for ImagerApp {
             crate::actions::operation_spec(
                 "export-config",
                 "Export headless configuration",
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::ImagerOperation::ExportConfig,
             )
-            .with_contract(qos_actions::ActionContract {
+            .with_contract(tilo_actions::ActionContract {
                 availability: if available {
-                    qos_actions::Availability::Available
+                    tilo_actions::Availability::Available
                 } else {
-                    qos_actions::Availability::Unavailable {
+                    tilo_actions::Availability::Unavailable {
                         code: "incomplete_plan".into(),
                         reason: "Select an image source and target drive first".into(),
                     }
                 },
-                result: qos_actions::ResultSpec::Json {
+                result: tilo_actions::ResultSpec::Json {
                     schema: serde_json::json!({ "type": "string" }),
                 },
-                discovery: qos_actions::DiscoveryScope::Launchable,
-                ..qos_actions::ActionContract::view()
+                discovery: tilo_actions::DiscoveryScope::Launchable,
+                ..tilo_actions::ActionContract::view()
             }),
         );
         resources.push(job);
@@ -4514,7 +4514,7 @@ impl Widget for ImagerApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -4525,8 +4525,8 @@ impl Widget for ImagerApp {
         };
         let expected_kind = match operation {
             crate::actions::ImagerOperation::Status
-            | crate::actions::ImagerOperation::ExportConfig => qos_actions::OperationKind::View,
-            _ => qos_actions::OperationKind::Effect,
+            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
+            _ => tilo_actions::OperationKind::Effect,
         };
         if kind != expected_kind {
             return Err("Imager operation kind does not match its contract".into());
@@ -4538,18 +4538,18 @@ impl Widget for ImagerApp {
 
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         match crate::actions::decode_operation(type_id, payload)? {
             Some(crate::actions::ImagerOperation::Status) => {
-                if kind != qos_actions::OperationKind::View {
+                if kind != tilo_actions::OperationKind::View {
                     return Err("Imager status is a view operation".into());
                 }
-                return Ok(Some(qos_actions::ActionOutput {
+                return Ok(Some(tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({
                         "phase": self.progress.phase.key(),
                         "progress": self.progress.overall(),
@@ -4559,7 +4559,7 @@ impl Widget for ImagerApp {
                 }));
             }
             Some(crate::actions::ImagerOperation::ExportConfig) => {
-                if kind != qos_actions::OperationKind::View {
+                if kind != tilo_actions::OperationKind::View {
                     return Err("Imager config export is a view operation".into());
                 }
                 if self.source.is_none() || self.target().is_none() {
@@ -4570,7 +4570,7 @@ impl Widget for ImagerApp {
                     .to_headless_config(self.source.as_ref(), self.target());
                 self.export_dialog.show(text.clone());
                 self.dirty = true;
-                return Ok(Some(qos_actions::ActionOutput {
+                return Ok(Some(tilo_actions::ActionOutput {
                     value: Some(serde_json::Value::String(text)),
                     resources: Vec::new(),
                 }));
@@ -4578,7 +4578,7 @@ impl Widget for ImagerApp {
             _ => {}
         }
         self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(qos_actions::ActionOutput::default))
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 
     /// The framework host drains the undo boundary an on-screen profile control
@@ -4666,8 +4666,8 @@ impl Widget for ImagerApp {
                         state,
                         crate::actions::IMAGER_ACTION_TYPE,
                         &field_action,
-                        qos_actions::ActionContext::for_action(
-                            "org.qos.Imager",
+                        tilo_actions::ActionContext::for_action(
+                            "org.tilo.Imager",
                             "Imager",
                             &field_action,
                         ),
@@ -4998,7 +4998,7 @@ mod tests {
 
     fn seeded_app() -> (ImagerApp, AutoCommit) {
         // Tests drive the wizard against the demo document (sample drives + a
-        // qOS image + recent history) — the same content `--shots`/`--demo` use.
+        // Tilo image + recent history) — the same content `--shots`/`--demo` use.
         let mut app = ImagerApp::new();
         app.targets = crate::model::sample_targets();
         app.releases = crate::model::sample_releases();
@@ -5178,7 +5178,7 @@ mod tests {
             selected
                 .value
                 .as_deref()
-                .is_some_and(|value| value.contains("qOS"))
+                .is_some_and(|value| value.contains("Tilo"))
         );
 
         let mut order = Vec::new();
@@ -5436,11 +5436,11 @@ mod tests {
     /// and a live (unseeded) document has nothing in it. Sample releases are
     /// opt-in via `--demo` / `--shots` like every other sample surface here.
     #[test]
-    fn live_app_offers_no_qos_release_to_write() {
+    fn live_app_offers_no_tilo_release_to_write() {
         let mut app = ImagerApp::new();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.releases().is_empty(), "no fabricated qOS releases");
+        assert!(app.releases().is_empty(), "no fabricated Tilo releases");
 
         // ...and nothing on the Source step is clickable that would select one.
         app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
@@ -5622,7 +5622,7 @@ mod tests {
         assert_eq!(app.step, Step::Drive);
         app.select_target(&doc, 0);
         app.advance(&mut doc);
-        // Seeded source is an installable qOS image → goes through Customize.
+        // Seeded source is an installable Tilo image → goes through Customize.
         assert_eq!(app.step, Step::Customize);
         app.advance(&mut doc);
         assert_eq!(app.step, Step::Confirm);
@@ -5684,7 +5684,7 @@ mod tests {
                 .any(|(_, hit)| matches!(hit, Hit::Release(_)))
         );
         let tree = app.accessibility_tree();
-        assert!(accessible_named(&tree, "Cancel qOS installer download").is_some());
+        assert!(accessible_named(&tree, "Cancel Tilo installer download").is_some());
     }
 
     #[test]
@@ -5704,7 +5704,7 @@ mod tests {
         assert!(app.status.contains("25%"));
 
         tx.send(crate::release::DownloadEvent::Finished(Err(
-            "qOS installer download cancelled.".into(),
+            "Tilo installer download cancelled.".into(),
         )))
         .unwrap();
         app.drain_release(&mut doc);
@@ -5754,7 +5754,7 @@ mod tests {
         click_at(&mut app, &mut doc, center(usb));
         assert_eq!(app.selected, Some(0));
 
-        // Drive → Customize (the seeded qOS image is customizable).
+        // Drive → Customize (the seeded Tilo image is customizable).
         let primary = app.compute_layout().primary.unwrap();
         click_at(&mut app, &mut doc, center(primary));
         assert_eq!(app.step, Step::Customize);
@@ -5816,12 +5816,12 @@ mod tests {
     }
 
     #[test]
-    fn local_qos_claim_cannot_unlock_preconfiguration() {
+    fn local_tilo_claim_cannot_unlock_preconfiguration() {
         let (mut app, mut doc) = seeded_app();
         let official = crate::model::sample_source();
         let mut local = official.clone();
         local.kind = SourceKind::IsoFile;
-        local.path = "/tmp/qos-official-looking.iso".into();
+        local.path = "/tmp/tilo-official-looking.iso".into();
         local.identity = None;
         app.select_source(&mut doc, &local);
         assert!(!app.customizable());
@@ -5864,9 +5864,9 @@ mod tests {
     #[test]
     fn portal_open_selects_inspected_source() {
         let (mut app, mut doc) = seeded_app();
-        // Simulate the portal returning a real qOS-looking image.
+        // Simulate the portal returning a real Tilo-looking image.
         let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
-        std::fs::write(f.path(), b"qos payload for the imager test").unwrap();
+        std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
         app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
             f.path().to_path_buf(),
         )));
@@ -5975,7 +5975,7 @@ mod tests {
             Step::Customize,
             "the panel only handles events on this step"
         );
-        assert!(app.customizable(), "the seeded qOS image is customizable");
+        assert!(app.customizable(), "the seeded Tilo image is customizable");
         app.customize.focus_for_test(field);
         (app, doc)
     }

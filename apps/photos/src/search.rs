@@ -9,9 +9,9 @@
 //! query happened to match one of those words.
 
 use automerge::AutoCommit;
-use qos_actions::{ActionAddress, Resource};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError,
@@ -423,8 +423,8 @@ mod tests {
     use crate::actions::PhotosResources;
     use crate::doc::PhotosDoc;
     use crate::model::OpenImage;
-    use qos_actions::ActionAddress;
-    use qos_actions::ResourceProvider;
+    use tilo_actions::ActionAddress;
+    use tilo_actions::ResourceProvider;
 
     fn open_doc(name: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();

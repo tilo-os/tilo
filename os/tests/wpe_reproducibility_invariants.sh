@@ -43,8 +43,8 @@ if grep -Eq 'latest\(\)|curl[^\n]*"?\$REL/"?([[:space:]]|$)' "$build_script"; th
 else
   ok 'WPE source selection has no latest-release scrape'
 fi
-has "$build_script" 'QOS_WPE_OFFLINE' 'WPE build supports a fail-closed offline source mode'
-has "$container" 'QOS_WPE_SOURCE_DIR=/qos-assets QOS_WPE_OFFLINE=1' \
+has "$build_script" 'TILO_WPE_OFFLINE' 'WPE build supports a fail-closed offline source mode'
+has "$container" 'TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1' \
   'production WPE compilation uses only the verified external cache'
 
 wpe_stage="$(sed -n '/^FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1/,/^FROM ${BASE_REF} AS wpe-builder-0/p' "$container")"
@@ -59,12 +59,12 @@ has "$buildroot" 'dnf builddep -y webkitgtk6.0' \
   'dedicated snapshot resolves the Fedora WebKit BuildRequires'
 has "$buildroot" 'find /etc/yum.repos.d -type f -delete' \
   'promoted WPE buildroot disables Fedora repositories'
-has "$buildroot" '/usr/lib/qos/wpe-buildroot-packages.txt' \
+has "$buildroot" '/usr/lib/tilo/wpe-buildroot-packages.txt' \
   'promoted WPE buildroot records its exact installed package set'
 
 for arch in X86_64 AARCH64; do
   value="$(sed -n "s/^WPE_BUILDROOT_${arch}_REF=//p" "$pins")"
-  if [ -z "$value" ] || [[ "$value" =~ ^code\.podesta\.ai/qos/qos-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]; then
+  if [ -z "$value" ] || [[ "$value" =~ ^code\.podesta\.ai/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]; then
     ok "$arch buildroot pin is either explicit bootstrap-empty or digest-pinned"
   else
     bad "$arch WPE buildroot uses a mutable or malformed reference"
@@ -84,7 +84,7 @@ has "$snapshot_workflow" 'WPE_SNAPSHOT_CREDENTIAL_BROKER' \
   'WPE snapshots use an OIDC credential broker in steady state'
 has "$snapshot_workflow" 'enable-openid-connect: true' \
   'WPE snapshot jobs explicitly enable Forgejo OIDC'
-has "$snapshot_workflow" '"$QOS_WPE_SIGNER" "$QOS_WPE_REF"' \
+has "$snapshot_workflow" '"$TILO_WPE_SIGNER" "$TILO_WPE_REF"' \
   'WPE buildroots are signed through a leased non-exportable signer'
 has "$snapshot_workflow" "vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP == '1'" \
   'exportable signing keys are isolated to an explicit bootstrap step'
@@ -139,14 +139,14 @@ has "$image_workflow" 'cosign verify --key keys/cosign.pub "$ref"' \
   'OS CI verifies the promoted WPE buildroot signature'
 has "$image_workflow" 'WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}' \
   'OS CI passes the verified buildroot into every image build'
-if grep -Fq 'QOS_WPE_BOOTSTRAP=1' "$image_workflow"; then
+if grep -Fq 'TILO_WPE_BOOTSTRAP=1' "$image_workflow"; then
   bad 'OS CI enables the live-repository WPE bootstrap'
 else
   ok 'OS CI never enables local WPE bootstrap mode'
 fi
-has "$image_script" 'QOS_WPE_BOOTSTRAP:=0' 'local WPE bootstrap is opt-in and off by default'
+has "$image_script" 'TILO_WPE_BOOTSTRAP:=0' 'local WPE bootstrap is opt-in and off by default'
 has "$image_script" 'build-wpe-buildroot.sh' 'local bootstrap has an explicit implementation'
-if grep -Fq './os/dev/use-published-image.sh "$QOS_PUBLISHED_OS_IMAGE"' \
+if grep -Fq './os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE"' \
      "$repo/.forgejo/workflows/release-imager.yml" \
    && ! grep -Fq './os/dev/build-image.sh' "$repo/.forgejo/workflows/release-imager.yml" \
    && grep -Fq 'cosign verify --key "$verify_key" "$image"' \
@@ -155,7 +155,7 @@ if grep -Fq './os/dev/use-published-image.sh "$QOS_PUBLISHED_OS_IMAGE"' \
 else
   bad 'installation-medium release can rebuild with or consume an unverified WPE input'
 fi
-has "$image_script" 'cosign verify --key "$QOS_REPO/keys/cosign.pub"' \
+has "$image_script" 'cosign verify --key "$TILO_REPO/keys/cosign.pub"' \
   'release helper verifies the WPE buildroot signature'
 
 exit "$fail"

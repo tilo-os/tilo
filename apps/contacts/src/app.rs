@@ -813,8 +813,8 @@ pub struct ContactsApp {
     /// The contacts + vCard version parked while the export Save dialog is up,
     /// written to the chosen destination when the portal returns a path.
     pending_export: Option<(Vec<ContactId>, VCardVersion)>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
     /// Pending untrusted UID collisions. These never enter the document until
     /// the user explicitly chooses a safe resolution.
     import_conflicts: Vec<ImportConflict>,
@@ -1238,7 +1238,7 @@ impl ContactsApp {
         &mut self,
         doc: &mut AutoCommit,
         action: &crate::actions::ContactsAction,
-    ) -> Result<(), qos_actions::ActionError> {
+    ) -> Result<(), tilo_actions::ActionError> {
         self.actions.try_dispatch_with_context(
             doc,
             crate::actions::CONTACTS_ACTION_TYPE,
@@ -1254,7 +1254,7 @@ impl ContactsApp {
         &mut self,
         doc: &AutoCommit,
         operation: &str,
-        error: &qos_actions::ActionError,
+        error: &tilo_actions::ActionError,
     ) {
         self.store.contacts = ContactsDoc::list_contacts(doc);
         if self.selected.is_some_and(|id| self.store.get(id).is_none()) {
@@ -1327,7 +1327,7 @@ impl ContactsApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// tests.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -1783,14 +1783,14 @@ impl ContactsApp {
             return;
         };
         self.completed_resource_invocation = Some(if success {
-            qos_actions::InvocationUpdate::Succeeded {
+            tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             }
         } else if let Some(message) = error {
-            qos_actions::InvocationUpdate::Failed {
+            tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "contacts.file_failed".into(),
                     message,
                     details: None,
@@ -1798,7 +1798,7 @@ impl ContactsApp {
                 },
             }
         } else {
-            qos_actions::InvocationUpdate::Cancelled {
+            tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file selection cancelled".into()),
             }
@@ -5157,18 +5157,18 @@ impl Widget for ContactsApp {
 
     /// Publish the open book + its contacts so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Resolve contacts outside the contextual palette page. This is the
     /// other half of bounded discovery: a search hit for contact 65,000 still
     /// reaches the exact current resource/action catalogue, while a deleted
     /// contact has no resource for the broker to invoke.
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -5180,7 +5180,7 @@ impl Widget for ContactsApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -5192,7 +5192,7 @@ impl Widget for ContactsApp {
         let operation: crate::actions::ContactsOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         match (kind, operation) {
-            (qos_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
+            (tilo_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
                 let id =
                     uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
                 if self.store.get(id).is_none() {
@@ -5201,11 +5201,11 @@ impl Widget for ContactsApp {
                 self.reveal_contact(id);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::ContactsOperation::OpenGroup { name },
             ) => self.reveal_group(&name)?,
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::ImportVcard { path },
             ) => {
                 if path.is_some() {
@@ -5220,7 +5220,7 @@ impl Widget for ContactsApp {
                 self.request_import();
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::ExportAllVcard { path },
             ) => {
                 if path.is_some() {
@@ -5243,7 +5243,7 @@ impl Widget for ContactsApp {
                 }
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::KeepImportConflict { token },
             ) => {
                 if !self
@@ -5256,7 +5256,7 @@ impl Widget for ContactsApp {
                 self.pending_conflict_resolution = Some((token, false));
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::ImportConflictAsNew { token },
             ) => {
                 if !self
@@ -5275,8 +5275,8 @@ impl Widget for ContactsApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -5334,7 +5334,7 @@ impl Widget for ContactsApp {
                 .map(|handled| {
                     handled.then(|| {
                         ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )
                     })
                 }),
@@ -5343,11 +5343,11 @@ impl Widget for ContactsApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested && self.resource_invocation == Some(invocation) {
             self.resource_invocation = None;
             self.import_rx = None;
@@ -5360,7 +5360,7 @@ impl Widget for ContactsApp {
                     "Import cancelled; restart Contacts before importing again (generation exhausted)",
                 );
             }
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some(
                     if exhausted {
@@ -8010,7 +8010,7 @@ mod tests {
         let operation = palette
             .take_operation()
             .expect("canonical search hit queued a broker operation");
-        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
         assert_eq!(
             operation
                 .context
@@ -8069,11 +8069,11 @@ mod tests {
         let doc = AutoCommit::new();
         let resources = Widget::resources(&app, &doc);
         let address = crate::actions::open_contact_address(id);
-        let spec = qos_actions::door::resolve(&resources, &address)
+        let spec = tilo_actions::door::resolve(&resources, &address)
             .expect("the search address resolves in the agent-visible tree");
         let encoded = match &spec.input {
-            qos_actions::ActionInput::Immediate(encoded) => encoded,
-            qos_actions::ActionInput::Prompted { .. } => panic!("open takes no arguments"),
+            tilo_actions::ActionInput::Immediate(encoded) => encoded,
+            tilo_actions::ActionInput::Prompted { .. } => panic!("open takes no arguments"),
         };
         assert!(
             Widget::invoke_resource_operation(
@@ -8124,7 +8124,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CONTACTS_OPERATION_TYPE,
                 &payload,
                 &AutoCommit::new(),
@@ -9352,8 +9352,8 @@ mod tests {
         // the app's own affordances (exactly as the shell's Ctrl+K palette would).
         let action = crate::actions::delete_contact_action(id.to_string());
         let encoded = crate::actions::encode(&action);
-        let mut tx = qos_actions::LocalTransport::new();
-        qos_actions::dispatch(&mut h.doc, &action, encoded, &mut tx).unwrap();
+        let mut tx = tilo_actions::LocalTransport::new();
+        tilo_actions::dispatch(&mut h.doc, &action, encoded, &mut tx).unwrap();
         // The store hasn't seen it yet — it still holds the contact.
         assert!(
             h.app.store.get(id).is_some(),
@@ -10513,11 +10513,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", home.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
 
         // First launch.
-        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
         let mut doc = store.load_or_new();
         let mut app = ContactsApp::new();
         app.sync(&mut doc, &ROOT);
@@ -10533,7 +10533,7 @@ mod tests {
         drop((store, doc, app)); // the process exits here
 
         // Second launch ("reboot"): a new app over the reloaded document.
-        let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
         let mut doc2 = store2.load().unwrap().expect("the store has a document");
         let mut app2 = ContactsApp::new();
         app2.sync(&mut doc2, &ROOT);
@@ -10563,9 +10563,9 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", home.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
-        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
         let mut doc = store.new_document();
 
         // A shared ancestor: one contact both sides know about.
@@ -10594,7 +10594,7 @@ mod tests {
         drop((store, doc));
 
         // Restart, then merge the peer that diverged before the save.
-        let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
         let mut restored = store2.load().unwrap().expect("the saved document");
         restored
             .merge(&mut peer)
@@ -10633,13 +10633,13 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", home.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         let (dir, legacy) = scratch_book();
         let book = sample_contacts();
         crate::storage::save(&legacy, &book).unwrap();
 
-        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
         assert!(
             store.migrate_from(&legacy).unwrap(),
             "the legacy file is imported"
@@ -10786,12 +10786,12 @@ mod tests {
         let right_contact = vcard::parse_vcards(card).pop().unwrap();
         assert_eq!(left_contact, right_contact);
 
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &crate::actions::create_contact_action(&left_contact),
             &mut left,
         )
         .unwrap();
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &crate::actions::create_contact_action(&right_contact),
             &mut right,
         )
@@ -11017,7 +11017,7 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         app.import_generation = 2;
         app.import_parse_rx = Some(receiver);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         sender
             .send(ParsedImport {
@@ -11035,7 +11035,7 @@ mod tests {
         assert!(app.import_parse_rx.is_none());
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &ROOT),
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
@@ -11055,8 +11055,8 @@ mod tests {
             let payload = serde_json::to_vec(&operation).unwrap();
             let error = app
                 .start_resource_operation(
-                    qos_actions::InvocationId::new(),
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
                     crate::actions::CONTACTS_OPERATION_TYPE,
                     &payload,
                     &doc,
@@ -11078,7 +11078,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let mut app = ContactsApp::new();
         app.sync(&mut doc, &ROOT);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.import_generation = u64::MAX;
         app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
@@ -11103,7 +11103,7 @@ mod tests {
         );
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &ROOT),
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -11114,7 +11114,7 @@ mod tests {
         let mut app = ContactsApp::new();
         app.sync(&mut doc, &ROOT);
         let (sender, receiver) = mpsc::sync_channel(1);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.import_parse_rx = Some(receiver);
         app.import_generation = u64::MAX;
@@ -11124,7 +11124,7 @@ mod tests {
             .expect("accepted import is settled when cancelled");
         assert!(matches!(
             update,
-            qos_actions::InvocationUpdate::Cancelled { .. }
+            tilo_actions::InvocationUpdate::Cancelled { .. }
         ));
         assert!(
             app.import_parse_rx.is_none(),
@@ -11185,12 +11185,12 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", home.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         // Seed a book into the store, then delete one contact and restart.
         let book = sample_contacts();
         let removed = book[0].id;
-        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
         let mut doc = store.new_document();
         for c in &book {
             ContactsDoc::upsert_contact(&mut doc, c);
@@ -11206,7 +11206,7 @@ mod tests {
         drop((store, doc, app));
 
         // Reload from the store: the deletion stuck.
-        let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
         let doc2 = store2.load().unwrap().expect("document after restart");
         let reloaded = ContactsDoc::list_contacts(&doc2);
         assert_eq!(

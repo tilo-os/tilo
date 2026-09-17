@@ -74,9 +74,9 @@ fn battery_allows(on_battery: bool, present: bool, percent: u8) -> bool {
 }
 
 fn power_allows() -> bool {
-    let snapshot = qos_power_mgmt::sysfs_battery_snapshot();
+    let snapshot = tilo_power_mgmt::sysfs_battery_snapshot();
     battery_allows(
-        qos_power_mgmt::sysfs_on_battery(),
+        tilo_power_mgmt::sysfs_on_battery(),
         snapshot.present,
         snapshot.percent,
     )

@@ -5,8 +5,8 @@
 //! Run with the WPE stack from os/dev/build-wpe.sh on the search paths:
 //!
 //! ```sh
-//! export PKG_CONFIG_PATH=$HOME/.cache/qos-wpe/prefix/lib64/pkgconfig
-//! export LD_LIBRARY_PATH=$HOME/.cache/qos-wpe/prefix/lib64
+//! export PKG_CONFIG_PATH=$HOME/.cache/tilo-wpe/prefix/lib64/pkgconfig
+//! export LD_LIBRARY_PATH=$HOME/.cache/tilo-wpe/prefix/lib64
 //! cargo test -p ui --features webview-wpe --test wpe_engine
 //! ```
 
@@ -28,7 +28,7 @@ use ui::webview::{WebViewCommand, WebViewEngine, WebViewEvent};
 #[test]
 fn wpe_engine_renders_a_page_offscreen() {
     // WebKit's own bubblewrap sandbox cannot nest inside the dev
-    // container / test environment; the per-cluster qOS sandbox is the
+    // container / test environment; the per-cluster Tilo sandbox is the
     // outer boundary in production anyway.
     unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
 
@@ -39,7 +39,7 @@ fn wpe_engine_renders_a_page_offscreen() {
         scale_factor: 1.0,
     });
     engine.send(WebViewCommand::Navigate(
-        "data:text/html,<body style=\"background:%23ff0000;margin:0\"><h1>qOS</h1></body>".into(),
+        "data:text/html,<body style=\"background:%23ff0000;margin:0\"><h1>Tilo</h1></body>".into(),
     ));
 
     let deadline = Instant::now() + Duration::from_secs(30);

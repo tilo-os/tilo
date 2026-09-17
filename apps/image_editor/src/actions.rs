@@ -3,7 +3,7 @@ use crate::{
     doc::ProjectDoc,
     model::{Operation, Project},
 };
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, OperationKind, ParamType, Resource, RetryPolicy,
 };
@@ -448,7 +448,7 @@ mod tests {
             .find(|action| action.id == "remove")
             .expect("adjustments publish their permanent removal action");
         assert!(!remove.contract.reversible);
-        assert_eq!(remove.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(remove.contract.risk, tilo_actions::RiskLevel::Destructive);
     }
 
     #[test]

@@ -1447,12 +1447,12 @@ mod tests {
             let mut resources = Vec::new();
             crate::widget::collect_widget_resources(s, doc, &mut resources);
             let encoded =
-                qos_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
+                tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("AppShell Back exports the action it emits");
             assert!(
                 s.start_resource_operation(
-                    qos_actions::InvocationId::new(),
-                    qos_actions::OperationKind::View,
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
                     &encoded.type_id,
                     &encoded.payload,
                     doc,

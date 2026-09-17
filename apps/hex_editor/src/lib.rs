@@ -1,4 +1,4 @@
-//! Hex — a device-local hex editor for qOS, built on the `ui` toolkit.
+//! Hex — a device-local hex editor for Tilo, built on the `ui` toolkit.
 //!
 //! Raw file bytes, paths, edits, and undo history remain on this device. The
 //! app publishes canonical local resource operations so palette and agent
@@ -65,13 +65,13 @@ pub fn app_root() -> Box<dyn Widget> {
     }
     let shots_mode = std::env::args().any(|a| a == "--shots" || a.starts_with("--shots="));
     // A `--shots`-only hook to capture the empty state deterministically.
-    let want_empty = std::env::var("QOS_HEX_DEMO").as_deref() == Ok("empty");
+    let want_empty = std::env::var("TILO_HEX_DEMO").as_deref() == Ok("empty");
     let view = if shots_mode && !want_empty {
         // Arm the transient floating status bubble so the single headless frame
         // captures the floating cursor read-out chip (it otherwise appears on a
         // change / hover and fades, so a still frame would miss it).
         let mut v = app::sample_view();
-        match std::env::var("QOS_HEX_DEMO").as_deref() {
+        match std::env::var("TILO_HEX_DEMO").as_deref() {
             Ok("search") => v.arm_search_for_shots(),
             Ok("error") => v.arm_error_for_shots(),
             _ => v.arm_status_bubble_for_shots(),

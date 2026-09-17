@@ -1,4 +1,4 @@
-//! qos-install — the user-facing CLI to install, run, and manage qOS
+//! tilo-install — the user-facing CLI to install, run, and manage Tilo
 //! packages (.qpkg) locally, verifying the package signature and trust
 //! chain before installing.
 
@@ -31,7 +31,7 @@ use pkg::trust::{
 use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
 use serde::{Deserialize, Serialize};
 
-/// Mirrors qos-pkg-cli's `QpkgHeader` (kept local to avoid a circular dep).
+/// Mirrors tilo-pkg-cli's `QpkgHeader` (kept local to avoid a circular dep).
 #[derive(Debug, Deserialize)]
 struct QpkgHeader {
     /// `qpkg:<hex>` form of the `PackageId`.
@@ -42,8 +42,8 @@ struct QpkgHeader {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "qos-install",
-    about = "Install, launch, list, or remove qOS packages."
+    name = "tilo-install",
+    about = "Install, launch, list, or remove Tilo packages."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -93,7 +93,7 @@ enum Cmd {
     /// Fetch a newer version of an installed package and swap it in,
     /// keeping the user's per-room state.
     Update {
-        /// Package id (as printed by `qos-install list`); omit to update all.
+        /// Package id (as printed by `tilo-install list`); omit to update all.
         pkg_id: Option<String>,
         /// Update from a local .qpkg instead of a configured registry
         /// (requires an explicit package id).
@@ -120,7 +120,7 @@ enum Cmd {
     /// (opt-in) its saved state.
     #[command(alias = "remove")]
     Uninstall {
-        /// Package id (as printed by `qos-install list`).
+        /// Package id (as printed by `tilo-install list`).
         pkg_id: String,
         /// Also delete all saved state for this app — the user's data, not the
         /// publisher's; does not come back on reinstall.
@@ -141,27 +141,27 @@ enum Cmd {
     },
     /// Pin an installed package: kept, ranked first, never evicted under size pressure.
     Pin {
-        /// Package id (as printed by `qos-install list`).
+        /// Package id (as printed by `tilo-install list`).
         pkg_id: String,
     },
     /// Unpin an installed package (drops it back to the eviction pool).
     Unpin {
-        /// Package id (as printed by `qos-install list`).
+        /// Package id (as printed by `tilo-install list`).
         pkg_id: String,
     },
-    /// Launch an installed package via qos-launcher.
+    /// Launch an installed package via tilo-launcher.
     Run {
         /// Package id.
         pkg_id: String,
-        /// Forwarded to qos-launcher.
+        /// Forwarded to tilo-launcher.
         #[arg(long)]
         no_services: bool,
-        /// Forwarded to qos-launcher. Deprecated — apps with an installed
-        /// `qos-runtime/<v>` bundle don't need this; silently overridden when
+        /// Forwarded to tilo-launcher. Deprecated — apps with an installed
+        /// `tilo-runtime/<v>` bundle don't need this; silently overridden when
         /// a bundle resolves.
         #[arg(long, hide = true)]
         minimal_libs: bool,
-        /// Forwarded to qos-launcher; falls back to --minimal-libs if the
+        /// Forwarded to tilo-launcher; falls back to --minimal-libs if the
         /// declared runtime bundle isn't installed.
         #[arg(long)]
         allow_missing_runtime: bool,
@@ -197,7 +197,7 @@ enum Cmd {
     },
     /// Print the PATH-shim directory and a shell-rc snippet to prepend it.
     Path,
-    /// Manage installed qOS runtime bundles.
+    /// Manage installed Tilo runtime bundles.
     Runtime {
         #[command(subcommand)]
         cmd: RuntimeCmd,
@@ -254,7 +254,7 @@ enum RevokedCmd {
 #[derive(Debug, Subcommand)]
 enum RuntimeCmd {
     /// Build + install a runtime bundle into
-    /// `$XDG_DATA_HOME/qos-runtime/<version>/`, from the host root or an
+    /// `$XDG_DATA_HOME/tilo-runtime/<version>/`, from the host root or an
     /// explicit prefix.
     Install {
         /// Bundle version tag, written into bundle.toml and used to look it up at launch.
@@ -270,7 +270,7 @@ enum RuntimeCmd {
         /// cross-arch bundle from a fabricated rootfs.
         #[arg(long)]
         arch: Option<String>,
-        /// Path to a signing identity JSON (see `qos-runtime-bundle key
+        /// Path to a signing identity JSON (see `tilo-runtime-bundle key
         /// generate`); the launcher refuses unsigned bundles by default, so
         /// most installs should sign.
         #[arg(long)]
@@ -342,15 +342,15 @@ enum Error {
     Shim(String),
     #[error("runtime-bundle: {0}")]
     RuntimeBundle(String),
-    #[error("runtime bundle qos-runtime/{0} is already installed (use --force to overwrite)")]
+    #[error("runtime bundle tilo-runtime/{0} is already installed (use --force to overwrite)")]
     RuntimeBundleExists(String),
-    #[error("runtime bundle qos-runtime/{0} is not installed")]
+    #[error("runtime bundle tilo-runtime/{0} is not installed")]
     RuntimeBundleNotInstalled(String),
     #[error(
         "{package} declares runtime `{runtime}`, and no bundle for it is installed. \
          That package will not launch: the launcher refuses to start an app whose \
          declared runtime is absent.\n  \
-         Install it and retry:  qos-install runtime install --version {version} --from-host --identity <key.json>\n  \
+         Install it and retry:  tilo-install runtime install --version {version} --from-host --identity <key.json>\n  \
          Or build it as part of this install:  add --with-runtime\n  \
          Or install anyway, knowing it cannot launch yet:  add --ignore-missing-runtime"
     )]
@@ -411,7 +411,7 @@ struct RegistryEntry {
     /// them without re-reading the manifest); empty if no [cli] block.
     #[serde(default)]
     cli_commands: Vec<String>,
-    /// The manifest's declared `runtime = "qos-runtime/<v>"`, if any — lets
+    /// The manifest's declared `runtime = "tilo-runtime/<v>"`, if any — lets
     /// `list`/`verify` report bundle status without re-reading manifests.
     #[serde(default)]
     runtime: String,
@@ -428,12 +428,12 @@ struct Registry {
 }
 
 fn data_root() -> Result<PathBuf, Error> {
-    // Honour QOS_APPS_DATA_DIR (tests/dev installs); matches qos-launcher::registry.
-    if let Some(dir) = std::env::var_os("QOS_APPS_DATA_DIR") {
+    // Honour TILO_APPS_DATA_DIR (tests/dev installs); matches tilo-launcher::registry.
+    if let Some(dir) = std::env::var_os("TILO_APPS_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
     let base = dirs::data_dir().ok_or(Error::NoDataDir)?;
-    Ok(base.join("qos-apps"))
+    Ok(base.join("tilo-apps"))
 }
 
 fn registry_path() -> Result<PathBuf, Error> {
@@ -444,9 +444,9 @@ fn payloads_root() -> Result<PathBuf, Error> {
     Ok(data_root()?.join("payloads"))
 }
 
-/// The user's data home (parent of `qos-rooms/`), distinct from
+/// The user's data home (parent of `tilo-rooms/`), distinct from
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
-/// not `QOS_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
+/// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
     if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
         && !dir.is_empty()
@@ -583,13 +583,13 @@ fn verify_and_gate(
                 }
                 // fallback: --allow-self-signed permits this
                 eprintln!(
-                    "qos-install: --require-attestor {required:?} unmatched; --allow-self-signed permits self-signed publisher ed25519:{}",
+                    "tilo-install: --require-attestor {required:?} unmatched; --allow-self-signed permits self-signed publisher ed25519:{}",
                     hex_of(&identity)
                 );
             } else if !trust.allow_self_signed {
                 // Default (current) behavior: warn and proceed.
                 eprintln!(
-                    "qos-install: WARN — package self-signed by ed25519:{} (no trusted-attestor signature); use --require-attestor <id> to demand an attestation",
+                    "tilo-install: WARN — package self-signed by ed25519:{} (no trusted-attestor signature); use --require-attestor <id> to demand an attestation",
                     hex_of(&identity)
                 );
             }
@@ -597,7 +597,7 @@ fn verify_and_gate(
         }
         Verification::Revoked { reason, pubkey, .. } => {
             eprintln!(
-                "qos-install: REFUSED — publisher ed25519:{} is revoked: {reason}",
+                "tilo-install: REFUSED — publisher ed25519:{} is revoked: {reason}",
                 hex_of(&pubkey)
             );
             Err(Error::Revoked { reason })
@@ -644,7 +644,7 @@ impl Ingested {
     fn version(&self) -> &str {
         &self.manifest.package.version
     }
-    /// `qos-runtime/<v>`, when the manifest pins one.
+    /// `tilo-runtime/<v>`, when the manifest pins one.
     fn runtime_ref(&self) -> Option<&str> {
         self.manifest.package.runtime.as_deref()
     }
@@ -730,7 +730,7 @@ fn runtime_status(ingested: &Ingested) -> Result<Option<(String, bool)>, Error> 
 
 /// Make the declared runtime available, or refuse the install.
 ///
-/// The refusal is the point: catching a missing `qos-runtime/<v>`
+/// The refusal is the point: catching a missing `tilo-runtime/<v>`
 /// bundle here (with a fix command) beats discovering
 /// `RuntimeBundleMissing` at first launch.
 fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Error> {
@@ -741,7 +741,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
         return Ok(());
     }
     if flags.with_runtime {
-        println!("  runtime  : qos-runtime/{version} is missing; building it from the host root");
+        println!("  runtime  : tilo-runtime/{version} is missing; building it from the host root");
         return runtime_install(
             &version,
             true,
@@ -753,7 +753,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
     }
     if flags.ignore_missing_runtime {
         eprintln!(
-            "qos-install: WARN — {} declares runtime `qos-runtime/{version}`, which is \
+            "tilo-install: WARN — {} declares runtime `tilo-runtime/{version}`, which is \
              not installed. The package will not launch until it is.",
             ingested.id()
         );
@@ -761,7 +761,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
     }
     Err(Error::RuntimeDependencyMissing {
         package: ingested.id().to_string(),
-        runtime: ingested.runtime_ref().unwrap_or("qos-runtime").to_string(),
+        runtime: ingested.runtime_ref().unwrap_or("tilo-runtime").to_string(),
         version,
     })
 }
@@ -781,13 +781,13 @@ fn write_cli_shims(manifest: &pkg::Manifest, id_field: &str) -> Result<Vec<Strin
     let shim_source = shim::locate_shim_source();
     if !shim_source.exists() {
         eprintln!(
-            "qos-install: WARNING — cannot find qos-cli-shim at {}. \
-             Skipping shim install. Set QOS_CLI_SHIM_PATH or install the qOS runtime first.",
+            "tilo-install: WARNING — cannot find tilo-cli-shim at {}. \
+             Skipping shim install. Set TILO_CLI_SHIM_PATH or install the Tilo runtime first.",
             shim_source.display()
         );
         return Ok(cli_commands);
     }
-    let launcher_override_owned = std::env::var_os("QOS_LAUNCHER_PATH").map(PathBuf::from);
+    let launcher_override_owned = std::env::var_os("TILO_LAUNCHER_PATH").map(PathBuf::from);
     let launcher_override = launcher_override_owned.as_deref();
     let spec = shim::ShimInstall {
         package_id: id_field,
@@ -803,7 +803,7 @@ fn write_cli_shims(manifest: &pkg::Manifest, id_field: &str) -> Result<Vec<Strin
         bin_dir.display()
     );
     println!(
-        "  PATH     : prepend {} to your shell's PATH to pick them up (see `qos-install path`).",
+        "  PATH     : prepend {} to your shell's PATH to pick them up (see `tilo-install path`).",
         bin_dir.display()
     );
     Ok(cli_commands)
@@ -847,7 +847,7 @@ fn install(
     place_payload(&ingested, &dest)?;
     let manifest_path = dest.join("manifest.toml");
 
-    // 5. The evidence a later `qos-install verify` replays.
+    // 5. The evidence a later `tilo-install verify` replays.
     let data_root = data_root()?;
     install::integrity::record(
         &data_root,
@@ -884,7 +884,7 @@ fn install(
     if let Some(rt) = ingested.runtime_ref() {
         println!("  runtime  : {rt}");
     }
-    println!("run with:  qos-install run {id_field}");
+    println!("run with:  tilo-install run {id_field}");
     Ok(())
 }
 
@@ -912,9 +912,9 @@ fn print_install_plan(
     println!("  pinned    : {pinned}");
     match runtime_status(ingested)? {
         None => println!("  runtime   : none declared"),
-        Some((v, true)) => println!("  runtime   : qos-runtime/{v} (installed)"),
+        Some((v, true)) => println!("  runtime   : tilo-runtime/{v} (installed)"),
         Some((v, false)) => println!(
-            "  runtime   : qos-runtime/{v} MISSING — install would refuse without \
+            "  runtime   : tilo-runtime/{v} MISSING — install would refuse without \
              --with-runtime or --ignore-missing-runtime"
         ),
     }
@@ -1062,8 +1062,8 @@ fn update_one(
         println!("  payload   : swap {}", entry.payload_root.display());
         match runtime_status(&ingested)? {
             None => println!("  runtime   : none declared"),
-            Some((v, true)) => println!("  runtime   : qos-runtime/{v} (installed)"),
-            Some((v, false)) => println!("  runtime   : qos-runtime/{v} MISSING"),
+            Some((v, true)) => println!("  runtime   : tilo-runtime/{v} (installed)"),
+            Some((v, false)) => println!("  runtime   : tilo-runtime/{v} MISSING"),
         }
         println!(
             "  state     : KEPT — {} room(s), {}",
@@ -1353,7 +1353,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
         let (removed, failures) = install::state::remove(&rooms);
         println!("  state    : deleted in {removed} room(s)");
         for (path, e) in failures {
-            eprintln!("qos-install: could not remove {}: {e}", path.display());
+            eprintln!("tilo-install: could not remove {}: {e}", path.display());
         }
     } else if !rooms.is_empty() {
         println!(
@@ -1527,7 +1527,7 @@ fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
 // grouping them into a struct would only move the list, not shorten it.
 #[allow(
     clippy::fn_params_excessive_bools,
-    reason = "each bool is an independent `qos-install run` flag forwarded to the launcher; \
+    reason = "each bool is an independent `tilo-install run` flag forwarded to the launcher; \
               see the comment above"
 )]
 fn run(
@@ -1572,7 +1572,7 @@ fn run(
         && let Some(rev) = revocation.find(&pk_bytes)
     {
         eprintln!(
-            "qos-install: REFUSED — installed package's publisher is revoked: {}",
+            "tilo-install: REFUSED — installed package's publisher is revoked: {}",
             rev.reason
         );
         return Err(Error::Revoked {
@@ -1595,13 +1595,13 @@ fn run(
                 });
             }
             eprintln!(
-                "qos-install: --require-attestor {required:?} unmatched; --allow-self-signed permits install-time attested-by {:?}",
+                "tilo-install: --require-attestor {required:?} unmatched; --allow-self-signed permits install-time attested-by {:?}",
                 entry.attested_by
             );
         }
     }
 
-    // Find qos-launcher on PATH; fall back to a sibling of this binary.
+    // Find tilo-launcher on PATH; fall back to a sibling of this binary.
     let launcher = which_launcher();
     let mut cmd = Command::new(&launcher);
     cmd.arg("run")
@@ -1620,7 +1620,7 @@ fn run(
     }
     if no_landlock {
         eprintln!(
-            "qos-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
+            "tilo-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
         );
         // Not implemented on the CLI yet — surface as a runtime flag if / when needed.
     }
@@ -1634,7 +1634,7 @@ fn print_path() -> Result<(), Error> {
     println!("{}", bin_dir.display());
     println!();
     println!("# Prepend the above to your shell's PATH so CLI commands");
-    println!("# installed via `qos-install install <pkg.qpkg>` are picked up.");
+    println!("# installed via `tilo-install install <pkg.qpkg>` are picked up.");
     println!("#");
     println!("# bash / zsh (~/.bashrc, ~/.zshrc):");
     println!("export PATH=\"{}:$PATH\"", bin_dir.display());
@@ -1691,7 +1691,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     println!(
         "integrity     : {}",
         if install::integrity::has_record(&data_root, pkg_id) {
-            "recorded (run `qos-install verify` to replay it)"
+            "recorded (run `tilo-install verify` to replay it)"
         } else {
             "no record — installed before integrity records, or the record was deleted"
         }
@@ -1826,7 +1826,7 @@ fn runtime_install(
         },
     )
     .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    println!("installed runtime bundle: qos-runtime/{version}");
+    println!("installed runtime bundle: tilo-runtime/{version}");
     println!("  path     : {}", dest.display());
     println!("  arch     : {}", manifest.arch);
     println!("  files    : {}", manifest.files.len());
@@ -1840,7 +1840,7 @@ fn runtime_install(
 fn runtime_list() -> Result<(), Error> {
     let base = dirs::data_dir()
         .ok_or(Error::NoDataDir)?
-        .join("qos-runtime");
+        .join("tilo-runtime");
     if !base.exists() {
         println!("(no runtime bundles installed)");
         return Ok(());
@@ -1879,7 +1879,7 @@ fn runtime_remove(version: &str) -> Result<(), Error> {
         return Err(Error::RuntimeBundleNotInstalled(version.to_string()));
     }
     fs::remove_dir_all(&path)?;
-    println!("removed runtime bundle: qos-runtime/{version}");
+    println!("removed runtime bundle: tilo-runtime/{version}");
     Ok(())
 }
 
@@ -1899,7 +1899,7 @@ fn runtime_verify(version: &str) -> Result<(), Error> {
         .ok_or_else(|| Error::RuntimeBundleNotInstalled(version.to_string()))?;
     let manifest =
         runtime_bundle::verify_bundle(&path).map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    println!("verified: qos-runtime/{version}");
+    println!("verified: tilo-runtime/{version}");
     println!("  path     : {}", path.display());
     println!("  files    : {}", manifest.files.len());
     println!("  root-hash: blake3:{}", manifest.root_hash);
@@ -1993,13 +1993,13 @@ fn main() {
         },
     };
     if let Err(e) = result {
-        eprintln!("qos-install: {e}");
+        eprintln!("tilo-install: {e}");
         std::process::exit(1);
     }
 }
 
 /// Read a .qpkg tar → [`MemoryBlobStore`] + `PackageId`. Mirrors
-/// (deliberately duplicated) qos-pkg-cli::read_qpkg so this crate
+/// (deliberately duplicated) tilo-pkg-cli::read_qpkg so this crate
 /// stays independent.
 #[allow(dead_code)]
 fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore), Error> {
@@ -2103,10 +2103,10 @@ fn which_launcher() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {
-        let sib = parent.join("qos-launcher");
+        let sib = parent.join("tilo-launcher");
         if sib.exists() {
             return sib;
         }
     }
-    PathBuf::from("qos-launcher")
+    PathBuf::from("tilo-launcher")
 }

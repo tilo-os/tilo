@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Measure the exact, already-resealed target UKI with the image's own
 # systemd-measure, obtain signatures from a broker-owned executable, verify
-# them with qOS's pinned public key, and add only /boot sidecars to IMAGE.
+# them with Tilo's pinned public key, and add only /boot sidecars to IMAGE.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
@@ -14,7 +14,7 @@ signer="$2"
 [ "$(realpath -e "$signer")" = "$signer" ] \
   || die "PCR prediction signer path must be canonical"
 case "$signer" in
-  "$QOS_REPO"/*|"${RUNNER_TEMP:-/path-that-cannot-match}"/*)
+  "$TILO_REPO"/*|"${RUNNER_TEMP:-/path-that-cannot-match}"/*)
     die "PCR prediction signer must not come from the checkout or job temporary directory" ;;
 esac
 current="$signer"
@@ -27,17 +27,17 @@ done
 
 for tool in objcopy objdump openssl podman python3 sha256sum; do command -v "$tool" >/dev/null || die "missing $tool"; done
 podman image exists "$image" || die "image is not present in local storage: $image"
-efi_cert_sha256="${QOS_EFI_SIGNING_CERT_SHA256:-}"
+efi_cert_sha256="${TILO_EFI_SIGNING_CERT_SHA256:-}"
 case "$efi_cert_sha256" in
-  *[!0-9a-f]*|'') die "QOS_EFI_SIGNING_CERT_SHA256 must pin the release EFI certificate" ;;
+  *[!0-9a-f]*|'') die "TILO_EFI_SIGNING_CERT_SHA256 must pin the release EFI certificate" ;;
 esac
 [ "${#efi_cert_sha256}" -eq 64 ] \
-  || die "QOS_EFI_SIGNING_CERT_SHA256 must be exactly 64 lowercase hex characters"
-scratch_root="${QOS_INSTALLER_SCRATCH:-${TMPDIR:-/var/tmp}}"
-work="$(mktemp -d "$scratch_root/qos-pcr-prediction.XXXXXX")"
+  || die "TILO_EFI_SIGNING_CERT_SHA256 must be exactly 64 lowercase hex characters"
+scratch_root="${TILO_INSTALLER_SCRATCH:-${TMPDIR:-/var/tmp}}"
+work="$(mktemp -d "$scratch_root/tilo-pcr-prediction.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
-install -d -m 0755 "$work/layer/boot/qos-target/predictions" \
-  "$work/layer/boot/EFI/qos/pcr-predictions"
+install -d -m 0755 "$work/layer/boot/tilo-target/predictions" \
+  "$work/layer/boot/EFI/tilo/pcr-predictions"
 
 # Copy through a container so no image mount (and no root storage access) is
 # exposed to this checkout-controlled script.
@@ -51,8 +51,8 @@ podman run --rm -v "$work:/out:Z" --entrypoint /bin/bash "$image" -ceu '
     printf "%s\t%s\n" "${source#/boot/}" "$n.efi" >> /out/live.manifest
   done < <(find /boot/EFI/Linux -type f -name "*.efi" -print | sort)
   [ "$n" -gt 0 ]
-  if [ -f /boot/qos-target/qos-target.efi ]; then
-    source=/boot/qos-target/qos-target.efi
+  if [ -f /boot/tilo-target/tilo-target.efi ]; then
+    source=/boot/tilo-target/tilo-target.efi
     echo separate > /out/target-source
   else
     source="$(find /boot/EFI/Linux -type f -name "*.efi" -print -quit)"
@@ -61,11 +61,11 @@ podman run --rm -v "$work:/out:Z" --entrypoint /bin/bash "$image" -ceu '
   fi
   [ -n "$source" ]
   install -m 0644 "$source" /out/target.efi
-  install -m 0644 /usr/share/qos/tpm2-pcr-signing.public.pem /out/public.pem
-  cat /usr/lib/qos/generation > /out/generation
+  install -m 0644 /usr/share/tilo/tpm2-pcr-signing.public.pem /out/public.pem
+  cat /usr/lib/tilo/generation > /out/generation
 '
 generation="$(tr -d '[:space:]' < "$work/generation")"
-case "$generation" in ''|*[!0-9]*) die "image has no valid qOS generation" ;; esac
+case "$generation" in ''|*[!0-9]*) die "image has no valid Tilo generation" ;; esac
 "$signer" export-efi-cert "$work/efi-signing.crt"
 [ -f "$work/efi-signing.crt" ] && [ ! -L "$work/efi-signing.crt" ] \
   || die "broker did not export a regular EFI signing certificate"
@@ -91,7 +91,7 @@ verify_signed_efi() {
     "/work/${signed#"$work/"}" >/dev/null 2>&1 \
     || die "broker signed $label with an identity other than the pinned EFI certificate"
 
-  "$QOS_OS_DIR/dev/verify-authenticode-envelope.py" "$original" "$signed" \
+  "$TILO_OS_DIR/dev/verify-authenticode-envelope.py" "$original" "$signed" \
     || die "broker changed bytes outside the Authenticode envelope of $label"
 }
 
@@ -110,7 +110,7 @@ if [ "$target_source" = separate ]; then
   verify_signed_efi "$work/target.efi" "$work/target.efi.signed" "target EFI image"
   mv "$work/target.efi.signed" "$work/target.efi"
   install -Dm0644 "$work/target.efi" \
-    "$work/layer/boot/qos-target/qos-target.efi"
+    "$work/layer/boot/tilo-target/tilo-target.efi"
 else
   [ -s "$work/live/$target_source.signed" ] || die "could not bind the signed release UKI"
   cp "$work/live/$target_source.signed" "$work/target.efi"
@@ -159,7 +159,7 @@ if len(matches) != 1 or len(matches[0]["pol"]) != 64:
 open(output, "wb").write(bytes.fromhex(matches[0]["pol"]))
 PY
 
-prediction="$work/layer/boot/qos-target/predictions/generation-$generation.json"
+prediction="$work/layer/boot/tilo-target/predictions/generation-$generation.json"
 signature="$prediction.signature"
 python3 - "$work/approved.bin" "$work/message.bin" "$generation" <<'PY'
 import struct, sys
@@ -168,7 +168,7 @@ open(output, "wb").write(open(approved, "rb").read() + struct.pack(">Q", int(gen
 PY
 "$signer" sign-sha256-rsa-pkcs1 "$work/message.bin" "$signature"
 openssl dgst -sha256 -verify "$work/public.pem" -signature "$signature" "$work/message.bin" >/dev/null \
-  || die "broker signed the prediction with a key other than qOS's pinned authority"
+  || die "broker signed the prediction with a key other than Tilo's pinned authority"
 python3 - "$work/approved.bin" "$signature" "$prediction" "$generation" <<'PY'
 import base64, json, sys
 approved, signature, output, generation = sys.argv[1:]
@@ -182,9 +182,9 @@ rm -f "$signature"
 "$signer" sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"
 openssl dgst -sha256 -verify "$work/public.pem" -signature "$prediction.uki.sig" \
   "$work/target.efi" >/dev/null \
-  || die "broker's detached target-UKI signature does not match qOS's pinned authority"
+  || die "broker's detached target-UKI signature does not match Tilo's pinned authority"
 install -m 0644 "$prediction" "$prediction.uki.sig" \
-  "$work/layer/boot/EFI/qos/pcr-predictions/"
+  "$work/layer/boot/EFI/tilo/pcr-predictions/"
 
 build_args=(-t "$image" -f - --build-arg "BASE_IMAGE=$image")
 [ -z "${SOURCE_DATE_EPOCH:-}" ] || build_args+=(--source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp)

@@ -1,8 +1,8 @@
 @0xc7f8a8b3c4d54e21;
 
-# qOS app-host control-socket RPC schema. The host exposes a single
+# Tilo app-host control-socket RPC schema. The host exposes a single
 # AppHost capability over a Unix-domain stream socket at
-# $XDG_RUNTIME_DIR/qos/services/app-host.sock . The launcher and a
+# $XDG_RUNTIME_DIR/tilo/services/app-host.sock . The launcher and a
 # future App Tray UI call list/resolve/pin/unpin/install/etc. against
 # this interface.
 #

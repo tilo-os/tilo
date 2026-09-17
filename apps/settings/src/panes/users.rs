@@ -1,6 +1,6 @@
-//! Local login accounts and qOS signing identities.
+//! Local login accounts and Tilo signing identities.
 //!
-//! A Unix login account owns a home/session; it may contain several qOS
+//! A Unix login account owns a home/session; it may contain several Tilo
 //! identities (personal, work, pseudonymous). Local-account mutations go
 //! through `AccountsService` and polkit. Identity activation writes only a
 //! non-secret selector; the launcher mounts one exact record into new apps.
@@ -294,9 +294,9 @@ impl UsersPane {
                     .collect(),
             )
         };
-        cards.push(card("Your qOS identities", identity_rows));
+        cards.push(card("Your Tilo identities", identity_rows));
         let mut protection_rows: Vec<El> = vec![caption(
-            "Secret Service is preferred. If the desktop keyring is locked, signing pauses and asks the session to unlock it; qOS never silently copies that key into an app.",
+            "Secret Service is preferred. If the desktop keyring is locked, signing pauses and asks the session to unlock it; Tilo never silently copies that key into an app.",
         )];
         if self
             .identities

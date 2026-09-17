@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn responsive_layout_matches_the_existing_export_card() {
         let mut dialog = ExportDialog::new();
-        dialog.show("[install]\nhostname = qos".into());
+        dialog.show("[install]\nhostname = tilo".into());
         dialog.layout_in(
             Rect::new(0.0, 0.0, 1280.0, 800.0),
             &Theme::dark(),
@@ -401,16 +401,16 @@ mod tests {
             theme.tokens.colors.accent[6]
         );
         assert_eq!(
-            ExportConfigBody::line_color(&theme, "hostname = qos"),
+            ExportConfigBody::line_color(&theme, "hostname = tilo"),
             theme.tokens.colors.text_primary
         );
 
         let mut dialog = ExportDialog::new();
-        dialog.show("[install]\nhostname = qos".into());
+        dialog.show("[install]\nhostname = tilo".into());
         let modal = dialog.accessibility().expect("dialog accessibility");
         assert_eq!(modal.role, ui::a11y::Role::Dialog);
         assert!(modal.state.modal);
         assert!(!modal.state.hidden);
-        assert_eq!(modal.value.as_deref(), Some("[install]\nhostname = qos"));
+        assert_eq!(modal.value.as_deref(), Some("[install]\nhostname = tilo"));
     }
 }

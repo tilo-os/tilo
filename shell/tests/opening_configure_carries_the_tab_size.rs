@@ -234,7 +234,7 @@ fn open_a_window(h: &mut Harness) -> Configures {
     let surface = compositor.create_surface(&qh, ());
     let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg_surface.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.qos.test.opening-size".into());
+    toplevel.set_app_id("org.tilo.test.opening-size".into());
     h.pump();
 
     // Toolkits negotiate decorations in the same round trip that creates the

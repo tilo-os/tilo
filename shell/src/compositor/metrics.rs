@@ -4,7 +4,7 @@
 //! `painted` (idle ticks do no paint work), `input_latency_us` (input-consumed to first painted
 //! submit; `present_async` distinguishes input-to-present from input-to-queued).
 //!
-//! Entirely env-var driven (`QOS_FRAME_TRACE`, `QOS_FRAME_SUMMARY`, `QOS_FRAME_WARMUP_MS`);
+//! Entirely env-var driven (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`, `TILO_FRAME_WARMUP_MS`);
 //! disabled, every [`FrameRecorder`] method is a `bool` branch. [`summarize`] is pure — the same function the live binary and unit tests call, so they can't drift.
 
 use std::io::Write;
@@ -75,7 +75,7 @@ impl FrameSample {
     }
 }
 
-/// Header line for the `QOS_FRAME_TRACE` CSV, kept next to [`FrameSample::write_csv_row`] so the two cannot drift.
+/// Header line for the `TILO_FRAME_TRACE` CSV, kept next to [`FrameSample::write_csv_row`] so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us";
 
@@ -119,7 +119,7 @@ pub fn percentiles(values: &[u32]) -> Percentiles {
     }
 }
 
-/// Aggregate view of a run. Serialised to `QOS_FRAME_SUMMARY`.
+/// Aggregate view of a run. Serialised to `TILO_FRAME_SUMMARY`.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 pub struct FrameSummary {
     /// Ticks considered (post-warmup).
@@ -280,16 +280,16 @@ pub struct FrameRecorder {
 const MAX_RETAINED: usize = 200_000;
 
 /// Env var naming the per-tick CSV trace path.
-pub const TRACE_ENV: &str = "QOS_FRAME_TRACE";
+pub const TRACE_ENV: &str = "TILO_FRAME_TRACE";
 /// Env var naming the JSON summary path.
-pub const SUMMARY_ENV: &str = "QOS_FRAME_SUMMARY";
+pub const SUMMARY_ENV: &str = "TILO_FRAME_SUMMARY";
 /// Env var overriding the warmup window in milliseconds.
-pub const WARMUP_ENV: &str = "QOS_FRAME_WARMUP_MS";
+pub const WARMUP_ENV: &str = "TILO_FRAME_WARMUP_MS";
 /// Samples younger than this are excluded from the summary.
 pub const DEFAULT_WARMUP_MS: u64 = 1_500;
 
 /// Env var asking the compositor to shut down cleanly after N seconds.
-pub const RUN_SECONDS_ENV: &str = "QOS_RUN_SECONDS";
+pub const RUN_SECONDS_ENV: &str = "TILO_RUN_SECONDS";
 
 /// Parse a run duration from a raw env value. `None` means "run forever" (production default).
 /// Pure so parsing is testable without poking the process environment: a mis-specified duration must read as "run forever" (killable) rather than "exit immediately" (a silent empty trace).
@@ -325,7 +325,7 @@ impl FrameRecorder {
         }
     }
 
-    /// Build from the process environment. Returns [`Self::disabled`] unless `QOS_FRAME_TRACE` or `QOS_FRAME_SUMMARY` is set.
+    /// Build from the process environment. Returns [`Self::disabled`] unless `TILO_FRAME_TRACE` or `TILO_FRAME_SUMMARY` is set.
     pub fn from_env() -> Self {
         let trace_path = std::env::var_os(TRACE_ENV);
         let summary_path = std::env::var_os(SUMMARY_ENV);

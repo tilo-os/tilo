@@ -112,7 +112,7 @@ fn breadcrumb_component_click_navigates_to_that_component() {
 /// sidebar lists the same directory by name under System.
 #[test]
 fn a_workspace_root_is_named_rather_than_spelled_out() {
-    let ws = PathBuf::from("/var/tmp/qos/workspace");
+    let ws = PathBuf::from("/var/tmp/tilo/workspace");
     let roots = vec![ws.clone()];
     let home = PathBuf::from("/home/quinten");
 
@@ -122,7 +122,7 @@ fn a_workspace_root_is_named_rather_than_spelled_out() {
     assert_eq!(labels, vec!["workspace"]);
     assert_eq!(comps[0].1, ws, "the root segment navigates to the mount");
 
-    // Below it, relative to the workspace - no `var`, no `tmp`, no `qos`.
+    // Below it, relative to the workspace - no `var`, no `tmp`, no `tilo`.
     let deep = ws.join("Designs").join("v2");
     let labels: Vec<String> = breadcrumb_components(&deep, Some(&home), &roots)
         .into_iter()

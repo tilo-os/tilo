@@ -193,8 +193,8 @@ mod tests {
     fn the_temp_file_sits_beside_the_target() {
         // A temp file in /tmp would make the rename cross a filesystem and fail with EXDEV on any
         // machine where /tmp is a separate mount.
-        let t = temp_path(Path::new("/var/lib/qos/state.automerge"));
-        assert_eq!(t.parent(), Some(Path::new("/var/lib/qos")));
+        let t = temp_path(Path::new("/var/lib/tilo/state.automerge"));
+        assert_eq!(t.parent(), Some(Path::new("/var/lib/tilo")));
         assert!(
             t.file_name().unwrap().to_string_lossy().starts_with('.'),
             "temp file should be hidden: {t:?}"

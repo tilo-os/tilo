@@ -1,4 +1,4 @@
-//! Library root for the qOS native Personal Settings app — the device and
+//! Library root for the Tilo native Personal Settings app — the device and
 //! account settings hub. Workspace-owned policy stays in the shell's
 //! contextual Workspace Settings surface; cross-cutting domains share a
 //! resolver instead of letting either UI write the other's state.

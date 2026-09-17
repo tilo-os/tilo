@@ -8,7 +8,7 @@
 //! per-icon caching.
 //!
 //! To add an icon: pull the `__iconNode` entries from
-//! `nirios-concept/node_modules/lucide-react/dist/esm/icons/<kebab>.js`,
+//! `tilo-concept/node_modules/lucide-react/dist/esm/icons/<kebab>.js`,
 //! add a variant to [`Icon`], and map it in [`icon_subpaths`].
 
 use vello::Scene;

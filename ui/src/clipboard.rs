@@ -10,7 +10,7 @@
 //! paste logs a warning.
 //!
 //! `arboard`'s Wayland path needs `zwlr_data_control_manager_v1`, a
-//! clipboard-*manager* protocol qOS deliberately withholds from sandboxed
+//! clipboard-*manager* protocol Tilo deliberately withholds from sandboxed
 //! apps: it exposes every selection on the seat with no focus check, and the
 //! fleet copies TOTP codes and recovery phrases (see
 //! `shell/src/compositor/selection.rs`). [`WaylandClipboard`]'s
@@ -200,7 +200,7 @@ impl WaylandClipboard {
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let worker_alive = std::sync::Arc::clone(&alive);
         let thread = std::thread::Builder::new()
-            .name("qos-wayland-clipboard".into())
+            .name("tilo-wayland-clipboard".into())
             .spawn(move || {
                 publication_worker(connection, receiver);
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
@@ -245,7 +245,7 @@ impl WaylandClipboard {
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let worker_alive = std::sync::Arc::clone(&alive);
         let thread = std::thread::Builder::new()
-            .name("qos-wayland-clipboard-test".into())
+            .name("tilo-wayland-clipboard-test".into())
             .spawn(move || {
                 publication_worker(connection, receiver);
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
@@ -979,7 +979,7 @@ impl WaylandClipboard {
         let wake = self.wake;
         let (immediate_tx, immediate_rx) = std::sync::mpsc::sync_channel(1);
         if std::thread::Builder::new()
-            .name("qos-wayland-clipboard-read".into())
+            .name("tilo-wayland-clipboard-read".into())
             .spawn(move || {
                 // `smithay_clipboard::Clipboard::load` waits for the compositor's
                 // transfer to finish. Keep exactly one loader per target instead

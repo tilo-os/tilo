@@ -1,4 +1,4 @@
-//! Sheets — a spreadsheet for qOS, built on the `ui` toolkit.
+//! Sheets — a spreadsheet for Tilo, built on the `ui` toolkit.
 //!
 //! Layers:
 //!   * [`model`]    — A1 addressing, cell values, number/date/time/currency

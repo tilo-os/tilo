@@ -1,6 +1,6 @@
 //! The toolkit's permission gate.
 //!
-//! There is exactly **one** permission model in qOS: the capability
+//! There is exactly **one** permission model in Tilo: the capability
 //! model in [`collab_types::caps`] — `(subject × scope × verb)`
 //! evaluated by [`decide_capability`], deny-biased and fail-closed. This
 //! module is the toolkit-side *adapter*, not a second model:

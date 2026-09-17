@@ -266,7 +266,7 @@ impl CommandPalette {
         }
     }
 
-    pub fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    pub fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.shared.take_control_invocation()
     }
 
@@ -363,17 +363,17 @@ mod tests {
     use super::*;
 
     fn native(resource_id: &str, action_id: &str, label: &str) -> CommandEntry {
-        let resource = ui::qos_actions::Resource::new(resource_id, "test", "Test").with_action(
-            ui::qos_actions::ActionSpec::operation(
+        let resource = ui::tilo_actions::Resource::new(resource_id, "test", "Test").with_action(
+            ui::tilo_actions::ActionSpec::operation(
                 action_id,
                 label,
-                ui::qos_actions::OperationKind::View,
+                ui::tilo_actions::OperationKind::View,
                 "test.view",
                 &action_id,
             )
             .unwrap(),
         );
-        CommandEntry::from_flat_action(&ui::qos_actions::flatten(&[resource])[0])
+        CommandEntry::from_flat_action(&ui::tilo_actions::flatten(&[resource])[0])
     }
 
     fn entries() -> Vec<Entry> {

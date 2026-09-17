@@ -817,7 +817,7 @@ impl GitClientApp {
             doc,
             crate::actions::GIT_CLIENT_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Git", "Git", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Git", "Git", &action),
         );
     }
 
@@ -831,7 +831,7 @@ impl GitClientApp {
             doc,
             crate::actions::GIT_CLIENT_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Git", "Git", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Git", "Git", &action),
         );
     }
 
@@ -841,11 +841,11 @@ impl GitClientApp {
         (!self.awaiting_repo).then_some(&self.model)
     }
 
-    /// The last preference [`EncodedAction`](qos_actions::EncodedAction) an
+    /// The last preference [`EncodedAction`](tilo_actions::EncodedAction) an
     /// on-screen control dispatched, for the affordance == `ActionSpec`
     /// covenant test.
     #[doc(hidden)]
-    pub fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -2650,8 +2650,8 @@ impl Widget for GitClientApp {
     /// Publish the open repository and its view-preference actions to the
     /// shell's Ctrl+K palette (delegates to the [`ResourceProvider`] impl in
     /// [`crate::actions`]). Empty when no repository is open.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Hand the host the document heads captured before an on-screen preference
@@ -2667,7 +2667,7 @@ impl Widget for GitClientApp {
     )]
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -2679,20 +2679,26 @@ impl Widget for GitClientApp {
         let operation: crate::actions::GitClientOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         match (kind, operation) {
-            (qos_actions::OperationKind::View, crate::actions::GitClientOperation::ShowChanges) => {
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::GitClientOperation::ShowChanges,
+            ) => {
                 self.switch_screen(Screen::Changes);
             }
-            (qos_actions::OperationKind::View, crate::actions::GitClientOperation::ShowHistory) => {
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::GitClientOperation::ShowHistory,
+            ) => {
                 self.switch_screen(Screen::History);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::GitClientOperation::ShowBranches,
             ) => {
                 self.switch_screen(Screen::Panels);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::GitClientOperation::OpenChange { area, path },
             ) => {
                 let area = match area.as_str() {
@@ -2715,7 +2721,7 @@ impl Widget for GitClientApp {
                 self.diff_scroll = 0.0;
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::GitClientOperation::OpenCommit { id },
             ) => {
                 let index = self
@@ -2728,17 +2734,17 @@ impl Widget for GitClientApp {
                 self.selected_commit = index;
                 self.detail_scroll = 0.0;
             }
-            (qos_actions::OperationKind::Effect, crate::actions::GitClientOperation::StageAll) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::GitClientOperation::StageAll) => {
                 self.stage_all();
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::UnstageAll,
             ) => {
                 self.unstage_all();
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::StageFile { path },
             ) => {
                 let found = self
@@ -2758,7 +2764,7 @@ impl Widget for GitClientApp {
                 self.toggle_stage(found.0, found.1);
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::UnstageFile { path },
             ) => {
                 let index = self
@@ -2770,7 +2776,7 @@ impl Widget for GitClientApp {
                 self.toggle_stage(ChangeArea::Staged, index);
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::DiscardFile { path },
             ) => {
                 let found = self
@@ -2793,7 +2799,7 @@ impl Widget for GitClientApp {
                 self.discard_file(found.0, found.1);
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::Commit { message },
             ) => {
                 if self.model.staged.is_empty() {
@@ -2806,7 +2812,7 @@ impl Widget for GitClientApp {
                 self.do_commit();
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::CreateBranch { name },
             ) => {
                 if name.trim().is_empty() {
@@ -2819,19 +2825,19 @@ impl Widget for GitClientApp {
                 self.create_new_branch();
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::CheckoutBranch { name },
             ) => self.apply_branch_action(BranchAction::Checkout(name)),
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::DeleteBranch { name },
             ) => self.apply_branch_action(BranchAction::Delete(name)),
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::ApplyStash { index },
             ) => self.apply_branch_action(BranchAction::StashApply(index)),
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::SaveStash { message },
             ) => {
                 let path = self
@@ -2842,7 +2848,7 @@ impl Widget for GitClientApp {
                 self.reload();
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::Fetch { remote },
             ) => {
                 let path = self
@@ -2853,7 +2859,7 @@ impl Widget for GitClientApp {
                 self.reload();
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::Pull { remote },
             ) => {
                 let path = self
@@ -2864,7 +2870,7 @@ impl Widget for GitClientApp {
                 self.reload();
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::GitClientOperation::Push { remote },
             ) => {
                 let path = self
@@ -3346,8 +3352,8 @@ mod tests {
             .find(|a| a.id == "diff-layout")
             .unwrap();
         let palette_action = match &spec.input {
-            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            qos_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => {
                 panic!("diff-layout is an immediate action")
             }
         };

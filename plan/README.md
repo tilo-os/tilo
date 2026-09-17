@@ -1,4 +1,4 @@
-# What qOS is
+# What Tilo is
 
 Collaborating with people and with AI agents is one problem: both need permissions you
 can reason about, visibility into who did what, and the ability to revert it.

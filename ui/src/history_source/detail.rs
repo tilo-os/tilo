@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use qos_actions::ActionFacet;
+use tilo_actions::ActionFacet;
 
 use crate::widget::{HistoryEntry, HistoryEntryId};
 
@@ -102,7 +102,7 @@ mod tests {
     use std::time::SystemTime;
 
     use collab_types::{ArtifactKind, OpClass};
-    use qos_actions::{ActionContext, ActionFacet};
+    use tilo_actions::{ActionContext, ActionFacet};
 
     use super::*;
     use crate::widget::HistoryAuthor;

@@ -32,8 +32,8 @@ pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
 /// receive an empty page for longer input and can refine it normally.
 pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
 const SEARCH_GRAM_WIDTH: usize = 4;
-use qos_actions::ActionAddress;
 use std::borrow::Borrow;
+use tilo_actions::ActionAddress;
 
 /// A compact, reusable exact substring index for app search providers.
 ///
@@ -957,7 +957,7 @@ fn index_tokens(normalized: &str) -> Vec<String> {
 
 /// Marks an `action_id` as a framework-owned canonical activation. The tag
 /// keeps arbitrary legacy ids from becoming actions merely because they happen
-/// to contain qos-actions' wire separator.
+/// to contain tilo-actions' wire separator.
 const ACTION_ADDRESS_PREFIX: &str = "\u{1}action\u{1f}";
 
 /// One typed hit produced by a [`SearchProvider`].
@@ -1082,15 +1082,15 @@ impl SearchResult {
 #[derive(Clone)]
 pub struct OpenResourceSearch {
     catalog: SearchCatalog,
-    resources: Arc<BTreeMap<String, qos_actions::Resource>>,
+    resources: Arc<BTreeMap<String, tilo_actions::Resource>>,
 }
 
 impl OpenResourceSearch {
     #[must_use]
-    pub fn new(resources: &[qos_actions::Resource]) -> Self {
+    pub fn new(resources: &[tilo_actions::Resource]) -> Self {
         fn collect(
-            resource: &qos_actions::Resource,
-            resources: &mut BTreeMap<String, qos_actions::Resource>,
+            resource: &tilo_actions::Resource,
+            resources: &mut BTreeMap<String, tilo_actions::Resource>,
         ) {
             resources
                 .entry(resource.id.as_str().to_string())
@@ -1110,7 +1110,7 @@ impl OpenResourceSearch {
                 let action = resource
                     .actions
                     .iter()
-                    .find(|action| action.kind == qos_actions::OperationKind::View)
+                    .find(|action| action.kind == tilo_actions::OperationKind::View)
                     .or_else(|| resource.actions.first())?;
                 let address = ActionAddress::new(resource.id.as_str(), &action.id);
                 Some((
@@ -1169,7 +1169,7 @@ impl SearchProvider for OpenResourceSearch {
             .query_page(query, cursor, work_budget, result_limit)
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
         self.resources
             .get(&address.resource)
             .filter(|resource| {
@@ -1260,7 +1260,7 @@ pub trait SearchProvider {
 
     /// Lazily resolve a canonical search address that is intentionally absent
     /// from the small open-resource snapshot.
-    fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<qos_actions::Resource> {
+    fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
         None
     }
 }
@@ -1386,29 +1386,29 @@ mod tests {
 
     #[test]
     fn open_resource_search_indexes_nested_resources_and_prefers_view_actions() {
-        let nested = qos_actions::Resource::new("note:launch", "notes.note", "Launch plan")
+        let nested = tilo_actions::Resource::new("note:launch", "notes.note", "Launch plan")
             .with_action(
-                qos_actions::ActionSpec::operation(
+                tilo_actions::ActionSpec::operation(
                     "delete",
                     "Delete note",
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::OperationKind::Effect,
                     "test.note",
                     &serde_json::json!({}),
                 )
                 .unwrap(),
             )
             .with_action(
-                qos_actions::ActionSpec::operation(
+                tilo_actions::ActionSpec::operation(
                     "open",
                     "Open note",
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     "test.note",
                     &serde_json::json!({}),
                 )
                 .unwrap(),
             );
         let root =
-            qos_actions::Resource::new("notes", "notes.collection", "Notes").with_child(nested);
+            tilo_actions::Resource::new("notes", "notes.collection", "Notes").with_child(nested);
         let provider = OpenResourceSearch::new(&[root]);
 
         let hit = provider
@@ -1431,16 +1431,16 @@ mod tests {
     fn open_resource_search_pages_with_hard_budgets() {
         let resources = (0..20)
             .map(|index| {
-                qos_actions::Resource::new(
+                tilo_actions::Resource::new(
                     format!("item:{index}"),
                     "test.item",
                     format!("Item {index}"),
                 )
                 .with_action(
-                    qos_actions::ActionSpec::operation(
+                    tilo_actions::ActionSpec::operation(
                         "open",
                         "Open",
-                        qos_actions::OperationKind::View,
+                        tilo_actions::OperationKind::View,
                         "test.item",
                         &serde_json::json!({}),
                     )

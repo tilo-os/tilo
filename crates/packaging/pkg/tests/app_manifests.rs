@@ -1,6 +1,6 @@
 //! Manifests for the shipped app fleet, checked against the production `pkg`
 //! schema (not a local copy), so a schema change that breaks a real install
-//! breaks this suite first. Every app needs a valid `qos-app.toml` to be
+//! breaks this suite first. Every app needs a valid `tilo-app.toml` to be
 //! packable, installable, and launchable at all.
 
 #![allow(
@@ -48,7 +48,7 @@ fn app_dirs() -> Vec<PathBuf> {
 }
 
 fn manifest_path(app_dir: &Path) -> PathBuf {
-    app_dir.join("qos-app.toml")
+    app_dir.join("tilo-app.toml")
 }
 
 fn load(app_dir: &Path) -> Manifest {
@@ -69,7 +69,7 @@ fn every_app_crate_ships_a_manifest() {
         .collect();
     assert!(
         missing.is_empty(),
-        "these app crates have no qos-app.toml and therefore cannot be \
+        "these app crates have no tilo-app.toml and therefore cannot be \
          packed, installed or launched: {missing:?}"
     );
 }
@@ -87,7 +87,7 @@ fn every_manifest_passes_schema_validation() {
 /// a domain projection pin that stronger promise in their manifests.
 #[test]
 fn app_fleet_declares_structural_continuity_fidelity() {
-    let semantic_apps = ["dev.qos.browser", "dev.qos.ebook", "dev.qos.music"];
+    let semantic_apps = ["dev.tilo.browser", "dev.tilo.ebook", "dev.tilo.music"];
 
     for dir in app_dirs() {
         let m = load(&dir);
@@ -107,7 +107,7 @@ fn app_fleet_declares_structural_continuity_fidelity() {
     }
 }
 
-/// `qos-pkg pack` re-serialises the manifest for the payload, and the launcher
+/// `tilo-pkg pack` re-serialises the manifest for the payload, and the launcher
 /// reads that copy — anything lost in the round-trip is lost between authoring and launch.
 #[test]
 fn every_manifest_survives_a_toml_round_trip() {
@@ -136,12 +136,12 @@ fn package_ids_are_unique_and_reverse_dns() {
         let m = load(&dir);
         let id = m.package.id.clone();
         assert!(
-            id.starts_with("dev.qos."),
+            id.starts_with("dev.tilo."),
             "{}: id {id:?} is not in the fleet's reverse-DNS namespace",
             dir.display()
         );
         assert!(
-            id.len() > "dev.qos.".len(),
+            id.len() > "dev.tilo.".len(),
             "{}: id {id:?} has an empty trailing component",
             dir.display()
         );
@@ -181,7 +181,7 @@ fn entrypoints_are_payload_relative() {
     }
 }
 
-/// `qos-launcher` grants `--share-net` iff `sandbox.net.mode != "off"`; the
+/// `tilo-launcher` grants `--share-net` iff `sandbox.net.mode != "off"`; the
 /// `namespaces` list is what an auditor reads, so the two must agree.
 #[test]
 fn net_mode_and_namespace_agree() {
@@ -288,7 +288,7 @@ fn service_packages_agree_with_their_entrypoint_about_drawing() {
 /// id (which would give "Api Tester").
 #[test]
 fn apps_declare_a_display_name_and_category() {
-    // Freedesktop main categories, narrowed to the ones qOS actually groups
+    // Freedesktop main categories, narrowed to the ones Tilo actually groups
     // by. Adding one is deliberate: the palette groups on this string, so a
     // typo would silently create a category of one.
     const CATEGORIES: &[&str] = &[

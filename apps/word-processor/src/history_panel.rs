@@ -242,9 +242,9 @@ impl HistoryPanel {
     }
 
     /// Re-derive the timeline if the document moved since the last call. Also
-    /// binds the local automerge actor to the qOS identity on disk, so the
+    /// binds the local automerge actor to the Tilo identity on disk, so the
     /// user's rows carry their name rather than the raw actor hex (outside a
-    /// qOS session, falls back to `QUICK_APP_ID`, the same key remote carets
+    /// Tilo session, falls back to `QUICK_APP_ID`, the same key remote carets
     /// are coloured by).
     pub fn refresh(&mut self, doc: &mut AutoCommit) {
         let heads = doc.get_heads();

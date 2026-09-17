@@ -435,7 +435,7 @@ pub(crate) fn pg_config(profile: &crate::model::ConnectionProfile) -> Config {
         cfg.dbname(&profile.database);
     }
     cfg.connect_timeout(Duration::from_secs(10));
-    cfg.application_name("qos-db-client");
+    cfg.application_name("tilo-db-client");
     cfg
 }
 

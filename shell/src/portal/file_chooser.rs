@@ -9,7 +9,7 @@
 //! mandatory on success.
 //!
 //! Every method authenticates the portal frontend and resolves its app id to
-//! a live qOS application before it calls [`FilePickerSpawner::spawn`] to
+//! a live Tilo application before it calls [`FilePickerSpawner::spawn`] to
 //! surface a compositor-owned dialog. The reply
 //! (`Option<Vec<PathBuf>>`) becomes a `uris` array, with `None` treated
 //! as `response=1` (cancelled). On `Deny`, returns response=1 with an empty results dict.

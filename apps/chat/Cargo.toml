@@ -19,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 # simulated engine and do not start an iroh endpoint or ScreenCast portal.
 default = ["live-media"]
 # Voice, camera, and screen sharing use iroh QUIC, GStreamer capture/playback,
-# `qos-callstream`, and the ScreenCast portal. The feature is off by default;
+# `tilo-callstream`, and the ScreenCast portal. The feature is off by default;
 # enable it with `--features live-media`.
 live-media = [
     "dep:gstreamer",
@@ -27,23 +27,23 @@ live-media = [
     "dep:iroh",
     "dep:tokio",
     "dep:ashpd",
-    "dep:qos-callstream",
+    "dep:tilo-callstream",
 ]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# The qOS action model: the serializable, replayable unit of CRDT mutation
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+# The Tilo action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
 # framework's `ui::ActionHost`.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 # The address a message carries when it was authored by selecting something —
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
-qos-reference = { path = "../../crates/collab/reference" }
+tilo-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
-# The qOS runtime user-identity loader (QOS_USER_IDENTITY) — the canonical
+# The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
@@ -71,7 +71,7 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "syn
 # Use ashpd's tokio-only workspace configuration; enabling async-std alongside
 # tokio is unsupported.
 ashpd = { workspace = true, optional = true }
-qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true }
+tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

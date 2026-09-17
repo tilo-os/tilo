@@ -1,4 +1,4 @@
-//! Logs — standard qOS application entry point.
+//! Logs — standard Tilo application entry point.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -36,7 +36,7 @@ use ui::widget::Widget;
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let entries = if std::env::var("QOS_LOGS_EMPTY").is_ok() || args.has("--error") {
+    let entries = if std::env::var("TILO_LOGS_EMPTY").is_ok() || args.has("--error") {
         Vec::new()
     } else {
         logs::journal::sample_entries()
@@ -74,7 +74,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.logs", logs::app_root)
+        &LaunchSpec::new("dev.tilo.logs", logs::app_root)
             .shot_root(shot_root)
             .allowed_flags(&[
                 "--detail",

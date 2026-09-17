@@ -1,4 +1,4 @@
-//! Hex editor — standard qOS application entry point.
+//! Hex editor — standard Tilo application entry point.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -44,7 +44,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.hex-editor", hex_editor::app_root)
+        &LaunchSpec::new("dev.tilo.hex-editor", hex_editor::app_root)
             .shot_root(shot_root)
             .configure_app(|app| hex_editor::actions::register(app.action_registry_mut())),
     );

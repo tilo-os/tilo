@@ -1,4 +1,4 @@
-//! The `AppWidget` trait — the single contract between the nirios shell and
+//! The `AppWidget` trait — the single contract between the tilo shell and
 //! any in-process app hosted inside a tile. Extends the base `Widget` trait
 //! with app-level metadata (kind, title, icon, permission hint, commands).
 //!

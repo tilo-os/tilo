@@ -489,7 +489,7 @@ impl MouseKeyboardPane {
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default();
         if let Err(e) = settings_store::update_section("input", section) {
-            warn!(target: "qos::settings", op = "input_prefs_save", error = %e, "failed to persist input prefs");
+            warn!(target: "tilo::settings", op = "input_prefs_save", error = %e, "failed to persist input prefs");
         }
     }
 
@@ -499,7 +499,7 @@ impl MouseKeyboardPane {
         if let Err(e) =
             settings_store::update_section(ui::text_assistance::SETTINGS_SECTION, section)
         {
-            warn!(target: "qos::settings", op = "text_assistance_save", error = %e, "failed to persist text-assistance prefs");
+            warn!(target: "tilo::settings", op = "text_assistance_save", error = %e, "failed to persist text-assistance prefs");
         }
     }
 
@@ -946,7 +946,7 @@ impl Widget for MouseKeyboardPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         // The add/reorder/remove source edge keys are transient internally,
         // but they exist only to apply a durable keyboard-source preference.
         let pending = std::mem::take(&mut self.commit_context_pending)

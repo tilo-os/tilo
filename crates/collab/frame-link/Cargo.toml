@@ -23,7 +23,7 @@ path = "src/bin/flatpak-share-demo.rs"
 tracing.workspace = true
 
 # Demo-only dependencies. Kept in `[dependencies]` (not gated behind a
-# feature) because the whole crate lives in the qOS workspace: `shell` is
+# feature) because the whole crate lives in the Tilo workspace: `shell` is
 # built anyway, and cargo dedupes so there's no marginal cost. Downstream
 # consumers of the library who don't want the demo can depend on this
 # crate with `default-features = false` — but the practical case is that

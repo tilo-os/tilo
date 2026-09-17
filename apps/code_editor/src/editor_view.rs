@@ -3125,8 +3125,8 @@ mod tests {
         // Only meaningful where arboard has a backend (a Wayland/X11 session).
         // Probe with a sentinel; if it doesn't round-trip, skip cleanly — the
         // clipboard helper is silent on absence (headless CI).
-        ui::text_selection::clipboard_copy("__qos_probe__");
-        if ui::text_selection::clipboard_paste().as_deref() != Some("__qos_probe__") {
+        ui::text_selection::clipboard_copy("__tilo_probe__");
+        if ui::text_selection::clipboard_paste().as_deref() != Some("__tilo_probe__") {
             eprintln!("clipboard_copy_paste_round_trips: no clipboard backend, skipping");
             return;
         }

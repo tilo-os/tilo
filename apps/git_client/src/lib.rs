@@ -1,4 +1,4 @@
-//! Git — a graphical git client for qOS, built on the `ui` toolkit.
+//! Git — a graphical git client for Tilo, built on the `ui` toolkit.
 //!
 //! The app presents three screens over a repository:
 //!

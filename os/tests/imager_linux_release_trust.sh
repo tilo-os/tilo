@@ -5,7 +5,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 verify="$repo/apps/imager/packaging/verify-linux-release.sh"
 sign="$repo/apps/imager/packaging/sign-linux-release-file.sh"
-work="$(mktemp -d /var/tmp/qos-imager-linux-trust-test.XXXXXX)"
+work="$(mktemp -d /var/tmp/tilo-imager-linux-trust-test.XXXXXX)"
 export GNUPGHOME="$work/signing-keyring"
 cleanup() {
   # GnuPG may remove its agent sockets while find is walking the temporary
@@ -18,7 +18,7 @@ cleanup() {
 trap cleanup EXIT
 mkdir -m 0700 "$GNUPGHOME"
 gpg --batch --passphrase '' --quick-generate-key \
-  'qOS release trust test <release-test@qos.invalid>' ed25519 sign 1d >/dev/null 2>&1
+  'Tilo release trust test <release-test@tilo.invalid>' ed25519 sign 1d >/dev/null 2>&1
 fingerprint="$(gpg --batch --with-colons --fingerprint \
   | awk -F: '$1 == "pub" { want = 1; next }
                want && $1 == "fpr" { print toupper($10); exit }')"
@@ -33,9 +33,9 @@ EOF
 chmod 0700 "$signer"
 external_payload="$work/external-signer-payload"
 printf 'OIDC broker signing path\n' >"$external_payload"
-QOS_LINUX_SIGNER="$signer" \
-QOS_LINUX_VERIFY_KEY="$verify_key" \
-QOS_LINUX_EXPECTED_FINGERPRINT="$fingerprint" \
+TILO_LINUX_SIGNER="$signer" \
+TILO_LINUX_VERIFY_KEY="$verify_key" \
+TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" \
   "$sign" "$external_payload"
 gpg --batch --verify "$external_payload.asc" "$external_payload" >/dev/null 2>&1
 
@@ -47,8 +47,8 @@ mkdir -p "$assets/linux-x86_64" "$assets/linux-aarch64" \
 for arch in x86_64 aarch64; do
   directory="$assets/linux-$arch"
   for suffix in AppImage tar.gz flatpak; do
-    artifact="$directory/qos-imager-linux-$arch.$suffix"
-    printf 'qOS Imager test artifact: %s %s\n' "$arch" "$suffix" >"$artifact"
+    artifact="$directory/tilo-imager-linux-$arch.$suffix"
+    printf 'Tilo Imager test artifact: %s %s\n' "$arch" "$suffix" >"$artifact"
     (cd "$directory" && sha256sum "$(basename "$artifact")" \
       >"$(basename "$artifact").sha256")
     gpg --batch --yes --armor --detach-sign "$artifact"
@@ -56,35 +56,35 @@ for arch in x86_64 aarch64; do
 done
 for arch in x86_64 aarch64; do
   directory="$assets/installer-$arch"
-  artifact="$directory/qos-installer-linux-$arch.img.zst"
-  printf 'qOS installer test artifact: %s\n' "$arch" >"$artifact"
+  artifact="$directory/tilo-installer-linux-$arch.img.zst"
+  printf 'Tilo installer test artifact: %s\n' "$arch" >"$artifact"
   (cd "$directory" && sha256sum "$(basename "$artifact")" \
     >"$(basename "$artifact").sha256")
   gpg --batch --yes --armor --detach-sign \
     --output "$assets/installer-signatures/$(basename "$artifact").asc" "$artifact"
 done
-catalog="$assets/catalog/qos-installer-catalog-v1.json"
+catalog="$assets/catalog/tilo-installer-catalog-v1.json"
 printf '{"schema":1}\n' >"$catalog"
 (cd "$assets/catalog" && sha256sum "$(basename "$catalog")" \
   >"$(basename "$catalog").sha256")
-QOS_LINUX_SIGNING_KEY="$fingerprint" \
-QOS_LINUX_EXPECTED_FINGERPRINT="$fingerprint" \
+TILO_LINUX_SIGNING_KEY="$fingerprint" \
+TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" \
   "$sign" "$catalog" \
     "$assets/installer-signatures/$(basename "$catalog").asc"
 gpg --batch --armor --export "$fingerprint" \
-  >"$assets/release-key/qos-release-key.asc"
-printf '%s\n' "$fingerprint" >"$assets/release-key/qos-release-key.fingerprint"
-(cd "$assets/release-key" && sha256sum qos-release-key.asc \
-  >qos-release-key.asc.sha256)
-(cd "$assets/release-key" && sha256sum qos-release-key.fingerprint \
-  >qos-release-key.fingerprint.sha256)
+  >"$assets/release-key/tilo-release-key.asc"
+printf '%s\n' "$fingerprint" >"$assets/release-key/tilo-release-key.fingerprint"
+(cd "$assets/release-key" && sha256sum tilo-release-key.asc \
+  >tilo-release-key.asc.sha256)
+(cd "$assets/release-key" && sha256sum tilo-release-key.fingerprint \
+  >tilo-release-key.fingerprint.sha256)
 
-QOS_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
+TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
   | grep -Fq 'verified 9 Linux and installer artifacts'
 
 wrong="${fingerprint%?}0"
 [ "$wrong" != "$fingerprint" ] || wrong="${fingerprint%?}1"
-if QOS_LINUX_EXPECTED_FINGERPRINT="$wrong" "$verify" "$assets" \
+if TILO_LINUX_EXPECTED_FINGERPRINT="$wrong" "$verify" "$assets" \
    >"$work/wrong.out" 2>"$work/wrong.err"; then
   printf 'wrong protected fingerprint unexpectedly passed\n' >&2
   exit 1
@@ -92,8 +92,8 @@ fi
 grep -Fq 'published Linux fingerprint does not match protected release policy' \
   "$work/wrong.err"
 
-printf 'tampered\n' >>"$assets/linux-aarch64/qos-imager-linux-aarch64.AppImage"
-if QOS_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
+printf 'tampered\n' >>"$assets/linux-aarch64/tilo-imager-linux-aarch64.AppImage"
+if TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
    >"$work/tamper.out" 2>"$work/tamper.err"; then
   printf 'tampered artifact unexpectedly passed\n' >&2
   exit 1

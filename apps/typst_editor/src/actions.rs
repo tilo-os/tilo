@@ -1,6 +1,6 @@
 //! Canonical resource/operation surface for the Typst editor.
 //!
-//! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
+//! The Tilo action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
 //! becomes an `Action` (a serializable value that deterministically changes the
 //! shared Automerge document, so undo and multi-peer replay come for free),
@@ -31,11 +31,11 @@
 //! is exported as an effect and local navigation/zoom as view operations.
 
 use automerge::AutoCommit;
-use qos_actions::{
+use serde::{Deserialize, Serialize};
+use tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
     OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
 };
-use serde::{Deserialize, Serialize};
 
 pub const OPERATION_TYPE: &str = "typst.operation";
 
@@ -298,7 +298,7 @@ mod tests {
     fn file_effects_bind_direct_paths_and_keep_job_confirmation_contracts() {
         let resources = resources(&AutoCommit::new());
         for id in ["open", "save", "export-pdf"] {
-            let spec = qos_actions::flatten(&resources)
+            let spec = tilo_actions::flatten(&resources)
                 .into_iter()
                 .find(|flat| flat.action.id == id)
                 .map(|flat| flat.action)
@@ -311,7 +311,7 @@ mod tests {
             assert_eq!(spec.contract.result, ResultSpec::Job);
             assert!(!matches!(
                 spec.contract.confirmation,
-                qos_actions::ConfirmationPolicy::None
+                tilo_actions::ConfirmationPolicy::None
             ));
             let args = serde_json::json!({"path": format!("/tmp/{id}")})
                 .as_object()
@@ -436,17 +436,17 @@ mod tests {
                 .iter()
                 .any(|child| child.kind == "typst.export")
         );
-        let actions = qos_actions::flatten(&resources);
+        let actions = tilo_actions::flatten(&resources);
         assert!(actions.iter().any(|a| {
-            a.action.id == "compile" && a.action.kind == qos_actions::OperationKind::Effect
+            a.action.id == "compile" && a.action.kind == tilo_actions::OperationKind::Effect
         }));
         assert!(actions.iter().any(|a| {
-            a.action.id == "zoom-in" && a.action.kind == qos_actions::OperationKind::View
+            a.action.id == "zoom-in" && a.action.kind == tilo_actions::OperationKind::View
         }));
         assert!(
             actions
                 .iter()
-                .all(|a| a.action.kind != qos_actions::OperationKind::Document)
+                .all(|a| a.action.kind != tilo_actions::OperationKind::Document)
         );
         assert!(
             app.take_committed_action().is_none(),

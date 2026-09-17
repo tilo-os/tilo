@@ -310,7 +310,7 @@ mod tests {
         Ed25519PublicKey, FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite,
     };
     use ed25519_dalek::SigningKey;
-    use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
     use super::*;
     use crate::peer_auth::AuthenticatedFsPeer;

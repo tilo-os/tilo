@@ -1,4 +1,4 @@
-# qOS
+# Tilo
 
 A collaborative Linux desktop, shipped as an image-based OS.
 
@@ -39,7 +39,7 @@ Most of the rest follows from that:
 
 | Path | What |
 |---|---|
-| `shell/` | Wayland compositor: scrollable strips, wheel-disc workspace switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `qos-control` (drives a running desktop) and `shots` (offscreen renderer). |
+| `shell/` | Wayland compositor: scrollable strips, wheel-disc workspace switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `tilo-control` (drives a running desktop) and `shots` (offscreen renderer). |
 | `ui/` | Retained-mode CRDT-native toolkit. Every widget reads and writes one automerge document, so undo, persistence and collaboration share a mechanism. `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`. |
 | `fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
 | `apps/` | 50 native applications — office suite, Servo-based browser, mail, calendar, maps, creative tools, passwords, clocks, terminal, and files. See [`apps/README.md`](apps/README.md). |
@@ -56,7 +56,7 @@ reports an absent one as `pkg-config exited with status code 1` inside a `-sys` 
 saying which. [`DEVELOPMENT.md`](DEVELOPMENT.md) maps them to packages.
 
 ```bash
-cargo build -p shell        # compositor, qos-control, shots
+cargo build -p shell        # compositor, tilo-control, shots
 cargo build -p ui
 cargo build -p fs
 cargo build -p file-explorer
@@ -85,7 +85,7 @@ when the thing under test is the pointer itself:
 
 ```bash
 cargo run --bin shots -- --mode offscreen --out target/shots
-cargo run -q --bin qos-control -- actions list
+cargo run -q --bin tilo-control -- actions list
 ./scripts/headless-examples/full-loop.py     # spawn → drive → snapshot → tear down, ~5 s
 ```
 
@@ -98,7 +98,7 @@ The required application-facing resource/action contract is documented in
 - [`docs/getting-started.md`](docs/getting-started.md) — choose a VM, Linux desktop session, or complete-system install
 - [`docs/architecture.md`](docs/architecture.md) — component overview
 - [`plan/`](plan/) — design intent for the compositor, collaboration, security, distribution
-- [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running qOS on your own machine
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running Tilo on your own machine
 - [`CLAUDE.md`](CLAUDE.md) — what agents working in this repository are told
 
 ## Status

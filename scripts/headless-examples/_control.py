@@ -1,4 +1,4 @@
-"""Tiny client for the nirios test_control socket.
+"""Tiny client for the tilo test_control socket.
 
 Used by the example scripts in this dir. Not a public API — feel free to
 copy this into your own script and inline the bits you need; it's
@@ -55,5 +55,5 @@ def require_ok(resp: dict) -> dict:
     return resp["ok"]
 
 
-def socket_path_from_argv(default: str = "/tmp/nirios.sock") -> str:
+def socket_path_from_argv(default: str = "/tmp/tilo.sock") -> str:
     return sys.argv[1] if len(sys.argv) > 1 else default

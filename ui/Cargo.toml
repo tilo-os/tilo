@@ -50,7 +50,7 @@ mpris = ["dep:zbus", "zbus/tokio"]
 portal = ["dep:ashpd"]
 
 [dependencies]
-qos-ui-graph = { path = "../crates/dev/ui-graph" }
+tilo-ui-graph = { path = "../crates/dev/ui-graph" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
 # Shared appearance path used for startup theme resolution and live reload.
@@ -66,13 +66,13 @@ url.workspace = true
 # x-www-form-urlencoded dialect that also reads `+` as a space.
 percent-encoding = "2"
 form_urlencoded = "1"
-qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
+tilo-startup-metrics = { path = "../crates/system/tilo-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
 # `webview-adblock`). The `content-blocking` feature provides the
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
-# runtime-collab is the qOS collab broker Cap'n Proto SDK.
+# runtime-collab is the Tilo collab broker Cap'n Proto SDK.
 # `CollaborationManager` delegates to it via a shovel thread.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 capnp.workspace = true
@@ -119,7 +119,7 @@ winit.workspace = true
 # (Dokumente / Bilder) instead of hard-coded English ones.
 dirs.workspace = true
 fluent.workspace = true
-qos-headless-schema = { path = "../crates/dev/headless-schema" }
+tilo-headless-schema = { path = "../crates/dev/headless-schema" }
 unic-langid.workspace = true
 unicode-segmentation = "1.12"
 # UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
@@ -151,7 +151,7 @@ chrono = { workspace = true, features = ["clock", "std"] }
 # rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
 # screencast pipeline.
 openh264.workspace = true
-# Shared qOS media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
+# Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
@@ -185,33 +185,33 @@ channel-crypto = { path = "../crates/collab/channel-crypto" }
 # uses `qdoc`'s structural snapshot diff to write each row's summary. Pure
 # model code — no renderer, no I/O — so this stays a cheap dep.
 qdoc = { path = "../crates/doc/qdoc" }
-# The qOS ACTION model: serializable, replayable CRDT-mutation actions + the
+# The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `command_palette` + `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
-qos-actions = { path = "../crates/collab/actions" }
-# Direct dep on the Ed25519 implementation `qos-collab-types` uses so
+tilo-actions = { path = "../crates/collab/actions" }
+# Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
-# without reaching into the qos-collab-types private module path. Pinned
-# to the same major as `qos-collab-types`.
+# without reaching into the tilo-collab-types private module path. Pinned
+# to the same major as `tilo-collab-types`.
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # FROST threshold identity engine used by the identity-flow widgets. The
 # screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
 # `begin_enrolment`, `adopt_dkg_outcome`, and `export_recovery_share`.
 threshold-identity = { path = "../crates/collab/threshold-identity" }
 # `widget::qr` encodes both the
-# pairing-channel JSON payload (screen 3) and the `qos://invite/...`
+# pairing-channel JSON payload (screen 3) and the `tilo://invite/...`
 # URL (screen 5). `qrcode` is a small (no transitive deps), pure-Rust
 # QR encoder that produces a module-matrix we paint with Vello.
 qrcode.workspace = true
-# The `qos://invite/<base32>` URL packs a
+# The `tilo://invite/<base32>` URL packs a
 # postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
 # so it stays URL-safe and case-insensitive when read aloud.
 base32.workspace = true
 # The pairing one-time MAC is derived from the 6-digit code so the
 # host can authenticate the pairer's DKG round-2 reply without a
 # pre-shared long-term key. SHA-512 is already a transitive via
-# `qos-threshold-identity`, so direct pin keeps the lock single-copy.
+# `tilo-threshold-identity`, so direct pin keeps the lock single-copy.
 sha2.workspace = true
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to
 # the one-time pairing secret; XChaCha20-Poly1305 separately encrypts
@@ -241,7 +241,7 @@ rand_core = { workspace = true, features = ["getrandom"] }
 accesskit = "0.25.0"
 accesskit_winit = "0.34.0"
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
-# focus / value / live-region narration through the offline qOS TTS engine.
+# focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
 tts = { path = "../crates/system/tts" }
@@ -253,12 +253,12 @@ tts = { path = "../crates/system/tts" }
 smithay-clipboard = "0.7"
 # The image source uses the regular focus-gated wl_data_device protocol. The
 # text-only smithay-clipboard facade cannot advertise binary MIME payloads,
-# while data-control would bypass qOS's focus/privilege boundary.
+# while data-control would bypass Tilo's focus/privilege boundary.
 smithay-client-toolkit = { version = "0.20.0", features = ["calloop"] }
 
 [target.'cfg(unix)'.dependencies]
 # Launcher-provided identity capabilities use inherited Unix socket file
-# descriptors. Native Windows apps run without that optional qOS service.
+# descriptors. Native Windows apps run without that optional Tilo service.
 runtime-identity = { path = "../crates/runtime/runtime-identity" }
 
 [build-dependencies]

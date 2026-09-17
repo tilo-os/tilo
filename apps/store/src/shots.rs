@@ -29,7 +29,7 @@ pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
 /// layout mode, and bounding the multiplier keeps the fixed-size fixture
 /// meaningful while still exercising the supported large-text regime.
 fn shot_text_scale() -> f32 {
-    std::env::var("QOS_SHOTS_TEXT_SCALE")
+    std::env::var("TILO_SHOTS_TEXT_SCALE")
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|scale| scale.is_finite() && (1.0..=2.0).contains(scale))
@@ -66,38 +66,39 @@ fn configure_settled_capture_renderer() {
 
 /// A hand-rolled fixture of items that shows every card variant:
 ///
-///   * a qOS item that's not installed  → **Open**
-///   * a qOS item that's cached + pinned → **Open** + **Installed** + Remove
-///   * a qOS item that's cached but out-of-date → **Update** + Keep on device
+///   * a Tilo item that's not installed  → **Open**
+///   * a Tilo item that's cached + pinned → **Open** + **Installed** + Remove
+///   * a Tilo item that's cached but out-of-date → **Update** + Keep on device
 ///   * a Flatpak item (flatpak available) → **Install**
 ///   * a Flatpak item, flatpak unavailable path is covered by a
 ///     `set_flatpak_available(false)` variant used by the
 ///     "no-flatpak" scenario.
 pub fn fixture_catalog() -> Vec<StoreItem> {
-    let qos = |name: &str, desc: &str, cat: &str, installed: InstalledState, ver: &str| StoreItem {
-        id: format!("dev.qos.{}", name.to_ascii_lowercase()),
-        name: name.into(),
-        description: desc.into(),
-        categories: vec![cat.into()],
-        icon_url: Some(format!("https://artwork.invalid/{name}.png")),
-        screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
-        homepage_url: None,
-        source_url: None,
-        install_ref_path: None,
-        source: StoreSource::Qos {
-            registry_name: "qOS main".into(),
-        },
-        trust: StoreTrust::PublisherSigned,
-        versions: vec![StoreItemVersion {
-            version: ver.into(),
-            released_at_unix: 0,
-            download_url: Some(format!("https://apps.qos.dev/{name}/{ver}.qpkg")),
-            root_hash_hex: Some("de".repeat(32)),
-            size_bytes: 4 * 1024 * 1024,
-        }],
-        publisher_pubkey_hex: Some("aa".repeat(32)),
-        installed,
-    };
+    let tilo =
+        |name: &str, desc: &str, cat: &str, installed: InstalledState, ver: &str| StoreItem {
+            id: format!("dev.tilo.{}", name.to_ascii_lowercase()),
+            name: name.into(),
+            description: desc.into(),
+            categories: vec![cat.into()],
+            icon_url: Some(format!("https://artwork.invalid/{name}.png")),
+            screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
+            homepage_url: None,
+            source_url: None,
+            install_ref_path: None,
+            source: StoreSource::Tilo {
+                registry_name: "Tilo main".into(),
+            },
+            trust: StoreTrust::PublisherSigned,
+            versions: vec![StoreItemVersion {
+                version: ver.into(),
+                released_at_unix: 0,
+                download_url: Some(format!("https://apps.tilo.dev/{name}/{ver}.qpkg")),
+                root_hash_hex: Some("de".repeat(32)),
+                size_bytes: 4 * 1024 * 1024,
+            }],
+            publisher_pubkey_hex: Some("aa".repeat(32)),
+            installed,
+        };
     let fh = |name: &str, desc: &str, cat: &str, installed: InstalledState| StoreItem {
         id: format!("org.example.{name}"),
         name: name.into(),
@@ -121,14 +122,14 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         installed,
     };
     vec![
-        qos(
+        tilo(
             "Notes",
             "Capture ideas, organise projects, and work together in real time.",
             "Productivity",
             InstalledState::Not,
             "0.1.0",
         ),
-        qos(
+        tilo(
             "Terminal",
             "A fast terminal for commands, scripts, and development tools.",
             "System",
@@ -140,7 +141,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             },
             "0.2.0",
         ),
-        qos(
+        tilo(
             "Files",
             "Browse, organise, and share files across your workspaces.",
             "System",
@@ -234,13 +235,13 @@ pub fn render_scenario_to_path_with_preferences(
     let mut app = seeded_app();
     app.set_layout_width_hint(f64::from(viewport.0));
     match scenario {
-        Some("detail") => app.focus_detail_for_shot("dev.qos.notes"),
+        Some("detail") => app.focus_detail_for_shot("dev.tilo.notes"),
         Some("remotes") => app.show_remotes_for_shot(),
         Some("progress") => {
             // Terminal is already installed and its offered action is Open,
             // so the visible busy card and masthead describe the same real
             // operation rather than claiming an install for an open-only row.
-            app.set_active_operation_for_shot("dev.qos.terminal", crate::ActionKind::Open);
+            app.set_active_operation_for_shot("dev.tilo.terminal", crate::ActionKind::Open);
             app.set_status_line("Starting Terminal · launching installed app…");
             app.set_worker_busy(true);
         }
@@ -310,7 +311,7 @@ pub fn render_widget(
 }
 
 fn configured_shot_theme(text_scale: Option<f32>, reduce_motion: bool) -> Theme {
-    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -405,9 +406,9 @@ fn render_widget_with_preferences(
 
 fn shot_reduce_motion() -> bool {
     [
-        "QOS_A11Y_REDUCE_MOTION",
-        "QOS_REDUCE_MOTION",
-        "QOS_SHOTS_REDUCE_MOTION",
+        "TILO_A11Y_REDUCE_MOTION",
+        "TILO_REDUCE_MOTION",
+        "TILO_SHOTS_REDUCE_MOTION",
     ]
     .into_iter()
     .filter_map(|key| std::env::var(key).ok())

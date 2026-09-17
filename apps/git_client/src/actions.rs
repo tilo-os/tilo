@@ -3,7 +3,7 @@
 //!
 //! ## The split — almost everything here is external
 //!
-//! The qOS action-model recipe (`docs/action-model-recipe.md`) sorts every
+//! The Tilo action-model recipe (`docs/action-model-recipe.md`) sorts every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
 //! becomes an [`Action`] (a serializable value that deterministically changes
 //! the shared Automerge document, so undo and multi-peer replay come for free),
@@ -45,7 +45,7 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
     OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
@@ -545,7 +545,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
                     },
                 )
                 .unwrap_or_else(|error| EncodedAction {
-                    type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                     payload: format!("git commit operation could not be serialized: {error}")
                         .into_bytes(),
                 })
@@ -569,7 +569,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
                 },
             )
             .unwrap_or_else(|error| EncodedAction {
-                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                 payload: format!("git branch operation could not be serialized: {error}")
                     .into_bytes(),
             })
@@ -590,7 +590,7 @@ pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
                 },
             )
             .unwrap_or_else(|error| EncodedAction {
-                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                 payload: format!("git stash operation could not be serialized: {error}")
                     .into_bytes(),
             })
@@ -766,7 +766,7 @@ impl ResourceProvider for crate::app::GitClientApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -781,7 +781,7 @@ mod tests {
         let encoded = encode(action).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
@@ -802,7 +802,7 @@ mod tests {
 
     fn repo_model() -> RepoModel {
         RepoModel {
-            name: "qos".into(),
+            name: "tilo".into(),
             ..RepoModel::default()
         }
     }
@@ -854,7 +854,7 @@ mod tests {
         assert_eq!(resources.len(), 1, "one repository root");
         let repo = &resources[0];
         assert_eq!(repo.kind, "git_client.repo");
-        assert_eq!(repo.label, "qos");
+        assert_eq!(repo.label, "tilo");
         assert_eq!(repo.id.as_str(), "git_client.repo:716f73");
 
         let ids: Vec<&str> = repo.actions.iter().map(|a| a.id.as_str()).collect();
@@ -943,7 +943,7 @@ mod tests {
         let encoded = encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -980,8 +980,8 @@ mod tests {
 
         let action = set_diff_layout_action(DiffLayout::SideBySide);
         let encoded = encode(&action).unwrap();
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1048,10 +1048,10 @@ mod tests {
         if let Some(discard) = discard {
             assert_eq!(
                 discard.contract.confirmation,
-                qos_actions::ConfirmationPolicy::Confirm,
+                tilo_actions::ConfirmationPolicy::Confirm,
                 "agent/palette discard must pass the host confirmation gate"
             );
-            assert_eq!(discard.contract.risk, qos_actions::RiskLevel::Destructive);
+            assert_eq!(discard.contract.risk, tilo_actions::RiskLevel::Destructive);
         }
     }
 

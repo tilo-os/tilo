@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn canonical_action_aliases_collapse_across_providers() {
-        let address = qos_actions::ActionAddress::new("notes.note:1", "open");
+        let address = tilo_actions::ActionAddress::new("notes.note:1", "open");
         let mut reg = SearchRegistry::new();
         let first = SearchResult::for_action("Notes", "Launch brief", &address);
         let second = SearchResult::for_action("Recent", "Launch brief", &address);

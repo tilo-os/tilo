@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive caret focus through real legacy Linux applications.
 
-This is deliberately a process-level test.  Each case boots a fresh qOS
+This is deliberately a process-level test.  Each case boots a fresh Tilo
 headless compositor, launches an application built with a different desktop
 toolkit, and uses the compositor's developer-only control socket for input.
 The assertion is semantic: text typed after the pointer leaves the app must
@@ -218,7 +218,7 @@ def verify_focus_and_select_probe(control: Control, app_id: str, frame: dict) ->
     and leave it selected so the payload's first character replaces it
     atomically without a separate empty-document transition.
     """
-    probe = "qosfocusprobe"
+    probe = "tilofocusprobe"
     control.chord("a")
     frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
     frame = type_with_frame_barriers(control, app_id, frame, probe)
@@ -271,7 +271,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
     # Keep Unix socket paths comfortably below SUN_LEN. TemporaryDirectory
     # removes this tree on success and failure; durable diagnostics live in
     # ``artifacts`` instead.
-    with tempfile.TemporaryDirectory(prefix="qos-legacy-") as raw_root:
+    with tempfile.TemporaryDirectory(prefix="tilo-legacy-") as raw_root:
         root = Path(raw_root)
         runtime = root / "runtime"
         runtime.mkdir(mode=0o700)
@@ -286,11 +286,11 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             "XDG_DATA_HOME": str(root / "data"),
             "XDG_STATE_HOME": str(root / "state"),
             "XDG_CACHE_HOME": str(root / "cache"),
-            "QOS_STATE_PATH": str(root / "state.json"),
-            "QOS_IDENTITY_ROOT": str(root / "identity"),
-            "QOS_WORKSPACE_ROOTS": "",
-            "QOS_TEST_CONTROL": str(control_path),
-            "NIRIOS_HEADLESS_SIZE": f"{SCREEN[0]}x{SCREEN[1]}",
+            "TILO_STATE_PATH": str(root / "state.json"),
+            "TILO_IDENTITY_ROOT": str(root / "identity"),
+            "TILO_WORKSPACE_ROOTS": "",
+            "TILO_TEST_CONTROL": str(control_path),
+            "TILO_HEADLESS_SIZE": f"{SCREEN[0]}x{SCREEN[1]}",
             "RUST_LOG": "warn,shell::compositor::client_input=debug",
         })
         env.pop("WAYLAND_DISPLAY", None)
@@ -310,7 +310,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             control = Control(control_path)
             wait_until("initial workspace", lambda: control.send({"op": "state_dump"}))
             complete_onboarding(control)
-            display_file = runtime / "qos-session" / "wayland-display"
+            display_file = runtime / "tilo-session" / "wayland-display"
             display = wait_until(
                 "published Wayland display",
                 lambda: display_file.read_text().strip() if display_file.exists() else None,
@@ -342,7 +342,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             rect = frame["rect"]
             click_x = rect["x"] + rect["w"] * case.click_fraction[0]
             click_y = rect["y"] + rect["h"] * case.click_fraction[1]
-            prefix = f"qos{case.name}before"
+            prefix = f"tilo{case.name}before"
             suffix = "after"
             expected = prefix + suffix
 

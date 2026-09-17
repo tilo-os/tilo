@@ -1,4 +1,4 @@
-//! Camera — standard qOS application entry point.
+//! Camera — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -111,14 +111,14 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .value("--height")
         .and_then(|value| value.parse().ok())
         .unwrap_or(default_height);
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => ui::Theme::light(),
         Some("high-contrast") => ui::Theme::high_contrast(),
         _ => ui::Theme::dark(),
     }
     .with_text_scale(args.text_scale.unwrap_or(1.0))
     .with_reduce_motion(matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
     ));
     ui::headless::FrameHarness::new_with_theme(
@@ -128,13 +128,13 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         theme,
     )
     .render_png(out);
-    println!("dev.qos.camera: wrote shot to {}", out.display());
+    println!("dev.tilo.camera: wrote shot to {}", out.display());
     Ok(())
 }
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.camera", camera::app_root)
+        &LaunchSpec::new("dev.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
             .allowed_flags(&[
                 "--select",
@@ -175,7 +175,7 @@ fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> 
         4,
         900,
         640,
-        "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;",
+        "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;",
     );
     camera::library::write_photo(dir, &qr, PhotoFormat::Png)?;
     Ok(())

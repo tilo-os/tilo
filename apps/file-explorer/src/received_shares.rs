@@ -1,6 +1,6 @@
 //! Client for the per-user received-file service inherited from the launcher.
 //!
-//! Files remains networkless. The launcher connects to `qos-fs.sock` outside
+//! Files remains networkless. The launcher connects to `tilo-fs.sock` outside
 //! the sandbox and gives this process only that connected descriptor. Bearer
 //! URIs are written inside a bounded frame and never placed in child argv.
 
@@ -123,7 +123,7 @@ fn connected_service_stream() -> Result<tokio::net::UnixStream, String> {
 }
 
 fn service_fd() -> Option<RawFd> {
-    // `qos-fs` is the shipped manifest name. Accept `fs` while older local
+    // `tilo-fs` is the shipped manifest name. Accept `fs` while older local
     // development manifests are still present.
-    runtime_portal::service_fd("qos-fs").or_else(|| runtime_portal::service_fd("fs"))
+    runtime_portal::service_fd("tilo-fs").or_else(|| runtime_portal::service_fd("fs"))
 }

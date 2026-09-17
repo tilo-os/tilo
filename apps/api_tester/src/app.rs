@@ -321,8 +321,8 @@ pub struct ApiTesterApp {
     // --- Worker plumbing ---
     tx: Sender<SendOutcome>,
     rx: Receiver<SendOutcome>,
-    resource_send_invocation: Option<qos_actions::InvocationId>,
-    resource_send_result: Option<qos_actions::InvocationUpdate>,
+    resource_send_invocation: Option<tilo_actions::InvocationId>,
+    resource_send_result: Option<tilo_actions::InvocationUpdate>,
 
     // --- Adaptive chrome: the shared collapsible sidebar/drawer controller
     // (docked-vs-overlay decision, eased reveal, and dimming scrim). ---
@@ -392,18 +392,18 @@ impl ApiTesterApp {
         clippy::expect_used,
         reason = "the static active-request resource always publishes its nullary send operation"
     )]
-    fn active_send_binding() -> qos_actions::ActionBinding<()> {
+    fn active_send_binding() -> tilo_actions::ActionBinding<()> {
         let resource = actions::active_request_resource();
-        qos_actions::ActionBinding::unit_for(&resource, "send")
+        tilo_actions::ActionBinding::unit_for(&resource, "send")
             .expect("active request resource publishes a nullary send action")
     }
 
-    fn menu_binding(resource: qos_actions::Resource) -> qos_actions::ActionBinding<String> {
+    fn menu_binding(resource: tilo_actions::Resource) -> tilo_actions::ActionBinding<String> {
         let spec = resource
             .actions
             .first()
             .expect("menu resources always publish their typed open action");
-        qos_actions::ActionBinding::new(&resource, spec, |action| {
+        tilo_actions::ActionBinding::new(&resource, spec, |action| {
             serde_json::Map::from_iter([("action".to_string(), serde_json::Value::String(action))])
         })
         .expect("menu choices match their exported action schema")
@@ -823,9 +823,9 @@ impl ApiTesterApp {
                 SendOutcome::Ok(resp) => {
                     if let Some(invocation) = self.resource_send_invocation.take() {
                         self.resource_send_result =
-                            Some(qos_actions::InvocationUpdate::Succeeded {
+                            Some(tilo_actions::InvocationUpdate::Succeeded {
                                 invocation,
-                                output: qos_actions::ActionOutput::default(),
+                                output: tilo_actions::ActionOutput::default(),
                             });
                     }
                     let out = self.outgoing();
@@ -850,9 +850,9 @@ impl ApiTesterApp {
                 }
                 SendOutcome::Err(e) => {
                     if let Some(invocation) = self.resource_send_invocation.take() {
-                        self.resource_send_result = Some(qos_actions::InvocationUpdate::Failed {
+                        self.resource_send_result = Some(tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "api_tester.request_failed".into(),
                                 message: e.clone(),
                                 details: None,
@@ -940,7 +940,7 @@ impl ApiTesterApp {
             state,
             API_TESTER_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.ApiTester", "API Tester", action),
+            tilo_actions::ActionContext::for_action("org.tilo.ApiTester", "API Tester", action),
         );
         self.adopt_workspace(state, path);
         self.dirty = true;
@@ -966,7 +966,7 @@ impl ApiTesterApp {
             .err();
     }
 
-    pub(crate) fn resource_from_catalog(&self, id: &str) -> Option<qos_actions::Resource> {
+    pub(crate) fn resource_from_catalog(&self, id: &str) -> Option<tilo_actions::Resource> {
         self.search_provider.resource(id)
     }
 
@@ -3187,10 +3187,10 @@ impl Widget for ApiTesterApp {
     /// Publish the resource tree the shell's one Ctrl+K palette walks — the
     /// collections, saved requests, environments, and variables currently in the
     /// shared document. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -3206,7 +3206,7 @@ impl Widget for ApiTesterApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -3219,7 +3219,7 @@ impl Widget for ApiTesterApp {
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         match operation {
             crate::actions::ApiTesterOperation::SendActiveRequest => {
-                if kind != qos_actions::OperationKind::Effect {
+                if kind != tilo_actions::OperationKind::Effect {
                     return Ok(false);
                 }
                 self.send();
@@ -3228,7 +3228,7 @@ impl Widget for ApiTesterApp {
                 collection_id,
                 request_id,
             } => {
-                if kind != qos_actions::OperationKind::Effect {
+                if kind != tilo_actions::OperationKind::Effect {
                     return Ok(false);
                 }
                 let collection_id = uuid::Uuid::parse_str(&collection_id)
@@ -3256,7 +3256,7 @@ impl Widget for ApiTesterApp {
                 self.send();
             }
             crate::actions::ApiTesterOperation::ReplayHistory { history_id } => {
-                if kind != qos_actions::OperationKind::View {
+                if kind != tilo_actions::OperationKind::View {
                     return Ok(false);
                 }
                 let history_id = uuid::Uuid::parse_str(&history_id)
@@ -3271,13 +3271,13 @@ impl Widget for ApiTesterApp {
                 self.dirty = true;
             }
             crate::actions::ApiTesterOperation::RequestMenu { action } => {
-                if kind != qos_actions::OperationKind::View {
+                if kind != tilo_actions::OperationKind::View {
                     return Ok(false);
                 }
                 self.open_request_menu_action(&action)?;
             }
             crate::actions::ApiTesterOperation::EnvironmentMenu { action } => {
-                if kind != qos_actions::OperationKind::View {
+                if kind != tilo_actions::OperationKind::View {
                     return Ok(false);
                 }
                 self.open_environment_menu_action(&action)?;
@@ -3288,14 +3288,14 @@ impl Widget for ApiTesterApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect
+        if kind != tilo_actions::OperationKind::Effect
             || type_id != crate::actions::API_TESTER_OPERATION_TYPE
         {
             return Ok(None);
@@ -3312,11 +3312,11 @@ impl Widget for ApiTesterApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.poll_worker();
         if self
             .resource_send_result
@@ -3680,7 +3680,7 @@ mod tests {
         .expect("operation encodes");
         assert_eq!(
             a.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::API_TESTER_OPERATION_TYPE,
                 &request,
                 &doc,
@@ -3699,7 +3699,7 @@ mod tests {
             .expect("operation encodes");
         assert_eq!(
             a.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::API_TESTER_OPERATION_TYPE,
                 &environment,
                 &doc,
@@ -3764,13 +3764,13 @@ mod tests {
     #[test]
     fn resource_send_reports_worker_completion_instead_of_queue_success() {
         let mut a = app();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         a.resource_send_invocation = Some(invocation);
         a.tx.send(SendOutcome::Ok(http::sample_response())).unwrap();
         let doc = AutoCommit::new();
         assert!(matches!(
             a.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert!(
             a.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
@@ -3793,7 +3793,7 @@ mod tests {
 
         let doc = AutoCommit::new();
         let id = format!("api_tester.request:{request}");
-        let resource = <ApiTesterApp as qos_actions::ResourceProvider>::resource(&a, &doc, &id)
+        let resource = <ApiTesterApp as tilo_actions::ResourceProvider>::resource(&a, &doc, &id)
             .expect("late exact address resolves");
         assert_eq!(resource.id.0, id);
         assert!(resource.actions.iter().any(|action| action.id == "send"));

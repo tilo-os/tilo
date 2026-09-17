@@ -1,4 +1,4 @@
-//! PDF — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! PDF — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A collaborative PDF reader: scrollable multi-page view with zoom and a
 //! thumbnail rail, a contents/comments/signatures sidebar, incremental

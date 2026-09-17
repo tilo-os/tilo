@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
-use ui::qos_actions::{ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource};
+use ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource};
 
 use accounts::SecretItem;
 
-pub const OPERATION_TYPE: &str = "qos.passwords.operation";
+pub const OPERATION_TYPE: &str = "tilo.passwords.operation";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PasswordOperation {
@@ -25,7 +25,7 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: &PasswordOperati
             label,
             ExecutionLocus::ClientLocal,
             EncodedAction {
-                type_id: "qos.invalid-arguments".into(),
+                type_id: "tilo.invalid-arguments".into(),
                 payload: Vec::new(),
             },
         )

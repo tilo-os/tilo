@@ -16,7 +16,7 @@ pub const FRONTEND_BUS_NAME: &str = "org.freedesktop.portal.Desktop";
 const MAX_APP_ID_BYTES: usize = 255;
 
 /// Resolves a frontend-authenticated application id (and, where present, its
-/// exported parent window) to a concrete qOS application instance.
+/// exported parent window) to a concrete Tilo application instance.
 pub trait PortalCallerResolver: Send + Sync {
     fn resolve(&self, app_id: &str, parent_window: Option<&str>) -> Option<PortalCaller>;
 }
@@ -99,7 +99,7 @@ impl PortalAuthenticator {
     }
 
     /// Authenticate the backend sender, validate the asserted app id, then
-    /// resolve it to a real qOS application instance. Unknown/ambiguous apps
+    /// resolve it to a real Tilo application instance. Unknown/ambiguous apps
     /// fail closed; there is deliberately no synthetic workspace zero.
     pub async fn authenticate(
         &self,
@@ -181,7 +181,7 @@ pub enum AuthenticationError {
     UntrustedSender,
     #[error("invalid application id")]
     InvalidApplicationId,
-    #[error("application has no unambiguous qOS instance")]
+    #[error("application has no unambiguous Tilo instance")]
     UnknownApplication,
     #[error("resolved application does not match the frontend assertion")]
     ApplicationMismatch,

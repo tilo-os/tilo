@@ -1,5 +1,5 @@
 //! Hosted compositor mode — runs the shell inside the developer's existing X11/Wayland session
-//! via `winit`. The legacy path every `cargo run -p quick-desktop` invocation uses; kept separate so `--mode native` has somewhere to land.
+//! via `winit`. The legacy path every `cargo run -p tilo-desktop` invocation uses; kept separate so `--mode native` has somewhere to land.
 
 use std::sync::Arc;
 
@@ -73,7 +73,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     } else {
         None
     };
-    // The FUSE mount (another process) enforces the ACL list it reads from this path (`qos-fs --acl`); exporting here is what makes it enforce anything instead of an empty list forever.
+    // The FUSE mount (another process) enforces the ACL list it reads from this path (`tilo-fs --acl`); exporting here is what makes it enforce anything instead of an empty list forever.
     tree.fs_acl_path = Some(persist::fs_capability_export_path());
 
     adopt_tree_ownership(&mut tree);
@@ -96,10 +96,10 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // session-control dispatcher into the same broker local apps use.
     let collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
 
-    qos_startup_metrics::mark("hosted-run-state-build");
+    tilo_startup_metrics::mark("hosted-run-state-build");
     let state = State::new();
     // The session keeps each open tab's document on disk, one record per tab, so a note typed into one is still there next boot.
-    let (host, chrome) = crate::shell::build_nirios_overlay_host_with_records(
+    let (host, chrome) = crate::shell::build_tilo_overlay_host_with_records(
         tree_handle.clone(),
         enable_peer_sync,
         crate::shell::session_record_store(),
@@ -132,7 +132,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
             };
             let payload = ui::collaboration::PresencePayload::Following { target };
             if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
-                follow_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+                follow_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
             }
         }));
         host.set_status_presence_bridge(std::rc::Rc::new(move |room, status| {
@@ -148,7 +148,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
                 }),
             };
             if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
-                status_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+                status_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
             }
         }));
         let tab_network = Arc::clone(network);
@@ -162,7 +162,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
                 ui::collaboration::PresencePayload::Left
             };
             if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
-                tab_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+                tab_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
             }
         }));
     }
@@ -182,9 +182,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
         host.attach_app_action_broker(action_broker);
     }
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
-    qos_startup_metrics::mark("hosted-app-new-start");
+    tilo_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::new(state, root);
-    qos_startup_metrics::mark("hosted-app-new-done");
+    tilo_startup_metrics::mark("hosted-app-new-done");
     // Seed per-tab presence from the tree's collaborator roster so tab-pill presence dots render
     // on first draw; network-driven updates later rewrite the same keys via the collab pump, so this doesn't conflict with live peer attribution.
     sync_tab_presence_from_tree(&tree_snapshot, app.presence_ctx_mut());
@@ -235,7 +235,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
             .ok()
     };
 
-    // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set, bind it like the headless
+    // Hosted-mode test-control socket: when TILO_TEST_CONTROL is set, bind it like the headless
     // backend and run the App with a proxy injecting clicks/hovers into the event loop — same code
     // path, gate, and redraw as hardware events.
     //
@@ -244,17 +244,17 @@ pub fn run_with_full_options(opts: HostedOptions) {
     {
         if let Some(path) = crate::compositor::native::test_control_path(
             crate::compositor::dev_env::DEV_ENV_OVERRIDES,
-            std::env::var_os("QOS_TEST_CONTROL"),
+            std::env::var_os("TILO_TEST_CONTROL"),
         ) {
             let socket_path = path;
-            qos_startup_metrics::mark("hosted-event-loop-enter");
+            tilo_startup_metrics::mark("hosted-event-loop-enter");
             app.run_with_setup(move |proxy| {
                 crate::compositor::hosted_test_control::spawn(socket_path, proxy);
             });
             return;
         }
     }
-    qos_startup_metrics::mark("hosted-event-loop-enter");
+    tilo_startup_metrics::mark("hosted-event-loop-enter");
     app.run();
 }
 
@@ -541,7 +541,7 @@ fn bring_up_portal(
     } else {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("nirios-portal")
+            .thread_name("tilo-portal")
             .build()
             .ok();
         let Some(rt) = rt else {

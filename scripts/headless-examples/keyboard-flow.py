@@ -2,7 +2,7 @@
 """Open the command palette with Ctrl+K, type a query, snapshot.
 
 Usage:
-  ./keyboard-flow.py [/tmp/nirios.sock] [QUERY] [/tmp/out.png]
+  ./keyboard-flow.py [/tmp/tilo.sock] [QUERY] [/tmp/out.png]
 
 Demonstrates the modifier + key + type pattern. The palette opens on
 Ctrl+K (a shell-wide hotkey); typing into it sets the live query, which

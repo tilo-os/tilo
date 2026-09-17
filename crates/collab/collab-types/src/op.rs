@@ -23,8 +23,8 @@ use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
 use crate::role::OpClass;
 
-const DOCUMENT_MUTATION_V1_PREFIX: &[u8] = b"qos-document-mutation-v1\0";
-const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"qos-document-mutation-v2\0";
+const DOCUMENT_MUTATION_V1_PREFIX: &[u8] = b"tilo-document-mutation-v1\0";
+const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
 const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
 const DOCUMENT_INCREMENTAL_TAG: u8 = 2;
 /// Maximum Automerge bytes carried by one snapshot or incremental mutation.
@@ -33,9 +33,9 @@ const DOCUMENT_INCREMENTAL_TAG: u8 = 2;
 pub const MAX_DOCUMENT_MUTATION_BYTES: usize = 3 * 1024 * 1024;
 const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize =
     DOCUMENT_MUTATION_V2_PREFIX.len() + MAX_DOCUMENT_MUTATION_BYTES + 16;
-const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"qos-document-artifact-v1\0";
-const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"qos-document-attestation-v1\0";
-const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"qos-document-channel-v1\0";
+const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
+const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
+const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"tilo-document-channel-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -579,23 +579,23 @@ mod tests {
 
     #[test]
     fn document_route_ids_are_stable_and_unambiguous() {
-        let first = document_artifact_id("dev.qos.notes", "room-a", "record-b");
+        let first = document_artifact_id("dev.tilo.notes", "room-a", "record-b");
         assert_eq!(
             first,
-            document_artifact_id("dev.qos.notes", "room-a", "record-b")
+            document_artifact_id("dev.tilo.notes", "room-a", "record-b")
         );
         assert_ne!(
             first,
-            document_artifact_id("dev.qos.notes", "room-ar", "ecord-b")
+            document_artifact_id("dev.tilo.notes", "room-ar", "ecord-b")
         );
         assert_ne!(
             first.0,
-            document_attestation_id("dev.qos.notes", "room-a", "record-b").0,
+            document_attestation_id("dev.tilo.notes", "room-a", "record-b").0,
             "artifact and attestation domains must not alias"
         );
         assert_ne!(
             first.0,
-            document_channel_id("dev.qos.notes", "room-a", "record-b").0,
+            document_channel_id("dev.tilo.notes", "room-a", "record-b").0,
             "artifact and MLS channel domains must not alias"
         );
         assert_eq!(first.0.get_version_num(), 8);

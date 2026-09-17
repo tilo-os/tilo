@@ -1,4 +1,4 @@
-//! Compatibility vocabulary shared by the UI and future `qos-compatd` client.
+//! Compatibility vocabulary shared by the UI and future `tilo-compatd` client.
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

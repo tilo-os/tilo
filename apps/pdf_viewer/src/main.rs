@@ -1,4 +1,4 @@
-//! PDF — standard qOS application entry point.
+//! PDF — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -24,7 +24,7 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-const APP_ID: &str = "dev.qos.pdf-viewer";
+const APP_ID: &str = "dev.tilo.pdf-viewer";
 
 #[allow(
     clippy::unnecessary_wraps,

@@ -18,7 +18,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
-use qos_actions::Action;
+use tilo_actions::Action;
 
 use crate::doc::BooksDoc;
 use crate::epub::{MAX_EPUB_BYTES, content_id, parse_epub};
@@ -36,8 +36,8 @@ pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 const LIBRARY_DIR_ENV: &str = "EBOOK_LIBRARY_DIR";
 
 /// Override for the collaborative-workspace mount root (tests point it at a temp
-/// directory); production is the real qOS FUSE mount.
-const WORKSPACE_DIR_ENV: &str = "QOS_WORKSPACE_DIR";
+/// directory); production is the real Tilo FUSE mount.
+const WORKSPACE_DIR_ENV: &str = "TILO_WORKSPACE_DIR";
 const DEFAULT_WORKSPACE: &str = "/var/workspace";
 
 /// Upper bound on library size, so a pathological watched directory can't stall
@@ -570,7 +570,7 @@ const TIDEGLASS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     //! Discovery + import run against real temp directories. The tests that set
-    //! the process-global `EBOOK_LIBRARY_DIR` / `QOS_WORKSPACE_DIR` env vars are
+    //! the process-global `EBOOK_LIBRARY_DIR` / `TILO_WORKSPACE_DIR` env vars are
     //! `#[serial]` so cargo's default parallel runner can't race them.
 
     use super::*;

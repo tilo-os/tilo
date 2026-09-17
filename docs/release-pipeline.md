@@ -1,6 +1,6 @@
 # Release pipeline
 
-qOS releases four independent component families. A release tag for one family
+Tilo releases four independent component families. A release tag for one family
 does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
@@ -38,29 +38,29 @@ distributions can pin one by version and architecture without compiling apps
 again.
 
 The desktop release retains its complete ARM64 matrix and verifier behind the
-`QOS_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"1"`: tagged
+`TILO_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"1"`: tagged
 and explicit full-native builds use the registered native `runner-arm64` pool
 and publish both architectures, while ordinary changes retain the amd64 lane.
 No package or artifact definition needs to change if scheduling is paused.
 
 The Fedora desktop lane also emits a small deterministic OS payload containing
-the same install-tested `shell`, `qos-launcher`, and `qos-unlock-helper`
+the same install-tested `shell`, `tilo-launcher`, and `tilo-unlock-helper`
 binaries. A successful `main` build publishes it immutably and advances
-`QOS_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`. Trusted OS composition
+`TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`. Trusted OS composition
 downloads the matching architecture and omits those three Cargo packages from
 its build. OS-only changes therefore test the desktop/OS integration without
 recompiling the desktop. Pull requests receive only a short-lived, workflow-
 restricted package-read token, so they exercise the same immutable integration
 boundary without a reusable registry credential.
 
-Each architecture collection also contains the signed `qos-runtime` bundle
+Each architecture collection also contains the signed `tilo-runtime` bundle
 built in the same Cargo graph as its thin app binaries. The OS verifies and
 installs that exact runtime; it never independently relinks
 `libruntime_dylib.so`, whose Rust symbol hashes would otherwise make reused
 qpkgs ABI-incompatible.
 
-Set repository variables `QOS_APP_COLLECTION_URL` and
-`QOS_APP_COLLECTION_SHA256`, and `QOS_APP_COLLECTION_PUBLISHER` to make that
+Set repository variables `TILO_APP_COLLECTION_URL` and
+`TILO_APP_COLLECTION_SHA256`, and `TILO_APP_COLLECTION_PUBLISHER` to make that
 pinned bundle the normal OS input, or
 provide the equivalent **Release / OS** dispatch inputs for a one-off build.
 The outer SHA-256 is checked before extraction, every qpkg/index checksum is
@@ -69,7 +69,7 @@ tagged OS provenance records the collection digest. Leaving the variables empty
 preserves the source-build fallback for bootstrap work.
 Successful default-collection publications from `main` advance the URL and
 digest variables automatically. Architecture-specific
-`QOS_APP_COLLECTION_{URL,SHA256}_{X86_64,AARCH64}` variables are maintained as
+`TILO_APP_COLLECTION_{URL,SHA256}_{X86_64,AARCH64}` variables are maintained as
 native runners become available; the unsuffixed pair remains the x86_64
 compatibility channel.
 
@@ -81,7 +81,7 @@ enforce the complete `x86_64 aarch64` matrix.
 ## App selection and collections
 
 Collections live in `release/app-collections.toml`. `default`, `desktop`, and
-`os` intentionally resolve `*` from checked-in `apps/*/qos-app.toml` files, so a
+`os` intentionally resolve `*` from checked-in `apps/*/tilo-app.toml` files, so a
 new app joins the normal fleet automatically. Small scenario-specific sets can
 extend another collection and exclude entries, or list apps directly.
 
@@ -97,7 +97,7 @@ Examples:
 python3 tools/app_release.py --collection recovery
 
 # Package two apps in one Cargo invocation.
-QOS_RELEASE_APPS='notes calculator' dist/apps/package-apps.sh
+TILO_RELEASE_APPS='notes calculator' dist/apps/package-apps.sh
 ```
 
 On a normal main push, **Release / apps** selects and publishes directly changed
@@ -113,7 +113,7 @@ OS pushes remain non-publishing while CI capacity is constrained, but trusted
 `main`, scheduled, and manual runs still perform the independent rebuild,
 installed-VM, desktop, app, and OS integration gates. Once a
 non-exportable `COSIGN_KEY_REF` is configured, setting
-`QOS_CONTINUOUS_OS_RELEASE=1` turns relevant `main` pushes into the same
+`TILO_CONTINUOUS_OS_RELEASE=1` turns relevant `main` pushes into the same
 reproducibility, installed-VM, signing, SBOM, provenance, freshness, and
 channel-promotion path used by explicit releases. It does not introduce a
 weaker fast-publish path. A successful desktop payload publication requests
@@ -144,19 +144,19 @@ native release capacity does not block ordinary integration feedback.
   in Authorized Integrations. OIDC jobs use `enable-openid-connect: true`.
 - App publication uses two narrowly restricted Forgejo Actions (Local)
   integrations: app release tags and pushes/manual dispatches from `main`. Their
-  audiences are stored in `QOS_APP_RELEASE_TAG_AUDIENCE` and
-  `QOS_APP_RELEASE_MAIN_AUDIENCE`; no long-lived registry token reaches the
+  audiences are stored in `TILO_APP_RELEASE_TAG_AUDIENCE` and
+  `TILO_APP_RELEASE_MAIN_AUDIENCE`; no long-lived registry token reaches the
   publication job. The main integration has package-write and repository-write
   scope so it can advance only the pinned collection channel after publication.
 - Trusted OS builds read the private immutable app collection with a separate
   read-only Forgejo Actions (Local) integration. The same integration reads the
   immutable desktop payload. Store its audience in
-  `QOS_OS_APP_COLLECTION_AUDIENCE`. Restrict it to **Release / OS** events;
+  `TILO_OS_APP_COLLECTION_AUDIENCE`. Restrict it to **Release / OS** events;
   pull requests may use its short-lived package-read capability so their OS
   builds test the same pinned integration inputs as `main`.
 - Desktop payload publication uses a package-write/repository-write integration
   restricted to `package-desktop.yml` pushes on `main`; store its audience in
-  `QOS_DESKTOP_RELEASE_AUDIENCE`.
+  `TILO_DESKTOP_RELEASE_AUDIENCE`.
 - Keep remote actions pinned to full commit hashes.
 - Use the v3 artifact actions (or Forgejo's patched v4), because upstream v4's
   GitHub Artifact API is not compatible with this instance.

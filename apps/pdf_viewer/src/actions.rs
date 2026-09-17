@@ -29,7 +29,7 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec, RetryPolicy,
@@ -237,8 +237,8 @@ fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
         },
     )
     .with_contract(ActionContract {
-        risk: qos_actions::RiskLevel::Destructive,
-        confirmation: qos_actions::ConfirmationPolicy::Confirm,
+        risk: tilo_actions::RiskLevel::Destructive,
+        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
         execution: ExecutionMode::Background { cancellable: true },
         result: ResultSpec::Job,
         ..ActionContract::default()
@@ -1420,10 +1420,10 @@ mod tests {
     use super::*;
     use crate::app::PdfApp;
     use qdoc::blobstore::{self, BlobStore, BlobTransport, MemoryBlobStore};
-    use qos_actions::{ActionInput, ActionRegistry, LocalTransport};
     use serial_test::serial;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
+    use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
     /// A tiny synchronous two-peer bridge. `offer()` belongs to peer A; a
@@ -1609,12 +1609,12 @@ mod tests {
         let encoded = encode(&add_signature_action(&signature));
         let decoded = registry().decode(&encoded).unwrap();
         let mut transport = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
         assert_eq!(PdfDoc::list_signatures(&doc)[0].ink, signature.ink);
 
         let encoded = encode(&delete_signature_action(&signature.id));
         let decoded = registry().decode(&encoded).unwrap();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
         assert!(PdfDoc::list_signatures(&doc).is_empty());
     }
 
@@ -1631,7 +1631,7 @@ mod tests {
         let encoded = prompted_encode(action, "Grace Hopper");
         let decoded = registry().decode(&encoded).expect("decodable action");
         let mut transport = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut transport)
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut transport)
             .expect("signature action applies");
         let signature = PdfDoc::list_signatures(&state.doc)
             .into_iter()
@@ -1671,7 +1671,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         assert!(
             PdfDoc::list_annotations(doc)
@@ -1783,8 +1783,8 @@ mod tests {
         let encoded = encode(&action);
 
         // A applies locally, producing the envelope; B replays it.
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1817,8 +1817,8 @@ mod tests {
         let action = import_pages_action(Some("source-1"), vec![page]);
         let encoded = encode(&action);
         assert_eq!(encoded.payload, encode(&action).payload);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
         assert_eq!(PdfDoc::list_page_plan(&a), PdfDoc::list_page_plan(&b));
     }

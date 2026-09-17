@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
-const REPOSITORY_DIR: &str = ".qos-backups";
+const REPOSITORY_DIR: &str = ".tilo-backups";
 const SNAPSHOTS_DIR: &str = "snapshots";
 const MANIFEST: &str = "manifest.json";
 
@@ -421,7 +421,7 @@ fn create_restore_stage(target: &Path) -> Result<PathBuf> {
     })?;
     for suffix in 0_u32..1024 {
         let stage = parent.join(format!(
-            ".qos-restore-{}-{suffix}.partial",
+            ".tilo-restore-{}-{suffix}.partial",
             std::process::id()
         ));
         match fs::create_dir(&stage) {
@@ -471,7 +471,7 @@ fn restore_into_stage(
                 if let Some(parent) = to.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                let temporary = to.with_extension(format!("qos-restore-{}", std::process::id()));
+                let temporary = to.with_extension(format!("tilo-restore-{}", std::process::id()));
                 let (size, digest) = copy_and_hash(&from, &temporary)?;
                 if size != entry.size || Some(digest) != entry.sha256 {
                     let _ = fs::remove_file(&temporary);
@@ -558,7 +558,7 @@ fn reserve_previous_restore_path(target: &Path) -> Result<PathBuf> {
     })?;
     for suffix in 0_u32..1024 {
         let previous = parent.join(format!(
-            ".qos-restore-{}-{suffix}.previous",
+            ".tilo-restore-{}-{suffix}.previous",
             std::process::id()
         ));
         match fs::symlink_metadata(&previous) {
