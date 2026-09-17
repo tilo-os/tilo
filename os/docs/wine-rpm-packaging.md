@@ -28,6 +28,15 @@ This reasoning does not replace actual cross-width execution tests.
 
 ## Resolve and freeze buildroots
 
+Acquire the pinned source in disposable native x86-64 Fedora 44 tooling with
+`python3 os/dev/fetch-wine-source.py NEW_DIRECTORY`. DNF resolves the exact
+source NEVRA through the configured Fedora source repositories. The helper
+checks the installed Fedora key against its pinned hash, then verifies the
+downloaded source size, hash and RPM signature in an isolated key database.
+It retains acquisition/signature logs and publishes only verified inputs to
+a new directory. Failed attempts retain their staging directory and logs.
+This acquisition step does not resolve or build either target environment.
+
 Use native x86 hardware. Prepare separate Fedora 44 target buildroots for
 `x86_64` and `i686`, retaining the complete spec-derived BuildRequires.
 An i686 target can run on an x86-64 host; an OCI `linux/386` label is not
