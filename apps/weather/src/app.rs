@@ -771,6 +771,9 @@ impl Widget for WeatherApp {
             self.nav = Self::build_nav(self.core.clone(), self.overview_collapsed, self.text_scale);
             self.nav.snap_pane(pane);
         }
+        // The core solves its row grid without a renderer; hand it the
+        // theme's spacing and metrics here so reserve and paint agree.
+        self.core.borrow_mut().set_layout_tokens(theme);
         self.nav.build_layout(taffy, theme, node_map)
     }
 
