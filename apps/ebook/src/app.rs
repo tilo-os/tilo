@@ -11947,6 +11947,43 @@ mod interaction_tests {
     }
 
     #[test]
+    fn action_search_discovers_live_reader_and_settings_actions() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let actions = app
+            .search_providers()
+            .pop()
+            .expect("the action-label provider is published");
+
+        for query in [
+            "Toggle bookmark",
+            "Add note",
+            "Previous page",
+            "Open reading settings",
+            "Open font settings",
+            "Rename font",
+            "Open colour settings",
+        ] {
+            let hit = ui::search::SearchProvider::search(actions.as_ref(), query)
+                .into_iter()
+                .find(|hit| hit.action_address().is_some())
+                .unwrap_or_else(|| panic!("missing discoverable live action: {query}"));
+            let address = hit.action_address().expect("canonical action address");
+            let resource =
+                ui::search::SearchProvider::resolve_action_resource(actions.as_ref(), &address)
+                    .unwrap_or_else(|| panic!("live exact action did not resolve: {query}"));
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action),
+                "exact resource lost the discovered action for {query}"
+            );
+        }
+    }
+
+    #[test]
     fn accessibility_reader_contains_visible_text_and_actionable_chrome() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
