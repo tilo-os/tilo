@@ -133,6 +133,7 @@ impl Capabilities {
     pub fn exit_cleanup_complete(&self) -> bool {
         let downloads = self.downloads.lock().unwrap();
         downloads.runtime_known
+            && !downloads.accepting
             && downloads.admitted == 0
             && downloads.detached == 0
             && downloads.prompts.is_empty()
