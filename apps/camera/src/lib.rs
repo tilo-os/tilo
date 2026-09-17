@@ -1,9 +1,8 @@
 //! Camera — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A real camera app: a live viewfinder (sample frames when headless), a
-//! photo/video shutter, a camera selector, and an on-disk capture history (empty until
-//! you capture), and a QR / barcode scanner that decodes codes for real
-//! (via [`rqrr`]) and
+//! photo/video shutter, a camera selector, one recent-capture handoff, and a
+//! QR / barcode scanner that decodes codes for real (via [`rqrr`]) and
 //! offers contextual actions (open URL, copy, connect Wi-Fi, add contact).
 //! Settings and capture metadata live in the Automerge CRDT.
 //!

@@ -806,7 +806,6 @@ impl ResourceProvider for crate::app::CameraApp {
 mod tests {
     use super::*;
     use crate::app::CameraApp;
-    use automerge::transaction::Transactable;
     use tilo_actions::ActionInput;
     use ui::widget::Widget;
 
