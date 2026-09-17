@@ -19,8 +19,8 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::peniko::Color;
 use winit::event::WindowEvent;
 
 use crate::icons::Icon;
@@ -103,20 +103,14 @@ fn paint_stat_tile(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+    // Card surface with its derived rest edge (HIG §9.5), crisp inside the
+    // tile so it registers on a raised ground in dark and light alike.
+    crate::surface::card(
+        scene,
         transform,
+        rect,
+        f64::from(theme.tokens.radii.lg),
         theme.tokens.colors.surfaces.raised,
-        None,
-        &card,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.border_standard,
-        None,
-        &card,
     );
 
     // Row positions follow the theme sizes that `tile_height` reserves;
