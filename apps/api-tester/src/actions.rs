@@ -49,7 +49,7 @@ use tilo_actions::{
 };
 
 use crate::doc::ApiDoc;
-use crate::model::{Collection, Environment, KeyValue, Request};
+use crate::model::{Collection, Environment, HistoryEntry, KeyValue, Request};
 
 /// Registry `type_id` for every API Tester action.
 pub const API_TESTER_ACTION_TYPE: &str = "api_tester.action";
@@ -204,6 +204,8 @@ pub fn replay_history_operation(history_id: Uuid) -> Result<ActionSpec, ActionEr
 /// document's keyed projection; it never serializes presentation state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ApiTesterAction {
+    /// Record a completed request without replaying its network effect.
+    RecordHistory { entry: HistoryEntry },
     // --- Collections ---------------------------------------------------------
     /// Add a new, empty collection. `id` is minted at authoring time; a replay
     /// that finds the id already present is a no-op, so re-applying can't stack a
@@ -415,6 +417,15 @@ impl Action for ApiTesterAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let root: ObjId = ROOT;
         match self {
+            ApiTesterAction::RecordHistory { entry } => {
+                let mut history = ApiDoc::history(doc, &root);
+                if !history.iter().any(|existing| existing.id == entry.id) {
+                    history.insert(0, entry.clone());
+                    history.truncate(50);
+                    ApiDoc::set_history(doc, &root, &history);
+                }
+                Ok(())
+            }
             ApiTesterAction::CreateCollection { id, name } => {
                 ApiDoc::create_collection(doc, &root, id, name);
                 Ok(())
