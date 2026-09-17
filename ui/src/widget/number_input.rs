@@ -666,12 +666,14 @@ impl Widget for NumberInput {
                 colors.surfaces.raised
             };
             scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
+            // Stepper edge derived from its rest surface, as a Neutral
+            // button (HIG §9.5), held across hover.
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                crate::surface::edge_on(colors.surfaces.raised),
                 None,
-                &shape,
+                &crate::surface::edge_outline(btn_rect, radius),
             );
 
             let (gw, gh) = text_renderer.measure(glyph, STEP_GLYPH_SIZE, None);

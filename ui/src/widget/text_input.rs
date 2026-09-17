@@ -1837,10 +1837,11 @@ impl TextInput {
             &gutter,
         );
         let edge = self.rect.x0 + gutter_width;
+        // Gutter rule derived from the field it divides (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
             &vello::kurbo::Line::new((edge, self.rect.y0), (edge, self.rect.y1)),
         );
@@ -4438,14 +4439,25 @@ impl TextInput {
         theme: &Theme,
         shape: &RoundedRect,
     ) {
-        let bg_color = if self.effectively_disabled() {
-            // One step darker than the raised form-field fill, to read as "inert".
-            theme.tokens.colors.surfaces.base
-        } else if self.is_focused {
+        let disabled = self.effectively_disabled();
+        let rest = theme.tokens.colors.surfaces.raised;
+        let bg_color = if self.is_focused && !disabled {
             theme.bg_active
         } else {
-            theme.tokens.colors.surfaces.raised
+            rest
         };
+        // Disabled is the rest face under one group alpha (HIG §9.5), so rest
+        // and disabled never look alike; a "one step darker" fill with the
+        // same declared border did, on the dark preset.
+        if disabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                shape,
+            );
+        }
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -4453,24 +4465,25 @@ impl TextInput {
             None,
             shape,
         );
-        let border_color = if self.effectively_disabled() {
-            theme.tokens.colors.border_standard
-        } else if self.is_focused {
-            theme.tokens.colors.border_focus
+        // Rest edge derived from the field fill; focus keeps `border_focus`.
+        let (border_w, border_color) = if self.is_focused && !disabled {
+            (2.0, theme.tokens.colors.border_focus)
         } else {
-            theme.tokens.colors.border_standard
+            (1.0, crate::surface::edge_on(rest))
         };
+        // Rest edge and focus ring share one half-pixel-inset outline, so
+        // the hairline never bleeds onto the ground and the ring sits where
+        // the edge was.
         scene.stroke(
-            &Stroke::new(if self.is_focused && !self.effectively_disabled() {
-                2.0
-            } else {
-                1.0
-            }),
+            &Stroke::new(border_w),
             transform,
             border_color,
             None,
-            shape,
+            &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
         );
+        if disabled {
+            scene.pop_layer();
+        }
     }
 
     /// Rebuilds `self.char_x_positions` (and, when unmasked, `self.single_layout`)

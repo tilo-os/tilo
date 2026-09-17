@@ -305,12 +305,15 @@ impl Checkbox {
             );
         }
 
+        // HIG §9.5: unchecked is the raised control surface with an edge
+        // derived from it — `bg_active` was the pressed tier at rest, and a
+        // declared `border_standard` vanished on a raised dark card.
         let box_color = if face.checked {
             theme.accent_primary
         } else if face.interact.hovered {
             theme.bg_hover
         } else {
-            theme.bg_active
+            theme.tokens.colors.surfaces.raised
         };
         if face.checked || face.fill_unchecked || face.interact.hovered {
             scene.fill(
@@ -322,18 +325,25 @@ impl Checkbox {
             );
         }
 
-        let stroke_color = if face.interact.focused {
-            theme.border_focus
+        // Focus ring wins; the accent-filled checked box is self-defining
+        // (like a Primary button) and takes no rest edge.
+        let edge = if face.interact.focused {
+            Some((2.0, theme.border_focus))
+        } else if face.checked {
+            None
         } else {
-            theme.tokens.colors.border_standard
+            Some((1.0, crate::surface::edge_on(box_color)))
         };
-        scene.stroke(
-            &Stroke::new(if face.interact.focused { 2.0 } else { 1.0 }),
-            transform,
-            stroke_color,
-            None,
-            &shape,
-        );
+        if let Some((width, color)) = edge {
+            // Rest edge and focus ring share one half-pixel-inset outline.
+            scene.stroke(
+                &Stroke::new(width),
+                transform,
+                color,
+                None,
+                &crate::surface::edge_outline(face.rect, f64::from(theme.tokens.radii.md)),
+            );
+        }
 
         if face.checked {
             let mut path = BezPath::new();
