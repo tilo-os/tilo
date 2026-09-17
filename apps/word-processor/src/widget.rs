@@ -508,12 +508,14 @@ struct PanelRow {
     y: f64,
 }
 
+#[derive(Clone, Copy)]
 struct NumRow {
     field: NumField,
     value: f32,
     geometry: PanelRow,
 }
 
+#[derive(Clone, Copy)]
 struct ImageFlipRow {
     geometry: PanelRow,
     button_width: f64,
@@ -1533,6 +1535,7 @@ fn spell_spans(dict: &spellcheck::Dictionary, language: &str, text: &str) -> Vec
 /// `RichTextLayout` is reused verbatim. Inputs mirror `shape`'s arguments exactly,
 /// including **wrap width** (so a resize re-shapes); block-level ink is excluded
 /// since it applies at draw time (`Laid::ink`), not baked into the shaped buffer.
+#[derive(Clone, Copy)]
 struct ShapeKeyInput<'a> {
     spans: &'a [RichSpan],
     underlines: &'a [(usize, usize)],
@@ -1545,7 +1548,7 @@ struct ShapeKeyInput<'a> {
     line_height_mult: f32,
 }
 
-fn shape_key(input: ShapeKeyInput<'_>) -> u64 {
+fn shape_key(input: &ShapeKeyInput<'_>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     input.spans.len().hash(&mut h);
@@ -1919,6 +1922,20 @@ impl Default for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
+    fn canvas_horizontal_bounds(&self, full: Rect) -> (f64, f64) {
+        let right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
+            (full.x1 - self.styles_panel_width()).max(full.x0 + 1.0)
+        } else {
+            full.x1
+        };
+        let left = if self.outline.is_open() {
+            (full.x0 + self.outline_panel_width()).min(right - 1.0)
+        } else {
+            full.x0
+        };
+        (left, right)
+    }
+
     fn layout_bar_height(&self) -> f64 {
         LAYOUT_BAR_H * self.text_scale
     }
@@ -3636,6 +3653,7 @@ struct PanelDrawCtx<'a> {
     cc: ChromeColors,
 }
 
+#[derive(Clone, Copy)]
 struct RunningBand<'a> {
     blocks: &'a [BlockView],
     page_no: usize,
@@ -3655,12 +3673,14 @@ struct EditorEventCtx<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
+#[derive(Clone, Copy)]
 struct UtilityBarsGeometry {
     left: f64,
     right: f64,
     top: f64,
 }
 
+#[derive(Clone, Copy)]
 struct PageSheetInput<'a> {
     header: &'a [BlockView],
     footer: &'a [BlockView],
@@ -3669,6 +3689,7 @@ struct PageSheetInput<'a> {
     scroll_y: f64,
 }
 
+#[derive(Clone, Copy)]
 struct PageContentInput<'a> {
     laid: &'a [Laid],
     cache: &'a HashMap<String, (u64, RichTextLayout)>,
@@ -3719,7 +3740,7 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         ctf: Affine,
         tr: &mut TextRenderer,
-        band: RunningBand<'_>,
+        band: &RunningBand<'_>,
     ) -> (bool, Vec<RegionLaid>) {
         let RunningBand {
             blocks,
@@ -3727,7 +3748,7 @@ impl WordProcessorWidget {
             rect: band,
             is_footer,
             editing,
-        } = band;
+        } = *band;
         if blocks.is_empty() || band.height() <= 2.0 {
             return (false, Vec::new());
         }
@@ -4567,7 +4588,7 @@ impl WordProcessorWidget {
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
-                NumRow {
+                &NumRow {
                     field,
                     value: field.get(&st),
                     geometry: PanelRow { x0, right, y },
@@ -5072,7 +5093,7 @@ impl WordProcessorWidget {
             scene,
             transform,
             tr,
-            ImageFlipRow {
+            &ImageFlipRow {
                 geometry: PanelRow { x0, right, y },
                 button_width: bw,
             },
@@ -5185,7 +5206,7 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
-        row: ImageFlipRow,
+        row: &ImageFlipRow,
     ) {
         let PanelRow { x0, right, y } = row.geometry;
         let bw = row.button_width;
@@ -5242,13 +5263,13 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
-        row: NumRow,
+        row: &NumRow,
     ) {
         let NumRow {
             field,
             value,
             geometry: PanelRow { x0, right, y },
-        } = row;
+        } = *row;
         let cc = self.chrome;
         tr.draw_text(
             scene,
@@ -6095,21 +6116,8 @@ impl WordProcessorWidget {
         // so the page shrinks rather than the history painting over the text.
         let history_h = self.history.band_height();
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
-        // Reserve the styles panel out of the canvas so the page re-centers in the
-        // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            (full.x1 - self.styles_panel_width()).max(full.x0 + 1.0)
-        } else {
-            full.x1
-        };
-        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
-        // styles panel on the right) so the page re-centers and scrolled content
-        // never paints under the pane.
-        let canvas_left = if self.outline.is_open() {
-            (full.x0 + self.outline_panel_width()).min(canvas_right - 1.0)
-        } else {
-            full.x0
-        };
+        // Side panels reserve canvas width rather than painting over the page.
+        let (canvas_left, canvas_right) = self.canvas_horizontal_bounds(full);
         // Reserve + draw the crash-recovery banner (when staged) and the Find
         // bar (when open), stacked directly under the toolbar.
         let (recovery_h, find_h) = self.draw_recovery_and_find_bars(
@@ -6117,7 +6125,7 @@ impl WordProcessorWidget {
             transform,
             text_renderer,
             theme,
-            UtilityBarsGeometry {
+            &UtilityBarsGeometry {
                 left: canvas_left,
                 right: canvas_right,
                 top: full.y0 + tb_h,
@@ -6219,13 +6227,13 @@ impl WordProcessorWidget {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        geometry: UtilityBarsGeometry,
+        geometry: &UtilityBarsGeometry,
     ) -> (f64, f64) {
         let UtilityBarsGeometry {
             left: canvas_left,
             right: canvas_right,
             top: tb_bottom,
-        } = geometry;
+        } = *geometry;
         let recovery_h = self.recovery.height();
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
@@ -6518,7 +6526,7 @@ impl WordProcessorWidget {
                         block_runs_markup(cell, self.review.is_visible());
                     let wrap_w = num::f32_of_f64((col_w - 2.0 * cell_pad).max(24.0));
                     let align = block_align(cell, TextAlign::Left);
-                    let key = shape_key(ShapeKeyInput {
+                    let key = shape_key(&ShapeKeyInput {
                         spans: &runs,
                         underlines: &underlines,
                         strikes: &strikes,
@@ -6841,7 +6849,7 @@ impl WordProcessorWidget {
         // The paragraph's line-spacing multiplier (1.0 = single) scales the
         // shaped line advance, so it is part of the shape key.
         let line_mult = block_line_spacing(b);
-        let key = shape_key(ShapeKeyInput {
+        let key = shape_key(&ShapeKeyInput {
             spans: &runs,
             underlines: &underlines,
             strikes: &strikes,
@@ -7182,7 +7190,7 @@ impl WordProcessorWidget {
                 scene,
                 text_renderer,
                 fg,
-                PageSheetInput {
+                &PageSheetInput {
                     header: &header,
                     footer: &footer,
                     edit_region,
@@ -7214,7 +7222,7 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         text_renderer: &mut TextRenderer,
         fg: &FrameGeometry,
-        input: PageSheetInput<'_>,
+        input: &PageSheetInput<'_>,
     ) {
         let PageSheetInput {
             header,
@@ -7222,7 +7230,7 @@ impl WordProcessorWidget {
             edit_region,
             index: i,
             scroll_y: sy,
-        } = input;
+        } = *input;
         let ptop = fg.page_top + num::f64_of_usize(i) * fg.page_pitch - sy;
         let sheet = Rect::new(fg.page_x, ptop, fg.page_x + fg.page_w, ptop + fg.letter_h);
         chrome::page::draw(
@@ -7258,7 +7266,7 @@ impl WordProcessorWidget {
             scene,
             fg.ctf,
             text_renderer,
-            RunningBand {
+            &RunningBand {
                 blocks: header,
                 page_no,
                 rect: head_band,
@@ -7270,7 +7278,7 @@ impl WordProcessorWidget {
             scene,
             fg.ctf,
             text_renderer,
-            RunningBand {
+            &RunningBand {
                 blocks: footer,
                 page_no,
                 rect: foot_band,
@@ -7371,7 +7379,7 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
-        input: PageContentInput<'_>,
+        input: &PageContentInput<'_>,
     ) -> Pass2Markers {
         let PageContentInput {
             laid,
@@ -7379,7 +7387,7 @@ impl WordProcessorWidget {
             multi_selection: multi_sel,
             spell_by_block,
             note_numbers: note_nums,
-        } = input;
+        } = *input;
         let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
         let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
@@ -9616,7 +9624,7 @@ impl Widget for WordProcessorWidget {
             scene,
             &fg,
             text_renderer,
-            PageContentInput {
+            &PageContentInput {
                 laid: &laid,
                 cache: &new_cache,
                 multi_selection: multi_sel,
