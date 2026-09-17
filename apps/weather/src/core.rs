@@ -35,8 +35,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Autocomplete, AutocompleteOutcome, DragController, ListMetrics, PressOutcome, ScrollMetrics,
-    Scrollbar, Suggestion, Widget,
+    Autocomplete, AutocompleteOutcome, Button, ButtonFace, ButtonStyle, DragController,
+    ListMetrics, PressOutcome, ScrollMetrics, Scrollbar, Suggestion, Widget,
 };
 
 use crate::actions::WeatherAction;
@@ -899,8 +899,8 @@ impl Core {
         hot: &mut Vec<Hotspot>,
     ) -> f64 {
         let scene = &mut *ctx.scene;
-        let t = ctx.transform;
         let tr = &mut *ctx.text_renderer;
+        let t = ctx.transform;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let large_text = theme.text_scale >= 1.5;
@@ -912,24 +912,20 @@ impl Core {
         // the forecast can use the full width. It sits at the search field's
         // right edge, which the field leaves room for.
         if self.overview_collapsible {
-            let cb = if large_text { 44.0 } else { 30.0 };
+            let cb = if large_text { 44.0 } else { 36.0 };
             let cy = sy + (sh - cb) / 2.0;
             let chip = Rect::new(left + width - cb, cy, left + width, cy + cb);
-            let hovered = chip.contains(self.last_mouse);
-            let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
-            scene.fill(
-                Fill::NonZero,
+            Button::paint(
+                scene,
                 t,
-                if hovered {
-                    c.neutral[2]
-                } else {
-                    c.surfaces.raised
-                },
-                None,
-                &shape,
+                tr,
+                theme,
+                &ButtonFace::new(chip, "")
+                    .icon(Icon::ChevronLeft)
+                    .accessible_name("Collapse saved places")
+                    .style(ButtonStyle::Neutral)
+                    .hovered(chip.contains(self.last_mouse)),
             );
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-            Icon::ChevronLeft.draw(scene, t, chip.inset(-8.0), c.text_primary);
             hot.push(Hotspot {
                 rect: chip,
                 action: OverAction::ToggleCollapse,
@@ -1093,6 +1089,7 @@ impl Core {
     /// scrolling city column starts at.
     fn draw_rail_header(&self, ctx: &mut DrawCtx<'_>, rect: Rect, hot: &mut Vec<Hotspot>) -> f64 {
         let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text_renderer;
         let t = ctx.transform;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
@@ -1106,21 +1103,17 @@ impl Core {
             cx + cs / 2.0,
             rect.y0 + 12.0 + cs,
         );
-        let hovered = chip.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
+        Button::paint(
+            scene,
             t,
-            if hovered {
-                c.neutral[2]
-            } else {
-                c.surfaces.raised
-            },
-            None,
-            &shape,
+            tr,
+            theme,
+            &ButtonFace::new(chip, "")
+                .icon(Icon::ChevronRight)
+                .accessible_name("Expand saved places")
+                .style(ButtonStyle::Neutral)
+                .hovered(chip.contains(self.last_mouse)),
         );
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-        Icon::ChevronRight.draw(scene, t, chip.inset(-8.0), c.text_primary);
         hot.push(Hotspot {
             rect: chip,
             action: OverAction::ToggleCollapse,

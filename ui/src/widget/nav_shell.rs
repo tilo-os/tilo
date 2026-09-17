@@ -910,12 +910,34 @@ impl Widget for NavShell {
     ) {
         self.self_tick(theme, text_renderer);
 
-        // Content first, behind the overlay drawer; off-screen push panes
-        // simply fall outside the framebuffer.
-        self.overview
-            .draw(scene, transform, text_renderer, theme, presence);
-        if let Some(d) = self.detail.as_mut() {
+        // Content first, behind the overlay drawer. Clip each translated push
+        // pane to its own bounds: a parked child's centred text or shadows may
+        // otherwise extend back into the visible pane.
+        if self.overview_rect.width() > 0.0 && self.overview_rect.height() > 0.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.overview_rect,
+            );
+            self.overview
+                .draw(scene, transform, text_renderer, theme, presence);
+            scene.pop_layer();
+        }
+        if self.detail_rect.width() > 0.0
+            && self.detail_rect.height() > 0.0
+            && let Some(d) = self.detail.as_mut()
+        {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.detail_rect,
+            );
             d.draw(scene, transform, text_renderer, theme, presence);
+            scene.pop_layer();
         }
         if self.sidebar_visible()
             && let Some(s) = self.sidebar.as_mut()
@@ -946,15 +968,35 @@ impl Widget for NavShell {
         if presence.should_cull(self.get_rect()) {
             return;
         }
-        self.overview.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        if let Some(d) = self.detail.as_mut() {
+        if self.overview_rect.width() > 0.0 && self.overview_rect.height() > 0.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.overview_rect,
+            );
+            self.overview.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
+            scene.pop_layer();
+        }
+        if self.detail_rect.width() > 0.0
+            && self.detail_rect.height() > 0.0
+            && let Some(d) = self.detail.as_mut()
+        {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.detail_rect,
+            );
             d.draw_with_presence(
                 scene,
                 transform,
@@ -963,6 +1005,7 @@ impl Widget for NavShell {
                 presence,
                 permissions,
             );
+            scene.pop_layer();
         }
         if self.sidebar_visible() {
             if self.scrim_rect.width() > 0.0 {

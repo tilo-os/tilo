@@ -719,16 +719,21 @@ fn surface(mode: &ui::LocalState<usize>, state: &ui::LocalState<ClockState>) -> 
                 .with_child(Box::new(page)),
         ));
     Box::new(
-        Row::new()
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_max_width(880.0)
-                    .filling()
-                    .with_child(Box::new(content)),
-            ))
-            .push(Box::new(Spacer::new())),
+        Container::new()
+            .with_background()
+            .with_no_padding()
+            .with_child(Box::new(
+                Row::new()
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_max_width(880.0)
+                            .filling()
+                            .with_child(Box::new(content)),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            )),
     )
 }
 
@@ -771,6 +776,38 @@ impl ClocksApp {
             t.start(Utc::now());
             t.pinned_overlay = true;
             value.timers.push(t);
+        }
+        if name == "world" {
+            value.world_clocks.extend([
+                WorldClock {
+                    id: Uuid::from_u128(1),
+                    city: "Tokyo".into(),
+                    timezone: "Asia/Tokyo".into(),
+                },
+                WorldClock {
+                    id: Uuid::from_u128(2),
+                    city: "New York".into(),
+                    timezone: "America/New_York".into(),
+                },
+            ]);
+        }
+        if name == "alarms" {
+            value.alarms.push(Alarm {
+                id: Uuid::from_u128(3),
+                label: "Morning routine".into(),
+                local_time: NaiveTime::from_hms_opt(7, 30, 0).unwrap_or(NaiveTime::MIN),
+                weekdays: [
+                    WeekdayKey::Mon,
+                    WeekdayKey::Tue,
+                    WeekdayKey::Wed,
+                    WeekdayKey::Thu,
+                    WeekdayKey::Fri,
+                ]
+                .into_iter()
+                .collect(),
+                enabled: true,
+                last_fired_local_date: None,
+            });
         }
         let state = ui::LocalState::new(value);
         let search = crate::search_provider::ClocksSearchProvider::new(&state.get());

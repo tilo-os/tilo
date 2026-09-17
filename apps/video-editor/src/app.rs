@@ -2681,7 +2681,10 @@ impl VideoEditorApp {
         let cy = r.transport.y0 + 20.0 * scale;
         let cx0 = r.transport.x0 + 30.0 * scale;
         let gap = 40.0 * scale;
-        let side = 30.0 * scale;
+        // Primary playback controls are used constantly and must remain real
+        // touch targets even in the compact editor. 34px still leaves a clear
+        // six-pixel channel between the 40px-spaced circles.
+        let side = 34.0 * scale;
         let mk = |i: f64, a: TransportAction| {
             let cx = cx0 + i * gap;
             (
@@ -2725,7 +2728,7 @@ impl VideoEditorApp {
             let x = x0 + i * (width + 4.0 * scale);
             (
                 v,
-                Rect::new(x, cy - 13.0 * scale, x + width, cy + 13.0 * scale),
+                Rect::new(x, cy - 16.0 * scale, x + width, cy + 16.0 * scale),
             )
         };
         vec![
@@ -24898,6 +24901,12 @@ mod tests {
             app.rect = Rect::new(0.0, 0.0, w, 800.0);
             let r = app.regions();
             let hist = app.history_buttons(&r);
+            for (_, rect) in app.transport_buttons(&r) {
+                assert!(
+                    rect.width() >= 32.0 && rect.height() >= 32.0,
+                    "{w}px: primary transport target is undersized: {rect:?}",
+                );
+            }
             let content = app.transport_content_x(&r);
             if hist.is_empty() {
                 assert_eq!(content, TRANSPORT_PLAIN_X, "{w}px: the space comes back");
@@ -24907,6 +24916,10 @@ mod tests {
             // Every button is inside the strip, and clear of the space the
             // readout and the scrubber then start in.
             for (which, rect) in &hist {
+                assert!(
+                    rect.width() >= 30.0 && rect.height() >= 32.0,
+                    "{w}px: {which:?} history target is undersized: {rect:?}",
+                );
                 assert!(
                     rect.x0 >= r.transport.x0 && rect.x1 <= r.transport.x0 + content,
                     "{w}px: {which:?} at {rect:?} is not inside its own slot",

@@ -392,10 +392,14 @@ impl WeatherApp {
             "search_empty" => self.core.borrow_mut().seed_search_empty("Zzqx"),
             "offline" => {
                 self.core.borrow_mut().status = "Offline — showing last saved forecast".into();
+                self.nav.show_detail();
+                self.nav.snap();
             }
             "error" => {
                 self.core.borrow_mut().status =
                     "Couldn't update — check your connection and try again".into();
+                self.nav.show_detail();
+                self.nav.snap();
             }
             _ => {}
         }
