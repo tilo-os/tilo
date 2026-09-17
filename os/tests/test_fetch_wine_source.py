@@ -42,7 +42,7 @@ class FetchTests(unittest.TestCase):
         (stage / self.pin['filename']).write_bytes(self.rpm)
         kwargs['stdout'].write(b'DNF downloaded source\n')
 
-    def fetch(self, rpmkeys='Header V4 RSA/SHA256 Signature: OK'):
+    def fetch(self, rpmkeys='    Header V4 RSA/SHA256 Signature: OK'):
         with patch.object(F.subprocess, 'run', side_effect=self.download), \
                 patch.object(F.contract, 'run', return_value=rpmkeys):
             return F.acquire(self.out, self.pin_file, self.key)
@@ -53,7 +53,7 @@ class FetchTests(unittest.TestCase):
         self.assertIn('Signature', (self.out / 'signature.log').read_text())
         self.assertIn('DNF downloaded', (self.out / 'download.log').read_text())
         self.assertTrue(json.loads((self.out / 'acquisition.json').read_text())['signature_verified'])
-        self.assertFalse(list(self.root.glob('.output.fetch-*')))
+        self.assertFalse(list(self.root.glob('output.fetch-*')))
 
     def test_wrong_key_never_downloads(self):
         self.key.write_bytes(b'wrong')
@@ -62,6 +62,23 @@ class FetchTests(unittest.TestCase):
         run.assert_not_called()
         self.assertFalse(self.out.exists())
 
+    def test_rpm6_lowercase_signature_is_authenticated(self):
+        result = '    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: abc: OK'
+        self.fetch(result)
+        self.assertEqual((self.out / 'signature.log').read_text(), result + '\n')
+
+    def test_unsigned_and_nonpositive_results_never_publish(self):
+        for result in (
+                '    Header SHA256 digest: OK\n    Payload SHA256 digest: OK',
+                '    Header OpenPGP V4 RSA/SHA256 signature: NOT OK',
+                '    Header OpenPGP V4 RSA/SHA256 signature: NOKEY',
+                '    Header OpenPGP V4 RSA/SHA256 signature: OK\n    Payload SHA256 digest: NOT OK',
+                '/path/Signature: OK'):
+            with self.subTest(result=result), self.assertRaises(RuntimeError):
+                self.fetch(result)
+            self.assertFalse(self.out.exists())
+        self.assertTrue(all(not p.name.startswith('.') for p in self.root.glob('output.fetch-*')))
+
     def test_tampered_rpm_rejected_before_rpmkeys(self):
         self.rpm = b'tampered RPM'
         with patch.object(F.subprocess, 'run', side_effect=self.download), \
@@ -69,7 +86,7 @@ class FetchTests(unittest.TestCase):
             F.acquire(self.out, self.pin_file, self.key)
         rpmkeys.assert_not_called()
         self.assertFalse(self.out.exists())
-        self.assertTrue(next(self.root.glob('.output.fetch-*')).joinpath('failure.log').is_file())
+        self.assertTrue(next(self.root.glob('output.fetch-*')).joinpath('failure.log').is_file())
 
     def test_bad_signature_never_publishes(self):
         with self.assertRaises(RuntimeError):
@@ -92,7 +109,7 @@ class FetchTests(unittest.TestCase):
         self.pin_file.write_text(json.dumps(self.pin))
         with self.assertRaises(ValueError):
             self.fetch()
-        self.assertFalse(list(self.root.glob('.output.fetch-*')))
+        self.assertFalse(list(self.root.glob('output.fetch-*')))
 
     def test_download_failure_retains_log(self):
         def fail(argv, **kwargs):
@@ -100,7 +117,7 @@ class FetchTests(unittest.TestCase):
             raise subprocess.CalledProcessError(1, argv)
         with patch.object(F.subprocess, 'run', side_effect=fail), self.assertRaises(RuntimeError):
             F.acquire(self.out, self.pin_file, self.key)
-        stage = next(self.root.glob('.output.fetch-*'))
+        stage = next(self.root.glob('output.fetch-*'))
         self.assertIn('repository unavailable', (stage / 'download.log').read_text())
         self.assertFalse(self.out.exists())
 
