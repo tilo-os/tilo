@@ -20,8 +20,10 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -54,6 +56,10 @@ const BUTTON_H: f64 = 28.0;
 const NAME_FIELD_W: f64 = 300.0;
 const BUTTON_Y_OFFSET: f64 = 24.0;
 const POPOVER_H: f64 = 36.0;
+/// Breathing room the popover's text stack keeps from its top and bottom
+/// edge — a hairline, half the smallest spacing step; a stack that cannot
+/// keep it drops its second line.
+const POPOVER_PAD_Y: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 const NATURAL_H_PLAIN: f64 = 140.0;
 const NATURAL_H_GROUPED: f64 = 168.0;
 
@@ -773,7 +779,7 @@ impl HistoryScrubber {
         let track = self.track_rect();
         // `scale.xs` is the floor of the type scale; the band caption was
         // three points under `sm`, which landed below it.
-        let size = theme.tokens.typography.scale.xs;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
 
         // Segments abut at the tick each one ends on so every visible edge is
         // a real boundary; spanning only first-tick..last-tick would leave a
@@ -905,7 +911,7 @@ impl HistoryScrubber {
         };
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
         scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let shown = fit(text_renderer, label, size, rect.width() - 10.0);
         let (w, h) = text_renderer.measure(&shown, size, None);
         text_renderer.draw_text(
@@ -933,7 +939,7 @@ impl HistoryScrubber {
         theme: &Theme,
     ) {
         let label = "No history yet";
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (w, h) = text_renderer.measure(label, size, None);
         text_renderer.draw_text(
             scene,
@@ -1066,61 +1072,52 @@ impl HistoryScrubber {
             Some(s)
         });
         let budget = pop.width() - 12.0;
-        if let Some(head) = group_line {
-            let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-            // The floor of the type scale, not three points under `sm`.
-            let sub_size = theme.tokens.typography.scale.xs;
-            let head = fit(text_renderer, &head, head_size, budget);
-            let (hw, hh) = text_renderer.measure(&head, head_size, None);
-            let detail = fit(text_renderer, &detail, sub_size, budget);
-            let (dw, dh) = text_renderer.measure(&detail, sub_size, None);
-            // Two lines centred as one block on the popover, each on its own
-            // measured line box, rather than at two hand-picked offsets.
-            let stack_h = f64::from(hh) + f64::from(dh);
-            let head_top = pop.center().y - stack_h / 2.0;
+        let head_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
+        // The floor of the type scale, not three points under `sm`.
+        let sub_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let colors = &theme.tokens.colors;
+        // Each line is fitted to the width and measured at the size it is
+        // painted with; the stack is then centred as one block on the
+        // popover, each line on its own measured box rather than at two
+        // hand-picked offsets.
+        let mut lines: Vec<(String, f32, Color, f32, f32)> = Vec::new();
+        let mut push = |text_renderer: &mut TextRenderer, text: &str, size: f32, ink: Color| {
+            let drawn = fit(text_renderer, text, size, budget);
+            let (w, h) = text_renderer.measure(&drawn, size, None);
+            lines.push((drawn, size, ink, w, h));
+        };
+        match group_line {
+            Some(head) => {
+                push(text_renderer, &head, head_size, colors.text_primary);
+                push(text_renderer, &detail, sub_size, colors.text_dim);
+            }
+            None => push(text_renderer, &detail, head_size, colors.text_primary),
+        }
+        // The popover cannot grow — below it sit the band and the handle's
+        // reach — so when the two-line stack no longer fits its box (2×
+        // type), the change line yields and the version name stays; the
+        // screen reader still gets both. Painting both would have pushed the
+        // detail line down over the band.
+        let stack_h = |lines: &[(String, f32, Color, f32, f32)]| -> f64 {
+            lines.iter().map(|l| f64::from(l.4)).sum()
+        };
+        if lines.len() > 1 && stack_h(&lines) > pop.height() - POPOVER_PAD_Y * 2.0 {
+            lines.truncate(1);
+        }
+        let mut top = pop.center().y - stack_h(&lines) / 2.0;
+        for (drawn, size, ink, w, h) in &lines {
             text_renderer.draw_text(
                 scene,
-                &head,
-                head_size,
-                theme.tokens.colors.text_primary,
+                drawn,
+                *size,
+                *ink,
                 translated(
                     transform,
-                    (pop.x0 + (pop.width() - f64::from(hw)) / 2.0, head_top),
+                    (pop.x0 + (pop.width() - f64::from(*w)) / 2.0, top),
                 ),
                 None,
             );
-            text_renderer.draw_text(
-                scene,
-                &detail,
-                sub_size,
-                theme.tokens.colors.text_dim,
-                translated(
-                    transform,
-                    (
-                        pop.x0 + (pop.width() - f64::from(dw)) / 2.0,
-                        head_top + f64::from(hh),
-                    ),
-                ),
-                None,
-            );
-        } else {
-            let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-            let drawn = fit(text_renderer, &detail, size, budget);
-            let (lw, lh) = text_renderer.measure(&drawn, size, None);
-            text_renderer.draw_text(
-                scene,
-                &drawn,
-                size,
-                theme.tokens.colors.text_primary,
-                translated(
-                    transform,
-                    (
-                        pop.x0 + (pop.width() - f64::from(lw)) / 2.0,
-                        pop.y0 + (pop.height() - f64::from(lh)) / 2.0,
-                    ),
-                ),
-                None,
-            );
+            top += f64::from(*h);
         }
     }
 
@@ -1145,7 +1142,7 @@ impl HistoryScrubber {
             // finish. Enter and Escape are the only two things it does; say so
             // where the buttons were, when there is room left over.
             let hint = "Enter to save \u{00b7} Esc to cancel";
-            let hint_size = theme.tokens.typography.scale.xs;
+            let hint_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
             let (hw, hh) = text_renderer.measure(hint, hint_size, None);
             if box_rect.x1 + 10.0 + f64::from(hw) <= last {
                 text_renderer.draw_text(
@@ -2523,6 +2520,55 @@ mod version_tests {
             at_start.x0,
             track.x0
         );
+    }
+
+    /// The popover cannot grow (the band and the handle sit right under
+    /// it), so at 2× the two-line stack yields its change line and the
+    /// version name stays inside the box — before, the detail line ran
+    /// down over the band. At 1× both lines still paint, inside.
+    #[test]
+    fn popover_text_stays_inside_its_box_at_every_text_scale() {
+        for (scale, expected_lines) in [(1.0_f32, 2_usize), (2.0, 1)] {
+            // A matched host: the theme's type steps carry the scale the
+            // renderer is set to, so the glyphs paint at 2x, not 4x (X1).
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut s = scrubber(1000.0, 20);
+            s.set_groups(vec![
+                group(0, 9, Some("Costs section")),
+                group(10, 19, Some("Headcount pass")),
+            ]);
+            s.set_current_tick(15);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let mut scene = Scene::new();
+            s.draw_popover(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert_eq!(
+                scene.encoding().resources.glyph_runs.len(),
+                expected_lines,
+                "at {scale}x the popover painted the wrong number of lines"
+            );
+            let pop = s.popover_rect();
+            let (w, h) = (1000_u32, 200_u32);
+            let rgba = crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
+            let mut ink_rows = Vec::new();
+            for y in 0..h as usize {
+                let row = &rgba[y * w as usize * 4..(y + 1) * w as usize * 4];
+                if row
+                    .chunks_exact(4)
+                    .any(|px| px[0] > 160 && px[1] > 160 && px[2] > 160)
+                {
+                    ink_rows.push(y);
+                }
+            }
+            let (top, bottom) = (
+                *ink_rows.first().expect("the popover painted a label"),
+                *ink_rows.last().expect("the popover painted a label"),
+            );
+            assert!(
+                f64::from(top as u32) >= pop.y0.floor() && f64::from(bottom as u32) < pop.y1.ceil(),
+                "at {scale}x label ink rows {top}..={bottom} leave the popover {pop:?}"
+            );
+        }
     }
 
     /// A strip narrower than its own gutters plus the popover's floor width

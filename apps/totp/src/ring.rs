@@ -26,7 +26,7 @@ use vello::peniko::Color;
 use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 
@@ -166,10 +166,16 @@ impl CountdownRing {
             scene.stroke(&stroke, transform, self.arc_color(theme), None, &path);
         }
 
-        // Centre seconds count.
+        // Centre seconds count. The radius already carries the text scale
+        // (the row measures it as `RING_R × text_scale`), and the renderer
+        // applies that scale again while shaping, so the label's design size
+        // goes through `renderer_input_style` once — otherwise the digits
+        // render at 4× under 200% text and spill past the ring.
         if self.show_seconds {
             let label = self.seconds.to_string();
-            let size = (self.radius * 0.95) as f32;
+            let size = text_renderer
+                .renderer_input_style(&TextStyle::new((self.radius * 0.95) as f32))
+                .size;
             let color = if self.seconds <= URGENT_SECONDS {
                 theme.tokens.colors.semantic.danger
             } else {

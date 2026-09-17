@@ -3,6 +3,13 @@
 //! clickable rect), and map clicks back to their own actions — the toolkit owns
 //! the look (active highlight, label cues, group separators), the app owns the
 //! behaviour.
+//!
+//! The *width model* — leading pad, per-item gap, separator advance, label
+//! size and minimum button height — is one value, [`ToolbarMetrics`], and
+//! the geometry is one function, [`item_rects`]; [`draw`] paints exactly the
+//! rects it returns. A host that packs items into rows itself (the word
+//! processor wraps its toolbar on a narrow window) measures with the same
+//! model instead of restating `14 / 6 / 34` beside its own packer.
 
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -12,6 +19,156 @@ use vello::peniko::Fill;
 
 /// Standard toolbar height, so callers can reserve space consistently.
 pub const TOOLBAR_HEIGHT: f64 = 50.0;
+
+/// The toolbar's width model. [`ToolbarMetrics::standard`] is what
+/// [`draw`] lays out with; a host that packs rows itself reads the same
+/// numbers from here so a row its packer admits is one `draw` lays out
+/// without clipping.
+///
+/// These are the toolbar's long-standing values, kept identical while the
+/// hosts move onto the shared model; where they sit against the spacing
+/// scale: `leading_pad` 14 and `separator_advance` 14 are off-grid
+/// (between `s3` 12 and `s4` 16), `item_gap` 6 is off-grid, `button_min_height`
+/// 34 matches the modal action button, `label_size` 15 sits between
+/// `scale.base` 14 and `scale.lg` 16.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToolbarMetrics {
+    /// Inset before the first item.
+    pub leading_pad: f64,
+    /// Horizontal advance after every item.
+    pub item_gap: f64,
+    /// Extra advance a group separator adds before a `group_start` item.
+    pub separator_advance: f64,
+    /// The separator line's inset from the start of its advance, its width
+    /// and its half-height around the row's centre line.
+    pub separator_inset: f64,
+    pub separator_width: f64,
+    pub separator_half_height: f64,
+    /// A button is at least this tall; a taller label grows it by
+    /// `label_pad_y` around the measured line.
+    pub button_min_height: f64,
+    pub label_pad_y: f64,
+    /// Renderer-relative label size.
+    pub label_size: f32,
+}
+
+impl ToolbarMetrics {
+    /// The model [`draw`] uses.
+    #[must_use]
+    pub const fn standard() -> Self {
+        Self {
+            leading_pad: 14.0,
+            item_gap: 6.0,
+            separator_advance: 14.0,
+            separator_inset: 2.0,
+            separator_width: 1.0,
+            separator_half_height: 12.0,
+            button_min_height: 34.0,
+            label_pad_y: 12.0,
+            label_size: 15.0,
+        }
+    }
+
+    /// Horizontal room one item takes in the row: its separator when it
+    /// starts a group, its width, and the gap after it. Summing this over a
+    /// row plus `leading_pad` is the row's used width — the quantity a
+    /// packer compares against the space it has.
+    #[must_use]
+    pub fn item_advance(&self, width: f64, group_start: bool) -> f64 {
+        let separator = if group_start {
+            self.separator_advance
+        } else {
+            0.0
+        };
+        separator + width + self.item_gap
+    }
+
+    /// Font weight a label is measured and drawn with for its cue.
+    #[must_use]
+    pub fn label_weight(cue: LabelCue) -> TextWeight {
+        if cue == LabelCue::Bold {
+            TextWeight::Bold
+        } else {
+            TextWeight::Regular
+        }
+    }
+
+    /// Height of the button for a label that measures `label_height` tall.
+    #[must_use]
+    pub fn button_height(&self, label_height: f64) -> f64 {
+        self.button_min_height.max(label_height + self.label_pad_y)
+    }
+}
+
+impl Default for ToolbarMetrics {
+    fn default() -> Self {
+        Self::standard()
+    }
+}
+
+/// Where a group separator is painted for an item whose advance starts at
+/// `x`, centred on `cy`.
+fn separator_rect(metrics: &ToolbarMetrics, x: f64, cy: f64) -> Rect {
+    Rect::new(
+        x + metrics.separator_inset,
+        cy - metrics.separator_half_height,
+        x + metrics.separator_inset + metrics.separator_width,
+        cy + metrics.separator_half_height,
+    )
+}
+
+/// One laid-out item: its button rect and its label's measured size, so
+/// the paint pass never shapes a label the layout pass already shaped.
+struct ItemLayout {
+    rect: Rect,
+    label_w: f64,
+    label_h: f64,
+}
+
+/// Lay `items` out left to right in `rect` with `metrics`, measuring each
+/// label once at `metrics.label_size` in its cue's weight.
+fn lay_out(
+    rect: Rect,
+    items: &[ToolbarItem],
+    tr: &mut TextRenderer,
+    metrics: &ToolbarMetrics,
+) -> Vec<ItemLayout> {
+    let cy = rect.y0 + rect.height() / 2.0;
+    let mut x = rect.x0 + metrics.leading_pad;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        if item.group_start {
+            x += metrics.separator_advance;
+        }
+        let weight = ToolbarMetrics::label_weight(item.cue);
+        let (lw, lh) = tr.measure_weighted(&item.label, metrics.label_size, None, weight);
+        let bh = metrics.button_height(f64::from(lh));
+        out.push(ItemLayout {
+            rect: Rect::new(x, cy - bh / 2.0, x + item.width, cy + bh / 2.0),
+            label_w: f64::from(lw),
+            label_h: f64::from(lh),
+        });
+        x += item.width + metrics.item_gap;
+    }
+    out
+}
+
+/// Each item's clickable rect in `rect`, laid out left to right with
+/// `metrics`: the geometry half of [`draw`], with nothing painted, so a
+/// host can hit-test or pack rows against the exact rects a later `draw`
+/// paints. Labels are measured at `metrics.label_size` in their cue's
+/// weight, which is what sets a button's height.
+pub fn item_rects(
+    rect: Rect,
+    items: &[ToolbarItem],
+    tr: &mut TextRenderer,
+    metrics: &ToolbarMetrics,
+) -> Vec<Rect> {
+    lay_out(rect, items, tr, metrics)
+        .into_iter()
+        .map(|item| item.rect)
+        .collect()
+}
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
 /// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
@@ -72,7 +229,8 @@ impl ToolbarItem {
     }
 }
 
-/// Draw a themed toolbar in `rect`; returns each item's clickable rect in order.
+/// Draw a themed toolbar in `rect` with the standard metrics; returns each
+/// item's clickable rect in order — the same rects [`item_rects`] returns.
 pub fn draw(
     scene: &mut Scene,
     transform: Affine,
@@ -80,6 +238,32 @@ pub fn draw(
     theme: &Theme,
     rect: Rect,
     items: &[ToolbarItem],
+) -> Vec<Rect> {
+    draw_with_metrics(
+        scene,
+        transform,
+        tr,
+        theme,
+        rect,
+        items,
+        &ToolbarMetrics::standard(),
+    )
+}
+
+/// [`draw`] with an explicit width model — for a host that lays its rows
+/// out with the same [`ToolbarMetrics`] it hands in here.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared paint context plus the row, its items and its metrics"
+)]
+pub fn draw_with_metrics(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    items: &[ToolbarItem],
+    metrics: &ToolbarMetrics,
 ) -> Vec<Rect> {
     scene.fill(
         Fill::NonZero,
@@ -104,11 +288,12 @@ pub fn draw(
         .colors
         .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
     let cy = rect.y0 + rect.height() / 2.0;
-    let mut x = rect.x0 + 14.0;
-    let mut rects = Vec::with_capacity(items.len());
-    for item in items {
+    let laid = lay_out(rect, items, tr, metrics);
+    for (item, laid) in items.iter().zip(&laid) {
+        let r = laid.rect;
         if item.group_start {
-            let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
+            // The separator sits in the advance before the item.
+            let sep = separator_rect(metrics, r.x0 - metrics.separator_advance, cy);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -116,16 +301,8 @@ pub fn draw(
                 None,
                 &sep,
             );
-            x += 14.0;
         }
-        let weight = if item.cue == LabelCue::Bold {
-            TextWeight::Bold
-        } else {
-            TextWeight::Regular
-        };
-        let (lw, lh) = tr.measure_weighted(&item.label, 15.0, None, weight);
-        let bh = 34.0_f64.max(f64::from(lh) + 12.0);
-        let r = Rect::new(x, cy - bh / 2.0, x + item.width, cy + bh / 2.0);
+        let weight = ToolbarMetrics::label_weight(item.cue);
         if item.active {
             scene.fill(
                 Fill::NonZero,
@@ -140,12 +317,12 @@ pub fn draw(
         } else {
             theme.text_primary
         };
-        let lx = x + (item.width - f64::from(lw)) / 2.0;
-        let ly = cy - f64::from(lh) / 2.0;
+        let lx = r.x0 + (item.width - laid.label_w) / 2.0;
+        let ly = cy - laid.label_h / 2.0;
         tr.draw_text_weighted(
             scene,
             &item.label,
-            15.0,
+            metrics.label_size,
             color,
             translated(transform, lx, ly),
             None,
@@ -155,31 +332,29 @@ pub fn draw(
         match item.cue {
             LabelCue::Underline => {
                 // The underline hugs the measured line box; the strike crosses its middle.
-                let uy = ly + f64::from(lh) - cue_thickness;
+                let uy = ly + laid.label_h - cue_thickness;
                 scene.fill(
                     Fill::NonZero,
                     transform,
                     color,
                     None,
-                    &Rect::new(lx, uy, lx + f64::from(lw), uy + cue_thickness),
+                    &Rect::new(lx, uy, lx + laid.label_w, uy + cue_thickness),
                 );
             }
             LabelCue::Strike => {
-                let sy = ly + f64::from(lh) / 2.0 - cue_thickness / 2.0;
+                let sy = ly + laid.label_h / 2.0 - cue_thickness / 2.0;
                 scene.fill(
                     Fill::NonZero,
                     transform,
                     color,
                     None,
-                    &Rect::new(lx, sy, lx + f64::from(lw), sy + cue_thickness),
+                    &Rect::new(lx, sy, lx + laid.label_w, sy + cue_thickness),
                 );
             }
             _ => {}
         }
-        rects.push(r);
-        x += item.width + 6.0;
     }
-    rects
+    laid.into_iter().map(|item| item.rect).collect()
 }
 
 /// Index of the button whose rect contains `point`, if any.
@@ -223,6 +398,48 @@ mod tests {
                 "scaled button must stay inside its allocated toolbar row"
             );
         }
+    }
+
+    /// The geometry `draw` paints is the geometry `item_rects` returns, and
+    /// both follow the advance model a row packer sums: leading pad, then
+    /// per item its separator (when it starts a group), its width and the
+    /// gap. A host packing rows with `item_advance` therefore admits
+    /// exactly the rows `draw` lays out.
+    #[test]
+    fn item_rects_are_what_draw_paints_and_follow_the_advance_model() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let m = ToolbarMetrics::standard();
+        let items = vec![
+            ToolbarItem::new("B", 34.0).cue(LabelCue::Bold),
+            ToolbarItem::new("I", 30.0),
+            ToolbarItem::new("H1", 42.0).group_start(true),
+            ToolbarItem::new("Quote", 60.0),
+        ];
+        let rect = Rect::new(10.0, 20.0, 610.0, 20.0 + TOOLBAR_HEIGHT);
+        let laid = item_rects(rect, &items, &mut tr, &m);
+        let drawn = draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &items);
+        assert_eq!(laid, drawn, "draw paints the rects item_rects lays out");
+
+        assert!((laid[0].x0 - (rect.x0 + m.leading_pad)).abs() < 1e-9);
+        let mut x = rect.x0 + m.leading_pad;
+        for (item, r) in items.iter().zip(&laid) {
+            let sep = if item.group_start { m.separator_advance } else { 0.0 };
+            assert!((r.x0 - (x + sep)).abs() < 1e-9, "{} starts after its separator", item.label);
+            assert!((r.width() - item.width).abs() < 1e-9);
+            assert!((r.height() - m.button_min_height).abs() < 1e-9, "1× labels fit the minimum");
+            assert!((r.center().y - rect.center().y).abs() < 1e-9, "buttons centre on the row");
+            x += m.item_advance(item.width, item.group_start);
+        }
+        // The used width the packer sums is where the next item would start.
+        assert!((x - (laid[3].x1 + m.item_gap)).abs() < 1e-9);
+        // The literal model the hosts mirrored: 14 / 6 / 34 / 15.
+        assert_eq!(
+            (m.leading_pad, m.item_gap, m.separator_advance, m.button_min_height),
+            (14.0, 6.0, 14.0, 34.0)
+        );
+        assert!((m.label_size - 15.0).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -116,6 +116,105 @@ const BAR_SWIPE_PX: f64 = 56.0;
 /// pane's authored gutter (the body's local `pad = 28.0` values name the same
 /// distance) and is recorded as such in the 2026-09-16 alignment review.
 const CONTENT_GUTTER: f64 = 28.0;
+/// The large-text (≥ 135 %) frame's bands, authored for 2× text: a 96 px
+/// header, 88 px rows (title + artist), a 116 px player (art beside a
+/// title + byline block, play button on the right). Each is a floor — the
+/// band grows when its measured lines plus padding need more — and every
+/// block inside is centred on the band's midline from measured heights.
+const LARGE_HEADER_H: f64 = 96.0;
+const LARGE_ROW_H: f64 = 88.0;
+const LARGE_PLAYER_H: f64 = 116.0;
+/// Room above and below a band's text block before the band has to grow.
+const LARGE_BAND_PAD: f64 = 12.0;
+const LARGE_PLAYER_PAD: f64 = 18.0;
+/// Between a row's title and artist lines / the player's title and byline.
+const LARGE_ROW_LINE_GAP: f64 = 4.0;
+const LARGE_PLAYER_LINE_GAP: f64 = 2.0;
+/// The player's art is a square as tall as its text block (68 px at 2×), on
+/// the content gutter; the play button is a 60 px circle on the right gutter.
+const LARGE_PLAYER_ART_MIN: f64 = 68.0;
+const LARGE_PLAY_DIAMETER: f64 = 60.0;
+const LARGE_PLAYER_TEXT_GAP: f64 = 18.0;
+
+/// The large-text frame's three bands, measured from the lines they hold.
+/// Every band keeps its authored height as a floor (header 96, rows 88,
+/// player 116 — the values 2× text happens to fit exactly) and grows when
+/// its measured block plus padding needs more, so 135–400% text is contained
+/// rather than assumed; every block inside is then centred on its band.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct LargeTextBands {
+    pub(super) title_h: f64,
+    pub(super) header_h: f64,
+    pub(super) row_title_h: f64,
+    pub(super) row_block_h: f64,
+    pub(super) row_h: f64,
+    pub(super) player_label_h: f64,
+    pub(super) player_block_h: f64,
+    pub(super) player_h: f64,
+}
+
+impl LargeTextBands {
+    pub(super) fn measure(tr: &mut TextRenderer, title: &str) -> Self {
+        let line = |tr: &mut TextRenderer, size: f32, weight: TextWeight| {
+            f64::from(tr.measure_weighted("Ag", size, None, weight).1)
+        };
+        let title_h = f64::from(tr.measure_weighted(title, 18.0, None, TextWeight::Bold).1);
+        let row_title_h = line(tr, 12.0, TextWeight::Semibold);
+        let row_block_h = row_title_h + LARGE_ROW_LINE_GAP + line(tr, 10.0, TextWeight::Regular);
+        let player_label_h = line(tr, 11.0, TextWeight::Semibold);
+        let player_block_h =
+            player_label_h + LARGE_PLAYER_LINE_GAP + line(tr, 9.0, TextWeight::Regular);
+        Self {
+            title_h,
+            header_h: LARGE_HEADER_H.max(title_h + 2.0 * LARGE_BAND_PAD),
+            row_title_h,
+            row_block_h,
+            row_h: LARGE_ROW_H.max(row_block_h + 2.0 * LARGE_BAND_PAD),
+            player_label_h,
+            player_block_h,
+            player_h: LARGE_PLAYER_H.max(player_block_h + 2.0 * LARGE_PLAYER_PAD),
+        }
+    }
+}
+
+#[cfg(test)]
+mod large_text_tests {
+    use super::*;
+
+    /// The ≥ 135 % frame used to place its header title, row lines and
+    /// player block with literals that fit 2× text exactly. Each band now
+    /// keeps that authored size at 2× and grows with the measured lines
+    /// beyond it — so a 3× title, row or player never leaves its band.
+    #[test]
+    fn large_text_bands_keep_their_authored_size_at_2x_and_grow_beyond() {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let two = LargeTextBands::measure(&mut tr, "Home");
+        assert_eq!(two.header_h, LARGE_HEADER_H, "2× header keeps 96");
+        assert_eq!(two.row_h, LARGE_ROW_H, "2× rows keep 88");
+        assert_eq!(two.player_h, LARGE_PLAYER_H, "2× player keeps 116");
+        assert!(
+            two.row_block_h + 2.0 * LARGE_BAND_PAD <= two.row_h
+                && two.player_block_h + 2.0 * LARGE_PLAYER_PAD <= two.player_h,
+            "2× blocks fit their bands with padding: {two:?}"
+        );
+
+        // 4× (the renderer's ceiling): every block outgrows its authored
+        // band, so every band must have grown to contain it.
+        tr.set_text_scale(4.0);
+        let four = LargeTextBands::measure(&mut tr, "Home");
+        assert!(
+            four.header_h > two.header_h && four.row_h > two.row_h && four.player_h > two.player_h,
+            "4× bands grow past the authored sizes: {four:?}"
+        );
+        assert!(
+            four.header_h >= four.title_h + 2.0 * LARGE_BAND_PAD
+                && four.row_h >= four.row_block_h + 2.0 * LARGE_BAND_PAD
+                && four.player_h >= four.player_block_h + 2.0 * LARGE_PLAYER_PAD,
+            "4× bands contain their measured blocks: {four:?}"
+        );
+    }
+}
 
 /// Width of the track table's duration slot; `m:ss` values right-align to
 /// `cols.dur + DURATION_SLOT_W`, and so does the column heading.
@@ -2252,15 +2351,22 @@ impl MusicApp {
         r: Rect,
     ) {
         scene.fill(Fill::NonZero, t, c.bg, None, &r);
-        let header_h = 96.0;
-        let player_h = 116.0;
+        let title = self.view_title();
+        let LargeTextBands {
+            title_h,
+            header_h,
+            row_title_h,
+            row_block_h,
+            row_h,
+            player_label_h,
+            player_block_h,
+            player_h,
+        } = LargeTextBands::measure(tr, &title);
         let header = Rect::new(r.x0, r.y0, r.x1, r.y0 + header_h);
         let body = Rect::new(r.x0, header.y1, r.x1, r.y1 - player_h);
         self.body_rect = body;
-        let title = self.view_title();
         // Centred on the measured line inside the header (the old literal
         // `y = 28.0` assumed `header.y0 == 0`) and on the content gutter.
-        let (_, title_h) = tr.measure_weighted(&title, 18.0, None, TextWeight::Bold);
         draw_text(
             tr,
             scene,
@@ -2325,13 +2431,16 @@ impl MusicApp {
                 .map(|track| track.id.clone())
                 .collect(),
         };
-        let row_h = 88.0;
         let mut y = body.y0 - self.scroll;
         for (index, id) in ids.iter().enumerate() {
             let Some(track) = self.lib.track(id).cloned() else {
                 continue;
             };
             let row = Rect::new(body.x0 + 16.0, y, body.x1 - 16.0, y + row_h);
+            // Title + artist block centred on the row's midline (the old
+            // literal 15 / 49 offsets matched the block only at exactly 2×).
+            let title_top = row.y0 + (row_h - row_block_h) / 2.0;
+            let artist_top = title_top + row_title_h + LARGE_ROW_LINE_GAP;
             // Row text and durations sit on the header/player content gutter
             // (row inset 16 + 12); they used to land 6 px further in on both
             // sides than the "Home" title above and the player art below.
@@ -2372,7 +2481,7 @@ impl MusicApp {
                 t,
                 &title,
                 text_x,
-                row.y0 + 15.0,
+                title_top,
                 12.0,
                 if self.pb.current.as_deref() == Some(track.id.as_str()) {
                     c.accent
@@ -2388,7 +2497,7 @@ impl MusicApp {
                 t,
                 &artist,
                 text_x,
-                row.y0 + 49.0,
+                artist_top,
                 10.0,
                 c.dim,
                 TextWeight::Regular,
@@ -2414,30 +2523,38 @@ impl MusicApp {
             None,
             &Rect::new(player.x0, player.y0, player.x1, player.y0 + 1.0),
         );
+        // Art, text block and play button all share the bar's midline (they
+        // used to sit on three lines — 52, 56.5 and 58 px from the bar's
+        // top — because each was placed by its own literal).
+        let mid_y = player.y0 + player_h / 2.0;
+        let play = Rect::from_center_size(
+            (
+                player.x1 - CONTENT_GUTTER - LARGE_PLAY_DIAMETER / 2.0,
+                mid_y,
+            ),
+            (LARGE_PLAY_DIAMETER, LARGE_PLAY_DIAMETER),
+        );
         if let Some(current) = self.pb.current.as_ref().and_then(|id| self.lib.track(id)) {
             // Art on the content gutter, like the header title, the rows and
-            // the play button's right edge (it sat 8 px inside them before).
-            let art = Rect::new(
-                player.x0 + CONTENT_GUTTER,
-                player.y0 + 18.0,
-                player.x0 + CONTENT_GUTTER + 68.0,
-                player.y0 + 86.0,
+            // the play button's right edge; a square as tall as the text
+            // block beside it.
+            let art_side = LARGE_PLAYER_ART_MIN.max(player_block_h);
+            let art = Rect::from_center_size(
+                (player.x0 + CONTENT_GUTTER + art_side / 2.0, mid_y),
+                (art_side, art_side),
             );
             self.draw_cover(scene, t, art, &current.album_id, &current.title, tr, 10.0);
-            let label = elide(
-                tr,
-                &current.title,
-                11.0,
-                TextWeight::Semibold,
-                (player.width() - 310.0).max(120.0),
-            );
+            let text_x = art.x1 + LARGE_PLAYER_TEXT_GAP;
+            let text_budget = (play.x0 - LARGE_PLAYER_TEXT_GAP - text_x).max(120.0);
+            let label = elide(tr, &current.title, 11.0, TextWeight::Semibold, text_budget);
+            let label_top = mid_y - player_block_h / 2.0;
             draw_text(
                 tr,
                 scene,
                 t,
                 &label,
-                art.x1 + 18.0,
-                player.y0 + 28.0,
+                text_x,
+                label_top,
                 11.0,
                 c.text,
                 TextWeight::Semibold,
@@ -2448,47 +2565,43 @@ impl MusicApp {
                 self.lib.artist_name(&current.artist_id),
                 9.0,
                 TextWeight::Regular,
-                (player.width() - 310.0).max(120.0),
+                text_budget,
             );
             draw_text(
                 tr,
                 scene,
                 t,
                 &byline,
-                art.x1 + 18.0,
-                player.y0 + 60.0,
+                text_x,
+                label_top + player_label_h + LARGE_PLAYER_LINE_GAP,
                 9.0,
                 c.dim,
                 TextWeight::Regular,
                 None,
             );
         } else {
+            let (_, idle_h) =
+                tr.measure_weighted("Nothing playing", 11.0, None, TextWeight::Regular);
             draw_text(
                 tr,
                 scene,
                 t,
                 "Nothing playing",
-                player.x0 + 28.0,
-                player.y0 + 42.0,
+                player.x0 + CONTENT_GUTTER,
+                mid_y - f64::from(idle_h) / 2.0,
                 11.0,
                 c.dim,
                 TextWeight::Regular,
                 None,
             );
         }
-        let play = Rect::new(
-            player.x1 - 88.0,
-            player.y0 + 28.0,
-            player.x1 - 28.0,
-            player.y0 + 88.0,
-        );
         let play_hover = self.push_hit(play, Action::TogglePlay);
         scene.fill(
             Fill::NonZero,
             t,
             if play_hover { c.accent_hover } else { c.accent },
             None,
-            &Circle::new(play.center(), 30.0),
+            &Circle::new(play.center(), LARGE_PLAY_DIAMETER / 2.0),
         );
         icon::draw(
             scene,

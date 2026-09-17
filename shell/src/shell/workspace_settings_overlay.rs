@@ -15,6 +15,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::overlay_host::modal_transition_curve;
 use crate::shell::state::{CapRole, UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
     DefaultAppsCtx, agents_add_rect, agents_pane_rows, default_app_rows, draw_agents_pane,
@@ -22,9 +23,21 @@ use crate::shell::workspace_settings::{
     ownership_action_rect, ownership_transfer_resource, permissions_pane_layout,
 };
 
-/// Duration shared by the workspace-settings lens and the global-search
-/// modal, whose travel distance and visual weight are equivalent.
-pub const MODAL_OPEN_ANIM_MS: u64 = 220;
+/// The "At a glance" stat tiles: the base surface inside the raised summary
+/// card, with a hairline derived against the card. Where a palette makes
+/// `base` and `raised` the same colour (high contrast), the lift alone
+/// cannot separate the tile from its card (HIG §9.3's caveat) and the edge
+/// does the job; `tests::stat_tiles_keep_an_edge_on_every_palette` holds it.
+fn stat_tile_face(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
+    let colors = &theme.tokens.colors;
+    (
+        colors.surfaces.base,
+        ui::tokens::colors::Colors::hairline_on(
+            colors.surfaces.raised,
+            ui::chrome::shell::HAIRLINE_ALPHA,
+        ),
+    )
+}
 
 /// The Permissions tab's grant-composer controls, as painted.
 #[derive(Clone, Copy, Debug)]
@@ -440,7 +453,9 @@ impl WorkspaceSettingsOverlay {
             if theme.reduce_motion {
                 Duration::ZERO
             } else {
-                Duration::from_millis(MODAL_OPEN_ANIM_MS)
+                // A Panel opens over `durations.base` (HIG §9.7), read from
+                // the motion tokens rather than a per-surface constant.
+                Duration::from_millis(u64::from(theme.tokens.motion.durations.base_ms))
             },
             ui::Curve::EaseOut,
         );
@@ -483,26 +498,30 @@ impl WorkspaceSettingsOverlay {
                 &self.viewport,
             );
         }
-        let travel = if theme.reduce_motion {
-            0.0
+        // The one Panel entrance (HIG §9.7): opacity, a short rise and a
+        // scale-up about the sheet's centre, shared with the other modal
+        // surfaces through `modal_transition_curve` — not a bespoke 48 px
+        // slide in from the right. Reduced motion keeps the end state.
+        let (_, dy, scale) = if theme.reduce_motion {
+            (alpha, 0.0, 1.0)
         } else {
-            48.0 * (1.0 - f64::from(alpha))
+            modal_transition_curve(&self.transition, now, 0.95)
         };
-        let panel_transform = transform.pre_translate((travel, 0.0).into());
-        ui::surface::soft_shadow(
-            scene,
-            panel_transform,
-            rect,
-            theme.tokens.colors.neutral[0],
-            40.0,
-            16.0,
-            0.62 * alpha,
-        );
-        let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
+        let centre = rect.center();
+        let panel_transform = transform
+            .pre_translate((centre.x, centre.y + dy).into())
+            .pre_scale(scale)
+            .pre_translate((-centre.x, -centre.y).into());
+        // Panel role (HIG §9.1–§9.3): the Panel radius, an elevation-token
+        // shadow that follows the sheet's own corners and fades with it,
+        // `panel_ground` and the derived Panel border.
+        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
+        ui::chrome::shell::panel_shadow(scene, panel_transform, rect, radius, theme, alpha);
+        let card = RoundedRect::from_rect(rect, radius);
         scene.fill(
             Fill::NonZero,
             panel_transform,
-            theme.tokens.colors.surfaces.base,
+            ui::chrome::shell::panel_ground(theme),
             None,
             &card,
         );
@@ -791,27 +810,36 @@ impl WorkspaceSettingsOverlay {
             settings_rect.center().x + width / 2.0,
             settings_rect.center().y + height / 2.0,
         );
-        let backdrop = RoundedRect::from_rect(settings_rect, f64::from(tokens.radii.lg));
+        // The scrim behind a modal Panel is the scrim token (HIG §9.2), on
+        // the lens's own corner so it does not leak past the sheet it dims.
+        let backdrop = RoundedRect::from_rect(
+            settings_rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, settings_rect.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.neutral[0].with_alpha_factor(0.56),
+            colors.surfaces.scrim,
             None,
             &backdrop,
         );
-        let surface = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
-        ui::surface::soft_shadow(scene, transform, card, colors.neutral[0], 24.0, 10.0, 0.52);
+        // Panel role (HIG §9.1–§9.3): Panel radius, elevation-token shadow,
+        // `panel_ground` and the derived border — not a sprite shadow off a
+        // ramp slot over a declared border.
+        let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, card.height());
+        let surface = RoundedRect::from_rect(card, sheet_radius);
+        ui::chrome::shell::panel_shadow(scene, transform, card, sheet_radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            ui::chrome::shell::panel_ground(theme),
             None,
             &surface,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &surface,
         );
@@ -1200,12 +1228,18 @@ impl WorkspaceSettingsOverlay {
             rect.x1 - 16.0,
             rect.y0 + 146.0,
         );
+        // The strip's track: a quiet lift under the Selector pills and a
+        // hairline derived against the panel ground (HIG §9.2/§9.5), not a
+        // ramp slot inside a faded declared border.
         let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.lg));
-        scene.fill(Fill::NonZero, transform, colors.neutral[0], None, &nav_rr);
+        scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &nav_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard.with_alpha_factor(0.72),
+            ui::tokens::colors::Colors::hairline_on(
+                ui::chrome::shell::panel_ground(theme),
+                ui::chrome::shell::HAIRLINE_ALPHA,
+            ),
             None,
             &nav_rr,
         );
@@ -2036,12 +2070,15 @@ impl WorkspaceSettingsOverlay {
                 x0 + stat_w,
                 summary_card.y1 - 14.0 * f64::from(theme.text_scale),
             );
-            scene.fill(
-                Fill::NonZero,
+            let stat_rr = RoundedRect::from_rect(stat, f64::from(tokens.radii.md));
+            let (stat_fill, stat_edge) = stat_tile_face(theme);
+            scene.fill(Fill::NonZero, transform, stat_fill, None, &stat_rr);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
                 transform,
-                colors.surfaces.base,
+                stat_edge,
                 None,
-                &RoundedRect::from_rect(stat, f64::from(tokens.radii.md)),
+                &stat_rr,
             );
             text_renderer.draw_text(
                 scene,
@@ -2200,13 +2237,46 @@ mod tests {
         assert!(caret.height() >= 32.0);
     }
 
+    /// HIG §9.3's caveat: where a palette makes `base` and `raised` the same
+    /// colour, a tile filled with `base` inside a `raised` card has no lift
+    /// left to separate it. The derived hairline must therefore move
+    /// against the card on every shipped palette — measured as the
+    /// composite of the edge over the card, not asserted from its alpha.
+    #[test]
+    fn stat_tiles_keep_an_edge_on_every_palette() {
+        use ui::a11y::relative_luminance;
+        let over = |top: vello::peniko::Color, bottom: vello::peniko::Color| {
+            let a = top.components[3];
+            let t = top.components;
+            let b = bottom.components;
+            vello::peniko::Color::new([
+                t[0] * a + b[0] * (1.0 - a),
+                t[1] * a + b[1] * (1.0 - a),
+                t[2] * a + b[2] * (1.0 - a),
+                1.0,
+            ])
+        };
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let card = theme.tokens.colors.surfaces.raised;
+            let (_, edge) = stat_tile_face(&theme);
+            let delta = (relative_luminance(over(edge, card)) - relative_luminance(card)).abs();
+            assert!(
+                delta >= 0.008,
+                "{}: the stat tile's edge must separate it from the card (Δ luminance {delta:.4})",
+                theme.name
+            );
+        }
+    }
+
     #[test]
     fn close_transition_remains_visible_until_exit_settles() {
         let mut overlay = WorkspaceSettingsOverlay::default();
         overlay.force_settled();
+        // The lens opens and closes over the motion token's `base` (HIG §9.7).
+        let open_ms = u64::from(Theme::dark().tokens.motion.durations.base_ms);
         overlay.transition.set_open(
             false,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            Duration::from_millis(open_ms),
             ui::Curve::EaseOut,
         );
         let now = Instant::now();
@@ -2214,7 +2284,7 @@ mod tests {
         assert!(
             !overlay
                 .transition
-                .is_visible(now + Duration::from_millis(MODAL_OPEN_ANIM_MS + 500))
+                .is_visible(now + Duration::from_millis(open_ms + 500))
         );
     }
 

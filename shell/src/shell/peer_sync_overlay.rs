@@ -644,6 +644,24 @@ impl PeerSyncOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // Theme type tokens already carry the user's text scale, and this
+        // sheet lays out and paints with those resolved sizes; the renderer
+        // must not scale them a second time (HIG §7a), so it is reset for
+        // the pass exactly as the lens pass resets it, and restored after.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        self.draw_at_theme_scale(host_rect, scene, transform, text_renderer, theme);
+        text_renderer.set_text_scale(renderer_scale);
+    }
+
+    fn draw_at_theme_scale(
+        &mut self,
+        host_rect: Rect,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         self.button_rects.clear();
         if !self.visible() {
             self.rect = Rect::ZERO;
@@ -653,7 +671,12 @@ impl PeerSyncOverlay {
         let rect = self.rect;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
+        // Panel role (HIG §9.1/§9.5): the sheet's corner is the Panel radius
+        // and its edge is derived against the ground, not declared.
+        let card = RoundedRect::from_rect(
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -664,7 +687,7 @@ impl PeerSyncOverlay {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
@@ -1174,45 +1197,33 @@ impl PeerSyncOverlay {
         } else {
             vec![("Copy".into(), Button::CopyToken)]
         };
-        let colors = &theme.tokens.colors;
-        let bh = 30.0;
+        // Shared `Button` faces (HIG §9.9) at the minimum pointer target
+        // (§9.6) with the Control radius (§9.1) — the former 30 px pills
+        // were under the target and hand-painted an accent wash.
+        let bh = f64::from(theme.tokens.metrics.min_pointer_target);
+        let pad_x = f64::from(theme.tokens.spacing.s3);
+        let gap = f64::from(theme.tokens.spacing.s2);
         let by = rect.y1 - pad - bh;
         let mut bx = rect.x1 - pad;
         for (label, button) in buttons {
-            let (tw, th) = text.measure(&label, body, None);
-            let bw = f64::from(tw) + 26.0;
+            let (tw, _) = text.measure(&label, body, None);
+            let bw = f64::from(tw) + 2.0 * pad_x;
             let brect = Rect::new(bx - bw, by, bx, by + bh);
             let primary = matches!(
                 button,
                 Button::Join | Button::CopyToken | Button::CreateInvite
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if primary {
-                    colors.accent[5]
-                } else {
-                    colors.lift(0.35)
-                },
-                None,
-                &RoundedRect::from_rect(brect, bh / 2.0),
-            );
-            text.draw_text(
-                scene,
-                &label,
-                body,
-                colors.text_primary,
-                transform.pre_translate(
-                    (
-                        f64::midpoint(brect.x0, brect.x1) - f64::from(tw) / 2.0,
-                        f64::midpoint(brect.y0, brect.y1) - f64::from(th) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-            );
+            // The pass paints with the renderer reset to 1× (see `draw`), so
+            // the face is handed the theme-scaled label size explicitly.
+            let mut face = ui::widget::ButtonFace::new(brect, &label)
+                .radius(ui::chrome::ChromeRole::Control.radius(theme, bh))
+                .text_size(body);
+            if primary {
+                face = face.primary();
+            }
+            ui::widget::Button::paint(scene, transform, text, theme, &face);
             self.button_rects.push((button, brect));
-            bx = brect.x0 - 8.0;
+            bx = brect.x0 - gap;
         }
     }
 
@@ -1250,7 +1261,12 @@ impl PeerSyncOverlay {
 }
 
 fn card_rect(host: Rect, state: &PeerSyncSnapshot) -> Rect {
-    let w = (host.width() * 0.42).clamp(400.0, 520.0);
+    // A sheet with a form in it takes the sheet width (HIG §9.6), shrinking
+    // inside the panel padding on a narrow host rather than a bespoke
+    // 400–520 band. Unscaled `BASE` like the rest of this sheet's geometry.
+    let w = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet)
+        .min(host.width() - 2.0 * f64::from(ui::tokens::Spacing::BASE.s4))
+        .max(0.0);
     let h = if state.invite_review_open {
         330.0
     } else if state.invite_name.is_some() {

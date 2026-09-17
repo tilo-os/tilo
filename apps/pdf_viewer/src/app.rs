@@ -594,6 +594,11 @@ pub struct PdfApp {
     /// accessibility tree and has no `Theme` in scope. Symmetric: the right
     /// edge used to sit at 16 while the left sat at 12.
     toolbar_inset: f64,
+    /// Nominal type-scale sizes for the renderer (see `TypePx`).
+    type_px: TypePx,
+    /// The empty state's "Open a PDF…" pill as last painted (see
+    /// `empty_open_button_rect`).
+    empty_open_button: std::cell::Cell<Rect>,
 
     /// An in-flight XDG-portal file-open. When the user asks to open a
     /// document (toolbar folder button, Ctrl+O, or the empty state's Open
@@ -926,7 +931,9 @@ impl PdfApp {
             sig_stroke: None,
             sig_pad_rect: Rect::ZERO,
             search_active: false,
-            search_input: TextInput::local().with_plain_chrome().with_font_size(13.0),
+            search_input: TextInput::local()
+                .with_plain_chrome()
+                .with_font_size(TypePx::default().base),
             matches: Vec::new(),
             active_match: 0,
             search_whole_word: false,
@@ -960,6 +967,8 @@ impl PdfApp {
             reduce_motion: false,
             text_scale: 1.0,
             toolbar_inset: f64::from(ui::tokens::spacing::Spacing::default().s3),
+            type_px: TypePx::default(),
+            empty_open_button: std::cell::Cell::new(Rect::ZERO),
             portal_rx: None,
             overlay_mode: false,
             prev_overlay: None,
@@ -1277,8 +1286,13 @@ impl PdfApp {
 
     fn recompute_regions(&mut self) {
         let r = self.rect;
-        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
-        let mut mid_top = r.y0 + TOOLBAR_H;
+        // The toolbar is one row unless the tool cluster has to wrap under the
+        // edge clusters; the layout decides that from the width alone, so lay
+        // a one-row bar out and size the real bar to the rows it asks for.
+        let one_row = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
+        let toolbar_h = TOOLBAR_H * self.toolbar_layout_for(one_row).rows as f64;
+        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
+        let mut mid_top = r.y0 + toolbar_h;
         if self.search_active {
             let search_h = SEARCH_H * self.text_scale;
             self.search_rect = Rect::new(r.x0, mid_top, r.x1, mid_top + search_h);
@@ -2717,10 +2731,11 @@ impl PdfApp {
     /// text and dropping the caret at the end. Any in-flight edit is dropped
     /// without committing — callers that need to preserve it commit first.
     fn begin_edit(&mut self, target: EditTarget, initial: &str) {
+        // The same type-scale steps the sidebar measures and paints these
+        // texts at, so the editor's glyphs are the glyphs it replaces.
         let size = match target {
-            EditTarget::CommentBody(_) => 12.0,
-            EditTarget::Reply(_) => 11.5,
-            EditTarget::Signer => 13.0,
+            EditTarget::CommentBody(_) | EditTarget::Reply(_) => self.type_px.sm,
+            EditTarget::Signer => self.type_px.base,
         };
         let mut input = TextInput::local()
             .multiline(true)
@@ -3676,15 +3691,12 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// The centred "Open a PDF…" button drawn on the empty state. Pure so the
-    /// draw and the click handler agree on its rect.
+    /// The centred "Open a PDF…" button drawn on the empty state, as the last
+    /// draw pass laid it out from its measured label (`draw_empty_state`), so
+    /// the click handler hits exactly the painted pill. Empty until the first
+    /// frame and while an open is pending (nothing to click).
     fn empty_open_button_rect(&self) -> Rect {
-        let canvas = self.canvas_rect;
-        let cx = f64::midpoint(canvas.x0, canvas.x1);
-        let cy = f64::midpoint(canvas.y0, canvas.y1);
-        let w = 150.0;
-        let h = 38.0;
-        Rect::new(cx - w / 2.0, cy + 78.0, cx + w / 2.0, cy + 78.0 + h)
+        self.empty_open_button.get()
     }
 }
 
@@ -3989,6 +4001,9 @@ impl Widget for PdfApp {
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
         self.toolbar_inset = f64::from(theme.tokens.spacing.s3);
+        self.type_px = TypePx::from_theme(theme);
+        // The find field types at the size its placeholder is painted at.
+        self.search_input.set_font_size(self.type_px.base);
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"

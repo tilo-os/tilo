@@ -133,7 +133,14 @@ fn tunnel_import_request(kind: ConnKind) -> PickRequest {
         .filter(filter)
         .all_files()
 }
+/// Connection-row height: 1× floor of the renderer-measured `row_h`.
 const ROW_H: f64 = 74.0;
+/// The 15px name line at 1× measures 18.75px under a 14px top padding; its
+/// centre, and the top of the endpoint line beneath it (44px: the name line
+/// plus an 11.25px gap — the floor of the renderer-measured `row_line2_top`).
+const ROW_NAME_LINE_1X: f64 = 18.75;
+const ROW_NAME_CY: f64 = 14.0 + ROW_NAME_LINE_1X / 2.0;
+const ROW_LINE2_TOP: f64 = 14.0 + ROW_NAME_LINE_1X + 11.25;
 const ROW_GAP: f64 = 8.0;
 
 /// Deterministic fictional values used only by the hermetic visual-review
@@ -437,6 +444,14 @@ pub struct VpnApp {
     /// from the renderer in `adjust_layout_with_measure` before geometry is
     /// applied, so layout, paint and hit-testing read one value.
     control_h: f64,
+    /// Connection-row height and the top of its second line, measured from
+    /// the renderer in `adjust_layout_with_measure` (`ROW_H` / 44px floors at
+    /// 1×) so `layout` — which has no renderer — builds the rows the painter
+    /// fills.
+    row_h: f64,
+    row_line2_top: f64,
+    /// Centre of the name line (status dot, badge and tor mark ride it).
+    row_name_cy: f64,
 }
 
 impl Default for VpnApp {
@@ -517,6 +532,9 @@ impl VpnApp {
             detail_scroll: 0.0,
             shot_loading: false,
             control_h: HEADER_CONTROL_H,
+            row_h: ROW_H,
+            row_line2_top: ROW_LINE2_TOP,
+            row_name_cy: ROW_NAME_CY,
         }
     }
 
@@ -1327,7 +1345,7 @@ impl VpnApp {
         let mut rows = Vec::new();
         let mut y = list.y0 + 44.0; // leave room for the list section title
         for c in &self.vault.connections {
-            let row = Rect::new(list.x0 + 12.0, y, list.x1 - 12.0, y + ROW_H);
+            let row = Rect::new(list.x0 + 12.0, y, list.x1 - 12.0, y + self.row_h);
             let toggle = Rect::new(
                 row.x1 - 16.0 - 46.0,
                 row.center().y - 13.0,
@@ -1335,7 +1353,7 @@ impl VpnApp {
                 row.center().y + 13.0,
             );
             rows.push((c.id, row, toggle));
-            y += ROW_H + ROW_GAP;
+            y += self.row_h + ROW_GAP;
         }
 
         // Detail header + tabs + content.
@@ -1838,7 +1856,18 @@ impl VpnApp {
             let hovered = self.hovered_row == Some(*id);
             let details = self.local_details.get(id);
             Self::draw_list_row(
-                scene, tr, t, theme, c, details, row, toggle, selected, hovered,
+                scene,
+                tr,
+                t,
+                theme,
+                c,
+                details,
+                row,
+                toggle,
+                selected,
+                hovered,
+                self.row_name_cy,
+                self.row_line2_top,
             );
         }
     }
@@ -1862,6 +1891,8 @@ impl VpnApp {
         toggle: &Rect,
         selected: bool,
         hovered: bool,
+        name_cy_offset: f64,
+        line2_top: f64,
     ) {
         let radius = f64::from(theme.tokens.radii.lg);
         if selected {
@@ -1884,6 +1915,10 @@ impl VpnApp {
             fill_round(scene, t, *row, radius, theme.tokens.colors.lift(0.35));
         }
 
+        // The first line's centre is the name's measured centre (from the
+        // layout metrics); the status dot and the badges ride it.
+        let name_cy = row.y0 + name_cy_offset;
+
         // status dot
         let sc = Self::status_color(theme, c.status);
         scene.fill(
@@ -1891,7 +1926,7 @@ impl VpnApp {
             t,
             sc,
             None,
-            &Circle::new(Point::new(row.x0 + 22.0, row.y0 + 24.0), 5.0),
+            &Circle::new(Point::new(row.x0 + 22.0, name_cy), 5.0),
         );
         if c.is_connected() {
             scene.stroke(
@@ -1899,14 +1934,24 @@ impl VpnApp {
                 t,
                 sc.multiply_alpha(0.4),
                 None,
-                &Circle::new(Point::new(row.x0 + 22.0, row.y0 + 24.0), 9.0),
+                &Circle::new(Point::new(row.x0 + 22.0, name_cy), 9.0),
             );
         }
 
-        // name + badge — elided against the space the badge and toggle leave,
-        // measured at the weight the name is painted with.
+        // name + badge (+ tor mark) — elided against the space the measured
+        // badge, the tor mark and the toggle leave, at the weight the name is
+        // painted with.
         let name_x = row.x0 + 38.0;
-        let name_max_w = ((toggle.x0 - 36.0 - 72.0) - name_x).max(40.0) as f32;
+        let (badge_label_w, _) = tr.measure_weighted(c.kind.badge(), 11.0, None, TextWeight::Bold);
+        let badge_slot = 10.0 + f64::from(badge_label_w) + 16.0;
+        let tor_slot = if c.tor {
+            let (tor_w, _) = tr.measure_weighted("tor", 10.0, None, TextWeight::Bold);
+            f64::from(tor_w) + 8.0
+        } else {
+            0.0
+        };
+        let name_max_w =
+            ((toggle.x0 - 16.0 - badge_slot - tor_slot) - name_x).max(40.0) as f32;
         let name = tr.elide_to_width_weighted(&c.name, 15.0, name_max_w, TextWeight::Semibold);
         text_w(
             tr,
@@ -1920,15 +1965,26 @@ impl VpnApp {
             TextWeight::Semibold,
         );
         let (nw, _) = tr.measure_weighted(&name, 15.0, None, TextWeight::Semibold);
-        Self::draw_badge(
-            scene,
-            tr,
-            t,
-            theme,
-            row.x0 + 38.0 + f64::from(nw) + 10.0,
-            row.y0 + 24.0,
-            c.kind,
-        );
+        let badge_x = row.x0 + 38.0 + f64::from(nw) + 10.0;
+        let badge_w = Self::draw_badge(scene, tr, t, theme, badge_x, name_cy, c.kind);
+
+        // Per-tunnel Tor mark: beside the protocol badge, on the badge's own
+        // centre line — it qualifies the tunnel the way the badge does, rather
+        // than floating at the row's top-right above the toggle.
+        if c.tor {
+            let (_, tor_h) = tr.measure_weighted("tor", 10.0, None, TextWeight::Bold);
+            text_w(
+                tr,
+                scene,
+                t,
+                "tor",
+                10.0,
+                theme.tokens.colors.accent[6],
+                badge_x + badge_w + 8.0,
+                name_cy - f64::from(tor_h) / 2.0,
+                TextWeight::Bold,
+            );
+        }
 
         let endpoint = details.map_or("Credentials unavailable on this device", |d| {
             d.endpoint.as_str()
@@ -1947,24 +2003,9 @@ impl VpnApp {
             12.0,
             theme.text_dim,
             row.x0 + 38.0,
-            row.y0 + 44.0,
+            row.y0 + line2_top,
             TextWeight::Regular,
         );
-
-        // per-tunnel tor flag mark
-        if c.tor {
-            text_w(
-                tr,
-                scene,
-                t,
-                "tor",
-                10.0,
-                theme.tokens.colors.accent[6],
-                toggle.x0 - 36.0,
-                row.y0 + 14.0,
-                TextWeight::Bold,
-            );
-        }
 
         // toggle switch
         Self::draw_switch(scene, t, theme, *toggle, c.is_connected());
@@ -3323,8 +3364,21 @@ impl Widget for VpnApp {
     ) -> bool {
         let (_, label_h) = tr.measure_weighted("+ Import", 13.0, None, TextWeight::Semibold);
         let control_h = HEADER_CONTROL_H.max(f64::from(label_h).ceil() + 16.0);
-        let changed = (control_h - self.control_h).abs() > f64::EPSILON;
+        // Rows: the 15px name line, the 12px endpoint line beneath it and the
+        // paddings the 1× row implied (14 / 11.25 / 15).
+        let (_, name_h) = tr.measure_weighted("Hg", 15.0, None, TextWeight::Semibold);
+        let (_, line2_h) = tr.measure("Hg", 12.0, None);
+        let row_line2_top = ROW_LINE2_TOP.max(14.0 + f64::from(name_h) + 11.25);
+        let row_h = ROW_H.max(row_line2_top + f64::from(line2_h) + 15.0);
+        let row_name_cy = 14.0 + f64::from(name_h) / 2.0;
+        let changed = (control_h - self.control_h).abs() > f64::EPSILON
+            || (row_h - self.row_h).abs() > f64::EPSILON
+            || (row_line2_top - self.row_line2_top).abs() > f64::EPSILON
+            || (row_name_cy - self.row_name_cy).abs() > f64::EPSILON;
         self.control_h = control_h;
+        self.row_h = row_h;
+        self.row_line2_top = row_line2_top;
+        self.row_name_cy = row_name_cy;
         changed
     }
 
@@ -4145,6 +4199,42 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.refresh(&mut doc);
         (app, doc)
+    }
+
+    /// Connection rows keep their 74px band at 1× and grow with the measured
+    /// name + endpoint lines at 2×; the rows the layout builds (and hit-tests)
+    /// never overlap and the second line always clears the first.
+    #[test]
+    fn connection_rows_follow_the_text_scale() {
+        let (mut app, _doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut tr = TextRenderer::new();
+        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+        assert!((app.row_h - ROW_H).abs() < 1e-6, "1× keeps the 74px row");
+        assert!((app.row_line2_top - ROW_LINE2_TOP).abs() < 1e-6);
+        let rows = app.layout().rows;
+        assert!(rows.len() > 1);
+        assert!(rows.iter().all(|(_, r, _)| (r.height() - ROW_H).abs() < 1e-6));
+
+        tr.set_text_scale(2.0);
+        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+        let (_, name_h) = tr.measure_weighted("Hg", 15.0, None, TextWeight::Semibold);
+        let (_, line2_h) = tr.measure("Hg", 12.0, None);
+        assert!(
+            app.row_line2_top >= 14.0 + f64::from(name_h),
+            "the endpoint line starts under the doubled name line"
+        );
+        assert!(app.row_h >= app.row_line2_top + f64::from(line2_h));
+        let rows = app.layout().rows;
+        assert!(rows.iter().all(|(_, r, _)| (r.height() - app.row_h).abs() < 1e-6));
+        for pair in rows.windows(2) {
+            assert!(pair[1].1.y0 >= pair[0].1.y1, "2× rows never overlap");
+        }
+        // The toggle stays centred in the taller row.
+        let (_, row, toggle) = rows[0];
+        assert!((toggle.center().y - row.center().y).abs() < 1e-6);
     }
 
     #[test]

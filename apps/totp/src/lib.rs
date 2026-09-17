@@ -59,6 +59,7 @@ pub mod actions;
 pub mod add_panel;
 pub mod app;
 pub mod doc;
+pub mod i18n;
 pub mod list;
 pub mod model;
 pub mod qr;

@@ -2117,271 +2117,6 @@ impl RecoveryChallenge {
     }
 }
 
-/// Single-line text edit state shared by the identity-flow inline
-/// inputs; screens render the caret at `cursor` and any
-/// `selection_range()`.
-#[derive(Clone, Debug, Default)]
-pub struct LineEditState {
-    pub text: String,
-    /// Byte index into `text`. Always on a char boundary.
-    pub cursor: usize,
-    /// Anchor end of the selection. `None` when nothing is selected.
-    pub selection_anchor: Option<usize>,
-}
-
-impl LineEditState {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_text(text: impl Into<String>) -> Self {
-        let text = text.into();
-        let cursor = text.len();
-        Self {
-            text,
-            cursor,
-            selection_anchor: None,
-        }
-    }
-
-    /// `(lo, hi)` byte-index pair, both on char boundaries.
-    pub fn selection_range(&self) -> Option<(usize, usize)> {
-        let anchor = self.selection_anchor?;
-        match anchor.cmp(&self.cursor) {
-            std::cmp::Ordering::Equal => None,
-            std::cmp::Ordering::Less => Some((anchor, self.cursor)),
-            std::cmp::Ordering::Greater => Some((self.cursor, anchor)),
-        }
-    }
-
-    pub fn selected_text(&self) -> &str {
-        match self.selection_range() {
-            // `selection_range` always returns char-boundary offsets, so
-            // `get` succeeds; the fallback only guards against that
-            // invariant somehow not holding.
-            Some((lo, hi)) => self.text.get(lo..hi).unwrap_or(""),
-            None => "",
-        }
-    }
-
-    /// Clamped to bounds and snapped to a char boundary; `extend`
-    /// keeps the anchor.
-    pub fn move_cursor(&mut self, pos: usize, extend: bool) {
-        let mut pos = pos.min(self.text.len());
-        while pos > 0 && !self.text.is_char_boundary(pos) {
-            pos = pos.saturating_sub(1);
-        }
-        if extend {
-            self.selection_anchor.get_or_insert(self.cursor);
-        } else {
-            self.selection_anchor = None;
-        }
-        self.cursor = pos;
-    }
-
-    /// Returns `true` if anything was removed.
-    pub fn delete_selection(&mut self) -> bool {
-        let Some((lo, hi)) = self.selection_range() else {
-            return false;
-        };
-        self.text.replace_range(lo..hi, "");
-        self.cursor = lo;
-        self.selection_anchor = None;
-        true
-    }
-
-    pub fn insert_str(&mut self, s: &str) {
-        let _ = self.delete_selection();
-        self.text.insert_str(self.cursor, s);
-        self.cursor = self.cursor.saturating_add(s.len());
-        self.selection_anchor = None;
-    }
-
-    fn prev_char_boundary(&self) -> usize {
-        if self.cursor == 0 {
-            return 0;
-        }
-        let mut p = self.cursor.saturating_sub(1);
-        while p > 0 && !self.text.is_char_boundary(p) {
-            p = p.saturating_sub(1);
-        }
-        p
-    }
-
-    fn next_char_boundary(&self) -> usize {
-        if self.cursor >= self.text.len() {
-            return self.text.len();
-        }
-        let mut p = self.cursor.saturating_add(1);
-        while p < self.text.len() && !self.text.is_char_boundary(p) {
-            p = p.saturating_add(1);
-        }
-        p
-    }
-
-    /// The usual editor definition: scans left to where non-alphanumeric
-    /// meets alphanumeric.
-    fn prev_word_boundary(&self) -> usize {
-        let bytes = self.text.as_bytes();
-        let is_alnum_before = |p: usize| {
-            bytes
-                .get(p.saturating_sub(1))
-                .is_some_and(u8::is_ascii_alphanumeric)
-        };
-        let mut p = self.cursor;
-        while p > 0 && !is_alnum_before(p) {
-            p = p.saturating_sub(1);
-        }
-        while p > 0 && is_alnum_before(p) {
-            p = p.saturating_sub(1);
-        }
-        p
-    }
-
-    fn next_word_boundary(&self) -> usize {
-        let bytes = self.text.as_bytes();
-        let len = bytes.len();
-        let is_alnum_at = |p: usize| bytes.get(p).is_some_and(u8::is_ascii_alphanumeric);
-        let mut p = self.cursor;
-        while p < len && is_alnum_at(p) {
-            p = p.saturating_add(1);
-        }
-        while p < len && !is_alnum_at(p) {
-            p = p.saturating_add(1);
-        }
-        p
-    }
-
-    /// `text_input` is `KeyEvent::text` — the OS's printable text for
-    /// this key, if any.
-    pub fn apply_key(
-        &mut self,
-        key: &winit::keyboard::Key,
-        modifiers: &winit::event::Modifiers,
-        text_input: Option<&str>,
-    ) -> bool {
-        use winit::event::Modifiers;
-        use winit::keyboard::{Key, NamedKey};
-        let ctrl = modifiers.state().control_key();
-        let shift = modifiers.state().shift_key();
-        let _ = Modifiers::default(); // silence unused-import lint in some compositions
-
-        match key {
-            Key::Named(NamedKey::ArrowLeft) => {
-                let target = if ctrl {
-                    self.prev_word_boundary()
-                } else {
-                    self.prev_char_boundary()
-                };
-                self.move_cursor(target, shift);
-                true
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                let target = if ctrl {
-                    self.next_word_boundary()
-                } else {
-                    self.next_char_boundary()
-                };
-                self.move_cursor(target, shift);
-                true
-            }
-            Key::Named(NamedKey::Home) => {
-                self.move_cursor(0, shift);
-                true
-            }
-            Key::Named(NamedKey::End) => {
-                self.move_cursor(self.text.len(), shift);
-                true
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if self.delete_selection() {
-                    return true;
-                }
-                if self.cursor == 0 {
-                    return false;
-                }
-                let target = if ctrl {
-                    self.prev_word_boundary()
-                } else {
-                    self.prev_char_boundary()
-                };
-                self.text.replace_range(target..self.cursor, "");
-                self.cursor = target;
-                true
-            }
-            Key::Named(NamedKey::Delete) => {
-                if self.delete_selection() {
-                    return true;
-                }
-                if self.cursor >= self.text.len() {
-                    return false;
-                }
-                let target = if ctrl {
-                    self.next_word_boundary()
-                } else {
-                    self.next_char_boundary()
-                };
-                self.text.replace_range(self.cursor..target, "");
-                true
-            }
-            Key::Character(s) if ctrl => self.apply_ctrl_shortcut(s),
-            _ => {
-                // Skip control codes: they arrive as zero-width chars on some platforms.
-                if let Some(t) = text_input {
-                    let cleaned: String = t.chars().filter(|c| !c.is_control()).collect();
-                    if !cleaned.is_empty() {
-                        self.insert_str(&cleaned);
-                        return true;
-                    }
-                }
-                false
-            }
-        }
-    }
-
-    /// Handles Ctrl+A/C/X/V; `s` is the character text from the key
-    /// event. Returns `true` if the shortcut was recognised and applied.
-    fn apply_ctrl_shortcut(&mut self, s: &str) -> bool {
-        match s.to_lowercase().as_str() {
-            "a" => {
-                self.selection_anchor = Some(0);
-                self.cursor = self.text.len();
-                true
-            }
-            "c" => {
-                let sel = self.selected_text();
-                let bytes = if sel.is_empty() {
-                    self.text.clone()
-                } else {
-                    sel.to_string()
-                };
-                crate::text_selection::clipboard_copy(&bytes);
-                true
-            }
-            "x" => {
-                if self.selection_range().is_some() {
-                    let sel = self.selected_text().to_string();
-                    crate::text_selection::clipboard_copy(&sel);
-                    self.delete_selection();
-                    true
-                } else {
-                    false
-                }
-            }
-            "v" => {
-                if let Some(pasted) = crate::text_selection::clipboard_paste() {
-                    let cleaned: String = pasted.chars().filter(|c| !c.is_control()).collect();
-                    self.insert_str(&cleaned);
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
-    }
-}
-
 /// Terminal "Done" success card, on the shared sheet: avatar disc and
 /// name on one row, the two closing lines under them. Falls back to a
 /// generic message if the store has no record.
@@ -2713,41 +2448,35 @@ impl Widget for IdentityFlow {
         }
     }
 
+    /// The flow is a real parent node with the active screen as its one
+    /// child, matching `children()`. Returning the screen's own node here
+    /// used to be enough; now that a screen has children of its own (its
+    /// embedded text fields), every walk that zips `children()` against
+    /// `taffy.children(node)` — focus order, accessibility — needs the two
+    /// trees to agree at this level too.
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        match self.current {
-            IdentityFlowScreen::CreateIdentity => {
-                self.create_identity.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::RecoveryShare => {
-                self.recovery_share.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::RecoveryVerify => {
-                self.recovery_verify.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::AddDeviceHost => {
-                self.add_device_host.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::PairDevice => self.pair_device.build_layout(taffy, theme, node_map),
-            IdentityFlowScreen::InviteMint => self.invite_mint.build_layout(taffy, theme, node_map),
-            IdentityFlowScreen::InviteAccept => {
-                self.invite_accept.build_layout(taffy, theme, node_map)
-            }
+        let fill = Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        let screen = match self.current_widget_mut() {
+            Some(screen) => vec![screen.build_layout(taffy, theme, node_map)],
             // The terminal card owns the viewport like every other screen;
             // a default (zero-width) leaf centred it on the window's left
             // edge, half off-screen.
-            IdentityFlowScreen::Done => taffy.leaf_node(Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            }),
-        }
+            None => Vec::new(),
+        };
+        let node = taffy.parent_node(fill, &screen);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2758,27 +2487,15 @@ impl Widget for IdentityFlow {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        match self.current {
-            IdentityFlowScreen::CreateIdentity => {
-                self.create_identity.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::RecoveryShare => {
-                self.recovery_share.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::RecoveryVerify => {
-                self.recovery_verify.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::AddDeviceHost => {
-                self.add_device_host.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::PairDevice => self.pair_device.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::InviteMint => self.invite_mint.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::InviteAccept => {
-                self.invite_accept.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::Done => {
-                // No inner screen; self.rect already set above.
-            }
+        // The screen is the flow's first taffy child; its layout is
+        // relative to the flow's rect.
+        let screen_node = taffy
+            .children(node)
+            .ok()
+            .and_then(|children| children.first().copied());
+        let screen_origin = Point::new(self.rect.x0, self.rect.y0);
+        if let (Some(screen_node), Some(screen)) = (screen_node, self.current_widget_mut()) {
+            screen.apply_layout(taffy, screen_node, screen_origin);
         }
     }
 
@@ -2942,6 +2659,78 @@ impl Widget for IdentityFlow {
 
     fn is_layout_dirty(&self) -> bool {
         true
+    }
+}
+
+/// Synthetic `winit` events for the screens' unit tests, which drive
+/// `handle_event_screen` directly rather than through a harness. One copy
+/// here rather than one per screen module.
+#[cfg(test)]
+pub(super) mod test_events {
+    use taffy::{NodeId, Style, TaffyTree};
+    use vello::kurbo::Point;
+    use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+
+    use crate::widget::TaffyTreeExt;
+
+    fn synth_device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// A key press carrying `logical_key` and the OS's printable `text`,
+    /// built the way the headless driver builds its own key events.
+    pub(crate) fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
+        let text: Option<winit::keyboard::SmolStr> = text.map(Into::into);
+        let event = KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified),
+                state: ElementState::Pressed,
+            },
+            logical_key.clone(),
+            text.clone(),
+            KeyLocation::Standard,
+            false,
+            text,
+            logical_key,
+        );
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    /// A printable character press.
+    pub(crate) fn char(ch: &str) -> WindowEvent {
+        key(Key::Character(ch.into()), Some(ch))
+    }
+
+    /// A named (non-printing) key press.
+    pub(crate) fn named(k: NamedKey) -> WindowEvent {
+        key(Key::Named(k), None)
+    }
+
+    pub(crate) fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: synth_device(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    pub(crate) fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// A throwaway tree and node for `handle_event_screen`'s parameters.
+    pub(crate) fn scratch_node() -> (TaffyTree<()>, NodeId) {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.leaf_node(Style::default());
+        (taffy, node)
     }
 }
 

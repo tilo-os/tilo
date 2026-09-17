@@ -263,6 +263,27 @@ const TURN_STEP_PX: f64 = 40.0;
 /// larger than the vertical wheel step so a swipe reads as a deliberate flick.
 const SWIPE_STEP_PX: f64 = 80.0;
 const TOC_W: f64 = 244.0;
+/// The renderer's nominal single-line box is `size × 1.25`; only the value the
+/// running-header slot starts from before the first frame has measured the
+/// real line box (`BooksApp::running_header_h`).
+const LINE_BOX_FACTOR: f64 = 1.25;
+
+/// Nominal size of the framed page's running header (the renderer scales it);
+/// measured in `draw_reader`, painted in `draw_reader_page_surface`.
+fn running_header_px() -> f32 {
+    11.0
+}
+
+/// Contents rail rows: the pill floor and the gap between pills, from the
+/// panel-row metric — a one-line row keeps the panel row pitch, and a row
+/// grows with its measured (wrapped) title so at 200 % a two-line title gets
+/// a two-line row instead of running into the next chapter.
+fn toc_row_gap(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s1)
+}
+fn toc_row_floor(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.panel_row_height) - toc_row_gap(theme)
+}
 const NOTES_W: f64 = 326.0;
 const PAGE_MAX_W: f64 = 680.0;
 /// The rails are independent reading lists.  Keep their scroll state separate
@@ -682,6 +703,15 @@ pub struct BooksApp {
     toc_scroll: f64,
     toc_max_scroll: f64,
     toc_scroll_to_active: bool,
+    /// Pitch of the first contents row as last laid out (`draw_toc`), so
+    /// keyboard paging inside the rail steps by a real row at any text scale.
+    toc_row_pitch: f64,
+    /// Measured line-box height of the framed page's running header at the
+    /// current chrome text scale, refreshed at the top of every reader frame
+    /// (`draw_reader`) so the pure page geometry — which has no renderer at
+    /// hand and is also consulted by hit-testing — sizes the header slot from
+    /// the box the header is really painted in.
+    running_header_h: f64,
     notes_scroll: f64,
     notes_max_scroll: f64,
     /// Request a bounded reveal of one annotation (from a search result or
@@ -971,6 +1001,8 @@ impl BooksApp {
             toc_scroll: 0.0,
             toc_max_scroll: 0.0,
             toc_scroll_to_active: true,
+            toc_row_pitch: f64::from(ui::tokens::Metrics::BASE.panel_row_height),
+            running_header_h: f64::from(running_header_px()) * LINE_BOX_FACTOR,
             notes_scroll: 0.0,
             notes_max_scroll: 0.0,
             notes_scroll_to_annotation: None,
@@ -1174,7 +1206,7 @@ impl BooksApp {
     fn handle_focused_rail_key(&mut self, key: &Key) -> Option<bool> {
         let target = self.semantic_focus.as_deref()?;
         let (scroll, max, unit) = if target.starts_with("books.reader.chapter:") {
-            (&mut self.toc_scroll, self.toc_max_scroll, 44.0)
+            (&mut self.toc_scroll, self.toc_max_scroll, self.toc_row_pitch)
         } else if target.starts_with("books.annotation.") || target.starts_with("books.highlight.")
         {
             (&mut self.notes_scroll, self.notes_max_scroll, 64.0)
@@ -7295,6 +7327,11 @@ struct ReaderPageGeometry {
     content_w: f32,
     content_h: f32,
     gutter: f64,
+    /// Top of the running header's line box and the y of the rule beneath it
+    /// (framed page only; zero otherwise). The content box starts below the
+    /// rule, so header, rule and first line never meet at any text scale.
+    header_y: f64,
+    rule_y: f64,
 }
 
 impl BooksApp {
@@ -7308,6 +7345,12 @@ impl BooksApp {
         self.chapter = self.chapter.min(nchap.saturating_sub(1));
 
         let mode = self.settings.mode;
+        // Measure the running header's line box at this frame's chrome scale
+        // before the geometry reserves its slot (see `running_header_h`).
+        self.running_header_h = f64::from(
+            tr.measure_weighted("Ag", running_header_px(), None, TextWeight::Semibold)
+                .1,
+        );
         let geom = self.reader_page_geometry(r, mode);
         let palette = self.resolve_palette(theme);
 
@@ -7572,24 +7615,37 @@ impl BooksApp {
         // framed card or margin; a wide screen keeps the floating paper card.
         let framed = self.rect.width() >= FRAME_MIN_W;
         let center_w = (center_x1 - center_x0).max(120.0);
-        let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, pad_bot) = if framed {
-            let paper_w = (center_w - 56.0).clamp(120.0, PAGE_MAX_W);
-            let paper_x = center_x0 + (center_w - paper_w) / 2.0;
-            let paper_y = body_y0 + 18.0;
-            let paper_h = (body_y1 - body_y0 - 36.0).max(120.0);
-            (paper_x, paper_y, paper_w, paper_h, 46.0, 50.0, 46.0)
-        } else {
-            let paper_x = center_x0;
-            let paper_y = body_y0;
-            let paper_w = center_w;
-            let paper_h = (body_y1 - body_y0).max(120.0);
-            // Accessibility text needs a little extra horizontal breathing
-            // room on an edge-to-edge phone page. The layout width follows
-            // this inset, so words reflow before reaching the viewport edge.
-            let pad_x = (22.0 + f64::from((self.settings.font_scale - 1.0).max(0.0)) * 11.0)
-                .clamp(22.0, 36.0);
-            (paper_x, paper_y, paper_w, paper_h, pad_x, 24.0, 30.0)
-        };
+        let sp = ui::tokens::spacing::Spacing::BASE;
+        let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, pad_bot, header_y, rule_y) =
+            if framed {
+                let paper_w = (center_w - 56.0).clamp(120.0, PAGE_MAX_W);
+                let paper_x = center_x0 + (center_w - paper_w) / 2.0;
+                let paper_y = body_y0 + 18.0;
+                let paper_h = (body_y1 - body_y0 - 36.0).max(120.0);
+                // Running header, then the rule an `s1` under its measured
+                // line box, then the content an `s2` under the rule. The slot
+                // follows the header's real height, so at 200 % the header
+                // grows away from the rule instead of into it (rounded so 1×
+                // keeps its pixel grid).
+                let header_y = paper_y + f64::from(sp.s6);
+                let rule_y = (header_y + self.running_header_h + f64::from(sp.s1)).round();
+                let pad_top = rule_y - paper_y + f64::from(sp.s2);
+                (
+                    paper_x, paper_y, paper_w, paper_h, 46.0, pad_top, 46.0, header_y, rule_y,
+                )
+            } else {
+                let paper_x = center_x0;
+                let paper_y = body_y0;
+                let paper_w = center_w;
+                let paper_h = (body_y1 - body_y0).max(120.0);
+                // Accessibility text needs a little extra horizontal breathing
+                // room on an edge-to-edge phone page. The layout width follows
+                // this inset, so words reflow before reaching the viewport edge.
+                let pad_x =
+                    (22.0 + f64::from((self.settings.font_scale - 1.0).max(0.0)) * 11.0)
+                        .clamp(22.0, 36.0);
+                (paper_x, paper_y, paper_w, paper_h, pad_x, 24.0, 30.0, 0.0, 0.0)
+            };
         let full_content_x = paper_x + pad_x;
         let full_content_w = (paper_w - 2.0 * pad_x).max(60.0) as f32;
         let content_y = paper_y + pad_top;
@@ -7625,6 +7681,8 @@ impl BooksApp {
             content_w,
             content_h,
             gutter,
+            header_y,
+            rule_y,
         }
     }
 
@@ -7795,25 +7853,31 @@ impl BooksApp {
             if let Some(book) = lib.get(self.book_idx)
                 && let Some(ch) = book.chapters.get(self.chapter)
             {
-                let head = ch.title.to_uppercase();
+                // One line, ellipsized to the column: the slot above the
+                // rule is a single line box, so a long title must not wrap
+                // into the rule.
+                let head = ellipsize(
+                    tr,
+                    &ch.title.to_uppercase(),
+                    running_header_px(),
+                    TextWeight::Semibold,
+                    f64::from(geom.content_w),
+                );
                 tr.draw_text_weighted(
                     scene,
                     &head,
-                    11.0,
+                    running_header_px(),
                     palette.ink_dim,
-                    t * Affine::translate((geom.content_x, geom.paper_y + 22.0)),
-                    Some(geom.content_w),
+                    t * Affine::translate((geom.content_x, geom.header_y)),
+                    None,
                     TextWeight::Semibold,
                 );
             }
             paint::line(
                 scene,
                 t,
-                Point::new(geom.content_x, geom.paper_y + 42.0),
-                Point::new(
-                    geom.content_x + f64::from(geom.content_w),
-                    geom.paper_y + 42.0,
-                ),
+                Point::new(geom.content_x, geom.rule_y),
+                Point::new(geom.content_x + f64::from(geom.content_w), geom.rule_y),
                 palette.rule,
                 1.0,
             );
@@ -9022,12 +9086,18 @@ impl BooksApp {
         // "CONTENTS" and "01" line up instead of sitting 2px apart.
         let row_inset = 10.0;
         let number_inset = 14.0;
+        let sp = &theme.tokens.spacing;
+        // The caption sits an `s4` down and the list starts an `s3` under its
+        // measured line box (same rule as the annotations rail), so a 200 %
+        // caption pushes the rows down instead of overlapping the first one.
+        let caption_y = y0 + f64::from(sp.s4);
+        let (_, cap_h) = tr.measure_weighted("CONTENTS", 11.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             "CONTENTS",
             11.0,
             c.text_dim,
-            t * Affine::translate((panel_x0 + row_inset + number_inset, y0 + 18.0)),
+            t * Affine::translate((panel_x0 + row_inset + number_inset, caption_y)),
             None,
             TextWeight::Semibold,
         );
@@ -9035,18 +9105,48 @@ impl BooksApp {
         let Some(book) = lib.get(self.book_idx) else {
             return;
         };
-        let list_y0 = y0 + 44.0;
-        let row_h = 44.0;
+        let list_y0 = caption_y + f64::from(cap_h) + f64::from(sp.s3);
         let list_y1 = y1 - 8.0;
-        let content_h = book.chapters.len() as f64 * row_h;
+        // Number column from the widest two-digit number; the title starts an
+        // `s3` after it and wraps inside the pill. Every row is as tall as
+        // its wrapped title needs (measured at the heavier active weight so
+        // the height does not jump when the active chapter changes), floored
+        // at the one-line pill; the pitch adds the inter-row gap.
+        let (number_px, title_px) = (12.0, 13.0);
+        let row_gap = toc_row_gap(theme);
+        let row_floor = toc_row_floor(theme);
+        let (num_w, num_h) = tr.measure_weighted("00", number_px, None, TextWeight::Bold);
+        let title_dx = number_inset + f64::from(num_w) + f64::from(sp.s3);
+        let title_w = (TOC_W - 2.0 * row_inset - title_dx - f64::from(sp.s2)).max(40.0) as f32;
+        let pill_heights: Vec<f64> = book
+            .chapters
+            .iter()
+            .map(|ch| {
+                let (_, th) =
+                    tr.measure_weighted(&ch.title, title_px, Some(title_w), TextWeight::Semibold);
+                (f64::from(th) + 2.0 * f64::from(sp.s2)).max(row_floor)
+            })
+            .collect();
+        let mut row_offsets = Vec::with_capacity(pill_heights.len());
+        let mut content_h = 0.0;
+        for h in &pill_heights {
+            row_offsets.push(content_h);
+            content_h += h + row_gap;
+        }
+        self.toc_row_pitch = pill_heights
+            .first()
+            .map_or(row_floor + row_gap, |h| h + row_gap);
         let visible_h = (list_y1 - list_y0).max(0.0);
         self.toc_max_scroll = (content_h - visible_h).max(0.0);
         if self.toc_scroll_to_active {
-            let active_y = self.chapter as f64 * row_h;
+            let active_y = row_offsets.get(self.chapter).copied().unwrap_or(0.0);
+            let active_h = pill_heights
+                .get(self.chapter)
+                .map_or(row_floor, |h| h + row_gap);
             if active_y < self.toc_scroll {
                 self.toc_scroll = active_y;
-            } else if active_y + row_h > self.toc_scroll + visible_h {
-                self.toc_scroll = active_y + row_h - visible_h;
+            } else if active_y + active_h > self.toc_scroll + visible_h {
+                self.toc_scroll = active_y + active_h - visible_h;
             }
             self.toc_scroll_to_active = false;
         }
@@ -9055,15 +9155,16 @@ impl BooksApp {
         let clip = Rect::new(panel_x0, list_y0, panel_x0 + TOC_W, list_y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         for (i, ch) in book.chapters.iter().enumerate() {
-            let y = list_y0 + i as f64 * row_h - self.toc_scroll;
-            if y + row_h < list_y0 || y > list_y1 {
+            let pill_h = pill_heights.get(i).copied().unwrap_or(row_floor);
+            let y = list_y0 + row_offsets.get(i).copied().unwrap_or(0.0) - self.toc_scroll;
+            if y + pill_h + row_gap < list_y0 || y > list_y1 {
                 continue;
             }
             let row = Rect::new(
                 panel_x0 + row_inset,
                 y,
                 panel_x0 + TOC_W - row_inset,
-                y + row_h - 6.0,
+                y + pill_h,
             );
             let active = i == self.chapter;
             let hover = self.is_hover(row);
@@ -9086,32 +9187,42 @@ impl BooksApp {
                     theme.bg_hover,
                 );
             }
+            // Number and title each centre their measured box on the pill,
+            // so the two share one centre line whatever the row's height.
             let num = format!("{:02}", i + 1);
             tr.draw_text_weighted(
                 scene,
                 &num,
-                12.0,
+                number_px,
                 if active {
                     theme.accent_primary
                 } else {
                     c.text_dim
                 },
-                t * Affine::translate((row.x0 + number_inset, y + 8.0)),
+                t * Affine::translate((
+                    row.x0 + number_inset,
+                    row.y0 + (pill_h - f64::from(num_h)) / 2.0,
+                )),
                 None,
                 TextWeight::Bold,
             );
+            let title_weight = if active {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            };
+            let (_, th) = tr.measure_weighted(&ch.title, title_px, Some(title_w), title_weight);
             tr.draw_text_weighted(
                 scene,
                 &ch.title,
-                13.0,
+                title_px,
                 if active { c.text_primary } else { c.text_dim },
-                t * Affine::translate((row.x0 + 42.0, y + 8.0)),
-                Some((TOC_W - 72.0) as f32),
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                },
+                t * Affine::translate((
+                    row.x0 + title_dx,
+                    row.y0 + (pill_h - f64::from(th)) / 2.0,
+                )),
+                Some(title_w),
+                title_weight,
             );
             self.push_hit(row, Action::GotoChapter(i));
         }
@@ -9276,7 +9387,9 @@ impl BooksApp {
         // measured caption rather than a fixed x that "ANNOTATIONS" overran
         // at larger text.
         let caption_x = x0 + f64::from(sp.s4);
-        let caption_y = y0 + 18.0;
+        // Same `s4` drop as the contents rail's caption, so the two rail
+        // captions sit level across the page.
+        let caption_y = y0 + f64::from(sp.s4);
         let (cap_w, cap_h) = tr.measure_weighted("ANNOTATIONS", 11.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
@@ -14533,6 +14646,102 @@ mod interaction_tests {
     }
 
     // ---- TOC chapter navigation ---------------------------------------------
+
+    /// At 200 % a chapter title wraps inside the 244px rail; each row must be
+    /// as tall as its wrapped title, so rows stay ordered, non-overlapping and
+    /// taller than the one-line pill where a title wrapped — instead of every
+    /// row being the fixed 44px that let titles run into the next chapter.
+    #[test]
+    fn toc_rows_grow_with_wrapped_titles_at_2x_and_never_overlap() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        let rows_at = |app: &mut BooksApp, doc: &mut AutoCommit, scale: f32| -> Vec<Rect> {
+            frame_at_text_scale(app, doc, 1280.0, 800.0, scale);
+            let theme = Theme::dark().with_text_scale(scale);
+            let floor = toc_row_floor(&theme);
+            for h in app.hits.iter().filter(|h| matches!(h.action, Action::GotoChapter(_))) {
+                assert!(
+                    h.rect.height() >= floor - 1e-6,
+                    "row {:?} is below the pill floor {floor} at {scale}×",
+                    h.rect
+                );
+            }
+            let mut rows: Vec<(usize, Rect)> = app
+                .hits
+                .iter()
+                .filter_map(|h| match h.action {
+                    Action::GotoChapter(c) => Some((c, h.rect)),
+                    _ => None,
+                })
+                .collect();
+            rows.sort_by_key(|(c, _)| *c);
+            rows.into_iter().map(|(_, r)| r).collect()
+        };
+        let one_x = rows_at(&mut app, &mut doc, 1.0);
+        let two_x = rows_at(&mut app, &mut doc, 2.0);
+        assert!(one_x.len() >= 2 && one_x.len() == two_x.len(), "same chapters at both scales");
+        for rows in [&one_x, &two_x] {
+            for pair in rows.windows(2) {
+                assert!(
+                    pair[0].y1 <= pair[1].y0 + 1e-6,
+                    "contents rows overlap: {:?} then {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+        let tallest_1x = one_x.iter().map(Rect::height).fold(0.0, f64::max);
+        let tallest_2x = two_x.iter().map(Rect::height).fold(0.0, f64::max);
+        assert!(
+            tallest_2x > tallest_1x,
+            "a wrapped 2× title gets a taller row ({tallest_2x} vs {tallest_1x})"
+        );
+    }
+
+    /// The framed page's running header lives in a slot whose height follows
+    /// the chrome text scale; the measured 2× header must fit above the rule
+    /// and the content box must start below it.
+    #[test]
+    fn running_header_fits_its_slot_above_the_rule_at_2x() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        // A real 2× frame measures the header box the geometry reserves.
+        frame_at_text_scale(&mut app, &mut doc, 1280.0, 800.0, 2.0);
+        let geom = app.reader_page_geometry(app.rect, app.settings.mode);
+        assert!(geom.framed, "1280 wide is the framed page");
+        let one_x = {
+            let fresh = app_with_sample();
+            fresh.reader_page_geometry(Rect::new(0.0, 0.0, 1280.0, 800.0), ReadMode::Paged)
+        };
+        assert!(
+            geom.rule_y > one_x.rule_y,
+            "the 2× slot ({}) is taller than the 1× slot ({})",
+            geom.rule_y - geom.header_y,
+            one_x.rule_y - one_x.header_y
+        );
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let title = app
+            .library
+            .get(app.book_idx)
+            .and_then(|b| b.chapters.get(app.chapter))
+            .map(|ch| ch.title.to_uppercase())
+            .expect("the sample book has a current chapter");
+        let (_, head_h) =
+            tr.measure_weighted(&title, running_header_px(), None, TextWeight::Semibold);
+        assert!(
+            geom.header_y + f64::from(head_h) <= geom.rule_y,
+            "header box ends at {} but the rule is at {}",
+            geom.header_y + f64::from(head_h),
+            geom.rule_y
+        );
+        assert!(
+            geom.content_y >= geom.rule_y + 1.0,
+            "content ({}) starts under the rule ({})",
+            geom.content_y,
+            geom.rule_y
+        );
+    }
 
     #[test]
     fn toc_row_click_navigates_to_that_chapter() {

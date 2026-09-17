@@ -17,14 +17,65 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::collections::HashMap;
+
 use settings::SettingsApp;
 use settings::categories::Category;
 use settings::sidebar::SHELL_FIELD_INSET;
 use settings::widgets::spacing;
+use taffy::{NodeId, TaffyTree};
+use ui::text_render::TextRenderer;
 use ui::widget::Widget;
-use vello::kurbo::Rect;
+use vello::kurbo::{Point, Rect};
 
 use crate::composition_balance::lay_out_at;
+
+/// The production layout cycle under a large-text preference: the theme
+/// carries `text_scale` and the renderer is told the same scale, exactly as
+/// the live host, the shared launcher and the headless harness do.
+fn lay_out_scaled(widget: &mut dyn Widget, (w, h): (f32, f32), text_scale: f32) {
+    let theme = ui::Theme::dark().with_text_scale(text_scale);
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT;
+    widget.sync(&mut doc, &root);
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let outer = taffy
+        .new_with_children(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(w),
+                    height: taffy::Dimension::length(h),
+                },
+                ..Default::default()
+            },
+            &[node],
+        )
+        .unwrap();
+    widget.sync(&mut doc, &root);
+    let measure_map = node_map.clone();
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(text_scale);
+    taffy
+        .compute_layout_with_measure(
+            outer,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(w),
+                height: taffy::AvailableSpace::Definite(h),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .unwrap();
+    widget.apply_layout(&taffy, node, Point::ORIGIN);
+    widget.sync(&mut doc, &root);
+}
 
 const WIDE: (f32, f32) = (1200.0, 760.0);
 const NARROW: (f32, f32) = (440.0, 820.0);
@@ -80,6 +131,20 @@ fn by_widget_name(root: &dyn Widget, name: &str) -> Vec<Rect> {
 fn close(a: f64, b: f64, what: &str) {
     assert!(
         (a - b).abs() < 0.5,
+        "{what}: expected {b}, got {a} (difference {})",
+        a - b
+    );
+}
+
+/// Two centre lines agree to within the layout engine's resolution. Taffy
+/// rounds every node to whole pixels, so an odd-height line box centred in
+/// an even-height row lands its centre exactly half a pixel off the row's:
+/// that half pixel is the engine's rounding step, not a misalignment, and is
+/// the largest difference this accepts. Used only where a text line box is
+/// compared against a control's centre; every other measure keeps [`close`].
+fn same_centre_line(a: f64, b: f64, what: &str) {
+    assert!(
+        (a - b).abs() <= 0.5,
         "{what}: expected {b}, got {a} (difference {})",
         a - b
     );
@@ -210,8 +275,9 @@ fn region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow() {
     lay_out(&mut app, WIDE);
     let label = first_named(&app, "Currency");
     let control = by_test_id(&app, "region.currency");
-    // Label and trailing chooser stay on one centre line…
-    close(label.center().y, control.center().y, "label vs dropdown centre");
+    // Label and trailing chooser stay on one centre line (to the engine's
+    // half-pixel: the 13 px label's line box is odd-height since F2)…
+    same_centre_line(label.center().y, control.center().y, "label vs dropdown centre");
     // …inside the toolkit's readable form measure (720) rather than the full
     // detail width, so the pair no longer drifts ~600 px apart.
     let card_inner = control.x1 - label.x0;
@@ -244,5 +310,125 @@ fn region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow() {
     assert!(
         control.x1 > f64::from(NARROW.0) - 60.0,
         "narrow chooser {control:?} must reach the card's trailing edge"
+    );
+}
+
+// ---- round two (2026-09-17) ----
+
+/// A sidebar row seats the toolkit's minimum pointer target plus one `s1`
+/// above and below it at 1× — exactly, so the pill/search-field alignment
+/// round one established is untouched — and grows from its measured label
+/// line under large text instead of letting a 28 px label overflow a 32 px
+/// pill.
+#[test]
+fn sidebar_rows_seat_the_pointer_target_at_1x_and_grow_with_large_text() {
+    let metrics = ui::tokens::Metrics::default();
+    let expected = f64::from(metrics.min_pointer_target + 2.0 * spacing().s1);
+    let mut app = SettingsApp::with_selected(Category::Appearance);
+    lay_out(&mut app, WIDE);
+    let rows = by_widget_name(&app, "SidebarRow");
+    assert!(!rows.is_empty(), "the docked sidebar lists its categories");
+    for row in &rows {
+        close(row.height(), expected, "1× sidebar row height");
+    }
+
+    // 1600 px is above the scaled breakpoint, so the sidebar stays docked.
+    let mut large = SettingsApp::with_selected(Category::Appearance).with_width_hint(1600.0);
+    lay_out_scaled(&mut large, (1600.0, 900.0), 2.0);
+    let rows = by_widget_name(&large, "SidebarRow");
+    assert!(!rows.is_empty(), "the sidebar is still docked at 1600 px / 200 %");
+    let shortest = rows.iter().map(Rect::height).fold(f64::MAX, f64::min);
+    let tallest = rows.iter().map(Rect::height).fold(0.0, f64::max);
+    assert!(
+        shortest > expected,
+        "at 200 % every row ({shortest}) must be taller than the 1× row ({expected})"
+    );
+    // Every label fits one 28 px line in the 528 px sidebar, so every row
+    // seats exactly one line: a row measured against a narrower width than
+    // it is drawn at would wrap "Device Privacy & Security" and stand two
+    // lines tall around a single drawn line.
+    assert!(
+        tallest < 2.0 * expected,
+        "at 200 % rows seat one line ({tallest} must be under {})",
+        2.0 * expected
+    );
+}
+
+/// The Formats card composes all six choice rows the same way: beneath their
+/// labels on a phone, beside them once the card can seat label and chooser on
+/// one line. No row is left inline while its neighbours wrap.
+#[test]
+fn region_choice_rows_switch_layout_as_one_card() {
+    let rows = [
+        ("region.currency", "Currency"),
+        ("region.date", "Date format"),
+        ("region.time", "Time format"),
+        ("region.measurement", "Measurement"),
+        ("region.number_style", "Number format"),
+        ("region.first_day", "First day of week"),
+    ];
+    let phone = (390.0, 844.0);
+    let mut app = SettingsApp::with_selected(Category::RegionFormats)
+        .with_width_hint(phone.0)
+        .with_deterministic_hardware_for_shot();
+    lay_out(&mut app, phone);
+    let sp = spacing();
+    for (id, label) in rows {
+        let control = by_test_id(&app, id);
+        let label = first_named(&app, label);
+        assert!(
+            control.y0 >= label.y1,
+            "phone: {id} {control:?} sits beneath its label {label:?}"
+        );
+        close(control.x0, label.x0, &format!("phone: {id} starts on its label's left edge"));
+        // The chooser hugs its label by the caption gap, not the row gap.
+        // Taffy rounds each sibling's position to whole pixels on its own, so
+        // the gap between two adjacent edges can land one pixel either side of
+        // the token; anything past that is a real gap defect.
+        let gap = control.y0 - label.y1;
+        assert!(
+            gap >= 0.0 && gap <= f64::from(sp.s1) + 1.0,
+            "phone: {id} caption gap {gap} must be the s1 step ({}) within one rounding pixel",
+            sp.s1
+        );
+    }
+
+    let mut app = SettingsApp::with_selected(Category::RegionFormats)
+        .with_width_hint(NARROW.0)
+        .with_deterministic_hardware_for_shot();
+    lay_out(&mut app, NARROW);
+    for (id, label) in rows {
+        let control = by_test_id(&app, id);
+        let label = first_named(&app, label);
+        assert!(
+            control.x0 > label.x1,
+            "narrow: {id} {control:?} sits beside its label {label:?}"
+        );
+        same_centre_line(
+            control.center().y,
+            label.center().y,
+            &format!("narrow: {id} shares its label's centre line"),
+        );
+    }
+}
+
+/// Large text needs the room a narrow window does: an 800 px window docks
+/// the sidebar at 1× and collapses to the single content screen at 200 %,
+/// where the breakpoint and the sidebar width have grown with the type.
+#[test]
+fn large_text_scales_the_shell_breakpoint_with_the_type() {
+    let mut one_x = SettingsApp::with_selected(Category::Appearance).with_width_hint(800.0);
+    lay_out(&mut one_x, (800.0, 900.0));
+    assert!(!one_x.is_narrow(), "800 px docks the sidebar at 1×");
+    assert!(
+        !by_widget_name(&one_x, "SidebarRow").is_empty(),
+        "1×: the docked sidebar lists its categories"
+    );
+
+    let mut two_x = SettingsApp::with_selected(Category::Appearance).with_width_hint(800.0);
+    lay_out_scaled(&mut two_x, (800.0, 900.0), 2.0);
+    assert!(
+        two_x.is_narrow(),
+        "800 px is below the 200 % breakpoint, so the shell shows one screen"
     );
 }

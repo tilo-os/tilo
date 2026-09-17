@@ -31,7 +31,19 @@ use crate::shell::state::WorkspaceTree;
 /// controls down to 18--22 px targets; 48 px leaves a consistent 32 px target
 /// while retaining substantially more room for content than a conventional
 /// desktop panel.
-pub const TOPBAR_HEIGHT_PX: f32 = 48.0;
+///
+/// Derived, not typed: every bar control is the §9.6 pointer floor
+/// (`metrics.min_pointer_target`, 32) and the bar gives it `s2` of air above
+/// and below. `metrics.bar_height` (40) describes an *app* toolbar whose
+/// controls are `bar_control_height` (28); the shell's bar hosts pointer-
+/// floor controls, which is why it is 48 and not 40 — the centre-lane tests
+/// (`large_text_activity_stays_single_line_inside_center_content_lane`,
+/// `compact_large_text_preserves_the_full_activity_sentence_and_detail_route`)
+/// are tuned to this height and pin the decision. Unscaled `BASE` values
+/// because the bar is laid out in logical pixels before any theme is in
+/// hand (`build_layout` sizes its node from this constant).
+pub const TOPBAR_HEIGHT_PX: f32 =
+    ui::tokens::Metrics::BASE.min_pointer_target + 2.0 * ui::tokens::Spacing::BASE.s2;
 
 /// The toolkit's shared chrome opacity, so the bar cannot drift from the
 /// popovers hanging off it. [`TopBarChrome::draw`] fills `surfaces.overlay`
@@ -45,12 +57,11 @@ const SPARKLINE_FILL_ALPHA: f32 = 0.30;
 
 /// Height of every pressable control in the bar — the nav cluster, the
 /// workspace pill, the centre selector, the tray pill and the media
-/// indicator's hit rect — so they share one top and bottom edge. HIG §9.6
-/// puts the minimum pointer target at 32×32; the `ui` tokens carry no
-/// density value for it yet, so the figure is pinned to `spacing.s8` by
-/// `bar_density_sits_on_the_spacing_scale` rather than typed ad hoc at
-/// each site.
-const BAR_CONTROL_PX: f64 = 32.0;
+/// indicator's hit rect — so they share one top and bottom edge. HIG §9.6's
+/// minimum pointer target (`metrics.min_pointer_target`, 32×32), read from
+/// the density tokens rather than typed; `bar_density_sits_on_the_spacing_scale`
+/// pins that it also lands on `spacing.s8`.
+const BAR_CONTROL_PX: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
 
 /// Pitch between the centre selector's three position dots. Each dot's hit
 /// rect is one pitch wide and [`BAR_CONTROL_PX`] tall, so a 3–5 px glyph
@@ -3520,10 +3531,26 @@ mod tests {
     /// names; this pins them so they cannot drift off it unnoticed.
     #[test]
     fn bar_density_sits_on_the_spacing_scale() {
-        let spacing = Theme::default().tokens.spacing;
+        let tokens = Theme::default().tokens;
+        let spacing = tokens.spacing;
         assert_eq!(BAR_CONTROL_PX, f64::from(spacing.s8));
         assert_eq!(CENTER_DOT_PITCH_PX, f64::from(spacing.s8));
         assert_eq!(TOPBAR_HEIGHT_PX, spacing.s12);
+        // The bar's density is the §9.6 pointer floor plus `s2` of air each
+        // side — derived from `tokens.metrics`, not restated. A bar of
+        // `metrics.bar_height` (40) would hold `bar_control_height` (28)
+        // controls, which the shell's bar deliberately does not: its
+        // controls are pointer targets. Recorded 2026-09-17 (S1 round two).
+        assert_eq!(BAR_CONTROL_PX, f64::from(tokens.metrics.min_pointer_target));
+        assert_eq!(
+            TOPBAR_HEIGHT_PX,
+            tokens.metrics.min_pointer_target + 2.0 * spacing.s2
+        );
+        assert!(
+            TOPBAR_HEIGHT_PX > tokens.metrics.bar_height,
+            "a 32 px control cannot sit in a {} px bar with any air",
+            tokens.metrics.bar_height
+        );
     }
 
     #[test]

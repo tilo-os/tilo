@@ -1,6 +1,7 @@
 //! Device-local find and zoom state, retained with each browser tab.
 use ui::{
     LocalState,
+    tokens::TextRole,
     webview::{SharedEngine, WebViewCommand, WebViewEvent},
     widget::{Button, Container, Row, Text, TextInput, Widget},
 };
@@ -148,28 +149,34 @@ impl DailyControls {
             _ => false,
         }
     }
-    fn button(&self, id: &str, label: &str, action: Action) -> Button {
+    /// `text_scale` is the theme's; these are labelled controls, so their
+    /// explicit width grows with the text it has to hold.
+    fn button(&self, id: &str, label: &str, action: Action, text_scale: f32) -> Button {
         let pending = self.pending.clone();
         // As tall as the address field and the find field these sit beside,
         // so the toolbar row and the find bar each keep one top and one
         // bottom edge. The 32px face left a step down on either side of them.
         Button::new(id, label, None)
-            .with_size(72.0, crate::browser_widget::TOOLBAR_CONTROL_HEIGHT)
+            .with_size(
+                crate::browser_widget::labelled_width(72.0, text_scale),
+                crate::browser_widget::TOOLBAR_CONTROL_HEIGHT,
+            )
             .on_effect(move || pending.set(Some(action)))
     }
-    pub fn launcher(&self) -> Button {
-        self.button("browser.find", "Find", Action::Open)
+    pub fn launcher(&self, text_scale: f32) -> Button {
+        self.button("browser.find", "Find", Action::Open, text_scale)
             .tooltip("Find in page (⌘F / Ctrl+F)")
     }
-    pub fn zoom_reset(&self) -> Button {
+    pub fn zoom_reset(&self, text_scale: f32) -> Button {
         self.button(
             "browser.zoom.reset",
             &format!("{:.0}%", 100.0 * 1.2_f64.powf(self.zoom)),
             Action::Zoom(0),
+            text_scale,
         )
         .tooltip("Zoom: ⌘/Ctrl + Plus or Minus; reset: ⌘/Ctrl+0")
     }
-    pub fn bar(&self) -> Box<dyn Widget> {
+    pub fn bar(&self, text_scale: f32) -> Box<dyn Widget> {
         // `no_wrap`, as the toolbar row above it: a wrapping row let the
         // full-width find field claim the line and pushed the match count,
         // Previous, Next and Done onto a second line beneath it, so the bar
@@ -186,22 +193,25 @@ impl DailyControls {
             ))
             .push(Box::new(
                 Text::new(&format!("{} / {}", self.active.max(0), self.count.max(0)))
-                    .with_size(13.0),
+                    .with_role(TextRole::Body),
             ))
             .push(Box::new(self.button(
                 "browser.find.previous",
                 "Previous",
                 Action::Next(false),
+                text_scale,
             )))
             .push(Box::new(self.button(
                 "browser.find.next",
                 "Next",
                 Action::Next(true),
+                text_scale,
             )))
             .push(Box::new(self.button(
                 "browser.find.close",
                 "Done",
                 Action::Close,
+                text_scale,
             )));
         Box::new(Container::new().with_child(Box::new(row)))
     }

@@ -27,17 +27,79 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::text_metrics::renderer_type_size;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::{Metrics, Spacing};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 pub const FOOTER_HEIGHT: f64 = 56.0;
 pub const HEADER_HEIGHT: f64 = 64.0;
 pub const ROW_HEIGHT: f64 = 28.0;
+/// The breadcrumb row sits one title line (`scale.base` at 1×, ~20 px)
+/// under the header inset.
+const CRUMB_ROW_OFFSET: f64 = 20.0;
+/// Height of a breadcrumb hit rect.
+const CRUMB_ROW_H: f64 = 18.0;
+/// Per-glyph width guess for a crumb that has not been measured yet (before
+/// the first paint); `measure_crumbs` records the real widths.
+const CRUMB_GLYPH_ESTIMATE: f64 = 7.5;
+
+/// Token-derived insets the picker lays out with. Resolved from the theme in
+/// `build_layout` and refreshed at paint, cached because
+/// `apply_layout_helper` runs from event handlers and `set_rect` with no
+/// theme in hand; the draw path reads the same values, so layout and paint
+/// agree at every `ui_scale`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PickerMetrics {
+    /// From the top edge to the title line and the up button (`s2`).
+    header_inset_y: f64,
+    /// Vertical inset of the Save-mode filename field inside its band (`s1`).
+    field_inset_y: f64,
+    /// Horizontal inset of text inside the filename field and filter chip,
+    /// and from a row's edge to its leading icon and on to the name (`s2`).
+    inset_x: f64,
+    /// The up button: a bar control wide (`bar_control_height`) and a large
+    /// glyph tall (`icon_lg`). Recorded (F4 r2): below the 32 px minimum
+    /// pointer target.
+    up_w: f64,
+    up_h: f64,
+    /// From a crumb's left edge to its first glyph (`s1`).
+    crumb_label_inset: f64,
+    /// Room a crumb reserves after its label for the chevron separator (`s3`).
+    crumb_separator_w: f64,
+}
+
+impl PickerMetrics {
+    fn from_theme(theme: &Theme) -> Self {
+        let t = &theme.tokens;
+        Self::from_parts(&t.spacing, &t.metrics)
+    }
+
+    fn from_parts(spacing: &Spacing, metrics: &Metrics) -> Self {
+        Self {
+            header_inset_y: f64::from(spacing.s2),
+            field_inset_y: f64::from(spacing.s1),
+            inset_x: f64::from(spacing.s2),
+            up_w: f64::from(metrics.bar_control_height),
+            up_h: f64::from(metrics.icon_lg),
+            crumb_label_inset: f64::from(spacing.s1),
+            crumb_separator_w: f64::from(spacing.s3),
+        }
+    }
+}
+
+impl Default for PickerMetrics {
+    /// The unscaled reference values, for a picker laid out before it has
+    /// seen a theme.
+    fn default() -> Self {
+        Self::from_parts(&Spacing::BASE, &Metrics::BASE)
+    }
+}
 /// 0 in Open mode.
 const FILENAME_HEIGHT: f64 = 36.0;
 const PADDING: f64 = 12.0;
@@ -181,6 +243,15 @@ pub struct FilePicker {
     entry_rows: Vec<(usize, Rect)>,
     /// `(ancestor_path, rect)` for each clickable breadcrumb segment.
     crumb_rects: Vec<(PathBuf, Rect)>,
+    /// Breadcrumb label widths measured at paint with the frame's renderer.
+    /// `compute_crumb_rects` (which has no renderer, and also runs from the
+    /// event path) prefers these to its per-glyph estimate, so a hit rect
+    /// matches the painted glyphs from the first paint on.
+    crumb_widths: HashMap<String, f64>,
+    /// Token-derived insets from the theme of the latest layout build, so
+    /// the renderer-less layout pass and the draw pass read the same
+    /// `ui_scale`d values. `PickerMetrics::default()` until a theme is seen.
+    metrics: PickerMetrics,
 
     /// `MouseInput` carries no position payload, so this tracks the cursor
     /// for click resolution.
@@ -231,6 +302,8 @@ impl FilePicker {
             filename_rect: Rect::ZERO,
             entry_rows: Vec::new(),
             crumb_rects: Vec::new(),
+            crumb_widths: HashMap::new(),
+            metrics: PickerMetrics::default(),
             last_cursor: Point::ZERO,
             last_click: None,
             hover_entry: None,
@@ -499,18 +572,19 @@ impl FilePicker {
             self.rect.x0 + PADDING + 160.0,
             by1,
         );
+        let m = self.metrics;
         let filename_top = self.rect.y1 - FOOTER_HEIGHT - FILENAME_HEIGHT;
         self.filename_rect = Rect::new(
             self.rect.x0 + PADDING,
-            filename_top + 4.0,
+            filename_top + m.field_inset_y,
             self.rect.x1 - PADDING,
-            filename_top + FILENAME_HEIGHT - 4.0,
+            filename_top + FILENAME_HEIGHT - m.field_inset_y,
         );
 
         let up_x1 = self.rect.x1 - PADDING;
-        let up_x0 = up_x1 - 28.0;
-        let up_top = self.rect.y0 + 8.0;
-        self.up_rect = Rect::new(up_x0, up_top, up_x1, up_top + 24.0);
+        let up_x0 = up_x1 - m.up_w;
+        let up_top = self.rect.y0 + m.header_inset_y;
+        self.up_rect = Rect::new(up_x0, up_top, up_x1, up_top + m.up_h);
 
         self.crumb_rects = self.compute_crumb_rects();
 
@@ -697,10 +771,11 @@ impl FilePicker {
                 segments.push((label, acc.clone()));
             }
         }
-        // No TextRenderer here, so approximate segment widths from label
-        // length — good enough for hit-testing; draw refines x using the
-        // real measure but reuses these rects.
-        let y0 = self.rect.y0 + 8.0 + 20.0;
+        // No TextRenderer here: a segment measured at a previous paint uses
+        // its recorded width, anything else the per-glyph estimate until the
+        // first paint measures it.
+        let m = self.metrics;
+        let y0 = self.rect.y0 + m.header_inset_y + CRUMB_ROW_OFFSET;
         let mut x = self.rect.x0 + PADDING;
         let mut out = Vec::new();
         for (label, target) in segments {
@@ -711,11 +786,48 @@ impl FilePicker {
                 reason = "label is a single path component's display text"
             )]
             let char_count = label.chars().count() as f64;
-            let w = 8.0 + char_count * 7.5 + 12.0; // text + " / "
-            out.push((target, Rect::new(x, y0, x + w, y0 + 18.0)));
+            let text_w = self
+                .crumb_widths
+                .get(&label)
+                .copied()
+                .unwrap_or(char_count * CRUMB_GLYPH_ESTIMATE);
+            let w = m.crumb_label_inset + text_w + m.crumb_separator_w;
+            out.push((target, Rect::new(x, y0, x + w, y0 + CRUMB_ROW_H)));
             x += w;
         }
         out
+    }
+
+    /// Measure every breadcrumb label with the renderer the frame draws with
+    /// and rebuild the crumb rects from those widths, so the hit rects match
+    /// the painted glyphs — and stay matched when an event handler rebuilds
+    /// the layout without a renderer. Runs once per paint.
+    fn measure_crumbs(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let size = theme.tokens.typography.scale.sm;
+        let labels: Vec<String> = (0..self.crumb_rects.len())
+            .filter_map(|idx| self.crumb_label_for(idx))
+            .collect();
+        let mut changed = false;
+        for label in labels {
+            let (tw, _) = text_renderer.measure(&label, size, None);
+            let measured = f64::from(tw);
+            if self.crumb_widths.get(&label) != Some(&measured) {
+                self.crumb_widths.insert(label, measured);
+                changed = true;
+            }
+        }
+        if changed {
+            self.crumb_rects = self.compute_crumb_rects();
+        }
+    }
+
+    /// Adopt `theme`'s insets; re-lay the picker out when they moved.
+    fn adopt_theme(&mut self, theme: &Theme) {
+        let metrics = PickerMetrics::from_theme(theme);
+        if metrics != self.metrics {
+            self.metrics = metrics;
+            self.apply_layout_helper();
+        }
     }
 
     /// Resolve "Open"/"Save": stage the selection (or the typed Save
@@ -858,9 +970,10 @@ impl Widget for FilePicker {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.adopt_theme(theme);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -892,7 +1005,9 @@ impl Widget for FilePicker {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.adopt_theme(theme);
         self.apply_layout_helper();
+        self.measure_crumbs(text_renderer, theme);
         let tokens = &theme.tokens;
         let radius = f64::from(tokens.radii.md);
         let frame = RoundedRect::from_rect(self.rect, radius);
@@ -1211,13 +1326,16 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let title_size = tokens.typography.scale.base;
+        let title_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
         text_renderer.draw_text(
             scene,
             &self.title,
             title_size,
             tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(self.rect.x0 + PADDING, self.rect.y0 + 8.0)),
+            transform.pre_translate(Vec2::new(
+                self.rect.x0 + PADDING,
+                self.rect.y0 + self.metrics.header_inset_y,
+            )),
             None,
         );
         if self.can_go_up() {
@@ -1248,7 +1366,7 @@ impl FilePicker {
                 LUCIDE_DEFAULT_STROKE_PX,
             );
         }
-        let crumb_size = tokens.typography.scale.sm;
+        let crumb_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let crumb_count = self.crumb_rects.len();
         for (idx, (_target, r)) in self.crumb_rects.iter().enumerate() {
             let label = self.crumb_label_for(idx).unwrap_or_default();
@@ -1263,11 +1381,17 @@ impl FilePicker {
                 &label,
                 crumb_size,
                 color,
-                transform.pre_translate(Vec2::new(r.x0 + 4.0, r.y0 + 2.0)),
+                transform
+                    .pre_translate(Vec2::new(r.x0 + self.metrics.crumb_label_inset, r.y0 + 2.0)),
                 None,
             );
             if idx.saturating_add(1) < crumb_count {
-                let sep_rect = Rect::new(r.x1 - 12.0, r.y0, r.x1, r.y0 + 16.0);
+                let sep_rect = Rect::new(
+                    r.x1 - self.metrics.crumb_separator_w,
+                    r.y0,
+                    r.x1,
+                    r.y0 + ROW_ICON_PX,
+                );
                 draw_icon(
                     scene,
                     transform,
@@ -1290,7 +1414,7 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = tokens.typography.scale.sm;
+        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         for (i, rect) in &self.entry_rows {
             let i = *i;
             let is_selected = self.selection.is_selected(i);
@@ -1329,11 +1453,12 @@ impl FilePicker {
                 } else {
                     tokens.colors.text_primary
                 };
+                let inset_x = self.metrics.inset_x;
                 let icon_y = rect.y0 + (ROW_HEIGHT - ROW_ICON_PX) / 2.0;
                 let icon_rect = Rect::new(
-                    rect.x0 + 8.0,
+                    rect.x0 + inset_x,
                     icon_y,
-                    rect.x0 + 8.0 + ROW_ICON_PX,
+                    rect.x0 + inset_x + ROW_ICON_PX,
                     icon_y + ROW_ICON_PX,
                 );
                 draw_icon(
@@ -1353,7 +1478,7 @@ impl FilePicker {
                     row_size,
                     fg,
                     transform.pre_translate(Vec2::new(
-                        rect.x0 + 8.0 + ROW_ICON_PX + 8.0,
+                        rect.x0 + inset_x + ROW_ICON_PX + inset_x,
                         rect.y0 + (ROW_HEIGHT - f64::from(name_h)) / 2.0,
                     )),
                     None,
@@ -1372,7 +1497,7 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = tokens.typography.scale.sm;
+        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if self.mode == FilePickerMode::Save {
             self.draw_filename_field(scene, transform, text_renderer, theme, row_size);
         }
@@ -1468,7 +1593,7 @@ impl FilePicker {
             row_size,
             color,
             transform.pre_translate(Vec2::new(
-                field.x0 + 8.0,
+                field.x0 + self.metrics.inset_x,
                 field.y0 + (field.height() - f64::from(shown_h)) / 2.0,
             )),
             None,
@@ -1524,7 +1649,7 @@ impl FilePicker {
             row_size,
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(
-                self.filter_rect.x0 + 8.0,
+                self.filter_rect.x0 + self.metrics.inset_x,
                 self.filter_rect.y0 + (self.filter_rect.height() - f64::from(filter_h)) / 2.0,
             )),
             None,
@@ -1772,7 +1897,7 @@ fn draw_button(
     // stays visually locked to the retained widget and every converted app.
     let face = crate::widget::ButtonFace::new(rect, label)
         .radius(f64::from(theme.tokens.radii.md))
-        .text_size(theme.tokens.typography.scale.sm)
+        .text_size(renderer_type_size(text_renderer, theme.tokens.typography.scale.sm))
         .weight(crate::text_render::TextWeight::Regular)
         .hovered(is_hover)
         .focused(is_focused)

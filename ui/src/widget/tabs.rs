@@ -1,3 +1,4 @@
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
@@ -278,6 +279,11 @@ pub struct TabBar {
     /// Cached because `apply_layout`, where the reveal is interpolated, has no
     /// `Theme` of its own.
     reduce_motion: bool,
+    /// `tokens.metrics.min_pointer_target`, cached from `build_layout` for
+    /// the same reason: the pointer target of a maximize/search chip is
+    /// derived from its glyph rect at hit-test time (see
+    /// [`Self::action_hit_rect`]).
+    min_pointer_target: f64,
 }
 
 impl TabBar {
@@ -335,6 +341,7 @@ impl TabBar {
             reveal_anim: HashMap::new(),
             reveal_px: Vec::new(),
             reduce_motion: false,
+            min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
         }
     }
 
@@ -547,7 +554,7 @@ impl TabBar {
         } else {
             text_dim
         };
-        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
+        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
         let accent = self.accent_ids.get(&t.id).copied();
@@ -905,7 +912,7 @@ impl TabBar {
             &pill_appearance(theme, false, true, false),
             1.0,
         );
-        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
+        let text_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
         let leading_shift = if let Some(kind) = c.desc.app_kind {
@@ -1190,7 +1197,7 @@ impl TabBar {
         if self.pinned_ids.contains(&t.id) {
             return None;
         }
-        let size = theme.tokens.typography.scale.sm / tr.text_scale();
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title = t.title.clone();
         let id = t.id;
         // Record the shaped advance here — `apply_layout` has no text renderer of
@@ -1594,6 +1601,63 @@ impl TabBar {
     #[cfg(any(test, debug_assertions))]
     pub fn search_rects(&self) -> &[Rect] {
         &self.search_rects
+    }
+
+    /// The pointer target of a maximize/search chip: at least the theme's
+    /// minimum pointer target on a side (HIG §9.6: 32 px), centred on the
+    /// chip's glyph rect, and never outside the bar. The painted chip stays
+    /// `ACTION_W` wide and the pill widths the layout pins do not move, so
+    /// neighbouring targets inside one pill overlap; a hover or press in an
+    /// overlap resolves by priority — close, then maximize, then search —
+    /// which keeps the close target its full 32 px. `Rect::ZERO` for a
+    /// chip the reveal has not placed.
+    pub fn action_hit_rect(&self, chip: Rect) -> Rect {
+        if chip.area() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let side = self
+            .min_pointer_target
+            .max(chip.width())
+            .max(chip.height());
+        let target = square_at(chip.center(), side);
+        if self.rect.area() > 0.0 {
+            target.intersect(self.rect)
+        } else {
+            target
+        }
+    }
+
+    /// The action chip of any pill under `p`, as `(tab index, chip)`. A
+    /// painted glyph wins outright — the maximize and search glyphs never
+    /// overlap, so a press on what the eye sees goes where the eye expects
+    /// — and only a point in neither glyph falls to the enlarged targets,
+    /// by priority: maximize, then search. Points inside a close target are
+    /// the close chip's and are resolved before this is consulted.
+    fn action_chip_at(&self, p: Point) -> Option<(usize, ActionChip)> {
+        let glyph = (0..self.tabs.len()).find_map(|i| {
+            let max = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
+            let search = self.search_rects.get(i).copied().unwrap_or(Rect::ZERO);
+            if max.area() > 0.0 && max.contains(p) {
+                Some((i, ActionChip::Maximize))
+            } else if search.area() > 0.0 && search.contains(p) {
+                Some((i, ActionChip::Search))
+            } else {
+                None
+            }
+        });
+        glyph.or_else(|| {
+            (0..self.tabs.len()).find_map(|i| {
+                let max = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
+                let search = self.search_rects.get(i).copied().unwrap_or(Rect::ZERO);
+                if self.action_hit_rect(max).contains(p) {
+                    Some((i, ActionChip::Maximize))
+                } else if self.action_hit_rect(search).contains(p) {
+                    Some((i, ActionChip::Search))
+                } else {
+                    None
+                }
+            })
+        })
     }
     /// Insert before the first pill whose horizontal midpoint is past
     /// `release_point.x`; append if past every midpoint.
@@ -2031,6 +2095,13 @@ fn title_x0(r: Rect, leading_shift: f64) -> f64 {
     r.x0 + PILL_PAD_X + leading_shift
 }
 
+/// The two hover-reveal action chips a pill carries besides close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionChip {
+    Maximize,
+    Search,
+}
+
 /// The round a hovered action chip paints behind its glyph: `CLOSE_W`
 /// square on the chip's centre, so it is the same disc the close chip
 /// paints, not a capsule the height of the chip's pointer target.
@@ -2054,6 +2125,7 @@ impl Widget for TabBar {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
+        self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // `TAB_BAR_HEIGHT` is a fixed 44px layout constant, well inside `f32`'s
         // exact-integer range.
         #[allow(
@@ -2145,7 +2217,15 @@ impl Widget for TabBar {
             );
             let close_hit = if close.area() > 0.0 {
                 let hit_w = CLOSE_HIT_PX.min(r.width());
-                Rect::new(r.x1 - hit_w, r.y0, r.x1, r.y1)
+                // The destructive target never sits on the painted maximize
+                // glyph: `chip_rects` already places that glyph outside it,
+                // and this keeps it so whatever the cluster's numbers.
+                let x0 = if max_rect.area() > 0.0 {
+                    (r.x1 - hit_w).max(max_rect.x1)
+                } else {
+                    r.x1 - hit_w
+                };
+                Rect::new(x0, r.y0, r.x1, r.y1)
             } else {
                 Rect::ZERO
             };
@@ -2903,16 +2983,20 @@ impl TabBar {
         self.hover_close_idx = (0..self.tabs.len())
             .find(|&i| self.close_hit_rect(i).is_some_and(|r| r.contains(p)))
             .filter(|&i| !is_pinned_at(i));
-        self.hover_max_idx = self
-            .max_rects
-            .iter()
-            .position(|r| r.contains(p))
-            .filter(|&i| !is_pinned_at(i));
-        self.hover_search_idx = self
-            .search_rects
-            .iter()
-            .position(|r| r.contains(p))
-            .filter(|&i| !is_pinned_at(i));
+        // One point lights one chip: the close target first, then a painted
+        // action glyph, then the enlarged action targets by priority — the
+        // same resolution the press uses.
+        let action = if self.hover_close_idx.is_some() {
+            None
+        } else {
+            self.action_chip_at(p).filter(|&(i, _)| !is_pinned_at(i))
+        };
+        self.hover_max_idx = action
+            .filter(|&(_, chip)| chip == ActionChip::Maximize)
+            .map(|(i, _)| i);
+        self.hover_search_idx = action
+            .filter(|&(_, chip)| chip == ActionChip::Search)
+            .map(|(i, _)| i);
         self.hover_idx = self.tab_rects.iter().position(|r| r.contains(p));
         self.hover_new_tab = self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
         if let Some((idx, origin)) = self.press_origin
@@ -2972,16 +3056,18 @@ impl TabBar {
                     .is_some_and(|r| r.contains(cursor_pos))
             })
             .filter(|&i| !is_pinned_at(i));
-        let max_idx = self
-            .max_rects
-            .iter()
-            .position(|r| r.contains(cursor_pos))
-            .filter(|&i| !is_pinned_at(i));
-        let search_idx = self
-            .search_rects
-            .iter()
-            .position(|r| r.contains(cursor_pos))
-            .filter(|&i| !is_pinned_at(i));
+        let action = if close_idx.is_some() {
+            None
+        } else {
+            self.action_chip_at(cursor_pos)
+                .filter(|&(i, _)| !is_pinned_at(i))
+        };
+        let max_idx = action
+            .filter(|&(_, chip)| chip == ActionChip::Maximize)
+            .map(|(i, _)| i);
+        let search_idx = action
+            .filter(|&(_, chip)| chip == ActionChip::Search)
+            .map(|(i, _)| i);
 
         // Sits in the bar's trailing space, also the whole-group drag-grab
         // zone, so it must win the press first.
@@ -5492,6 +5578,156 @@ mod tests {
         assert!((ring.center().y - max_rect.center().y).abs() < 1e-9);
         let search_ring = chip_hover_ring(search);
         assert_eq!(search_ring.size(), ring.size(), "one shape for both action chips");
+    }
+
+    /// A maximize/search chip's pointer target is the theme's minimum
+    /// pointer target (32 px) centred on its 14 px glyph and inside the
+    /// bar, while the painted chip and the pill widths the layout pins stay
+    /// exactly where they were.
+    #[test]
+    fn action_chips_have_a_minimum_pointer_target_centred_on_the_glyph() {
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Files"),
+            ],
+            1,
+        );
+        lay_out_at_width(&mut b, 640.0);
+        let min = f64::from(crate::theme::Theme::dark().tokens.metrics.min_pointer_target);
+        let pill = Rect::new(
+            100.0,
+            b.rect.y0 + TAB_PILL_INSET_Y,
+            500.0,
+            b.rect.y1 - TAB_PILL_INSET_Y,
+        );
+        let (_, max_rect, search) =
+            chip_rects(pill, CHIP_CLUSTER_W, false, CLOSE_W, CLOSE_INSET, ACTION_W, ACTION_W);
+        assert_eq!(max_rect.width(), ACTION_W, "the painted chip does not widen");
+        for (name, chip) in [("maximize", max_rect), ("search", search)] {
+            let hit = b.action_hit_rect(chip);
+            assert!(
+                hit.width() >= min && hit.height() >= min,
+                "{name} target {hit:?} is below the {min} px minimum"
+            );
+            assert!(
+                (hit.center().x - chip.center().x).abs() < 1e-9
+                    && (hit.center().y - chip.center().y).abs() < 1e-9,
+                "{name} target is centred on its glyph"
+            );
+            assert!(
+                hit.y0 >= b.rect.y0 && hit.y1 <= b.rect.y1,
+                "{name} target stays inside the bar"
+            );
+            let beside = Point::new(chip.x0 - 4.0, chip.center().y);
+            assert!(
+                !chip.contains(beside) && hit.contains(beside),
+                "a press beside the {name} glyph lands on its target"
+            );
+        }
+        assert_eq!(
+            b.action_hit_rect(Rect::ZERO),
+            Rect::ZERO,
+            "an unrevealed chip has no target"
+        );
+    }
+
+    /// The enlarged targets overlap inside one pill; a hover or press in the
+    /// overlap resolves to one chip by priority (close, maximize, search),
+    /// and a point in the old 4 px dead gap between two glyphs now lands.
+    #[test]
+    fn overlapping_action_targets_resolve_to_one_chip_by_priority() {
+        let mut b = bar();
+        b.rect = Rect::new(0.0, 0.0, 252.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+            Rect::new(172.0, 6.0, 252.0, 34.0),
+        ];
+        b.close_rects = vec![
+            Rect::new(60.0, 10.0, 78.0, 30.0),
+            Rect::new(146.0, 10.0, 164.0, 30.0),
+            Rect::new(232.0, 10.0, 250.0, 30.0),
+        ];
+        b.max_rects = vec![
+            Rect::new(40.0, 10.0, 56.0, 30.0),
+            Rect::new(126.0, 10.0, 142.0, 30.0),
+            Rect::new(212.0, 10.0, 228.0, 30.0),
+        ];
+        b.search_rects = vec![
+            Rect::new(20.0, 10.0, 36.0, 30.0),
+            Rect::new(106.0, 10.0, 122.0, 30.0),
+            Rect::new(192.0, 10.0, 208.0, 30.0),
+        ];
+        let mut handled = false;
+        // Between B's search glyph (ends at 122) and maximize glyph (starts
+        // at 126): inside both enlarged targets — maximize wins.
+        b.on_cursor_moved(winit::dpi::PhysicalPosition::new(124.0, 20.0), 1.0, &mut handled);
+        assert_eq!(b.hover_max_idx, Some(1));
+        assert_eq!(b.hover_search_idx, None, "one point lights one chip");
+        // Left of the search glyph, inside its target only.
+        b.on_cursor_moved(winit::dpi::PhysicalPosition::new(100.0, 20.0), 1.0, &mut handled);
+        assert_eq!(b.hover_search_idx, Some(1));
+        assert_eq!(b.hover_max_idx, None);
+        // The press resolves the same way, from the authoritative rects.
+        b.last_cursor = Point::new(124.0, 20.0);
+        b.hover_idx = Some(1);
+        b.on_left_press(&mut handled);
+        assert_eq!(b.pending_max, Some(2), "the overlap press fires maximize on tab B");
+        assert_eq!(b.pending_search, None);
+    }
+
+    /// On a live, hover-revealed pill the close target never covers the
+    /// painted maximize glyph, and a press on a painted glyph goes to that
+    /// chip whatever the enlarged targets around it would say — glyph
+    /// first, then targets by priority. Closing is destructive; it must
+    /// never be what a press on a visible secondary glyph does.
+    #[test]
+    fn close_target_stays_off_the_maximize_glyph_and_glyphs_win_over_targets() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let width = 640.0;
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Files"),
+            ],
+            1,
+        );
+        lay_out_at_width_with(&mut b, width, &theme);
+        hover_pill(&mut b, 0, width, &theme);
+        let max = b.max_rects()[0];
+        let search = b.search_rects()[0];
+        assert!(
+            max.area() > 0.0 && search.area() > 0.0,
+            "hovering the active pill reveals both action chips"
+        );
+        let close_hit = b.close_hit_rect(0).expect("the active pill has a close target");
+        assert!(
+            close_hit.x0 >= max.x1,
+            "close target {close_hit:?} starts after the maximize glyph {max:?}"
+        );
+        assert!(close_hit.width() >= CLOSE_HIT_PX - 1e-9, "and keeps its 32 px");
+
+        // The search glyph's trailing edge lies inside the enlarged maximize
+        // target; the painted glyph wins over the target.
+        let on_search_glyph = Point::new(search.x1 - 1.0, search.center().y);
+        assert!(
+            b.action_hit_rect(max).contains(on_search_glyph),
+            "the overlap this test relies on exists"
+        );
+        let mut handled = false;
+        b.last_cursor = on_search_glyph;
+        b.on_left_press(&mut handled);
+        assert_eq!(b.pending_search.take(), Some(1), "a press on the search glyph searches");
+        assert_eq!(b.pending_max, None);
+
+        // A press on the maximize glyph maximizes and never closes.
+        b.last_cursor = max.center();
+        b.on_left_press(&mut handled);
+        assert_eq!(b.pending_max.take(), Some(1));
+        assert_eq!(b.pending_close, None, "the destructive chip never takes a maximize press");
     }
 
     /// A chip's hover wash is measured against the ground, so it is light

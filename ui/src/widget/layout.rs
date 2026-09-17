@@ -7,8 +7,104 @@ use taffy::style_helpers::length;
 use taffy::{AvailableSpace, LengthPercentage, NodeId, Size, TaffyTree};
 
 use super::Widget;
+use crate::Theme;
 use crate::bound_dispatch::{BoundNodeMap, mutate_bound_node};
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
+use crate::tokens::Typography;
+
+/// What sizes an extent handed to a responsive shell (HIG §9.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtentSizing {
+    /// A destination list, an overview column, a breakpoint: sized by the
+    /// text it holds, so it grows by [`Theme::responsive_scale`]
+    /// (`ui_scale × text_scale.max(1.0)`).
+    Text,
+    /// An icon rail: glyphs, not text, so it follows [`Theme::ui_scale`]
+    /// alone.
+    Icon,
+}
+
+/// A breakpoint or pane width **authored at 1×** for a responsive shell
+/// (`NavSplit`, `NavShell`, `AppShell`, `SidebarDrawer`), resolved against
+/// the theme once when the tree is built. The one place the
+/// authored-to-resolved rule lives, so the four shells cannot drift.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AuthoredExtent {
+    px: f64,
+    sizing: ExtentSizing,
+}
+
+impl AuthoredExtent {
+    /// A text-sized extent authored at 1×.
+    #[must_use]
+    pub const fn text(px: f64) -> Self {
+        Self {
+            px,
+            sizing: ExtentSizing::Text,
+        }
+    }
+
+    /// An icon-sized extent (a rail) authored at 1×.
+    #[must_use]
+    pub const fn icon(px: f64) -> Self {
+        Self {
+            px,
+            sizing: ExtentSizing::Icon,
+        }
+    }
+
+    /// The authored 1× value.
+    #[must_use]
+    pub const fn authored(&self) -> f64 {
+        self.px
+    }
+
+    #[must_use]
+    pub const fn sizing(&self) -> ExtentSizing {
+        self.sizing
+    }
+
+    /// The same sizing with a new authored value (a per-frame setter).
+    #[must_use]
+    pub const fn with_px(self, px: f64) -> Self {
+        Self { px, ..self }
+    }
+
+    /// The extent as laid out under `theme`: identity on a stock theme.
+    #[must_use]
+    pub fn resolve(&self, theme: &Theme) -> f64 {
+        self.resolve_with(theme.responsive_scale(), f64::from(theme.ui_scale))
+    }
+
+    /// [`Self::resolve`] from the two factors, for a helper that caches
+    /// them instead of holding a theme (`SidebarDrawer`).
+    #[must_use]
+    pub fn resolve_with(&self, responsive_scale: f64, ui_scale: f64) -> f64 {
+        self.px
+            * match self.sizing {
+                ExtentSizing::Text => responsive_scale,
+                ExtentSizing::Icon => ui_scale,
+            }
+    }
+}
+
+/// Height of a shell control that carries one line of body text — a Back
+/// chip, the slot a search field sits in — authored at 1× as `authored`
+/// logical px.
+///
+/// It grows with `ui_scale` like every metric, and once the theme's body line
+/// (`typography.scale.base` at the current text scale) outgrows the room the
+/// authored height left for it, by exactly that difference: the authored
+/// padding around the line is kept and the label never overflows the control.
+/// Unchanged on a stock theme, so 1× geometry is exactly what was authored.
+#[must_use]
+pub fn text_control_height(authored: f64, theme: &Theme) -> f64 {
+    let ui = f64::from(theme.ui_scale);
+    let line_at_1x = f64::from(TextStyle::new(Typography::default().scale.base).line_height_px());
+    let line_now = f64::from(TextStyle::new(theme.tokens.typography.scale.base).line_height_px());
+    let padding = (authored - line_at_1x).max(0.0) * ui;
+    (authored * ui).max(line_now + padding)
+}
 
 /// Uniform padding on all four sides, in logical pixels. Pass a token
 /// (`theme.padding_standard`, `theme.tokens.spacing.s4`), not a number.
@@ -534,6 +630,55 @@ mod tests {
             _: &TaffyTree<()>,
         ) {
         }
+    }
+
+    /// HIG §9.6 in one place: text-sized extents grow by
+    /// `ui_scale × text_scale.max(1.0)`, icon-sized ones by `ui_scale`.
+    #[test]
+    fn authored_extents_resolve_by_their_sizing() {
+        let text = AuthoredExtent::text(760.0);
+        let icon = AuthoredExtent::icon(86.0);
+        assert_eq!((text.resolve(&Theme::dark()), icon.resolve(&Theme::dark())), (760.0, 86.0));
+        let two = Theme::dark().with_text_scale(2.0);
+        assert_eq!((text.resolve(&two), icon.resolve(&two)), (1520.0, 86.0));
+        let small = Theme::dark().with_text_scale(0.75);
+        assert_eq!(text.resolve(&small), 760.0, "text never shrinks an extent");
+        let dense = Theme::dark().with_ui_scale(1.5);
+        assert!((text.resolve(&dense) - 1140.0).abs() < 1e-9);
+        assert!((icon.resolve(&dense) - 129.0).abs() < 1e-9);
+        assert_eq!(text.with_px(300.0), AuthoredExtent::text(300.0));
+        assert_eq!(icon.with_px(56.0).sizing(), ExtentSizing::Icon);
+        assert_eq!(text.authored(), 760.0);
+    }
+
+    /// The authored height holds until the body line outgrows the room it
+    /// left; then the line grows and the authored padding is kept.
+    #[test]
+    fn text_control_height_keeps_the_authored_height_until_the_line_outgrows_it() {
+        let stock = Theme::dark();
+        assert_eq!(text_control_height(34.0, &stock), 34.0);
+        assert_eq!(text_control_height(36.0, &stock), 36.0);
+
+        let line_1x = f64::from(TextStyle::new(stock.tokens.typography.scale.base).line_height_px());
+        let two = Theme::dark().with_text_scale(2.0);
+        let line_2x = f64::from(TextStyle::new(two.tokens.typography.scale.base).line_height_px());
+        assert!((line_2x - 2.0 * line_1x).abs() < 1e-3, "the theme's body line doubles");
+        let grown = text_control_height(34.0, &two);
+        assert!(
+            (grown - (line_2x + (34.0 - line_1x))).abs() < 1e-6,
+            "34 px at 1× becomes the 2× line plus the same padding, got {grown}"
+        );
+        assert!(grown > 34.0 && grown < 68.0, "grows by the line, not by the whole scale");
+
+        let smaller = Theme::dark().with_text_scale(0.75);
+        assert_eq!(
+            text_control_height(34.0, &smaller),
+            34.0,
+            "smaller text never shrinks a control below its authored height"
+        );
+
+        let dense = Theme::dark().with_ui_scale(1.5);
+        assert!((text_control_height(34.0, &dense) - 51.0).abs() < 1e-6, "ui_scale scales the whole control");
     }
 
     #[test]

@@ -52,6 +52,33 @@ use crate::strings::tr;
 const BAR_H: f32 = 48.0;
 const PAD: f32 = 12.0;
 
+/// The photo-details sheet, authored at 1×: title 16 px down, subtitle at 48,
+/// fields from 90 on a 60 px pitch (label, 38 px input), a 44 px footer whose
+/// buttons end 20 px above the edge — 408 px in all. The spacing that used to
+/// be `literal × text scale` still scales; the line boxes are now measured,
+/// so a wrapped 200% subtitle pushes the fields down instead of under
+/// "Folder", and the field list scrolls beneath the pinned footer when the
+/// viewport caps the sheet (the footer used to paint over "Captured").
+const SHEET_INSET: f64 = 16.0;
+const SHEET_TOP_PAD: f64 = 16.0;
+const SHEET_TITLE_GAP: f64 = 9.5;
+const SHEET_SUBTITLE_GAP: f64 = 27.0;
+const SHEET_LABEL_GAP: f64 = 2.0;
+const SHEET_INPUT_H: f64 = 38.0;
+const SHEET_FIELD_GAP: f64 = 5.0;
+const SHEET_CONTENT_PAD_BOTTOM: f64 = 11.0;
+const SHEET_BODY_FOOTER_GAP: f64 = 8.0;
+const SHEET_FOOTER_H: f64 = 64.0;
+const SHEET_BUTTON_H: f64 = 44.0;
+const SHEET_TITLE: &str = "Photo details";
+const SHEET_SUBTITLE: &str = "Shared labels only — no automatic people identification";
+const SHEET_FIELD_LABELS: [&str; 4] = [
+    "Folder",
+    "People (comma-separated)",
+    "Tags (comma-separated)",
+    "Captured",
+];
+
 /// Button height. Deliberately shorter than the bar so the controls sit in
 /// the strip rather than filling it edge to edge.
 const BTN_H: f32 = 34.0;
@@ -72,7 +99,12 @@ const STATUS_PAD_Y: f32 = 4.0;
 /// Line height the renderer will give `size` at `text_scale` — the default
 /// `TextStyle` leading on the scaled size, not a local copy of that factor.
 fn line_h(size: f32, text_scale: f32) -> f32 {
-    ui::text_render::TextStyle::new(size * text_scale).line_height_px()
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a line height in logical px fits f32 exactly as the renderer reports it"
+    )]
+    let line = ui::text_metrics::line_height_px(size, text_scale) as f32;
+    line
 }
 
 /// Toolbar capsule height at `text_scale`: the authored [`BTN_H`] at 1×.
@@ -593,6 +625,18 @@ pub struct PhotosApp {
     /// Tab order in the details sheet: four shared fields, Cancel, Save.
     metadata_editor_focus: usize,
     metadata_editor_hits: Vec<(MetadataEditorHit, Rect)>,
+    /// Scroll offset of the sheet's field list. The sheet is capped at the
+    /// viewport and its footer is pinned, so when the fields need more room
+    /// than that leaves (200% text on an 800×900 window) they scroll under
+    /// the footer instead of the footer painting over the last field.
+    metadata_editor_scroll: f64,
+    /// The field list's visible region from the last paint — where wheel
+    /// events scroll and outside which presses are not forwarded to a
+    /// scrolled-away input.
+    metadata_editor_body: Rect,
+    /// Set when keyboard focus moves; the next paint scrolls that field into
+    /// view.
+    metadata_editor_reveal_focus: bool,
     /// At most two viewportfuls of decoded thumbnails.  Originals are never
     /// scanned at draw time, and a large library cannot turn a frame into a
     /// disk-I/O loop.
@@ -720,6 +764,9 @@ impl PhotosApp {
             metadata_captured_at_input: TextInput::local().with_id("photos-metadata-captured-at"),
             metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
+            metadata_editor_scroll: 0.0,
+            metadata_editor_body: Rect::ZERO,
+            metadata_editor_reveal_focus: false,
             library_thumbnails: HashMap::new(),
             thumbnail_unavailable: HashSet::new(),
             original_decode_failed: None,
@@ -1151,6 +1198,8 @@ impl PhotosApp {
         self.metadata_tags_input.set_focus(false);
         self.metadata_captured_at_input.set_focus(false);
         self.metadata_editor_focus = 0;
+        self.metadata_editor_scroll = 0.0;
+        self.metadata_editor_reveal_focus = true;
         self.album_editor = false;
         // The sheet owns the full privacy explanation. Keeping a duplicate
         // in the persistent status band made it wrap below a phone viewport.
@@ -1203,6 +1252,7 @@ impl PhotosApp {
 
     fn set_metadata_editor_focus(&mut self, focus: usize) {
         self.metadata_editor_focus = focus.min(5);
+        self.metadata_editor_reveal_focus = true;
         self.metadata_folder_input.set_focus(focus == 0);
         self.metadata_people_input.set_focus(focus == 1);
         self.metadata_tags_input.set_focus(focus == 2);
@@ -1542,12 +1592,40 @@ impl PhotosApp {
                 _ => {}
             }
         }
+        // A wheel over the sheet scrolls its field list (clamped at paint,
+        // where the content height is known).
+        if let winit::event::WindowEvent::MouseWheel { delta, .. } = event
+            && self.metadata_editor_body.contains(self.pointer)
+        {
+            let dy = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
+                // Physical pixels, like every pointer position this app
+                // converts; without the division a 2× display scrolls twice
+                // the trackpad distance.
+                winit::event::MouseScrollDelta::PixelDelta(position) => position.y / scale_factor,
+            };
+            self.metadata_editor_scroll = (self.metadata_editor_scroll - dy).max(0.0);
+            *handled = true;
+            return true;
+        }
+        // A press outside the field list's visible region belongs to the
+        // pinned footer (or the scrim), never to an input scrolled under it.
+        let press_outside_body = matches!(
+            event,
+            winit::event::WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                ..
+            }
+        ) && !self.metadata_editor_body.contains(self.pointer);
         for input in [
             &mut self.metadata_folder_input,
             &mut self.metadata_people_input,
             &mut self.metadata_tags_input,
             &mut self.metadata_captured_at_input,
         ] {
+            if press_outside_body {
+                break;
+            }
             let mut sink = None;
             input.handle_event(
                 event,
@@ -3079,24 +3157,33 @@ impl PhotosApp {
                         ),
                     );
                 }
+                // Label and pencil centred on the control's centre line
+                // (the label used to be top-anchored 14 px down, so its 200%
+                // line ran into the face's bottom edge while the glyph sat
+                // 8 px higher).
+                let (_, details_h) = text_renderer.measure_weighted(
+                    "Details",
+                    11.0,
+                    Some((details.width() - 30.0) as f32),
+                    TextWeight::Medium,
+                );
                 text_renderer.draw_text_weighted(
                     scene,
                     "Details",
                     11.0,
                     theme.tokens.colors.accent[6],
-                    transform * Affine::translate((details.x0 + 26.0, details.y0 + 14.0)),
+                    transform
+                        * Affine::translate((
+                            details.x0 + 26.0,
+                            details.center().y - f64::from(details_h) / 2.0,
+                        )),
                     Some((details.width() - 30.0) as f32),
                     TextWeight::Medium,
                 );
                 draw_icon(
                     scene,
                     transform,
-                    Rect::new(
-                        details.x0 + 10.0,
-                        details.y0 + 14.0,
-                        details.x0 + 26.0,
-                        details.y0 + 30.0,
-                    ),
+                    Rect::from_center_size((details.x0 + 18.0, details.center().y), (16.0, 16.0)),
                     Icon::Pencil,
                     theme.tokens.colors.accent[6],
                     1.5,
@@ -3687,32 +3774,90 @@ impl PhotosApp {
         let narrow = bounds.width() < 620.0;
         let panel_w = if narrow { bounds.width() - 16.0 } else { 420.0 };
         let scale = f64::from(theme.text_scale);
-        // Keep each field's scaled label, input, and its own focus ring on a
-        // separate line. The former fixed 66px rhythm made 200% text paint
-        // through the next field and the footer actions.
-        let panel_h = (408.0 * scale).min((bounds.height() - 24.0).max(0.0));
+        let panel_x0 = if narrow {
+            bounds.x0 + 8.0
+        } else {
+            bounds.x1 - panel_w - 12.0
+        };
+        let panel_x1 = if narrow {
+            bounds.x1 - 8.0
+        } else {
+            bounds.x1 - 12.0
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "sheet widths are ordinary logical-pixel values"
+        )]
+        let inner_w = (panel_x1 - panel_x0 - 2.0 * SHEET_INSET).max(0.0) as f32;
+
+        // Measured header and field rhythm (see the `SHEET_*` constants).
+        let (_, title_h) =
+            text_renderer.measure_weighted(SHEET_TITLE, 18.0, Some(inner_w), TextWeight::Medium);
+        let (_, subtitle_h) = text_renderer.measure_weighted(
+            SHEET_SUBTITLE,
+            12.0,
+            Some(inner_w),
+            TextWeight::Regular,
+        );
+        let label_h = SHEET_FIELD_LABELS
+            .iter()
+            .map(|label| {
+                f64::from(
+                    text_renderer
+                        .measure_weighted(label, 12.0, Some(inner_w), TextWeight::Regular)
+                        .1,
+                )
+            })
+            .fold(0.0_f64, f64::max);
+        let title_top = SHEET_TOP_PAD * scale;
+        let subtitle_top = title_top + f64::from(title_h) + SHEET_TITLE_GAP;
+        let fields_top = subtitle_top + f64::from(subtitle_h) + SHEET_SUBTITLE_GAP;
+        let input_h = SHEET_INPUT_H * scale;
+        let field_gap = SHEET_FIELD_GAP * scale;
+        let field_h = label_h + SHEET_LABEL_GAP * scale + input_h;
+        let field_pitch = field_h + field_gap;
+        let content_h = fields_top + 4.0 * field_pitch - field_gap + SHEET_CONTENT_PAD_BOTTOM;
+        let footer_h = SHEET_FOOTER_H * scale;
+        let wanted_h = content_h + SHEET_BODY_FOOTER_GAP + footer_h;
+        let panel_h = wanted_h.min((bounds.height() - 24.0).max(0.0));
         let panel = Rect::new(
-            if narrow {
-                bounds.x0 + 8.0
-            } else {
-                bounds.x1 - panel_w - 12.0
-            },
+            panel_x0,
             if narrow {
                 (bounds.y1 - panel_h - 8.0).max(bounds.y0 + 8.0)
             } else {
                 bounds.y0 + 12.0
             },
-            if narrow {
-                bounds.x1 - 8.0
-            } else {
-                bounds.x1 - 12.0
-            },
+            panel_x1,
             if narrow {
                 bounds.y1 - 8.0
             } else {
                 (bounds.y0 + 12.0 + panel_h).min(bounds.y1 - 8.0)
             },
         );
+        // The footer is pinned; the header and fields scroll in the body
+        // above it when the capped sheet cannot hold them all.
+        let footer_top = panel.y1 - footer_h;
+        let body = Rect::new(
+            panel.x0,
+            panel.y0,
+            panel.x1,
+            (footer_top - SHEET_BODY_FOOTER_GAP).max(panel.y0),
+        );
+        let max_scroll = (content_h - body.height()).max(0.0);
+        if std::mem::take(&mut self.metadata_editor_reveal_focus) && self.metadata_editor_focus < 4
+        {
+            let top = fields_top + self.metadata_editor_focus as f64 * field_pitch;
+            let bottom = top + field_h;
+            if top - self.metadata_editor_scroll < 0.0 {
+                self.metadata_editor_scroll = top - SHEET_INSET;
+            } else if bottom - self.metadata_editor_scroll > body.height() {
+                self.metadata_editor_scroll = bottom - body.height() + SHEET_INSET;
+            }
+        }
+        self.metadata_editor_scroll = self.metadata_editor_scroll.clamp(0.0, max_scroll);
+        self.metadata_editor_body = body;
+        let origin_y = panel.y0 - self.metadata_editor_scroll;
+
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -3720,6 +3865,59 @@ impl PhotosApp {
             None,
             &panel,
         );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &body,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            SHEET_TITLE,
+            18.0,
+            theme.text_primary,
+            transform * Affine::translate((panel.x0 + SHEET_INSET, origin_y + title_top)),
+            Some(inner_w),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            SHEET_SUBTITLE,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((panel.x0 + SHEET_INSET, origin_y + subtitle_top)),
+            Some(inner_w),
+            TextWeight::Regular,
+        );
+        let fields = [
+            &mut self.metadata_folder_input,
+            &mut self.metadata_people_input,
+            &mut self.metadata_tags_input,
+            &mut self.metadata_captured_at_input,
+        ];
+        for (index, (label, input)) in SHEET_FIELD_LABELS.iter().zip(fields).enumerate() {
+            let y = origin_y + fields_top + index as f64 * field_pitch;
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                12.0,
+                theme.text_dim,
+                transform * Affine::translate((panel.x0 + SHEET_INSET, y)),
+                Some(inner_w),
+                TextWeight::Regular,
+            );
+            let input_top = y + label_h + SHEET_LABEL_GAP * scale;
+            input.apply_layout_external(Rect::new(
+                panel.x0 + SHEET_INSET,
+                input_top,
+                panel.x1 - SHEET_INSET,
+                input_top + input_h,
+            ));
+            input.draw(scene, transform, text_renderer, theme, presence);
+        }
+        scene.pop_layer();
+        // Top hairline over the (possibly scrolled) content.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -3727,64 +3925,19 @@ impl PhotosApp {
             None,
             &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
         );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Photo details",
-            18.0,
-            theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0 * scale)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Shared labels only — no automatic people identification",
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 48.0 * scale)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
-        let fields = [
-            ("Folder", &mut self.metadata_folder_input),
-            ("People (comma-separated)", &mut self.metadata_people_input),
-            ("Tags (comma-separated)", &mut self.metadata_tags_input),
-            ("Captured", &mut self.metadata_captured_at_input),
-        ];
-        for (index, (label, input)) in fields.into_iter().enumerate() {
-            // Leave a full scaled line after the privacy subtitle.  At 200%
-            // the sentence wraps, so the old 70px origin put “Folder” on its
-            // second line even though the field rectangles themselves fit.
-            let y = panel.y0 + 90.0 * scale + index as f64 * 60.0 * scale;
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                theme.text_dim,
-                transform * Affine::translate((panel.x0 + 16.0, y)),
-                Some((panel.width() - 32.0) as f32),
-                TextWeight::Regular,
-            );
-            input.apply_layout_external(Rect::new(
-                panel.x0 + 16.0,
-                y + 17.0 * scale,
-                panel.x1 - 16.0,
-                y + 55.0 * scale,
-            ));
-            input.draw(scene, transform, text_renderer, theme, presence);
-        }
-        let y = panel.y1 - 64.0 * scale;
+        let y = footer_top;
+        let button_h = SHEET_BUTTON_H * scale;
         let cancel = Rect::new(
-            panel.x0 + 16.0,
+            panel.x0 + SHEET_INSET,
             y,
             panel.x0 + 112.0 * scale,
-            y + 44.0 * scale,
+            y + button_h,
         );
         let save = Rect::new(
             panel.x1 - 96.0 * scale,
             y,
-            panel.x1 - 16.0,
-            y + 44.0 * scale,
+            panel.x1 - SHEET_INSET,
+            y + button_h,
         );
         for (hit, rect, label, color) in [
             (
@@ -3810,12 +3963,24 @@ impl PhotosApp {
                 None,
                 &rect,
             );
+            // Label centred on its measured line (the old `14 × scale` top
+            // offset only matched the line at 1×).
+            let (_, label_line) = text_renderer.measure_weighted(
+                label,
+                13.0,
+                Some((rect.width() - 16.0) as f32),
+                TextWeight::Medium,
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0 * scale)),
+                transform
+                    * Affine::translate((
+                        rect.x0 + 10.0,
+                        rect.center().y - f64::from(label_line) / 2.0,
+                    )),
                 Some((rect.width() - 16.0) as f32),
                 TextWeight::Medium,
             );
@@ -5749,6 +5914,105 @@ mod tests {
         );
         // Icon-only items stay square at every scale.
         assert_eq!(item_width(Face::IconOnly, "", btn_h(2.0)), btn_h(2.0));
+    }
+
+    /// 2026-09-17 review: at 200% on an 800×900 window the details sheet was
+    /// capped at the viewport while its fields kept a `60 × scale` pitch and
+    /// the footer stayed bottom-anchored, so Cancel / Save painted over the
+    /// "Captured" field. The field list now scrolls under the pinned footer:
+    /// focusing the last field reveals it inside the visible body, and the
+    /// footer always sits below that body.
+    #[test]
+    fn metadata_sheet_footer_never_covers_a_focused_field() {
+        for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
+            let mut app = PhotosApp::new();
+            let mut doc = AutoCommit::new();
+            app.show_library();
+            let staging = tempfile::tempdir().expect("staging dir");
+            crate::seed_scenario(&mut app, &mut doc, "metadata-edit", staging.path());
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(theme.text_scale);
+            for frame in 0..3 {
+                if frame == 1 {
+                    assert!(
+                        app.metadata_editor,
+                        "the metadata-edit scenario opens the sheet"
+                    );
+                    app.set_metadata_editor_focus(3);
+                }
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                app.sync(&mut doc, &automerge::ROOT);
+                let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy
+                    .new_with_children(
+                        Style {
+                            size: Size {
+                                width: Dimension::length(w),
+                                height: Dimension::length(h),
+                            },
+                            ..Default::default()
+                        },
+                        &[child],
+                    )
+                    .unwrap();
+                let measure_map = node_map.clone();
+                let trr = &mut tr;
+                taffy
+                    .compute_layout_with_measure(
+                        root,
+                        Size {
+                            width: taffy::AvailableSpace::Definite(w),
+                            height: taffy::AvailableSpace::Definite(h),
+                        },
+                        |known, available, id, _, _| {
+                            measure_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                                (*p).measure(known, available, trr)
+                            })
+                        },
+                    )
+                    .unwrap();
+                app.apply_layout(&taffy, child, Point::ORIGIN);
+                let mut scene = Scene::new();
+                app.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &ui::presence::PresenceCtx::empty(),
+                );
+            }
+            let body = app.metadata_editor_body;
+            let captured = app.metadata_captured_at_input.get_rect();
+            assert!(
+                captured.y0 >= body.y0 - 0.01 && captured.y1 <= body.y1 + 0.01,
+                "{scale}×: the focused Captured field {captured:?} is inside the visible body {body:?}"
+            );
+            assert!(
+                app.metadata_editor_hits.len() == 2
+                    && app
+                        .metadata_editor_hits
+                        .iter()
+                        .all(|(_, rect)| rect.y0 >= body.y1 - 0.01),
+                "{scale}×: Cancel and Save sit below the body {body:?}: {:?}",
+                app.metadata_editor_hits
+                    .iter()
+                    .map(|(_, rect)| *rect)
+                    .collect::<Vec<_>>()
+            );
+            if (scale - 1.0).abs() < f32::EPSILON {
+                assert_eq!(
+                    app.metadata_editor_scroll, 0.0,
+                    "1× holds the whole sheet without scrolling"
+                );
+            } else {
+                assert!(
+                    app.metadata_editor_scroll > 0.0,
+                    "2× on 800×900 needs the field list to scroll to reveal Captured"
+                );
+            }
+        }
     }
 
     /// Library card action rows keep the same inset from both card edges, so

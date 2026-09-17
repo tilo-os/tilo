@@ -60,7 +60,7 @@ pub fn store_card(
     let identity = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(5.0)
+        .with_gap(theme.tokens.spacing.s1)
         .push(Box::new(
             Text::new(&item.name)
                 .with_scaled_size(18.0)

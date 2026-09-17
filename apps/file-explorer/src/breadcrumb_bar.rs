@@ -379,8 +379,12 @@ impl Widget for BreadcrumbBar {
             if ls.chevron_before {
                 let (cw, _) = text_renderer.measure(CHEVRON, TEXT_SIZE, None);
                 let sep_x = ls.rect.x0 - SEP_PAD - f64::from(cw);
-                let sep_y =
-                    crate::text_layout::centered_text_y(ls.rect.y0, ls.rect.height(), TEXT_SIZE);
+                let sep_y = crate::text_layout::centered_text_y(
+                    ls.rect.y0,
+                    ls.rect.height(),
+                    TEXT_SIZE,
+                    text_renderer.text_scale(),
+                );
                 text_renderer.draw_text(
                     scene,
                     CHEVRON,
@@ -407,6 +411,7 @@ impl Widget for BreadcrumbBar {
                         ls.rect.y0,
                         ls.rect.height(),
                         TEXT_SIZE,
+                        text_renderer.text_scale(),
                     );
                     text_renderer.draw_text(
                         scene,

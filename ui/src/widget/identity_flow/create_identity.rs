@@ -28,13 +28,20 @@
 //! The form validation + submit pipeline is exposed as plain methods so
 //! tests can drive the screen without rendering; `submit_to_store` is the
 //! load-bearing path, also used by `handle_event_screen` on a real click.
+//!
+//! The display-name field is the shared [`TextInput`], embedded the way
+//! `ModalPrompt` embeds one: the sheet's row plan places it
+//! ([`place_field`]), the screen forwards it the events it does not claim
+//! for itself (Enter submits, PageUp/PageDown scroll), and it hangs off the
+//! screen's layout node as a child of its own so the host's focus order,
+//! the accessibility tree and the headless driver all reach it by name.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use rand_core::OsRng;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use threshold_identity::ThresholdIdentity;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -48,13 +55,14 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Field, Resolved, Role, Rows, SheetSpec, line_height,
-    paint_field, paint_text, paragraph_height, resolve, with_layout_renderer,
+    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, edited, line_height,
+    paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, ScreenOutcome,
 };
 use crate::widget::modal_frame::ModalAction;
+use crate::widget::text_input::TextInput;
 
 /// Default accent-tile palette. Picked so each tile reads as a
 /// distinct hue at a small swatch size. Stored as `[r, g, b]`.
@@ -76,6 +84,9 @@ const NAME_LABEL: &str = "Display name";
 const NAME_PLACEHOLDER: &str = "Your name…";
 const ACCENT_LABEL: &str = "Accent colour";
 const SUBMIT_LABEL: &str = "Create my identity";
+/// `test_id` of the display-name field — the handle the headless driver,
+/// the inspector and assistive technology address it by.
+pub const NAME_INPUT_ID: &str = "identity_name_input";
 
 /// Narrows a small layout count/index (tile counts and positions, always
 /// within the fixed 8-entry [`ACCENT_PALETTE`]) to `f64`. Bounded far
@@ -105,9 +116,15 @@ struct Plan {
 
 pub struct CreateIdentityScreen {
     rect: Rect,
-    /// Single-line editor backing the display-name field. Use
+    /// The display-name field: the shared text input, embedded. Use
     /// `display_name()` / `set_display_name()` to read/write.
-    editor: crate::widget::identity_flow::LineEditState,
+    name: TextInput,
+    /// The field's own layout node, minted by `build_layout`, so a click in
+    /// the field hands the host that node as the focus target.
+    name_node: Option<NodeId>,
+    /// The field's text as last seen, so an edit is a change of text and a
+    /// caret move is not (see [`edited`]).
+    last_name: String,
     selected_accent: usize,
     submit_hovered: bool,
     submit_rect: Rect,
@@ -137,9 +154,18 @@ impl Default for CreateIdentityScreen {
 
 impl CreateIdentityScreen {
     pub fn new() -> Self {
+        // The first-run screen has one field; it starts focused so the
+        // first keystroke is the name, as the modal prompt's field does.
+        let mut name = TextInput::local()
+            .with_id(NAME_INPUT_ID)
+            .with_placeholder(NAME_PLACEHOLDER)
+            .with_accessible_name(NAME_LABEL);
+        name.set_focus(true);
         Self {
             rect: Rect::ZERO,
-            editor: crate::widget::identity_flow::LineEditState::new(),
+            name,
+            name_node: None,
+            last_name: String::new(),
             selected_accent: 0,
             submit_hovered: false,
             submit_rect: Rect::ZERO,
@@ -156,11 +182,14 @@ impl CreateIdentityScreen {
 
     /// Live display-name input — useful for tests.
     pub fn display_name(&self) -> &str {
-        &self.editor.text
+        self.name.value()
     }
 
     pub fn set_display_name(&mut self, name: impl Into<String>) {
-        self.editor = crate::widget::identity_flow::LineEditState::with_text(name);
+        let name = name.into();
+        self.name.set_text(&name);
+        self.name.set_cursor_pos(name.len());
+        self.last_name = name;
         self.submit_error = None;
     }
 
@@ -178,7 +207,7 @@ impl CreateIdentityScreen {
     }
 
     pub fn is_submit_enabled(&self) -> bool {
-        !self.editor.text.trim().is_empty()
+        !self.name.value().trim().is_empty()
     }
 
     pub fn last_record(&self) -> Option<&IdentityRecord> {
@@ -212,7 +241,7 @@ impl CreateIdentityScreen {
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         let record = IdentityRecord::from_threshold_identity(
             &id,
-            self.editor.text.trim(),
+            self.name.value().trim(),
             self.selected_accent_color(),
             SystemTime::now(),
         )?;
@@ -233,15 +262,35 @@ impl CreateIdentityScreen {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
         store: &dyn IdentityStore,
     ) -> ScreenOutcome {
-        match event {
+        // The field answers for its own node, so a click in it moves the
+        // host's focus to the field rather than to the screen.
+        let field_node = self.name_node.unwrap_or(node_id);
+        let mut forward = |name: &mut TextInput, handled: &mut bool| {
+            name.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                field_node,
+                taffy,
+            );
+        };
+        // Set after the match, once `forward` has released `focus_target`:
+        // a click in the field tells the host the field's node holds focus
+        // even when the field already believed it did (it starts focused).
+        let mut claim_focus = false;
+        let outcome = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pos;
@@ -250,40 +299,31 @@ impl CreateIdentityScreen {
                     self.submit_hovered = hovering;
                     *handled = true;
                 }
+                forward(&mut self.name, handled);
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                // Accent tile?
-                for (i, r) in self.tile_rects.iter().enumerate() {
-                    if r.contains(self.last_cursor) {
-                        self.selected_accent = i;
-                        *handled = true;
-                        return ScreenOutcome::Stay;
-                    }
-                }
-                // Submit?
-                if self.submit_rect.contains(self.last_cursor) && self.is_submit_enabled() {
+            } => match self.press(handled, store) {
+                Some(outcome) => outcome,
+                // The field, through the part of it inside the visible body:
+                // a row scrolled under the action row takes no click.
+                None if self.input_rect.contains(self.last_cursor) => {
+                    self.name.set_focus(true);
+                    forward(&mut self.name, handled);
+                    claim_focus = true;
                     *handled = true;
-                    match self.submit_to_store(store) {
-                        Ok(_rec) => return ScreenOutcome::Advance,
-                        Err(e) => {
-                            self.submit_error = Some(format!("{e}"));
-                            return ScreenOutcome::Stay;
-                        }
-                    }
+                    ScreenOutcome::Stay
                 }
-                ScreenOutcome::Stay
-            }
+                None => ScreenOutcome::Stay,
+            },
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key,
                         state: ElementState::Pressed,
-                        text,
                         ..
                     },
                 ..
@@ -292,23 +332,11 @@ impl CreateIdentityScreen {
                     *handled = true;
                     return ScreenOutcome::Stay;
                 }
-                // Enter submits; everything else delegates to the shared editor.
+                // Enter submits; everything else is the field's.
                 if matches!(logical_key, Key::Named(NamedKey::Enter)) {
-                    if self.is_submit_enabled() {
-                        *handled = true;
-                        match self.submit_to_store(store) {
-                            Ok(_) => return ScreenOutcome::Advance,
-                            Err(e) => self.submit_error = Some(format!("{e}")),
-                        }
-                    }
-                    return ScreenOutcome::Stay;
+                    return self.submit_if_enabled(handled, store);
                 }
-                if self
-                    .editor
-                    .apply_key(logical_key, modifiers, text.as_deref())
-                {
-                    *handled = true;
-                }
+                forward(&mut self.name, handled);
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -317,7 +345,58 @@ impl CreateIdentityScreen {
                 }
                 ScreenOutcome::Stay
             }
-            _ => ScreenOutcome::Stay,
+            // Key releases, IME preedit/commit, modifiers: the field's.
+            _ => {
+                forward(&mut self.name, handled);
+                ScreenOutcome::Stay
+            }
+        };
+        if claim_focus {
+            *focus_target = Some(field_node);
+        }
+        // An edit clears a stale submit error, as retyping the name did; a
+        // caret or selection move alone does not.
+        if edited(&mut self.name, &mut self.last_name) {
+            self.submit_error = None;
+        }
+        outcome
+    }
+
+    /// A left press on an accent tile or the submit button; `None` when it
+    /// landed on neither, so the caller can offer it to the field.
+    fn press(&mut self, handled: &mut bool, store: &dyn IdentityStore) -> Option<ScreenOutcome> {
+        if let Some(i) = self
+            .tile_rects
+            .iter()
+            .position(|r| r.contains(self.last_cursor))
+        {
+            self.selected_accent = i;
+            *handled = true;
+            return Some(ScreenOutcome::Stay);
+        }
+        if self.submit_rect.contains(self.last_cursor) && self.is_submit_enabled() {
+            return Some(self.submit_if_enabled(handled, store));
+        }
+        None
+    }
+
+    /// Submit through the store when the name allows it: `Advance` on
+    /// success, `Stay` with the error surfaced inline otherwise.
+    fn submit_if_enabled(
+        &mut self,
+        handled: &mut bool,
+        store: &dyn IdentityStore,
+    ) -> ScreenOutcome {
+        if !self.is_submit_enabled() {
+            return ScreenOutcome::Stay;
+        }
+        *handled = true;
+        match self.submit_to_store(store) {
+            Ok(_) => ScreenOutcome::Advance,
+            Err(e) => {
+                self.submit_error = Some(format!("{e}"));
+                ScreenOutcome::Stay
+            }
         }
     }
 
@@ -347,6 +426,9 @@ impl CreateIdentityScreen {
         self.scroll = scroll;
         let body = resolved.sheet.body();
         self.body_height = body.height();
+        // The widget takes the whole row (the body clip trims its paint);
+        // its pointer target is the part inside the visible body.
+        place_field(&mut self.name, resolved.plan.input, text_renderer, theme);
         self.input_rect = BodyScroll::visible(body, resolved.plan.input);
         self.tile_rects = resolved
             .plan
@@ -464,15 +546,27 @@ impl Widget for CreateIdentityScreen {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = Some(theme.clone());
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+        // The field is a child node of its own — placed by the sheet, not
+        // by taffy (`Display::None`), but present in the tree so the host's
+        // focus order and the accessibility tree line up with `children()`.
+        let field = taffy.leaf_node(Style {
+            display: Display::None,
             ..Default::default()
         });
+        node_map.insert(field, std::ptr::from_mut::<dyn Widget>(&mut self.name));
+        self.name_node = Some(field);
+        // The screen owns the viewport, so the sheet centres on the window
+        // rather than inside a fixed box at the origin.
+        let node = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            &[field],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -500,7 +594,7 @@ impl Widget for CreateIdentityScreen {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let resolved = self.resolve(theme, text_renderer);
         let actions = self.actions();
@@ -536,20 +630,8 @@ impl Widget for CreateIdentityScreen {
             Align::Start,
             false,
         );
-        paint_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &Field {
-                rect: plan.input,
-                text: &self.editor.text,
-                placeholder: NAME_PLACEHOLDER,
-                focused: true,
-                editor: Some(&self.editor),
-                multiline: false,
-            },
-        );
+        self.name
+            .draw(scene, transform, text_renderer, theme, presence);
         paint_text(
             scene,
             transform,
@@ -601,6 +683,25 @@ impl Widget for CreateIdentityScreen {
 
     fn test_id(&self) -> Option<&str> {
         Some("identity_flow_create")
+    }
+
+    /// The field is the screen's one child, in the order `build_layout`
+    /// minted its node — the contract every focus and accessibility walk
+    /// zips against.
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.name]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.name]
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.name)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Widget::ime_purpose(&self.name)
     }
 
     fn get_rect(&self) -> Rect {
@@ -703,6 +804,70 @@ mod tests {
         let error = plan.error.expect("an error row when there is an error");
         assert!(error.y0 > first.y1);
         assert!((plan.bottom - error.y1).abs() < 1e-9);
+    }
+
+    /// The name field is the shared input, embedded: a click in its row
+    /// focuses it and hands the host its own node, typed keys land in its
+    /// value (and enable submit), Enter submits through the store, and the
+    /// field is the screen's addressable child.
+    #[test]
+    fn clicking_and_typing_drive_the_shared_field_and_enter_submits() {
+        use crate::widget::identity_flow::test_events as ev;
+        let theme = Theme::dark();
+        let store = MemoryIdentityStore::new();
+        let mut s = CreateIdentityScreen::new();
+        s.name.set_focus(false);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = HashMap::new();
+        let node = s.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .expect("layout");
+        s.apply_layout(&taffy, node, Point::ORIGIN);
+        let field_node = s.name_node.expect("the field has a node");
+        assert!(node_map.contains_key(&field_node), "registered for the host");
+        assert_eq!(
+            s.children().iter().filter_map(|c| c.test_id()).collect::<Vec<_>>(),
+            vec![NAME_INPUT_ID]
+        );
+
+        let mut doc = AutoCommit::new();
+        let mut send = |s: &mut CreateIdentityScreen, e: &WindowEvent| {
+            let mut handled = false;
+            let mut target = None;
+            let outcome = s.handle_event_screen(
+                e,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut target,
+                node,
+                &taffy,
+                &store,
+            );
+            (outcome, target)
+        };
+        let centre = s.input_rect.center();
+        send(&mut s, &ev::cursor_at(centre));
+        let (_, target) = send(&mut s, &ev::left_press());
+        assert!(s.name.is_focused(), "a click in the row focuses the field");
+        assert_eq!(target, Some(field_node), "and hands the host the field's node");
+        assert!(!s.is_submit_enabled());
+        send(&mut s, &ev::char("B"));
+        send(&mut s, &ev::char("o"));
+        assert_eq!(s.display_name(), "Bo", "typed keys land in the shared field");
+        assert!(s.is_submit_enabled());
+        let (outcome, _) = send(&mut s, &ev::named(NamedKey::Enter));
+        assert!(matches!(outcome, ScreenOutcome::Advance), "Enter submits");
+        assert_eq!(s.last_record().map(|r| r.display_name.as_str()), Some("Bo"));
     }
 
     /// The pointer targets exist after the layout pass alone — a click

@@ -53,12 +53,26 @@ pub fn draw(
     text: &mut TextRenderer,
 ) {
     if let Some(label) = label {
+        // Theme type tokens already carry the user's text scale; the chip
+        // paints with those resolved sizes, so the renderer must not scale
+        // them again (HIG §7a) — reset for this pass, as the shell's
+        // immediate-mode chrome passes do, and restore afterwards.
+        let renderer_scale = text.text_scale();
+        text.set_text_scale(1.0);
         draw_chip(scene, cursor, label, theme, text);
+        text.set_text_scale(renderer_scale);
     }
     draw_cursor(scene, cursor, theme);
 }
 
 /// The carried-item chip: a rounded card with the item's name in it.
+///
+/// Deliberately not [`ui::widget::Chip::draw_at`]: a chip is a Selector
+/// that sits *inside* a Panel and paints a veneer fill (`surface_white_5`),
+/// which over arbitrary app content would let whatever is being dragged
+/// across show through the label. The carried item is an Object off the
+/// surface — it needs an opaque ground, an elevation shadow and the Control
+/// radius, none of which the chip painter offers. Nothing hit-tests it.
 fn draw_chip(
     scene: &mut Scene,
     cursor: Point,
@@ -68,7 +82,7 @@ fn draw_chip(
 ) {
     // Control label scale (HIG §9.6), measured with the style it is drawn
     // in so the label is centred on its real line box rather than on a
-    // `size * 1.3` guess.
+    // `size * 1.3` guess. The caller has reset the renderer for this pass.
     let size = theme.tokens.typography.scale.sm;
     let (tw, th) = text.measure(label, size, None);
     let w = f64::from(tw) + CHIP_PAD * 2.0;

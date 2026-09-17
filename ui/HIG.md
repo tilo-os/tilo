@@ -342,7 +342,15 @@ number:
 `tests/f1_spacing_token_audit.rs` ratchets module-level pixel constants and
 literal `length(N)` values in widget, chrome, shell and app production code:
 a file may never carry more than its baseline records, and one that sheds a
-literal lowers its line in the same commit.
+literal lowers its line in the same commit. It shares its file walk,
+`#[cfg(test)]` span finder and baseline plumbing with the colour ratchet in
+`tests/design_token_audit.rs` (`tests/support/ratchet.rs`), so both audits
+see exactly the same production lines.
+
+A custom theme's `spacing_px` is built inside `CustomThemeSpec::SPACING_PX_MIN
+..= SPACING_PX_MAX` (6–22, the Themes app's range) even though the schema
+admits 2–64: the whole scale is proportional to it, and 2 px would put `s1`
+under a pixel.
 
 ---
 
@@ -655,13 +663,46 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   for a sheet with a form in it (`panel_width_sheet`).
 - Responsive shells: a genuine sidebar docks at `sidebar_width` 280, an
   overview column at `overview_width` 340, and a sidebar docks beside its
-  content at or above `compact_breakpoint` 720. Today the shells' default
-  constants (`AppShell` breakpoint, `NavShell` sidebar/overview widths,
-  `SidebarDrawer` width) are the **unscaled** `Metrics::BASE` values, so at
-  `ui_scale ≠ 1` they lag the scaled `theme.tokens.metrics`; resolving the
-  scaled token in `build_layout` is the shells' next step. `NavSplit`
-  (300 / 900) and `AppShell`'s 264 sidebar predate the tokens and are
-  recorded, not yet moved.
+  content at or above `compact_breakpoint` 720. `NavShell` and `AppShell`
+  read those defaults from `theme.tokens.metrics` in `build_layout`, so they
+  follow `ui_scale`. `NavSplit` (300 / 900), `NavShell`'s 700 breakpoint and
+  `AppShell`'s 264 sidebar predate the tokens; the proposal on record is one
+  set for all four shells — sidebar `sidebar_width` 280, breakpoint
+  `compact_breakpoint` 720 (drawer: 720 + `drawer_width − sidebar_width` =
+  760), and one chip for `AppShell`'s Back button (34) and `NavShell`'s
+  collapse / Back chip (36): `min_pointer_target` 32 inside an `s3` inset,
+  which also makes the chip band (56) equal to a 56 px header bar.
+- **One text-scale rule for shell inputs (`Theme::responsive_scale`).** A
+  breakpoint or pane width handed to `NavSplit`, `NavShell`, `AppShell` or
+  `SidebarDrawer` is **authored at 1×** and the shell resolves it against the
+  theme when the tree is built: `× ui_scale × text_scale.max(1.0)`
+  (`Metrics::text_growth`). Panes and breakpoints are sized by the text they
+  hold, so they grow with it and never shrink below the authored geometry;
+  an app passes `with_breakpoint(760.0)` and deletes its own
+  `× text_scale` arithmetic (`widget::AuthoredExtent` is the rule as a
+  value, for a host that needs it directly). A width sized by icons rather
+  than text — a rail — takes the `with_icon_*_width` builder
+  (`SidebarDrawer::icon_docked_width`) and follows `ui_scale` alone.
+  `SidebarDrawer` has no `build_layout`, so a host adopting the rule calls
+  `drawer.scale_for(theme)` once from its own; until it does, the drawer lays
+  out the authored geometry, which is what every drawer host does today.
+  Read the resolved values back (`shell.breakpoint()`, `sidebar_width()`)
+  rather than comparing a window width against the authored constant. A
+  shell control that carries one line of text (the Back chip, the search
+  slot) grows by `widget::text_control_height(authored, theme)` — the
+  authored height until the body line outgrows it, then line + the authored
+  padding — never by the whole scale.
+- **Shell panes are measured with the host's theme and renderer.** A
+  `NavSplit` / `NavShell` pane is built against the theme its outer tree was
+  built with and solved in `adjust_layout_with_measure` with the renderer
+  the host hands the layout pass; a `Text` under a split measures at the
+  same text scale as everything beside it. Never lay a child out against
+  `Theme::dark()` or a fresh `TextRenderer::new()` on a draw or layout path.
+- **A docked sidebar keeps its full height.** The collapse chip sits in the
+  docked sidebar's own header row, which the sidebar clears horizontally
+  (mail: `CHIP_CLEARANCE`), so the three panes' headers share one top edge.
+  Only an overlay drawer, and a narrow content pane the chip floats over,
+  start below the chip band.
 
 ### 9.7 Motion
 

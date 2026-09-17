@@ -154,8 +154,73 @@ pub fn mono_centered_top(tr: &mut TextRenderer, s: &str, size: f32, y0: f64, h: 
     y0 + (h - f64::from(th)) / 2.0
 }
 
+/// Leading a pill keeps around its measured label line. A label measures
+/// 1.25× its size, so 10/12/14 px labels (12.5/15/17.5 px) reproduce the
+/// historical 16/18/20 px pills exactly, while a 2× label grows the pill.
+const PILL_LEADING: f64 = 2.5;
+
+/// Horizontal label padding inside a [`pill`] (the same 6 px the pill has
+/// always used; shared by the width, height and paint helpers).
+fn pill_pad() -> f64 {
+    6.0
+}
+
+/// Height of a [`pill`] whose label is painted at `size`: the measured line
+/// height plus leading, never shorter than the label size plus padding.
+///
+/// Callers size the pill from its label rather than the label from the pill,
+/// because the renderer scales `size` by the text scale — deriving a size from
+/// a fixed height painted 2× glyphs inside a 1× pill.
+pub fn pill_height(tr: &mut TextRenderer, size: f32) -> f64 {
+    let (_, th) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
+    (f64::from(th) + PILL_LEADING).max(f64::from(size) + pill_pad())
+}
+
+/// Painted width of a [`pill`] carrying `label` at `size` (without the
+/// trailing gap the draw call adds to its advance).
+pub fn pill_width(tr: &mut TextRenderer, label: &str, size: f32) -> f64 {
+    let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+    f64::from(tw) + pill_pad() * 2.0
+}
+
+/// Truncate monospace `s` to fit `max_width` at `size`, appending an ellipsis
+/// when anything was dropped — the mono counterpart of
+/// [`TextRenderer::elide_to_width`], measured with the same styled path
+/// [`mono`] paints with.
+pub fn elide_mono(tr: &mut TextRenderer, s: &str, size: f32, max_width: f64) -> String {
+    const ELLIPSIS: &str = "\u{2026}";
+    if s.is_empty() || max_width <= 0.0 {
+        return String::new();
+    }
+    if f64::from(mono_width(tr, s, size)) <= max_width {
+        return s.to_string();
+    }
+    let ell_w = f64::from(mono_width(tr, ELLIPSIS, size));
+    if ell_w > max_width {
+        return ELLIPSIS.to_string();
+    }
+    let budget = max_width - ell_w;
+    let mut best = String::new();
+    let mut candidate = String::new();
+    for ch in s.chars() {
+        candidate.push(ch);
+        if f64::from(mono_width(tr, &candidate, size)) <= budget {
+            best.push(ch);
+        } else {
+            break;
+        }
+    }
+    // Trim the space before the ellipsis, as the toolkit's sans-serif
+    // elision does, so `impl Scene …` and `impl Scene…` never sit side by side.
+    let trimmed = best.trim_end().len();
+    best.truncate(trimmed);
+    best.push_str(ELLIPSIS);
+    best
+}
+
 /// A small rounded "pill" with a label — used for ref decorations, badges,
-/// ahead/behind counts. Returns the advance width consumed (pill + gap).
+/// ahead/behind counts. The label is painted at `size`; the pill is
+/// [`pill_height`] tall. Returns the advance width consumed (pill + gap).
 #[allow(clippy::too_many_arguments)]
 pub fn pill(
     scene: &mut Scene,
@@ -163,14 +228,14 @@ pub fn pill(
     t: Affine,
     x: f64,
     y: f64,
-    height: f64,
+    size: f32,
     label: &str,
     fg: Color,
     bg: Color,
     border: Option<Color>,
 ) -> f64 {
-    let pad = 6.0;
-    let size = (height - 6.0).max(9.0) as f32;
+    let pad = pill_pad();
+    let height = pill_height(tr, size);
     // Measure once with the exact style painted below: the width sizes the
     // pill and the line height centres the label in it. Centring on the
     // measured line (not the font size) removes the old `- 1.0` nudge.

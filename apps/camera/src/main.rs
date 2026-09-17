@@ -50,6 +50,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     unsafe {
         for (option, variable) in [
             ("--screen", "CAMERA_SCREEN"),
+            // `--mode photo|video` poses the viewfinder's capture sub-mode so
+            // the video shutter and switcher state can be captured headless.
+            ("--mode", "CAMERA_MODE"),
             ("--dir", "CAMERA_DIR"),
             ("--scroll", "CAMERA_SCROLL"),
             ("--hover", "CAMERA_SHOT_HOVER"),
@@ -126,6 +129,7 @@ pub fn main() {
             ])
             .allowed_options(&[
                 "--screen",
+                "--mode",
                 "--dir",
                 "--scroll",
                 "--hover",

@@ -42,6 +42,9 @@ struct SidebarHits<'a> {
 }
 
 struct ToolbarLayout {
+    /// Toolbar rows this layout occupies: 1, or 2 when the tool cluster no
+    /// longer fits between the edge clusters and wraps beneath them.
+    rows: usize,
     open: Rect,
     save: Rect,
     tools: Vec<(Tool, Rect)>,
@@ -110,12 +113,60 @@ fn truncate_to_width(
     kept
 }
 
+/// The type-scale steps as the *nominal* sizes this app hands its renderer.
+///
+/// Theme tokens arrive already multiplied by the accessibility text scale and
+/// `TextRenderer` multiplies again, so the scale is divided out once here
+/// (`renderer_input_style`'s rule) and applied exactly once — by whichever
+/// renderer scale is in force: the chrome scale for bars, rails and the empty
+/// state, 1.0 inside the fixed-layout page pass. Cached from the theme in
+/// `build_layout` (next to `text_scale` and `toolbar_inset`) so the pure
+/// layout helpers that have no `Theme` at hand — `search_layout`,
+/// `comment_metrics` — size text exactly as the draw pass paints it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TypePx {
+    pub xs: f32,
+    pub sm: f32,
+    pub base: f32,
+    pub lg: f32,
+}
+
+impl TypePx {
+    pub(crate) fn from_theme(theme: &Theme) -> Self {
+        let scale = &theme.tokens.typography.scale;
+        let s = theme.text_scale;
+        Self {
+            xs: scale.xs / s,
+            sm: scale.sm / s,
+            base: scale.base / s,
+            lg: scale.lg / s,
+        }
+    }
+}
+
+impl Default for TypePx {
+    fn default() -> Self {
+        Self::from_theme(&Theme::dark())
+    }
+}
+
 impl PdfApp {
     // ---- pure layout ------------------------------------------------
 
     fn toolbar_layout(&self) -> ToolbarLayout {
-        let tb = self.toolbar_rect;
-        let cy = f64::midpoint(tb.y0, tb.y1);
+        self.toolbar_layout_for(self.toolbar_rect)
+    }
+
+    /// The toolbar laid out in `tb`. `recompute_regions` calls this with a
+    /// one-row bar to learn how many rows the width needs; every other caller
+    /// goes through `toolbar_layout` with the bar that was sized from it.
+    fn toolbar_layout_for(&self, tb: Rect) -> ToolbarLayout {
+        // The edge clusters always live on the first row; `tb` may be two
+        // rows tall, so centre on the row, not on the whole bar.
+        let cy = tb.y0 + TOOLBAR_H / 2.0;
+        // Breathing room between the tool cluster and whatever bounds its
+        // span (the edge clusters on one row, the bar's insets when wrapped).
+        let tools_edge_gap = f64::from(ui::tokens::spacing::Spacing::BASE.s2);
         let w = tb.width();
         let compact = w < 640.0;
         let bw = 34.0;
@@ -161,34 +212,55 @@ impl PdfApp {
         let left_end = save.x1;
 
         // ---- centre: tools, centred in the remaining span ----
+        // When the span between the edge clusters cannot hold the tool
+        // cluster (a 480px window), the tools wrap onto a second toolbar row
+        // spanning the full width instead of running under the zoom controls;
+        // every action stays reachable and none overlaps another.
         let n = Tool::ALL.len() as f64;
         let tools_w = n * bw + (n - 1.0) * gap;
-        let centre = f64::midpoint(left_end, right_start);
-        let mut tx = (centre - tools_w / 2.0).max(left_end + 8.0);
+        let wrap = tools_w + 2.0 * tools_edge_gap > right_start - left_end;
+        let (rows, tools_cy, tools_x0, tools_x1) = if wrap {
+            (
+                2,
+                tb.y0 + TOOLBAR_H * 1.5,
+                tb.x0 + self.toolbar_inset,
+                tb.x1 - self.toolbar_inset,
+            )
+        } else {
+            (1, cy, left_end, right_start)
+        };
+        let tool_row =
+            |x0: f64, width: f64| Rect::new(x0, tools_cy - bh / 2.0, x0 + width, tools_cy + bh / 2.0);
+        let centre = f64::midpoint(tools_x0, tools_x1);
+        let mut tx = (centre - tools_w / 2.0).max(tools_x0 + tools_edge_gap);
         let mut tools = Vec::new();
         for t in Tool::ALL {
-            tools.push((t, row(tx, bw)));
+            tools.push((t, tool_row(tx, bw)));
             tx += bw + gap;
         }
         let tools_end = tx - gap;
 
-        // Swatches sit just right of the tools, but only when the annotate
-        // tools are active and there is genuinely room for them.
+        // Swatches sit just right of the tools (on the tools' row), but only
+        // when the annotate tools are active and there is genuinely room.
         let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
         let sw = 16.0;
         let sgap = 8.0;
         let swatch_span = 5.0 * sw + 4.0 * sgap;
         let sx0 = tools_end + 14.0;
         let mut swatches = Vec::new();
-        if annotate && sx0 + swatch_span <= right_start - 10.0 {
+        if annotate && sx0 + swatch_span <= tools_x1 - 10.0 {
             let mut sx = sx0;
             for s in Swatch::ALL {
-                swatches.push((s, Rect::new(sx, cy - sw / 2.0, sx + sw, cy + sw / 2.0)));
+                swatches.push((
+                    s,
+                    Rect::new(sx, tools_cy - sw / 2.0, sx + sw, tools_cy + sw / 2.0),
+                ));
                 sx += sw + sgap;
             }
         }
 
         ToolbarLayout {
+            rows,
             open,
             save,
             tools,
@@ -291,8 +363,8 @@ impl PdfApp {
         let chip = |w: f64, x1: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
 
         // Right cluster: [Case] [Whole word], packed against the right edge.
-        let case_w = f64::from(tr.measure("Case", 11.0, None).0) + 22.0 * scale;
-        let ww_w = f64::from(tr.measure("Whole word", 11.0, None).0) + 22.0 * scale;
+        let case_w = f64::from(tr.measure("Case", self.type_px.sm, None).0) + 22.0 * scale;
+        let ww_w = f64::from(tr.measure("Whole word", self.type_px.sm, None).0) + 22.0 * scale;
         let whole_word = chip(ww_w, s.x1 - pad);
         let case = chip(case_w, whole_word.x0 - gap);
         let chips_left = case.x0;
@@ -303,14 +375,14 @@ impl PdfApp {
         let counter_full_w = if full.is_empty() {
             0.0
         } else {
-            f64::from(tr.measure(&full, 12.0, None).0)
+            f64::from(tr.measure(&full, self.type_px.sm, None).0)
         };
         let counter_short_w = if short.is_empty() {
             0.0
         } else {
-            f64::from(tr.measure(&short, 12.0, None).0)
+            f64::from(tr.measure(&short, self.type_px.sm, None).0)
         };
-        let hint_w = f64::from(tr.measure(SEARCH_HINT, 10.5, None).0);
+        let hint_w = f64::from(tr.measure(SEARCH_HINT, self.type_px.xs, None).0);
 
         // Show the hint only when the field + full counter still clear the
         // toggles with room to spare.
@@ -515,7 +587,11 @@ impl PdfApp {
         // Rasterise the pages + thumbnails on screen once, up front.
         let (page_imgs, thumb_imgs) = self.rasterize_visible();
 
-        tr.set_text_scale(1.0);
+        // Pages are fixed-layout (see above); the no-document surface is
+        // reader chrome and keeps the chrome scale like the toolbar.
+        if self.has_document {
+            tr.set_text_scale(1.0);
+        }
         self.draw_canvas(scene, base, tr, theme, &page_imgs);
         tr.set_text_scale(chrome_text_scale);
 
@@ -919,11 +995,11 @@ impl PdfApp {
             None,
             &RoundedRect::from_rect(body, 1.5),
         );
-        let (_, delete_h) = tr.measure_weighted("Delete", 12.0, None, TextWeight::Semibold);
+        let (_, delete_h) = tr.measure_weighted("Delete", self.type_px.sm, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             "Delete",
-            12.0,
+            self.type_px.sm,
             c.semantic.danger,
             base * Affine::translate((gx + 16.0, vcenter(item, delete_h))),
             None,
@@ -956,15 +1032,84 @@ impl PdfApp {
         let cx = f64::midpoint(canvas.x0, canvas.x1);
         let cy = f64::midpoint(canvas.y0, canvas.y1);
 
-        // Outlined page glyph with a folded corner.
+        // Everything here is measured at the chrome scale and stacked from
+        // tokens, then centred as one group, so the title never runs into
+        // the detail line and the label never outgrows its button at 200 %.
+        let sp = &theme.tokens.spacing;
+        let (title, sub, sub_color) = if self.pending_open.is_some() {
+            (
+                "Opening PDF…",
+                "Reading the selected document.",
+                theme.text_dim,
+            )
+        } else {
+            match &self.load_error {
+                // A file-open failure is a durable state, not a low-priority hint:
+                // use the semantic error ink so it remains legible in both dark
+                // and high-contrast palettes.
+                Some(err) => {
+                    let detail = if err.to_ascii_lowercase().contains("password")
+                        || err.to_ascii_lowercase().contains("encrypt")
+                    {
+                        "This PDF needs a password before it can be opened."
+                    } else if err.to_ascii_lowercase().contains("unavailable")
+                        || err.to_ascii_lowercase().contains("not a readable pdf")
+                    {
+                        "The file is unavailable or isn't a readable PDF."
+                    } else {
+                        "Check the file and try again."
+                    };
+                    ("Couldn't open this document", detail, c.semantic.danger)
+                }
+                None => (
+                    "No document open",
+                    "Choose a PDF to start reading.",
+                    theme.text_dim,
+                ),
+            }
+        };
+        let title_px = self.type_px.lg;
+        let sub_px = self.type_px.sm;
+        let label_px = self.type_px.base;
+        // Measured with the weight it is painted in: a Semibold run advances
+        // wider than the Regular measurement that used to centre it.
+        let (tw, th) = tr.measure_weighted(title, title_px, None, TextWeight::Semibold);
+        // Error strings can be supplied by a parser, portal or native backend.
+        // Keep the visible state to one bounded, centred line instead of
+        // handing an arbitrary diagnostic to the text wrapper (which also
+        // makes a small failure state resistant to pathological input).  The
+        // complete diagnostic remains exposed in the assertive accessibility
+        // node and in `load_error` for copy/support workflows.
+        let shown_sub = truncate_to_width(
+            tr,
+            sub,
+            sub_px,
+            (canvas.width() - 80.0) as f32,
+            TextWeight::Regular,
+        );
+        let (sw, sh) = tr.measure(&shown_sub, sub_px, None);
+        let label = "Open a PDF…";
+        let (lw, lh) = tr.measure_weighted(label, label_px, None, TextWeight::Semibold);
+        let gsz = 16.0;
+        let ggap = f64::from(sp.s2);
+        let group_w = gsz + ggap + f64::from(lw);
+        // The button is its measured group plus token padding, so it grows
+        // with the label instead of clipping it at larger text.
+        let btn_w = group_w + 2.0 * f64::from(sp.s6);
+        let btn_h = f64::from(lh) + 2.0 * f64::from(sp.s3);
+
+        // Stack: glyph, title, detail, action — gaps from the spacing scale.
         let gw = 78.0;
         let gh = 98.0;
-        let g = Rect::new(
-            cx - gw / 2.0,
-            cy - gh / 2.0 - 30.0,
-            cx + gw / 2.0,
-            cy + gh / 2.0 - 30.0,
-        );
+        let gap_title = f64::from(sp.s4);
+        let gap_sub = f64::from(sp.s1);
+        let gap_btn = f64::from(sp.s1);
+        let total = gh + gap_title + f64::from(th) + gap_sub + f64::from(sh) + gap_btn + btn_h;
+        let mut y = cy - total / 2.0;
+
+        // Outlined page glyph with a folded corner.
+        let g = Rect::new(cx - gw / 2.0, y, cx + gw / 2.0, y + gh);
+        y += gh + gap_title;
         scene.fill(
             Fill::NonZero,
             base,
@@ -999,78 +1144,34 @@ impl PdfApp {
             );
         }
 
-        let (title, sub, sub_color) = if self.pending_open.is_some() {
-            (
-                "Opening PDF…",
-                "Reading the selected document.",
-                theme.text_dim,
-            )
-        } else {
-            match &self.load_error {
-                // A file-open failure is a durable state, not a low-priority hint:
-                // use the semantic error ink so it remains legible in both dark
-                // and high-contrast palettes.
-                Some(err) => {
-                    let detail = if err.to_ascii_lowercase().contains("password")
-                        || err.to_ascii_lowercase().contains("encrypt")
-                    {
-                        "This PDF needs a password before it can be opened."
-                    } else if err.to_ascii_lowercase().contains("unavailable")
-                        || err.to_ascii_lowercase().contains("not a readable pdf")
-                    {
-                        "The file is unavailable or isn't a readable PDF."
-                    } else {
-                        "Check the file and try again."
-                    };
-                    ("Couldn't open this document", detail, c.semantic.danger)
-                }
-                None => (
-                    "No document open",
-                    "Choose a PDF to start reading.",
-                    theme.text_dim,
-                ),
-            }
-        };
-        // Measured with the weight it is painted in: a Semibold run advances
-        // wider than the Regular measurement that used to centre it.
-        let (tw, _) = tr.measure_weighted(title, 16.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             title,
-            16.0,
+            title_px,
             theme.text_primary,
-            base * Affine::translate((cx - f64::from(tw) / 2.0, cy + 34.0)),
+            base * Affine::translate((cx - f64::from(tw) / 2.0, y)),
             None,
             TextWeight::Semibold,
         );
-        // Error strings can be supplied by a parser, portal or native backend.
-        // Keep the visible state to one bounded, centred line instead of
-        // handing an arbitrary diagnostic to the text wrapper (which also
-        // makes a small failure state resistant to pathological input).  The
-        // complete diagnostic remains exposed in the assertive accessibility
-        // node and in `load_error` for copy/support workflows.
-        let shown_sub = truncate_to_width(
-            tr,
-            sub,
-            12.5,
-            (canvas.width() - 80.0) as f32,
-            TextWeight::Regular,
-        );
-        let (sw, _) = tr.measure(&shown_sub, 12.5, None);
+        y += f64::from(th) + gap_sub;
         tr.draw_text(
             scene,
             &shown_sub,
-            12.5,
+            sub_px,
             sub_color,
-            base * Affine::translate((cx - f64::from(sw) / 2.0, cy + 58.0)),
+            base * Affine::translate((cx - f64::from(sw) / 2.0, y)),
             None,
         );
+        y += f64::from(sh) + gap_btn;
 
+        let btn = Rect::new(cx - btn_w / 2.0, y, cx + btn_w / 2.0, y + btn_h);
         if self.pending_open.is_some() {
             // Opening is a singular, passive state.  Do not render a second
             // open affordance (or a duplicate toast) while the worker owns the
-            // request; the quiet progress rail is enough feedback.
-            let progress = Rect::new(cx - 54.0, cy + 82.0, cx + 54.0, cy + 86.0);
+            // request; the quiet progress rail is enough feedback. Nothing to
+            // click, so the cached button rect is emptied.
+            self.empty_open_button.set(Rect::ZERO);
+            let progress = Rect::new(cx - 54.0, btn.y0 + 4.0, cx + 54.0, btn.y0 + 8.0);
             scene.fill(
                 Fill::NonZero,
                 base,
@@ -1094,8 +1195,9 @@ impl PdfApp {
                 ),
             );
         } else {
-            // Primary action: open a document from within the app.
-            let btn = self.empty_open_button_rect();
+            // Primary action: open a document from within the app. The click
+            // handler reads this exact rect back (`empty_open_button_rect`).
+            self.empty_open_button.set(btn);
             let hot = btn.contains(self.last_mouse);
             let shape = RoundedRect::from_rect(btn, f64::from(theme.tokens.radii.md));
             scene.fill(Fill::NonZero, base, theme.accent_primary, None, &shape);
@@ -1103,11 +1205,6 @@ impl PdfApp {
                 scene.fill(Fill::NonZero, base, c.lift(0.72), None, &shape);
             }
             // Folder glyph + label as a centred group.
-            let label = "Open a PDF…";
-            let (lw, lh) = tr.measure_weighted(label, 13.0, None, TextWeight::Semibold);
-            let gsz = 16.0;
-            let gap = 8.0;
-            let group_w = gsz + gap + f64::from(lw);
             let gx = btn.x0 + (btn.width() - group_w) / 2.0;
             let gcy = f64::midpoint(btn.y0, btn.y1);
             draw_folder_glyph(
@@ -1119,9 +1216,9 @@ impl PdfApp {
             tr.draw_text_weighted(
                 scene,
                 label,
-                13.0,
+                label_px,
                 theme.tokens.colors.on_accent(4.5),
-                base * Affine::translate((gx + gsz + gap, vcenter(btn, lh))),
+                base * Affine::translate((gx + gsz + ggap, vcenter(btn, lh))),
                 None,
                 TextWeight::Semibold,
             );
@@ -1716,11 +1813,11 @@ impl PdfApp {
         draw_plus(scene, base, lay.zoom_in, theme.text_primary);
         if lay.zoom_label.area() > 1.0 {
             let zlabel = format!("{}%", (self.zoom() * 100.0).round() as i64);
-            let (zw, zh) = tr.measure(&zlabel, 12.0, None);
+            let (zw, zh) = tr.measure(&zlabel, self.type_px.sm, None);
             tr.draw_text(
                 scene,
                 &zlabel,
-                12.0,
+                self.type_px.sm,
                 theme.text_primary,
                 base * Affine::translate((
                     f64::midpoint(lay.zoom_label.x0, lay.zoom_label.x1) - f64::from(zw) / 2.0,
@@ -1743,11 +1840,11 @@ impl PdfApp {
             FitMode::Width => "Wide",
             _ => "Fit",
         };
-        let (fw, fh) = tr.measure(fit_txt, 11.0, None);
+        let (fw, fh) = tr.measure(fit_txt, self.type_px.sm, None);
         tr.draw_text(
             scene,
             fit_txt,
-            11.0,
+            self.type_px.sm,
             if fit_active {
                 theme.tokens.colors.on_accent(4.5)
             } else {
@@ -1907,11 +2004,11 @@ impl PdfApp {
         self.search_input.apply_layout_external(input);
         if self.search_input.value().is_empty() {
             let placeholder = "Search document…";
-            let (_, ph) = tr.measure(placeholder, 13.0, None);
+            let (_, ph) = tr.measure(placeholder, self.type_px.base, None);
             tr.draw_text(
                 scene,
                 placeholder,
-                13.0,
+                self.type_px.base,
                 theme.text_dim,
                 base * Affine::translate((input.x0, vcenter(input, ph))),
                 Some(input.width() as f32),
@@ -1932,11 +2029,11 @@ impl PdfApp {
         lay: &SearchBarLayout,
     ) {
         if let Some((rect, text)) = &lay.counter {
-            let (_, counter_h) = tr.measure(text, 12.0, None);
+            let (_, counter_h) = tr.measure(text, self.type_px.sm, None);
             tr.draw_text(
                 scene,
                 text,
-                12.0,
+                self.type_px.sm,
                 theme.text_dim,
                 base * Affine::translate((rect.x0, vcenter(self.search_rect, counter_h))),
                 None,
@@ -1987,11 +2084,11 @@ impl PdfApp {
                 None,
                 &RoundedRect::from_rect(r, f64::from(theme.tokens.radii.full)),
             );
-            let (lw, lh) = tr.measure(label, 11.0, None);
+            let (lw, lh) = tr.measure(label, self.type_px.sm, None);
             tr.draw_text(
                 scene,
                 label,
-                11.0,
+                self.type_px.sm,
                 txt,
                 base * Affine::translate((
                     f64::midpoint(r.x0, r.x1) - f64::from(lw) / 2.0,
@@ -2013,11 +2110,11 @@ impl PdfApp {
         lay: &SearchBarLayout,
     ) {
         if let Some(hint) = lay.hint {
-            let (_, hint_h) = tr.measure(SEARCH_HINT, 10.5, None);
+            let (_, hint_h) = tr.measure(SEARCH_HINT, self.type_px.xs, None);
             tr.draw_text(
                 scene,
                 SEARCH_HINT,
-                10.5,
+                self.type_px.xs,
                 theme.text_dim,
                 base * Affine::translate((hint.x0, vcenter(self.search_rect, hint_h))),
                 None,
@@ -2078,7 +2175,7 @@ impl PdfApp {
             theme,
             &SegmentedFace::new(&rects, &labels, selected)
                 .style(SegmentedStyle::Underline)
-                .text_size(11.5)
+                .text_size(self.type_px.sm)
                 .weight(TextWeight::Regular),
         );
         for (tab, r) in tab_rects {
@@ -2211,13 +2308,13 @@ impl PdfApp {
             .filter(|e| e.target == EditTarget::CommentBody(cm.id.clone()));
         let body_text = editing_body.map_or(cm.body.as_str(), Editing::text);
         let body_probe = if body_text.is_empty() { "M" } else { body_text };
-        let (_, bh) = tr.measure(body_probe, 12.0, Some(Self::comment_body_wrap(inner_w, s)));
+        let (_, bh) = tr.measure(body_probe, self.type_px.sm, Some(Self::comment_body_wrap(inner_w, s)));
         // Header band (avatar + name + chips) is 24px, then a 6px gap, the body,
         // and a 12px bottom pad. Mirrors `comment_header_layout`'s `body_top`.
         let mut card_h = 24.0 * s + 6.0 * s + f64::from(bh) + 12.0 * s;
         let mut reply_heights = Vec::with_capacity(cm.replies.len());
         for r in &cm.replies {
-            let (_, rh) = tr.measure(&r.body, 11.0, Some(Self::comment_reply_wrap(inner_w, s)));
+            let (_, rh) = tr.measure(&r.body, self.type_px.sm, Some(Self::comment_reply_wrap(inner_w, s)));
             reply_heights.push(f64::from(rh));
             card_h += 16.0 * s + f64::from(rh) + 8.0 * s;
         }
@@ -2228,7 +2325,7 @@ impl PdfApp {
             .filter(|e| e.target == EditTarget::Reply(cm.id.clone()));
         let compose_h = if let Some(e) = composing {
             let probe = if e.text().is_empty() { "M" } else { e.text() };
-            let (_, fh) = tr.measure(probe, 11.5, Some(Self::comment_compose_wrap(inner_w, s)));
+            let (_, fh) = tr.measure(probe, self.type_px.sm, Some(Self::comment_compose_wrap(inner_w, s)));
             8.0 * s + f64::from(fh).max(15.0 * s) + 16.0 * s
         } else {
             8.0 * s + 24.0 * s
@@ -2367,7 +2464,7 @@ impl PdfApp {
         tr.draw_text(
             scene,
             &header,
-            11.0,
+            self.type_px.sm,
             theme.text_dim,
             base * Affine::translate((body.x0 + pad, header_y)),
             None,
@@ -2423,7 +2520,18 @@ impl PdfApp {
             self.draw_comment_header_row(scene, base, tr, theme, cm, &hdr, out);
             let yy =
                 self.draw_comment_body(scene, base, tr, theme, card, cm, &hdr, &m, inner_w, out);
-            let yy = Self::draw_comment_replies(scene, base, tr, theme, card, cm, &m, inner_w, yy);
+            let yy = Self::draw_comment_replies(
+                scene,
+                base,
+                tr,
+                theme,
+                card,
+                cm,
+                &m,
+                inner_w,
+                yy,
+                self.type_px.sm,
+            );
             self.draw_comment_composer(scene, base, tr, theme, card, cm, &m, yy, out);
 
             out.hits.push((SidebarHit::Comment(cm.id.clone()), card));
@@ -2458,11 +2566,11 @@ impl PdfApp {
             hdr.avatar_c,
             hdr.avatar_radius,
         );
-        let name = truncate_to_width(tr, &cm.author, 11.5, hdr.name_max, TextWeight::Semibold);
+        let name = truncate_to_width(tr, &cm.author, self.type_px.sm, hdr.name_max, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             &name,
-            11.5,
+            self.type_px.sm,
             theme.text_primary,
             base * Affine::translate((hdr.name_x, hdr.name_y)),
             Some(hdr.name_max),
@@ -2531,11 +2639,11 @@ impl PdfApp {
             None,
             &RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.full)),
         );
-        let (cw2, ch2) = tr.measure(chip_label, 9.5, None);
+        let (cw2, ch2) = tr.measure(chip_label, self.type_px.xs, None);
         tr.draw_text(
             scene,
             chip_label,
-            9.5,
+            self.type_px.xs,
             chip_text,
             base * Affine::translate((
                 f64::midpoint(chip.x0, chip.x1) - f64::from(cw2) / 2.0,
@@ -2605,7 +2713,7 @@ impl PdfApp {
             tr.draw_text(
                 scene,
                 "Write a comment…",
-                12.0,
+                self.type_px.sm,
                 theme.text_dim,
                 base * Affine::translate((body_x, body_top)),
                 Some(body_wrap),
@@ -2614,7 +2722,7 @@ impl PdfApp {
             tr.draw_text(
                 scene,
                 &cm.body,
-                12.0,
+                self.type_px.sm,
                 theme.text_primary,
                 base * Affine::translate((body_x, body_top)),
                 Some(body_wrap),
@@ -2641,6 +2749,7 @@ impl PdfApp {
         m: &CommentMetrics,
         inner_w: f64,
         mut yy: f64,
+        reply_px: f32,
     ) -> f64 {
         let c = &theme.tokens.colors;
         let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
@@ -2665,7 +2774,7 @@ impl PdfApp {
             tr.draw_text(
                 scene,
                 &r.body,
-                11.0,
+                reply_px,
                 theme.tokens.colors.text_primary,
                 base * Affine::translate((card.x0 + 24.0 * s, yy)),
                 Some(Self::comment_reply_wrap(inner_w, s)),
@@ -2758,11 +2867,11 @@ impl PdfApp {
                     &RoundedRect::from_rect(btn, f64::from(theme.tokens.radii.sm)),
                 );
             }
-            let (_, reply_h) = tr.measure("+ Reply", 11.0, None);
+            let (_, reply_h) = tr.measure("+ Reply", self.type_px.sm, None);
             tr.draw_text(
                 scene,
                 "+ Reply",
-                11.0,
+                self.type_px.sm,
                 if hot {
                     theme.text_primary
                 } else {
@@ -2819,22 +2928,22 @@ impl PdfApp {
             } else {
                 theme.text_dim
             };
-            let (_, title_h) = tr.measure_weighted(&item.title, 12.0, None, weight);
+            let (_, title_h) = tr.measure_weighted(&item.title, self.type_px.sm, None, weight);
             tr.draw_text_weighted(
                 scene,
                 &item.title,
-                12.0,
+                self.type_px.sm,
                 col,
                 base * Affine::translate((row.x0 + indent, vcenter(row, title_h))),
                 Some((row.width() - indent - 28.0) as f32),
                 weight,
             );
             let pnum = format!("{}", item.page);
-            let (pw, ph) = tr.measure(&pnum, 11.0, None);
+            let (pw, ph) = tr.measure(&pnum, self.type_px.sm, None);
             tr.draw_text(
                 scene,
                 &pnum,
-                11.0,
+                self.type_px.sm,
                 theme.text_dim,
                 base * Affine::translate((row.x1 - 10.0 - f64::from(pw), vcenter(row, ph))),
                 None,
@@ -2880,7 +2989,7 @@ impl PdfApp {
         tr.draw_text(
             scene,
             "YOUR SIGNATURE",
-            9.5,
+            self.type_px.xs,
             theme.text_dim,
             base * Affine::translate((body.x0 + pad, y)),
             None,
@@ -2903,7 +3012,7 @@ impl PdfApp {
             theme,
             &SegmentedFace::new(&seg_rects, &seg_labels, sel)
                 .style(SegmentedStyle::Solid)
-                .text_size(12.0)
+                .text_size(self.type_px.sm)
                 .weight(TextWeight::Medium),
         );
         out.hits
@@ -2997,7 +3106,7 @@ impl PdfApp {
             tr.draw_text(
                 scene,
                 "Your name",
-                13.0,
+                self.type_px.base,
                 theme.text_dim,
                 base * Affine::translate((name_x, name_y)),
                 None,
@@ -3006,7 +3115,7 @@ impl PdfApp {
             tr.draw_text_weighted(
                 scene,
                 &name_shown,
-                13.0,
+                self.type_px.base,
                 theme.text_primary,
                 base * Affine::translate((name_x, name_y)),
                 Some((name_hit.width() - 6.0) as f32),
@@ -3108,11 +3217,11 @@ impl PdfApp {
         let ink_area = card.inflate(-10.0, -10.0);
         if self.sig_strokes.is_empty() && self.sig_stroke.is_none() {
             let hint = "Draw your signature here";
-            let (hw, hh) = tr.measure(hint, 12.0, None);
+            let (hw, hh) = tr.measure(hint, self.type_px.sm, None);
             tr.draw_text(
                 scene,
                 hint,
-                12.0,
+                self.type_px.sm,
                 theme.text_dim,
                 base * Affine::translate((
                     f64::midpoint(card.x0, card.x1) - f64::from(hw) / 2.0,
@@ -3138,7 +3247,7 @@ impl PdfApp {
         }
         // Clear link (top-right), only when there is something to clear.
         if !self.sig_strokes.is_empty() {
-            let (cw, ch) = tr.measure("Clear", 10.5, None);
+            let (cw, ch) = tr.measure("Clear", self.type_px.xs, None);
             let clr = Rect::new(
                 card.x1 - 12.0 - f64::from(cw) - 8.0,
                 card.y0 + 4.0,
@@ -3149,7 +3258,7 @@ impl PdfApp {
             tr.draw_text(
                 scene,
                 "Clear",
-                10.5,
+                self.type_px.xs,
                 if hot {
                     theme.accent_primary
                 } else {
@@ -3202,7 +3311,7 @@ impl PdfApp {
         } else {
             "Place signature on a page"
         };
-        let (lw, lh) = tr.measure_weighted(label, 12.0, None, TextWeight::Semibold);
+        let (lw, lh) = tr.measure_weighted(label, self.type_px.sm, None, TextWeight::Semibold);
         let label_col = if arming {
             theme.tokens.colors.on_accent(4.5)
         } else if ready {
@@ -3213,7 +3322,7 @@ impl PdfApp {
         tr.draw_text_weighted(
             scene,
             label,
-            12.0,
+            self.type_px.sm,
             label_col,
             base * Affine::translate((
                 f64::midpoint(add.x0, add.x1) - f64::from(lw) / 2.0,
@@ -3246,7 +3355,7 @@ impl PdfApp {
         tr.draw_text(
             scene,
             &format!("PLACED  ·  {}", self.signatures.len()),
-            9.5,
+            self.type_px.xs,
             theme.text_dim,
             base * Affine::translate((body.x0 + pad, y_start)),
             None,
@@ -3311,7 +3420,7 @@ impl PdfApp {
         tr.draw_text_weighted(
             scene,
             &s.signer,
-            12.0,
+            self.type_px.sm,
             theme.text_primary,
             base * Affine::translate((sg.x1 + 12.0, row.y0 + 9.0)),
             None,
@@ -3392,7 +3501,7 @@ impl PdfApp {
         let now = std::time::Instant::now();
         let canvas = self.canvas_rect;
         let label = format!("Page {} of {}", self.current_page, self.doc.page_count());
-        let text_size = 12.5f32;
+        let text_size = self.type_px.sm;
         let chev = 26.0;
         let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, text_size, chev);
         let cx = f64::midpoint(canvas.x0, canvas.x1);

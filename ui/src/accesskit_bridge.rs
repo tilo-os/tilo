@@ -380,7 +380,7 @@ fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
 /// [`build_tree_update`] emitted.
 fn search_synthetic<const BOUND: bool>(
     w: &dyn Widget,
-    ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
+    ptr_to_taffy: &HashMap<WidgetKey, TaffyNodeId>,
     wanted: AkNodeId,
 ) -> Option<A11yTarget> {
     let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
@@ -394,8 +394,7 @@ fn search_synthetic<const BOUND: bool>(
     // A presentational widget emits no node, so it owns no synthetic subtree;
     // and only a laid-out widget's subtree is addressable at all.
     let access_node = w.accessibility()?;
-    let w_ptr = std::ptr::from_ref::<dyn Widget>(w).cast::<()>();
-    let owner = ptr_to_taffy.get(&w_ptr).copied()?;
+    let owner = ptr_to_taffy.get(&widget_key(w)).copied()?;
     let owner_id = widget_node_id(Some(owner), 0);
 
     let mut key_path = Vec::new();
@@ -455,12 +454,42 @@ fn find_synthetic_path(
 
 /// Reverse of the App's `taffy::NodeId -> *mut dyn Widget` map, so the walk can
 /// look up a stable id for any `&dyn Widget` it meets.
+/// Identity of a retained widget in the reverse node map.
+///
+/// The data pointer alone is ambiguous: a parent whose first field is a
+/// child widget starts at the same address as that child (the compiler is
+/// free to lay a struct out that way), so two `node_map` entries collided
+/// on one key and whichever was inserted last won — the child was then
+/// exported under its parent's taffy id and an AT-SPI activation aimed at
+/// the child found nothing. The widget's dynamic size and alignment (read
+/// through the vtable, never compared as vtable addresses, which are not
+/// unique) tell a container apart from the child it starts with.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct WidgetKey {
+    data: *const (),
+    size: usize,
+    align: usize,
+}
+
+fn widget_key(w: &dyn Widget) -> WidgetKey {
+    WidgetKey {
+        data: std::ptr::from_ref::<dyn Widget>(w).cast::<()>(),
+        size: std::mem::size_of_val(w),
+        align: std::mem::align_of_val(w),
+    }
+}
+
 fn reverse_node_map<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
-) -> HashMap<*const (), TaffyNodeId> {
-    let mut ptr_to_taffy: HashMap<*const (), TaffyNodeId> = HashMap::new();
+) -> HashMap<WidgetKey, TaffyNodeId> {
+    let mut ptr_to_taffy: HashMap<WidgetKey, TaffyNodeId> = HashMap::new();
     for (&taffy_id, &w_ptr) in node_map {
-        ptr_to_taffy.insert((w_ptr as *const dyn Widget).cast::<()>(), taffy_id);
+        // SAFETY: `node_map` holds the retained widgets of the current tree,
+        // which the host keeps alive for as long as the map (every semantic
+        // dispatch dereferences these same pointers); only the vtable's size
+        // and alignment are read here, never the widget's fields.
+        let key = unsafe { widget_key(&*w_ptr) };
+        ptr_to_taffy.insert(key, taffy_id);
     }
     ptr_to_taffy
 }
@@ -759,7 +788,7 @@ fn append_resource_nodes(
 #[allow(clippy::too_many_arguments)]
 fn visit<const BOUND: bool>(
     w: &dyn Widget,
-    ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
+    ptr_to_taffy: &HashMap<WidgetKey, TaffyNodeId>,
     scale: f64,
     focused: Option<TaffyNodeId>,
     walk_counter: &mut u64,
@@ -771,8 +800,7 @@ fn visit<const BOUND: bool>(
         return;
     };
     let access = w.accessibility();
-    let w_ptr = std::ptr::from_ref::<dyn Widget>(w).cast::<()>();
-    let taffy_id = ptr_to_taffy.get(&w_ptr).copied();
+    let taffy_id = ptr_to_taffy.get(&widget_key(w)).copied();
 
     if let Some(access_node) = access {
         let id = widget_node_id(taffy_id, *walk_counter);
@@ -896,7 +924,7 @@ fn visit_synthetic<const BOUND: bool>(
     ordinal: usize,
     in_focused_widget: bool,
     hosted: Vec<HostedWidget<'_>>,
-    ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
+    ptr_to_taffy: &HashMap<WidgetKey, TaffyNodeId>,
     scale: f64,
     focused: Option<TaffyNodeId>,
     walk_counter: &mut u64,
@@ -1265,6 +1293,125 @@ mod tests {
         let theme = Theme::dark();
         let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
         (taffy, node_map, root_node)
+    }
+
+    /// A container whose first field is a child widget starts at the very
+    /// address of that child; `#[repr(C)]` pins the layout the default
+    /// representation may also pick.
+    #[repr(C)]
+    struct FirstFieldHost {
+        child: TestWidget,
+        pad: u64,
+    }
+
+    impl Widget for FirstFieldHost {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let kid = self.child.build_layout(taffy, theme, node_map);
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &[kid])
+                .unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(
+            &mut self,
+            _taffy: &TaffyTree<()>,
+            _node: taffy::NodeId,
+            _origin: vello::kurbo::Point,
+        ) {
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut vello::Scene,
+            _transform: vello::kurbo::Affine,
+            _text_renderer: &mut crate::text_render::TextRenderer,
+            _theme: &Theme,
+            _presence: &crate::presence::PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &winit::event::WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<taffy::NodeId>,
+            _node_id: taffy::NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![&self.child]
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            vec![&mut self.child]
+        }
+        fn name(&self) -> &str {
+            "first-field-host"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::new(0.0, 0.0, 200.0, 100.0)
+        }
+        fn accessibility(&self) -> Option<AccessNode> {
+            Some(AccessNode::new(Role::Generic))
+        }
+    }
+
+    /// The reverse node map must tell a container apart from the child it
+    /// starts with: keyed by data pointer alone, the two collided and the
+    /// child was exported under its parent's taffy id, so an activation
+    /// aimed at the child's own id found no node.
+    #[test]
+    fn a_child_at_its_parents_address_keeps_its_own_node_id() {
+        let mut root = FirstFieldHost {
+            child: TestWidget::new(Some(AccessNode::new(Role::Button).with_name("Bump")))
+                .with_rect(0.0, 0.0, 40.0, 20.0),
+            pad: 0,
+        };
+        let (_taffy, node_map, root_node) = lay_out(&mut root);
+        assert!(
+            std::ptr::eq(
+                std::ptr::from_ref::<dyn Widget>(&root).cast::<()>(),
+                std::ptr::from_ref::<dyn Widget>(&root.child).cast::<()>()
+            ),
+            "the fixture must reproduce the shared address"
+        );
+        let child_node = *node_map
+            .keys()
+            .find(|node| **node != root_node)
+            .expect("the child has its own taffy node");
+        let child_id = AkNodeId(u64::from(child_node).saturating_add(1));
+        let root_id = AkNodeId(u64::from(root_node).saturating_add(1));
+
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+        let role_of = |wanted: AkNodeId| {
+            update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == wanted)
+                .map(|(_, node)| node.role())
+        };
+        assert_eq!(role_of(child_id), Some(AkRole::Button), "child exported under its own id");
+        assert_eq!(
+            role_of(root_id),
+            Some(AkRole::GenericContainer),
+            "parent exported under its own id"
+        );
+        assert!(
+            matches!(
+                resolve_node_id(&root, &node_map, child_id),
+                Some(A11yTarget::Widget(node)) if node == child_node
+            ),
+            "the child's id resolves back to the child's taffy node"
+        );
     }
 
     #[test]

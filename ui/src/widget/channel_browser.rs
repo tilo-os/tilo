@@ -21,6 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use collab_types::ChannelId;
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
@@ -44,6 +45,13 @@ const COLOUR_BAND_W: f64 = 4.0;
 const UNREAD_SLOT_W: f64 = 36.0;
 const TIME_SLOT_W: f64 = 80.0;
 const ROLE_CHIP_W: f64 = 64.0;
+/// Label room inside a role chip: `ROLE_CHIP_W` less the 6 px pad each
+/// side (`f32` because the renderer's fit takes one).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a 64 px chip width is exact in f32"
+)]
+const ROLE_LABEL_BUDGET: f32 = ROLE_CHIP_W as f32 - 12.0;
 /// Mirrors command-palette's adaptive sizing rule.
 pub const SHEET_MAX_W: f64 = 720.0;
 pub const SHEET_MIN_W: f64 = 560.0;
@@ -408,7 +416,7 @@ impl ChannelBrowser {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let pill_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let pill_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
         let active_fill = theme.tokens.colors.accent[5];
         let idle_fill = theme.tokens.colors.surface_white_5;
         let active_text = theme.tokens.colors.text_primary;
@@ -522,7 +530,7 @@ impl ChannelBrowser {
             &band,
         );
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let cy = f64::midpoint(row.y0, row.y1);
         let mut x_cursor = band.x1 + 8.0;
         // One measured line box for everything on the row's centre line:
@@ -571,9 +579,14 @@ impl ChannelBrowser {
         role: &str,
         x_cursor: f64,
     ) {
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let cy = f64::midpoint(row.y0, row.y1);
         let chip_text_size = (text_size - 2.0).max(10.0);
+        // The chip is capped at `ROLE_CHIP_W`; the label is fitted to the
+        // room inside it rather than painted past the cap, which is what a
+        // role name at 2× type did.
+        let role = text_renderer.elide_to_width(role, chip_text_size, ROLE_LABEL_BUDGET);
+        let role = role.as_str();
         let (lw, _) = text_renderer.measure(role, chip_text_size, None);
         let chip_w = (f64::from(lw) + 12.0).min(ROLE_CHIP_W);
         let chip_h = (row.height() - 16.0).max(16.0);
@@ -625,7 +638,7 @@ impl ChannelBrowser {
         entry: &ChannelEntry,
         now: SystemTime,
     ) {
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let cy = f64::midpoint(row.y0, row.y1);
 
         // Right-aligned before the unread badge slot.
@@ -709,7 +722,7 @@ impl ChannelBrowser {
             None,
             &band,
         );
-        let text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
         let cy = f64::midpoint(header_rect.y0, header_rect.y1);
         let header_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
@@ -749,7 +762,7 @@ impl ChannelBrowser {
             &border,
         );
 
-        let chip_text_size = (theme.tokens.typography.scale.sm - 2.0).max(9.0);
+        let chip_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 2.0).max(9.0));
         let chip_body = theme.tokens.colors.surface_white_5;
         let chip_border = theme.tokens.colors.border_white_10;
         let dim = theme.tokens.colors.text_dim;
@@ -1122,7 +1135,7 @@ impl Widget for ChannelBrowser {
 
         if self.visible.is_empty() {
             let label = "No channels";
-            let size = theme.tokens.typography.scale.sm;
+            let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
             let (w, h) = text_renderer.measure(label, size, None);
             let top = self.list_top_y();
             let cx = f64::midpoint(self.rect.x0, self.rect.x1);
@@ -1301,6 +1314,52 @@ mod tests {
     use std::time::Duration;
     use winit::event::Modifiers;
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+
+    /// At 2× a role name no longer fits the capped chip; it is elided so
+    /// its ink stays inside the chip instead of running past the cap.
+    #[test]
+    fn role_chip_label_stays_inside_the_capped_chip_at_two_x() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let row = Rect::new(0.0, 0.0, 300.0, 56.0);
+        let x = 20.0;
+        let mut scene = Scene::new();
+        ChannelBrowser::draw_role_chip(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            row,
+            "Moderator",
+            x,
+        );
+        let (w, h) = (300_u32, 56_u32);
+        let rgba = crate::offscreen::OffscreenRenderer::new(w, h)
+            .render(&scene, vello::peniko::Color::BLACK);
+        let mut ink_cols = Vec::new();
+        for col in 0..w as usize {
+            for y in 0..h as usize {
+                let i = (y * w as usize + col) * 4;
+                // Label ink is the light `text_dim`; the chip's 5 % fill and
+                // 10 % border stay far darker.
+                if rgba[i] > 120 && rgba[i + 1] > 120 && rgba[i + 2] > 120 {
+                    ink_cols.push(col);
+                    break;
+                }
+            }
+        }
+        let (first, last) = (
+            *ink_cols.first().expect("the role label painted some ink"),
+            *ink_cols.last().expect("the role label painted some ink"),
+        );
+        assert!(
+            f64::from(first as u32) >= x.floor()
+                && f64::from(last as u32) < (x + ROLE_CHIP_W).ceil(),
+            "role ink columns {first}..={last} leave the chip {x}..{}",
+            x + ROLE_CHIP_W
+        );
+    }
 
     fn entry(
         name: &str,

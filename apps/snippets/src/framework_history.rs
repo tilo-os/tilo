@@ -212,7 +212,12 @@ impl HistoryPreview for SnippetsPreview {
                 );
                 y += f64::from(tr.measure(line, size, Some(width)).1) + 12.;
             }
-            let height = (s.body.lines().count() as f64 * 24. + 40.).max(80.);
+            // The code body's line pitch at the current text scale — the same
+            // rule the live app's metrics use — so the card holds its lines at
+            // 2x; the card keeps its 24 px-per-line allowance at 1x.
+            let line_h = crate::app::BODY_LINE + crate::draw::line_growth(tr, crate::app::BODY_FONT);
+            let pitch = 24. + (line_h - crate::app::BODY_LINE);
+            let height = (s.body.lines().count() as f64 * pitch + 40.).max(80.);
             crate::app::SnippetsApp::draw_code(
                 scene,
                 t,
@@ -220,6 +225,7 @@ impl HistoryPreview for SnippetsPreview {
                 theme,
                 Rect::new(x, y, (self.bounds.x1 - 20.).max(x + 2000.), y + height),
                 s,
+                line_h,
             );
         } else {
             tr.draw_text(

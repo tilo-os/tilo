@@ -23,7 +23,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
@@ -35,6 +35,48 @@ use crate::widget::{Element, TaffyTreeExt, Widget};
 /// wrapping `Scrollable` bar read identically.
 const BAR_THICKNESS: f64 = 8.0;
 const BAR_MARGIN: f64 = 2.0;
+
+/// One line of `size` type as the renderer will lay it out. Theme type sizes
+/// already carry the accessibility text scale, and a single line of
+/// `TextStyle::new(size)` measures exactly `size × line_height` tall (see
+/// `TextRenderer::measure_style`), so a band sized from this at layout time
+/// agrees with the line the widget measures and centres at paint time.
+pub fn type_line_height(size: f32) -> f64 {
+    f64::from(crate::text_render::TextStyle::new(size).line_height_px())
+}
+
+/// A structural band that follows the type: `floor` is the widget's 1×
+/// default, which `content + padding` never undercuts at the default text
+/// scale, so 1× layouts are unchanged and only larger type grows the band.
+pub fn text_band(floor: f64, content: f64, padding: f64) -> f64 {
+    floor.max(content + padding)
+}
+
+/// The estimated height of an unmeasured row: the host's authored estimate
+/// (from `set_viewport`), raised only once the label line plus `authored_pad`
+/// would not fit, or — unauthored — the widget's `default` grown to the line
+/// plus `default_pad`. `line` is `None` before the first layout, when no
+/// theme has been seen and the estimate is exactly what the host set. This
+/// deliberately does not use `SparseVirtualViewport::set_minimum_height`:
+/// that floor also applies to heights set per row (`set_row_height`), which
+/// are the host's exact values.
+pub(crate) fn row_estimate(authored: Option<f64>, default: f64, row_type: Option<RowType>) -> f64 {
+    match (authored, row_type) {
+        (Some(authored), Some(t)) => text_band(authored, t.line, t.authored_pad),
+        (Some(authored), None) => authored,
+        (None, Some(t)) => text_band(default, t.line, t.default_pad),
+        (None, None) => default,
+    }
+}
+
+/// What a row widget learned about its label type at its last layout: the
+/// line box and the padding each kind of estimate keeps around it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RowType {
+    pub(crate) line: f64,
+    pub(crate) default_pad: f64,
+    pub(crate) authored_pad: f64,
+}
 
 /// `Auto` is sized to content at build time (treated as `Flex(1.0)` until
 /// the layout pass can measure it).
@@ -368,6 +410,17 @@ pub struct DataTable<Row> {
     momentum: ScrollMomentum,
     reduce_motion: bool,
     last_tick: Option<Instant>,
+    /// Header band, resolved from the theme's label line at layout time
+    /// (`HEADER_HEIGHT` at the default text scale, taller at 2×).
+    header_h: f64,
+    /// The estimated row height the host authored through `set_viewport`,
+    /// if any. It is honoured as written at the default text scale and only
+    /// raised once the label line itself would not fit; the unauthored
+    /// default follows the type with its 1× padding.
+    authored_row_height: Option<f64>,
+    /// The label type seen at the last layout; `None` until then, when the
+    /// estimate is exactly the authored or default height.
+    row_type: Option<RowType>,
 }
 
 impl<Row> DataTable<Row> {
@@ -421,6 +474,9 @@ impl<Row> DataTable<Row> {
             momentum: ScrollMomentum::new(),
             reduce_motion: false,
             last_tick: None,
+            header_h: HEADER_HEIGHT,
+            authored_row_height: None,
+            row_type: None,
         }
     }
 
@@ -541,7 +597,7 @@ impl<Row> DataTable<Row> {
         if pt.x < self.rect.x0 || pt.x > self.rect.x1 {
             return None;
         }
-        let body_top = self.rect.y0 + HEADER_HEIGHT;
+        let body_top = self.rect.y0 + self.header_h;
         if pt.y < body_top {
             return None;
         }
@@ -911,7 +967,8 @@ impl<Row> DataTable<Row> {
     /// Enables the [`visible_row_range`] windowing so only rows intersecting
     /// the viewport (plus overscan) are rendered.
     pub fn set_viewport(&mut self, height_px: f32, row_height_px: f32) {
-        self.viewport.set_estimated_height(f64::from(row_height_px));
+        self.authored_row_height = Some(f64::from(row_height_px));
+        self.refresh_row_estimate();
         self.viewport.set_viewport(f64::from(height_px));
         self.viewport
             .set_overscan(self.viewport.estimated_height() * 2.0);
@@ -980,6 +1037,39 @@ impl<Row> DataTable<Row> {
         self.structure_dirty = true;
         self.layout_dirty = true;
         self.refresh_view_anchor();
+    }
+
+    /// Size the header band and the estimated row height from the theme's
+    /// label line. At the default text scale both resolve to the pinned
+    /// `HEADER_HEIGHT` / `ROW_HEIGHT`; at 2× they grow so the (now correctly
+    /// sized) text has the same padding it had at 1×. An estimate the host
+    /// authored through [`Self::set_viewport`] is kept as written and raised
+    /// only once the line plus the smallest step would not fit; heights set
+    /// per row (`set_row_height`, mounted cells) are never touched.
+    fn apply_type_metrics(&mut self, theme: &Theme) {
+        let tokens = &theme.tokens;
+        let line = type_line_height(tokens.typography.scale.sm);
+        self.header_h = text_band(HEADER_HEIGHT, line, f64::from(tokens.spacing.s3));
+        self.row_type = Some(RowType {
+            line,
+            default_pad: f64::from(tokens.spacing.s2),
+            authored_pad: f64::from(tokens.spacing.s1),
+        });
+        self.refresh_row_estimate();
+    }
+
+    /// The one place the viewport's estimated row height is set, from the
+    /// authored estimate and the label type seen so far (see
+    /// [`row_estimate`]). Called when either input changes.
+    fn refresh_row_estimate(&mut self) {
+        let estimate = row_estimate(self.authored_row_height, ROW_HEIGHT, self.row_type);
+        let before = self.viewport.estimated_height();
+        self.viewport.set_estimated_height(estimate);
+        if self.viewport.estimated_height().to_bits() != before.to_bits() {
+            self.viewport
+                .set_overscan(self.viewport.estimated_height() * 2.0);
+            self.visible_window_changed();
+        }
     }
 
     fn reconcile_mounted_cells(&mut self) {
@@ -1073,7 +1163,7 @@ impl<Row> DataTable<Row> {
         if self.viewport.viewport() > 0.0 {
             self.viewport.viewport()
         } else {
-            (self.rect.height() - HEADER_HEIGHT).max(0.0)
+            (self.rect.height() - self.header_h).max(0.0)
         }
     }
 
@@ -1105,8 +1195,8 @@ impl<Row> DataTable<Row> {
         }
         let x1 = self.rect.x1 - BAR_MARGIN;
         let x0 = x1 - BAR_THICKNESS;
-        let y0 = self.rect.y0 + HEADER_HEIGHT + BAR_MARGIN;
-        let y1 = self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h() - BAR_MARGIN;
+        let y0 = self.rect.y0 + self.header_h + BAR_MARGIN;
+        let y1 = self.rect.y0 + self.header_h + self.body_viewport_h() - BAR_MARGIN;
         if y1 - y0 <= crate::widget::scrollbar::MIN_THUMB_LEN.min(1.0) {
             return None;
         }
@@ -1153,7 +1243,7 @@ impl<Row> DataTable<Row> {
             cr.x1 - w,
             self.rect.y0,
             cr.x1,
-            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.y0 + self.header_h,
         ))
     }
 
@@ -1199,7 +1289,7 @@ impl<Row> DataTable<Row> {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.y0 + self.header_h,
         );
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -1227,7 +1317,7 @@ impl<Row> DataTable<Row> {
             };
             let header = crate::i18n::I18nManager::lookup_plain(&col.header);
             let (_, header_h) = text_renderer.measure(&header, text_size, None);
-            let label_y = centered_text_top(header_rect.y0, HEADER_HEIGHT, header_h);
+            let label_y = centered_text_top(header_rect.y0, self.header_h, header_h);
             text_renderer.draw_text(
                 scene,
                 &header,
@@ -1251,7 +1341,7 @@ impl<Row> DataTable<Row> {
                     translated(
                         transform,
                         cr.x1 - pad_x - f64::from(arrow_w),
-                        centered_text_top(header_rect.y0, HEADER_HEIGHT, arrow_h),
+                        centered_text_top(header_rect.y0, self.header_h, arrow_h),
                     ),
                     None,
                 );
@@ -1270,7 +1360,7 @@ impl<Row> DataTable<Row> {
     ) {
         let tokens = &theme.tokens;
         let (vis_start, vis_end) = self.visible_row_range();
-        let body_bottom = self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h();
+        let body_bottom = self.rect.y0 + self.header_h + self.body_viewport_h();
         for ri in vis_start..vis_end {
             let Some(row_state) = self.row_state_at(ri) else {
                 continue;
@@ -1284,9 +1374,9 @@ impl<Row> DataTable<Row> {
             let Some(row_h) = self.viewport.item_height(ri) else {
                 continue;
             };
-            let y0 = self.rect.y0 + HEADER_HEIGHT + view_top;
+            let y0 = self.rect.y0 + self.header_h + view_top;
             let y1 = y0 + row_h;
-            if y1 <= self.rect.y0 + HEADER_HEIGHT {
+            if y1 <= self.rect.y0 + self.header_h {
                 continue;
             }
             if y0 >= body_bottom {
@@ -1429,7 +1519,7 @@ impl<Row> DataTable<Row> {
         }
         // 2. Header click → sort (host-owned via on_header_click, else internal toggle).
         let in_header = pt.y >= self.rect.y0
-            && pt.y < self.rect.y0 + HEADER_HEIGHT
+            && pt.y < self.rect.y0 + self.header_h
             && pt.x >= self.rect.x0
             && pt.x <= self.rect.x1;
         if in_header {
@@ -1452,7 +1542,7 @@ impl<Row> DataTable<Row> {
         // release so the same gesture can become a drag without selecting.
         let in_body = pt.x >= self.rect.x0
             && pt.x <= self.rect.x1
-            && pt.y >= self.rect.y0 + HEADER_HEIGHT
+            && pt.y >= self.rect.y0 + self.header_h
             && pt.y <= self.rect.y1;
         if self.internal_scroll() && in_body {
             self.drag_scroll
@@ -1703,21 +1793,16 @@ const WHEEL_LINE_PX: f64 = 60.0;
 
 /// Theme type sizes already carry the accessibility text scale, and the
 /// renderer applies that same scale once more inside `draw_text`/`measure`.
-/// Feed the size-based renderer APIs this renderer-relative size so the
-/// multiplier lands exactly once; it is the size-only twin of
-/// [`TextRenderer::renderer_input_style`]. The immediate-mode data widgets
-/// share it from here.
-pub(crate) fn renderer_type_size(text_renderer: &TextRenderer, resolved: f32) -> f32 {
-    text_renderer
-        .renderer_input_style(&TextStyle::new(resolved))
-        .size
-}
+/// The size-only twin of [`TextRenderer::renderer_input_style`], defined in
+/// [`crate::text_metrics`]; re-exported here for the immediate-mode data
+/// widgets that learned it from this module.
+pub(crate) use crate::text_metrics::renderer_type_size;
 
-/// Top edge that centres a measured text box of `text_h` in a band starting
-/// at `band_y0` with height `band_h`. Text taller than the band starts at the
-/// band's top rather than bleeding into the row above.
+/// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text
+/// taller than the band starts at the band's top rather than bleeding into
+/// the row above, which the unclamped rule would let it do.
 pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
-    band_y0 + ((band_h - f64::from(text_h)) / 2.0).max(0.0)
+    crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
 }
 
 /// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
@@ -1823,6 +1908,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         if self.reduce_motion {
             self.momentum.stop();
         }
+        self.apply_type_metrics(theme);
         self.reconcile_mounted_cells();
         let mut child_nodes = Vec::with_capacity(self.mounted_cells.len());
         for cell in &mut self.mounted_cells {
@@ -1841,7 +1927,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .viewport
                 .item_view_top(cell.row_index)
                 .unwrap_or_default();
-            style.inset.top = length(px(HEADER_HEIGHT + top));
+            style.inset.top = length(px(self.header_h + top));
             let _ = taffy.set_style(child, style);
             cell.node = Some(child);
             child_nodes.push(child);
@@ -1853,7 +1939,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .content_extent()
                 .max(self.viewport.estimated_height())
         };
-        let height = HEADER_HEIGHT + body_height;
+        let height = self.header_h + body_height;
         let node = taffy.parent_node(
             Style {
                 size: Size {
@@ -1894,7 +1980,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .get(cell.column_index)
                 .map_or(self.rect.x0, |column| column.x0);
             let desired_y = self.rect.y0
-                + HEADER_HEIGHT
+                + self.header_h
                 + self
                     .viewport
                     .item_view_top(cell.row_index)
@@ -1913,12 +1999,15 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .and_modify(|height| *height = height.max(cell.widget.get_rect().height()))
                 .or_insert_with(|| cell.widget.get_rect().height());
         }
+        // A mounted cell never makes its row shorter than the estimate the
+        // plain text rows use, so retained and text rows stay one height.
+        let row_floor = self.viewport.estimated_height();
         let mut measured = false;
         for (row_index, height) in row_heights {
             if let Some(key) = self.row_identity_at(row_index) {
                 measured |= self
                     .viewport
-                    .measure(row_index, key, height.max(ROW_HEIGHT));
+                    .measure(row_index, key, height.max(row_floor));
             }
         }
         if columns_changed {
@@ -1955,9 +2044,9 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.draw_header(scene, transform, text_renderer, theme);
         let body = Rect::new(
             self.rect.x0,
-            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.y0 + self.header_h,
             self.rect.x1,
-            self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h(),
+            self.rect.y0 + self.header_h + self.body_viewport_h(),
         );
         // Rows and mounted cells paint whole-row geometry inside one body
         // clip, so a row leaving the viewport is trimmed rather than re-laid.
@@ -2194,7 +2283,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     .item_view_top(ri)
                     .zip(self.viewport.item_height(ri))
                     .map(|(top, height)| {
-                        let y0 = self.rect.y0 + HEADER_HEIGHT + top;
+                        let y0 = self.rect.y0 + self.header_h + top;
                         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + height)
                     });
                 let cells: Vec<AccessNode> = self

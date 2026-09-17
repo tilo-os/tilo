@@ -37,7 +37,7 @@ use ui::Widget;
 use ui::format::bytes as format_bytes;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, TextInputKind};
 
@@ -49,6 +49,30 @@ use crate::search::{self, SearchKind};
 /// How long a transient status message (Saved / open error) stays up.
 const FLASH_MS: u128 = 3500;
 const LOCAL_HISTORY_LIMIT: usize = 256;
+
+/// Theme type sizes already carry the accessibility text scale, and the
+/// size-based renderer APIs (`measure*`, `draw_text*`, `pill_size`) apply
+/// that scale once more. Every token the chrome paints goes through here so
+/// the multiplier lands exactly once — 2× glyphs at 200 %, not 4×. The byte
+/// grid is unaffected: its `CELL_FONT` is a literal base size by design.
+fn ts(tr: &TextRenderer, resolved: f32) -> f32 {
+    tr.renderer_input_style(&TextStyle::new(resolved)).size
+}
+
+/// Measured line box of a renderer-relative `size` — what stacked chrome
+/// lines step by and what a band centres, never the bare font size.
+fn line_box(tr: &mut TextRenderer, size: f32) -> f64 {
+    let (_, h) = tr.measure("0", size, None);
+    f64::from(h)
+}
+
+/// How much one line of `size` has grown over its 1× box at the current
+/// accessibility scale — what a 1×-designed band adds to keep seating it.
+fn line_growth(tr: &mut TextRenderer, size: f32) -> f64 {
+    let line = line_box(tr, size);
+    let scale = f64::from(tr.text_scale()).max(f32::EPSILON.into());
+    (line - line / scale).max(0.0)
+}
 
 fn file_open_request() -> PickRequest {
     PickRequest::open("Open file", "Open")
@@ -697,14 +721,14 @@ impl HexView {
         // measured line box so the two sizes share the bar's centre line.
         let (name_w, name_h) = tr.measure_weighted(
             &self.file_name,
-            tokens.typography.scale.lg,
+            ts(tr, tokens.typography.scale.lg),
             None,
             TextWeight::Semibold,
         );
         tr.draw_text_weighted(
             scene,
             &self.file_name,
-            tokens.typography.scale.lg,
+            ts(tr, tokens.typography.scale.lg),
             tokens.colors.text_primary,
             t * Affine::translate((
                 bar.x0 + pad,
@@ -714,11 +738,11 @@ impl HexView {
             TextWeight::Semibold,
         );
         let meta = format!("{} bytes", self.model.len());
-        let (_, meta_h) = tr.measure(&meta, tokens.typography.scale.sm, None);
+        let (_, meta_h) = tr.measure(&meta, ts(tr, tokens.typography.scale.sm), None);
         tr.draw_text(
             scene,
             &meta,
-            tokens.typography.scale.sm,
+            ts(tr, tokens.typography.scale.sm),
             tokens.colors.text_dim,
             t * Affine::translate((
                 bar.x0 + pad + f64::from(name_w) + 12.0,
@@ -784,11 +808,13 @@ impl HexView {
         label: &str,
         fill: Color,
     ) -> f64 {
-        let size = theme.tokens.typography.scale.xs;
+        let size = ts(tr, theme.tokens.typography.scale.xs);
         let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Bold);
         let pad_x = 8.0;
         let w = f64::from(tw) + pad_x * 2.0;
-        let h = 18.0;
+        // The capsule wraps the measured line box (18 px at 1×) so it keeps
+        // seating its label at every text scale.
+        let h = f64::from(th) + 5.5;
         let x0 = right_x - w;
         let y0 = bar.y0 + (bar.height() - h) / 2.0;
         let shape = RoundedRect::new(x0, y0, right_x, y0 + h, 6.0);
@@ -1169,16 +1195,18 @@ impl HexView {
         let x = panel.x0 + pad;
         let mut y = panel.y0 + pad;
 
+        let title_size = ts(tr, tokens.typography.scale.xs);
         tr.draw_text_weighted(
             scene,
             "DATA INSPECTOR",
-            tokens.typography.scale.xs,
+            title_size,
             tokens.colors.text_dim,
             t * Affine::translate((x, y)),
             None,
             TextWeight::Bold,
         );
-        y += 22.0;
+        // Stacked lines step by their measured boxes (22 / 24 px at 1×).
+        y += line_box(tr, title_size) + 9.5;
 
         // Cursor + endianness sub-header.
         let sub = format!(
@@ -1186,10 +1214,11 @@ impl HexView {
             self.model.cursor(),
             self.model.endian().label()
         );
+        let value_size = ts(tr, tokens.typography.scale.sm);
         tr.draw_text_styled(
             scene,
             &sub,
-            tokens.typography.scale.sm,
+            value_size,
             tokens.colors.accent[6],
             t * Affine::translate((x, y)),
             None,
@@ -1197,20 +1226,35 @@ impl HexView {
             false,
             true,
         );
-        y += 24.0;
+        let value_line = line_box(tr, value_size);
+        y += value_line + 9.0;
 
         let rows: Vec<Interpretation> =
             inspector::inspect(self.model.bytes(), self.model.cursor(), self.model.endian());
-        let label_w = 72.0;
-        let row_h = 22.0;
-        let value_size = tokens.typography.scale.sm;
+        // One measured pitch for every row (22 px at 1×); the label column is
+        // as wide as the widest label it holds plus a gutter, so values never
+        // start under a label at any text scale.
+        let row_h = value_line + 7.0;
+        let label_w = rows
+            .iter()
+            .map(|r| {
+                f64::from(
+                    tr.measure_styled(r.label, value_size, None, TextWeight::Medium, false, true)
+                        .0,
+                )
+            })
+            .fold(0.0_f64, f64::max)
+            + 12.0;
+        // The zebra band is the row minus a 1 px seam, centred on the text's
+        // measured line box rather than nudged around an assumed height.
+        let band_pad = (row_h - value_line) / 2.0 - 1.0;
 
         for r in &rows {
             if y + row_h > panel.y1 {
                 break;
             }
             // Zebra striping for legibility.
-            let band = Rect::new(panel.x0, y - 3.0, panel.x1, y + row_h - 5.0);
+            let band = Rect::new(panel.x0, y - band_pad, panel.x1, y + value_line + band_pad);
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -1290,7 +1334,7 @@ impl HexView {
             self.status_bubble.poke(now);
             self.last_status_label = Some(label.clone());
         }
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = ts(tr, theme.tokens.typography.scale.sm);
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
         let margin = 14.0;
         let rect = Rect::new(
@@ -1333,41 +1377,47 @@ impl HexView {
         let cx = self.rect.center().x;
         let cy = self.rect.center().y;
 
+        // The stack is anchored on the button (`by0`) and each line above it
+        // sits on its measured line box, so the title, subtitle and button
+        // keep their 1× gaps (8 / 17 px) without overlapping at 200 %.
+        let by0 = cy - 8.0;
+
         // Title.
         let title = "No file open";
-        let tsz = tokens.typography.scale.x2l;
-        let (tw, _) = tr.measure_weighted(title, tsz, None, TextWeight::Semibold);
+        let tsz = ts(tr, tokens.typography.scale.x2l);
+        let (tw, th) = tr.measure_weighted(title, tsz, None, TextWeight::Semibold);
+        // Subtitle.
+        let sub = "Open a file to inspect and edit its bytes.";
+        let ssz = ts(tr, tokens.typography.scale.sm);
+        let (sw, sh) = tr.measure(sub, ssz, None);
+        let sub_top = by0 - 17.0 - f64::from(sh);
+        let title_top = sub_top - 8.0 - f64::from(th);
         tr.draw_text_weighted(
             scene,
             title,
             tsz,
             c.text_primary,
-            t * Affine::translate((cx - f64::from(tw) / 2.0, cy - 78.0)),
+            t * Affine::translate((cx - f64::from(tw) / 2.0, title_top)),
             None,
             TextWeight::Semibold,
         );
-
-        // Subtitle.
-        let sub = "Open a file to inspect and edit its bytes.";
-        let ssz = tokens.typography.scale.sm;
-        let (sw, _) = tr.measure(sub, ssz, None);
         tr.draw_text(
             scene,
             sub,
             ssz,
             c.text_dim,
-            t * Affine::translate((cx - f64::from(sw) / 2.0, cy - 40.0)),
+            t * Affine::translate((cx - f64::from(sw) / 2.0, sub_top)),
             None,
         );
 
         // Primary action: Open file…
         let label = "Open file…";
-        let bsz = tokens.typography.scale.base;
-        let (lw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
+        let bsz = ts(tr, tokens.typography.scale.base);
+        let (lw, lh) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
         let bw = f64::from(lw) + 44.0;
-        let bh = 40.0;
+        // 40 px at 1×; grows with the label's measured line box.
+        let bh = (f64::from(lh) + 22.5).max(40.0);
         let bx0 = cx - bw / 2.0;
-        let by0 = cy - 8.0;
         let btn = Rect::new(bx0, by0, bx0 + bw, by0 + bh);
         let accent = c.accent[ui_accent_idx()];
         scene.fill(
@@ -1384,7 +1434,7 @@ impl HexView {
             contrast_on(accent),
             t * Affine::translate((
                 bx0 + (bw - f64::from(lw)) / 2.0,
-                by0 + (bh - f64::from(bsz)) / 2.0,
+                by0 + (bh - f64::from(lh)) / 2.0,
             )),
             None,
             TextWeight::Semibold,
@@ -1393,7 +1443,7 @@ impl HexView {
 
         // Keyboard hint under the button.
         let hint = "Ctrl+O";
-        let hsz = tokens.typography.scale.xs;
+        let hsz = ts(tr, tokens.typography.scale.xs);
         let (hw, _) = tr.measure(hint, hsz, None);
         tr.draw_text(
             scene,
@@ -1429,7 +1479,10 @@ impl HexView {
     ) {
         let tokens = &theme.tokens;
         let w = 460.0;
-        let h = 56.0;
+        // 56 px at 1×; the sheet grows with its `sm` field/count line so the
+        // shared input and the counter keep seating at every text scale.
+        let count_size = ts(tr, tokens.typography.scale.sm);
+        let h = 56.0 + line_growth(tr, count_size);
         let x0 = self.rect.x1 - w - 24.0;
         let y0 = self.rect.y0 + 56.0;
         let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
@@ -1449,14 +1502,18 @@ impl HexView {
         );
 
         let pad = 14.0;
-        // Kind toggle chip.
+        // Kind toggle chip: sized from its measured label (48 × 22 px at 1×)
+        // and the label centred on its measured line box.
         let kind = self.search_kind.label();
-        let chip_w = 48.0;
+        let kind_size = ts(tr, tokens.typography.scale.xs);
+        let (kind_w, kind_h) = tr.measure_weighted(kind, kind_size, None, TextWeight::Bold);
+        let chip_w = (f64::from(kind_w) + 16.0).max(48.0);
+        let chip_h = f64::from(kind_h) + 9.5;
         let chip = RoundedRect::new(
             x0 + pad,
             y0 + 12.0,
             x0 + pad + chip_w,
-            y0 + 12.0 + 22.0,
+            y0 + 12.0 + chip_h,
             6.0,
         );
         scene.fill(
@@ -1469,9 +1526,12 @@ impl HexView {
         tr.draw_text_weighted(
             scene,
             kind,
-            tokens.typography.scale.xs,
+            kind_size,
             contrast_on(tokens.colors.accent[ui_accent_idx()]),
-            t * Affine::translate((x0 + pad + 8.0, y0 + 12.0 + 5.0)),
+            t * Affine::translate((
+                x0 + pad + (chip_w - f64::from(kind_w)) / 2.0,
+                y0 + 12.0 + (chip_h - f64::from(kind_h)) / 2.0,
+            )),
             None,
             TextWeight::Bold,
         );
@@ -1496,7 +1556,7 @@ impl HexView {
         let count_w = if count.is_empty() {
             0.0
         } else {
-            f64::from(tr.measure(&count, tokens.typography.scale.sm, None).0)
+            f64::from(tr.measure(&count, ts(tr, tokens.typography.scale.sm), None).0)
         };
 
         // The shared field supplies selection, word/caret navigation,
@@ -1520,15 +1580,13 @@ impl HexView {
             } else {
                 tokens.colors.text_dim
             };
+            let count_top = y0 + (h - line_box(tr, count_size)) / 2.0;
             tr.draw_text(
                 scene,
                 &count,
-                tokens.typography.scale.sm,
+                count_size,
                 ccolor,
-                t * Affine::translate((
-                    x0 + w - pad - count_w,
-                    y0 + (h - f64::from(tokens.typography.scale.sm)) / 2.0,
-                )),
+                t * Affine::translate((x0 + w - pad - count_w, count_top)),
                 None,
             );
         }
@@ -1543,7 +1601,13 @@ impl HexView {
     ) {
         let tokens = &theme.tokens;
         let w = 340.0;
-        let h = 56.0;
+        // The caption sits on its measured line and the shared input starts
+        // just beneath it (19 px at 1×); the sheet grows with both lines.
+        let caption_size = ts(tr, tokens.typography.scale.xs);
+        let caption_line = line_box(tr, caption_size);
+        let input_top = 8.0 + caption_line - 1.5;
+        let input_h = 34.0 + line_growth(tr, ts(tr, tokens.typography.scale.sm));
+        let h = input_top + input_h + 3.0;
         let x0 = self.rect.x0 + (self.rect.width() - w) / 2.0;
         let y0 = self.rect.y0 + 80.0;
         let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
@@ -1566,7 +1630,7 @@ impl HexView {
         tr.draw_text_weighted(
             scene,
             "Go to offset",
-            tokens.typography.scale.xs,
+            caption_size,
             tokens.colors.text_dim,
             t * Affine::translate((x0 + pad, y0 + 8.0)),
             None,
@@ -1574,7 +1638,7 @@ impl HexView {
         );
         self.goto_input.apply_layout_external(Rect::new(
             x0 + pad,
-            y0 + 19.0,
+            y0 + input_top,
             x0 + w - pad,
             y0 + h - 3.0,
         ));
@@ -1926,8 +1990,10 @@ impl Widget for HexView {
             return;
         }
 
-        // Measure the cell font with the renderer that paints it, then reflow
-        // the byte grid to fill the current width before laying out.
+        // Measure the cell font (and the title bar's line growth) with the
+        // renderer that paints it, then reflow the byte grid to fill the
+        // current width before laying out. One `GridMetrics` owns every
+        // vertical edge on both the paint and the event path.
         self.cell_metrics = CellMetrics::measure(text_renderer);
         let fit = self.fit_bytes_per_row();
         if fit != self.model.bytes_per_row() {
@@ -2454,6 +2520,10 @@ struct CellMetrics {
     glyph_w: f64,
     /// Line height of one row of cell text.
     line_h: f64,
+    /// How much the title bar's `lg` line has grown over its 1× box at the
+    /// current accessibility scale — the bar adds exactly this to its 44 px
+    /// design height so the file name and the pills keep seating.
+    title_growth: f64,
 }
 
 impl CellMetrics {
@@ -2464,11 +2534,14 @@ impl CellMetrics {
     const FALLBACK: Self = Self {
         glyph_w: GridMetrics::CELL_FONT as f64 * 0.6,
         line_h: GridMetrics::CELL_FONT as f64 * 1.25,
+        title_growth: 0.0,
     };
 
     /// Measure the cell font with the renderer that will paint it. Eight
     /// glyphs — the offset gutter's width — so a fractional advance is read
-    /// at the precision the gutter needs.
+    /// at the precision the gutter needs. The title bar's line growth is
+    /// measured here too, from the same renderer, so the event path's
+    /// `metrics()` and the painted frame place the grid at the same y.
     fn measure(tr: &mut TextRenderer) -> Self {
         let (w, h) = tr.measure_styled(
             "00000000",
@@ -2481,9 +2554,14 @@ impl CellMetrics {
         if w <= 0.0 || h <= 0.0 {
             return Self::FALLBACK;
         }
+        // The title's `lg` token in the renderer's input space is the 1× type
+        // ramp's `lg` (the renderer applies the accessibility scale on top),
+        // so no theme is needed to measure how much the title line grows.
+        let title_growth = line_growth(tr, ui::tokens::TypeScale::default().lg);
         Self {
             glyph_w: f64::from(w) / 8.0,
             line_h: f64::from(h),
+            title_growth,
         }
     }
 
@@ -2510,6 +2588,7 @@ impl CellMetrics {
 }
 
 /// Computed layout metrics for one frame. All in logical px.
+#[derive(Clone, Copy, Debug)]
 struct GridMetrics {
     header_bottom: f64,
     col_header_y: f64,
@@ -2555,7 +2634,9 @@ impl GridMetrics {
     const INSPECTOR_MIN: f64 = 300.0;
 
     fn new(rect: Rect, bpr: usize, cell: CellMetrics) -> Self {
-        let header_bottom = rect.y0 + 44.0;
+        // The title bar is 44 px at 1× and grows by exactly its `lg` line's
+        // measured growth, so the file name and pills stay seated at 200 %.
+        let header_bottom = rect.y0 + 44.0 + cell.title_growth;
         // The column header is the cell font at caption size, so its offset
         // labels stay on the byte pitch at every scale; its band grows with
         // the measured line height (20px at 1×, as before).
@@ -2827,11 +2908,39 @@ mod tests {
             "pitches follow the renderer scale: {base:?} → {large:?}"
         );
 
+        // The title bar grows with its `lg` line at 2×, and that growth is
+        // part of the same measurement the event path reads, so `metrics()`
+        // before and after a painted frame agree on where the grid starts.
+        assert!(base.title_growth.abs() < 1e-6, "no title growth at 1×: {base:?}");
+        assert!(large.title_growth > 4.0, "the title line grows at 2×: {large:?}");
+
         let mut view = HexView::new(vec![0xAB; 96], "scale.bin");
         view.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
         for cell in [base, large] {
             view.cell_metrics = cell;
+            let before_paint = view.metrics();
+            // Paint a real frame at this cell's scale and read the metrics the
+            // frame was laid out with; the pre-paint event-path metrics must
+            // already match them (same `CellMetrics::measure`).
+            let scale = if cell == large { 2.0 } else { 1.0 };
+            let theme = Theme::dark().with_text_scale(scale);
+            tr.set_text_scale(scale);
+            let mut scene = Scene::new();
+            Widget::draw(
+                &mut view,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert_eq!(view.cell_metrics, cell, "draw measures the same cell metrics");
             let m = view.metrics();
+            assert!(
+                (m.header_bottom - before_paint.header_bottom).abs() < 1e-6
+                    && (m.grid_top - before_paint.grid_top).abs() < 1e-6,
+                "event-path metrics match the painted frame: {before_paint:?} vs {m:?}"
+            );
             assert!((m.row_h - cell.row_h()).abs() < f64::EPSILON);
             assert!((m.hex_col_w - cell.hex_col_w()).abs() < f64::EPSILON);
             let bpr = view.model.bytes_per_row();

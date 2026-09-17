@@ -28,6 +28,11 @@ use crate::draw;
 use crate::model::{self, ThemeSpec};
 
 const PANE_MARGIN: f64 = 22.0;
+// Text-driven heights, at 1×. Every one of these seats glyphs the shared
+// renderer draws at the accessibility text scale, so `SpecimenLayout`
+// multiplies them by that scale: the specimen reflows under large text
+// instead of stacking its sections over one another. The charts and the
+// pane margin carry no text and stay fixed.
 const TITLE_BAR_H: f64 = 42.0;
 const SECTION_LABEL_H: f64 = 18.0;
 const TYPOGRAPHY_BODY_H: f64 = 54.0;
@@ -56,6 +61,9 @@ fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
 /// bar.
 struct SpecimenLayout<'t> {
     th: &'t Theme,
+    /// The accessibility text scale the specimen's glyphs are drawn at; every
+    /// text-driven height below is this times its 1× constant.
+    scale: f64,
     /// The "app window" card the whole specimen is drawn inside.
     card: Rect,
     /// Left edge of the content region (card left edge + padding).
@@ -65,6 +73,12 @@ struct SpecimenLayout<'t> {
     /// Padding between the card edge and the content region.
     pad: f64,
     radius: f64,
+    /// Scaled text-driven heights the section painters lay their glyphs in.
+    title_bar_h: f64,
+    label_h: f64,
+    buttons_h: f64,
+    controls_h: f64,
+    list_row_h: f64,
     typography_y: f64,
     buttons_y: f64,
     controls_y: f64,
@@ -84,22 +98,38 @@ impl<'t> SpecimenLayout<'t> {
         f64::from(th.gap_standard).clamp(10.0, 18.0)
     }
 
-    fn minimum_pane_height(th: &Theme) -> f64 {
+    /// A 1× text-driven measure at the specimen's text scale.
+    fn scaled(&self, at_1x: f64) -> f64 {
+        at_1x * self.scale
+    }
+
+    /// The text scale the specimen's geometry follows: never below 1×, so a
+    /// small-text preference keeps the 1× specimen rather than shrinking its
+    /// bands under glyphs that are still legible, and never a non-finite
+    /// value. `new` and `minimum_pane_height` share this rule so the pane a
+    /// specimen is allocated always matches the specimen drawn in it.
+    fn geometry_scale(scale: f64) -> f64 {
+        if scale.is_finite() { scale.max(1.0) } else { 1.0 }
+    }
+
+    /// The pane height that contains the complete specimen at `scale`,
+    /// including the chart floor and the card's bottom padding/margin.
+    fn minimum_pane_height(th: &Theme, scale: f64) -> f64 {
+        let scale = Self::geometry_scale(scale);
         let section_bodies = TYPOGRAPHY_BODY_H
             + BUTTONS_BODY_H
             + CONTROLS_BODY_H
             + LIST_ROW_H * LIST_ROWS
             + BADGES_BODY_H;
         PANE_MARGIN * 2.0
-            + TITLE_BAR_H
             + Self::padding(th) * 2.0
-            + SECTION_LABEL_H * 6.0
-            + section_bodies
+            + (TITLE_BAR_H + SECTION_LABEL_H * 6.0 + section_bodies) * scale
             + Self::gap(th) * 5.0
             + CHART_MIN_H
     }
 
-    fn new(th: &'t Theme, pane: Rect) -> Self {
+    fn new(th: &'t Theme, pane: Rect, scale: f64) -> Self {
+        let scale = Self::geometry_scale(scale);
         let radius = th.radius_standard.clamp(0.0, 18.0);
         let card = Rect::new(
             pane.x0 + PANE_MARGIN,
@@ -112,13 +142,19 @@ impl<'t> SpecimenLayout<'t> {
         let cx = card.x0 + pad;
         let cw = card.width() - pad * 2.0;
 
-        let typography_y = card.y0 + TITLE_BAR_H + pad;
-        let buttons_y = typography_y + SECTION_LABEL_H + TYPOGRAPHY_BODY_H + gap;
-        let controls_y = buttons_y + SECTION_LABEL_H + BUTTONS_BODY_H + gap;
-        let list_y = controls_y + SECTION_LABEL_H + CONTROLS_BODY_H + gap;
-        let badges_y = list_y + SECTION_LABEL_H + LIST_ROW_H * LIST_ROWS + gap;
-        let charts_y = badges_y + SECTION_LABEL_H + BADGES_BODY_H + gap;
-        let chart_content_y = charts_y + SECTION_LABEL_H;
+        let title_bar_h = TITLE_BAR_H * scale;
+        let label_h = SECTION_LABEL_H * scale;
+        let buttons_h = BUTTONS_BODY_H * scale;
+        let controls_h = CONTROLS_BODY_H * scale;
+        let list_row_h = LIST_ROW_H * scale;
+
+        let typography_y = card.y0 + title_bar_h + pad;
+        let buttons_y = typography_y + label_h + TYPOGRAPHY_BODY_H * scale + gap;
+        let controls_y = buttons_y + label_h + buttons_h + gap;
+        let list_y = controls_y + label_h + controls_h + gap;
+        let badges_y = list_y + label_h + list_row_h * LIST_ROWS + gap;
+        let charts_y = badges_y + label_h + BADGES_BODY_H * scale + gap;
+        let chart_content_y = charts_y + label_h;
         let chart_h = (card.y1 - pad - chart_content_y).clamp(CHART_MIN_H, CHART_MAX_H);
         let chart_w = (cw - CHART_COLUMN_GAP) / 2.0;
         let bar_rect = Rect::new(cx, chart_content_y, cx + chart_w, chart_content_y + chart_h);
@@ -131,11 +167,17 @@ impl<'t> SpecimenLayout<'t> {
 
         Self {
             th,
+            scale,
             card,
             cx,
             cw,
             pad,
             radius,
+            title_bar_h,
+            label_h,
+            buttons_h,
+            controls_h,
+            list_row_h,
             typography_y,
             buttons_y,
             controls_y,
@@ -212,7 +254,9 @@ impl PreviewPane {
             return;
         }
         let th = &self.theme;
-        let layout = SpecimenLayout::new(th, self.rect);
+        // The specimen's glyphs are drawn at the shared renderer's text
+        // scale, so its text-driven geometry follows the same factor.
+        let layout = SpecimenLayout::new(th, self.rect, f64::from(tr.text_scale()));
 
         // 1. Desktop background (surface base).
         draw::fill_rect(scene, t, self.rect, th.bg_app);
@@ -229,7 +273,7 @@ impl PreviewPane {
         );
 
         // 2. Title bar.
-        self.draw_title_bar(scene, t, tr, layout.card, layout.radius);
+        self.draw_title_bar(scene, t, tr, layout.card, layout.radius, layout.title_bar_h);
 
         // 3. Typography — the specimen is shaped in the theme's chosen font
         //    family (via `font_choice`) so a font change re-renders here live.
@@ -253,25 +297,29 @@ impl PreviewPane {
         self.spec = Some(spec.clone());
     }
 
-    /// Minimum narrow allocation that contains the complete specimen,
-    /// including the chart floor and the card's bottom padding/margin.
-    pub(crate) fn narrow_intrinsic_height(&self) -> f32 {
+    /// Minimum narrow allocation that contains the complete specimen at the
+    /// OS theme's `text_scale`, including the chart floor and the card's
+    /// bottom padding/margin. The previewed theme supplies the specimen's
+    /// colours and spacing; the person's text-size preference is the OS
+    /// theme's, so it is passed in rather than read from the previewed one.
+    pub(crate) fn narrow_intrinsic_height(&self, text_scale: f32) -> f32 {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "the specimen height is a small logical-pixel value representable by f32"
         )]
-        let height = SpecimenLayout::minimum_pane_height(&self.theme) as f32;
+        let height =
+            SpecimenLayout::minimum_pane_height(&self.theme, f64::from(text_scale)) as f32;
         height
     }
 
     #[cfg(test)]
     pub(crate) fn specimen_card_rect(&self) -> Rect {
-        SpecimenLayout::new(&self.theme, self.rect).card
+        SpecimenLayout::new(&self.theme, self.rect, 1.0).card
     }
 
     #[cfg(test)]
     pub(crate) fn specimen_tail_rect(&self) -> Rect {
-        SpecimenLayout::new(&self.theme, self.rect).tail_rect()
+        SpecimenLayout::new(&self.theme, self.rect, 1.0).tail_rect()
     }
 
     fn font(&self) -> String {
@@ -470,10 +518,10 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         card: Rect,
         radius: f64,
+        tb_h: f64,
     ) {
         let th = &self.theme;
         let sem = &th.tokens.colors.semantic;
-        let tb_h = TITLE_BAR_H;
         let title_bar = Rect::new(card.x0, card.y0, card.x1, card.y0 + tb_h);
         draw::fill_rrect(
             scene,
@@ -538,7 +586,7 @@ impl PreviewPane {
     ) {
         let th = layout.th;
         draw_section_label(tr, scene, t, layout.cx, y, "TYPOGRAPHY", th);
-        y += SECTION_LABEL_H;
+        y += layout.label_h;
         draw::text_font(
             tr,
             scene,
@@ -551,7 +599,7 @@ impl PreviewPane {
             TextWeight::Bold,
             &self.font_choice,
         );
-        y += 32.0;
+        y += layout.scaled(32.0);
         draw::text_font(
             tr,
             scene,
@@ -578,8 +626,8 @@ impl PreviewPane {
     ) {
         let th = layout.th;
         draw_section_label(tr, scene, t, layout.cx, y, "BUTTONS", th);
-        y += SECTION_LABEL_H;
-        let bh = BUTTONS_BODY_H;
+        y += layout.label_h;
+        let bh = layout.buttons_h;
         let bw = ((layout.cw - 30.0) / 4.0).min(150.0);
         let labels = ["Primary", "Secondary", "Ghost", "Disabled"];
         for (i, lab) in labels.iter().enumerate() {
@@ -672,22 +720,26 @@ impl PreviewPane {
         let pad = layout.pad;
         let radius = layout.radius;
         draw_section_label(tr, scene, t, cx, y, "CONTROLS", th);
-        y += SECTION_LABEL_H;
-        let row_h = CONTROLS_BODY_H;
+        y += layout.label_h;
+        let row_h = layout.controls_h;
+        // The toggle, checkbox, their labels and the slider's origin seat
+        // glyphs drawn at the text scale, so every 1× measure in this row
+        // follows `layout.scaled`.
+        let s = |v: f64| layout.scaled(v);
         // Toggle (on)
-        let tg = Rect::new(cx, y, cx + 44.0, y + 24.0);
-        draw::fill_rrect(scene, t, tg, 12.0, th.accent_primary);
+        let tg = Rect::new(cx, y, cx + s(44.0), y + s(24.0));
+        draw::fill_rrect(scene, t, tg, s(12.0), th.accent_primary);
         draw::circle(
             scene,
             t,
-            Point::new(tg.x1 - 12.0, tg.center().y),
-            9.0,
+            Point::new(tg.x1 - s(12.0), tg.center().y),
+            s(9.0),
             Color::WHITE,
         );
-        draw::text(tr, scene, t, "On", 12.0, th.text_dim, tg.x1 + 8.0, y + 5.0);
+        draw::text(tr, scene, t, "On", 12.0, th.text_dim, tg.x1 + s(8.0), y + s(5.0));
         // Checkbox (checked)
-        let cbx = cx + 110.0;
-        let cb = Rect::new(cbx, y + 2.0, cbx + 20.0, y + 22.0);
+        let cbx = cx + s(110.0);
+        let cb = Rect::new(cbx, y + s(2.0), cbx + s(20.0), y + s(22.0));
         draw::fill_rrect(scene, t, cb, (radius * 0.4).max(3.0), th.accent_primary);
         draw::line(
             scene,
@@ -712,11 +764,11 @@ impl PreviewPane {
             "Enabled",
             12.0,
             th.text_dim,
-            cb.x1 + 8.0,
-            y + 5.0,
+            cb.x1 + s(8.0),
+            y + s(5.0),
         );
         // Slider (~62%)
-        let sl_x0 = cx + 230.0;
+        let sl_x0 = cx + s(230.0);
         let sl_x1 = cx + cw.min(cw) - 0.0;
         let sl_x1 = sl_x1.min(card.x1 - pad);
         let track_y = y + row_h / 2.0 - 1.0;
@@ -787,9 +839,14 @@ impl PreviewPane {
                 th.accent_primary,
             );
         }
+        // The row's glyphs are drawn at the renderer's text scale, and the
+        // row height arrives already scaled, so every 1× offset inside the
+        // row follows the same factor.
+        let s = rowh / LIST_ROW_H;
         // avatar
-        let ac = Point::new(rr.x0 + 22.0, rr.center().y);
-        draw::circle(scene, t, ac, 12.0, col);
+        let avatar_r = 12.0 * s;
+        let ac = Point::new(rr.x0 + 22.0 * s, rr.center().y);
+        draw::circle(scene, t, ac, avatar_r, col);
         let initial = name.chars().next().unwrap_or('?').to_string();
         draw::text_center(
             tr,
@@ -798,10 +855,10 @@ impl PreviewPane {
             &initial,
             12.0,
             model::color(model::on_color([col.r(), col.g(), col.b()])),
-            ac.x - 12.0,
-            ac.x + 12.0,
-            ac.y - 12.0,
-            ac.y + 12.0,
+            ac.x - avatar_r,
+            ac.x + avatar_r,
+            ac.y - avatar_r,
+            ac.y + avatar_r,
             TextWeight::Bold,
         );
         draw::text_w(
@@ -811,8 +868,8 @@ impl PreviewPane {
             name,
             13.0,
             th.text_primary,
-            rr.x0 + 44.0,
-            rr.y0 + 7.0,
+            rr.x0 + 44.0 * s,
+            rr.y0 + 7.0 * s,
             TextWeight::Medium,
         );
         draw::text(
@@ -822,19 +879,19 @@ impl PreviewPane {
             sub,
             11.0,
             th.text_dim,
-            rr.x0 + 44.0,
-            rr.y0 + 22.0,
+            rr.x0 + 44.0 * s,
+            rr.y0 + 22.0 * s,
         );
         // trailing badge
         if badge > 0 {
-            let bw2 = 22.0;
+            let bw2 = 22.0 * s;
             let br = Rect::new(
                 rr.x1 - bw2 - 10.0,
-                rr.center().y - 9.0,
+                rr.center().y - 9.0 * s,
                 rr.x1 - 10.0,
-                rr.center().y + 9.0,
+                rr.center().y + 9.0 * s,
             );
-            draw::fill_rrect(scene, t, br, 9.0, sem.danger);
+            draw::fill_rrect(scene, t, br, 9.0 * s, sem.danger);
             draw::text_center(
                 tr,
                 scene,
@@ -853,7 +910,7 @@ impl PreviewPane {
             draw::line(
                 scene,
                 t,
-                Point::new(rr.x0 + 44.0, rr.y1),
+                Point::new(rr.x0 + 44.0 * s, rr.y1),
                 Point::new(rr.x1 - 10.0, rr.y1),
                 Self::alpha(th.border_standard, 0.6),
                 1.0,
@@ -877,8 +934,8 @@ impl PreviewPane {
         let cw = layout.cw;
         let radius = layout.radius;
         draw_section_label(tr, scene, t, cx, y, "LIST", th);
-        y += SECTION_LABEL_H;
-        let rowh = LIST_ROW_H;
+        y += layout.label_h;
+        let rowh = layout.list_row_h;
         let people = [
             ("Ada Lovelace", "Online", sem.success, 3u32),
             ("Alan Turing", "Editing themes", th.accent_primary, 0),
@@ -919,26 +976,44 @@ impl PreviewPane {
         let th = layout.th;
         let sem = &th.tokens.colors.semantic;
         draw_section_label(tr, scene, t, layout.cx, y, "BADGES", th);
-        y += SECTION_LABEL_H;
+        y += layout.label_h;
         let badges = [
             ("Success", sem.success),
             ("Warning", sem.warning),
             ("Danger", sem.danger),
             ("Info", sem.info),
         ];
+        // The chips seat glyphs drawn at the text scale, so their 1× padding,
+        // height, radius and dot follow `layout.scaled` like the count pill.
         let mut bx = layout.cx;
+        let chip_h = layout.scaled(22.0);
         for (lab, col) in badges {
             let (w, _) = tr.measure(lab, 11.0, None);
-            let pw = f64::from(w) + 22.0;
-            let br = Rect::new(bx, y, bx + pw, y + 22.0);
-            draw::fill_rrect(scene, t, br, 11.0, Self::alpha(col, 0.18));
-            draw::stroke_rrect(scene, t, br, 11.0, Self::alpha(col, 0.5), 1.0);
-            draw::circle(scene, t, Point::new(br.x0 + 9.0, br.center().y), 3.0, col);
-            draw::text(tr, scene, t, lab, 11.0, col, br.x0 + 15.0, y + 5.5);
-            bx += pw + 8.0;
+            let pw = f64::from(w) + layout.scaled(22.0);
+            let br = Rect::new(bx, y, bx + pw, y + chip_h);
+            draw::fill_rrect(scene, t, br, chip_h / 2.0, Self::alpha(col, 0.18));
+            draw::stroke_rrect(scene, t, br, chip_h / 2.0, Self::alpha(col, 0.5), 1.0);
+            draw::circle(
+                scene,
+                t,
+                Point::new(br.x0 + layout.scaled(9.0), br.center().y),
+                layout.scaled(3.0),
+                col,
+            );
+            draw::text(
+                tr,
+                scene,
+                t,
+                lab,
+                11.0,
+                col,
+                br.x0 + layout.scaled(15.0),
+                y + layout.scaled(5.5),
+            );
+            bx += pw + layout.scaled(8.0);
         }
         // count pill + NEW
-        let cr = Rect::new(bx, y, bx + 30.0, y + BADGES_BODY_H);
+        let cr = Rect::new(bx, y, bx + 30.0, y + layout.scaled(BADGES_BODY_H));
         draw::fill_rrect(scene, t, cr, 11.0, th.accent_primary);
         draw::text_center(
             tr,

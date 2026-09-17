@@ -681,6 +681,44 @@ fn apply_post_layout_scenario(
             // Separate right-click fixture. Its location is a real pointer
             // anchor in the content pane, deliberately away from toolbar ⋯.
             widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.34));
+            // Arm the first row through the menu's real keyboard route so the
+            // still shows the armed-row treatment (the accent fill that
+            // replaced the invisible dark-theme veneer), not only the resting
+            // menu.
+            let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown);
+            let event = winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                        winit::keyboard::NativeKeyCode::Unidentified,
+                    ),
+                    state: winit::event::ElementState::Pressed,
+                },
+                key.clone(),
+                None,
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                None,
+                key,
+            );
+            let ev = winit::event::WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event,
+                is_synthetic: false,
+            };
+            let mut handled = false;
+            let mut focus = None;
+            let mods = winit::event::Modifiers::default();
+            widget.handle_event(
+                &ev,
+                1.0,
+                &mods,
+                &mut state.doc,
+                &state.root,
+                &mut handled,
+                &mut focus,
+                child,
+                taffy,
+            );
         }
         Some("reorder") => {
             // Grab a favourite and lift it two rows up — mid-drag.

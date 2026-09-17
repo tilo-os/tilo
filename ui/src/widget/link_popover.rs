@@ -20,6 +20,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
@@ -399,8 +400,8 @@ impl LinkPopover {
             &TextStyle::new(tokens.typography.scale.sm),
             tokens.colors.text_primary,
             tokens.colors.text_dim,
-            tokens.colors.accent[5].with_alpha_factor(0.3),
-            tokens.colors.accent[5],
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             true,
         );
     }
@@ -416,7 +417,7 @@ impl LinkPopover {
         rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        let font_size = tokens.typography.scale.sm;
+        let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if self.visible.is_empty() {
             let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
             let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;

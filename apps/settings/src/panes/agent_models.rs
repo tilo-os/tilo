@@ -22,7 +22,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 use zeroize::Zeroize;
 
-use crate::widgets::{El, caption, card, card_with_action, hgap, rows, value_row};
+use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 
 const SETUP_KEY: &str = "agent_models.local.setup";
 const CONFIRM_KEY: &str = "agent_models.local.confirm";
@@ -694,7 +694,6 @@ impl AgentModelsPane {
                             "Accept license & download",
                             Some(CONFIRM_KEY),
                         )))
-                        .push(hgap(8.0))
                         .push(Box::new(Button::new(
                             "agent-models-cancel-install",
                             "Cancel",
@@ -795,8 +794,7 @@ impl AgentModelsPane {
                         ),
                         label,
                         Some(&model_key(&model.package.id, action)),
-                    )))
-                    .push(hgap(8.0));
+                    )));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
@@ -851,7 +849,6 @@ impl AgentModelsPane {
                         || save_profile(ProviderProfile::hosted(ProviderProtocol::Anthropic)),
                     ),
                 ))
-                .push(hgap(8.0))
                 .push(Box::new(
                     Button::new("agent-models-add-openai", "Add compatible API", None).on_effect(
                         || {
@@ -960,7 +957,6 @@ impl AgentModelsPane {
                             }
                         }),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-protocol-{profile_id}"),
@@ -979,7 +975,6 @@ impl AgentModelsPane {
                             }
                         }),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-enabled-{profile_id}"),
@@ -998,7 +993,6 @@ impl AgentModelsPane {
                             }
                         }),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-remove-provider-{profile_id}"),
@@ -1031,7 +1025,6 @@ impl AgentModelsPane {
                             .with_secret(true)
                             .with_placeholder("API key (stored in qOS vault)"),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-set-api-key-{profile_id}"),
@@ -1051,7 +1044,6 @@ impl AgentModelsPane {
                             key.zeroize();
                         }),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-remove-api-key-{profile_id}"),
