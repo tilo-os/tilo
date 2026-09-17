@@ -3,7 +3,7 @@
 
 Architecture-specific outputs are all retained. Shared noarch packages must
 have equal complete semantic RPM headers (including file digests and scripts).
-Only container/compression/signature/build-host bookkeeping is ignored. The
+Only container/compression/signature/build-target bookkeeping is ignored. The
 x86_64 build owns the shared noarch bytes after successful comparison.
 """
 import argparse
@@ -16,12 +16,14 @@ import wine_rpm_contract as contract
 
 # Differences here describe RPM encoding/signing/build-machine bookkeeping,
 # never installed contents, dependencies, scripts, triggers, ownership or flags.
+# OPTFLAGS and PLATFORM record the compiler flags and build target, even for
+# noarch RPMs. Actual installed bytes and package architecture stay compared.
 ENCODING_TAGS = frozenset('''
 SIGSIZE SIGMD5 SIGPGP SIGGPG RSAHEADER DSAHEADER SHA1HEADER SHA256HEADER
 LONGSIGSIZE LONGARCHIVESIZE ARCHIVESIZE PAYLOADDIGEST PAYLOADDIGESTALT
 PAYLOADSHA256 PAYLOADSHA512 PAYLOADSHA3_256 PAYLOADDIGESTALGO PAYLOADSIZE
 PAYLOADFORMAT PAYLOADCOMPRESSOR PAYLOADFLAGS HEADERIMMUTABLE HEADERREGIONS
-BUILDTIME BUILDHOST COOKIE RPMVERSION
+BUILDTIME BUILDHOST COOKIE RPMVERSION OPTFLAGS PLATFORM
 '''.split())
 
 FILE_ARRAYS = frozenset('''
