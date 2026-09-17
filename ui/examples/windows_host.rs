@@ -16,6 +16,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string(&HostNotifications::new(id)?.history()?)?);
         }
         [command, id, tag] if command == "remove" => HostNotifications::new(id)?.remove(tag)?,
+        [command, id, tag, seconds, title, body] if command == "schedule" => {
+            let time = std::time::SystemTime::now() + std::time::Duration::from_secs(seconds.parse()?);
+            HostNotifications::new(id)?.schedule(tag, title, body, time)?;
+        }
+        [command, id] if command == "scheduled" => {
+            let pending: Vec<_> = HostNotifications::new(id)?.scheduled()?.into_iter()
+                .map(|notice| (notice.id, notice.delivery_time.duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or_default()))
+                .collect();
+            println!("{}", serde_json::to_string(&pending)?);
+        }
+        [command, id, tag] if command == "cancel" => HostNotifications::new(id)?.cancel_schedule(tag)?,
         _ => return Err("expected register ID TITLE EXE LINK | show ID TAG TITLE BODY | history ID | remove ID TAG".into()),
     }
     Ok(())

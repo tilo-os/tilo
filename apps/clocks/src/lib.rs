@@ -76,6 +76,10 @@ pub struct Timer {
     pub ends_at_utc: Option<DateTime<Utc>>,
     pub paused_remaining_ms: Option<u64>,
     pub pinned_overlay: bool,
+    /// The native host accepted responsibility for this exact deadline.
+    /// Kept across restarts so a delivered alert is not submitted again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_scheduled_end: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,8 +100,15 @@ pub struct ClockState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DueEvent {
-    Alarm { id: Uuid, label: String },
-    Timer { id: Uuid, label: String },
+    Alarm {
+        id: Uuid,
+        label: String,
+    },
+    Timer {
+        id: Uuid,
+        label: String,
+        native_scheduled: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,6 +222,7 @@ impl Timer {
             ends_at_utc: None,
             paused_remaining_ms: Some(ms),
             pinned_overlay: false,
+            native_scheduled_end: None,
         }
     }
     pub fn start(&mut self, now: DateTime<Utc>) {
@@ -393,11 +405,14 @@ impl ClockState {
         }
         for timer in &mut self.timers {
             if timer.ends_at_utc.is_some_and(|end| end <= now_utc) {
+                let native_scheduled = timer.native_scheduled_end == timer.ends_at_utc;
                 timer.ends_at_utc = None;
+                timer.native_scheduled_end = None;
                 timer.paused_remaining_ms = Some(0);
                 due.push(DueEvent::Timer {
                     id: timer.id,
                     label: timer.label.clone(),
+                    native_scheduled,
                 });
             }
         }
@@ -470,6 +485,42 @@ pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTim
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_timer_handoff_survives_restart_and_matches_only_its_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clocks.json");
+        let now = Utc::now();
+        let mut timer = Timer::new("Tea", Duration::from_secs(30));
+        timer.start(now);
+        timer.native_scheduled_end = timer.ends_at_utc;
+        let mut state = ClockState::default();
+        state.timers.push(timer);
+        state.save_at(&path).unwrap();
+        let mut restored = ClockState::load_at(&path);
+        let later = now + chrono::Duration::seconds(31);
+        assert!(matches!(
+            restored.tick(later, later.with_timezone(&Local)).as_slice(),
+            [DueEvent::Timer {
+                native_scheduled: true,
+                ..
+            }]
+        ));
+        assert_eq!(restored.timers[0].native_scheduled_end, None);
+        assert!(restored.tick(later, later.with_timezone(&Local)).is_empty());
+
+        let mut changed = ClockState::load_at(&path);
+        changed.timers[0].pause(now + chrono::Duration::seconds(1));
+        changed.timers[0].start(now + chrono::Duration::seconds(20));
+        let later = now + chrono::Duration::seconds(60);
+        assert!(matches!(
+            changed.tick(later, later.with_timezone(&Local)).as_slice(),
+            [DueEvent::Timer {
+                native_scheduled: false,
+                ..
+            }]
+        ));
+    }
 
     #[test]
     fn saved_timer_survives_replacement_and_restart() {
