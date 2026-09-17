@@ -1,6 +1,6 @@
 use super::{
-    AppManifest, AppSpec, Frame, MAX_REQUEST_BYTES, configure_profile, parse_args, read_frame,
-    serve, validate_manifest, write_reply,
+    AppManifest, AppSpec, Frame, MAX_REQUEST_BYTES, parse_args, read_frame, serve,
+    validate_manifest, write_reply,
 };
 use serde_json::json;
 use std::{
@@ -16,14 +16,17 @@ fn isolated_root(test_name: &str) -> Option<PathBuf> {
         return Some(PathBuf::from(root));
     }
     let root = tempfile::tempdir().unwrap();
+    let profile = root.path().join("profile");
+    let environment = root.path().join("environment");
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", test_name, "--nocapture"])
-        .env("QOS_MCP_PROCESS_TEST_ROOT", root.path())
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
-        .env("XDG_DATA_HOME", root.path().join("data"))
-        .env("XDG_CACHE_HOME", root.path().join("cache"))
-        .env("QOS_IDENTITY_ROOT", root.path().join("identity"))
-        .env("QOS_BLOB_STORE", root.path().join("blobs"))
+        .env("QOS_MCP_PROCESS_TEST_ROOT", profile)
+        .env("XDG_CONFIG_HOME", environment.join("config"))
+        .env("XDG_DATA_HOME", environment.join("data"))
+        .env("XDG_CACHE_HOME", environment.join("cache"))
+        .env("XDG_STATE_HOME", environment.join("state"))
+        .env("QOS_IDENTITY_ROOT", environment.join("identity"))
+        .env("QOS_BLOB_STORE", environment.join("blobs"))
         .status()
         .unwrap();
     assert!(status.success());
@@ -153,7 +156,15 @@ fn zero_app_stdio_is_json_only_and_profile_contention_is_refused() {
     ) else {
         return;
     };
-    configure_profile(&root).unwrap();
+    let profile_environment = [
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "QOS_IDENTITY_ROOT",
+        "QOS_BLOB_STORE",
+    ]
+    .map(|name| (name, std::env::var_os(name)));
     let manifest = validate_manifest(AppManifest { apps: vec![] }).unwrap();
     let requests = concat!(
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}\n",
@@ -177,6 +188,9 @@ fn zero_app_stdio_is_json_only_and_profile_contention_is_refused() {
     assert_eq!(replies[0]["id"], 1);
     assert_eq!(replies[1]["error"]["code"], -32700);
     assert_eq!(replies[2]["id"], 2);
+    for (name, expected) in &profile_environment {
+        assert_eq!(std::env::var_os(name), *expected, "serve mutated {name}");
+    }
 
     let held = crate::runtime_host::Session::start(&root).unwrap();
     let error = serve(
@@ -187,6 +201,13 @@ fn zero_app_stdio_is_json_only_and_profile_contention_is_refused() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("lock") || error.kind() == std::io::ErrorKind::WouldBlock);
+    for (name, expected) in &profile_environment {
+        assert_eq!(
+            std::env::var_os(name),
+            *expected,
+            "contended serve mutated {name}"
+        );
+    }
     drop(held);
 }
 
@@ -197,7 +218,6 @@ fn eof_reaps_owned_children_and_early_exit_interrupts_idle_input() {
     ) else {
         return;
     };
-    configure_profile(&root).unwrap();
     let pid_file = root.join("child.pid");
     let manifest = validate_manifest(AppManifest {
         apps: vec![AppSpec {
@@ -229,8 +249,6 @@ fn eof_reaps_owned_children_and_early_exit_interrupts_idle_input() {
         Some(libc::ESRCH)
     );
 
-    let early_root = root.join("early");
-    configure_profile(&early_root).unwrap();
     let manifest = validate_manifest(AppManifest {
         apps: vec![AppSpec {
             id: "dev.qos.failure".into(),
@@ -241,7 +259,7 @@ fn eof_reaps_owned_children_and_early_exit_interrupts_idle_input() {
     .unwrap();
     let started = Instant::now();
     let error = serve(
-        &early_root,
+        &root,
         manifest,
         DelayedEof(Duration::from_secs(5)),
         Vec::new(),
@@ -266,7 +284,6 @@ fn duplicate_app_ids_publish_as_distinct_normal_sdk_instances() {
     let Some(root) = isolated_root(TEST) else {
         return;
     };
-    configure_profile(&root).unwrap();
     let session = crate::runtime_host::Session::start(&root).unwrap();
     let executable = std::env::current_exe().unwrap();
     let mut children = Vec::new();
