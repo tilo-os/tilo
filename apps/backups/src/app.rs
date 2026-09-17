@@ -5413,6 +5413,36 @@ mod tests {
     }
 
     #[test]
+    fn retention_steppers_stay_reachable_and_dispatch_on_wide_and_phone_layouts() {
+        let mut f = Frame::demo();
+        f.click_hit(|hit| matches!(hit, Hit::Tab(View::Schedules)));
+
+        for width in [1280.0, 390.0] {
+            f.app.rect = Rect::new(0.0, 0.0, width, 844.0);
+            f.draw();
+            for field in PolicyField::ALL {
+                let minus = f.rect_of(
+                    |hit| matches!(hit, Hit::Policy(candidate, -1) if *candidate == field),
+                );
+                let plus = f
+                    .rect_of(|hit| matches!(hit, Hit::Policy(candidate, 1) if *candidate == field));
+                assert!(minus.x1 <= plus.x0, "{field:?} stepper buttons overlap");
+                assert_eq!(minus.y0, plus.y0, "{field:?} controls leave their row");
+                assert_eq!(minus.y1, plus.y1, "{field:?} controls differ in height");
+                assert!(minus.x0 >= 0.0 && plus.x1 <= width);
+            }
+        }
+
+        let before = BackupsDoc::retention(&f.state.doc, &f.state.root, PolicyField::Daily);
+        f.click_hit(|hit| matches!(hit, Hit::Policy(PolicyField::Daily, 1)));
+        assert_eq!(
+            BackupsDoc::retention(&f.state.doc, &f.state.root, PolicyField::Daily),
+            before + 1,
+            "the visible phone control uses the durable action path"
+        );
+    }
+
+    #[test]
     fn phone_tabs_do_not_overlap_the_compact_backup_action() {
         let mut f = Frame::demo();
         f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
