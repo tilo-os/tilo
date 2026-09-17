@@ -79,6 +79,7 @@ pub mod gpu;
 #[cfg(feature = "gpu-video")]
 pub mod gpu_video;
 pub mod headless;
+pub mod history_mode;
 pub mod history_source;
 pub mod i18n;
 pub mod icons;
@@ -247,6 +248,9 @@ pub use widget::history_group::{
 };
 pub use widget::history_scrubber::HistoryScrubber;
 pub use widget::name_field::{NameField, NameFieldOutcome};
+pub use history_mode::{
+    HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
+};
 // Re-exported so an app reaches the whole history stack through `ui::`
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
