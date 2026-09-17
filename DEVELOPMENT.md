@@ -62,7 +62,7 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files, Word Processor, Terminal and PDF Viewer have been built and run on Windows. Other apps
+Scratchpad, Files, Word Processor, Terminal, PDF Viewer and Books have been built and run on Windows. Other apps
 are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
@@ -88,6 +88,9 @@ cargo test --locked -p ui --lib --features portal portal::
 ```
 
 The example reports the selected path; even its Save mode does not write a file.
+The Windows installer also copies the versioned font catalog and licenses beside
+the executables. Native renderers load and validate that catalog once per process,
+then share its font data. Cargo-run binaries use the checked-in catalog instead.
 Install the currently verified native apps into your Windows user profile, with
 Start menu entries under **Tilo**:
 
@@ -180,6 +183,14 @@ PDF Viewer captures wait for the production worker's visible pages and thumbnail
 unfinished rendering fails after 15 seconds. The explicit `loading` scenario keeps
 its intentional placeholder. `cargo test --locked -p pdf-viewer --test capture`
 exercises this worker path separately from the synchronous library tests.
+
+Books opens EPUBs through its background importer and wakes idle windows when an
+import completes. Device-local source paths and watched folders stay outside the
+collaborative document. `EBOOK_LIBRARY_DIR` uses Windows `;` path-list separators;
+drive letters are preserved. Windows imports remain local unless an absolute
+`TILO_WORKSPACE_DIR` explicitly identifies a configured collaborative workspace.
+The installer does not provide that workspace service. Books captures accept an
+EPUB positional argument and wait for its import to finish.
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
 `CARGO_PROFILE_TEST_DEBUG=0` in the PowerShell environment before building. Do not
