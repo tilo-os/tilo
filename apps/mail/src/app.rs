@@ -80,6 +80,24 @@ const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
 /// through Files after Mail exposes a proper streamed handoff.
 const MAX_ATTACHMENT_SAVE_BYTES: usize = crate::attachment_store::MAX_ATTACHMENT_BYTES;
 
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+struct EventContext<'a> {
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
 /// An open row context menu.
 struct ContextMenu {
     target: MessageId,
@@ -2338,30 +2356,47 @@ impl MailApp {
             None,
         );
 
-        let smtp_row_bottom = self.draw_setup_fields(scene, t, tr, theme, presence, p, lx);
+        let smtp_row_bottom = self.draw_setup_fields(
+            &mut PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            presence,
+            p,
+            lx,
+        );
         self.draw_setup_auth_method(scene, t, tr, theme, lx, last_mouse);
         self.draw_setup_tls_toggles(scene, t, tr, theme);
-        self.draw_setup_footer(scene, t, tr, theme, lx, last_mouse, smtp_row_bottom);
+        self.draw_setup_footer(
+            &mut PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            lx,
+            last_mouse,
+            smtp_row_bottom,
+        );
     }
 
     /// The identity + server fields (left-column labels, the "Port" caption,
     /// and each [`TextInput`]'s own drawing). Part of [`Self::draw_setup`];
     /// returns the bottom edge of the SMTP-host row, which the footer's
     /// autoconfig hint sits just below.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of already-computed layout/state the fields draw with; bundling them into a context struct would just move the same count into a field list"
-    )]
     fn draw_setup_fields(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintContext<'_>,
         presence: &PresenceCtx,
         p: Rect,
         lx: f64,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let labels = [
             "Display name",
@@ -2618,20 +2653,17 @@ impl MailApp {
 
     /// The autoconfig/validation hint line and the Save / Cancel / Remove
     /// buttons at the bottom of the sheet. Part of [`Self::draw_setup`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of already-computed layout/state the footer draws with; bundling them into a context struct would just move the same count into a field list"
-    )]
     fn draw_setup_footer(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintContext<'_>,
         lx: f64,
         last_mouse: Point,
         smtp_row_bottom: f64,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         self.draw_setup_autoconfig_hint(scene, t, tr, theme, lx, smtp_row_bottom);
         self.draw_setup_footer_buttons(scene, t, tr, theme, last_mouse);
     }
@@ -3068,37 +3100,24 @@ impl MailApp {
 
     /// Route events to the open compose modal and report whether it consumed
     /// them.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn handle_compose_modal(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_compose_modal(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         let format_before = self.compose.format();
         let (consumed, action) = self.compose.handle_event(
             event,
             &mut ComposeEventContext {
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
         );
         let lifecycle_boundary = !matches!(&action, ComposeAction::None);
         match action {
             ComposeAction::RequestAttachment => self.request_compose_attachment(),
-            ComposeAction::Send => self.send_compose(state),
-            ComposeAction::SaveDraft => self.save_compose_draft(state),
+            ComposeAction::Send => self.send_compose(ctx.state),
+            ComposeAction::SaveDraft => self.save_compose_draft(ctx.state),
             ComposeAction::Close => {
                 self.dirty = true;
             }
@@ -3601,12 +3620,16 @@ impl Widget for MailApp {
         if self.compose.open
             && self.handle_compose_modal(
                 event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
+                &mut EventContext {
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                },
             )
         {
             *handled = true;
@@ -3678,14 +3701,16 @@ impl Widget for MailApp {
         if self.setup_open {
             self.handle_setup_event(
                 event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut EventContext {
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                },
             );
             if *handled {
                 self.dirty = true;
@@ -4401,19 +4426,7 @@ fn prepare_calendar_invitation_draft(
 }
 
 impl MailApp {
-    #[allow(clippy::too_many_arguments)]
-    fn handle_setup_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_setup_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
         // Keyboard: Tab/Shift+Tab move between fields, Enter advances (or
         // submits on the last field); everything else routes to the focused
         // field.
@@ -4429,20 +4442,24 @@ impl MailApp {
         {
             match logical_key {
                 Key::Named(NamedKey::Tab) => {
-                    let dir = if modifiers.state().shift_key() { -1 } else { 1 };
+                    let dir = if ctx.modifiers.state().shift_key() {
+                        -1
+                    } else {
+                        1
+                    };
                     self.focus_setup_step(dir);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
                     let order = self.setup_tab_order();
                     let is_last = self.setup_focus.is_some_and(|f| order.last() == Some(&f));
                     if is_last {
-                        self.save_setup(state);
+                        self.save_setup(ctx.state);
                     } else {
                         self.focus_setup_step(1);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -4453,14 +4470,14 @@ impl MailApp {
             if let Some(i) = focused.and_then(|i| self.setup_inputs.get_mut(i)) {
                 i.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
             // Typing in the email field pre-fills the server settings from the
@@ -4478,8 +4495,8 @@ impl MailApp {
         } = event
         {
             let pt = self.shared.borrow().last_mouse;
-            self.handle_setup_click(pt, state);
-            *handled = true;
+            self.handle_setup_click(pt, ctx.state);
+            *ctx.handled = true;
         }
     }
 
