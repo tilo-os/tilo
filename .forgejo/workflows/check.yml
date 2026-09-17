@@ -143,7 +143,8 @@ jobs:
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
             base='${{ github.event.before }}'
           fi
-          if [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -z "$base" ] \
+              || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             base=HEAD^
           fi
           echo "base=$(git rev-parse "$base^{commit}")" >> "$GITHUB_OUTPUT"
