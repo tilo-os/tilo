@@ -59,8 +59,8 @@ pub use app::CameraApp;
 
 use ui::widget::Widget;
 
-/// Build the live app: the library is backed by real files on disk and the
-/// viewfinder needs a real camera.
+/// Build the live app: captures may be projected to disk and the viewfinder
+/// needs a real camera.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(CameraApp::disk())
 }

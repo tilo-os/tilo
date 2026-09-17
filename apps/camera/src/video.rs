@@ -294,7 +294,7 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
 
 /// Read the leading AVI headers of `path` and return `(width, height,
 /// duration_ms)`. Best-effort: `None` if the file is not a readable AVI.
-/// Lets the library show a real duration/resolution for recorded clips
+/// Lets the recent handoff show real duration/resolution for recorded clips
 /// without decoding the whole stream.
 pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     // The `avih` header lives near the top of the file; a small prefix is
