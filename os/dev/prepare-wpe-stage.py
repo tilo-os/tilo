@@ -63,6 +63,27 @@ def image_identity(raw, expected, architecture):
     return expected
 
 
+def compiler_failure_lines(raw):
+    """Allow bounded compiler records; registry/authentication errors stay private."""
+    lines = []
+    context = 0
+    for line in raw.decode(errors='replace').splitlines():
+        text = line[:4096]
+        compiler = bool(re.search(r'[^\s]+\.(?:c|cc|cpp|cxx|h|hpp):[0-9]+(?::[0-9]+)?: (?:fatal )?error:', text)
+                        or re.search(r'meson\.build:[0-9]+:[0-9]+: ERROR:', text)
+                        or re.search(r'(?:^|/)ld(?:\.lld|\.bfd)?:.*(?:undefined reference|cannot find)', text)
+                        or re.search(r'\.(?:c|cc|cpp|cxx):.*undefined reference', text)
+                        or text.startswith('collect2: error: ld returned'))
+        if text.startswith(('CMake Error at ', 'CMake Error:', 'CMake Error in ')):
+            context = 8
+        if compiler or context or text.startswith(('ninja: error:', 'ninja: build stopped:')):
+            if not re.search(r'(?i)authorization|credential|password|bearer|token|registry|https?://', text):
+                lines.append(text)
+                lines = lines[-80:]
+        context = max(0, context - 1)
+    return lines
+
+
 def prepare(args):
     validate(args)
     if platform.system() != 'Linux' or platform.machine() != args.architecture or os.getuid() != 0:
@@ -74,8 +95,13 @@ def prepare(args):
     environment = os.environ | {'SOURCE_DATE_EPOCH': args.epoch}
     with tempfile.TemporaryDirectory(prefix='tilo-wpe-stage-') as temporary:
         iidfile = Path(temporary) / 'image.id'
-        subprocess.run(build_command(args, iidfile), env=environment, check=True,
-                       stdout=sys.stderr, stderr=subprocess.PIPE)
+        try:
+            subprocess.run(build_command(args, iidfile), env=environment, check=True,
+                           stdout=sys.stderr, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as error:
+            for line in compiler_failure_lines(error.stderr or b''):
+                print('TILO_WPE_COMPILER_DIAGNOSTIC ' + line, file=sys.stderr)
+            raise
         identity = iidfile.read_text().strip()
         raw = subprocess.check_output(['podman', '--remote=false', 'image', 'inspect', identity],
                                       env=environment, stderr=subprocess.PIPE)
