@@ -14,7 +14,7 @@ use ui::format::bytes as format_bytes;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Avatar;
+use ui::widget::{Avatar, Button, ButtonFace};
 
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
@@ -628,18 +628,16 @@ impl ChatApp {
             side.x0 + 12.0,
             header.y1 + 6.0,
             side.x0 + 118.0,
-            header.y1 + 28.0,
+            header.y1 + 38.0,
         );
-        fill_round(scene, tf, add_cat, 7.0, c.lift(0.35));
-        label(
+        Button::paint(
             scene,
-            tr,
             tf,
-            "＋ Category",
-            11.0,
-            c.text_dim,
-            add_cat.x0 + 9.0,
-            add_cat.center().y - 7.0,
+            tr,
+            theme,
+            &ButtonFace::new(add_cat, "＋ Category")
+                .ghost()
+                .text_size(11.0),
         );
         ChatApp::push_hit(hits, add_cat, Hit::AddCategory(self.active_ws.clone()));
         header
@@ -663,7 +661,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let mut y = header.y1 + 38.0;
+        let mut y = header.y1 + 46.0;
         let body_bottom = side.y1 - 60.0;
 
         // Uncategorised channels (category id "").
@@ -675,7 +673,7 @@ impl ChatApp {
                 break;
             }
             // Category header row: caret + name + "+".
-            let hrow = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 24.0);
+            let hrow = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 32.0);
             let caret = if cat.collapsed { "▸" } else { "▾" };
             label(
                 scene,
@@ -718,8 +716,17 @@ impl ChatApp {
                 );
             }
             // "+" add-channel button.
-            let plus = Rect::new(hrow.x1 - 22.0, y + 2.0, hrow.x1 - 4.0, y + 20.0);
-            label(scene, tr, tf, "+", 16.0, c.text_dim, plus.x0 + 4.0, y + 1.0);
+            let plus = Rect::new(hrow.x1 - 32.0, y, hrow.x1, y + 32.0);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(plus, "+")
+                    .ghost()
+                    .text_size(16.0)
+                    .accessible_name("Add channel"),
+            );
             ChatApp::push_hit(
                 hits,
                 plus,
@@ -730,11 +737,11 @@ impl ChatApp {
             );
             // Caret + name toggles collapse; right-click (resolved against the
             // toggle / "+" hit in `on_right_click`) opens the category menu.
-            let toggle = Rect::new(hrow.x0, y, plus.x0, y + 24.0);
+            let toggle = Rect::new(hrow.x0, y, plus.x0, y + 32.0);
             if !renaming_cat {
                 ChatApp::push_hit(hits, toggle, Hit::CategoryToggle(cat.id.clone()));
             }
-            y += 26.0;
+            y += 34.0;
 
             if !cat.collapsed {
                 y = self.draw_channel_group(
@@ -2865,19 +2872,15 @@ impl ChatApp {
                 rect.x0 + 50.0,
                 rect.center().y + 22.0,
             );
-            fill_round(scene, tf, plus, 8.0, c.lift(0.72));
-            let (pw, ph) = tr.measure("+", 20.0, None);
-            text(
+            Button::paint(
                 scene,
-                tr,
                 tf,
-                "+",
-                20.0,
-                c.text_dim,
-                plus.center().x - f64::from(pw) / 2.0,
-                plus.center().y - f64::from(ph) / 2.0,
-                TextWeight::Regular,
-                None,
+                tr,
+                theme,
+                &ButtonFace::new(plus, "+")
+                    .ghost()
+                    .text_size(20.0)
+                    .accessible_name("Attach file"),
             );
             ChatApp::push_hit(hits, plus, Hit::Attach);
             tx = plus.x1 + 8.0;
@@ -2890,33 +2893,16 @@ impl ChatApp {
             rect.x1 - 12.0,
             rect.center().y + 22.0,
         );
-        fill_round(
+        Button::paint(
             scene,
             tf,
-            send,
-            9.0,
-            if send_enabled {
-                c.accent[5]
-            } else {
-                c.lift(0.35)
-            },
-        );
-        let (sw, sh) = tr.measure("➤", 16.0, None);
-        text(
-            scene,
             tr,
-            tf,
-            "➤",
-            16.0,
-            if send_enabled {
-                Color::WHITE
-            } else {
-                c.text_dim
-            },
-            send.center().x - f64::from(sw) / 2.0,
-            send.center().y - f64::from(sh) / 2.0,
-            TextWeight::Regular,
-            None,
+            theme,
+            &ButtonFace::new(send, "➤")
+                .primary()
+                .text_size(16.0)
+                .disabled(!send_enabled)
+                .accessible_name("Send message"),
         );
         ChatApp::push_hit(hits, send, Hit::Send);
 
@@ -2926,18 +2912,15 @@ impl ChatApp {
             send.x0 - 8.0,
             rect.center().y + 22.0,
         );
-        let (ew, eh) = tr.measure("🙂", 16.0, None);
-        text(
+        Button::paint(
             scene,
-            tr,
             tf,
-            "🙂",
-            16.0,
-            c.text_dim,
-            emoji.center().x - f64::from(ew) / 2.0,
-            emoji.center().y - f64::from(eh) / 2.0,
-            TextWeight::Regular,
-            None,
+            tr,
+            theme,
+            &ButtonFace::new(emoji, "🙂")
+                .ghost()
+                .text_size(16.0)
+                .accessible_name("Choose emoji"),
         );
         ChatApp::push_hit(
             hits,
