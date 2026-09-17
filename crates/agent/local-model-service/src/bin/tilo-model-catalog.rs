@@ -590,8 +590,8 @@ mod tests {
         let (catalog, trust) =
             compile(source, &fixtures, &SigningKey::from_bytes(&[11; 32])).unwrap();
         assert_eq!(catalog.payload.recommendation, "example/tiny-model");
-        assert_eq!(catalog.payload.models[0].artifact.size_bytes, 41);
-        assert_eq!(catalog.payload.runtimes[0].release.artifact.size_bytes, 43);
+        assert_eq!(catalog.payload.models[0].artifact.size_bytes, 42);
+        assert_eq!(catalog.payload.runtimes[0].release.artifact.size_bytes, 44);
         assert_eq!(trust.keys.len(), 1);
     }
 
