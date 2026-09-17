@@ -3228,14 +3228,14 @@ mod tests {
             }
         }
 
-        for width in [360.0, 390.0] {
+        for width in [360_u32, 390] {
             let centre = ui::headless::Driver::new(
                 ui::State::new(),
                 Box::new(PrintCentre::demo(DemoScenario::ScanResult)),
-                (width as u32, 760),
+                (width, 760),
             );
             let mut buttons = 0;
-            inspect(&centre.inspection().root, width, &mut buttons);
+            inspect(&centre.inspection().root, f64::from(width), &mut buttons);
             assert!(buttons >= 8, "expected the complete scan-review action set");
         }
     }
@@ -3253,12 +3253,12 @@ mod tests {
             }
         }
 
-        for width in [360.0_f32, 520.0_f32] {
-            let height = 820.0_f32;
+        for width in [360_u32, 520] {
+            let height = 820_u32;
             let centre = ui::headless::Driver::new(
                 ui::State::new(),
                 Box::new(PrintCentre::demo(DemoScenario::PrintSetup)),
-                (width as u32, height as u32),
+                (width, height),
             );
             let snapshot = centre.inspection();
 

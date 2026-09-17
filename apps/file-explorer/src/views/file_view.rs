@@ -1850,7 +1850,10 @@ mod tests {
         let viewport = Rect::new(100.0, 150.0, 700.0, 750.0);
         view.last_vp = Some(viewport);
         assert_eq!(
-            view.accessibility().unwrap().bounds.map(|b| b.to_rect()),
+            view.accessibility()
+                .unwrap()
+                .bounds
+                .map(ui::a11y::AccessBounds::to_rect),
             Some(viewport)
         );
         assert_eq!(view.accessibility().unwrap().children.len(), 2);
