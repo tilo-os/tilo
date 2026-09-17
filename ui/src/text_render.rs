@@ -27,6 +27,12 @@ pub const UI_MATH_FAMILY: &str = "Noto Sans Math";
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
 /// other characters not covered by the selected primary face.
 pub fn configured_font_system() -> FontSystem {
+    #[cfg(windows)]
+    if let Some(font_system) =
+        crate::font_catalog::windows_font_system(crate::i18n::I18nManager::current_locale())
+    {
+        return font_system;
+    }
     let mut font_system = FontSystem::new();
     let database = font_system.db_mut();
     database.set_sans_serif_family(UI_SANS_FAMILY);
