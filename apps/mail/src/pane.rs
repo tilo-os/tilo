@@ -183,6 +183,14 @@ struct DrawContext<'a> {
     theme: &'a Theme,
 }
 
+struct ReaderThreadLayout {
+    reader: Rect,
+    content_x: f64,
+    content_w: f32,
+    y: f64,
+    head_has_html: bool,
+}
+
 pub struct Pane {
     role: Role,
     shared: Shared,
@@ -1261,20 +1269,17 @@ impl Pane {
 
     /// The reader's action bar: Reply/Archive/Delete/Star/Mark-unread, icon
     /// only when `compact`, icon + label otherwise. Part of [`Self::draw_reader`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the reader state draw_reader already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_reader_action_bar(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         compact: bool,
         starred: bool,
         last_mouse: Point,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         for (rect, hit) in &self.hits {
             let (label, danger, icon) = match hit {
@@ -1458,7 +1463,17 @@ impl Pane {
             .selected
             .and_then(|id| st.mailbox.get(id))
             .is_some_and(|message| message.starred);
-        self.draw_reader_action_bar(scene, t, tr, theme, compact, starred, st.last_mouse);
+        self.draw_reader_action_bar(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            compact,
+            starred,
+            st.last_mouse,
+        );
 
         let width = (rr.width() - 48.0).max(120.0) as f32;
         let x = rr.x0 + 24.0;
@@ -1591,7 +1606,17 @@ impl Pane {
             .selected
             .and_then(|id| st.mailbox.get(id))
             .is_some_and(|m| m.starred);
-        self.draw_reader_action_bar(scene, t, tr, theme, compact, starred, st.last_mouse);
+        self.draw_reader_action_bar(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            compact,
+            starred,
+            st.last_mouse,
+        );
 
         let Some(head) = msgs.last() else {
             // Unreachable: `msgs.is_empty()` returned above — but bail rather
@@ -1601,10 +1626,12 @@ impl Pane {
         let content_x = rr.x0 + 24.0;
         let content_w = (rr.width() - 48.0) as f32;
         let mut y = Self::draw_reader_thread_heading(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             content_x,
             content_w,
             head,
@@ -1613,10 +1640,12 @@ impl Pane {
             rr.y0 + HEADER_H + 8.0,
         );
         y = Self::draw_inspection_badge(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             content_x,
             y,
             head.read,
@@ -1636,16 +1665,20 @@ impl Pane {
         let head_id = head.id;
         let head_html = head.html_body.clone();
         let webview_rect = self.draw_reader_thread_messages(
-            scene,
-            t,
-            tr,
-            theme,
-            rr,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             &msgs,
-            content_x,
-            content_w,
-            y,
-            head_html.is_some(),
+            ReaderThreadLayout {
+                reader: rr,
+                content_x,
+                content_w,
+                y,
+                head_has_html: head_html.is_some(),
+            },
             &mut chip_hits,
         );
         self.reader_attachment_hits = chip_hits;
@@ -1655,12 +1688,8 @@ impl Pane {
 
     /// Draw the conversation title and its compact count/folder context,
     /// returning the baseline after that header.
-    #[allow(clippy::too_many_arguments)]
     fn draw_reader_thread_heading(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         content_x: f64,
         content_w: f32,
         head: &Message,
@@ -1668,6 +1697,10 @@ impl Pane {
         folder: Folder,
         y: f64,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let subject = elide(
             tr,
@@ -1704,12 +1737,8 @@ impl Pane {
     /// Draw the persistent visual counterpart of an explicit no-side-effect
     /// inspection. Returns the next baseline unchanged when the reader is
     /// showing a normal message open.
-    #[allow(clippy::too_many_arguments)]
     fn draw_inspection_badge(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         content_x: f64,
         y: f64,
         already_read: bool,
@@ -1718,6 +1747,10 @@ impl Pane {
         if !inspecting {
             return y;
         }
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let label = if already_read {
             "Preview · read state unchanged"
@@ -1755,27 +1788,27 @@ impl Pane {
     /// when it carries an HTML body, everything else draws as a text card.
     /// Returns the reserved HTML webview rect, if any. Part of
     /// [`Self::draw_reader_thread`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_reader_thread_messages(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rr: Rect,
+        ctx: &mut DrawContext<'_>,
         msgs: &[&Message],
-        content_x: f64,
-        content_w: f32,
-        mut y: f64,
-        head_has_html: bool,
+        layout: ReaderThreadLayout,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> Option<Rect> {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let ReaderThreadLayout {
+            reader,
+            content_x,
+            content_w,
+            mut y,
+            head_has_html,
+        } = layout;
         let mut webview_rect: Option<Rect> = None;
         for (i, m) in msgs.iter().enumerate() {
-            if y > rr.y1 - 40.0 {
+            if y > reader.y1 - 40.0 {
                 break;
             }
             let is_head = i == msgs.len() - 1;
@@ -1796,7 +1829,7 @@ impl Pane {
                     },
                 );
                 y += 8.0;
-                let bottom = rr.y1 - 46.0; // room for the remote-images bar
+                let bottom = reader.y1 - 46.0; // room for the remote-images bar
                 if bottom > y + 48.0 {
                     webview_rect = Some(Rect::new(
                         content_x,
@@ -1807,7 +1840,18 @@ impl Pane {
                 }
             } else {
                 y = self.draw_message_card(
-                    scene, t, tr, theme, m, content_x, y, content_w, is_head, chip_hits,
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    m,
+                    content_x,
+                    y,
+                    content_w,
+                    is_head,
+                    chip_hits,
                 );
                 y += 14.0;
             }
@@ -2064,26 +2108,22 @@ impl Pane {
         cy + 48.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Draw the "N attachments" label and the wrapping row of attachment
     /// chips for an expanded message card, recording each chip's hit region.
     /// Returns the y past the chips. Part of [`Self::draw_message_card`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the card layout draw_message_card already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_attachment_chips(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         msg: &Message,
         cx: f64,
         card_x1: f64,
         mut yy: f64,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         yy += 8.0;
         tr.draw_text_weighted(
@@ -2172,16 +2212,9 @@ impl Pane {
 
     /// Draw one message card in the reader thread (header + body or a
     /// collapsed preview line) and return the y past it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the thread layout draw_reader already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_message_card(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         msg: &Message,
         cx: f64,
         cy: f64,
@@ -2189,6 +2222,10 @@ impl Pane {
         expanded: bool,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let card_x1 = cx + f64::from(width);
         let mut yy = self.draw_card_header(
@@ -2223,8 +2260,19 @@ impl Pane {
                 yy += f64::from(ph.max(18.0)) + 2.0;
             }
             if msg.has_attachments() {
-                yy = self
-                    .draw_attachment_chips(scene, t, tr, theme, msg, cx, card_x1, yy, chip_hits);
+                yy = self.draw_attachment_chips(
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    msg,
+                    cx,
+                    card_x1,
+                    yy,
+                    chip_hits,
+                );
             }
         } else {
             // Collapsed preview: a single elided line so a narrow reader column
