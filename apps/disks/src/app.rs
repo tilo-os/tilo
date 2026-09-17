@@ -743,11 +743,15 @@ impl DisksApp {
     }
 
     // ---- drawing primitives -------------------------------------------
-    // Each of `txt` / `txt_right` / `txt_center` takes every value it draws
-    // independently (position, size, colour, weight, ...); bundling them
-    // into a params struct would just move the same field count into a
-    // call-site literal at 74 call sites for no behavioural difference.
-    #[allow(clippy::too_many_arguments, reason = "see the comment above")]
+    // This is the one leaf adapter around `TextRenderer::draw_text_weighted`.
+    // Its text, typography, origin and optional clipping width are independent
+    // at 57 call sites; a parameter object would add construction noise but
+    // express no invariant. Alignment-aware adapters below group their anchor
+    // into a `Point` and therefore remain lint-clean.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "leaf adapter mirrors independently variable renderer inputs at 57 call sites; no domain invariant exists to model"
+    )]
     fn txt(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -770,15 +774,13 @@ impl DisksApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn txt_right(
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
         size: f32,
         color: Color,
-        right: f64,
-        top: f64,
+        anchor: Point,
         weight: TextWeight,
     ) {
         let (w, _) = tr.measure_weighted(s, size, None, weight);
@@ -788,22 +790,20 @@ impl DisksApp {
             s,
             size,
             color,
-            right - f64::from(w),
-            top,
+            anchor.x - f64::from(w),
+            anchor.y,
             None,
             weight,
         );
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn txt_center(
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
         size: f32,
         color: Color,
-        cx: f64,
-        top: f64,
+        anchor: Point,
         weight: TextWeight,
     ) {
         let (w, _) = tr.measure_weighted(s, size, None, weight);
@@ -813,8 +813,8 @@ impl DisksApp {
             s,
             size,
             color,
-            cx - f64::from(w) / 2.0,
-            top,
+            anchor.x - f64::from(w) / 2.0,
+            anchor.y,
             None,
             weight,
         );
@@ -982,8 +982,7 @@ impl DisksApp {
             &format!("{}", self.topo.drives.len()),
             11.5,
             c.text_dim,
-            hr.x1 - 2.0,
-            hr.y0 + 8.0,
+            Point::new(hr.x1 - 2.0, hr.y0 + 8.0),
             TextWeight::Semibold,
         );
     }
@@ -1048,8 +1047,7 @@ impl DisksApp {
             drive.kind.tag(),
             12.0,
             Color::WHITE,
-            f64::midpoint(badge.x0, badge.x1),
-            badge.y0 + 4.0,
+            Point::new(f64::midpoint(badge.x0, badge.x1), badge.y0 + 4.0),
             TextWeight::Bold,
         );
 
@@ -1106,8 +1104,7 @@ impl DisksApp {
             status.label(),
             10.5,
             dot_c,
-            r.x1 - 32.0,
-            r.y0 + 17.0,
+            Point::new(r.x1 - 32.0, r.y0 + 17.0),
             TextWeight::Semibold,
         );
     }
@@ -1290,8 +1287,7 @@ impl DisksApp {
                     a.label(),
                     13.0,
                     with_alpha(c.text_dim, 130),
-                    f64::midpoint(r.x0, r.x1),
-                    r.y0 + 9.0,
+                    Point::new(f64::midpoint(r.x0, r.x1), r.y0 + 9.0),
                     TextWeight::Medium,
                 );
                 continue;
@@ -1321,8 +1317,7 @@ impl DisksApp {
                 a.label(),
                 13.0,
                 fg,
-                f64::midpoint(r.x0, r.x1),
-                r.y0 + 9.0,
+                Point::new(f64::midpoint(r.x0, r.x1), r.y0 + 9.0),
                 TextWeight::Medium,
             );
         }
@@ -1484,8 +1479,7 @@ impl DisksApp {
             "◍ Whole disk",
             11.5,
             if whole { pill_c } else { c.text_dim },
-            f64::midpoint(pill.x0, pill.x1),
-            pill.y0 + 4.0,
+            Point::new(f64::midpoint(pill.x0, pill.x1), pill.y0 + 4.0),
             TextWeight::Semibold,
         );
 
@@ -1782,8 +1776,7 @@ impl DisksApp {
                 &mp,
                 12.0,
                 c.text_dim,
-                area.x1,
-                y + 1.0,
+                Point::new(area.x1, y + 1.0),
                 TextWeight::Regular,
             );
             let barr = Rect::new(area.x0, y + 22.0, area.x1, y + 32.0);
@@ -1959,8 +1952,7 @@ impl DisksApp {
                 &format!("{temp} °C"),
                 13.0,
                 c.text_primary,
-                area.x1 - pad,
-                yy,
+                Point::new(area.x1 - pad, yy),
                 TextWeight::Semibold,
             );
             let frac = ((temp as f64 - 20.0) / 50.0).clamp(0.0, 1.0);
@@ -1992,8 +1984,7 @@ impl DisksApp {
                     &val,
                     12.5,
                     c.text_primary,
-                    area.x1 - pad,
-                    *yy,
+                    Point::new(area.x1 - pad, *yy),
                     TextWeight::Semibold,
                 );
                 *yy += 22.0;
@@ -2446,8 +2437,7 @@ impl DisksApp {
             "USED",
             11.0,
             c.text_dim,
-            cols.used,
-            hy,
+            Point::new(cols.used, hy),
             TextWeight::Semibold,
         );
         cols
@@ -2585,8 +2575,7 @@ impl DisksApp {
                 &format!("{:.0}%", f * 100.0),
                 11.0,
                 c.text_dim,
-                cols.used,
-                ry - 8.0,
+                Point::new(cols.used, ry - 8.0),
                 TextWeight::Regular,
             );
         } else {
@@ -2596,8 +2585,7 @@ impl DisksApp {
                 "—",
                 12.0,
                 c.text_dim,
-                cols.used,
-                ry,
+                Point::new(cols.used, ry),
                 TextWeight::Regular,
             );
         }
@@ -2723,8 +2711,7 @@ impl DisksApp {
                 "✓ match",
                 12.0,
                 c.semantic.success,
-                inp.x1 - 12.0,
-                inp.y0 + 10.0,
+                Point::new(inp.x1 - 12.0, inp.y0 + 10.0),
                 TextWeight::Semibold,
             );
         }
@@ -2813,8 +2800,7 @@ impl DisksApp {
             "No storage devices found",
             17.0,
             c.text_primary,
-            cx,
-            card.y0 + 96.0,
+            Point::new(cx, card.y0 + 96.0),
             TextWeight::Bold,
         );
         let line = if std::env::var("DISKS_LIVE").is_ok() {
@@ -2828,8 +2814,7 @@ impl DisksApp {
             line,
             12.5,
             c.text_dim,
-            cx,
-            card.y0 + 124.0,
+            Point::new(cx, card.y0 + 124.0),
             TextWeight::Regular,
         );
         Self::txt_center(
@@ -2838,8 +2823,7 @@ impl DisksApp {
             "Reflecting the live system — nothing is invented here.",
             11.5,
             with_alpha(c.text_dim, 180),
-            cx,
-            card.y0 + 144.0,
+            Point::new(cx, card.y0 + 144.0),
             TextWeight::Regular,
         );
 
