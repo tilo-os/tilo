@@ -29,6 +29,22 @@ class IdentityTests(unittest.TestCase):
                        'RepoDigests': [self.reference], 'Id': 'c' * 64,
                        'Labels': {'org.opencontainers.image.revision': self.revision}}]
 
+    def test_pending_rebind_marker_rejects_file_directory_and_dangling_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = root / source.hardware.DEVELOPMENT_PATH / 'initramfs-rebind-required.json'
+            marker.parent.mkdir(parents=True)
+            for kind in ('file', 'directory', 'symlink'):
+                if kind == 'file':
+                    marker.write_text('{}')
+                elif kind == 'directory':
+                    marker.mkdir()
+                else:
+                    marker.symlink_to(root / 'missing')
+                with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, 'verified initramfs regeneration'):
+                    source.mounted_identity(root, 'unused', 'unused', 'aarch64')
+                marker.rmdir() if kind == 'directory' else marker.unlink()
+
     def test_immutable_source_and_mutable_update_tag_share_repository(self):
         source.inputs(self.reference, self.repository + ':test', 'aarch64', self.revision)
 
