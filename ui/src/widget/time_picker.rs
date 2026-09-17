@@ -471,6 +471,8 @@ impl Widget for TimePicker {
                 width: Dimension::length(total_w),
                 height: Dimension::length(PICKER_HEIGHT),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));

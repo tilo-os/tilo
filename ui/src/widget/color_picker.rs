@@ -747,6 +747,8 @@ impl Widget for ColorPicker {
                 width: Dimension::length(Self::px(PICKER_WIDTH)),
                 height: Dimension::length(Self::px(PICKER_HEIGHT)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));

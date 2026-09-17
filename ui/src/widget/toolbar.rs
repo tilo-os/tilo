@@ -74,7 +74,10 @@ impl Toolbar {
             intrinsic: Size::ZERO,
             font: TextStyle::new(14.0),
             padding: 8.0,
-            minimum: 32.0,
+            // Replaced by `build_layout` from `theme.tokens.metrics`; the
+            // unscaled reference keeps a renderer-less caller's estimate
+            // consistent with the real one.
+            minimum: crate::tokens::Metrics::BASE.min_pointer_target,
             // Replaced by `build_layout`; the default-token value keeps a
             // renderer-less caller's estimate consistent with the real one.
             separator: SEPARATOR_HAIRLINE + 2.0 * crate::tokens::Spacing::default().s2,
@@ -145,7 +148,7 @@ impl Toolbar {
                         Orientation::Vertical => f64::from(theme.tokens.typography.scale.sm),
                     };
                     (text + 2.0 * f64::from(theme.tokens.spacing.s3))
-                        .max(f64::from(theme.tokens.spacing.s8))
+                        .max(f64::from(theme.tokens.metrics.min_pointer_target))
                 }
             })
             .collect();
@@ -528,7 +531,10 @@ impl Widget for Toolbar {
     ) -> NodeId {
         self.font = TextStyle::new(theme.tokens.typography.scale.sm);
         self.padding = theme.tokens.spacing.s3;
-        self.minimum = theme.tokens.spacing.s8;
+        // A hit target is a metric, not a spacing step: a custom theme's
+        // dense `spacing_px` rescales `s8` but must not shrink the pointer
+        // target beneath the 32 px floor (HIG §7b).
+        self.minimum = theme.tokens.metrics.min_pointer_target;
         self.separator = separator_extent(theme);
         // Bootstrap only for legacy callers that skip renderer settlement.
         self.extents = self
@@ -1250,6 +1256,41 @@ mod tests {
     /// `[Button, Separator, Button]` — the divider paints as a thin filled
     /// rect (an extra COLOR draw tag). `separator_count` pins the structural
     /// contract independently of the scene-encoding check.
+    /// The minimum hit rect is a metric, not a spacing step: halving the
+    /// spacing scale (what a dense custom-theme `spacing_px` does) must leave
+    /// every button at the 32 px pointer target. Before this read
+    /// `metrics.min_pointer_target`, the same fixture gave 16 px buttons.
+    #[test]
+    fn minimum_hit_rect_reads_the_pointer_target_not_the_spacing_scale() {
+        let mut dense = Theme::dark();
+        dense.tokens.spacing = crate::tokens::Spacing::BASE.scaled(0.5);
+        assert!(
+            dense.tokens.spacing.s8 < dense.tokens.metrics.min_pointer_target,
+            "fixture must make s8 ({}) smaller than the target ({})",
+            dense.tokens.spacing.s8,
+            dense.tokens.metrics.min_pointer_target
+        );
+        let mut tb = Toolbar::new(Orientation::Horizontal)
+            .push_button("A", || {})
+            .push_button("Bb", || {});
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        tb.build_layout(&mut taffy, &dense, &mut node_map);
+        let mut text = TextRenderer::new();
+        tb.update_measurements(&mut text);
+        let target = dense.tokens.metrics.min_pointer_target;
+        assert_eq!(tb.minimum, target);
+        for (index, extent) in tb.extents.iter().enumerate() {
+            assert!(
+                extent.width >= target && extent.height >= target,
+                "button {index} extent {extent:?} is under the {target} px pointer target"
+            );
+        }
+        // The renderer-less estimate follows the same floor.
+        tb.recompute_visible(400.0, &dense);
+        assert_eq!(tb.visible_count(), 2);
+    }
+
     #[test]
     fn toolbar_separator_paints_a_divider_line() {
         let mut tb = Toolbar::new(Orientation::Horizontal)
