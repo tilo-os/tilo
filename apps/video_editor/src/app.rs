@@ -250,11 +250,23 @@ const INSPECTOR_HEADER_H: f64 = 26.0;
 
 /// The band a pane's heading row occupies — "MEDIA BIN", "INSPECTOR" and the
 /// controls that share their line (the bin's "+ Title", the inspector's
-/// selection count). Text and chips centre on this one band; the bin's words
+/// selection count, the export chip and the project notice in the strip
+/// under the topbar). Text and chips centre on this one band; the bin's words
 /// used to start at a fixed +14 while its chip sat at +6..+26, so the chip
-/// floated some five pixels above the words on either side of it.
+/// floated some five pixels above the words on either side of it. The band is
+/// the export chip's former 26px, so no pointer target on it got smaller.
 const PANE_HEADING_Y0: f64 = 6.0;
-const PANE_HEADING_H: f64 = 20.0;
+const PANE_HEADING_H: f64 = 26.0;
+
+/// One size for every inspector control label and caption: the theme type
+/// scale's `sm` step, as a renderer base size like every other size in this
+/// file. It is a literal rather than `theme.tokens.typography.scale.sm`
+/// because the tokens fold the UI scale in as well as the text scale and the
+/// renderer applies its text scale on top — reading the token here drew these
+/// labels in a different size regime from the headings, readouts and faces
+/// beside them at any UI scale other than 1. Moving the whole editor onto
+/// style-based drawing (`renderer_input_style`) is the measured-controls work.
+const INSPECTOR_LABEL_SIZE: f32 = 12.0;
 
 /// Below this window width the inspector collapses to an overlay flap from
 /// the right, exactly as the bin does from the left.
@@ -6460,7 +6472,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Rate",
-                base_size(tr, theme.tokens.typography.scale.sm),
+                INSPECTOR_LABEL_SIZE,
                 c.text_dim,
                 x0,
                 l.project_rate_y,
@@ -6616,7 +6628,7 @@ impl VideoEditorApp {
                     tr,
                     tf,
                     "Nothing marked yet",
-                    base_size(tr, theme.tokens.typography.scale.sm),
+                    INSPECTOR_LABEL_SIZE,
                     c.text_dim,
                     x0,
                     rect.y0 - 16.0,
@@ -15540,11 +15552,11 @@ impl VideoEditorApp {
         // The whole body scrolls together by `inspector_scroll` (clamped to 0
         // when nothing is selected, so the empty state stays put).
         let top = r.inspector.y0 - self.inspector_scroll;
-        // One size for every control label and caption in the panel, from the
-        // theme's type scale. The rows used to mix 12, 11.5 and 11: the fade
-        // and transition-length labels read as a different, smaller kind of
-        // row from the opacity and grade labels directly above them.
-        let label_size = base_size(tr, theme.tokens.typography.scale.sm);
+        // One size for every control label and caption in the panel. The rows
+        // used to mix 12, 11.5 and 11: the fade and transition-length labels
+        // read as a different, smaller kind of row from the opacity and grade
+        // labels directly above them.
+        let label_size = INSPECTOR_LABEL_SIZE;
         // The heading row shares the media bin's band and centre line, so the
         // two panes' headings — and the chips beside them — line up.
         let heading = Rect::new(
@@ -18819,30 +18831,22 @@ fn readout_fit(
 /// The playhead time is centred on the line the transport buttons share, and
 /// every smaller part stands on that line-box's foot. A line box's descent is
 /// a fixed share of its size, so the parts' baselines land within a fraction
-/// of a pixel of each other at the sizes this strip uses — and stay there when
-/// the text scale changes, which the four hand-tuned tops this replaces (+8,
-/// +13, +13, +14) did not: each was right for one size at one scale.
+/// of a pixel of each other at the sizes this strip uses, and the parts keep
+/// that relationship to one another at any text scale — which the four
+/// hand-tuned tops this replaces (+8, +13, +13, +14) did not: each was right
+/// for one size at one scale.
 ///
 /// The one guard: a playhead time taller than the strip's upper half is held
 /// at the strip's top inset rather than pushed above its edge, where the
-/// pane's clip would cut the digits' heads off.
+/// pane's clip would cut the digits' heads off. Whether a strip of
+/// `TRANSPORT_H` can hold a large-text readout above its scrubber at all is
+/// the strip's height to answer, not this function's — see the
+/// measured-controls plan.
 fn readout_tops(transport: Rect, cy: f64, heights: [f64; 4]) -> [f64; 4] {
     let [big, total, motion, meta] = heights;
     let big_top = (cy - big / 2.0).max(transport.y0 + 2.0);
     let foot = big_top + big;
     [big_top, foot - total, foot - motion, foot - meta]
-}
-
-/// A theme type-scale step as the base size the legacy `text` helpers take.
-///
-/// Theme typography tokens are already resolved logical sizes — the active
-/// text scale is folded in — while `text` / `text_w` route through the
-/// renderer's own scaling. Dividing here applies the scale exactly once, the
-/// same reconciliation `TextRenderer::renderer_input_style` performs for
-/// style-based callers; handing the token straight to `text` drew it twice as
-/// large as everything beside it at large text.
-fn base_size(tr: &TextRenderer, resolved: f32) -> f32 {
-    resolved / tr.text_scale()
 }
 
 /// The key control at the head of an animatable inspector row: a diamond,

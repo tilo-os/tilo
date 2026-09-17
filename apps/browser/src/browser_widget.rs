@@ -74,14 +74,33 @@ const PIP_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// rows visually related instead of leaving the actions in a disconnected
 /// expanse of empty canvas. Compact chrome deliberately remains fluid.
 const LIBRARY_DESKTOP_CONTENT_WIDTH: f32 = 920.0;
-/// Below this window width the toolbar drops its optional commands — site
-/// information, bookmark, history pause and Picture in Picture — so the
-/// address field keeps a readable width. Between the compact breakpoint and
-/// this one, keeping every command left a tablet-width window an address
-/// field some 56px wide: room for "https:/" and nothing else. Every dropped
-/// command keeps its keyboard and action routes, and history pause moves to
-/// the Library heading exactly as it does in compact chrome.
+/// Below this window width the toolbar shrinks its navigation buttons, hides
+/// Forward and the optional commands, and protects the address field.
+const COMPACT_CHROME_MAX_WIDTH: f64 = 600.0;
+/// Below this window width the toolbar drops the optional commands that have
+/// another route — bookmark (Ctrl+D, `browser.page/bookmark`), history pause
+/// (`browser.session/toggle-history-pause`, and the Library heading exactly as
+/// in compact chrome) and Picture in Picture (`browser.page/picture-in-picture`)
+/// — so the address field keeps a readable width. Between the compact
+/// breakpoint and this one, keeping every command left a tablet-width window
+/// an address field some 56px wide: room for "https:/" and nothing else. The
+/// site-information launcher stays: it has no action route yet, so hiding it
+/// would make site information click-only through the protection panel.
 const ROOMY_CHROME_MIN_WIDTH: f64 = 1000.0;
+/// The height of every control on the toolbar row — navigation buttons, site
+/// launchers, DevTools, Find and zoom, Private, Settings — and of the address
+/// field they sit beside, so the row has one top and one bottom edge. Also the
+/// find bar's controls, which sit beside a field of the same height.
+pub(crate) const TOOLBAR_CONTROL_HEIGHT: f32 = 40.0;
+
+/// The responsive tiers for a window `width`: `(compact, roomy)`. One rule for
+/// the retained layout pass and the one-frame capture seed.
+fn chrome_tiers(width: f64) -> (bool, bool) {
+    (
+        width < COMPACT_CHROME_MAX_WIDTH,
+        width >= ROOMY_CHROME_MIN_WIDTH,
+    )
+}
 
 fn decode_favicon_png(
     bytes: &[u8],
@@ -806,8 +825,7 @@ impl BrowserWidget {
 
     /// Seed the responsive breakpoint before a single-frame offscreen render.
     pub fn debug_set_viewport_width(&mut self, width: u32) {
-        self.compact_chrome = width < 600;
-        self.roomy_chrome = f64::from(width) >= ROOMY_CHROME_MIN_WIDTH;
+        (self.compact_chrome, self.roomy_chrome) = chrome_tiers(f64::from(width));
         // The desktop Library cap also needs the viewport before its first
         // retained layout pass. Production windows already have this rect by
         // the time a user opens Library; headless review does not.
@@ -1477,7 +1495,10 @@ impl BrowserWidget {
         // target) instead of the toolkit's 120×40 label-button default,
         // so three of them leave the address bar the rest of the width
         // even on a narrow / mobile-width window.
-        let nav_btn: (f32, f32) = (if self.compact_chrome { 33.0 } else { 44.0 }, 40.0);
+        let nav_btn: (f32, f32) = (
+            if self.compact_chrome { 33.0 } else { 44.0 },
+            TOOLBAR_CONTROL_HEIGHT,
+        );
         let back = self.bind_button(
             Button::new("browser.back", "", None)
                 .with_icon(Icon::ArrowLeft)
@@ -1624,12 +1645,14 @@ impl BrowserWidget {
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(forward));
         }
-        if self.roomy_chrome {
+        // Site information has no action route yet, so it stays on every
+        // non-compact tier — see `ROOMY_CHROME_MIN_WIDTH`.
+        if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(self.site.launcher(true)));
         }
-        // Every control on this row is `nav_btn.1` tall — the same height as
-        // the address field — so the row has one top and one bottom edge.
-        // The two site launchers were 32px in a 40px row.
+        // Every control on this row is `TOOLBAR_CONTROL_HEIGHT` tall — the
+        // address field's height — so the row has one top and one bottom
+        // edge. The two site launchers were 32px in a 40px row.
         toolbar = toolbar
             .push(Box::new(self.site.launcher(false).with_size(
                 if self.compact_chrome { 32.0 } else { 56.0 },
@@ -3851,12 +3874,14 @@ impl Widget for BrowserWidget {
         let mut children = vec![child_node];
         self.site_panel = None;
         if self.site.open {
-            // The panel hangs under the toolbar at the theme's own insets:
-            // one `s3` gutter from the window's left edge (and the same
-            // kept free on the right), `s16` down from the top so it clears
-            // the toolbar row, and `s12` more kept free at the foot.
+            // The panel hangs directly under the toolbar row — its controls'
+            // height plus the toolbar Container's padding either side, the
+            // same sum the toolbar itself lays out to, so the two agree at
+            // every UI scale — with one `s3` gutter from the window's left
+            // edge (and the same kept free on the right) and `s12` kept free
+            // at the foot.
             let gutter = theme.tokens.spacing.s3;
-            let top = theme.tokens.spacing.s16;
+            let top = TOOLBAR_CONTROL_HEIGHT + 2.0 * theme.padding_standard;
             let width = (self.rect.width() as f32 - 2.0 * gutter).clamp(240.0, 480.0);
             let height = (self.rect.height() as f32 - top - theme.tokens.spacing.s12)
                 .clamp(180.0, 510.0);
@@ -3893,13 +3918,9 @@ impl Widget for BrowserWidget {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let compact = self.rect.width() < 600.0;
-        if compact != self.compact_chrome {
+        let (compact, roomy) = chrome_tiers(self.rect.width());
+        if (compact, roomy) != (self.compact_chrome, self.roomy_chrome) {
             self.compact_chrome = compact;
-            self.structure_dirty = true;
-        }
-        let roomy = self.rect.width() >= ROOMY_CHROME_MIN_WIDTH;
-        if roomy != self.roomy_chrome {
             self.roomy_chrome = roomy;
             self.structure_dirty = true;
         }

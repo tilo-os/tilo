@@ -308,9 +308,9 @@ impl SiteControls {
         } else {
             "Ads and trackers protection"
         })
-        // The toolbar's control height: this sits between 40px navigation
-        // buttons and the 40px address field.
-        .with_size(56.0, 40.0)
+        // The toolbar's control height: this sits between the navigation
+        // buttons and the address field.
+        .with_size(56.0, crate::browser_widget::TOOLBAR_CONTROL_HEIGHT)
         .tooltip(if information {
             "Connection, permissions and stored data"
         } else {

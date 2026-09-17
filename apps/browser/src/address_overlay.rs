@@ -307,29 +307,34 @@ impl AddressSuggestions {
                 entry.title.as_str()
             };
             let x = self.rect.x0 + ROW_PAD_X;
-            // Both lines are measured with the styles they are drawn with and
+            // One line each, elided to the row's width: a long title used to
+            // wrap under the width limit, and a wrapped title has no place to
+            // go in a row this tall except over its own URL line. Both lines
+            // are then measured with the styles they are drawn with and
             // centred as one block in the row, so the pair sits in the same
             // place in a 46px row and in the taller rows a text scale buys. A
             // fixed 8px top with a size-derived second line left the block
             // high in the row at every scale above 1.
-            let (_, title_h) = text_renderer.measure_style(title, Some(text_max), &title_style);
-            let (_, url_h) = text_renderer.measure_style(&entry.url, Some(text_max), &url_style);
+            let title = text_renderer.elide_to_width(title, title_style.size, text_max);
+            let url = text_renderer.elide_to_width(&entry.url, url_style.size, text_max);
+            let (_, title_h) = text_renderer.measure_style(&title, None, &title_style);
+            let (_, url_h) = text_renderer.measure_style(&url, None, &url_style);
             let block_h = f64::from(title_h) + line_gap + f64::from(url_h);
             let block_top = row_top + ((row_height - block_h) / 2.0).max(0.0);
             text_renderer.draw_style(
                 scene,
-                title,
+                &title,
                 theme.text_primary,
                 transform * Affine::translate((x, block_top)),
-                Some(text_max),
+                None,
                 &title_style,
             );
             text_renderer.draw_style(
                 scene,
-                &entry.url,
+                &url,
                 theme.text_dim,
                 transform * Affine::translate((x, block_top + f64::from(title_h) + line_gap)),
-                Some(text_max),
+                None,
                 &url_style,
             );
         }
