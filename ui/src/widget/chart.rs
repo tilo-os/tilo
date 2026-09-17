@@ -38,8 +38,6 @@ const AREA_FILL_ALPHA: u8 = 46;
 /// Alpha of the sparkline area fill — a touch heavier since sparklines are
 /// small and benefit from a more legible fill.
 const SPARK_FILL_ALPHA: u8 = 54;
-/// Alpha of the grid lines against the border colour.
-const GRID_ALPHA: u8 = 90;
 /// Number of horizontal grid divisions (so `DIVISIONS + 1` rules).
 const GRID_DIVISIONS: usize = 4;
 /// Stroke width of a series line.
@@ -305,7 +303,8 @@ impl Chart {
         }
 
         // Horizontal grid rules.
-        let grid = with_alpha(tokens.colors.border_standard, GRID_ALPHA);
+        // Grid rules derive from the surface the chart sits on (HIG §9.5).
+        let grid = crate::surface::edge_on(tokens.colors.surfaces.raised);
         for i in 0..=GRID_DIVISIONS {
             let y = plot.y0 + plot.height() * (count_f64(i) / count_f64(GRID_DIVISIONS));
             scene.stroke(
