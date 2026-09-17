@@ -77,6 +77,7 @@ class ImportTests(unittest.TestCase):
                     self.assertTrue(verified.public_bundle.is_dir())
             finally:
                 self.commands = [call.args[0] for call in remote.call_args_list]
+                self.environments = [call.args[1] for call in remote.call_args_list]
 
     def test_valid_source_is_held_then_unmounted_without_image_execution(self):
         before = fixtures.RebindTests.snapshot(self)
@@ -86,6 +87,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual([cmd[1] for cmd in self.commands], ['inspect', 'verify', 'pull'])
         self.assertIn('--tls-verify=true', self.commands[0])
         self.assertIn('--tls-verify=true', self.commands[2])
+        self.assertEqual(self.environments[1]['PATH'], '/usr/local/bin:/usr/bin:/bin')
 
     def test_bad_digest_repository_and_canonical_receipt_reject_before_network(self):
         original = copy.deepcopy(self.receipt)
