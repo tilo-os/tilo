@@ -270,6 +270,18 @@ impl CollaborationOverview {
             TextWeight::Regular,
         );
         self.status_hit = Rect::new(r.x0, r.y0, r.x1, r.y0 + 38.0);
+        self.draw_sharing_controls(scene, transform, tr, theme, r);
+        r.y1 + 18.0
+    }
+
+    fn draw_sharing_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+    ) {
         self.sharing_hits.clear();
         for (i, (mode, label)) in [
             (StatusSharing::Automatic, "✦ Auto"),
@@ -316,7 +328,6 @@ impl CollaborationOverview {
             );
             self.sharing_hits.push((mode, chip));
         }
-        r.y1 + 18.0
     }
 
     fn draw_people(

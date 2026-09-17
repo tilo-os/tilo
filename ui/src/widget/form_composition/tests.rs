@@ -42,14 +42,14 @@ fn wide_fields_align_controls_beside_measured_labels() {
     );
 }
 fn named<'a>(node: &'a InspectionNode, id: &str) -> &'a InspectionNode {
-    if node.test_id.as_deref() == Some(id) {
-        return node;
-    }
     fn find<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
         if node.test_id.as_deref() == Some(id) {
             return Some(node);
         }
         node.children.iter().find_map(|child| find(child, id))
+    }
+    if node.test_id.as_deref() == Some(id) {
+        return node;
     }
     find(node, id).unwrap()
 }
@@ -129,6 +129,26 @@ fn page_readable_width_and_single_gutter_leave_common_content_edges() {
 }
 #[test]
 fn resized_layout_matches_fresh_and_retains_focus_order() {
+    fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
+        let mut all = vec![node.rect];
+        for child in &node.children {
+            all.extend(geometry(child));
+        }
+        all
+    }
+    fn keys(node: &InspectionNode, found: &mut std::collections::HashSet<String>) {
+        if let Some(key) = node
+            .semantics
+            .as_ref()
+            .and_then(|access| access.semantic_key.as_ref())
+        {
+            assert!(found.insert(key.clone()), "duplicate semantic key {key}");
+        }
+        for child in &node.children {
+            keys(child, found);
+        }
+    }
+
     let mut resized = FrameHarness::new_with_theme(
         crate::State::new(),
         Box::new(FormPage::new("Account", long_form())),
@@ -143,13 +163,6 @@ fn resized_layout_matches_fresh_and_retains_focus_order() {
         (340, 1400),
         Theme::dark().with_text_scale(2.0),
     );
-    fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
-        let mut all = vec![node.rect];
-        for child in &node.children {
-            all.extend(geometry(child));
-        }
-        all
-    }
     assert_eq!(
         geometry(&resized.inspection().root),
         geometry(&fresh.inspection().root)
@@ -173,18 +186,6 @@ fn resized_layout_matches_fresh_and_retains_focus_order() {
             "Save account changes"
         ]
     );
-    fn keys(node: &InspectionNode, found: &mut std::collections::HashSet<String>) {
-        if let Some(key) = node
-            .semantics
-            .as_ref()
-            .and_then(|access| access.semantic_key.as_ref())
-        {
-            assert!(found.insert(key.clone()), "duplicate semantic key {key}");
-        }
-        for child in &node.children {
-            keys(child, found);
-        }
-    }
     keys(
         &resized.inspection().root,
         &mut std::collections::HashSet::new(),
@@ -392,16 +393,16 @@ fn clearing_section_and_field_overrides_restores_only_the_selected_property() {
 
 #[test]
 fn wide_label_aligns_to_first_control_even_with_long_help_and_validation() {
-    let mut field = Field::new("Email", TextInput::local())
-        .with_help("Supporting information for this account. ".repeat(8))
-        .with_error("Enter a valid email address.");
-    solve(&mut field, 700.0, &Theme::dark());
     fn visible_label(widget: &dyn Widget) -> Rect {
         if widget.name() == "Text" {
             return widget.get_rect();
         }
         visible_label(widget.children()[0])
     }
+    let mut field = Field::new("Email", TextInput::local())
+        .with_help("Supporting information for this account. ".repeat(8))
+        .with_error("Enter a valid email address.");
+    solve(&mut field, 700.0, &Theme::dark());
     let label = visible_label(field.children()[0]);
     let control = field.children()[1].children()[0].get_rect();
     assert!(

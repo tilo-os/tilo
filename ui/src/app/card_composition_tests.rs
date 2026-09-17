@@ -3,11 +3,11 @@ use crate::widget::{Actions, Button, Card, CardGrid, Element, Text};
 use automerge::ReadDoc;
 
 fn fixture() -> App {
-    let cards: Vec<Element> = (0..3)
+    let cards: Vec<Element> = (0_usize..3)
         .map(|index| {
             Box::new(
                 Card::composed(Box::new(Text::new(
-                    &"Useful description. ".repeat(index + 1),
+                    &"Useful description. ".repeat(index.checked_add(1).unwrap()),
                 )))
                 .with_title("Connection")
                 .with_footer(Box::new(
