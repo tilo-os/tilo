@@ -127,6 +127,7 @@ mod tests {
             services: ServiceCapabilities::personal_server(),
             workspaces: BTreeSet::from([7]),
             apps: BTreeSet::new(),
+            accelerators: BTreeSet::new(),
             priority: 0,
             latency_ms: 12,
             power: tilo_relay::PowerAvailability::External,
