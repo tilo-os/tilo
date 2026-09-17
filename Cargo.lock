@@ -1504,6 +1504,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "dirs 6.0.0",
+ "libc",
  "png 0.18.1",
  "pollster",
  "qos-actions",
