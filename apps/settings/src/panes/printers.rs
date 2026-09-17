@@ -20,7 +20,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::widgets::{El, caption, card, card_with_action, rows, status_pill};
+use crate::widgets::{El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill};
 
 pub(crate) const REFRESH_KEY: &str = "settings.printers.refresh";
 pub(crate) const SCAN_KEY: &str = "settings.printers.discover";
@@ -390,11 +390,7 @@ impl PrintersPane {
                                 .with_no_padding()
                                 .with_intrinsic_height()
                                 .push(Box::new(Text::new(&s.description).with_size(13.0)))
-                                .push(Box::new(
-                                    Text::new(&s.device)
-                                        .with_size(11.0)
-                                        .with_color(Theme::dark().text_dim),
-                                )),
+                                .push(Box::new(Text::new(&s.device).with_size(11.0).dimmed())),
                         ) as El
                     })
                     .collect(),
@@ -412,9 +408,9 @@ impl PrintersPane {
         let mut top = Row::new()
             .push(Box::new(Text::new(&printer.name).with_size(13.0)))
             .push(Box::new(Spacer::new()))
-            .push(status_pill(
+            .push(semantic_status_pill(
                 state_label(printer.state),
-                state_color(printer.state),
+                state_tone(printer.state),
             ));
         if !printer.default {
             top = top.push(Box::new(Button::new(
@@ -486,16 +482,8 @@ impl PrintersPane {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(top))
-                .push(Box::new(
-                    Text::new(&detail)
-                        .with_size(11.0)
-                        .with_color(Theme::dark().text_dim),
-                ))
-                .push(Box::new(
-                    Text::new(&supplies)
-                        .with_size(11.0)
-                        .with_color(Theme::dark().text_dim),
-                )),
+                .push(Box::new(Text::new(&detail).with_size(11.0).dimmed()))
+                .push(Box::new(Text::new(&supplies).with_size(11.0).dimmed())),
         )
     }
 }
@@ -513,10 +501,10 @@ fn state_label(state: QueueState) -> &'static str {
     }
 }
 
-fn state_color(state: QueueState) -> vello::peniko::Color {
+fn state_tone(state: QueueState) -> StatusTone {
     match state {
-        QueueState::Ready | QueueState::Printing => Theme::dark().status_success,
-        QueueState::Paused | QueueState::Offline => Theme::dark().text_dim,
+        QueueState::Ready | QueueState::Printing => StatusTone::Success,
+        QueueState::Paused | QueueState::Offline => StatusTone::Neutral,
     }
 }
 
@@ -547,7 +535,7 @@ fn discovered_row(p: &DiscoveredPrinter) -> El {
             .push(Box::new(
                 Text::new(p.location.as_deref().unwrap_or("Driverless IPP"))
                     .with_size(11.0)
-                    .with_color(Theme::dark().text_dim),
+                    .dimmed(),
             )),
     )
 }
@@ -598,12 +586,12 @@ fn job_row(job: &PrintJob) -> El {
             .push(Box::new(
                 Text::new(&format!("{} · {} · {}", job.owner, size, job.submitted))
                     .with_size(11.0)
-                    .with_color(Theme::dark().text_dim),
+                    .dimmed(),
             ))
             .push(Box::new(
                 Text::new(&format!("{state} · {progress}{reason}"))
                     .with_size(11.0)
-                    .with_color(Theme::dark().text_dim),
+                    .dimmed(),
             )),
     )
 }

@@ -409,11 +409,7 @@ impl MouseKeyboardPane {
                 .push(Box::new(Text::new(&self.source_label(id)).with_size(13.0)))
                 .push(Box::new(Spacer::new()));
             if id == &self.last.keyboard_layout {
-                row = row.push(Box::new(
-                    Text::new("Active")
-                        .with_size(12.0)
-                        .with_color(Theme::dark().accent_primary),
-                ));
+                row = row.push(Box::new(Text::new("Active").with_size(12.0)));
             }
             let up = format!("input.source.{index}.up");
             let down = format!("input.source.{index}.down");
