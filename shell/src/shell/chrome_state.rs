@@ -302,6 +302,8 @@ pub struct QuickSettingsState {
 
 impl Default for QuickSettingsState {
     fn default() -> Self {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Quick Settings production defaults");
         Self {
             brightness: 0.6,
             volume: 0.4,
@@ -330,6 +332,39 @@ impl Default for QuickSettingsState {
 }
 
 impl QuickSettingsState {
+    pub(crate) fn fixture() -> Self {
+        Self {
+            brightness: 0.6,
+            volume: 0.4,
+            wifi: true,
+            bluetooth: false,
+            bluetooth_available: false,
+            wired: None,
+            battery: os_actions::BatteryInfo {
+                present: false,
+                capacity: 0,
+                status: String::new(),
+                cycle_count: None,
+                on_ac: false,
+                full_capacity: None,
+                design_capacity: None,
+                charge_limit: None,
+            },
+            firmware_updates: None,
+            radios: os_actions::RadioState::default(),
+            vpns: Vec::new(),
+            privacy: os_actions::PrivacyStatus::default(),
+            night_light: false,
+            nav_stack: vec![QsLevel::Root],
+            // Populated by nmcli/bluetoothctl on the popover's rising
+            // edge — no fake content.
+            wifi_networks: Vec::new(),
+            bt_devices: Vec::new(),
+            wifi_password: None,
+            power_profile: PowerProfile::Balanced,
+        }
+    }
+
     /// The renderer's dispatch key. Defaults to `Root` if the stack is
     /// somehow empty (`new()` always seeds it).
     pub fn current_level(&self) -> &QsLevel {
@@ -355,6 +390,8 @@ impl QuickSettingsState {
     reason = "chrome fields represent independently focusable overlays and transient controls; combining them would obscure widget lifetime boundaries"
 )]
 pub struct ChromeState {
+    identity_source: IdentitySource,
+    pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     /// Shared with the portal (grants) and peer-sync (replica), all
     /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
@@ -489,6 +526,21 @@ pub struct ChromeState {
     viewport_size: Option<(f64, f64)>,
 }
 
+#[derive(Debug)]
+enum IdentitySource {
+    SessionRegistry,
+    Explicit(String),
+}
+
+impl IdentitySource {
+    fn local_user_for_room(&self, room: &crate::shell::state::RoomId) -> String {
+        match self {
+            Self::SessionRegistry => crate::shell::state::local_user_id_for_room(room),
+            Self::Explicit(principal) => principal.clone(),
+        }
+    }
+}
+
 impl ChromeState {
     /// Wraps an owned [`WorkspaceTree`] in a fresh handle. Production
     /// callers sharing the handle with portal/peer-sync use
@@ -501,10 +553,43 @@ impl ChromeState {
     /// `GrantStoreHandle` and peer-sync's `WorkspaceTreeReplica` mutate
     /// the same tree as the shell chrome.
     pub fn new_with_handle(tree_handle: WorkspaceTreeHandle) -> Rc<RefCell<Self>> {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Chrome production inputs");
+        Self::from_inputs(
+            tree_handle,
+            super::hosted_inputs::HostedTileInputs::default(),
+            QuickSettingsState::default(),
+            crate::shell::state::local_user_id(),
+            IdentitySource::SessionRegistry,
+        )
+    }
+
+    pub(crate) fn new_with_fixture_handle(
+        tree_handle: WorkspaceTreeHandle,
+        inputs: super::hosted_inputs::HostedTileInputs,
+    ) -> Chrome {
+        Self::from_inputs(
+            tree_handle,
+            inputs,
+            QuickSettingsState::fixture(),
+            "shell-fixture".into(),
+            IdentitySource::Explicit("shell-fixture".into()),
+        )
+    }
+
+    fn from_inputs(
+        tree_handle: WorkspaceTreeHandle,
+        hosted_inputs: super::hosted_inputs::HostedTileInputs,
+        quick_settings: QuickSettingsState,
+        local_user_id: String,
+        identity_source: IdentitySource,
+    ) -> Chrome {
         Rc::new(RefCell::new(Self {
             tree_handle,
+            hosted_inputs,
+            identity_source,
             overlays: OverlayFlags::default(),
-            quick_settings: QuickSettingsState::default(),
+            quick_settings,
             editing_workspace_name: None,
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
             search_scope: SearchScope::default(),
@@ -521,7 +606,7 @@ impl ChromeState {
             activity_focus_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
-            local_user_id: crate::shell::state::local_user_id(),
+            local_user_id,
             notifications: Vec::new(),
             notification_bridge: None,
             notification_history: Vec::new(),
@@ -643,12 +728,20 @@ impl ChromeState {
         self.tree_handle.read()
     }
 
+    /// Caller-supplied principal, absent when identity comes from the session registry.
+    pub(crate) fn explicit_local_user(&self) -> Option<&str> {
+        match &self.identity_source {
+            IdentitySource::Explicit(principal) => Some(principal),
+            IdentitySource::SessionRegistry => None,
+        }
+    }
+
     /// Person principal this session presents inside `room`.
     pub fn local_user_for_room(
         &self,
         room: &crate::shell::state::RoomId,
     ) -> crate::shell::state::UserId {
-        crate::shell::state::local_user_id_for_room(room)
+        self.identity_source.local_user_for_room(room)
     }
 
     /// Person principal selected for the active workspace, or the session
@@ -893,7 +986,9 @@ impl ChromeState {
             tree.set_active(id);
             // A room with no owner has no administrators, so nobody can
             // grant anything in it, including the person who just made it.
-            tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+            tree.adopt_ownerless_workspaces_with(|room| {
+                self.identity_source.local_user_for_room(room)
+            });
             id
         };
         self.bump();
@@ -1433,7 +1528,7 @@ impl ChromeState {
     /// Consume one pending shell-originated lock request.  Kept private to
     /// the shell crate because only the compositor runtime may perform the
     /// session transition.
-    pub(crate) fn take_session_lock_request(&mut self) -> bool {
+    pub fn take_session_lock_request(&mut self) -> bool {
         std::mem::take(&mut self.session_lock_requested)
     }
 

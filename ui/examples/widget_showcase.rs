@@ -183,6 +183,8 @@ fn caption(key: &'static str) -> Box<dyn Widget> {
 }
 
 pub fn run(_args: &[String]) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     I18nManager::init("en-US");
     I18nManager::add_resource(
         "en-US",
@@ -251,7 +253,7 @@ pub fn run(_args: &[String]) {
     let root: Box<dyn Widget> =
         Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(column_inner));
 
-    let app = App::new(state, root);
+    let app = App::from_scoped_parts(wake_scope, state, root);
     app.run();
 }
 

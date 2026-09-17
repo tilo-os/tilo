@@ -493,6 +493,12 @@ impl Workspace {
     /// dangling parent, or a non-contiguous sibling `order`).
     pub fn check_invariants(&self) -> Result<(), String> {
         let ids: std::collections::HashSet<PageId> = self.data.pages.iter().map(|p| p.id).collect();
+        if ids.len() != self.data.pages.len() {
+            return Err("duplicate page id".into());
+        }
+        if ids.iter().any(PageId::is_nil) || self.data.tags.iter().any(|tag| tag.id.is_nil()) {
+            return Err("page and tag ids must be non-nil UUIDs".into());
+        }
         for p in &self.data.pages {
             if let Some(parent) = p.parent
                 && !ids.contains(&parent)
@@ -502,6 +508,28 @@ impl Workspace {
                     p.id, parent,
                 ));
             }
+        }
+
+        let parents = self
+            .data
+            .pages
+            .iter()
+            .map(|page| (page.id, page.parent))
+            .collect::<HashMap<_, _>>();
+        let mut finished = std::collections::HashSet::new();
+        for page in &self.data.pages {
+            let mut chain = std::collections::HashSet::new();
+            let mut current = Some(page.id);
+            while let Some(id) = current {
+                if finished.contains(&id) {
+                    break;
+                }
+                if !chain.insert(id) {
+                    return Err(format!("page {id} forms a parent cycle"));
+                }
+                current = parents.get(&id).copied().flatten();
+            }
+            finished.extend(chain);
         }
 
         // Group by parent and check the order sequence.

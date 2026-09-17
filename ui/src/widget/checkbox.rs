@@ -273,6 +273,14 @@ impl Checkbox {
         self.enabled = enabled;
     }
 
+    // Theme roles already include the requested type scale. Renderer APIs
+    // apply their own scale, so divide it out exactly as semantic Text does.
+    fn renderer_label_style(&self, renderer: &TextRenderer) -> TextStyle {
+        let mut style = self.label_style.clone();
+        style.size /= renderer.text_scale();
+        style
+    }
+
     /// Paint a checkbox without taking ownership of its state or events.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &CheckboxFace) {
         let shape = RoundedRect::from_rect(face.rect, f64::from(theme.tokens.radii.md));
@@ -433,8 +441,11 @@ impl Widget for Checkbox {
             taffy::AvailableSpace::MaxContent => None,
         });
         let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
-        let (label_width, label_height) =
-            text_renderer.measure_style(&crate::i18n!(label), label_limit, &self.label_style);
+        let (label_width, label_height) = text_renderer.measure_style(
+            &crate::i18n!(label),
+            label_limit,
+            &self.renderer_label_style(text_renderer),
+        );
         Size {
             width: known_dimensions
                 .width
@@ -490,8 +501,9 @@ impl Widget for Checkbox {
             let gap = 10.0;
             let x = self.rect.x0 + target + gap;
             let max_width = (self.rect.x1 - x).max(0.0);
+            let style = self.renderer_label_style(text_renderer);
             let (_, label_height) =
-                text_renderer.measure_style(&label, Some(max_width as f32), &self.label_style);
+                text_renderer.measure_style(&label, Some(max_width as f32), &style);
             let y = self.rect.y0 + ((self.rect.height() - f64::from(label_height)) / 2.0).max(0.0);
             text_renderer.draw_style(
                 scene,
@@ -499,7 +511,7 @@ impl Widget for Checkbox {
                 theme.tokens.colors.text_primary,
                 transform.pre_translate((x, y).into()),
                 Some(max_width as f32),
-                &self.label_style,
+                &style,
             );
         }
     }
@@ -1060,5 +1072,52 @@ mod tests {
             !checkbox.is_checked(),
             "the document path remains the read model"
         );
+    }
+    #[test]
+    fn labelled_checkbox_applies_theme_text_scale_once_in_measure_and_draw() {
+        let mut checkbox = Checkbox::new("updates", "updates").with_label("Updates");
+        for (theme_scale, renderer_scale) in [(2.0, 1.0), (2.0, 2.0), (1.0, 2.0), (2.0, 1.0)] {
+            let theme = Theme::dark().with_text_scale(theme_scale);
+            let mut tree = TaffyTree::new();
+            let mut map = std::collections::HashMap::new();
+            checkbox.build_layout(&mut tree, &theme, &mut map);
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(renderer_scale);
+            let measured = checkbox.measure(
+                Size {
+                    width: None,
+                    height: None,
+                },
+                Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            );
+            let expected =
+                (14.0_f32 * 1.4 * theme_scale).max(checkbox.interaction.minimum_target());
+            assert!(
+                (measured.height - expected).abs() < 0.1,
+                "theme{theme_scale} renderer{renderer_scale}: {measured:?}"
+            );
+            checkbox.rect = Rect::new(
+                0.0,
+                0.0,
+                f64::from(measured.width),
+                f64::from(measured.height),
+            );
+            let mut scene = Scene::new();
+            checkbox.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &theme,
+                &crate::presence::PresenceCtx::default(),
+            );
+            assert!(!scene.encoding().resources.glyph_runs.is_empty());
+            for run in &scene.encoding().resources.glyph_runs {
+                assert!((run.font_size - 14.0 * theme_scale).abs() < 0.1);
+            }
+        }
     }
 }

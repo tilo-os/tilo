@@ -7,15 +7,16 @@
 //! This module closes that gap in three lines. Instead of
 //!
 //! ```ignore
-//! let state = ui::State::new();
-//! ui::App::new(state, my_app::app_root()).run();
+//! ui::App::from_factory(ui::State::new(), my_app::app_root).run();
 //! ```
 //!
 //! an app writes
 //!
 //! ```ignore
 //! let (state, autosave) = ui::persist::open("dev.tilo.my-app");
-//! ui::App::new(state, my_app::app_root()).with_autosave(autosave).run();
+//! ui::App::from_factory(state, my_app::app_root)
+//!     .with_autosave(autosave)
+//!     .run();
 //! ```
 //!
 //! and gets the previous session's document loaded before the first

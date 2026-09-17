@@ -1494,10 +1494,15 @@ impl Widget for FileView {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
+                let bounds = match self.mode {
+                    ViewMode::List => self.list_row_rect(index),
+                    ViewMode::Grid => self.cell_rect(index),
+                };
                 AccessNode::new(Role::ListItem)
                     .with_name(entry.name.clone())
                     .with_description(accessible_entry_description(entry))
                     .with_position(index + 1, self.entries.len())
+                    .with_bounds(bounds)
                     .with_state(AccessState {
                         selected: self.selection.is_selected(index),
                         ..Default::default()
@@ -1506,6 +1511,12 @@ impl Widget for FileView {
             .collect();
         let mut node = AccessNode::new(Role::List)
             .with_name(t("files-a11y-list"))
+            // The list control occupies its scroll viewport; individual rows
+            // retain their content-space bounds and the ancestor's clipping.
+            .with_bounds(
+                self.last_vp
+                    .map_or(self.rect, |viewport| self.rect.intersect(viewport)),
+            )
             .with_optional_value(value)
             .with_state(AccessState {
                 focusable: true,
@@ -1828,6 +1839,21 @@ mod tests {
         v.rect = Rect::new(0.0, 0.0, width, 600.0);
         v.columns = v.columns_for_width(width);
         v
+    }
+
+    #[test]
+    fn accessibility_list_bounds_describe_the_scroll_viewport() {
+        let sink = new_sink();
+        let entries = vec![ent("a.txt", false), ent("b.txt", false)];
+        let mut view = FileView::new(&entries, &SelectionModel::new(), &sink);
+        view.rect = Rect::new(100.0, -500.0, 700.0, 2500.0);
+        let viewport = Rect::new(100.0, 150.0, 700.0, 750.0);
+        view.last_vp = Some(viewport);
+        assert_eq!(
+            view.accessibility().unwrap().bounds.map(|b| b.to_rect()),
+            Some(viewport)
+        );
+        assert_eq!(view.accessibility().unwrap().children.len(), 2);
     }
 
     #[test]
