@@ -45,6 +45,18 @@ The Imager labels board media with `PROFILE only` in selection and write review.
 Selection IDs include architecture, profile and image digest; the download cache
 remains addressed by the authenticated expanded-image digest. Required USB
 capacity follows the actual expanded image size, not a fixed advertised minimum.
+
+The installation platform contract uses schema 2: `completeSystem.usbCapacity`
+names the selected catalog entry's `image_size` in bytes. It replaces schema 1's
+fixed `minimumUsbGiB`, which could understate a full installer's requirements.
+The packager measures the expanded raw file, and Imager verifies its size and
+digest before comparing it with the selected drive's capacity. Compressed
+archive bytes never determine the minimum drive size. Update the website's
+contract validator and snapshot together before promoting a release carrying
+schema 2; `publish-site-release.sh` runs the website checks before committing or
+pushing the copied contract. This platform schema is independent of the media
+catalog's schema/version.
+
 Board release publication must additionally sign and verify its media and v2
 catalog and embed that catalog in signed host packages; the existing generic
 release matrix does not automatically publish the extra files.

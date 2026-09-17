@@ -11,9 +11,15 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 contract = json.loads((ROOT / "docs/install-contract.json").read_text())
 
-assert contract["schemaVersion"] == 1
+assert contract["schemaVersion"] == 2
 assert contract["product"] == "qOS"
 assert contract["completeSystem"]["architectures"] == ["x86_64", "aarch64"]
+assert "minimumUsbGiB" not in contract["completeSystem"]
+assert contract["completeSystem"]["usbCapacity"] == {
+    "requirement": "expanded-image-size",
+    "catalogField": "image_size",
+    "unit": "bytes",
+}
 assert contract["completeSystem"]["alongside"] == {
     "rootMinimumGiB": 32,
     "efiMinimumGiB": 2,
