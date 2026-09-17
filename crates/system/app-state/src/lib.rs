@@ -103,6 +103,14 @@ pub enum StoreError {
         found: u32,
         understood: u32,
     },
+    /// An app-owned migration declined an older, otherwise readable layout.
+    #[error("migrating {path} from layout {from} to {to}: {message}")]
+    Migration {
+        path: PathBuf,
+        from: u32,
+        to: u32,
+        message: String,
+    },
 }
 
 fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
@@ -127,17 +135,17 @@ pub fn schema_version_of(doc: &AutoCommit) -> u32 {
     }
 }
 
-fn stamp_schema_version(doc: &mut AutoCommit) {
-    if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION)) {
+fn stamp_schema_version(doc: &mut AutoCommit, version: u32) {
+    if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(version)) {
         tracing::warn!(error = %e, "could not stamp the document's schema version");
     }
 }
 
 /// Stamp the version only if the document doesn't already carry one, so a
 /// pre-versioning document gets it on first save rather than staying unlabelled.
-fn ensure_schema_version(doc: &mut AutoCommit) {
+fn ensure_schema_version(doc: &mut AutoCommit, version: u32) {
     if matches!(doc.get(ROOT, SCHEMA_VERSION_KEY), Ok(None) | Err(_)) {
-        stamp_schema_version(doc);
+        stamp_schema_version(doc, version);
     }
 }
 
@@ -214,6 +222,10 @@ pub struct DocStore {
     dir: PathBuf,
     document: PathBuf,
     actor: ActorId,
+    /// App/document-specific layout understood by this caller. Constructors
+    /// default to the toolkit's legacy v1 contract; apps opt into a newer
+    /// schema before loading via [`Self::with_schema_version`].
+    schema_version: u32,
     /// Held for as long as the store lives; `None` when another instance already owns the lock.
     lock: Option<File>,
     /// Heads the file on disk is known to contain; empty until the first load or save.
@@ -440,6 +452,7 @@ impl DocStore {
             document: dir.join(DOCUMENT_FILE),
             dir,
             actor,
+            schema_version: SCHEMA_VERSION,
             lock,
             persisted: Vec::new(),
             refusal: None,
@@ -448,6 +461,19 @@ impl DocStore {
 
     pub fn package_id(&self) -> &str {
         &self.package_id
+    }
+
+    /// Select the app-owned CRDT layout this store reads and writes. Call
+    /// this before `load`, `load_or_new`, or creating an autosave handle.
+    #[must_use]
+    pub fn with_schema_version(mut self, version: u32) -> Self {
+        self.schema_version = version;
+        self
+    }
+
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 
     /// The directory holding the document, its actor sidecar and its lock.
@@ -502,15 +528,51 @@ impl DocStore {
         // Check before reading any value: a newer layout may reuse a key with a
         // different meaning, and the writer above saves the whole document back.
         let found = schema_version_of(&doc);
-        if found > SCHEMA_VERSION {
+        if found > self.schema_version {
             return Err(StoreError::NewerSchema {
                 path: self.document.clone(),
                 found,
-                understood: SCHEMA_VERSION,
+                understood: self.schema_version,
             });
         }
         doc.set_actor(self.actor.clone());
         self.persisted = doc.get_heads();
+        Ok(Some(doc))
+    }
+
+    /// Load and, when necessary, atomically migrate an older app-owned CRDT
+    /// layout to [`Self::schema_version`]. The callback must be deterministic
+    /// and idempotent because another replica may independently migrate the
+    /// same logical document before their changes merge.
+    ///
+    /// A successful migration is written before returning. This keeps the
+    /// autosave frontier aligned with what is actually durable; merely
+    /// mutating the returned document and then seeding autosave would
+    /// otherwise make those migration heads look already persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns load/write errors unchanged, or [`StoreError::Migration`] when
+    /// the app callback rejects the older layout.
+    pub fn load_migrating<F>(&mut self, migrate: F) -> Result<Option<AutoCommit>, StoreError>
+    where
+        F: FnOnce(&mut AutoCommit, u32, u32) -> Result<(), String>,
+    {
+        let Some(mut doc) = self.load()? else {
+            return Ok(None);
+        };
+        let found = schema_version_of(&doc);
+        if found >= self.schema_version {
+            return Ok(Some(doc));
+        }
+        migrate(&mut doc, found, self.schema_version).map_err(|message| StoreError::Migration {
+            path: self.document.clone(),
+            from: found,
+            to: self.schema_version,
+            message,
+        })?;
+        stamp_schema_version(&mut doc, self.schema_version);
+        self.save(&mut doc)?;
         Ok(Some(doc))
     }
 
@@ -554,7 +616,7 @@ impl DocStore {
         self.persisted = Vec::new();
         self.refusal = None;
         let mut doc = AutoCommit::new().with_actor(self.actor.clone());
-        stamp_schema_version(&mut doc);
+        stamp_schema_version(&mut doc, self.schema_version);
         doc
     }
 
@@ -571,7 +633,7 @@ impl DocStore {
     /// can't be written.
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         self.refuse_to_write()?;
-        ensure_schema_version(doc);
+        ensure_schema_version(doc, self.schema_version);
         let bytes = doc.save();
         self.write_full(&bytes)?;
         self.persisted = doc.get_heads();
@@ -586,7 +648,7 @@ impl DocStore {
             Some(r) => Err(StoreError::NewerSchema {
                 path: self.document.clone(),
                 found: r.found,
-                understood: SCHEMA_VERSION,
+                understood: self.schema_version,
             }),
         }
     }
@@ -601,7 +663,7 @@ impl DocStore {
     /// can't be written.
     pub fn append(&mut self, doc: &mut AutoCommit) -> Result<usize, StoreError> {
         self.refuse_to_write()?;
-        ensure_schema_version(doc);
+        ensure_schema_version(doc, self.schema_version);
         let heads = doc.get_heads();
         if heads == self.persisted {
             return Ok(0);
@@ -1332,6 +1394,62 @@ mod tests {
             "the version has to survive the round trip, not just live in memory"
         );
         assert_eq!(schema_version_of(&loaded), SCHEMA_VERSION);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn app_owned_schema_migration_is_durable_and_runs_once() {
+        let _tmp = scratch_home();
+        let package = "dev.qos.schema-migration";
+        let mut old_store = DocStore::open_for(package).unwrap();
+        let mut old = old_store.new_document();
+        old.put(ROOT, "legacy", "value").unwrap();
+        old_store.save(&mut old).unwrap();
+        drop(old_store);
+
+        let mut migrated_store = DocStore::open_for(package).unwrap().with_schema_version(2);
+        let migrated = migrated_store
+            .load_migrating(|doc, from, to| {
+                assert_eq!((from, to), (1, 2));
+                doc.put(ROOT, "migrated", true)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(schema_version_of(&migrated), 2);
+        assert!(migrated.get(ROOT, "migrated").unwrap().is_some());
+        drop(migrated_store);
+
+        let mut reopened = DocStore::open_for(package).unwrap().with_schema_version(2);
+        let loaded = reopened
+            .load_migrating(|_, _, _| Err("migration ran twice".into()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(schema_version_of(&loaded), 2);
+        assert!(loaded.get(ROOT, "legacy").unwrap().is_some());
+        assert!(loaded.get(ROOT, "migrated").unwrap().is_some());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn app_owned_schema_refuses_a_newer_layout() {
+        let _tmp = scratch_home();
+        let package = "dev.qos.schema-refusal";
+        let mut newer = DocStore::open_for(package).unwrap().with_schema_version(3);
+        let mut doc = newer.new_document();
+        newer.save(&mut doc).unwrap();
+        drop(newer);
+
+        let mut older = DocStore::open_for(package).unwrap().with_schema_version(2);
+        assert!(matches!(
+            older.load(),
+            Err(StoreError::NewerSchema {
+                found: 3,
+                understood: 2,
+                ..
+            })
+        ));
     }
 
     /// A document from before versioning existed opens, and gains its version
