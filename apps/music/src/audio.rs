@@ -34,7 +34,7 @@
 //!
 //! ## System dependency (host + OS image)
 //!
-//! Audible output needs the host GStreamer runtime, including an audio sink
+//! Audible output needs the host `GStreamer` runtime, including an audio sink
 //! (WASAPI on Windows) and AAC/Opus decoders. On Fedora, install:
 //! - a `GStreamer` **audio sink** plugin — `gstreamer1-plugin-pipewire`
 //!   (`pipewiresink`) and/or `gstreamer1-plugins-good` (`pulsesink`), plus a
@@ -47,9 +47,393 @@
 //!   playback is silent without one. (The stream itself is fetched by
 //!   `reqwest`, so no `GStreamer` HTTP-source plugin is needed.)
 
-/// A handle to the audio backend. Cheap to construct; owns the pipeline
-/// when the `audio` feature is enabled.
+/// A bounded initialization job. Cancellation drops its result receiver without
+/// joining a potentially slow native initializer. A replacement waits for this
+/// worker to finish, so repeated load/stop never creates parallel initializers.
+struct Initialization<T> {
+    result: Option<std::sync::mpsc::Receiver<Result<T, String>>>,
+    finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<T: Send + 'static> Initialization<T> {
+    fn spawn(initialize: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_finished = finished.clone();
+        let spawned = std::thread::Builder::new()
+            .name("music-audio-init".into())
+            .spawn(move || {
+                // Ensure completion is visible even if a native wrapper panics.
+                struct Finish(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                impl Drop for Finish {
+                    fn drop(&mut self) {
+                        self.0.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                let _finish = Finish(worker_finished);
+                // A canceled receiver disposes the backend here, on this worker.
+                drop(sender.send(initialize()));
+            });
+        if let Err(error) = spawned {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let _ = sender.send(Err(format!("cannot start audio initialization: {error}")));
+            finished.store(true, std::sync::atomic::Ordering::Release);
+            return Self {
+                result: Some(receiver),
+                finished,
+            };
+        }
+        Self {
+            result: Some(receiver),
+            finished,
+        }
+    }
+
+    fn poll(&self) -> Option<Result<T, String>> {
+        match self.result.as_ref()?.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
+                "audio initialization worker stopped without a result".into(),
+            )),
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.result = None;
+    }
+
+    fn canceled_and_finished(&self) -> bool {
+        self.result.is_none() && self.finished.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// The UI-owned audio handle. Construction and all observations are free of
+/// native initialization. The first requested source starts a background job;
+/// only the latest transport intent is applied when the backend arrives.
 pub struct AudioEngine {
+    backend: Option<AudioBackend>,
+    initialization: Option<Initialization<AudioBackend>>,
+    current_uri: Option<String>,
+    fallback: Option<String>,
+    volume: f32,
+    want_play: bool,
+    pending_seek: Option<u64>,
+    seek_started: Option<std::time::Instant>,
+    preroll_started: Option<std::time::Instant>,
+    initialization_failed: bool,
+    initialization_error: std::sync::Mutex<Option<String>>,
+}
+
+impl Default for AudioEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AudioEngine {
+    pub fn new() -> Self {
+        Self {
+            backend: None,
+            initialization: None,
+            current_uri: None,
+            fallback: None,
+            volume: 0.8,
+            want_play: false,
+            pending_seek: None,
+            seek_started: None,
+            preroll_started: None,
+            initialization_failed: false,
+            initialization_error: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn load(&mut self, uri: &str) {
+        self.load_with_fallback(uri, None);
+    }
+
+    pub fn load_with_fallback(&mut self, uri: &str, fallback: Option<&str>) {
+        self.current_uri = Some(uri.to_owned());
+        self.fallback = fallback.map(str::to_owned);
+        self.want_play = false;
+        self.pending_seek = None;
+        self.seek_started = None;
+        self.preroll_started = None;
+        self.initialization_failed = false;
+        if let Ok(error) = self.initialization_error.get_mut() {
+            *error = None;
+        }
+        if let Some(backend) = &mut self.backend {
+            backend.load_with_fallback(uri, fallback);
+            // Preroll a replacement too: a queued seek needs PAUSED before
+            // Play, and a paused handoff must not leave its pipeline in NULL.
+            backend.pause();
+        } else {
+            self.start_initialization();
+        }
+    }
+
+    fn start_initialization(&mut self) {
+        #[cfg(feature = "audio")]
+        {
+            if self
+                .initialization
+                .as_ref()
+                .is_some_and(Initialization::canceled_and_finished)
+            {
+                self.initialization = None;
+            }
+            if self.initialization.is_none() && !self.initialization_failed {
+                self.initialization = Some(Initialization::spawn(AudioBackend::try_new));
+            }
+        }
+    }
+
+    /// Poll only while a source needs initialization or a deferred seek. Stop
+    /// cancels its receiver and does not keep an idle window repainting.
+    pub fn needs_poll(&self) -> bool {
+        Self::is_live()
+            && self.current_uri.is_some()
+            && !self.initialization_failed
+            && (self.backend.is_none()
+                || self.pending_seek.is_some()
+                || self.frames_rendered() == 0)
+    }
+
+    pub fn play(&mut self) {
+        self.want_play = true;
+        if self.pending_seek.is_none()
+            && let Some(backend) = &mut self.backend
+        {
+            backend.play();
+        }
+    }
+
+    pub fn pause(&mut self) {
+        self.want_play = false;
+        if let Some(backend) = &mut self.backend {
+            backend.pause();
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.current_uri = None;
+        self.fallback = None;
+        self.want_play = false;
+        self.pending_seek = None;
+        self.seek_started = None;
+        self.preroll_started = None;
+        self.initialization_failed = false;
+        if let Ok(error) = self.initialization_error.get_mut() {
+            *error = None;
+        }
+        if let Some(job) = &mut self.initialization {
+            job.cancel();
+        }
+        if let Some(backend) = &mut self.backend {
+            backend.stop();
+        }
+    }
+
+    pub fn seek_ms(&mut self, ms: u64) {
+        if !Self::is_live() || self.current_uri.is_none() {
+            return;
+        }
+        self.pending_seek = Some(ms);
+        self.seek_started = None;
+        self.apply_seek();
+    }
+
+    fn apply_seek(&mut self) {
+        if let Some(ms) = self.pending_seek
+            && let Some(backend) = &mut self.backend
+        {
+            // Network staging has its own deadlines. The preroll deadline
+            // starts only after there is a local source to seek through.
+            #[cfg(all(feature = "audio", feature = "live"))]
+            if backend
+                .inner
+                .pending
+                .as_ref()
+                .is_some_and(|pending| !pending.started)
+            {
+                return;
+            }
+            let started = self
+                .seek_started
+                .get_or_insert_with(std::time::Instant::now);
+            let outcome = backend.try_seek_ms(ms).or_else(|| {
+                (started.elapsed() >= std::time::Duration::from_secs(5))
+                    .then(|| Err("audio source did not become seekable within five seconds".into()))
+            });
+            if let Some(outcome) = outcome {
+                self.pending_seek = None;
+                self.seek_started = None;
+                match outcome {
+                    Ok(()) if self.want_play => backend.play(),
+                    Ok(()) => {}
+                    Err(error) => {
+                        self.initialization_failed = true;
+                        if let Ok(message) = self.initialization_error.get_mut() {
+                            *message = Some(error);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.clamp(0.0, 1.0);
+        if let Some(backend) = &mut self.backend {
+            backend.set_volume(self.volume);
+        }
+    }
+    pub fn volume(&self) -> f32 {
+        self.volume
+    }
+    pub fn current_uri(&self) -> Option<&str> {
+        self.current_uri.as_deref()
+    }
+    pub fn position_ms(&self) -> Option<u64> {
+        self.backend.as_ref()?.position_ms()
+    }
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.backend.as_ref()?.duration_ms()
+    }
+    pub fn has_stream(&self) -> bool {
+        Self::is_live() && self.current_uri.is_some()
+    }
+    pub fn is_live() -> bool {
+        cfg!(feature = "audio")
+    }
+    pub fn is_playing_real(&self) -> bool {
+        self.backend
+            .as_ref()
+            .is_some_and(AudioBackend::is_playing_real)
+    }
+
+    pub fn pump(&mut self) -> bool {
+        if self.current_uri.is_none() {
+            return false;
+        }
+        if self.backend.is_none() && !self.initialization_failed {
+            self.start_initialization();
+            if let Some(result) = self.initialization.as_ref().and_then(Initialization::poll) {
+                self.initialization = None;
+                match result {
+                    Ok(mut backend) => {
+                        backend.set_volume(self.volume);
+                        if let Some(uri) = &self.current_uri {
+                            backend.load_with_fallback(uri, self.fallback.as_deref());
+                            if self.want_play && self.pending_seek.is_none() {
+                                backend.play();
+                            } else {
+                                backend.pause();
+                            }
+                        }
+                        self.backend = Some(backend);
+                    }
+                    Err(error) => {
+                        self.initialization_failed = true;
+                        if let Ok(message) = self.initialization_error.get_mut() {
+                            *message = Some(error);
+                        }
+                    }
+                }
+            }
+        }
+        let failed = self.backend.as_mut().is_some_and(AudioBackend::pump);
+        if !failed {
+            self.apply_seek();
+            if self.backend.is_some() && self.frames_rendered() == 0 {
+                #[cfg(all(feature = "audio", feature = "live"))]
+                if self.backend.as_ref().is_some_and(|backend| {
+                    backend
+                        .inner
+                        .pending
+                        .as_ref()
+                        .is_some_and(|pending| !pending.started)
+                }) {
+                    return self.initialization_failed;
+                }
+                let started = self
+                    .preroll_started
+                    .get_or_insert_with(std::time::Instant::now);
+                if started.elapsed() >= std::time::Duration::from_secs(5) {
+                    self.initialization_failed = true;
+                    if let Ok(message) = self.initialization_error.get_mut() {
+                        *message = Some(
+                            "audio decoder did not produce a buffer within five seconds".into(),
+                        );
+                    }
+                }
+            }
+        }
+        self.initialization_failed || failed
+    }
+
+    pub fn take_error(&self) -> Option<String> {
+        self.initialization_error
+            .lock()
+            .ok()
+            .and_then(|mut error| error.take())
+            .or_else(|| self.backend.as_ref().and_then(AudioBackend::take_error))
+    }
+    pub fn reached_eos(&self) -> bool {
+        self.backend.as_ref().is_some_and(AudioBackend::reached_eos)
+    }
+    pub fn staging_complete(&self) -> bool {
+        self.backend.as_ref().map_or_else(
+            || self.current_uri.is_none(),
+            AudioBackend::staging_complete,
+        )
+    }
+    pub fn staging_finished(&self) -> bool {
+        self.backend.as_ref().map_or_else(
+            || self.current_uri.is_none(),
+            AudioBackend::staging_finished,
+        )
+    }
+    pub fn staged_progress(&self) -> Option<(u64, Option<u64>)> {
+        self.backend.as_ref()?.staged_progress()
+    }
+    pub fn frames_rendered(&self) -> u64 {
+        self.backend
+            .as_ref()
+            .map_or(0, AudioBackend::frames_rendered)
+    }
+    pub fn actual_audio_sink_name(&self) -> Option<String> {
+        self.backend.as_ref()?.actual_audio_sink_name()
+    }
+    pub fn audio_sink_is_real(&self) -> Option<bool> {
+        self.backend.as_ref()?.audio_sink_is_real()
+    }
+
+    /// Bounded test/probe helper; production frames call `pump` instead.
+    #[cfg(feature = "audio")]
+    pub fn wait_until_playing(&mut self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.pump() {
+                return false;
+            }
+            if self.backend.as_ref().is_some_and(|backend| {
+                use gstreamer::prelude::*;
+                backend.inner.playbin.current_state() == gstreamer::State::Playing
+            }) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+/// Ready native backend, owned by the initialization worker until handoff.
+struct AudioBackend {
     inner: Inner,
     /// Last requested URI (for diagnostics / the silent stub).
     current_uri: Option<String>,
@@ -254,34 +638,17 @@ struct Inner {
     playing: bool,
 }
 
-impl AudioEngine {
-    /// Build an engine. Infallible for the stub build. With `--features
-    /// audio`, `playbin` is a core `GStreamer` element (`gstreamer1-plugins-base`)
-    /// that this feature depends on, so a failure to construct it means the
-    /// deployment is missing that runtime dependency rather than a condition
-    /// callers can route around — this panics with a diagnostic rather than
-    /// silently degrading to a stub that would claim to play and never sound.
-    ///
-    /// # Panics
-    ///
-    /// With the `audio` feature enabled, panics when `GStreamer` cannot create
-    /// its core `playbin` element. This indicates that the required
-    /// `gstreamer1-plugins-base` runtime package is missing or unusable.
-    #[allow(clippy::panic)] // A missing required runtime is not recoverable here.
-    pub fn new() -> Self {
+impl AudioBackend {
+    /// Construct the actual pipeline on the initialization worker.
+    fn try_new() -> Result<Self, String> {
         #[cfg(feature = "audio")]
         let inner = {
             use gstreamer::prelude::*;
-            if let Err(e) = gstreamer::init() {
-                tracing::error!(target: "music::audio", error = %e, "gstreamer::init failed — the `audio` feature needs a working GStreamer runtime");
-            }
-            let playbin = match gstreamer::ElementFactory::make("playbin").build() {
-                Ok(playbin) => playbin,
-                Err(error) => panic!(
-                    "could not create GStreamer playbin; install the \
-                     gstreamer1-plugins-base runtime package: {error}"
-                ),
-            };
+            gstreamer::init()
+                .map_err(|error| format!("GStreamer initialization failed: {error}"))?;
+            let playbin = gstreamer::ElementFactory::make("playbin")
+                .build()
+                .map_err(|error| format!("could not create GStreamer playbin: {error}"))?;
             let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             // Route audio through an explicit **real** sink chain, so the
             // output is audible and verifiable. `autoaudiosink` selects
@@ -306,19 +673,14 @@ impl AudioEngine {
         };
         #[cfg(not(feature = "audio"))]
         let inner = Inner { playing: false };
-        Self {
+        Ok(Self {
             inner,
             current_uri: None,
             volume: 0.8,
-        }
+        })
     }
 
-    /// Point the engine at a new stream URI and start from zero.
-    pub fn load(&mut self, uri: &str) {
-        self.load_with_fallback(uri, None);
-    }
-
-    /// Like [`Self::load`], but with a secondary source the staging download
+    /// Load a URI with a secondary source the staging download
     /// falls back to when `uri` yields no bytes (a flaky Invidious proxy → the
     /// direct googlevideo URL). `fallback` is ignored for a `file://` uri and in
     /// non-`live` builds.
@@ -393,6 +755,9 @@ impl AudioEngine {
             #[cfg(feature = "live")]
             if let Some(p) = &mut self.inner.pending {
                 p.want_play = false;
+                if !p.started {
+                    return;
+                }
             }
             let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
         }
@@ -434,24 +799,40 @@ impl AudioEngine {
     /// off the end of the file, the pipeline hit EOS, and the transport snapped
     /// to the end / advanced. With a fully-rangeable source and this clamp, a
     /// seek repositions the pipeline instead of ending the track.
-    pub fn seek_ms(&mut self, ms: u64) {
+    fn try_seek_ms(&self, ms: u64) -> Option<Result<(), String>> {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            if !matches!(
+                self.inner.playbin.current_state(),
+                gstreamer::State::Paused | gstreamer::State::Playing
+            ) {
+                return None;
+            }
+            let mut seeking = gstreamer::query::Seeking::new(gstreamer::Format::Time);
+            if self.inner.playbin.query(&mut seeking) && !seeking.result().0 {
+                return Some(Err("this audio source does not support seeking".into()));
+            }
             let target = match self.duration_ms() {
                 // Never seek to (or past) the very end — keep a 250 ms guard so a
                 // scrub to ~100% resumes just before the end rather than EOS-ing.
                 Some(dur) if dur > 0 => ms.min(dur.saturating_sub(250)),
                 _ => ms,
             };
-            let _ = self.inner.playbin.seek_simple(
-                gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::KEY_UNIT,
-                gstreamer::ClockTime::from_mseconds(target),
-            );
+            Some(
+                self.inner
+                    .playbin
+                    .seek_simple(
+                        gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::KEY_UNIT,
+                        gstreamer::ClockTime::from_mseconds(target),
+                    )
+                    .map_err(|error| format!("audio source rejected the seek: {error}")),
+            )
         }
         #[cfg(not(feature = "audio"))]
         {
             let _ = ms;
+            Some(Ok(()))
         }
     }
 
@@ -465,14 +846,6 @@ impl AudioEngine {
                 .playbin
                 .set_property("volume", f64::from(self.volume));
         }
-    }
-
-    pub fn volume(&self) -> f32 {
-        self.volume
-    }
-
-    pub fn current_uri(&self) -> Option<&str> {
-        self.current_uri.as_deref()
     }
 
     /// Query the pipeline's current playhead in milliseconds, when the live
@@ -508,12 +881,6 @@ impl AudioEngine {
         {
             None
         }
-    }
-
-    /// Whether the live backend currently has a stream loaded (so the app can
-    /// decide to trust [`Self::position_ms`] over the simulated playhead).
-    pub fn has_stream(&self) -> bool {
-        Self::is_live() && self.current_uri.is_some()
     }
 
     /// Whether the real pipeline has actually reached (or is heading to) the
@@ -588,6 +955,8 @@ impl AudioEngine {
                             .set_property("volume", f64::from(self.volume));
                         if want {
                             let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
+                        } else {
+                            let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
                         }
                     } else {
                         // The fetch was forbidden before any bytes landed: honest
@@ -803,7 +1172,7 @@ impl AudioEngine {
     /// Block until the pipeline reaches `PLAYING` (or `timeout` elapses),
     /// returning whether it got there. Used by the audio-pipeline test to prove
     /// real decode reaches the sink; never called on the live UI thread.
-    #[cfg(feature = "audio")]
+    #[cfg(all(test, feature = "audio"))]
     pub fn wait_until_playing(&self, timeout: std::time::Duration) -> bool {
         use gstreamer::prelude::*;
         let deadline = std::time::Instant::now() + timeout;
@@ -825,11 +1194,6 @@ impl AudioEngine {
                 return false;
             }
         }
-    }
-
-    /// Whether real audio output is wired up in this build.
-    pub fn is_live() -> bool {
-        cfg!(feature = "audio")
     }
 
     /// Begin staging an http(s) stream to a temp file via bounded reqwest ranges.
@@ -1186,14 +1550,8 @@ fn build_audio_sink(
     Some(sink)
 }
 
-impl Default for AudioEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(feature = "audio")]
-impl Drop for AudioEngine {
+impl Drop for AudioBackend {
     fn drop(&mut self) {
         use gstreamer::prelude::*;
         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
@@ -1207,6 +1565,227 @@ impl Drop for AudioEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wait_for(mut condition: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "audio lifecycle did not settle"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    fn empty_app_does_not_initialize_gstreamer() {
+        const CHILD: &str = "TILO_TEST_EMPTY_MUSIC_NO_GST";
+        if std::env::var_os(CHILD).is_some() {
+            // A fresh process is essential: other audio tests initialize the
+            // process-global GStreamer runtime, hiding an eager constructor.
+            assert_eq!(unsafe { gstreamer::ffi::gst_is_initialized() }, 0);
+            let mut app = crate::app_root_for_shot("empty");
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let mut engine = AudioEngine::new();
+            engine.set_volume(0.3);
+            engine.pause();
+            engine.stop();
+            assert!(!engine.pump());
+            assert_eq!(engine.frames_rendered(), 0);
+            assert!(engine.position_ms().is_none());
+            assert!(!engine.needs_poll());
+            assert_eq!(unsafe { gstreamer::ffi::gst_is_initialized() }, 0);
+            return;
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "audio::tests::empty_app_does_not_initialize_gstreamer",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("GST_PLUGIN_SYSTEM_PATH_1_0", scratch.path())
+            .env("GST_PLUGIN_PATH_1_0", scratch.path())
+            .env("GST_REGISTRY_1_0", scratch.path().join("registry.bin"))
+            .env("XDG_DATA_HOME", scratch.path())
+            .env("XDG_CONFIG_HOME", scratch.path())
+            .env("XDG_CACHE_HOME", scratch.path())
+            .env_remove("TILO_MUSIC_VIEW")
+            .current_dir(scratch.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        assert!(!scratch.path().join("registry.bin").exists());
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    fn initialization_failure_reaches_transport_without_fake_playback() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let mut engine = AudioEngine::new();
+        engine.initialization = Some(Initialization::spawn(move || {
+            wait.recv().unwrap();
+            Err("missing playback plugin".into())
+        }));
+        engine.load("file:///unavailable.wav");
+        engine.play();
+        assert!(!engine.pump());
+        assert!(engine.needs_poll());
+        assert!(!engine.is_playing_real());
+        assert_eq!(engine.frames_rendered(), 0);
+        release.send(()).unwrap();
+        wait_for(|| engine.pump());
+        assert_eq!(
+            engine.take_error().as_deref(),
+            Some("missing playback plugin")
+        );
+        assert!(engine.take_error().is_none());
+        assert!(
+            engine.pump(),
+            "failure remains latched until stopped or reloaded"
+        );
+        engine.stop();
+        assert!(!engine.needs_poll());
+        assert!(!engine.pump());
+    }
+
+    #[test]
+    fn canceled_initializer_disposes_result_without_joining_or_polling() {
+        struct Owned(std::sync::mpsc::Sender<()>);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        for drop_job in [false, true] {
+            let (release, wait) = std::sync::mpsc::channel();
+            let (disposed, disposal) = std::sync::mpsc::channel();
+            let mut job = Initialization::spawn(move || {
+                wait.recv().unwrap();
+                Ok(Owned(disposed))
+            });
+            job.cancel();
+            assert!(!job.canceled_and_finished());
+            if drop_job {
+                drop(job);
+            }
+            release.send(()).unwrap();
+            disposal
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn stopped_initialization_does_not_poll_or_start_parallel_replacement() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let mut engine = AudioEngine::new();
+        engine.initialization = Some(Initialization::spawn(move || {
+            wait.recv().unwrap();
+            Err("canceled initializer".into())
+        }));
+        let old_finished = engine.initialization.as_ref().unwrap().finished.clone();
+        engine.load("file:///first.wav");
+        engine.stop();
+        assert!(!engine.needs_poll());
+        assert!(!engine.pump());
+        engine.load("file:///replacement.wav");
+        assert!(!engine.pump());
+        assert!(std::sync::Arc::ptr_eq(
+            &old_finished,
+            &engine.initialization.as_ref().unwrap().finished
+        ));
+        engine.stop();
+        release.send(()).unwrap();
+        wait_for(|| old_finished.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!engine.pump());
+        assert!(engine.current_uri().is_none());
+        assert!(engine.take_error().is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    fn delayed_backend_applies_latest_source_volume_seek_and_pause() {
+        use gstreamer::prelude::*;
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("latest.wav");
+        std::fs::write(&path, sine_wav(3, 44_100)).unwrap();
+        let uri = media::source::path_to_file_uri(&path).unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        let mut engine = AudioEngine::new();
+        engine.initialization = Some(Initialization::spawn(move || {
+            wait.recv().unwrap();
+            AudioBackend::try_new()
+        }));
+        engine.load("file:///obsolete-must-never-open.wav");
+        engine.play();
+        engine.load(&uri);
+        engine.set_volume(0.05);
+        engine.seek_ms(1000);
+        engine.play();
+        engine.pause();
+        assert!(!engine.pump());
+        assert!(!engine.is_playing_real());
+        assert!(engine.position_ms().is_none());
+        assert!(
+            engine.needs_poll(),
+            "paused initialization still needs completion"
+        );
+        release.send(()).unwrap();
+        wait_for(|| {
+            assert!(!engine.pump(), "{:?}", engine.take_error());
+            engine.backend.is_some()
+                && engine.pending_seek.is_none()
+                && engine.position_ms().is_some_and(|position| position >= 900)
+        });
+        let backend = engine.backend.as_ref().unwrap();
+        assert_eq!(backend.current_uri.as_deref(), Some(uri.as_str()));
+        assert_eq!(
+            backend.inner.playbin.property::<f64>("volume"),
+            f64::from(0.05f32)
+        );
+        assert!(!engine.is_playing_real());
+        engine.play();
+        assert!(engine.wait_until_playing(std::time::Duration::from_secs(5)));
+        wait_for(|| {
+            assert!(!engine.pump());
+            engine.frames_rendered() > 0
+        });
+        assert_eq!(engine.audio_sink_is_real(), Some(true));
+        engine.stop();
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    fn deferred_seek_timeout_reports_error_and_stops_polling() {
+        let mut engine = AudioEngine::new();
+        engine.backend = Some(AudioBackend::try_new().unwrap());
+        // A source that has not prerolled cannot accept a seek. Exercise the
+        // production timeout with the actual native backend still in NULL.
+        engine.current_uri = Some("file:///not-yet-prerolled.wav".into());
+        engine.pending_seek = Some(1000);
+        engine.seek_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(6));
+        assert!(engine.pump());
+        assert!(
+            engine
+                .take_error()
+                .unwrap()
+                .contains("did not become seekable")
+        );
+        assert!(!engine.needs_poll());
+        assert!(!engine.is_playing_real());
+        engine.stop();
+        assert!(!engine.pump());
+    }
 
     #[cfg(all(feature = "audio", feature = "live"))]
     #[test]
@@ -1298,7 +1877,7 @@ mod tests {
         ));
         let wav = sine_wav(1, 44_100);
         std::fs::write(&path, &wav).expect("staged audio bytes");
-        let mut engine = AudioEngine::new();
+        let mut engine = AudioBackend::try_new().expect("native backend");
         engine.set_volume(0.05);
         // The transfer has completed; drive the same pending-file transition
         // that the download worker exposes to the production pump.

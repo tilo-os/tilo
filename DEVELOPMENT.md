@@ -550,6 +550,13 @@ first visible frame. The second check verifies runtime hashes, plugin origins
 and decoding to completion; it needs `llvm-readobj.exe` on `PATH`. Neither
 check proves audible output or Windows hardware decoding.
 
+Music constructs its empty UI without initializing GStreamer. Loading a source
+starts one background initializer; track replacement, pause, volume and seek
+requests retain their latest intent while it runs. Stopping cancels delivery
+without waiting for native initialization. Playback errors remain explicit,
+and handoff readiness requires decoded audio rather than a requested URI.
+The same lifecycle is used on every supported platform.
+
 ### If you build in a container (optional)
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the
