@@ -336,6 +336,9 @@ impl HistoryHost {
     fn show_timeline(&self) -> bool {
         self.open && (self.width >= 600.0 || self.selected.is_empty() || self.activity_page)
     }
+    fn timeline_available(&self) -> bool {
+        self.controller.is_some() || self.files.is_some()
+    }
     fn show_preview(&self) -> bool {
         !self.selected.is_empty() && !self.activity_page
     }
@@ -425,11 +428,13 @@ impl HistoryHost {
                     }
                 }
                 Command::PreviousPage | Command::NextPage => {
-                    if let Some(preview) = &mut self.canvas_mut().preview {
-                        preview.navigate(if matches!(command, Command::NextPage) {
+                    self.canvas_mut().navigate(
+                        if matches!(command, Command::NextPage) {
                             super::PreviewNavigation::NextPage
-                        } else { super::PreviewNavigation::PreviousPage });
-                    }
+                        } else {
+                            super::PreviewNavigation::PreviousPage
+                        },
+                    );
                 }
                 Command::Activity => self.activity_page = true,
                 Command::Before => {

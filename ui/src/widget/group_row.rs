@@ -152,6 +152,8 @@ pub struct GroupRow {
     /// Horizontal scroll offset (px): each child renders at `-scroll_x`.
     /// Clamped to `[0, max(0, content_w - viewport_w)]` after each layout.
     scroll_x: f64,
+    /// Absolute external viewport navigation stays bounded through geometry changes.
+    absolute_pan: bool,
     /// Total content width incl. gaps; cached so the wheel handler can
     /// clamp `scroll_x` without re-summing children.
     content_w: f64,
@@ -296,6 +298,7 @@ impl GroupRow {
             structure_dirty: false,
             hover_gap_idx: None,
             scroll_x: 0.0,
+            absolute_pan: false,
             content_w: 0.0,
             group_left_edges: Vec::new(),
             last_wheel_at: None,
@@ -554,6 +557,27 @@ impl GroupRow {
         self.scroll_x
     }
 
+    /// Set the real strip viewport to an absolute finite offset. Browser and
+    /// other external navigation controllers use this narrow seam instead of
+    /// synthesizing wheel input or moving rendered output independently.
+    pub fn pan_to(&mut self, requested: f64) -> bool {
+        if !requested.is_finite() {
+            return false;
+        }
+        self.absolute_pan = true;
+        let next = requested.clamp(0.0, self.max_scroll_x());
+        let changed = (next - self.scroll_x).abs() > f64::EPSILON
+            || self.snap_anim.is_some()
+            || self.last_wheel_at.is_some();
+        if changed {
+            self.scroll_x = next;
+            self.snap_anim = None;
+            self.last_wheel_at = None;
+            self.scroll_dirty = true;
+        }
+        changed
+    }
+
     pub fn handle_count(&self) -> usize {
         self.handles.len()
     }
@@ -574,6 +598,7 @@ impl GroupRow {
     pub fn inherit_viewport(&mut self, previous: &Self) {
         self.rect = previous.rect;
         self.scroll_x = previous.scroll_x;
+        self.absolute_pan = previous.absolute_pan;
         self.content_w = previous.content_w;
         self.laid_spans.clone_from(&previous.laid_spans);
         self.output_spans.clone_from(&previous.output_spans);
@@ -634,6 +659,7 @@ impl GroupRow {
     /// pass (uses the group's live rect). Cancels any in-flight wheel-snap
     /// so this isn't immediately overridden by a snap-back.
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
+        self.absolute_pan = false;
         let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
@@ -648,6 +674,7 @@ impl GroupRow {
     /// wheel-snap curve instead of teleporting, so a focus jump reads as
     /// motion rather than a cut.
     pub fn scroll_group_into_view_animated(&mut self, group_id: u64, now: Instant) -> bool {
+        self.absolute_pan = false;
         let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
@@ -684,7 +711,7 @@ impl GroupRow {
             sx -= left_bound - gr.x0;
         }
         let viewport = self.rect.width().max(1.0);
-        let upper = self.max_scroll_x().max(viewport * 3.0);
+        let upper = if self.absolute_pan { self.max_scroll_x() } else { self.max_scroll_x().max(viewport * 3.0) };
         sx = sx.clamp(0.0, upper);
         ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
     }
@@ -1579,7 +1606,7 @@ impl Widget for GroupRow {
         // `max_scroll_x` alone would reset scroll every frame on a
         // single-group strip, killing the "scroll into empty space" feel.
         let viewport = self.rect.width().max(1.0);
-        let upper = self.max_scroll_x().max(viewport * 3.0);
+        let upper = if self.absolute_pan { self.max_scroll_x() } else { self.max_scroll_x().max(viewport * 3.0) };
         if self.scroll_x > upper {
             self.scroll_x = upper;
         }
@@ -1907,6 +1934,9 @@ impl Widget for GroupRow {
     }
 
     fn needs_redraw(&self) -> bool {
+        if self.hidden {
+            return false;
+        }
         // A wheel-pan changes `scroll_x` without touching the row's rect
         // or any child's dirty bit, so without this the parent's cached
         // scene would keep painting pre-scroll positions.
@@ -1918,6 +1948,9 @@ impl Widget for GroupRow {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        if self.hidden {
+            return false;
+        }
         // The row owns drag animations outside its presentation children;
         // propagate them alongside child animation requests.
         self.snap_in_flight()
@@ -1986,6 +2019,7 @@ impl GroupRow {
                 .iter()
                 .any(super::resize_handle::ResizeHandle::is_dragging);
         if geometry_moved
+            && !self.absolute_pan
             && steady
             && let Some(target) = self.strip_frame_target(&self.laid_spans)
         {
@@ -4245,6 +4279,79 @@ mod tests {
                 "group rects must not shift after a bare wheel"
             );
         }
+    }
+
+    #[test]
+    fn absolute_pan_is_finite_bounded_and_preserves_group_geometry() {
+        let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
+        let before = row
+            .groups
+            .iter()
+            .map(WindowGroup::get_rect)
+            .collect::<Vec<_>>();
+        let content = row.content_width();
+        let max = row.max_scroll_x();
+        assert!(max > 0.0, "test requires a real overflowing strip");
+        row.snap_anim = Some(SnapAnim {
+            from: 0.0,
+            to: max,
+            started: Instant::now(),
+        });
+        row.last_wheel_at = Some(Instant::now());
+        assert!(!row.pan_to(f64::NAN));
+        assert_eq!(row.scroll_x(), 0.0, "invalid pan cannot move the strip");
+        assert!(
+            row.snap_anim.is_some(),
+            "invalid pan cannot cancel existing presentation state"
+        );
+        assert!(row.pan_to(max + 500.0));
+        assert_eq!(row.scroll_x(), max);
+        assert!(row.snap_anim.is_none());
+        assert!(row.last_wheel_at.is_none());
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        assert_eq!(
+            row.content_width(),
+            content,
+            "panning cannot resize strip content"
+        );
+        for (was, group) in before.iter().zip(&row.groups) {
+            let now = group.get_rect();
+            assert_eq!(now.width(), was.width(), "panning cannot resize a group");
+            assert_eq!(now.height(), was.height(), "panning cannot resize a group");
+            assert!(
+                now.x0 < was.x0,
+                "panning right moves real group rectangles left"
+            );
+        }
+        row.tick_snap_at(Instant::now() + Duration::from_secs(1));
+        assert_eq!(
+            row.scroll_x(),
+            max,
+            "a cancelled snap cannot override manual pan"
+        );
+        // Removing windows changes the real content range; an absolute pan
+        // clamps to that range instead of snapping back to the selected card.
+        row.groups.truncate(3);
+        let mut resized = TaffyTree::new();
+        let theme = Theme::dark();
+        let root = row.build_layout(&mut resized, &theme, &mut HashMap::new());
+        resized
+            .compute_layout(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1200.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        row.apply_layout(&resized, root, Point::ORIGIN);
+        assert_eq!(
+            row.scroll_x(),
+            row.max_scroll_x(),
+            "geometry clamps a manual pan to its new end"
+        );
+        assert!(row.pan_to(-500.0));
+        assert_eq!(row.scroll_x(), 0.0);
     }
 
     #[test]

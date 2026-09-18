@@ -1460,6 +1460,7 @@ pub fn build_workspace_root(
         records,
         &mut resolver,
         qos_desktop::composition::SurfaceChrome {
+            navigation: qos_desktop::composition::NavigationChrome::InSurface,
             topbar: Box::new(topbar),
             backdrop,
             empty_workspace: Some(Box::new(

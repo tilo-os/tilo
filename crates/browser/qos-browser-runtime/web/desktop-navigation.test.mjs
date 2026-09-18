@@ -12,3 +12,12 @@ test('exact identities, bounded publication and disposed/stale commands', async(
  nav.close();await assert.rejects(nav.controller.dispatch({kind:'select',generation:raw.generation}),/disposed/);
  assert.throws(()=>nav.controller.getSnapshot(),/disposed/);
 });
+test('pan keeps real pixel metrics and exact mount/workspace/strip ownership across the bridge', async()=>{
+ const raw={version:1,generation:'mount',desktopPan:{workspace:'18446744073709551615',strip:'9007199254740993',offset:12,viewport:600,content:1800,max:1200}};
+ const sent=[];
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>1,dispatch:value=>sent.push(JSON.parse(value)),active:()=>true});
+ assert.deepEqual(nav.controller.getSnapshot().desktopPan,raw.desktopPan);
+ const command={kind:'pan',generation:'mount',workspace:raw.desktopPan.workspace,strip:raw.desktopPan.strip,offset:1200};
+ await nav.controller.dispatch(command);assert.deepEqual(sent,[command]);
+ nav.close();await assert.rejects(nav.controller.dispatch(command),/disposed/);assert.equal(sent.length,1);
+});
