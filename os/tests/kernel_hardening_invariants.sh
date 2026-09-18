@@ -515,6 +515,13 @@ if grep -Fq 'attrs" != 06000000' "$audit" \
 else
   bad 'runtime Secure Boot audit accepts malformed or setup-mode firmware state'
 fi
+if grep -Fq "secureboot_enrollment_boot_marker_safe" "$audit" \
+   && grep -Fq "Secure Boot enrollment occurred this boot; reboot before retiring PK/KEK" "$audit" \
+   && grep -Fq "Secure Boot enrollment crossed a verified reboot boundary" "$audit"; then
+  ok 'runtime audit exposes Secure Boot enrollment reboot proof'
+else
+  bad 'runtime audit ignores malformed or same-boot enrollment evidence'
+fi
 if grep -Fq 'SuccessExitStatus=0 1' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"; then
   bad 'systemd still converts the security audit failure into success'
 else
