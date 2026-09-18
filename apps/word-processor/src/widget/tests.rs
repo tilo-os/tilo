@@ -3,6 +3,15 @@ use std::fmt::Write as _;
 use taffy::AvailableSpace;
 use ui::permissions::PermissionContext;
 
+/// Minimal, valid 2×3 RGB PNG shared by image layout, accessibility, portal,
+/// and inspector tests.
+const TEST_PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0,
+    0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 159, 1,
+    140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+    130,
+];
+
 #[test]
 fn cropped_image_source_expands_behind_the_stable_frame() {
     let frame = Rect::new(10.0, 20.0, 110.0, 70.0);
@@ -2040,18 +2049,11 @@ fn page_margins_persist_across_reload() {
 /// out an `image` block and does not panic (decode → layout → draw).
 #[test]
 fn inserted_image_lays_out_and_draws() {
-    // A minimal 2×3 RGB PNG (matches the model-test fixture).
-    const TINY_PNG: &[u8] = &[
-        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
-        0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
-        159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
-        66, 96, 130,
-    ];
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "caption above");
-    wp.model_mut().insert_image_bytes(&mut state.doc, TINY_PNG);
+    wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
     // Re-sync so the widget's block/blob caches see the new image block.
     wp.sync(&mut state.doc, &state.root);
     pipeline_draw(&mut wp, &mut state, 1000, 700);
@@ -2068,9 +2070,7 @@ fn inserted_image_lays_out_and_draws() {
 fn explicit_image_size_is_honored() {
     let mut state = ui::State::new();
     with_doc(&mut state, |dm| {
-        let hash = dm
-            .put_blob(A11Y_TINY_PNG)
-            .expect("test image fits blob quota");
+        let hash = dm.put_blob(TEST_PNG).expect("test image fits blob quota");
         let p = dm.insert_block(None, "paragraph");
         dm.splice_text(&p, 0, 0, "caption");
         let img = dm.insert_block(Some(&p), "image");
@@ -2110,9 +2110,7 @@ fn right_floated_image_narrows_following_paragraph() {
         // column geometry from, then the floated image, then the wrapped text.
         let r = dm.insert_block(None, "paragraph");
         dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
-        let hash = dm
-            .put_blob(A11Y_TINY_PNG)
-            .expect("test image fits blob quota");
+        let hash = dm.put_blob(TEST_PNG).expect("test image fits blob quota");
         let img = dm.insert_block(Some(&r), "image");
         dm.set_attr(&img, "blob", hash.as_str());
         dm.set_attr(&img, "anchor", "paragraph");
@@ -2190,9 +2188,7 @@ fn left_floated_image_offsets_following_paragraph_right() {
     with_doc(&mut state, |dm| {
         let r = dm.insert_block(None, "paragraph");
         dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
-        let hash = dm
-            .put_blob(A11Y_TINY_PNG)
-            .expect("test image fits blob quota");
+        let hash = dm.put_blob(TEST_PNG).expect("test image fits blob quota");
         let img = dm.insert_block(Some(&r), "image");
         dm.set_attr(&img, "blob", hash.as_str());
         dm.set_attr(&img, "anchor", "paragraph");
@@ -4666,14 +4662,6 @@ fn dragging_tab_marker_off_removes_it() {
 
 // ---- Accessibility ------------------------------------------------------
 
-/// A 2×3 RGB PNG fixture (shared with the image-layout test).
-const A11Y_TINY_PNG: &[u8] = &[
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0,
-    0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 159, 1,
-    140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
-    130,
-];
-
 /// The accessibility tree's root is a focusable, multiline [`Role::Document`].
 #[test]
 fn accessibility_root_is_a_multiline_document() {
@@ -4809,8 +4797,7 @@ fn accessibility_image_node_carries_alt() {
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "before");
-    wp.model_mut()
-        .insert_image_bytes(&mut state.doc, A11Y_TINY_PNG);
+    wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
     wp.sync(&mut state.doc, &state.root);
     let tree = wp.accessibility_tree();
     assert!(
@@ -5264,19 +5251,10 @@ fn presence_payload_is_none_when_unfocused() {
 
 // ---- image insert via the host file-chooser portal --------------------
 
-/// A minimal, real 2×3 PNG used by the image tests (decodes cleanly so the
-/// insert path records intrinsic dimensions).
-const IMG_PNG: &[u8] = &[
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0,
-    0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 159, 1,
-    140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
-    130,
-];
-
-/// Write `IMG_PNG` to a unique temp file and return its path.
+/// Write [`TEST_PNG`] to a unique temp file and return its path.
 fn temp_png(tag: &str) -> std::path::PathBuf {
     let p = std::env::temp_dir().join(format!("wp-img-{tag}-{}.png", std::process::id()));
-    std::fs::write(&p, IMG_PNG).expect("write temp png");
+    std::fs::write(&p, TEST_PNG).expect("write temp png");
     p
 }
 
@@ -5595,7 +5573,7 @@ fn doc_with_selected_image() -> (WordProcessorWidget, ui::State, String) {
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "caption");
-    wp.model_mut().insert_image_bytes(&mut state.doc, IMG_PNG);
+    wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
     wp.sync(&mut state.doc, &state.root);
     let c = wp.model().containers.clone().unwrap();
     let img_id = qdoc::model::materialize(&state.doc, &c)
@@ -5743,7 +5721,7 @@ fn selected_image_resizes_from_the_panel() {
         f64::midpoint(larger_rect.x0, larger_rect.x1),
         f64::midpoint(larger_rect.y0, larger_rect.y1),
     );
-    left_click_state(&mut wp, &mut state, pt);
+    left_click(&mut wp, &mut state, pt);
     let (w, _h) = wp
         .model()
         .image_size(&state.doc, &id)
@@ -5769,7 +5747,7 @@ fn selected_image_flips_from_the_panel() {
         f64::midpoint(flip_rect.x0, flip_rect.x1),
         f64::midpoint(flip_rect.y0, flip_rect.y1),
     );
-    left_click_state(&mut wp, &mut state, pt);
+    left_click(&mut wp, &mut state, pt);
     let c = wp.model().containers.clone().unwrap();
     let flipped = qdoc::model::materialize(&state.doc, &c)
         .blocks
@@ -5780,11 +5758,6 @@ fn selected_image_flips_from_the_panel() {
         flipped,
         "the image's flip_h attr is set after clicking Flip Horizontal"
     );
-}
-
-/// A left click at `pt` through the production `handle_event`, taking `ui::State`.
-fn left_click_state(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
-    left_click(wp, state, pt);
 }
 
 // ---- paragraph-style delete / duplicate context menu ------------------
