@@ -30,13 +30,24 @@ Btrfs+systemd+composefs layout only. Different actual layout/entry defaults fail
 closed and must be reconciled with real bootc output before acceptance; do not
 weaken checks merely to obtain a successful receipt.
 
-This verifies a normal installed target disk, **not the installer/live medium**.
-The medium's selected live UKI carries `tilo.install`, while its separate
-`/boot/tilo-target/tilo-target.efi` is the normal installation target. This helper
-intentionally requires the selected installed UKI to match that independently
-verified normal target. Media acceptance needs distinct authenticated live-UKI
-and target-UKI receipts and separate live boot tests; do not point this helper
-at the live UKI or relax its command-line/target matching checks.
+The default `--boot-profile installed-target` requires the selected installed
+UKI to match the independently PCR-verified `/boot/tilo-target/tilo-target.efi`
+and rejects installer activation. For a medium use
+`--boot-profile installer-media --source-live-uki boot/EFI/Linux/EXACT-LIVE.efi`.
+The named source live UKI must appear exactly once in fresh authenticated EFI
+evidence, match its recorded bytes, bind the same composefs seal/generation,
+and contain exactly one bare `tilo.install` token. The actual selected ESP UKI
+must match those live bytes. Arbitrary EFI paths, omitted explicit selection,
+valued/duplicate installer flags and a target UKI substituted for live are
+rejected. The separate normal target must still omit installer activation and
+pass full target PCR prediction verification.
+
+The receipt's `selected_boot` describes the actual disk UKI and whether the
+target PCR proof applies to it. For media this field is false: target PCR
+evidence is retained separately under `boot`, never attributed to the live UKI.
+`sign-target-prediction.sh` signs every live UKI and the separate normal target,
+but produces PCR sidecars only for the target. Both medium live boot and final
+target boot remain independent runtime acceptance requirements.
 
 `installed_bytes_verified` and `installable` remain false. The receipt reports
 the checks actually performed, retains material-audit coverage/limitations,

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from test_development_boot import synthetic_uki
 
 DEV = Path(__file__).resolve().parents[1] / 'dev'
 sys.path.insert(0, str(DEV))
@@ -57,6 +58,49 @@ class Layout(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux' and os.geteuid() == 0, 'root Linux file ownership checks')
 class Reopen(unittest.TestCase):
+    def test_live_media_and_target_keep_distinct_authenticated_identities(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / disk.prediction.TARGET
+            live_path = 'boot/EFI/Linux/tilo-live.efi'
+            live = root / live_path
+            target.parent.mkdir(parents=True)
+            live.parent.mkdir(parents=True)
+            base = 'quiet tilo.generation=7 composefs=' + 'a'*128
+            target.write_bytes(synthetic_uki('aarch64', base.encode()))
+            live.write_bytes(synthetic_uki('aarch64', (base + ' tilo.install').encode()))
+            target_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+            live_sha = hashlib.sha256(live.read_bytes()).hexdigest()
+            evidence = {'target_uki_sha256': target_sha,
+                        'signed_ukis': [{'path': live_path, 'sha256': live_sha}]}
+            args = (root, evidence)
+            normal = disk.source_boot_selection(*args, 'installed-target', None, 'aarch64', 7, 'a'*128)
+            medium = disk.source_boot_selection(*args, 'installer-media', live_path, 'aarch64', 7, 'a'*128)
+            self.assertEqual(normal['sha256'], target_sha)
+            self.assertEqual(medium['sha256'], live_sha)
+            self.assertTrue(normal['pcr_prediction_applies'])
+            self.assertFalse(medium['pcr_prediction_applies'])
+            self.assertNotEqual(live_sha, target_sha)
+            for profile, path in [('installed-target', live_path), ('installer-media', None),
+                                  ('installer-media', '../arbitrary.efi'),
+                                  ('installer-media', 'boot/EFI/Linux/other.efi')]:
+                with self.assertRaises(ValueError):
+                    disk.source_boot_selection(*args, profile, path, 'aarch64', 7, 'a'*128)
+            live.write_bytes(target.read_bytes())
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                disk.source_boot_selection(*args, 'installer-media', live_path, 'aarch64', 7, 'a'*128)
+            evidence['signed_ukis'][0]['sha256'] = target_sha
+            with self.assertRaisesRegex(ValueError, 'activation'):
+                disk.source_boot_selection(*args, 'installer-media', live_path, 'aarch64', 7, 'a'*128)
+
+    def test_installer_flag_must_be_one_bare_token(self):
+        base = 'tilo.generation=7 composefs=' + 'a'*128
+        for suffix in ('', ' tilo.install=0', ' tilo.install=1', ' tilo.install tilo.install'):
+            with self.assertRaises(ValueError):
+                disk.profile_cmdline((base + suffix).encode(), 'installer-media', 7, 'a'*128)
+        with self.assertRaises(ValueError):
+            disk.profile_cmdline((base + ' tilo.install').encode(), 'installed-target', 7, 'a'*128)
+
     def test_signed_companion_is_selected_and_unsigned_copy_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
