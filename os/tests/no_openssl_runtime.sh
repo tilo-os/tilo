@@ -32,6 +32,7 @@ development_signer="$repo/os/dev/development-signer.py"
 development_signer_setup="$repo/os/dev/setup-development-signer.py"
 development_compiler="$repo/os/dev/compile-development-os.py"
 development_trust="$repo/os/dev/development-trust.py"
+development_compile_container="$repo/os/Containerfile.development-compile"
 if grep -Eq 'pkcs1v15::SigningKey|SigningKey::<Sha(256|512)>' "$crypto_source"; then
   bad 'Tilo-owned RSA signing regressed from ring to the timing-vulnerable RustCrypto operation'
 elif grep -Fq 'AuthenticodeSignature::new' "$crypto_source"; then
@@ -59,6 +60,17 @@ if grep -Eq "(^|[^[:alnum:]_])openssl([^[:alnum:]_]|$)" "$development_trust"; th
   bad 'development public trust parsing still invokes OpenSSL'
 else
   ok 'development Cosign, PCR, and certificate identities use Rust-native parsing'
+fi
+if rg -n -i '(/usr/bin/(openssl|sbsign|sbverify)|\b(openssl|sbsign|sbverify)\b)' \
+    "$development_signer" "$development_signer_setup" "$development_compiler" \
+    "$development_trust" "$repo/os/dev/verify-development-loader.py" \
+    "$repo/os/dev/development_boot.py" "$repo/os/dev/development_prediction.py" \
+    "$repo/os/dev/retain-development-rootfs.py" >/dev/null; then
+  bad 'development trust tooling still invokes OpenSSL or sbsigntools'
+elif grep -Eq 'dnf .*install.*(openssl|sbsigntools)' "$development_compile_container"; then
+  bad 'retained development compiler still installs OpenSSL or sbsigntools'
+else
+  ok 'retained development trust tooling uses only Rust-native crypto'
 fi
 if RUSTC_WRAPPER= cargo tree --manifest-path "$repo/Cargo.toml" -p tilo-crypto -d \
     | grep -Eq '^rsa v'; then
