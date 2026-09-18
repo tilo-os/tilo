@@ -15,8 +15,9 @@ gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
 
-@unittest.skipUnless(hasattr(os, 'getuid') and os.getuid() == 0 and shutil.which('openssl'),
-                     'native root public trust fixture required')
+@unittest.skipUnless(hasattr(os, 'getuid') and os.getuid() == 0
+                     and shutil.which('cosign') and fixtures.fixtures.trust.CRYPTO.is_file(),
+                     'native root Rust-crypto fixture required')
 class CompletionTests(unittest.TestCase):
     setUpClass = classmethod(fixtures.RebindTests.setUpClass.__func__)
 
