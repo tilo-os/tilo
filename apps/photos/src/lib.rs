@@ -313,6 +313,20 @@ pub fn seed_scenario(
         }
     }
     app.open_path(doc, &path.to_string_lossy());
+    // The first imported photograph is part of the timeline fixture too.
+    // Give it an honest capture day so it joins the newest group instead of
+    // producing an orphaned "Undated" hero tile ahead of the collection.
+    let mut seeded_library = PhotosDoc::library(doc);
+    if let Some(active) = PhotosDoc::image(doc)
+        && let Some(photo) =
+            seeded_library.photo_mut(&crate::model::LibraryPhoto::from_image(active).id)
+    {
+        photo.captured_at = Some("2026-07-12 18:16".into());
+        photo.folder = Some("Travel 2026".into());
+        photo.people = vec!["Élodie".into(), "Sam".into()];
+        photo.tags = vec!["golden hour".into()];
+        PhotosDoc::set_library(doc, &seeded_library);
+    }
 
     match scenario {
         // A library has useful context only when it contains more than the
@@ -328,12 +342,12 @@ pub fn seed_scenario(
                 ("Summer trail", "2026-06-15 09:18"),
                 ("Museum light", "2026-06-15 14:42"),
                 ("Rainy market", "2026-06-16 10:06"),
-                ("Dog at the lake", "2026-06-16 17:30"),
-                ("Window cat", "2026-06-18 08:11"),
-                ("Sunset ferry", "2026-06-18 21:02"),
-                ("Garden supper", "2026-06-21 19:14"),
-                ("Paper lanterns", "2026-07-02 22:09"),
-                ("Mountain lookout", "2026-07-04 11:28"),
+                ("Dog at the lake", "2026-07-04 17:30"),
+                ("Window cat", "2026-07-04 08:11"),
+                ("Sunset ferry", "2026-07-04 21:02"),
+                ("Garden supper", "2026-07-12 19:14"),
+                ("Paper lanterns", "2026-07-12 22:09"),
+                ("Mountain lookout", "2026-07-09 11:28"),
                 ("Studio morning", "2026-07-09 07:51"),
                 ("First swim", "2026-07-12 15:45"),
             ]
