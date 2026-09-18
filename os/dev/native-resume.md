@@ -90,3 +90,34 @@ Verification currently covers exact frozen recipe transformation and fail-closed
 target selection. No reconstructed image has been built or executed by this
 change; remote build and complete-inventory/consumer acceptance remain runtime
 gates, not claims from unit tests.
+
+## Manual CI controller
+
+`development-native-resume.yml` uses the existing ARM disk100g lane. Its reviewed
+`helpers_revision` must be the coherent install-prep helper branch containing
+the producer, compile-driver resume hook/source separation, and bounded public
+export helper. It is deliberately independent of the fixed4583 source checkout.
+Do not substitute a latest-main helper revision with a different crypto CLI.
+
+Inputs are the exact two public checkpoint receipt strings and their SHA256s,
+plus the original WPE adoption receipt/hash. `launch-native-resume.py` rejects a
+different checkpoint reference before creating Docker resources. The original
+compile driver prepares cache access, native input identity and build environment;
+its resume hook invokes the derived producer and returns before the old exporter.
+
+The tools image follows the existing development-compile convention: pinned
+568fca1f builder, tools-only package install, and existing pinned cosign. Its
+actual configuration digest is recorded in worker.json. This is not an OS or
+application rebuild. No reusable published tools image is currently assumed.
+
+The inner worker is capped at4 CPUs and9GiB RAM, within the existing lane's
+allocation. Compiler jobs remain2 to preserve the original profile. Live build
+logs stream through Docker attach; early cgroup limits, throttling, memory and
+available pressure files are sampled at approximately2,60,300seconds. Missing
+pressure support is recorded as unavailable. No resource resize is automatic.
+
+Only allowlisted, bounded public JSON evidence is exported, including the
+reconstruction plan even on a partial failure. Exact owned Docker resources are
+removed on exit/cancellation. No full target directory is promised to survive.
+Success requires the complete reconstructed immutable publication receipt;
+there is no automatic retry or fallback to the old full native build.
