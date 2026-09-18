@@ -338,17 +338,17 @@ pub fn seed_scenario(
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
             for (variant, (name, captured_at)) in [
-                ("Harbour dusk", "2026-06-14 20:24"),
+                ("Harbour dusk", "2026-07-12 20:24"),
                 ("Summer trail", "2026-06-15 09:18"),
                 ("Museum light", "2026-06-15 14:42"),
                 ("Rainy market", "2026-06-16 10:06"),
                 ("Dog at the lake", "2026-07-12 17:30"),
                 ("Window cat", "2026-07-12 08:11"),
-                ("Sunset ferry", "2026-07-04 21:02"),
+                ("Sunset ferry", "2026-07-12 21:02"),
                 ("Garden supper", "2026-07-12 19:14"),
                 ("Paper lanterns", "2026-07-12 22:09"),
                 ("Mountain lookout", "2026-07-12 11:28"),
-                ("Studio morning", "2026-07-09 07:51"),
+                ("Studio morning", "2026-07-12 07:51"),
                 ("First swim", "2026-07-12 15:45"),
             ]
             .into_iter()
