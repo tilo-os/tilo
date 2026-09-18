@@ -96,6 +96,8 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         | "overview.toggle"
         | "settings.open"
         | "quick-settings.open"
+        | "quick-settings.clipboard"
+        | "quick-settings.devices"
         | "projection.open"
         | "capture.open"
         | "collaborators.open"
@@ -175,6 +177,8 @@ mod tests {
             "overview.toggle",
             "settings.open",
             "quick-settings.open",
+            "quick-settings.clipboard",
+            "quick-settings.devices",
             "projection.open",
             "collaborators.open",
             "room.activity.open",
