@@ -47,3 +47,12 @@ pub mod search_provider;
 pub mod settings;
 
 pub use browser_widget::BrowserWidget;
+
+/// Production Browser root used by the normal launcher, headless tooling,
+/// and certification. Launch-specific URI handling remains in the binary;
+/// this deliberately creates the same safe default profile a user gets when
+/// opening Browser without a target.
+#[must_use]
+pub fn app_root() -> BrowserWidget {
+    BrowserWidget::new()
+}
