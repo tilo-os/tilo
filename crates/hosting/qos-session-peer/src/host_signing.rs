@@ -13,7 +13,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use ui::collaboration::{HostDocumentCommitter, RouteSpec};
 
 const LIMIT: usize = 32;
-const DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 struct Handoff {
     bytes: Vec<u8>,
     receipt: OwnerCommitReceipt,
@@ -35,6 +34,7 @@ pub(crate) struct PendingSignature {
     route: RouteSpec,
     certificate: qos_user_identity::DeviceCert,
     mutation: DocumentMutation,
+    started: response::Sender<std::time::Instant>,
     reply: response::Sender<Result<SignedOp, String>>,
     service: HostSigning,
     permit: OwnedSemaphorePermit,
@@ -108,6 +108,7 @@ impl HostDocumentCommitter for BoundSigner {
                     .fail("host signing handoff capacity exhausted; outcome unknown")
             })?;
         let (reply, receiver) = response::channel();
+        let (started, start) = response::channel();
         let timing = Timing::new("signing_wait");
         self.service
             .sender
@@ -115,6 +116,7 @@ impl HostDocumentCommitter for BoundSigner {
                 route: route.clone(),
                 certificate: self.certificate.clone(),
                 mutation,
+                started,
                 reply,
                 service: self.service.clone(),
                 permit,
@@ -125,7 +127,13 @@ impl HostDocumentCommitter for BoundSigner {
                     .fail("host signer unavailable; outcome unknown")
             })?;
         timing.mark("enqueued");
-        let response = receiver.recv_timeout(DEADLINE);
+        // Reconnect/replay may leave this bounded request queued indefinitely.
+        // Only the ready serialized owner turn starts its execution deadline.
+        let deadline = start.recv().map_err(|_| {
+            self.service.fail("host signing reply lost; outcome unknown")
+        })?;
+        timing.mark("owner_started");
+        let response = receiver.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
         let event = match &response {
             Ok(Ok(_)) => "reply_ok",
             Ok(Err(_)) => "reply_error",
@@ -199,12 +207,15 @@ impl PendingSignature {
             route,
             certificate,
             mutation,
+            started,
             reply,
             service,
             permit,
             timing,
         } = self;
         timing.mark("owner_dequeued");
+        // Notification only: losing the caller does not cancel this owner turn.
+        let _ = started.send(crate::owner_commit::execution_deadline());
         let result: Result<SignedOp, String> = (|| {
             service.health()?;
             let record = route.record.as_deref().unwrap_or("");
@@ -409,13 +420,15 @@ mod tests {
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, receiver) = HostSigning::new(handle);
         let (reply, lost) = response::channel();
-        drop(lost);
+        let (started, lost_start) = response::channel();
+        drop((lost, lost_start));
         let pending = PendingSignature {
             route: RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap()),
             certificate: owner.identity.native_cert.clone(),
             mutation: DocumentMutation::Snapshot(
                 owner.peer().document("dev.qos.chat", "").unwrap(),
             ),
+            started,
             reply,
             service: service.clone(),
             permit: service.permits.clone().try_acquire_owned().unwrap(),
@@ -442,4 +455,94 @@ mod tests {
         );
         drop(receiver);
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_signing_survives_reconnect_longer_than_execution_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let before = owner.status();
+        let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
+        let (service, mut receiver) = HostSigning::new(handle);
+        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation = DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+        let waiting = tokio::task::spawn_blocking(move || signer.commit(&route, mutation));
+        // A disconnected/replaying host cannot enter PendingSignature::apply.
+        // Holding the real queued request models that ready-gated owner turn.
+        let pending = receiver.recv().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5100)).await;
+        assert!(!waiting.is_finished(), "queued work must not spend its execution deadline");
+        assert!(service.health().is_ok());
+        assert_eq!(owner.status(), before);
+        let (complete, result) = pending.apply(&mut owner);
+        result.unwrap(); complete();
+        let signed = waiting.await.unwrap().unwrap();
+        let request = request(&owner, "dev.qos.chat", "", signed);
+        let committed = owner.status();
+        assert_eq!(committed.generation, before.generation + 1);
+        let receipt = service.commit(request.clone()).await.unwrap();
+        receipt.validate_for(&request).unwrap();
+        assert_eq!(owner.status(), committed);
+        assert!(service.commit(request).await.is_err(), "the exact receipt is single-use");
+        assert_eq!(owner.status(), committed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn started_signing_timeout_keeps_committed_receipt_and_uncertainty() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
+        let (service, mut receiver) = HostSigning::new(handle);
+        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation = DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+        let waiting = tokio::task::spawn_blocking(move || signer.commit(&route, mutation));
+        let pending = receiver.recv().await.unwrap();
+        let before = owner.status().generation;
+        let (complete, result) = pending.apply(&mut owner);
+        result.unwrap();
+        assert_eq!(owner.status().generation, before + 1);
+        // The owner barrier happened; deliberately withhold the existing completion.
+        let error = tokio::time::timeout(std::time::Duration::from_secs(7), waiting).await.unwrap().unwrap().unwrap_err();
+        assert!(error.contains("outcome unknown"));
+        assert!(service.health().is_err());
+        assert_eq!(service.state.lock().unwrap().pending.len(), 1);
+        complete();
+        assert_eq!(service.state.lock().unwrap().pending.len(), 1);
+        assert_eq!(owner.status().generation, before + 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_signing_exits_when_owner_mailbox_closes() {
+        let root = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
+        let (service, mut receiver) = HostSigning::new(handle);
+        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation = DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+        let waiting = tokio::task::spawn_blocking(move || signer.commit(&route, mutation));
+        let pending = receiver.recv().await.unwrap();
+        drop(pending); drop(receiver);
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(1), waiting).await.unwrap().unwrap().is_err());
+        assert!(service.health().is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signing_uses_owner_timestamp_not_a_fresh_budget_on_start_delivery() {
+        let root = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
+        let (service, mut receiver) = HostSigning::new(handle);
+        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation = DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+        let waiting = tokio::task::spawn_blocking(move || signer.commit(&route, mutation));
+        let pending = receiver.recv().await.unwrap();
+        // Deliver an owner deadline already elapsed, representing late observation.
+        pending.started.send(std::time::Instant::now() - std::time::Duration::from_millis(1)).unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(250), waiting).await.unwrap().unwrap().unwrap_err().contains("outcome unknown"));
+        assert!(service.health().is_err());
+        drop(pending);
+    }
+
 }
