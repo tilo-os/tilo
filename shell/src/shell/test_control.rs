@@ -176,6 +176,9 @@ pub enum Response {
         chrome: serde_json::Value,
         /// The peers this session would paint, straight off the `PresenceCtx` the overlay reads.
         peers: serde_json::Value,
+        /// Compositor-authoritative screen exposure: who can see/control
+        /// which surface. This is deliberately separate from presence.
+        sharing: serde_json::Value,
     },
     /// Answer to a capability query or admin command (`grant`, `revoke`, `check_action`). Opaque JSON so the shape can grow.
     Answer(serde_json::Value),
@@ -213,6 +216,11 @@ pub trait ControlState {
     }
     /// The peers this session would paint right now, off the same `PresenceCtx` the overlay draws from — exposed because "no peer arrived" and "a peer arrived and wasn't drawn" otherwise look identical. Defaults to `Null`.
     fn peers_json(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+    /// Active stream/input grants from the compositor authority. Defaults to
+    /// `Null` for control-state fixtures without a live compositor.
+    fn sharing_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
     /// Per-surface ground truth of whether each foreign toplevel has ever presented. The placeholder tile is near-identical between apps and, for a legitimately-empty one, near-identical to a real first frame — `frame_seq > 0` is the fact a harness needs instead of guessing from pixels. Defaults to an empty list.
@@ -771,6 +779,7 @@ fn state_dump<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
             workspace_tree: state.workspace_tree_json(),
             chrome: state.chrome_state_json(),
             peers: state.peers_json(),
+            sharing: state.sharing_json(),
         },
         Vec::new(),
     )
@@ -1646,6 +1655,7 @@ mod tests {
             workspace_tree,
             chrome,
             peers: _,
+            sharing: _,
         } = resp
         else {
             panic!("expected Response::State, got something else");
@@ -1671,6 +1681,7 @@ mod tests {
             workspace_tree,
             chrome,
             peers: _,
+            sharing: _,
         } = resp
         else {
             panic!("expected Response::State");
@@ -1685,6 +1696,7 @@ mod tests {
             workspace_tree: serde_json::json!({ "workspaces": [] }),
             chrome: serde_json::json!({ "overlays": {} }),
             peers: serde_json::json!({ "pointers": [] }),
+            sharing: serde_json::json!({ "exposures": [] }),
         };
         let out = serialise_response(&resp);
         assert!(
@@ -1694,6 +1706,7 @@ mod tests {
         assert!(out.contains("\"workspace_tree\""), "got {out}");
         assert!(out.contains("\"chrome\""), "got {out}");
         assert!(out.contains("\"peers\""), "got {out}");
+        assert!(out.contains("\"sharing\""), "got {out}");
     }
 
     struct ActionState;
