@@ -225,6 +225,8 @@ optional legacy-provider DSO and loadable ENGINE modules, plus GStreamer's
 OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins (Tilo has none of
 those network media paths), the now-unusable WebRTC/ICE/SRTP companion
 plugins, and the offline ARM compatibility frontend's Qt OpenSSL TLS backend.
+The orphaned `libshout` package is erased after its plugin is removed, so its
+unused direct `libssl` dependency is absent from the finished RPM database too.
 The projector's required RTP/H.264 and HLS plugins remain installed.
 Foundational Fedora consumers retain only the built-in provider surface they
 require; the recurring security audit fails if any removed module reappears.

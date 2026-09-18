@@ -2236,8 +2236,9 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # offline and does not need its optional OpenSSL TLS backend. Rust-native code
 # owns network security, while foundational distro consumers use the built-in
 # provider. The Shoutcast library has no remaining consumer after its plugin is
-# removed, so delete that payload too. Keep RPM metadata intact because Fedora
-# records the plugin dependency at the aggregate bundle level.
+# removed, so delete its payload and package metadata too. The aggregate
+# GStreamer bundle retains a dependency on libshout for the deleted plugin;
+# `--nodeps` is therefore intentional and bounded by the absence audit below.
 # Delete these loadable surfaces before the composefs root is sealed.
 RUN find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
@@ -2250,6 +2251,7 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/gstreamer-1.0/libgstsrtp.so' \
          -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
       \( -type f -o -type l \) -delete \
+    && rpm -e --nodeps libshout \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
