@@ -1145,3 +1145,289 @@ fn directory_actual_operation_and_bounded_unknown_future_encoding_fit() {
         event + 44
     );
 }
+
+#[cfg(unix)]
+mod connection_capacity {
+    use super::*;
+
+    const ID: ConnectionId = ConnectionId([95; 16]);
+
+    fn singleton(row: &Row) -> Result<usize, StoreError> {
+        format::encode(&format::PageNode {
+            schema: 1,
+            node: format::Node::Leaf(vec![row.clone()]),
+        })
+        .map(|bytes| bytes.len())
+    }
+
+    fn baseline_root(store: &ConnectionStore) -> [u8; 32] {
+        storage::build_pages(
+            &store.storage,
+            std::iter::once(Ok(Row::Baseline(format::BaselineEntry {
+                connection: ID.0,
+                revision: 4,
+                ordinal: 0,
+                path: format::NativePath::Unix(b"file".to_vec()),
+                state: format::State::File {
+                    sha256: [7; 32],
+                    bytes: 3,
+                    executable: false,
+                },
+            }))),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn initial_connection(padding: usize) -> format::Connection {
+        let (mut source, destination) = bindings();
+        let locator = "/".to_owned() + &"x".repeat(padding);
+        source.locator = EndpointLocator::new(Path::new(&locator)).unwrap();
+        format::Connection::new(
+            ID,
+            source,
+            destination,
+            ConnectionPolicy {
+                deletion_retention_seconds: 2_592_000,
+            },
+        )
+        .unwrap()
+    }
+
+    // This clone selects padding only; create_connection and real baseline events
+    // must independently produce the same state before it is used in preflight.
+    fn expected_baseline(padding: usize, root: [u8; 32]) -> format::Connection {
+        let mut connection = initial_connection(padding);
+        connection.revision = 4;
+        connection.serial = 1;
+        connection.baseline = Some(4);
+        connection.baseline_root = Some(root);
+        connection.baseline_count = 1;
+        connection.decode().unwrap();
+        connection
+    }
+
+    fn largest_padding(root: [u8; 32]) -> usize {
+        let fits = |padding| singleton(&Row::Connection(expected_baseline(padding, root)));
+        assert!(fits(1).is_ok());
+        assert!(matches!(fits(32_767), Err(StoreError::LimitExceeded)));
+        let (mut low, mut high) = (1, 32_767);
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            match fits(middle) {
+                Ok(_) => low = middle,
+                Err(StoreError::LimitExceeded) => high = middle,
+                Err(error) => panic!("unexpected candidate encoding error: {error:?}"),
+            }
+        }
+        assert!(low > 10);
+        assert!(format::MAX_BYTES - fits(low).unwrap() <= 3);
+        low
+    }
+
+    fn admit_and_reopen(
+        mut store: ConnectionStore,
+        path: &Path,
+        padding: usize,
+        root: [u8; 32],
+    ) -> ConnectionStore {
+        assert_eq!(store.digest, [0; 32]);
+        let initial = initial_connection(padding);
+        let value = format::encode(&initial).unwrap().len();
+        let create_bytes = format::encode(&format::Event {
+            schema: 1,
+            predecessor: store.digest,
+            change: Change::Create {
+                record: initial.clone(),
+            },
+        })
+        .unwrap()
+        .len();
+        assert_eq!(create_bytes, value + 130);
+        assert_eq!(
+            singleton(&Row::Connection(initial.clone())).unwrap(),
+            value + 76
+        );
+        let record = initial.decode().unwrap();
+        store
+            .create_connection(ID, record.source, record.destination, record.policy)
+            .unwrap();
+        assert_eq!(store.connection(ID).unwrap(), initial);
+        assert_eq!(commit_test_baseline(&mut store, ID), root);
+        let expected = expected_baseline(padding, root);
+        assert_eq!(store.connection(ID).unwrap(), expected);
+        let row = Row::Connection(expected.clone());
+        let row_bytes = format::encode(&row).unwrap().len();
+        let page_bytes = singleton(&row).unwrap();
+        let root_bytes = format::encode(&root).unwrap().len();
+        assert_eq!(page_bytes, value + root_bytes + 69);
+        assert_eq!(page_bytes, row_bytes + 45);
+        assert!(create_bytes < page_bytes);
+        store.checkpoint().unwrap();
+        drop(store);
+        let reopened = ConnectionStore::open_at(path).unwrap();
+        assert_eq!(reopened.connection(ID).unwrap(), expected);
+        assert_eq!(
+            singleton(&Row::Connection(reopened.connection(ID).unwrap())).unwrap(),
+            page_bytes
+        );
+        let baseline = reopened.load_baseline(ID).unwrap();
+        let entries = baseline.entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries.get(&RelativePath::unix(b"file").unwrap()),
+            intent(&reopened.load_connection(ID).unwrap())
+                .source_before
+                .as_ref()
+        );
+        println!(
+            "directory Connection padding={padding} create-value={value} create-event={create_bytes} current-row={row_bytes} current-page={page_bytes} root-json={root_bytes}"
+        );
+        reopened
+    }
+
+    fn directory_operation(store: &ConnectionStore) -> format::Operation {
+        let record = store.load_connection(ID).unwrap();
+        let connection = store.connection(ID).unwrap();
+        let mut proposal = intent(&record);
+        proposal.expected_baseline = record.baseline_revision;
+        proposal.path = RelativePath::unix(b"dir").unwrap();
+        proposal.source_before = Some(EntryState::Directory);
+        let mut operation =
+            format::Operation::new(proposal, connection.serial + 1, &connection).unwrap();
+        let (mut admission, _, _) = directory_facts(false);
+        admission.truncate(admission.len() - 32);
+        admission[8..24].copy_from_slice(&ID.0);
+        admission[24..32].copy_from_slice(&operation.serial.to_le_bytes());
+        admission[32..40].copy_from_slice(&record.revision.to_le_bytes());
+        admission[40..48].copy_from_slice(&connection.fence.to_le_bytes());
+        admission[49..57].copy_from_slice(&record.baseline_revision.unwrap().to_le_bytes());
+        for (index, endpoint) in [record.source.identity, record.destination.identity]
+            .iter()
+            .enumerate()
+        {
+            let at = 57 + index * 64;
+            admission[at..at + 32].copy_from_slice(&endpoint.volume);
+            admission[at + 32..at + 64].copy_from_slice(&endpoint.root);
+        }
+        operation.native_kind = Some(NativeOperationKind::DirectoryV1);
+        operation.native_identity = Some(seal(admission));
+        operation.native_budget = Some(format::NativeBudget::initial());
+        operation.decode().unwrap();
+        operation
+    }
+
+    fn assert_preflight_boundary(store: &ConnectionStore, refuses: bool) {
+        let operation = directory_operation(store);
+        let current = store.connection(ID).unwrap();
+        let current_page = singleton(&Row::Connection(current.clone())).unwrap();
+        let rows = store.reduce_intent(&operation).unwrap();
+        for row in &rows {
+            format::encode(row).unwrap();
+            let length = singleton(row).unwrap();
+            if matches!(row, Row::Connection(_)) {
+                assert_eq!(length, current_page - 3);
+                println!(
+                    "directory immediate Connection row={} page={length}",
+                    format::encode(row).unwrap().len()
+                );
+            }
+        }
+        assert!(store.prepare_rows(rows).unwrap().fits_overlay());
+        let event = format::encode(&format::Event {
+            schema: 1,
+            predecessor: store.digest,
+            change: Change::Intent {
+                operation: operation.clone(),
+            },
+        })
+        .unwrap();
+        assert!(store.log.metadata().unwrap().len() + event.len() as u64 + 44 < 15 * 1024 * 1024);
+        let mut future = current;
+        future.revision = u64::MAX;
+        future.serial = operation.serial;
+        future.baseline = Some(u64::MAX);
+        future.pending = None;
+        let row = Row::Connection(future);
+        let row_bytes = format::encode(&row).unwrap().len();
+        let page = format::PageNode {
+            schema: 1,
+            node: format::Node::Leaf(vec![row]),
+        };
+        // Uncapped serde reports the oversize length only; capped production encoding decides admission.
+        let page_bytes = serde_json::to_vec(&page).unwrap().len();
+        assert_eq!(page_bytes, current_page + 38);
+        assert_eq!(row_bytes, current_page - 7);
+        if refuses {
+            assert!((format::MAX_BYTES + 35..=format::MAX_BYTES + 38).contains(&page_bytes));
+            assert!(matches!(
+                format::encode(&page),
+                Err(StoreError::LimitExceeded)
+            ));
+        } else {
+            assert!(page_bytes <= format::MAX_BYTES - 2);
+            assert_eq!(format::encode(&page).unwrap().len(), page_bytes);
+        }
+        let snapshot = || {
+            (
+                store.sequence,
+                store.digest,
+                store.current.generation,
+                store.overlay.clone(),
+                store.overlay_bytes,
+                store.executor_position(ID).unwrap(),
+                store.load_baseline(ID).unwrap(),
+                store
+                    .rows()
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap(),
+                std::fs::read(
+                    store
+                        .storage
+                        .path
+                        .join(format!("log-{}", store.current.log)),
+                )
+                .unwrap(),
+                std::fs::read(store.storage.path.join("CURRENT")).unwrap(),
+            )
+        };
+        let before = snapshot();
+        let result = store.preflight_directory_intent(&operation);
+        if refuses {
+            assert!(matches!(result, Err(StoreError::LimitExceeded)));
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(snapshot(), before);
+        assert_eq!(store.connection(ID).unwrap().pending, None);
+        assert!(
+            store
+                .row(&format::key(1, ID.0, operation.serial))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .rows()
+                .unwrap()
+                .all(|row| !matches!(row.unwrap(), Row::NativeRegistration(_)))
+        );
+        println!(
+            "directory Connection future-row={row_bytes} future-page={page_bytes} intent-event={} refused={refuses}",
+            event.len()
+        );
+    }
+
+    #[test]
+    fn directory_connection_singleton_preflight_uses_valid_reopened_history() {
+        for shrink in [0, 10] {
+            let (_temp, path) = fixture();
+            let store = ConnectionStore::open_at(&path).unwrap();
+            let root = baseline_root(&store);
+            let padding = largest_padding(root) - shrink;
+            let store = admit_and_reopen(store, &path, padding, root);
+            assert_preflight_boundary(&store, shrink == 0);
+        }
+    }
+}
