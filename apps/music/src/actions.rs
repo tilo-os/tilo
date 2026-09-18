@@ -211,6 +211,8 @@ pub fn open_playlist_membership_address(playlist: &str, track: &str) -> ActionAd
 /// collaborator's session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicOperation {
+    /// Ask the host picker for a file; callers cannot supply a raw path.
+    ChooseAudioFile,
     /// Open one of the stable app-owned destinations in [`NAVIGATION_VIEWS`].
     /// The receiver validates `id` again before it changes local presentation.
     OpenView {
@@ -827,6 +829,7 @@ pub struct QueueItemResource {
 /// derived from state the document already holds; nothing is fabricated.
 #[derive(Debug, Clone, Default)]
 pub struct MusicResourceCtx {
+    pub local_file: Option<CatalogTrackResource>,
     pub playlists: Vec<PlaylistResource>,
     pub tracks: Vec<CatalogTrackResource>,
     pub albums: Vec<CatalogAlbumResource>,
@@ -887,7 +890,7 @@ fn local_playback_spec(
             playback: playback.clone(),
         },
     );
-    if playback.playing && playback.current != previous.current {
+    if playback.playing && (playback.current != previous.current || !previous.playing) {
         spec.execution(ExecutionMode::Background { cancellable: false })
             .returns(ResultSpec::Json {
                 schema: serde_json::json!({
@@ -1590,12 +1593,19 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
 /// playlist (remove + toggle-like). Every document-mutating operation is
 /// exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let known_tracks = ctx
+    let mut known_tracks = ctx
         .tracks
         .iter()
         .map(|track| track.id.clone())
         .collect::<BTreeSet<_>>();
-    let mut root = Resource::new("music.library", "music.library", "Library");
+    if let Some(file) = &ctx.local_file {
+        known_tracks.insert(file.id.clone());
+    }
+    let mut root = Resource::new("music.library", "music.library", "Library")
+        .with_action(open_local_file_spec());
+    if let Some(file) = &ctx.local_file {
+        root = root.with_child(local_file_resource(file, &ctx.playback));
+    }
     root = root.with_child(with_playback_actions(
         Resource::new("music.player:player", "music.player", "Player"),
         &ctx.playback,
@@ -1670,6 +1680,12 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 /// otherwise stale targets disappear instead of gaining authority from an old
 /// palette snapshot.
 pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
+    if id == LOCAL_FILE_RESOURCE_ID {
+        return ctx
+            .local_file
+            .as_ref()
+            .map(|file| local_file_resource(file, &ctx.playback));
+    }
     if let Some(view) = parse_view_resource_id(id) {
         return known_view_label(view).map(|label| navigation_view_resource(view, label));
     }
@@ -1685,11 +1701,14 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
             membership.down_rank,
         ));
     }
-    let known_tracks = ctx
+    let mut known_tracks = ctx
         .tracks
         .iter()
         .map(|track| track.id.clone())
         .collect::<BTreeSet<_>>();
+    if let Some(file) = &ctx.local_file {
+        known_tracks.insert(file.id.clone());
+    }
     if id == "music.library" {
         return provide_resources(ctx, &AutoCommit::new())
             .into_iter()
@@ -1751,6 +1770,43 @@ impl ResourceProvider for crate::app::MusicApp {
         let ctx = self.music_resource_ctx_for_id(id)?;
         resource_by_id(&ctx, id)
     }
+}
+
+/// A device-local source has no collaborative track/catalog identity.
+pub const LOCAL_FILE_RESOURCE_ID: &str = "music.local-file:current";
+
+pub(crate) fn open_local_file_spec() -> ActionSpec {
+    operation_spec(
+        "open-file",
+        "Open audio file",
+        OperationKind::Effect,
+        &MusicOperation::ChooseAudioFile,
+    )
+    .retry_policy(RetryPolicy::AtMostOnce)
+    .execution(ExecutionMode::Background { cancellable: false })
+    .returns(ResultSpec::Json {
+        schema: serde_json::json!({
+            "type":"object", "required":["state"], "properties":{"state":{"enum":["playing"]}}
+        }),
+    })
+}
+
+fn local_file_resource(file: &CatalogTrackResource, playback: &crate::model::Playback) -> Resource {
+    let resource = Resource::new(
+        LOCAL_FILE_RESOURCE_ID,
+        "music.local-file",
+        file.label.clone(),
+    );
+    if playback.current.as_deref() == Some(&file.id) {
+        return with_transport_navigation(with_transport_settings(resource, playback), playback);
+    }
+    let mut next = playback.clone();
+    next.current = Some(file.id.clone());
+    next.queue = vec![file.id.clone()];
+    next.queue_index = 0;
+    next.position_ms = 0;
+    next.playing = true;
+    resource.with_action(local_playback_spec("play", "Play file", playback, &next))
 }
 
 #[cfg(test)]

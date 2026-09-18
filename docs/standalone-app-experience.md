@@ -114,6 +114,10 @@ node identifiers that accessibility treats as globally unique within the window.
 Both hosts should share pane state, intent processing and resource declarations.
 Semantic inspection, focus and input routing must explicitly include both
 subtrees, while application lifecycle calls continue to target the app root.
+Remember the last document focus when focus enters host controls, so activating
+Open History does not lose the selected component before its authority is
+captured. Revalidate that binding rather than selecting another document when
+the remembered component has closed.
 History docks beside content at wide sizes and becomes a content page with Back
 at narrow sizes. Refresh captured authority before exposing rows or painting;
 revocation removes the pane's private content and invalidates published actions.
