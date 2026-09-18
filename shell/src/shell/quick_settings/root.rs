@@ -32,8 +32,6 @@ pub enum RootAction {
     OpenSettings,
     Privacy,
     OpenNotifications,
-    OpenClipboard,
-    OpenDevices,
     OpenPowerMenu,
     Enter(QsLevel),
     Changed(PendingRootActions),
