@@ -1,0 +1,81 @@
+name: Development / finalize retained ARM rootfs
+
+on:
+  workflow_dispatch:
+    inputs:
+      helpers_revision:
+        description: Reviewed full helper commit, including finalization fixes
+        required: true
+        type: string
+      request:
+        description: Bounded public finalization request JSON; operator must be ready before dispatch
+        required: true
+        type: string
+      request_sha256:
+        description: SHA256 of exact request UTF-8 bytes
+        required: true
+        type: string
+
+concurrency:
+  group: development-arm-finalization
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/codex/'))
+    runs-on: runner-disk-100g-arm64
+    timeout-minutes: 165
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: controller
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
+      - name: Validate pinned public inputs
+        env:
+          FINALIZATION_REQUEST: ${{ inputs.request }}
+          FINALIZATION_REQUEST_SHA256: ${{ inputs.request_sha256 }}
+          HELPERS_REVISION: ${{ inputs.helpers_revision }}
+        run: |
+          python3 - <<'PY'
+          import importlib.util, os
+          spec = importlib.util.spec_from_file_location('worker', 'controller/os/dev/launch-finalization-worker.py')
+          worker = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(worker)
+          worker.request_bytes(os.environ['FINALIZATION_REQUEST'], os.environ['FINALIZATION_REQUEST_SHA256'], os.environ['HELPERS_REVISION'])
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          ref: 4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: helpers
+          ref: ${{ inputs.helpers_revision }}
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.podesta.ai
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Finalize only, with operator-bound external signing
+        timeout-minutes: 155
+        env:
+          FINALIZATION_REQUEST: ${{ inputs.request }}
+          FINALIZATION_REQUEST_SHA256: ${{ inputs.request_sha256 }}
+          HELPERS_REVISION: ${{ inputs.helpers_revision }}
+        run: |
+          python3 controller/os/dev/launch-finalization-worker.py \
+            --controller "$PWD/controller" --source "$PWD/source" --helpers "$PWD/helpers" \
+            --evidence "$RUNNER_TEMP/finalization-evidence"
+      - name: Retain bounded public receipts
+        if: always()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: finalization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/finalization-evidence/
+          if-no-files-found: warn
+          retention-days: 14
