@@ -35,8 +35,8 @@ pub(in crate::setup) use native::*;
 #[cfg(target_os = "linux")]
 mod native {
     use super::super::{
-        MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete, Provider,
-        checkpoint::Record,
+        FreshProvider, MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete,
+        Provider, checkpoint::Record, initialize_fresh,
     };
     use super::{effective_mode_allowed, raw_components};
     use crate::setup::internal_download::SelectedManifest;
@@ -556,7 +556,10 @@ mod native {
         scanned: bool,
         prepared: bool,
         uncertain: bool,
+        fresh: Option<FreshCreation>,
     }
+    // Constructed only by the validated exclusive-create branch; never reopened.
+    struct FreshCreation;
     pub(in crate::setup) struct Partial<'a> {
         pub(in crate::setup) provider: LinuxProvider<'a>,
         pub(in crate::setup) file: File,
@@ -702,13 +705,17 @@ mod native {
             for index in 0..2 {
                 stop(cancel)?;
                 self.lease.check()?;
+                #[cfg(test)]
+                if index == 1 {
+                    super::tests::boundary("component-acquire-1")?;
+                }
                 if let Some(mut final_file) = finals[index].take() {
                     final_file.residue = !scans[index].is_empty();
                     result.push(Component::Final(final_file));
                     continue;
                 }
                 let parent = &self.lease.payload.file;
-                let held = if let Some((leaf, parent_id, file_id)) = &candidates[index] {
+                let (held, fresh) = if let Some((leaf, parent_id, file_id)) = &candidates[index] {
                     let file = open(parent, leaf.as_bytes(), libc::O_RDWR).map_err(io)?;
                     let held = Held::new(file, leaf.as_bytes(), false, true)?;
                     held.check(Some(parent))?;
@@ -717,11 +724,12 @@ mod native {
                             && held.id.digest() == *file_id,
                         "Journal candidate native identity mismatch",
                     )?;
-                    held
+                    (held, None)
                 } else {
                     let mut created = None;
                     for _ in 0..MAX_COLLISIONS {
                         let leaf = generated()?;
+                        stop(cancel)?;
                         match open(
                             parent,
                             leaf.as_bytes(),
@@ -745,7 +753,10 @@ mod native {
                             Err(e) => return Err(io(e)),
                         }
                     }
-                    created.ok_or("Cache exclusive-create collision limit")?
+                    (
+                        created.ok_or("Cache exclusive-create collision limit")?,
+                        Some(FreshCreation),
+                    )
                 };
                 require(
                     held.file.metadata().map_err(io)?.len()
@@ -758,8 +769,8 @@ mod native {
                     leaf: String::from_utf8(held.leaf.clone())
                         .map_err(|_| "Invalid partial leaf")?,
                 };
-                let file = held.file.try_clone().map_err(io)?;
-                let provider = LinuxProvider {
+                let mut file = held.file.try_clone().map_err(io)?;
+                let mut provider = LinuxProvider {
                     lease: self.lease.clone(),
                     selected,
                     index,
@@ -769,13 +780,36 @@ mod native {
                     scanned: false,
                     prepared: false,
                     uncertain: false,
+                    fresh,
                 };
+                if provider.fresh.is_some() {
+                    initialize_fresh(selected, index, &mut provider, &mut file)?;
+                }
+                stop(cancel)?;
                 result.push(Component::Partial(Partial { provider, file }));
             }
             self.lease.check()?;
             result
                 .try_into()
                 .map_err(|_| "Internal component count".into())
+        }
+    }
+    impl FreshProvider for LinuxProvider<'_> {
+        fn take_fresh(&mut self, selected: &SelectedManifest, index: usize) -> Result<Ownership> {
+            let fresh = self.fresh.take();
+            require(
+                fresh.is_some()
+                    && !self.uncertain
+                    && selected.manifest_sha256() == self.selected.manifest_sha256()
+                    && index == self.index,
+                "No fresh cache ownership for selection",
+            )?;
+            Ok(self.own.clone())
+        }
+        fn initialization_failed(&mut self) {
+            self.fresh = None;
+            self.uncertain = true;
+            self.revoke_preparation();
         }
     }
     impl Provider for LinuxProvider<'_> {
