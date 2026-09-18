@@ -723,6 +723,9 @@ pub struct PhotosApp {
     /// resource tree still resolve every stable id outside this shelf.
     library_folders: Vec<(String, usize)>,
     library_people: Vec<(String, usize)>,
+    /// One bounded representative image per approved person, selected from
+    /// the shared metadata projection and rendered from the existing cache.
+    library_person_covers: HashMap<String, String>,
     library_tags: Vec<(String, usize)>,
     metadata_filter_cards: Vec<MetadataFilterCard>,
     /// Visible paging affordances for a one-card enlarged-text shelf. These
@@ -1007,6 +1010,7 @@ impl PhotosApp {
             active_favorites: false,
             library_folders: Vec::new(),
             library_people: Vec::new(),
+            library_person_covers: HashMap::new(),
             library_tags: Vec::new(),
             metadata_filter_cards: Vec::new(),
             library_page_hits: Vec::new(),
@@ -4128,9 +4132,12 @@ impl PhotosApp {
             );
         } else {
             for (index, (name, count)) in people.into_iter().enumerate() {
-                let x = content.x0 + (index % 3) as f64 * ((content.width() - 24.0) / 3.0 + 12.0);
-                let card_y = y + (index / 3) as f64 * 78.0;
-                let card = Rect::new(x, card_y, x + (content.width() - 24.0) / 3.0, card_y + 64.0);
+                let columns = if content.width() < 620.0 { 2 } else { 4 };
+                let gap = 12.0;
+                let card_w = (content.width() - gap * (columns - 1) as f64) / columns as f64;
+                let x = content.x0 + (index % columns) as f64 * (card_w + gap);
+                let card_y = y + (index / columns) as f64 * 184.0;
+                let card = Rect::new(x, card_y, x + card_w, card_y + 170.0);
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -4138,12 +4145,36 @@ impl PhotosApp {
                     None,
                     &card,
                 );
+                let preview = Rect::new(card.x0, card.y0, card.x1, card.y0 + 112.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.neutral[2],
+                    None,
+                    &preview,
+                );
+                if let Some(id) = self.library_person_covers.get(name)
+                    && let Some(image) = self.library_thumbnails.get(id)
+                {
+                    let scale = (preview.width() / f64::from(image.width))
+                        .max(preview.height() / f64::from(image.height));
+                    let image_transform = transform
+                        * Affine::translate((
+                            preview.x0 + (preview.width() - f64::from(image.width) * scale) * 0.5,
+                            preview.y0 + (preview.height() - f64::from(image.height) * scale) * 0.5,
+                        ))
+                        * Affine::scale(scale);
+                    scene.draw_image(image, image_transform);
+                } else {
+                    let avatar = Rect::from_center_size(preview.center(), (38.0, 38.0));
+                    draw_icon(scene, transform, avatar, Icon::Image, theme.text_dim);
+                }
                 text_renderer.draw_text_weighted(
                     scene,
                     name,
                     15.0,
                     theme.text_primary,
-                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 12.0)),
+                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 124.0)),
                     Some((card.width() - 24.0) as f32),
                     TextWeight::Medium,
                 );
@@ -4152,7 +4183,7 @@ impl PhotosApp {
                     &format!("{count} photos · approved"),
                     12.0,
                     theme.text_dim,
-                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 36.0)),
+                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 146.0)),
                     Some((card.width() - 24.0) as f32),
                     TextWeight::Regular,
                 );
@@ -7392,16 +7423,35 @@ impl Widget for PhotosApp {
         }
         self.library_folders = folders.into_iter().take(6).collect();
         self.library_people = people.into_iter().take(6).collect();
+        self.library_person_covers.clear();
+        for (person, _) in &self.library_people {
+            if let Some(photo) = library
+                .photos
+                .iter()
+                .find(|photo| photo.people.iter().any(|label| label == person))
+            {
+                self.library_person_covers
+                    .insert(person.clone(), photo.id.clone());
+            }
+        }
         self.library_tags = tags.into_iter().take(6).collect();
         // Request exactly the sorted, virtualised timeline slice, not the
         // document's original insertion order.  Otherwise a visible newest
         // photo can remain a placeholder while an off-screen old one decodes.
-        let thumbnail_sources: Vec<_> = self
+        let mut thumbnail_sources: Vec<_> = self
             .library_items
             .iter()
             .take(24)
             .filter_map(|item| library.photo(&item.id).cloned())
             .collect();
+        for cover in self.library_person_covers.values() {
+            if thumbnail_sources.iter().all(|photo| &photo.id != cover)
+                && let Some(photo) = library.photo(cover).cloned()
+            {
+                thumbnail_sources.push(photo);
+            }
+        }
+        thumbnail_sources.truncate(24);
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
     }
