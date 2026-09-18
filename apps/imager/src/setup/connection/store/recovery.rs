@@ -1,4 +1,5 @@
 //! File-byte preservation. This does not prove a later endpoint displacement.
+pub(super) mod directory;
 use super::super::super::{migration::same_snapshot, nofollow::metadata_nofollow};
 use super::{
     Arc, AtomicBool, Change, ConnectionId, ConnectionStore, DurableAck, EndpointIdentity, File,
@@ -1207,6 +1208,9 @@ impl ConnectionStore {
         &self,
         operation: &format::Operation,
     ) -> Result<Option<super::EntryState>, StoreError> {
+        if operation.native_kind == Some(format::NativeOperationKind::DirectoryV1) {
+            return self.native_directory_baseline_value(operation).map(Some);
+        }
         if operation.action.is_some() {
             return Err(StoreError::RecoveryRequired);
         }
@@ -1268,6 +1272,7 @@ impl ConnectionStore {
         destination: &storage::Identity,
         initial_review: bool,
         existing_ancestors: Option<&format::ExistingAncestorPatchV1>,
+        directory_ancestors: Option<&format::DirectoryAncestorPatchV1>,
         recovery_checks: &mut RecoveryChecks,
     ) -> Result<Vec<Row>, StoreError> {
         let mut connection = self.connection(ConnectionId(id))?;
@@ -1285,6 +1290,9 @@ impl ConnectionStore {
             connection: ConnectionId(id),
             serial,
         })?;
+        if operation.native_kind.is_none() && directory_ancestors.is_some() {
+            return Err(StoreError::RecoveryRequired);
+        }
         if operation.stage != 3
             || (operation.native_budget.is_some()
                 && connection.baseline.is_none()
@@ -1318,6 +1326,23 @@ impl ConnectionStore {
                 std::collections::BTreeMap::default()
             };
             let value = self.native_baseline_value(&operation)?;
+            if operation.native_kind == Some(format::NativeOperationKind::DirectoryV1) {
+                if existing_ancestors.is_some()
+                    || directory::ancestor_patch(&operation, &patch)?.as_ref()
+                        != directory_ancestors
+                    || value != Some(super::EntryState::Directory)
+                {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                let requirement =
+                    super::super::transaction::ExistingAncestorRequirement::from_baseline(
+                        &operation.path.to_relative()?,
+                        &patch,
+                    )?;
+                for path in requirement.paths() {
+                    patch.insert(path, super::EntryState::Directory);
+                }
+            }
             if let Some(receipt) = existing_ancestors {
                 let expected = ancestor_patch(&operation, &patch)?;
                 if expected.as_ref() != Some(receipt)

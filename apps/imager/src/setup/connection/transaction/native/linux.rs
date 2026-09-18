@@ -1,5 +1,6 @@
-//! Handle-relative regular-file primitives. No store receipts, cleanup or public
+//! Handle-relative native primitives. No store receipts, cleanup or public
 //! activation lives here. Relocation evidence is never sealed byte recovery.
+pub(super) mod directory;
 mod lease_process;
 mod witness;
 use super::descriptor as d;
@@ -8317,6 +8318,8 @@ pub(in crate::setup::connection::transaction) struct NativePublication {
 )]
 pub(in crate::setup::connection::transaction) struct NativeEpoch<'a> {
     witness: Option<witness::NamespaceWitness>,
+    directory_requests: Option<Arc<std::sync::atomic::AtomicU16>>,
+    directory_ancestors: Option<directory::DirectoryAncestors>,
     ancestor_chains: u16,
     ancestors: Option<super::ExistingAncestorProof>,
     cancel_read: Option<&'a std::sync::atomic::AtomicBool>,
@@ -8464,6 +8467,8 @@ impl<'a> NativeEpoch<'a> {
         })?;
         Ok(Self {
             witness: None,
+            directory_requests: None,
+            directory_ancestors: None,
             cancel_read: None,
             stop_read: None,
             source,
@@ -8522,6 +8527,13 @@ impl<'a> NativeEpoch<'a> {
         self.leases.revoke();
     }
     pub(in crate::setup::connection::transaction) fn check(&mut self) -> Result<()> {
+        if self
+            .directory_requests
+            .as_ref()
+            .is_some_and(|count| count.load(std::sync::atomic::Ordering::Acquire) > 128)
+        {
+            return Err(self.failure(EndpointError::LimitExceeded));
+        }
         if self.poisoned
             || Instant::now() >= self.deadline
             || self
@@ -8567,6 +8579,11 @@ impl<'a> NativeEpoch<'a> {
         path: &RelativePath,
     ) -> Result<ParentGuard> {
         self.check()?;
+        if let Some(proof) = &self.directory_ancestors {
+            if &proof.admission.path == path {
+                return proof.parent(side);
+            }
+        }
         if let Some(proof) = &self.ancestors {
             if &proof.admission.path == path {
                 let original = proof
@@ -9268,6 +9285,13 @@ impl<'e> NativeEpoch<'e> {
         target: &'e PinnedEndpoint,
         cancel: &'e std::sync::atomic::AtomicBool,
     ) -> Result<Self> {
+        if live.native_kind().is_some() {
+            return Err(Failure {
+                cause: EndpointError::Unverified,
+                boundary: Boundary::Untouched,
+                os_error: None,
+            });
+        }
         Self::begin_connected_mode(live, source, target, cancel, false)
     }
     fn begin_connected_mode(
@@ -9358,11 +9382,24 @@ impl<'e> NativeEpoch<'e> {
                 Decision::VerifyEqual | Decision::Propagate { .. }
             )
         {
-            epoch.prove_existing_ancestors(live.native_identity())?;
+            if live.native_kind()
+                == Some(crate::setup::connection::store::NativeOperationKind::DirectoryV1)
+            {
+                epoch.directory_requests = Some(Arc::new(std::sync::atomic::AtomicU16::new(0)));
+                epoch.prove_directory_ancestors(live.native_identity())?;
+            } else {
+                epoch.prove_existing_ancestors(live.native_identity())?;
+            }
         }
         Ok(epoch)
     }
     fn connected_check(&mut self, live: &LiveOperation) -> Result<()> {
+        if self.directory_requests.is_some()
+            != (live.native_kind()
+                == Some(crate::setup::connection::store::NativeOperationKind::DirectoryV1))
+        {
+            return Err(self.failure(EndpointError::Unverified));
+        }
         if (self
             .connected
             .as_ref()
@@ -9452,7 +9489,12 @@ impl<'e> NativeEpoch<'e> {
         bytes: &[u8],
     ) -> Result<()> {
         self.check()?;
-        if d::decode(bytes).is_err() {
+        let valid = if self.directory_requests.is_some() {
+            d::directory::decode(bytes).is_ok()
+        } else {
+            d::decode(bytes).is_ok()
+        };
+        if !valid {
             return Err(self.failure(EndpointError::Unsupported));
         }
         self.witness_create(name)?;
@@ -10297,6 +10339,10 @@ impl NativeEpoch<'_> {
             }),
             budget: Arc::clone(&self.read_budget),
             epoch_lifetime: Arc::downgrade(&self.lifetime),
+            directory_requests: self
+                .directory_requests
+                .as_ref()
+                .map(|count| (live.id(), Arc::clone(count))),
             store_lifetime: live.lifetime().clone(),
         })
     }
@@ -10378,6 +10424,15 @@ impl super::NativeOwnedNames {
         directory: &NativeDirectory,
         name: &CStr,
     ) -> std::result::Result<Vec<u8>, EndpointError> {
+        let bytes = self.read_clue_bytes(directory, name)?;
+        d::decode(&bytes).map_err(|_| EndpointError::Unverified)?;
+        Ok(bytes)
+    }
+    fn read_clue_bytes(
+        &self,
+        directory: &NativeDirectory,
+        name: &CStr,
+    ) -> std::result::Result<Vec<u8>, EndpointError> {
         self.charge(0)?;
         let file = open_at(directory.file(), name, libc::O_RDONLY)?;
         destination_security::check_private_file(&file)?;
@@ -10393,7 +10448,6 @@ impl super::NativeOwnedNames {
             return Err(EndpointError::Unstable);
         }
         bytes.truncate(count);
-        d::decode(&bytes).map_err(|_| EndpointError::Unverified)?;
         Ok(bytes)
     }
     #[expect(
@@ -10405,6 +10459,11 @@ impl super::NativeOwnedNames {
         root: &NativeDirectory,
         record: &crate::setup::connection::store::NativeNamespaceRecord,
     ) -> std::result::Result<OwnedSnapshot, EndpointError> {
+        if record.native_kind()
+            == Some(crate::setup::connection::store::NativeOperationKind::DirectoryV1)
+        {
+            return self.validate_directory_record(root, record);
+        }
         self.charge(0)?;
         root.validate(false)?;
         if object(root.file())? != self.root {
@@ -11196,6 +11255,13 @@ impl<'e> NativeEpoch<'e> {
         target: &'e PinnedEndpoint,
         cancel: &'e std::sync::atomic::AtomicBool,
     ) -> Result<Self> {
+        if context.native_kind().is_some() {
+            return Err(Failure {
+                cause: EndpointError::Unverified,
+                boundary: Boundary::Untouched,
+                os_error: None,
+            });
+        }
         Self::begin_recovery_mode(context, source, target, cancel, false)
     }
     fn begin_recovery_mode(
@@ -11260,6 +11326,11 @@ impl<'e> NativeEpoch<'e> {
             Arc::clone(context.reads()),
         )?;
         epoch.cancel_read = Some(cancel);
+        if context.native_kind()
+            == Some(crate::setup::connection::store::NativeOperationKind::DirectoryV1)
+        {
+            epoch.directory_requests = Some(Arc::new(std::sync::atomic::AtomicU16::new(0)));
+        }
         if !context.recovery_only() {
             epoch.stop_read = Some(context.gate());
         }
@@ -11280,7 +11351,14 @@ impl<'e> NativeEpoch<'e> {
                 Decision::VerifyEqual | Decision::Propagate { .. }
             )
         {
-            epoch.prove_existing_ancestors(context.native_identity())?;
+            if context.native_kind()
+                == Some(crate::setup::connection::store::NativeOperationKind::DirectoryV1)
+            {
+                epoch.directory_requests = Some(Arc::new(std::sync::atomic::AtomicU16::new(0)));
+                epoch.prove_directory_ancestors(context.native_identity())?;
+            } else {
+                epoch.prove_existing_ancestors(context.native_identity())?;
+            }
         }
         Ok(epoch)
     }
@@ -11288,6 +11366,12 @@ impl<'e> NativeEpoch<'e> {
         &mut self,
         context: &crate::setup::connection::store::RecoveryContext,
     ) -> Result<()> {
+        if self.directory_requests.is_some()
+            != (context.native_kind()
+                == Some(crate::setup::connection::store::NativeOperationKind::DirectoryV1))
+        {
+            return Err(self.failure(EndpointError::Unverified));
+        }
         if !self.connected.as_ref().is_some_and(|binding| {
             (context.action().is_reconciliation()
                 || (binding.capture_only
@@ -11352,6 +11436,10 @@ impl<'e> NativeEpoch<'e> {
             }),
             budget: Arc::clone(&self.read_budget),
             epoch_lifetime: Arc::downgrade(&self.lifetime),
+            directory_requests: self
+                .directory_requests
+                .as_ref()
+                .map(|count| (context.id(), Arc::clone(count))),
             store_lifetime: context.lifetime().clone(),
         })
     }
@@ -17224,6 +17312,21 @@ fn execute_next_inner(
     right: &PinnedEndpoint,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> ExecutorResult {
+    execute_next_inner_mode(store, id, session, left, right, cancel, false)
+}
+#[expect(
+    clippy::too_many_lines,
+    reason = "Pending-first observation and typed planning share one bounded executor dispatch"
+)]
+fn execute_next_inner_mode(
+    store: &mut crate::setup::connection::store::ConnectionStore,
+    id: ConnectionId,
+    session: &crate::setup::connection::transaction::TransactionSession,
+    left: &PinnedEndpoint,
+    right: &PinnedEndpoint,
+    cancel: &std::sync::atomic::AtomicBool,
+    directory_only: bool,
+) -> ExecutorResult {
     use crate::setup::connection::{
         store::Lifecycle,
         transaction::{RegularPlan, TransactionOutcome},
@@ -17278,6 +17381,48 @@ fn execute_next_inner(
             absent(),
         )
     };
+    if record.baseline_revision.is_some() {
+        use crate::setup::connection::transaction::directory::{DirectoryPlan, plan_directory};
+        match plan_directory(store, id, &baseline, &source, &destination)? {
+            DirectoryPlan::Ready(intent) => {
+                let admission = directory::NativeDirectoryAdmission::capture(
+                    store,
+                    &intent,
+                    [left, right],
+                    cancel,
+                )?;
+                let mut live = store.begin_native_directory(intent, session, admission)?;
+                #[cfg(test)]
+                directory::test_point("intent-record");
+                store.reserve_native_work(
+                    &mut live,
+                    session,
+                    EXECUTOR_READ_WINDOW,
+                    Instant::now() + std::time::Duration::from_secs(30),
+                    cancel,
+                )?;
+                return directory::execute_admitted(store, live, session, left, right, cancel);
+            }
+            DirectoryPlan::StructuralPending(reason) if directory_only => {
+                return Ok(TransactionOutcome::StructuralPending(reason));
+            }
+            DirectoryPlan::Settled if directory_only => {
+                return executor_verified(
+                    store,
+                    latest.ok_or(StoreError::RecoveryRequired)?,
+                    left,
+                    right,
+                    cancel,
+                );
+            }
+            _ => (),
+        }
+    }
+    if directory_only {
+        return Ok(TransactionOutcome::AccountedPending {
+            operation: latest.map(|id| store.executor_receipt(id)).transpose()?,
+        });
+    }
     match crate::setup::connection::transaction::plan_regular(
         store,
         id,
@@ -17340,6 +17485,11 @@ impl<'e> NativeEpoch<'e> {
             Arc::clone(context.reads()),
         )?;
         epoch.cancel_read = Some(cancel);
+        if context.native_kind()
+            == Some(crate::setup::connection::store::NativeOperationKind::DirectoryV1)
+        {
+            epoch.directory_requests = Some(Arc::new(std::sync::atomic::AtomicU16::new(0)));
+        }
         if !context.recovery_only() {
             epoch.stop_read = Some(context.gate());
         }
@@ -17642,6 +17792,11 @@ fn execute_pending(
             cancel,
         )?;
     }
+    if context.native_kind()
+        == Some(crate::setup::connection::store::NativeOperationKind::DirectoryV1)
+    {
+        return directory::execute_pending(store, &context, session, left, right, cancel);
+    }
     let action = context.action().clone();
     if matches!(action, ExecutionAction::Captured) {
         let mut proof = NativeEpoch::recover_conflict(store, &context, left, right, cancel)?;
@@ -17895,6 +18050,9 @@ impl NativeEpoch<'_> {
         self.validate_existing_ancestors(false)
     }
     fn validate_existing_ancestors(&mut self, start_window: bool) -> Result<()> {
+        if self.directory_requests.is_some() {
+            return self.validate_directory_ancestors(start_window);
+        }
         let Some(mut proof) = self.ancestors.take() else {
             return Ok(());
         };
