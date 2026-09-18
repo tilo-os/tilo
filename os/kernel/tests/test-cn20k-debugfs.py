@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 kernel = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(kernel.parent / 'dev'))
 patch = kernel / "patches/0001-octeontx2-gate-cn20k-debugfs.patch"
 spec = importlib.util.spec_from_file_location('restore', kernel.parent / 'dev/kernel_checkpoint_restore.py')
 restore = importlib.util.module_from_spec(spec)
