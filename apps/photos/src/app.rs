@@ -88,6 +88,7 @@ const CANVAS_INSET: f32 = 10.0;
 const THUMBNAIL_MAX_W: u32 = 320;
 const THUMBNAIL_MAX_H: u32 = 180;
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
+const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// One bounded materialized library page. This is intentionally independent
 /// of the number of cards that happen to fit in a particular window.
 const LIBRARY_PAGE_SIZE: usize = 24;
@@ -177,6 +178,52 @@ struct ThumbnailResult {
     generation: u64,
     id: String,
     preview: Option<Rgba>,
+}
+
+struct AnalysisResult {
+    invocation: tilo_actions::InvocationId,
+    photo_id: String,
+    content: Option<String>,
+    result: Result<crate::model::ImageAnalysis, String>,
+}
+
+struct AnalysisJob {
+    invocation: tilo_actions::InvocationId,
+    photo_id: String,
+    content: Option<String>,
+    image: OpenImage,
+    language: String,
+}
+
+fn analysis_failure(
+    invocation: tilo_actions::InvocationId,
+    message: String,
+) -> tilo_actions::InvocationUpdate {
+    tilo_actions::InvocationUpdate::Failed {
+        invocation,
+        error: tilo_actions::ActionFailure {
+            code: "photos.analysis_failed".into(),
+            message,
+            details: None,
+            retryable: true,
+        },
+    }
+}
+
+fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) {
+    while let Ok(job) = rx.recv() {
+        if tx
+            .send(AnalysisResult {
+                invocation: job.invocation,
+                photo_id: job.photo_id,
+                content: job.content,
+                result: crate::analysis::recognize_text(&job.image, &job.language),
+            })
+            .is_err()
+        {
+            return;
+        }
+    }
 }
 
 fn thumbnail_worker(rx: &Receiver<ThumbnailJob>, tx: &SyncSender<ThumbnailResult>) {
@@ -543,6 +590,10 @@ pub struct PhotosApp {
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     pending_resource_open: Option<(tilo_actions::InvocationId, String)>,
+    analysis_tx: Option<SyncSender<AnalysisJob>>,
+    analysis_rx: Receiver<AnalysisResult>,
+    active_analysis: HashSet<tilo_actions::InvocationId>,
+    cancelled_analysis: HashSet<tilo_actions::InvocationId>,
     canvas_state: CanvasState,
     search_provider: crate::search::PhotosSearchProvider,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
@@ -689,6 +740,65 @@ impl Default for PhotosApp {
 }
 
 impl PhotosApp {
+    fn drain_analysis_results(&mut self, doc: &mut AutoCommit) {
+        while let Ok(completed) = self.analysis_rx.try_recv() {
+            self.active_analysis.remove(&completed.invocation);
+            if self.cancelled_analysis.remove(&completed.invocation) {
+                continue;
+            }
+            let current = PhotosDoc::photo(doc, &completed.photo_id);
+            let stale = current
+                .as_ref()
+                .is_none_or(|photo| photo.image.content != completed.content);
+            let update = if stale {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation: completed.invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "photos.analysis_stale".into(),
+                        message:
+                            "This photograph changed before text recognition finished. Retry it."
+                                .into(),
+                        details: None,
+                        retryable: true,
+                    },
+                }
+            } else {
+                match completed.result {
+                    Ok(mut analysis) => {
+                        analysis.provenance.scope = "shared".to_owned();
+                        let action = crate::actions::PhotosAction::SetImageAnalysis {
+                            photo_id: completed.photo_id,
+                            analysis: Some(analysis),
+                        };
+                        match self.actions.try_dispatch_with_context(
+                            doc,
+                            crate::actions::PHOTOS_ACTION_TYPE,
+                            &action,
+                            tilo_actions::ActionContext::for_action(
+                                "org.tilo.Photos",
+                                "Photos",
+                                &action,
+                            ),
+                        ) {
+                            Ok(()) => {
+                                self.notice = Some(
+                                    "Recognized text was shared with this photo library".to_owned(),
+                                );
+                                tilo_actions::InvocationUpdate::Succeeded {
+                                    invocation: completed.invocation,
+                                    output: tilo_actions::ActionOutput::default(),
+                                }
+                            }
+                            Err(error) => analysis_failure(completed.invocation, error.to_string()),
+                        }
+                    }
+                    Err(error) => analysis_failure(completed.invocation, error),
+                }
+            };
+            self.resource_result = Some(update);
+        }
+    }
+
     fn toolbar_slots(&self) -> &'static [Slot] {
         if self.large_text_toolbar || (self.rect.width() > 0.0 && self.rect.width() < 600.0) {
             COMPACT_SLOTS
@@ -706,6 +816,14 @@ impl PhotosApp {
             std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
         let (thumbnail_result_tx, thumbnail_result_rx) =
             std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
+        let (analysis_job_tx, analysis_job_rx) =
+            std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
+        let (analysis_result_tx, analysis_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
+        let analysis_tx = std::thread::Builder::new()
+            .name("photos-local-analysis".to_owned())
+            .spawn(move || analysis_worker(&analysis_job_rx, &analysis_result_tx))
+            .ok()
+            .map(|_| analysis_job_tx);
         let thumbnail_tx = std::thread::Builder::new()
             .name("photos-thumbnail".to_owned())
             .spawn(move || thumbnail_worker(&thumbnail_job_rx, &thumbnail_result_tx))
@@ -744,6 +862,10 @@ impl PhotosApp {
             resource_invocation: None,
             resource_result: None,
             pending_resource_open: None,
+            analysis_tx,
+            analysis_rx,
+            active_analysis: HashSet::new(),
+            cancelled_analysis: HashSet::new(),
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
             search_heads: Vec::new(),
@@ -6291,27 +6413,23 @@ impl Widget for PhotosApp {
         {
             let photo = PhotosDoc::photo(doc, &resource_id)
                 .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-            let mut analysis = crate::analysis::recognize_text(&photo.image, &language)?;
-            // `recognize_text` deliberately returns a local-only result. This
-            // operation is the explicit consent boundary that turns its
-            // bounded data into a collaborative record.
-            analysis.provenance.scope = "shared".to_owned();
-            let action = crate::actions::PhotosAction::SetImageAnalysis {
-                photo_id: resource_id,
-                analysis: Some(analysis),
-            };
-            self.actions
-                .try_dispatch_with_context(
-                    doc,
-                    crate::actions::PHOTOS_ACTION_TYPE,
-                    &action,
-                    tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
-                )
-                .map_err(|error| error.to_string())?;
-            self.notice = Some("Recognized text was shared with this photo library".to_owned());
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
+            let sender = self
+                .analysis_tx
+                .as_ref()
+                .ok_or_else(|| "local text recognition is unavailable on this device".to_owned())?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id: resource_id,
+                    content: photo.image.content.clone(),
+                    image: photo.image,
+                    language,
+                })
+                .map_err(|_| {
+                    "text recognition is busy; wait for the current photos to finish".to_owned()
+                })?;
+            self.active_analysis.insert(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
 
         let crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } = operation
@@ -6350,6 +6468,13 @@ impl Widget for PhotosApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if cancellation_requested && self.active_analysis.remove(&invocation) {
+            self.cancelled_analysis.insert(invocation);
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("local text recognition was cancelled".into()),
+            });
+        }
         if cancellation_requested
             && self
                 .pending_resource_open
@@ -6390,6 +6515,7 @@ impl Widget for PhotosApp {
     )]
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         PhotosDoc::seed(doc);
+        self.drain_analysis_results(doc);
         if let Some((invocation, path)) = self.pending_resource_open.take() {
             self.open_path(doc, &path);
             self.resource_result = Some(if self.open_image_path().is_some() {
