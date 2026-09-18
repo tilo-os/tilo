@@ -131,6 +131,7 @@ jobs:
             memory-swap=9g
 
       - name: Resume admitted kernel and retain verified packaging
+        id: compile
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
@@ -147,11 +148,51 @@ jobs:
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_BUILD_JOBS=${{ env.KERNEL_BUILD_JOBS }}
+            KERNEL_CHECKPOINT_RUN_ID=${{ github.run_id }}
+            KERNEL_CHECKPOINT_ATTEMPT=${{ github.run_attempt }}
           cache-from: |
             type=registry,ref=code.podesta.ai/qos/tilo-development-kernel-buildcache:aarch64
             type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:aarch64
           cache-to: type=registry,ref=code.podesta.ai/qos/tilo-development-kernel-buildcache:aarch64,mode=min
           provenance: false
+
+      - name: Retain public checkpoint after failed kernel make
+        if: failure() && steps.compile.outcome == 'failure'
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # This target reads only the run-specific cache; it has no dependency
+          # on the compile stage and cannot compile the kernel a second time.
+          partial="code.podesta.ai/qos/tilo-development-partial-kernel-aarch64:failed-$SOURCE_REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker buildx build --file kernel-recovery.Containerfile --target failed-kernel-checkpoint \
+            --platform linux/arm64 --build-context kernel-checkpoint=./checkpoint-context \
+            --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg "KERNEL_CHECKPOINT_RUN_ID=$GITHUB_RUN_ID" \
+            --build-arg "KERNEL_CHECKPOINT_ATTEMPT=$GITHUB_RUN_ATTEMPT" \
+            --provenance=false --load --tag "$partial" .
+          # Export failure remains failure: the failed compile step is never
+          # continue-on-error and no normal kernel success receipt is emitted.
+          mkdir -p kernel-evidence
+          cid=$(docker create "$partial" /bin/true)
+          trap 'docker rm "$cid" >/dev/null 2>&1 || true' EXIT
+          docker cp "$cid:/capture-receipt.json" kernel-evidence/failed-make-capture.json
+          docker cp "$cid:/SHA256SUMS" kernel-evidence/failed-make-SHA256SUMS
+          docker push "$partial"
+          PARTIAL_REF="$partial" python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          ref=os.environ['PARTIAL_REF']
+          image=json.loads(subprocess.check_output(['docker','image','inspect',ref]))[0]
+          digest=next(x for x in image['RepoDigests'] if x.startswith('code.podesta.ai/qos/tilo-development-partial-kernel-aarch64@sha256:'))
+          raw=subprocess.check_output(['docker','buildx','imagetools','inspect','--raw',digest])
+          assert 'sha256:'+hashlib.sha256(raw).hexdigest()==digest.split('@')[1], 'published manifest digest differs'
+          assert json.loads(raw)['config']['digest']==image['Id'], 'published config differs'
+          capture=json.loads(pathlib.Path('kernel-evidence/failed-make-capture.json').read_text())
+          assert capture['success'] is True and capture['capture']['build_success'] is False
+          assert capture['capture']['run_id']==os.environ['GITHUB_RUN_ID'] and capture['capture']['attempt']==os.environ['GITHUB_RUN_ATTEMPT']
+          pathlib.Path('kernel-evidence/failed-make-publication.json').write_text(json.dumps(dict(
+              purpose='failed-make-public-kernel-checkpoint',reference=digest,config_digest=image['Id'],
+              capture=capture,installable=False,build_success=False,resume_admitted=False),sort_keys=True)+'\n')
+          PY
 
       - name: Inspect packaged RPM without executing its payload
         run: |
