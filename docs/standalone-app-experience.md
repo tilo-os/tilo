@@ -12,8 +12,13 @@ History observation now preserves pending app edits: shared timeline, lookup and
 comparison readers inspect committed changes without closing the live action.
 Word Processor uses the same path for its history cache and version previews;
 the workspace index reads record snapshots instead of borrowing records for
-mutation. This fixes existing history surfaces, but does not yet add a universal
-standalone History entry point or a focused-record services controller.
+mutation. The focused-record controller now captures a component binding or an
+explicit legacy document lifetime, rechecks Read permission and clears refused
+or stale sessions. The shared retained History pane supports exact selection
+comparisons; mutation controls are absent unless a host implements them.
+These are host building blocks, not yet a universal standalone History entry
+point: native/headless host composition, canonical action routing and visible
+entry points still need integration. Restore remains a separate Document action.
 
 ## Product requirement
 
@@ -96,6 +101,28 @@ picker backend rather than copied into Windows.
    protected credential storage, native dialogs/menus, notifications and media
    controls. The common controller, history, search, invitation state machine,
    permissions and document synchronization do not branch per operating system.
+
+### Compose History without replacing the app root
+
+The native `App` and headless `FrameHarness` must retain the original app root.
+A generic container around it would hide root-owned lifecycle, record,
+continuation, native-view and operation capabilities that are not recursively
+forwarded by ordinary widgets. History should be a second host-owned retained
+subtree, built into the same Taffy arena and node map. Separate arenas can reuse
+node identifiers that accessibility treats as globally unique within the window.
+
+Both hosts should share pane state, intent processing and resource declarations.
+Semantic inspection, focus and input routing must explicitly include both
+subtrees, while application lifecycle calls continue to target the app root.
+History docks beside content at wide sizes and becomes a content page with Back
+at narrow sizes. Refresh captured authority before exposing rows or painting;
+revocation removes the pane's private content and invalidates published actions.
+
+Integration evidence must exercise native `App` and `FrameHarness` through the
+same Open, Select, Compare and Close action addresses. Include pending edits,
+three-change selection, focus transfer, revocation after publication and document
+replacement, as well as root capabilities with the pane open. Pane-only tests do
+not establish host integration or keyboard/accessibility support.
 
 The Windows service transport needs an explicit admission design. A same-user
 pipe alone is not proof of app identity or sandbox confinement. Ordinary native
