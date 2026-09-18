@@ -312,18 +312,25 @@ impl Action for MailAction {
                 }
             }
             MailAction::Purge { ids } => {
-                for id in bounded_ids(ids) {
-                    // A purge payload may outlive the list projection that
-                    // authored it.  Never let that turn into deletion of an
-                    // inbox/archive row: permanent deletion is only valid for
-                    // a message the collaborative document still says is in
-                    // Trash.  This also makes mixed-folder and stale agent
-                    // batches safely atomic (invalid members are no-ops).
-                    if MailDoc::is_present_message(doc, id)
-                        && MailDoc::get_folder_for(doc, id) == Some(Folder::Trash)
-                    {
-                        MailDoc::mark_message_purged(doc, id);
-                    }
+                let ids = bounded_ids(ids);
+                // Purge is all-or-nothing. A stale search result or a message
+                // concurrently moved out of Trash must refuse the whole batch,
+                // rather than permanently delete whatever happens to remain
+                // valid. This preserves the atomic contract agents and the
+                // selection toolbar publish.
+                if ids.is_empty()
+                    || ids.iter().any(|id| {
+                        !MailDoc::is_present_message(doc, id)
+                            || MailDoc::get_folder_for(doc, id) != Some(Folder::Trash)
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "every message must still be present in Trash before permanent deletion"
+                            .into(),
+                    ));
+                }
+                for id in ids {
+                    MailDoc::mark_message_purged(doc, id);
                 }
             }
             MailAction::AddLabel { ids, label } => {
@@ -601,9 +608,10 @@ fn bulk_spec(
     id: &'static str,
     label: &'static str,
     description: &'static str,
+    reversible: bool,
     build: impl Fn(Vec<String>) -> MailAction + Send + Sync + 'static,
 ) -> ActionSpec {
-    ActionSpec::typed(
+    let spec = ActionSpec::typed(
         id,
         label,
         "message ids…",
@@ -634,8 +642,8 @@ fn bulk_spec(
                 });
             encode(&build(ids))
         },
-    )
-    .reversible()
+    );
+    if reversible { spec.reversible() } else { spec }
 }
 
 #[allow(
@@ -841,24 +849,28 @@ pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
         "archive-messages",
         "Archive messages",
         "Stable ids of loaded messages to archive together",
+        true,
         |ids| move_action(ids, Folder::Archive),
     ));
     root = root.with_action(bulk_spec(
         "move-messages-to-trash",
         "Move messages to Trash",
         "Stable ids of loaded messages to move to Trash together",
+        true,
         |ids| move_action(ids, Folder::Trash),
     ));
     root = root.with_action(bulk_spec(
         "mark-messages-read",
         "Mark messages read",
         "Stable ids of loaded messages to mark read together",
+        true,
         |ids| set_read_action(ids, true),
     ));
     root = root.with_action(bulk_spec(
         "mark-messages-unread",
         "Mark messages unread",
         "Stable ids of loaded messages to mark unread together",
+        true,
         |ids| set_read_action(ids, false),
     ));
     // Purge is intentionally not coupled to move-to-Trash.  It is a separate
@@ -869,6 +881,7 @@ pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
             "purge-trashed-messages",
             "Delete trashed messages permanently",
             "Stable ids of messages already in Trash to delete permanently",
+            false,
             purge_action,
         )
         .destructive(),
@@ -1385,19 +1398,26 @@ mod tests {
             purge.contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm
         ));
+        assert!(
+            !purge.contract.reversible,
+            "a server-side permanent deletion must not claim local undo can restore it"
+        );
     }
 
     #[test]
-    fn purge_action_refuses_inbox_and_stale_ids() {
+    fn purge_action_refuses_mixed_or_stale_ids_without_deleting_a_valid_subset() {
         let mut doc = AutoCommit::new();
         MailDoc::set_folder_for(&mut doc, "inbox", Folder::Inbox);
         MailDoc::set_folder_for(&mut doc, "trash", Folder::Trash);
-        purge_action(vec!["inbox".into(), "missing".into(), "trash".into()])
+        let heads_before = doc.get_heads();
+        let error = purge_action(vec!["inbox".into(), "missing".into(), "trash".into()])
             .apply(&mut doc)
-            .expect("bounded stale/mixed purge is a safe action");
+            .expect_err("mixed/stale purge refuses rather than deleting a valid subset");
+        assert!(matches!(error, ActionError::Refused(_)));
         assert!(MailDoc::is_present_message(&doc, "inbox"));
-        assert!(!MailDoc::is_present_message(&doc, "trash"));
+        assert!(MailDoc::is_present_message(&doc, "trash"));
         assert_eq!(MailDoc::get_folder_for(&doc, "inbox"), Some(Folder::Inbox));
+        assert_eq!(doc.get_heads(), heads_before);
     }
 
     #[test]
