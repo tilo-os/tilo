@@ -1,0 +1,29 @@
+{
+  "run": {
+    "id": 22744,
+    "status": "success",
+    "commit_sha": "d575c611be844d2c709e869582c705e2cc431363",
+    "workflow_id": "full-builder-seed-pilot.yml",
+    "created": "2026-09-18T22:41:30Z",
+    "started": "2026-09-18T22:51:44Z",
+    "stopped": "2026-09-18T22:55:44Z"
+  },
+  "jobs": [
+    {
+      "id": 83504,
+      "run_id": 22744,
+      "attempt": 1,
+      "handle": "d1148713-d265-4838-8498-bc82e608e485",
+      "repo_id": 23,
+      "owner_id": 11,
+      "name": "native-smoke",
+      "needs": null,
+      "runs_on": [
+        "runner"
+      ],
+      "task_id": 75046,
+      "status": "success"
+    }
+  ],
+  "observed_at": "2026-09-18T22:56:06.6544521Z"
+}

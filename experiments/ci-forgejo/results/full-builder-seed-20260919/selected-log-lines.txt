@@ -1,0 +1,10 @@
+2026-09-18T22:51:45.6457327Z Runner 3e192039-f721-4aa6-8eed-ba5631f120b1 (version:v13.0.0) received task 75046 of job native-smoke, triggered by event: push
+2026-09-18T22:51:45.7284499Z   🐳  docker pull image=code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a platform=linux/amd64 username=xemmerling forcePull=true
+2026-09-18T22:55:42.6040386Z   🐳  docker create image=code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a platform=linux/amd64 entrypoint=["tail" "-f" "/dev/null"] cmd=[] network="WORKFLOW-1c8eb5ec9d46d3e4a47bb6718ea9c4ce"
+2026-09-18T22:55:43.2637911Z PILOT_NATIVE_START=2026-09-18T22:55:43Z
+2026-09-18T22:55:43.2820846Z rustc 1.97.1 (8bab26f4f 2026-07-14)
+2026-09-18T22:55:43.2935498Z cargo 1.97.1 (c980f4866 2026-06-30)
+2026-09-18T22:55:43.3550812Z PILOT_C_OK
+2026-09-18T22:55:43.4217148Z PILOT_RUST_OK arch=x86_64
+2026-09-18T22:55:43.4234416Z PILOT_NATIVE_FINISH=2026-09-18T22:55:43Z
+2026-09-18T22:55:43.4430897Z 🏁  Job succeeded

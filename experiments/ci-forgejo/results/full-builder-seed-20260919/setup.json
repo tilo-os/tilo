@@ -1,0 +1,12 @@
+{
+  "runs_on": "runner",
+  "head": "d575c611be844d2c709e869582c705e2cc431363",
+  "repository_id": 23,
+  "repository": "qos/qos",
+  "expected_seed_node": "talos-2a014f9307124fd2",
+  "expected_seed_is_conditional": true,
+  "expected_job": "native-smoke",
+  "image": "code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+  "workflow": "full-builder-seed-pilot.yml",
+  "branch": "codex/ci-full-builder-seed-probe"
+}

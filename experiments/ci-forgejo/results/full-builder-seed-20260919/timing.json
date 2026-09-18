@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "id": 22744,
+      "created": "2026-09-18T22:41:30Z",
+      "started": "2026-09-18T22:51:44Z",
+      "stopped": "2026-09-18T22:55:44Z",
+      "queue_seconds": 614.0,
+      "wall_seconds": 240.0,
+      "jobs": [
+        {
+          "id": 83504,
+          "events": {
+            "runner_received": "2026-09-18T22:51:45.6457327Z",
+            "pull_requested": "2026-09-18T22:51:45.7284499Z",
+            "container_create": "2026-09-18T22:55:42.6040386Z",
+            "container_run": "2026-09-18T22:55:42.6861467Z",
+            "job_finished": "2026-09-18T22:55:43.4430897Z"
+          },
+          "queue_seconds": null,
+          "run_created_to_runner_received_seconds": 615.646,
+          "pull_to_create_seconds": 236.876,
+          "create_to_run_seconds": 0.082,
+          "runner_to_finish_seconds": 237.797
+        }
+      ]
+    }
+  ]
+}

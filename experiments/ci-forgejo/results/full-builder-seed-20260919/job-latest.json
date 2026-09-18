@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "id": 83504,
+      "run_id": 22744,
+      "attempt": 1,
+      "handle": "d1148713-d265-4838-8498-bc82e608e485",
+      "repo_id": 23,
+      "owner_id": 11,
+      "name": "native-smoke",
+      "needs": null,
+      "runs_on": [
+        "runner"
+      ],
+      "task_id": 75046,
+      "status": "running"
+    }
+  ],
+  "observed_at": "2026-09-18T22:52:39.0955052Z"
+}

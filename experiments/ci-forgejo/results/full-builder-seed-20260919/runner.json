@@ -1,0 +1,21 @@
+{
+  "id": 14993,
+  "uuid": "3e192039-f721-4aa6-8eed-ba5631f120b1",
+  "name": "ci-warm-46d2f177e1874951aeb2",
+  "repo_id": 23,
+  "owner_id": 0,
+  "status": "active",
+  "labels": [
+    "docker",
+    "ubuntu-20.04",
+    "ubuntu-22.04",
+    "ubuntu-latest",
+    "ubuntu-24.04",
+    "ubuntu-22.04-full",
+    "ubuntu-24.04-full",
+    "fedora",
+    "tupo-runner",
+    "runner"
+  ],
+  "version": "v13.0.0"
+}
