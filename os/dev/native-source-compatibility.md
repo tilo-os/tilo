@@ -105,3 +105,19 @@ This is reviewed source compatibility, not identical build-context provenance.
 Native receipt identities remain original and the real assembly source remains
 recorded. The recipe and WPE consumer receipt are unchanged by the policy
 commit. Authenticated source checkout needs depth four.
+
+### Reviewed optional runtime-test follow-up
+
+An optional `policy_revision`, valid only with `rootfs_revision`, adds one
+Containerfile-only commit after the reviewed runtime-policy commit. Every
+parent in the five-commit chain is checked, and both the follow-up diff and the
+complete frozen-source diff remain explicit. Recipe changes must remain inside
+the existing rootfs stage; native stages, split/UKI stages and stage directives
+cannot change. The approval pins the final recipe blob and SHA256.
+
+The deferred AirPlay execution leaves the installed test scripts, executable
+modes, plugin probes and protocol tests intact. This is not a successful AirPlay
+validation claim. Its new recipe requires a correspondingly updated WPE
+consumer receipt: only the reviewed recipe hash and canonical audit hash may
+change. Original native inputs continue to use the original recipe and WPE
+receipt. Authenticated source checkout needs depth five.

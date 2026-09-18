@@ -151,6 +151,39 @@ class CompatibilityTests(unittest.TestCase):
         for prefix,value in (('original',original),('assembly',updated)):
             raw=json.dumps(value);bridge[prefix+'_receipt_json']=raw;bridge[prefix+'_receipt_sha256']=c.sha(raw.encode())
         self.verify()
+        # A reviewed recipe-only follow-up retains policy ancestry and bridges
+        # the new consumer recipe back to the original native/WPE identities.
+        policy_rev=self.revision
+        newest=new.replace(b'RUN fixed',b'RUN deferred-optional-test')
+        (self.repo/'os/Containerfile').write_bytes(newest)
+        self.git('commit','-qam','defer optional runtime test')
+        self.revision=self.git('rev-parse','HEAD').decode().strip()
+        self.value.update(policy_revision=policy_rev,assembly_source_revision=self.revision)
+        self.value['changes']['os/Containerfile'].update(
+            new_blob=self.git('rev-parse',self.revision+':os/Containerfile').decode().strip(),
+            new_sha256=c.sha(newest))
+        updated['audit']['compatible_recipes']['os/Containerfile']=c.sha(newest)
+        updated['audit_sha256']=c.sha((json.dumps(updated['audit'],sort_keys=True,separators=(',',':'))+'\n').encode())
+        raw=json.dumps(updated);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
+        proof=self.verify()
+        inputs.update(revision=self.revision,epoch=proof['assembly_epoch'],containerfile_sha256=c.sha(newest),wpe_receipt_sha256=bridge['assembly_receipt_sha256'])
+        with patch.object(c,'SOURCE',self.base): result=c.original_native_inputs(inputs,proof)
+        self.assertEqual(result['containerfile_sha256'],c.sha(old))
+        self.assertEqual(result['wpe_receipt_sha256'],bridge['original_receipt_sha256'])
+        self.value['policy_revision']=recipe_rev
+        with self.assertRaisesRegex(ValueError,'ancestry'):self.verify()
+        self.value['policy_revision']=policy_rev
+        # Additional tracked input, even with the expected parent, is rejected.
+        self.git('reset','--soft',policy_rev)
+        (self.repo/'Cargo.toml').write_bytes(b'extra\n');self.git('commit','-qam','unexpected followup')
+        self.revision=self.git('rev-parse','HEAD').decode().strip();self.value['assembly_source_revision']=self.revision
+        with self.assertRaisesRegex(ValueError,'only Containerfile'):self.verify()
+        self.git('reset','--hard',policy_rev)
+        self.revision=policy_rev;self.value['assembly_source_revision']=policy_rev;del self.value['policy_revision']
+        self.value['changes']['os/Containerfile'].update(new_blob=self.git('rev-parse',policy_rev+':os/Containerfile').decode().strip(),new_sha256=c.sha(new))
+        updated['audit']['compatible_recipes']['os/Containerfile']=c.sha(new)
+        updated['audit_sha256']=c.sha((json.dumps(updated['audit'],sort_keys=True,separators=(',',':'))+'\n').encode())
+        raw=json.dumps(updated);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
         self.value['rootfs_revision']=provider
         with self.assertRaisesRegex(ValueError,'ancestry'):self.verify()
         self.value['rootfs_revision']=recipe_rev
