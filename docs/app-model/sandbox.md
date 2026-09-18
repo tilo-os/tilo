@@ -267,7 +267,7 @@ Where a denial can be expressed as a state your app already handles, it is:
 So `/var/workspace` is a **filtered view**: an app that enumerates it sees
 exactly what it was granted, as an ordinary directory. There is no entry
 that appears and then fails, and no errno that distinguishes "hidden" from
-"not there" — `fs/tests/integration_test.rs` compares the two for every
+"not there" — `crates/system/fs/tests/integration_test.rs` compares the two for every
 operation. Nothing here is a reason to prompt the user; if a path is not
 there, treat it as not there.
 

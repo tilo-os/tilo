@@ -161,7 +161,7 @@ tilo/                            # workspace root
 │       ├── portal/                      # FileChooser, ScreenCast, Camera D-Bus backends
 │       ├── network/                     # Iroh actor, identity, hub, replica, encoder, invite
 │       └── bin/{shots,tilo-control}/  # e2e harness + control-socket CLI
-├── fs/                                  # FUSE3 driver
+├── crates/system/fs/                    # FUSE3 driver
 ├── apps/{terminal,file-explorer,browser,…}/  # native apps
 ├── crates/<domain>/                     # supporting libraries (collab, doc, runtime, packaging, …)
 └── os/                                  # Containerfile + systemd units

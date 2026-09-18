@@ -50,7 +50,7 @@ and
 
 ## P0-2 — The FUSE replication path performs no authentication
 
-`fs/src/sync.rs:159-195`
+`crates/system/fs/src/sync.rs:159-195`
 
 `SyncProtocol::accept` takes any connection on `TILO_FS_SYNC_ALPN` and:
 
@@ -61,9 +61,9 @@ There is no identity check, no ACL consultation, and no signature verification o
 The same applies to `fetch_remote_doc` (`sync.rs:104-113`) and the anti-entropy full-document merge
 (`sync.rs:317`).
 
-The ACL in `fs/src/acl.rs` is well-built — fail-closed, deny-biased, delegating to
+The ACL in `crates/system/fs/src/acl.rs` is well-built — fail-closed, deny-biased, delegating to
 `collab_types::decide_capability`, and it aborts the mount rather than serving unenforced. But it is
-consulted only on the FUSE syscall path (`fs/src/fs.rs:432`, `:456`, `:561`), i.e. against local
+consulted only on the FUSE syscall path (`crates/system/fs/src/fs.rs:432`, `:456`, `:561`), i.e. against local
 processes. **It is not a replication boundary.**
 
 Any peer that can reach the endpoint and speak the ALPN can read and rewrite the whole namespace.
@@ -75,23 +75,23 @@ ACL per-connection. Depends on a real, persistent device identity existing first
 
 ## P0-3 — The iroh node key is ephemeral, so FS attribution and ACL subject rotate every boot
 
-`fs/src/sync.rs:89-96` builds the endpoint without ever passing a `secret_key`, so the iroh NodeId
+`crates/system/fs/src/sync.rs:89-96` builds the endpoint without ever passing a `secret_key`, so the iroh NodeId
 is freshly random on every process start.
 
 Consequences:
 
-- `fs/src/main.rs:221,286` sets `author = endpoint.id().to_string()` — authorship attribution is a
+- `crates/system/fs/src/main.rs:221,286` sets `author = endpoint.id().to_string()` — authorship attribution is a
   new anonymous string each mount.
-- `fs/src/main.rs:219,283` resolves the default ACL subject from the same key, so **any ACL grant
+- `crates/system/fs/src/main.rs:219,283` resolves the default ACL subject from the same key, so **any ACL grant
   written against the default subject is dead on the next boot**.
-- The node-id-reuse guard at `fs/src/namespace.rs:147-152` ("a restart with the same author can't
+- The node-id-reuse guard at `crates/system/fs/src/namespace.rs:147-152` ("a restart with the same author can't
   reuse a node id") never engages, because the author is never the same twice.
 
 **Resolved.** The mount binds under the machine's device key, so the `NodeId` *is* the device's
 Ed25519 public key and is unchanged across a remount; a device key that will not load fails the
 mount rather than falling back to a random one. `bind_endpoint` is split into
 `bind_endpoint_with_key` and `bind_ephemeral_endpoint` so the random-identity path is named at
-every call site. Held by `fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
+every call site. Held by `crates/system/fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
 and `::identity_survives_a_restart`.
 
 ---
