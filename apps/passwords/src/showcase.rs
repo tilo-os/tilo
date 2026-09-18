@@ -1184,14 +1184,17 @@ impl PasswordsSurface {
         let Some(model) = &self.model else { return };
         match model.reveal_value(&item.id) {
             Ok(secret) => {
-                ui::text_selection::clipboard_copy(&secret);
+                if !ui::try_clipboard_copy(&secret) {
+                    self.status = "Could not copy to the system clipboard. Try again.".into();
+                    return;
+                }
                 let lease =
                     accounts::ClipboardLease::new(secret, std::time::Duration::from_secs(30));
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(30));
                     let current = ui::text_selection::clipboard_paste();
                     if lease.should_clear(current.as_deref()) {
-                        ui::text_selection::clipboard_copy("");
+                        let _ = ui::try_clipboard_copy("");
                     }
                 });
                 self.status = format!(
@@ -1234,7 +1237,10 @@ impl PasswordsSurface {
         if value.is_empty() {
             return;
         }
-        ui::text_selection::clipboard_copy(value);
+        if !ui::try_clipboard_copy(value) {
+            self.status = "Could not copy to the system clipboard. Try again.".into();
+            return;
+        }
         self.status = match item.kind {
             SecretItemKind::Wifi => "Copied network name".into(),
             SecretItemKind::ApiKey => "Copied account".into(),
@@ -1250,7 +1256,10 @@ impl PasswordsSurface {
             return;
         }
         let origins = item.origins.iter().cloned().collect::<Vec<_>>().join("\n");
-        ui::text_selection::clipboard_copy(&origins);
+        if !ui::try_clipboard_copy(&origins) {
+            self.status = "Could not copy to the system clipboard. Try again.".into();
+            return;
+        }
         self.status = if item.origins.len() == 1 {
             "Copied address".into()
         } else {
@@ -5750,8 +5759,74 @@ mod tests {
         assert!(json.contains("Reveal for ten seconds"));
     }
 
+    // Clipboard transport is injected at the existing host boundary. Keep
+    // these unit tests independent of the desktop and serialize their shared
+    // backend; native integration checks still exercise the Windows clipboard.
+    struct TestClipboard {
+        accepts: bool,
+        text: std::sync::Mutex<Option<String>>,
+    }
+
+    impl ui::clipboard::ClipboardBackend for TestClipboard {
+        fn set_text(&self, _target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+            if !self.accepts {
+                return false;
+            }
+            *self.text.lock().unwrap() = Some(text.into());
+            true
+        }
+        fn text(&self, _target: ui::clipboard::ClipboardTarget) -> Option<String> {
+            self.text.lock().unwrap().clone()
+        }
+        fn name(&self) -> &'static str {
+            "passwords-test-transport"
+        }
+    }
+
+    fn clipboard_fixture(accepts: bool) -> std::sync::MutexGuard<'static, ()> {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = SERIAL.lock().unwrap();
+        ui::clipboard::install_clipboard_backend(std::sync::Arc::new(TestClipboard {
+            accepts,
+            text: std::sync::Mutex::new(Some("existing clipboard".into())),
+        }));
+        guard
+    }
+
+    #[test]
+    fn failed_copy_reports_error_without_claiming_or_replacing_clipboard_contents() {
+        let _clipboard = clipboard_fixture(false);
+        let root = std::env::temp_dir().join(format!(
+            "tilo-passwords-copy-failure-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut model = crate::PasswordsModel::open_in(&root);
+        let mut item = SecretItem::login("Account", "ada", "private-value");
+        item.add_origin("https://example.invalid").unwrap();
+        model.save_item(&mut item).unwrap();
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(model);
+        app.refresh();
+        for copy in [
+            PasswordsSurface::copy_selected,
+            PasswordsSurface::copy_identity_selected,
+            PasswordsSurface::copy_origin_selected,
+        ] {
+            copy(&mut app);
+            assert_eq!(
+                app.status,
+                "Could not copy to the system clipboard. Try again."
+            );
+            assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
+            assert!(app.revealed.is_none());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn polished_surface_saves_searches_and_updates_real_store() {
+        let _clipboard = clipboard_fixture(true);
         let root = std::env::temp_dir().join(format!(
             "tilo-passwords-surface-{}-{:?}",
             std::process::id(),
@@ -5818,6 +5893,7 @@ mod tests {
 
     #[test]
     fn secret_row_has_distinct_copy_and_reveal_targets() {
+        let _clipboard = clipboard_fixture(true);
         let root = std::env::temp_dir().join(format!(
             "tilo-passwords-secret-actions-{}-{:?}",
             std::process::id(),
@@ -5832,6 +5908,7 @@ mod tests {
 
         app.activate_detail_row_at(1, 880.0, 1_000.0);
         assert!(app.status.starts_with("Copied password"));
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
         assert!(
             app.revealed.is_none(),
             "copying must not disclose the value"
