@@ -34,7 +34,8 @@ use ui::theme::Theme;
 use ui::tokens::Metrics;
 use ui::tokens::spacing::Spacing;
 use ui::tokens::typography::TypeScale;
-use ui::widget::{ContextMenu, MenuItem};
+use ui::chrome::{SelectionState, selection_tier};
+use ui::widget::{Button, ButtonFace, ContextMenu, MenuItem};
 use ui::widget::{ResourceOperationStart, Widget};
 
 use crate::actions::{MAPS_ACTION_TYPE, MapsAction};
@@ -61,9 +62,10 @@ use crate::traffic::{Congestion, TrafficData};
 // panel header the theme's bar height and the docked/drawer breakpoint its
 // compact breakpoint — read through `MapsApp::margin` & co. from the cached
 // theme tokens. The values below are the deliberately authored ones.
-/// Gap between adjacent floating elements; deliberately off the spacing
-/// scale (between `s2` and `s3`) — the authored 1× rhythm of the map chrome.
-const GAP: f64 = 10.0;
+/// Gap between adjacent floating elements — the theme's `s3`, the sibling
+/// step every floating map surface keeps from its neighbour (HIG §7b), so
+/// the search bar, panel, controls and cards share one rhythm.
+const GAP: f64 = Spacing::BASE.s3 as f64;
 const CTRL_SIZE: f64 = crate::map_controls::SIZE;
 const ROW_H: f64 = 56.0;
 /// Widest the panel is ever drawn (docked, or as an overlay drawer).
@@ -379,7 +381,7 @@ impl MapsApp {
         }
         let margin = self.margin();
         let nav = self.navigation_rect();
-        let column_h = margin + 4.0 * CTRL_SIZE + 2.0 * GAP;
+        let column_h = margin + crate::map_controls::column_height();
         let column = Rect::new(
             self.rect.x1 - margin - CTRL_SIZE,
             self.rect.y0,
@@ -463,7 +465,17 @@ impl MapsApp {
         );
         let body = ui::surface::soft_outline(rect);
         scene.fill(Fill::NonZero, visual, c.surfaces.raised, None, &body);
-        scene.stroke(&Stroke::new(1.0), visual, c.border_standard, None, &body);
+        // The card's rest edge derives from its own surface (HIG §9.5): a
+        // declared `border_standard` is three shades off dark `raised` and
+        // vanished against the map.
+        scene.stroke(
+            &Stroke::new(1.0),
+            visual,
+            ui::surface::edge_on(c.surfaces.raised),
+            None,
+            &body,
+        );
+        let pad = self.margin();
         // The End pill is its authored 50px wide and an `s6` tall at 1×,
         // grown by the label's measured extra width (cached per scale) and
         // its line plus an `s1` above and below once scaled type needs more,
@@ -488,7 +500,7 @@ impl MapsApp {
             tr,
             visual,
             "Navigation",
-            rect.x0 + 16.0,
+            rect.x0 + pad,
             rect.y0 + 10.0,
             text_sm(),
             theme.text_dim,
@@ -499,23 +511,32 @@ impl MapsApp {
         // Ending a live activity is intentionally explicit. At rest this reads
         // as quiet chrome; hover adds a soft danger wash without changing the
         // button's geometry (and therefore without making the title jump).
-        let end_fill = if self.navigation_end_hovered {
-            draw::alpha(c.semantic.danger, 0.16)
-        } else {
-            draw::alpha(c.neutral[3], 0.62)
-        };
-        let end_stroke = if self.navigation_end_hovered {
-            draw::alpha(c.semantic.danger, 0.58)
-        } else {
-            c.border_standard
-        };
         let end_text = if self.navigation_end_hovered {
             c.semantic.danger
         } else {
             theme.text_dim
         };
-        draw::fill_rrect(scene, visual, end, 10.0, end_fill);
-        draw::stroke_rrect(scene, visual, end, 10.0, 1.0, end_stroke);
+        if self.navigation_end_hovered {
+            draw::fill_rrect(
+                scene,
+                visual,
+                end,
+                10.0,
+                draw::alpha(c.semantic.danger, 0.16),
+            );
+            draw::stroke_rrect(
+                scene,
+                visual,
+                end,
+                10.0,
+                1.0,
+                draw::alpha(c.semantic.danger, 0.58),
+            );
+        } else {
+            // Quiet chrome at rest: the base tier seated in the raised card
+            // (a contrast step on both themes) with its derived edge.
+            draw::edged(scene, visual, end, 10.0, c.surfaces.base);
+        }
         draw::fill_rrect(
             scene,
             visual,
@@ -548,9 +569,9 @@ impl MapsApp {
         // into the badge and instruction beneath.
         let title_growth = line_growth(text_sm(), tr.text_scale());
         let badge = Rect::new(
-            rect.x0 + 16.0,
+            rect.x0 + pad,
             rect.y0 + 48.0 + title_growth,
-            rect.x0 + 52.0,
+            rect.x0 + pad + 36.0,
             rect.y0 + 84.0 + title_growth,
         );
         draw::fill_circle(
@@ -604,20 +625,23 @@ impl MapsApp {
             12.0,
             theme.text_dim,
         );
-        draw::line(
+        // The rule between the next step and the summary derives against the
+        // card and stops at the content gutter, never running into the
+        // corner radius.
+        draw::separator(
             scene,
             visual,
-            Point::new(rect.x0 + 16.0, rule_y),
-            Point::new(rect.x1 - 16.0, rule_y),
-            1.0,
-            c.border_standard,
+            rect.x0 + pad,
+            rect.x1 - pad,
+            rule_y,
+            c.surfaces.raised,
         );
         draw::text_w(
             scene,
             tr,
             visual,
             &geo::fmt_duration(route.duration_s),
-            rect.x0 + 16.0,
+            rect.x0 + pad,
             rect.y0 + 114.0 + shift,
             16.0,
             theme.accent_primary,
@@ -628,7 +652,7 @@ impl MapsApp {
             tr,
             visual,
             &format!("{} remaining", geo::fmt_distance(route.distance_m)),
-            rect.x1 - 16.0,
+            rect.x1 - pad,
             rect.y0 + 116.0 + shift,
             12.0,
             theme.text_dim,
@@ -2768,18 +2792,24 @@ impl MapsApp {
         &mut self,
         scene: &mut Scene,
         t: Affine,
-        _tr: &mut TextRenderer,
+        tr: &mut TextRenderer,
         theme: &Theme,
     ) {
         let r = self.overflow_rect();
-        let c = &theme.tokens.colors;
         let active = self.overflow.is_open() || self.tiles.progress().is_active();
-        let border = if active {
-            theme.accent_primary
-        } else {
-            c.border_standard
-        };
-        draw::card(scene, t, r, 10.0, c.surfaces.raised, border);
+        // The same Neutral face as the map controls column; the ⋯ glyph
+        // paints on top. An open menu or a running download is live state,
+        // so it wears an accent ring over the rest edge (HIG §9.4).
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(r, "").radius(10.0).accessible_name("More"),
+        );
+        if active {
+            draw::stroke_rrect(scene, t, r, 10.0, 1.0, theme.accent_primary);
+        }
         let ctr = r.center();
         let col = if self.overflow.is_open() {
             theme.accent_primary
@@ -2794,15 +2824,19 @@ impl MapsApp {
 
     /// The leading menu button in the narrow overlay layout: toggles the panel
     /// drawer. Renders nothing when the panel is docked.
-    fn draw_menu(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_menu(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let Some(r) = self.menu_rect() else { return };
-        let c = &theme.tokens.colors;
-        let border = if self.nav_open {
-            theme.border_focus
-        } else {
-            c.border_standard
-        };
-        draw::card(scene, t, r, 12.0, c.surfaces.raised, border);
+        // Same Neutral face as every floating map button; the open state is
+        // carried by the accent glyph below, not a second border colour.
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(r, "")
+                .radius(12.0)
+                .accessible_name("Menu"),
+        );
         // Three-line hamburger, or a back-chevron feel when open (rotate hint
         // via colour). Kept as clean strokes — no icon font dependency.
         let cx = r.center().x;
@@ -2936,14 +2970,34 @@ impl MapsApp {
         };
         let area_x1 = self.rect.x1 - self.margin();
         let w = 360.0_f64.min((area_x1 - area_x0).max(200.0));
-        let row_h = 24.0;
-        let card_h = 118.0 + rows.len() as f64 * row_h;
+        // One rhythm from the theme: `s4` card gutter, `s1` between the
+        // title and its category line, `s2` between detail rows, `s3`
+        // before the action; every line sits on its measured box.
+        let ts = self.text_scale;
+        let line = |size: f32| line_h(size, ts);
+        let (s1, s2, s3, pad) = (
+            f64::from(self.spacing.s1),
+            f64::from(self.spacing.s2),
+            f64::from(self.spacing.s3),
+            f64::from(self.spacing.s4),
+        );
+        let (title_h, cat_h, row_line) = (line(18.0), line(12.0), line(12.0));
+        let bh = 36.0;
+        let card_h = (pad
+            + title_h
+            + s1
+            + cat_h
+            + rows.len() as f64 * (s2 + row_line)
+            + s3
+            + bh
+            + pad)
+            .ceil();
         let cx = f64::midpoint(area_x0, area_x1);
         let x0 = (cx - w / 2.0).max(area_x0);
         let y1 = self.rect.y1 - 54.0; // above the scale bar + attribution
         let y0 = y1 - card_h;
         let card = Rect::new(x0, y0, x0 + w, y1);
-        draw::card(scene, t, card, 16.0, c.surfaces.raised, c.border_standard);
+        draw::card(scene, t, card, 16.0, c.surfaces.raised);
         self.click_targets.push((card, Hit::Consume));
 
         // Category colour bar down the leading edge.
@@ -2955,12 +3009,18 @@ impl MapsApp {
             canvas::category_color(theme, poi.category),
         );
 
-        let pad = 16.0;
         let x = card.x0 + pad;
         let right = card.x1 - pad;
-        let mut y = card.y0 + 14.0;
-        // Close (×).
-        let close = Rect::new(right - 20.0, card.y0 + 12.0, right + 6.0, card.y0 + 38.0);
+        let mut y = card.y0 + pad;
+        // Close (×): a 26 px target seated `s2` inside the corner, its glyph
+        // centred on the title line; the title elides before it.
+        let close_edge = 26.0;
+        let close = Rect::new(
+            card.x1 - s2 - close_edge,
+            card.y0 + s2,
+            card.x1 - s2,
+            card.y0 + s2 + close_edge,
+        );
         draw::text_center(
             scene,
             tr,
@@ -2968,23 +3028,24 @@ impl MapsApp {
             "✕",
             close.x0,
             close.x1,
-            y,
+            self.vmid(close.y0, close_edge, 14.0),
             14.0,
             theme.text_dim,
         );
         self.click_targets.push((close, Hit::ClosePoi));
+        let name = draw::ellipsize(tr, &poi.name, 18.0, close.x0 - s2 - x);
         draw::text_w(
             scene,
             tr,
             t,
-            &poi.name,
+            &name,
             x,
             y,
             18.0,
             theme.text_primary,
             TextWeight::Bold,
         );
-        y += 26.0;
+        y += title_h + s1;
         draw::text(
             scene,
             tr,
@@ -3009,8 +3070,9 @@ impl MapsApp {
                 right - x - cw - 10.0,
             );
         }
-        y += 24.0;
+        y += cat_h;
         for (glyph, text, link) in &rows {
+            y += s2;
             draw::text(scene, tr, t, glyph, x, y, 12.0, theme.text_dim);
             let col = if *link {
                 theme.accent_primary
@@ -3018,23 +3080,20 @@ impl MapsApp {
                 theme.text_primary
             };
             draw::text_clip(scene, tr, t, text, x + 20.0, y, 12.0, col, right - x - 20.0);
-            y += row_h;
+            y += row_line;
         }
-        y += 6.0;
-        // Directions (primary action).
-        let bh = 36.0;
+        y += s3;
+        // Directions (primary action): the shared button face.
         let btn = Rect::new(x, y, right, y + bh);
-        draw::fill_rrect(scene, t, btn, 9.0, theme.accent_primary);
-        draw::text_center(
+        Button::paint(
             scene,
-            tr,
             t,
-            "Directions",
-            btn.x0,
-            btn.x1,
-            self.vmid(btn.y0, bh, 13.0),
-            13.0,
-            Color::WHITE,
+            tr,
+            theme,
+            &ButtonFace::new(btn, "Directions")
+                .primary()
+                .radius(9.0)
+                .text_size(13.0),
         );
         self.click_targets.push((btn, Hit::PoiDirections));
     }
@@ -3085,14 +3144,7 @@ impl MapsApp {
             let h = 32.0;
             let w = draw::measure_w(tr, label, fs) + 40.0;
             let pill = Rect::new(map_left, bottom - h, map_left + w, bottom);
-            draw::card(
-                scene,
-                t,
-                pill,
-                h / 2.0,
-                draw::alpha(c.surfaces.raised, 0.96),
-                c.border_standard,
-            );
+            draw::card(scene, t, pill, h / 2.0, draw::alpha(c.surfaces.raised, 0.96));
             draw::fill_circle(
                 scene,
                 t,
@@ -3123,14 +3175,7 @@ impl MapsApp {
         let w = 180.0_f64;
         let h = pad + header_h + Congestion::ALL.len() as f64 * row_h + pad - 4.0;
         let card = Rect::new(map_left, bottom - h, map_left + w, bottom);
-        draw::card(
-            scene,
-            t,
-            card,
-            12.0,
-            draw::alpha(c.surfaces.raised, 0.96),
-            c.border_standard,
-        );
+        draw::card(scene, t, card, 12.0, draw::alpha(c.surfaces.raised, 0.96));
 
         let x = card.x0 + pad;
         let mut y = card.y0 + pad;
@@ -3210,14 +3255,7 @@ impl MapsApp {
         // (which spans most of the top edge in the narrow layout).
         let top = self.rect.y0 + self.margin() + self.search_h() + GAP;
         let r = Rect::new(cx - w / 2.0, top, cx + w / 2.0, top + 30.0);
-        draw::card(
-            scene,
-            t,
-            r,
-            15.0,
-            theme.tokens.colors.surfaces.raised,
-            theme.tokens.colors.border_standard,
-        );
+        draw::card(scene, t, r, 15.0, theme.tokens.colors.surfaces.raised);
         // Small spinner dot.
         let dot = Point::new(r.x0 + 16.0, r.center().y);
         draw::fill_circle(
@@ -3271,7 +3309,7 @@ impl MapsApp {
         let w = draw::measure_w(tr, msg, size) + 44.0;
         let r = Rect::new(cx - w / 2.0, cy - 17.0, cx + w / 2.0, cy + 17.0);
         let c = &theme.tokens.colors;
-        draw::card(scene, t, r, 17.0, c.surfaces.raised, c.border_standard);
+        draw::card(scene, t, r, 17.0, c.surfaces.raised);
         let dot = Point::new(r.x0 + 18.0, r.center().y);
         let dot_col = if offline {
             c.semantic.warning
@@ -3302,7 +3340,9 @@ impl MapsApp {
             return;
         }
         let c = &theme.tokens.colors;
-        let inset = 10.0;
+        // The panel's one inset — `s3` between its edge and every child.
+        let inset = f64::from(self.spacing.s3);
+        let s1 = f64::from(self.spacing.s1);
         let docked = !self.overlay_mode();
         let directions = matches!(self.model.panel, Panel::Directions);
 
@@ -3316,7 +3356,7 @@ impl MapsApp {
                 pr.x1,
                 pr.y0 + self.panel_header_h() + 2.0 * inset,
             );
-            draw::card(scene, t, bar, 14.0, c.surfaces.raised, c.border_standard);
+            draw::card(scene, t, bar, 14.0, c.surfaces.raised);
             self.click_targets.push((bar, Hit::Consume));
             let by = self.vmid(bar.y0 + inset, self.panel_header_h(), 15.0);
             draw::text_w(
@@ -3324,7 +3364,7 @@ impl MapsApp {
                 tr,
                 t,
                 "Places",
-                bar.x0 + inset + 4.0,
+                bar.x0 + inset + s1,
                 by,
                 15.0,
                 theme.text_primary,
@@ -3336,17 +3376,14 @@ impl MapsApp {
                 bar.x1 - inset,
                 bar.y1 - inset,
             );
-            draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
-            draw::text_center(
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "»",
-                btn.x0,
-                btn.x1,
-                self.vmid(btn.y0, btn.height(), 16.0),
-                16.0,
-                theme.text_primary,
+                tr,
+                theme,
+                &ButtonFace::new(btn, "»")
+                    .text_size(16.0)
+                    .accessible_name("Expand panel"),
             );
             self.click_targets.push((btn, Hit::ToggleCollapse));
             self.content_view_h = 0.0;
@@ -3354,7 +3391,7 @@ impl MapsApp {
             return;
         }
 
-        draw::card(scene, t, pr, 14.0, c.surfaces.raised, c.border_standard);
+        draw::card(scene, t, pr, 14.0, c.surfaces.raised);
         // Swallow background clicks.
         self.click_targets.push((pr, Hit::Consume));
 
@@ -3369,23 +3406,25 @@ impl MapsApp {
             pr.x1 - inset,
             pr.y0 + inset + self.panel_header_h(),
         );
-        let mut hx = header.x0;
+        let mut hx = header.x0 + s1;
         if directions {
-            let back = Rect::new(hx, header.y0, hx + self.panel_header_h(), header.y1);
-            draw::fill_rrect(scene, t, back, 8.0, c.surfaces.base);
-            draw::text_center(
+            let back = Rect::new(
+                header.x0,
+                header.y0,
+                header.x0 + self.panel_header_h(),
+                header.y1,
+            );
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "‹",
-                back.x0,
-                back.x1,
-                self.vmid(back.y0, back.height(), 18.0),
-                18.0,
-                theme.text_primary,
+                tr,
+                theme,
+                &ButtonFace::new(back, "‹")
+                    .text_size(18.0)
+                    .accessible_name("Back"),
             );
             self.click_targets.push((back, Hit::PanelBack));
-            hx = back.x1 + 8.0;
+            hx = back.x1 + f64::from(self.spacing.s2);
         }
         let title = if directions { "Directions" } else { "Places" };
         draw::text_w(
@@ -3393,7 +3432,7 @@ impl MapsApp {
             tr,
             t,
             title,
-            hx + 2.0,
+            hx,
             self.vmid(header.y0, header.height(), 16.0),
             16.0,
             theme.text_primary,
@@ -3406,23 +3445,20 @@ impl MapsApp {
                 header.x1,
                 header.y1,
             );
-            draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
-            draw::text_center(
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "«",
-                btn.x0,
-                btn.x1,
-                self.vmid(btn.y0, btn.height(), 16.0),
-                16.0,
-                theme.text_dim,
+                tr,
+                theme,
+                &ButtonFace::new(btn, "«")
+                    .text_size(16.0)
+                    .accessible_name("Collapse panel"),
             );
             self.click_targets.push((btn, Hit::ToggleCollapse));
         }
 
         // Content region (below the header), clipped + scrolled.
-        let content = Rect::new(pr.x0 + inset, header.y1 + 10.0, pr.x1 - inset, pr.y1 - 10.0);
+        let content = Rect::new(pr.x0 + inset, header.y1 + inset, pr.x1 - inset, pr.y1 - inset);
         self.content_view_h = content.height();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &content);
         let cy = content.y0 - self.scroll;
@@ -3452,6 +3488,18 @@ impl MapsApp {
         let c = &theme.tokens.colors;
         let x = content.x0;
         let right = content.x1;
+        // The panel's rhythm: `s1` under a title, `s2` between related rows
+        // and after a section label, `s3` between siblings, `s4` between
+        // sections — every line on its measured box.
+        let ts = self.text_scale;
+        let line = |size: f32| line_h(size, ts);
+        let (s1, s2, s3, s4) = (
+            f64::from(self.spacing.s1),
+            f64::from(self.spacing.s2),
+            f64::from(self.spacing.s3),
+            f64::from(self.spacing.s4),
+        );
+        let label_advance = line(11.0) + s2;
 
         // First-run empty state: nothing selected, searched, saved, recent, or
         // fetched for the viewport. An honest hint toward the primary action
@@ -3462,6 +3510,7 @@ impl MapsApp {
             && self.model.recents.is_empty()
             && self.pois.is_empty();
         if empty {
+            let (title_h, body_h) = (line(16.0), line(13.0));
             draw::text_w(
                 scene,
                 tr,
@@ -3473,13 +3522,14 @@ impl MapsApp {
                 theme.text_primary,
                 TextWeight::Bold,
             );
+            let body_y = y + title_h + s2;
             draw::text(
                 scene,
                 tr,
                 t,
                 "Search for a place or address",
                 x,
-                y + 28.0,
+                body_y,
                 13.0,
                 theme.text_dim,
             );
@@ -3489,18 +3539,26 @@ impl MapsApp {
                 t,
                 "to route and plan transit.",
                 x,
-                y + 46.0,
+                body_y + body_h,
                 13.0,
                 theme.text_dim,
             );
-            return y + 78.0;
+            return body_y + 2.0 * body_h + s4;
         }
 
         // Selected place card.
         if let Some(sel) = self.model.selected_place().cloned() {
-            let card_h = 132.0;
+            let (name_h, meta_h) = (line(18.0), line(12.0));
+            let bh = 34.0;
+            let name_y = y + s3;
+            let cat_y = name_y + name_h + s1;
+            let addr_y = cat_y + meta_h;
+            let by = addr_y + meta_h + s3;
+            let card_h = (by + bh + s3 - y).ceil();
             let cr = Rect::new(x, y, right, y + card_h);
-            draw::fill_rrect(scene, t, cr, 12.0, c.surfaces.base);
+            // The base tier seated in the raised panel, with its derived
+            // edge — a contrast step on both themes, never a bare fill.
+            draw::edged(scene, t, cr, 12.0, c.surfaces.base);
             // Accent identifies the current selection. Category is written
             // directly below, so it does not need a competing colour stripe.
             draw::fill_rrect(
@@ -3510,13 +3568,14 @@ impl MapsApp {
                 12.0,
                 theme.accent_primary,
             );
+            let name = draw::ellipsize(tr, &sel.name, 18.0, right - x - 2.0 * s4);
             draw::text_w(
                 scene,
                 tr,
                 t,
-                &sel.name,
-                x + 16.0,
-                y + 12.0,
+                &name,
+                x + s4,
+                name_y,
                 18.0,
                 theme.text_primary,
                 TextWeight::Bold,
@@ -3526,8 +3585,8 @@ impl MapsApp {
                 tr,
                 t,
                 sel.category.label(),
-                x + 16.0,
-                y + 38.0,
+                x + s4,
+                cat_y,
                 12.0,
                 theme.accent_primary,
             );
@@ -3536,17 +3595,16 @@ impl MapsApp {
                 tr,
                 t,
                 &sel.address,
-                x + 16.0,
-                y + 58.0,
+                x + s4,
+                addr_y,
                 12.0,
                 theme.text_dim,
-                right - x - 28.0,
+                right - x - 2.0 * s4,
             );
 
-            // Action buttons row.
-            let by = y + 86.0;
-            let bw = (right - x - 16.0 - 16.0) / 3.0;
-            let bh = 34.0;
+            // Action buttons row: the shared button face, three siblings an
+            // `s3` apart on the card's `s4` gutter (aligned with the text).
+            let bw = (right - x - 2.0 * s4 - 2.0 * s3) / 3.0;
             let saved = sel.saved;
             let actions: [(&str, Hit, bool); 3] = [
                 ("Directions", Hit::Directions, true),
@@ -3558,36 +3616,36 @@ impl MapsApp {
                 ),
             ];
             for (i, (label, hit, primary)) in actions.into_iter().enumerate() {
-                let bx = x + 8.0 + i as f64 * (bw + 4.0);
+                let bx = x + s4 + i as f64 * (bw + s3);
                 let br = Rect::new(bx, by, bx + bw, by + bh);
-                let (fill, fg) = if primary {
-                    (theme.accent_primary, Color::WHITE)
-                } else if matches!(hit, Hit::ToggleSave) && saved {
-                    (
-                        draw::alpha(theme.accent_primary, 0.18),
-                        theme.accent_primary,
-                    )
-                } else {
-                    (c.surfaces.raised, theme.text_primary)
-                };
-                draw::fill_rrect(scene, t, br, 8.0, fill);
-                if !primary {
-                    draw::stroke_rrect(scene, t, br, 8.0, 1.0, c.border_standard);
+                let mut face = ButtonFace::new(br, label).text_size(12.0);
+                if primary {
+                    face = face.primary();
                 }
-                draw::text_center(
-                    scene,
-                    tr,
-                    t,
-                    label,
-                    br.x0,
-                    br.x1,
-                    self.vmid(br.y0, bh, 12.0),
-                    12.0,
-                    fg,
-                );
+                Button::paint(scene, t, tr, theme, &face);
+                if matches!(hit, Hit::ToggleSave) && saved {
+                    // Chosen state is a lift with a derived edge, not an
+                    // accent wash (HIG §9.3).
+                    let tier = selection_tier(theme, SelectionState::active(true));
+                    draw::fill_rrect(scene, t, br, 8.0, tier.fill);
+                    if let Some(border) = tier.border {
+                        draw::stroke_rrect(scene, t, br, 8.0, 1.0, border);
+                    }
+                    draw::text_center(
+                        scene,
+                        tr,
+                        t,
+                        label,
+                        br.x0,
+                        br.x1,
+                        self.vmid(br.y0, bh, 12.0),
+                        12.0,
+                        theme.text_primary,
+                    );
+                }
                 self.click_targets.push((br, hit));
             }
-            y += card_h + 14.0;
+            y += card_h + s4;
         }
 
         // Results / recents / saved sections.
@@ -3604,11 +3662,11 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
-            y += 20.0;
+            y += label_advance;
             for p in &results {
                 y = self.draw_place_row(scene, t, tr, theme, content, y, p);
             }
-            y += 8.0;
+            y += s2;
         }
 
         // Nearby POIs fetched for the current viewport (Overpass), nearest-first
@@ -3627,12 +3685,12 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
-            y += 20.0;
+            y += label_advance;
             let anchor = self.search_anchor();
             for poi in &nearby {
                 y = self.draw_poi_row(scene, t, tr, theme, content, y, poi, anchor);
             }
-            y += 8.0;
+            y += s2;
         }
 
         let saved = self
@@ -3653,11 +3711,11 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
-            y += 20.0;
+            y += label_advance;
             for p in &saved {
                 y = self.draw_place_row(scene, t, tr, theme, content, y, p);
             }
-            y += 8.0;
+            y += s2;
         }
 
         if !self.model.recents.is_empty() {
@@ -3672,10 +3730,11 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
-            y += 20.0;
+            y += label_advance;
             let recents = self.model.recents.clone();
+            let recent_h = f64::from(self.spacing.s8);
             for q in &recents {
-                let rr = Rect::new(x, y, right, y + 30.0);
+                let rr = Rect::new(x, y, right, y + recent_h);
                 draw::stroke_circle(
                     scene,
                     t,
@@ -3690,12 +3749,12 @@ impl MapsApp {
                     t,
                     q,
                     x + 26.0,
-                    self.vmid(rr.y0, 30.0, 12.0),
+                    self.vmid(rr.y0, recent_h, 12.0),
                     12.0,
                     theme.text_primary,
                 );
                 self.click_targets.push((rr, Hit::Recent(q.clone())));
-                y += 32.0;
+                y += recent_h + s1;
             }
         }
         y
@@ -3724,10 +3783,11 @@ impl MapsApp {
         p: &crate::model::Place,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - 8.0);
+        let s2 = f64::from(self.spacing.s2);
+        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - s2);
         let selected = self.model.selected.as_deref() == Some(p.id.as_str());
         if selected {
-            draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
+            draw::selected_row(scene, t, r, 8.0, theme);
         }
         // Lists use one quiet marker treatment; the category label carries the
         // information without turning saved places into a rainbow of competing
@@ -3742,6 +3802,10 @@ impl MapsApp {
             3.2,
             theme.accent_primary,
         );
+        // Name and subtitle stack on their measured lines, the block centred
+        // on the row like the marker beside it.
+        let (name_h, sub_h) = (line_h(13.0, self.text_scale), line_h(11.0, self.text_scale));
+        let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
         let tx = r.x0 + 36.0;
         draw::text_clip(
             scene,
@@ -3749,7 +3813,7 @@ impl MapsApp {
             t,
             &p.name,
             tx,
-            r.y0 + 6.0,
+            name_y,
             13.0,
             theme.text_primary,
             r.x1 - tx - 50.0,
@@ -3761,7 +3825,7 @@ impl MapsApp {
             t,
             &sub,
             tx,
-            r.y0 + 24.0,
+            name_y + name_h,
             11.0,
             theme.text_dim,
             r.x1 - tx - 50.0,
@@ -3772,8 +3836,8 @@ impl MapsApp {
                 tr,
                 t,
                 "♥",
-                r.x1 - 8.0,
-                r.y0 + 24.0,
+                r.x1 - s2,
+                self.vmid(r.y0, r.height(), 12.0),
                 12.0,
                 theme.tokens.colors.semantic.danger,
             );
@@ -3799,10 +3863,11 @@ impl MapsApp {
         anchor: LatLon,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - 8.0);
+        let s2 = f64::from(self.spacing.s2);
+        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - s2);
         let selected = self.selected_poi.as_deref() == Some(poi.id.as_str());
         if selected {
-            draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
+            draw::selected_row(scene, t, r, 8.0, theme);
         }
         // The pictogram, category label and map marker already identify this
         // POI. Keeping list decoration neutral makes distance and selection
@@ -3814,6 +3879,8 @@ impl MapsApp {
 
         let dist = geo::fmt_distance(geo::haversine_m(poi.pos, anchor));
         let dw = draw::measure_w(tr, &dist, 11.0) + 10.0;
+        let (name_h, sub_h) = (line_h(13.0, self.text_scale), line_h(11.0, self.text_scale));
+        let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
         let tx = r.x0 + 38.0;
         draw::text_clip(
             scene,
@@ -3821,7 +3888,7 @@ impl MapsApp {
             t,
             &poi.name,
             tx,
-            r.y0 + 6.0,
+            name_y,
             13.0,
             theme.text_primary,
             r.x1 - tx - dw,
@@ -3839,18 +3906,19 @@ impl MapsApp {
             t,
             &sub,
             tx,
-            r.y0 + 24.0,
+            name_y + name_h,
             11.0,
             theme.text_dim,
             r.x1 - tx - dw,
         );
+        // The distance chip sits on the name line's centre.
         draw::text_right(
             scene,
             tr,
             t,
             &dist,
-            r.x1 - 8.0,
-            r.y0 + 8.0,
+            r.x1 - s2,
+            name_y + (name_h - sub_h) / 2.0,
             11.0,
             theme.accent_primary,
         );
@@ -3907,16 +3975,22 @@ impl MapsApp {
         };
         let loc_w = draw::measure_w(tr, loc_label, 13.0) + 44.0;
         let loc_r = Rect::new(x, y, x + loc_w, y + loc_h);
-        let (loc_fill, loc_fg) = if self.locating {
-            (
-                draw::alpha(theme.accent_primary, 0.16),
-                theme.accent_primary,
-            )
+        let loc_fg = theme.accent_primary;
+        if self.locating {
+            // A translucent accent wash: the surface the eye sees is the
+            // panel beneath it, so the edge derives from that ground, not
+            // from the wash's accent RGB (which would vanish on light).
+            draw::fill_rrect(scene, t, loc_r, 8.0, draw::alpha(theme.accent_primary, 0.16));
+            scene.stroke(
+                &Stroke::new(1.0),
+                t,
+                ui::surface::edge_on(c.surfaces.raised),
+                None,
+                &ui::surface::edge_outline(loc_r, 8.0),
+            );
         } else {
-            (c.surfaces.base, theme.accent_primary)
-        };
-        draw::fill_rrect(scene, t, loc_r, 8.0, loc_fill);
-        draw::stroke_rrect(scene, t, loc_r, 8.0, 1.0, c.border_standard);
+            draw::edged(scene, t, loc_r, 8.0, c.surfaces.base);
+        }
         let gx = loc_r.x0 + 18.0;
         let gy = loc_r.center().y;
         draw::stroke_circle(scene, t, Point::new(gx, gy), 5.0, 1.6, loc_fg);
@@ -3949,7 +4023,7 @@ impl MapsApp {
                 Hit::UseMyLocation
             },
         ));
-        y += loc_h + 14.0;
+        y += loc_h + f64::from(self.spacing.s4);
 
         // NOTE: the geocoded results for the focused endpoint are NOT drawn
         // inline here — that reflowed the mode control and route below every
@@ -3962,16 +4036,31 @@ impl MapsApp {
         // below for the public-transport departures.
         let mode_h = authored_h(40.0, &[12.0], tr.text_scale());
         let mode_rect = Rect::new(x, y, right, y + mode_h);
-        draw::fill_rrect(scene, t, mode_rect, 9.0, c.surfaces.base);
+        // The track is the base tier seated in the panel with its derived
+        // edge; the active segment sits an `s1` inside it.
+        let track_radius = 9.0;
+        let seg_inset = f64::from(self.spacing.s1);
+        draw::edged(scene, t, mode_rect, track_radius, c.surfaces.base);
         let seg_w = mode_rect.width() / TravelMode::ALL.len() as f64;
+        let active_fg = c.ink_on(
+            theme.accent_primary,
+            Color::WHITE,
+            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
         for (i, m) in TravelMode::ALL.iter().enumerate() {
             let sx = mode_rect.x0 + i as f64 * seg_w;
             let seg = Rect::new(sx, mode_rect.y0, sx + seg_w, mode_rect.y1);
             let active = self.model.mode == *m;
             if active {
-                draw::fill_rrect(scene, t, seg.inflate(-3.0, -3.0), 7.0, theme.accent_primary);
+                draw::fill_rrect(
+                    scene,
+                    t,
+                    seg.inflate(-seg_inset, -seg_inset),
+                    track_radius - seg_inset,
+                    theme.accent_primary,
+                );
             }
-            let fg = if active { Color::WHITE } else { theme.text_dim };
+            let fg = if active { active_fg } else { theme.text_dim };
             draw::text_center(
                 scene,
                 tr,
@@ -3985,7 +4074,7 @@ impl MapsApp {
             );
             self.click_targets.push((seg, Hit::Mode(*m)));
         }
-        y += mode_h + 12.0;
+        y += mode_h + f64::from(self.spacing.s3);
 
         // Depart / arrive time control — offered for EVERY travel mode. It is
         // most meaningful for Transit (it anchors the planner query) but the
@@ -4043,7 +4132,7 @@ impl MapsApp {
                 theme.tokens.colors.semantic.danger,
             );
             self.click_targets.push((clr, Hit::ClearRoute));
-            y += (big_h + 8.0).max(40.0);
+            y += big_h + f64::from(self.spacing.s2);
 
             // Planned departure → arrival clock, derived from the time picker.
             // Leaving now, a single ETA reads cleaner than "Leave x → Arrive y";
@@ -4089,15 +4178,9 @@ impl MapsApp {
             }
             y += authored_h(28.0, &[13.0], tr.text_scale());
 
-            draw::line(
-                scene,
-                t,
-                Point::new(x, y),
-                Point::new(right, y),
-                1.0,
-                c.border_standard,
-            );
-            y += 14.0;
+            // Summary and steps are two groups: a derived rule, then `s4`.
+            draw::separator(scene, t, x, right, y, c.surfaces.raised);
+            y += f64::from(self.spacing.s4);
 
             // Each step band holds an instruction line and a distance line on
             // its own measured row beneath it — at 1× the authored 46px band,
@@ -4131,13 +4214,15 @@ impl MapsApp {
                     right - x - 38.0,
                 );
                 if step.distance_m >= 1.0 {
+                    // The distance line sits on its own measured box directly
+                    // under the instruction's.
                     draw::text_right(
                         scene,
                         tr,
                         t,
                         &geo::fmt_distance(step.distance_m),
-                        right - 4.0,
-                        y + instr_h + 2.0,
+                        right - f64::from(self.spacing.s1),
+                        y + instr_h,
                         11.0,
                         theme.text_dim,
                     );
@@ -4167,7 +4252,7 @@ impl MapsApp {
                 13.0,
                 theme.text_dim,
             );
-            y += 24.0;
+            y += line(tr, 13.0) + f64::from(self.spacing.s2);
         }
         y
     }
@@ -4222,13 +4307,15 @@ impl MapsApp {
         // The authored 36px row, or the tallest label it carries (the 18pt
         // stepper glyphs) plus padding once the type has grown.
         let row_h = authored_h(36.0, &[18.0], tr.text_scale());
-        let toggle_w = 150.0_f64.min((right - x - 8.0) * 0.5);
+        let (s1, s2) = (f64::from(self.spacing.s1), f64::from(self.spacing.s2));
+        let toggle_w = 150.0_f64.min((right - x - s2) * 0.5);
 
         // Travel mode above is the person's first decision. Timing is a
         // refinement, so its selector is deliberately quieter: a soft active
         // state with a focused edge rather than a second full-accent control.
         let seg_rect = Rect::new(x, y, x + toggle_w, y + row_h);
-        draw::fill_rrect(scene, t, seg_rect, 9.0, c.surfaces.base);
+        let track_radius = 9.0;
+        draw::edged(scene, t, seg_rect, track_radius, c.surfaces.base);
         let modes = [
             (TransitTimeMode::Depart, "Leave"),
             (TransitTimeMode::Arrive, "Arrive"),
@@ -4239,15 +4326,22 @@ impl MapsApp {
             let seg = Rect::new(sx, seg_rect.y0, sx + seg_w, seg_rect.y1);
             let active = tt.mode == *m;
             if active {
-                let active_rect = seg.inflate(-3.0, -3.0);
+                let active_rect = seg.inflate(-s1, -s1);
                 draw::fill_rrect(
                     scene,
                     t,
                     active_rect,
-                    7.0,
+                    track_radius - s1,
                     draw::alpha(theme.accent_primary, 0.14),
                 );
-                draw::stroke_rrect(scene, t, active_rect, 7.0, 1.0, theme.accent_primary);
+                draw::stroke_rrect(
+                    scene,
+                    t,
+                    active_rect,
+                    track_radius - s1,
+                    1.0,
+                    theme.accent_primary,
+                );
             }
             let fg = if active {
                 theme.accent_primary
@@ -4270,32 +4364,19 @@ impl MapsApp {
 
         // Stepper: [–] <clock> [+], sharing the row with the toggle.
         let btn_w = 38.0;
-        let minus = Rect::new(seg_rect.x1 + 8.0, y, seg_rect.x1 + 8.0 + btn_w, y + row_h);
+        let minus = Rect::new(seg_rect.x1 + s2, y, seg_rect.x1 + s2 + btn_w, y + row_h);
         let plus = Rect::new(right - btn_w, y, right, y + row_h);
-        draw::fill_rrect(scene, t, minus, 8.0, c.surfaces.base);
-        draw::fill_rrect(scene, t, plus, 8.0, c.surfaces.base);
-        draw::text_center(
-            scene,
-            tr,
-            t,
-            "–",
-            minus.x0,
-            minus.x1,
-            self.vmid(minus.y0, row_h, 18.0),
-            18.0,
-            theme.text_primary,
-        );
-        draw::text_center(
-            scene,
-            tr,
-            t,
-            "+",
-            plus.x0,
-            plus.x1,
-            self.vmid(plus.y0, row_h, 18.0),
-            18.0,
-            theme.text_primary,
-        );
+        for (rect, label, name) in [(minus, "–", "Earlier"), (plus, "+", "Later")] {
+            Button::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .text_size(18.0)
+                    .accessible_name(name),
+            );
+        }
         let target = self.clock_anchor() + chrono::Duration::minutes(i64::from(tt.offset_min));
         let label = if tt.is_now() {
             "Now".to_string()
@@ -4320,29 +4401,24 @@ impl MapsApp {
         // A compact "Reset to now" appears only when the anchor is off default —
         // the common leave-now case stays a single, quiet row.
         if !tt.is_now() {
-            y += 8.0;
-            let reset_w = draw::measure_w(tr, "Reset to now", 12.0) + 20.0;
-            let reset = Rect::new(x, y, x + reset_w, y + 26.0);
-            draw::fill_rrect(scene, t, reset, 8.0, c.surfaces.raised);
-            draw::stroke_rrect(scene, t, reset, 8.0, 1.0, c.border_standard);
-            draw::text_center(
+            y += s2;
+            let reset_h = authored_h(26.0, &[12.0], tr.text_scale());
+            let reset_w = draw::measure_w(tr, "Reset to now", 12.0) + 2.0 * f64::from(self.spacing.s3);
+            let reset = Rect::new(x, y, x + reset_w, y + reset_h);
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "Reset to now",
-                reset.x0,
-                reset.x1,
-                self.vmid(reset.y0, 26.0, 12.0),
-                12.0,
-                theme.text_primary,
+                tr,
+                theme,
+                &ButtonFace::new(reset, "Reset to now").text_size(12.0),
             );
             self.click_targets.push((reset, Hit::TransitTimeNow));
-            y += 26.0;
+            y += reset_h;
         }
 
         // Breathing space rather than a hairline — groups separate by space, not
-        // boxes-within-boxes (HIG §7).
-        y + 18.0
+        // boxes-within-boxes (HIG §7): `s4` before the next group.
+        y + f64::from(self.spacing.s4)
     }
 
     /// The public-transport departures list for Transit mode. The depart/arrive
@@ -4378,6 +4454,11 @@ impl MapsApp {
         } else {
             self.model.dest_name.clone()
         };
+        let (s1, s2, s3) = (
+            f64::from(self.spacing.s1),
+            f64::from(self.spacing.s2),
+            f64::from(self.spacing.s3),
+        );
         draw::text_w(
             scene,
             tr,
@@ -4389,7 +4470,7 @@ impl MapsApp {
             theme.text_primary,
             TextWeight::Semibold,
         );
-        y += 26.0;
+        y += line_h(14.0, self.text_scale) + s2;
 
         if self.model.transit.is_empty() {
             let has_target = self.model.dest.is_some() || self.model.selected_place().is_some();
@@ -4401,7 +4482,7 @@ impl MapsApp {
                 "No public-transport itineraries found."
             };
             draw::text(scene, tr, t, msg, x, y, 13.0, theme.text_dim);
-            return y + 24.0;
+            return y + line_h(13.0, self.text_scale) + s2;
         }
 
         let journeys = self.model.transit.clone();
@@ -4409,19 +4490,22 @@ impl MapsApp {
             let selected = self.model.transit_choice == i;
             let base_h = 86.0;
             let jr = Rect::new(x, y, right, y + base_h);
-            draw::fill_rrect(
-                scene,
-                t,
-                jr,
-                10.0,
-                if selected {
-                    draw::alpha(theme.accent_primary, 0.12)
-                } else {
-                    c.surfaces.base
-                },
-            );
+            // Each itinerary is the base tier in the panel with its derived
+            // edge; the chosen one is a translucent accent wash whose edge
+            // derives from the panel it sits on (the surface actually seen),
+            // then the accent ring.
             if selected {
+                draw::fill_rrect(scene, t, jr, 10.0, draw::alpha(theme.accent_primary, 0.12));
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    ui::surface::edge_on(c.surfaces.raised),
+                    None,
+                    &ui::surface::edge_outline(jr, 10.0),
+                );
                 draw::stroke_rrect(scene, t, jr, 10.0, 1.5, theme.accent_primary);
+            } else {
+                draw::edged(scene, t, jr, 10.0, c.surfaces.base);
             }
             // Header: dep–arr  ·  duration  ·  transfers.
             draw::text_w(
@@ -4512,7 +4596,7 @@ impl MapsApp {
                 }
             }
             self.click_targets.push((jr, Hit::Journey(i)));
-            y += base_h + 10.0;
+            y += base_h + s3;
 
             // Expanded leg detail for the selected journey.
             if selected {
@@ -4596,9 +4680,9 @@ impl MapsApp {
                         11.0,
                         theme.text_dim,
                     );
-                    y += lh + 2.0;
+                    y += lh + s1;
                 }
-                y += 6.0;
+                y += s2;
             }
         }
 
@@ -4626,17 +4710,10 @@ impl MapsApp {
             Some(a) => format!("{freshness} · via Transitous (MOTIS) · {a}"),
             None => format!("{freshness} · via Transitous (MOTIS)"),
         };
-        draw::line(
-            scene,
-            t,
-            Point::new(x, y),
-            Point::new(right, y),
-            1.0,
-            c.border_standard,
-        );
-        y += 10.0;
+        draw::separator(scene, t, x, right, y, c.surfaces.raised);
+        y += s3;
         draw::text_clip(scene, tr, t, &src, x, y, 10.0, theme.text_dim, right - x);
-        y += 18.0;
+        y += line_h(10.0, self.text_scale) + s2;
         y
     }
 
@@ -6080,6 +6157,61 @@ mod tests {
             plain.map_controls.rect(MapControlAction::ZoomIn).y0 < nav.y1,
             "with no card the cluster sits at the top-right corner"
         );
+    }
+
+    /// One rhythm for the floating chrome (HIG §7b): the search bar, the
+    /// panel beneath it and the ⋯ overflow button all keep the theme's `s3`
+    /// from their neighbours and the `s4` window margin — nothing touches.
+    #[test]
+    fn floating_chrome_keeps_one_sibling_gap() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let sp = theme.tokens.spacing;
+        assert_eq!(GAP, f64::from(sp.s3));
+        let search = a.search_rect();
+        let panel = a.panel_rect();
+        assert_eq!(panel.y0 - search.y1, GAP, "panel sits an s3 under the search bar");
+        assert_eq!(search.y0, f64::from(sp.s4), "search bar keeps the window margin");
+        assert_eq!(search.x0, f64::from(sp.s4));
+        let overflow = a.overflow_rect();
+        assert_eq!(a.rect.x1 - overflow.x1, f64::from(sp.s4));
+        assert_eq!(a.rect.y1 - overflow.y1, f64::from(sp.s4));
+        assert!(
+            overflow.y0 - panel.y1 >= 0.0 || overflow.x0 - panel.x1 >= GAP,
+            "the overflow button clears the panel by a sibling gap"
+        );
+    }
+
+    /// The rows of the Explore panel pitch at `ROW_H` with an `s2` between
+    /// neighbouring hit rects, so no two rows share an edge.
+    #[test]
+    fn explore_rows_keep_a_related_row_gap() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        a.set_active_panel(Panel::Explore);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let mut rows: Vec<Rect> = a
+            .click_targets
+            .iter()
+            .filter(|(_, hit)| matches!(hit, Hit::SelectPlace(_) | Hit::SelectPoi(_)))
+            .map(|(rect, _)| *rect)
+            .collect();
+        assert!(rows.len() >= 2, "the offline demo lists several places");
+        rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        for pair in rows.windows(2) {
+            let gap = pair[1].y0 - pair[0].y1;
+            assert!(
+                gap >= f64::from(theme.tokens.spacing.s2) - 1e-6,
+                "rows {:?} and {:?} are only {gap}px apart",
+                pair[0],
+                pair[1]
+            );
+        }
     }
 
     #[test]
