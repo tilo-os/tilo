@@ -2232,7 +2232,8 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # compatibility with old applications. The GStreamer bad-free bundle also
 # carries OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins; its WebRTC,
 # ICE and SRTP companions are unusable here and likewise serve no Tilo path.
-# Qt's ARM compatibility frontend is also
+# libevent's OpenSSL adapter is a separate optional DSO; retain the event-loop
+# libraries for distro consumers but remove that unused TLS integration. Qt's ARM compatibility frontend is also
 # offline and does not need its optional OpenSSL TLS backend. Rust-native code
 # owns network security, while foundational distro consumers use the built-in
 # provider. The Shoutcast library has no remaining consumer after its plugin is
@@ -2243,6 +2244,7 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 RUN find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
+         -o -name 'libevent_openssl.so*' \
          -o -path '*/gstreamer-1.0/libgstdtls.so' \
          -o -path '*/gstreamer-1.0/libgstcurl.so' \
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
@@ -2255,6 +2257,7 @@ RUN find /usr/lib /usr/lib64 \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
+         -o -name 'libevent_openssl.so*' \
          -o -path '*/gstreamer-1.0/libgstdtls.so' \
          -o -path '*/gstreamer-1.0/libgstcurl.so' \
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
