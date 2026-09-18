@@ -2322,13 +2322,16 @@ impl FrameHarness {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.modifiers = *modifiers;
         }
+        // An open search is modal above both live History chrome and the
+        // document. Update modifiers first, then capture before History can
+        // observe or claim the event.
+        if self.system_search_event(event) { return; }
         // Framework presentations own captured keyboard input before global
         // host navigation, matching native App's early History dispatch.
         let history_input = self.history.as_ref().is_some_and(|history| history.controls_event(event, self.input_scale))
             || matches!(event, WindowEvent::KeyboardInput { .. })
                 && crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy);
         if history_input { self.send(event); return; }
-        if self.system_search_event(event) { return; }
         if self.caller_palette_event(event) { return; }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed {
@@ -2377,12 +2380,14 @@ impl FrameHarness {
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
         if let WindowEvent::ModifiersChanged(modifiers) = event { self.modifiers = *modifiers; }
+        // Direct helpers share the modal boundary too. In particular, embedded
+        // History observation must not see pointer presses underneath search.
+        if self.system_search_event(event) { return; }
         // This guard includes modality-driven relayout before dispatch, and
         // remains set through the frame that closes History.
         let embedded = crate::history_mode::embedded::observe_event(self.root.as_mut(), event, self.input_scale, self.focused, &self.taffy);
         let history_input = self.framework_input.get() || embedded || self.history.as_ref().is_some_and(|history| history.controls_event(event, self.input_scale));
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, history_input);
-        if !history_input && self.system_search_event(event) { return; }
         self.pump_component_wakes();
         let detected = if self.dispatching_touch_pointer {
             None

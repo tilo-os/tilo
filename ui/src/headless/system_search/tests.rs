@@ -533,3 +533,156 @@ fn exact_application_name_outranks_actions_for_that_application() {
         ))
     );
 }
+
+static LIVE_HISTORY: crate::history_mode::HistoryDefinition =
+    crate::history_mode::HistoryDefinition {
+        app_id: crate::application_test_support::APP,
+        scopes: &[crate::history_mode::HistoryScopeDefinition {
+            key: "document",
+            title: "Live document",
+            presentation: crate::history_mode::HistoryPresentation::Domain {
+                create: crate::history_mode::test_preview,
+            },
+            content_schema: None,
+        }],
+    };
+
+fn frame_with_live_history(
+    embedded: bool,
+) -> (crate::application_test_support::ProbeHost, FrameHarness) {
+    use crate::application::{LaunchTarget, RestoreInput};
+    use crate::application_test_support::*;
+    let host = ProbeHost::new();
+    let definition = runner_probe_definition();
+    let context = host
+        .prepare_with_permissions(definition, 91, &LaunchTarget::New, runner_permissions())
+        .unwrap();
+    let mut component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    component.register_document_history(&LIVE_HISTORY).unwrap();
+    let mut f = if embedded {
+        let tile = crate::widget::TileHost::mount_component(component, |_| {}).unwrap();
+        let inputs = runner_inputs();
+        FrameHarness::new_with_controlled_inputs(
+            State::new(),
+            Box::new(tile),
+            (800, 640),
+            inputs.theme,
+            inputs.text_renderer,
+            author(),
+        )
+    } else {
+        FrameHarness::from_component(component, (800, 640), runner_inputs()).unwrap()
+    };
+    f.replace_global_search_data(data());
+    assert!(!history_captures(&f));
+    (host, f)
+}
+
+fn history_captures(f: &FrameHarness) -> bool {
+    let mut captured = f
+        .history
+        .as_ref()
+        .is_some_and(|history| history.captures_input());
+    f.root
+        .visit_framework_history(&mut |history, _| captured |= history.captures_input());
+    captured
+}
+
+#[test]
+fn search_captures_keyboard_before_live_and_embedded_history_toolbars() {
+    for embedded in [false, true] {
+        let (_host, mut f) = frame_with_live_history(embedded);
+        f.perform_semantic_named("history-open", None, &crate::a11y::Action::Focus)
+            .unwrap();
+        f.open_global_search_all("").unwrap();
+        let modifiers = winit::keyboard::ModifiersState::CONTROL;
+        f.send_host_event(&WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::from(modifiers),
+        ));
+        assert_eq!(f.modifiers.state(), modifiers);
+        f.send(&WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::default(),
+        ));
+        assert!(f.modifiers.state().is_empty());
+        f.type_text("Trip");
+        assert_eq!(
+            f.global_search_query(),
+            Some("Trip"),
+            "History toolbar must not consume search typing (embedded={embedded})"
+        );
+        enter(&mut f);
+        assert_eq!(
+            f.take_global_search_intent(),
+            Some(GlobalSearchIntent::SelectHostTarget {
+                revision: "generation-1".into(),
+                target: "opaque-tab-11".into()
+            })
+        );
+        assert!(
+            !history_captures(&f),
+            "Enter must not open background History"
+        );
+        // Once search closes, History retains its ordinary keyboard action.
+        f.perform_semantic_named("history-open", None, &crate::a11y::Action::Focus)
+            .unwrap();
+        enter(&mut f);
+        assert!(
+            history_captures(&f),
+            "closed search must leave History keyboard routing intact"
+        );
+    }
+}
+
+#[test]
+fn search_captures_host_and_direct_pointer_before_history_observation() {
+    for embedded in [false, true] {
+        for direct in [false, true] {
+            let (_host, mut f) = frame_with_live_history(embedded);
+            let history_button = f.targets()["history-open"].center();
+            f.open_global_search_all("Trip").unwrap();
+            if direct {
+                f.click_at(history_button.x, history_button.y);
+            } else {
+                f.send_host_event(&WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(history_button.x, history_button.y),
+                });
+                for state in [ElementState::Pressed, ElementState::Released] {
+                    f.send_host_event(&WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state,
+                        button: MouseButton::Left,
+                    });
+                }
+            }
+            assert!(
+                !history_captures(&f),
+                "background History received pointer (embedded={embedded}, direct={direct})"
+            );
+            assert_eq!(f.global_search_query(), Some("Trip"));
+            let row = f
+                .system_search
+                .overlay
+                .as_ref()
+                .unwrap()
+                .palette
+                .row_rect(0)
+                .unwrap();
+            f.click_at(row.center().x, row.center().y);
+            assert_eq!(
+                f.take_global_search_intent(),
+                Some(GlobalSearchIntent::SelectHostTarget {
+                    revision: "generation-1".into(),
+                    target: "opaque-tab-11".into()
+                })
+            );
+            f.click_named("history-open").unwrap();
+            assert!(
+                history_captures(&f),
+                "closed search must leave History pointer routing intact"
+            );
+        }
+    }
+}
