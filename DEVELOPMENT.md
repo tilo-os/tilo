@@ -465,6 +465,38 @@ set `CARGO_TARGET_DIR`. When checking Linux from WSL in the same worktree, run
 Cargo sequentially with Windows builds and use `--target` with the Linux host
 triple so the application artifacts are kept separate.
 
+### Windows ARM64 media development
+
+The native MSVC ARM64 media backend has been tested against MSYS2 CLANGARM64
+GStreamer 1.28.6, with `gstreamer`, `gst-plugins-base`, `gst-plugins-good` and
+`pkgconf` installed (package names start with `mingw-w64-clang-aarch64-`).
+Its import libraries link directly; no `.lib` conversion is required. Configure
+the current PowerShell process for your installation:
+
+```powershell
+$gstPrefix = 'C:/Users/user/msys64/clangarm64' # Replace with your installation.
+$env:PATH = "$gstPrefix/bin;$env:PATH"
+$env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
+$env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"
+cargo test --locked -p media --features decode,encode --lib
+cargo check --locked -p video-player --tests
+cargo test --locked -p video-player --test real_decode
+```
+
+The media suite runs headlessly. To exercise actual compressed video decoding
+and seeking without a window or audible output, supply an existing local clip:
+
+```powershell
+cargo run --locked -p media --features decode --example decode_probe -- 'C:/Media/clip.webm' 500 rgba sw
+```
+
+The probe fails if the real decoder is unavailable; synthesized frames do not
+count as decoding evidence. `native` instead of `rgba` also exercises negotiated
+system-memory formats such as NV12. Unix DMA-BUF remains Unix-only; this does not
+establish Windows hardware decoding, zero-copy presentation or audio-device
+routing. GStreamer DLLs and codec plugins must also be available when running an
+app; this development setup is not a standalone installer runtime bundle.
+
 ### If you build in a container (optional)
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the

@@ -30,6 +30,7 @@ automerge.workspace = true
 blake3.workspace = true
 serde.workspace = true
 hex.workspace = true
+url.workspace = true
 
 # Decode diagnostics: which decoder was plugged, why a hardware path was
 # refused, what `TILO_MEDIA_HWDEC` / `TILO_MEDIA_HWENC` were read as. Same pin the
