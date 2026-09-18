@@ -349,3 +349,10 @@ pub(in crate::setup::connection) struct NativeOwnedNames {
     epoch_lifetime: std::sync::Weak<()>,
     store_lifetime: std::sync::Weak<()>,
 }
+
+/// Per-observation ownership snapshots; never reused by a later scan.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeOwnedObservation<'a> {
+    names: &'a NativeOwnedNames,
+    snapshots: std::cell::RefCell<std::collections::BTreeMap<String, linux::OwnedSnapshot>>,
+}
