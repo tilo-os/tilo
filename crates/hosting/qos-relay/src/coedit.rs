@@ -50,6 +50,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::client::RelayClient;
+use crate::clock::now_ns;
 use crate::transport::Envelope;
 
 /// Body carried inside an [`Envelope::Delta`]. Self-describing so the
@@ -365,18 +366,6 @@ impl RelayCoeditSession {
     pub fn into_client(self) -> RelayClient {
         self.client
     }
-}
-
-/// Wall-clock nanoseconds since the epoch, used as the envelope's
-/// `authored_at_ns`. The host assigns its own monotonic delivery seq
-/// for the pending queue, so this value is metadata only.
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        // `u64` nanoseconds since the epoch doesn't overflow until the
-        // year 2554; clamp rather than panic on the (unreachable in
-        // practice) far side of that.
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]

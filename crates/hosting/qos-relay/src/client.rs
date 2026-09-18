@@ -19,7 +19,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use qos_user_identity::{DeviceCert, RevocationList};
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
-use crate::daemon::{read_frame, write_frame};
+use crate::framing::{read_frame, write_frame};
 use crate::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
     DISCOVERY_ALPN, Envelope, FrameReader, HomePeerManagementRequest, HomePeerManagementResponse,
@@ -54,7 +54,7 @@ pub struct RelayClient {
     /// The task driving the send/recv split. Dropping this handle detaches the
     /// task, which owns the endpoint until it can finish the stream cleanly.
     /// A `Connection` alone does not keep its endpoint socket open.
-    _pump: tokio::task::JoinHandle<()>,
+    _pump: n0_future::task::JoinHandle<()>,
 }
 
 impl Drop for RelayClient {
@@ -148,7 +148,7 @@ impl RelayClient {
             &ack,
             &expected_server_user,
             &revocations,
-            crate::peer::now_ns(),
+            crate::clock::now_ns(),
             &nonce,
         )?;
         if ack.cert.device_public_key != expected_server_device {
@@ -309,10 +309,10 @@ impl RelayClient {
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
             Some((user, _)) => {
-                auth::verify_hello_ack(&ack, user, &revocations, crate::peer::now_ns(), &nonce)?
+                auth::verify_hello_ack(&ack, user, &revocations, crate::clock::now_ns(), &nonce)?
             }
             None => {
-                auth::verify_pinned_host_ack(&ack, &revocations, crate::peer::now_ns(), &nonce)?
+                auth::verify_pinned_host_ack(&ack, &revocations, crate::clock::now_ns(), &nonce)?
             }
         };
         if let Some((_, expected_device)) = expected_server
@@ -490,7 +490,7 @@ impl RelayClient {
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
-        let now_ns = crate::peer::now_ns();
+        let now_ns = crate::clock::now_ns();
         let relay_peer = match expected_server_user.as_ref() {
             Some(expected_user) => {
                 let relay_peer = auth::verify_hello_ack(
@@ -519,7 +519,7 @@ impl RelayClient {
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
         let mut reader = FrameReader::new(recv);
-        let pump = tokio::spawn(async move {
+        let pump = n0_future::task::spawn(async move {
             // Keep the socket alive through the final queued Unsubscribe and
             // FIN even if the caller handed this client its only Endpoint.
             let _endpoint_keepalive = endpoint_keepalive;
@@ -535,7 +535,7 @@ impl RelayClient {
                             // Keep the endpoint alive long enough to flush the final
                             // Unsubscribe/FIN. Bound the wait so a dead network cannot
                             // strand this detached cleanup task indefinitely.
-                            let _ = tokio::time::timeout(
+                            let _ = n0_future::time::timeout(
                                 std::time::Duration::from_secs(2),
                                 send.stopped(),
                             )

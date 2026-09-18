@@ -27,7 +27,7 @@
 //! - Or call [`reconcile`] for a self-contained round trip on a client
 //!   whose inbound stream you are not otherwise draining.
 
-use std::time::{Duration, Instant};
+use n0_future::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 
@@ -139,7 +139,7 @@ pub async fn reconcile(
         if remaining.is_zero() {
             return Err(SyncError::Timeout);
         }
-        match tokio::time::timeout(remaining, client.recv()).await {
+        match n0_future::time::timeout(remaining, client.recv()).await {
             Ok(Some(Envelope::SyncResponse {
                 workspace_id: ws,
                 delta_since,

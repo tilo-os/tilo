@@ -176,6 +176,21 @@ pub struct RelayIdentity {
 }
 
 impl Relay {
+    /// Start on an explicitly selected packet relay without public address lookup.
+    ///
+    /// Device certificate validation, workspace membership and relay/1 framing
+    /// remain identical to [`Self::start`]. The default constructor retains N0.
+    ///
+    /// # Errors
+    /// Returns the same identity, storage and endpoint errors as [`Self::start`].
+    pub async fn start_with_relay_mode(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        relay_mode: iroh::RelayMode,
+    ) -> Result<Self, RelayError> {
+        Self::start_inner(cfg, identity, Some(relay_mode)).await
+    }
+
     /// Start the daemon with the given config + identity.
     ///
     /// Binds an iroh endpoint (using the persistent secret at
@@ -196,7 +211,19 @@ impl Relay {
         clippy::too_many_lines,
         reason = "the ordered startup transaction keeps identity validation, endpoint binding, protocol wiring, and background-task ownership auditable in one place"
     )]
-    pub async fn start(mut cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+    pub async fn start(cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+        Self::start_inner(cfg, identity, None).await
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered startup preserves native identity, policy and task ownership"
+    )]
+    async fn start_inner(
+        mut cfg: RelayConfig,
+        identity: RelayIdentity,
+        relay_mode: Option<iroh::RelayMode>,
+    ) -> Result<Self, RelayError> {
         import_home_peer_bindings(&mut cfg)?;
         validate_relay_identity(&identity)?;
         if !cfg.device_role.can_serve() {
@@ -224,7 +251,7 @@ impl Relay {
             filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
-        let endpoint = bind_endpoint(&cfg, &identity.device_signing_key).await?;
+        let endpoint = bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?;
         let workspaces = build_workspace_registry(&cfg)?;
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
@@ -608,12 +635,17 @@ pub fn relay_service_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32]
 async fn bind_endpoint(
     cfg: &RelayConfig,
     device_key: &ed25519_dalek::SigningKey,
+    relay_mode: Option<iroh::RelayMode>,
 ) -> Result<Endpoint, RelayError> {
     let secret = iroh::SecretKey::from_bytes(&blake3::derive_key(
         "qos-relay-iroh-service-key-v1",
         &device_key.to_bytes(),
     ));
-    Endpoint::builder(presets::N0)
+    let builder = match relay_mode {
+        Some(mode) => Endpoint::builder(presets::Minimal).relay_mode(mode),
+        None => Endpoint::builder(presets::N0),
+    };
+    builder
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
         .map_err(|e| RelayError::Iroh(format!("invalid iroh listen address: {e}")))?
@@ -1529,52 +1561,7 @@ async fn handle_conn(
     Ok(())
 }
 
-/// Read a 4-byte-LE-prefix framed message from `recv`.
-///
-/// # Errors
-///
-/// Returns an error if the stream closes or errors mid-read, or if the
-/// decoded length prefix is `0` or exceeds `max` — the latter guards
-/// against a peer claiming an unbounded frame.
-pub async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Vec<u8>, std::io::Error> {
-    let mut prefix = [0u8; 4];
-    recv.read_exact(&mut prefix)
-        .await
-        .map_err(std::io::Error::other)?;
-    let n = u32::from_le_bytes(prefix) as usize;
-    if n == 0 || n > max {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("frame size {n} out of range"),
-        ));
-    }
-    let mut buf = vec![0u8; n];
-    recv.read_exact(&mut buf)
-        .await
-        .map_err(std::io::Error::other)?;
-    Ok(buf)
-}
-
-/// Write a 4-byte-LE-prefix framed message to `send`.
-///
-/// # Errors
-///
-/// Returns an error if the stream write fails, or if `data` is longer
-/// than `u32::MAX` bytes and so cannot be represented in the length
-/// prefix.
-pub async fn write_frame(send: &mut SendStream, data: &[u8]) -> Result<(), std::io::Error> {
-    let len = u32::try_from(data.len()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "frame too large to encode a u32 length prefix",
-        )
-    })?;
-    send.write_all(&len.to_le_bytes()).await?;
-    if !data.is_empty() {
-        send.write_all(data).await?;
-    }
-    Ok(())
-}
+pub use crate::framing::{read_frame, write_frame};
 
 /// Spawn the outbound reconnect-with-backoff task for one peer
 /// relay identified by its config entry. Parses the iroh id and

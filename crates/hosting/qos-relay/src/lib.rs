@@ -71,25 +71,38 @@
 pub mod antientropy;
 pub mod auth;
 pub mod client;
+pub mod clock;
 pub mod coedit;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod config;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
+pub mod framing;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod home_peer;
 pub mod mesh;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 pub mod policy;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod process_lease;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod transport;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod workspace;
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
+#[cfg(not(target_arch = "wasm32"))]
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
+#[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Relay, RelayError, RelayHandle};
+#[cfg(not(target_arch = "wasm32"))]
 pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{
     DeviceMeshProfile, DeviceRole, Placement, PlacementRequest, RemoteControlRoute,
@@ -97,6 +110,7 @@ pub use mesh::{
     place, route_remote_control,
 };
 pub use policy::TrustPolicy;
+#[cfg(not(target_arch = "wasm32"))]
 pub use process_lease::ProcessLease;
 pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};

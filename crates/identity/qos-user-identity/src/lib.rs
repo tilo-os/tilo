@@ -77,6 +77,7 @@ pub mod canonical;
 pub mod cert;
 pub mod directory;
 pub mod enrollment;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;
 pub mod revocation;
@@ -93,6 +94,7 @@ pub use enrollment::{
     ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, decode_enrollment_token,
     encode_enrollment_token, mint_enrollment_token, verify_enrollment_token,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use persist::{
     DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, load_or_create_device_key,
 };

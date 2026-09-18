@@ -47,3 +47,5 @@ mod personal_device_process;
 mod relay_daemon;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
+#[path = "browser_transport.rs"]
+mod browser_transport;

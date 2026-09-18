@@ -51,11 +51,8 @@ path = "src/home_peer_control.rs"
 #   peers without any external service.
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
-fs = { path = "../../../fs" }
-collab-types = { path = "../../collab/collab-types" }
 # Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay
@@ -68,7 +65,6 @@ iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 qos-user-identity = { path = "../../identity/qos-user-identity" }
-runtime-identity = { path = "../../runtime/runtime-identity" }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true
@@ -84,30 +80,44 @@ postcard = { workspace = true, features = ["use-std"] }
 # Signing / hashing — reused for the connection-level nonce challenge.
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-chacha20poly1305.workspace = true
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
 
 # Runtime + config.
-tokio = { workspace = true, features = ["full"] }
-clap.workspace = true
-toml.workspace = true
-anyhow.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
+n0-future = "0.3.2"
 thiserror.workspace = true
-libc.workspace = true
-socket2 = "0.6"
 
 # Observability.
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
-sd-notify.workspace = true
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+chacha20poly1305.workspace = true
+clap.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+sd-notify.workspace = true
+tokio = { workspace = true, features = ["full"] }
+atomic-file = { path = "../../../crates/system/atomic-file" }
+fs = { path = "../../../fs" }
+collab-types = { path = "../../collab/collab-types" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+socket2 = "0.6"
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 
 [[test]]

@@ -31,7 +31,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../system/atomic-file" }
+
 # Ed25519 signing/verification. Same version + features used across
 # the collab crates (`collab-types`, `threshold-identity`) so the
 # `SigningKey`/`VerifyingKey` types are interchangeable.
@@ -73,6 +73,12 @@ thiserror.workspace = true
 # (no ambiguity between 0/O or 1/l/I) so a user can read the token
 # out loud without garble. Small dep, pinned to 0.5.
 base32.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+atomic-file = { path = "../../system/atomic-file" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 # Isolated on-disk fixtures for the persistence-round-trip tests
