@@ -7,6 +7,103 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Bounded, explainable intelligence derived on a device from a photograph.
+///
+/// This record contains no pixels, embeddings, face geometry, machine-local
+/// file names, or opaque model output.  A local analysis is private until a
+/// user or trusted caller explicitly publishes it through `SetImageAnalysis`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAnalysis {
+    /// The text read from the pixels. Line layout is intentionally flattened:
+    /// the shared search layer needs words, not page coordinates.
+    #[serde(default)]
+    pub ocr_text: String,
+    /// A concise, local description suitable for finding a photograph later.
+    #[serde(default)]
+    pub description: String,
+    /// Recognized non-person subjects, for example "bicycle" or "beach".
+    #[serde(default)]
+    pub objects: Vec<String>,
+    /// Pet labels are separate from generic objects because people browse
+    /// their animals differently from everything else in a scene.
+    #[serde(default)]
+    pub pets: Vec<String>,
+    /// Non-biometric, user-visible person labels. These are names only when a
+    /// person deliberately supplied a name; recognition never invents one.
+    #[serde(default)]
+    pub people: Vec<String>,
+    /// How the result was made. It gives collaborators enough context to
+    /// decide whether to trust or refresh it without leaking local paths.
+    #[serde(default)]
+    pub provenance: AnalysisProvenance,
+}
+
+/// The bounded provenance attached to an analysis result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalysisProvenance {
+    /// `local-ocr`, `local-description`, or `user`.
+    #[serde(default = "default_analysis_source")]
+    pub source: String,
+    /// Stable engine/model family identifier, never an error or command line.
+    #[serde(default)]
+    pub engine: String,
+    /// OCR language when text recognition was used.
+    #[serde(default)]
+    pub language: String,
+    /// The content hash this result describes. Empty means a legacy/path-only
+    /// image and makes the result deliberately refreshable, not transferable.
+    #[serde(default)]
+    pub content: String,
+    /// Explicit sharing semantics: `shared` records were accepted through the
+    /// document action; `local` records must never be written to the CRDT.
+    #[serde(default = "default_analysis_scope")]
+    pub scope: String,
+}
+
+fn default_analysis_source() -> String {
+    "user".to_owned()
+}
+fn default_analysis_scope() -> String {
+    "shared".to_owned()
+}
+
+impl Default for AnalysisProvenance {
+    fn default() -> Self {
+        Self {
+            source: default_analysis_source(),
+            engine: String::new(),
+            language: String::new(),
+            content: String::new(),
+            scope: default_analysis_scope(),
+        }
+    }
+}
+
+impl ImageAnalysis {
+    /// Join every human-searchable field without exposing provenance internals.
+    #[must_use]
+    pub fn searchable_text(&self) -> String {
+        [
+            self.ocr_text.as_str(),
+            self.description.as_str(),
+            &self.objects.join(" "),
+            &self.pets.join(" "),
+            &self.people.join(" "),
+        ]
+        .join(" ")
+    }
+
+    /// Whether the record has any useful result to retain.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ocr_text.is_empty()
+            && self.description.is_empty()
+            && self.objects.is_empty()
+            && self.pets.is_empty()
+            && self.people.is_empty()
+    }
+}
+
 /// A durable entry in Photos' shared library. Pixel bytes remain in the
 /// content store; this is intentionally only addressable metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -31,6 +128,11 @@ pub struct LibraryPhoto {
     /// string avoids silently changing a collaborator's timezone or precision.
     #[serde(default)]
     pub captured_at: Option<String>,
+    /// Explicitly shared intelligence. Device-local analysis belongs in the
+    /// caller's ephemeral cache until this compact record is intentionally
+    /// accepted through a canonical action.
+    #[serde(default)]
+    pub analysis: Option<ImageAnalysis>,
 }
 
 impl LibraryPhoto {
@@ -48,6 +150,7 @@ impl LibraryPhoto {
             people: Vec::new(),
             tags: Vec::new(),
             captured_at: None,
+            analysis: None,
         }
     }
 
@@ -69,6 +172,11 @@ impl LibraryPhoto {
         if let Some(captured_at) = &self.captured_at {
             parts.push(format!("Captured: {captured_at}"));
         }
+        if let Some(analysis) = &self.analysis
+            && !analysis.description.is_empty()
+        {
+            parts.push(format!("Description: {}", analysis.description));
+        }
         parts.join(" · ")
     }
 
@@ -89,6 +197,11 @@ impl LibraryPhoto {
         }
         if let Some(captured_at) = &self.captured_at {
             parts.push(captured_at.clone());
+        }
+        if let Some(analysis) = &self.analysis
+            && !analysis.description.is_empty()
+        {
+            parts.push(analysis.description.clone());
         }
         parts.join(" · ")
     }

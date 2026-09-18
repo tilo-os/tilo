@@ -31,6 +31,7 @@ winit.workspace = true
 taffy.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 png.workspace = true
+tilo-ocr = { path = "../../crates/media/ocr" }
 
 [dev-dependencies]
 tempfile.workspace = true
