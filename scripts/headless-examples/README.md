@@ -1,6 +1,6 @@
 # Headless e2e examples
 
-Copy-pastable scripts that drive the tilo compositor headlessly via the `TILO_TEST_CONTROL` unix socket. Use these as starting points when writing automation for AI agents, regression tests, or interactive exploration.
+Scripts for controlling the headless compositor through the `TILO_TEST_CONTROL` Unix socket.
 
 **All examples assume the compositor is running headlessly.** Start it once with:
 
@@ -29,15 +29,15 @@ Each script takes the socket path as its first argument (default `/tmp/tilo.sock
 | `click-and-snapshot.py` | Click a named widget, write a PNG of the post-click state. |
 | `keyboard-flow.py` | Ctrl+K opens the palette, type text, snapshot. |
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
-| `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down (single file; the most copy-pastable). |
+| `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down. |
 | `tilo_client.py` | Library with `TiloClient` class; `from tilo_client import TiloClient`. Higher-level than the raw socket calls below. |
 | `library-demo.py` | Same flow as `full-loop.py` but via `TiloClient` — shows the library's API. |
 
 Each script is < 50 lines of Python, no external deps (stdlib `socket` + `json` only).
 
-## Easier than this: the `tilo-control` CLI
+## `tilo-control` CLI
 
-If you don't need the Python scripts, the `tilo-control` binary wraps the JSON protocol:
+Use `tilo-control` from the command line:
 
 ```bash
 cargo build -p shell --bin tilo-control
@@ -51,7 +51,7 @@ tilo-control key Enter                     # named key OR single char
 tilo-control modifiers ctrl,shift          # set modifier mask (empty arg clears)
 ```
 
-Default socket: `$TILO_TEST_CONTROL` else `/tmp/tilo.sock`. Errors exit non-zero with the structured `code: message` on stderr. Reach for the Python scripts only when you need to compose multiple calls or scrape responses.
+Default socket: `$TILO_TEST_CONTROL` else `/tmp/tilo.sock`. Errors exit non-zero with `code: message` on stderr.
 
 ## Wire protocol cheat-sheet
 
@@ -80,16 +80,14 @@ Error codes that show up in normal use:
 - `invalid_path` — `snapshot` path is empty
 - `not_implemented` — placeholder for in-flight phases
 
-## When NOT to use this
+## Offscreen rendering and recordings
 
-- **For golden-image / regression tests**: use `cargo run --bin shots -- --mode offscreen --out target/<dir>`. That binary owns ~22 catalogued scenarios with deterministic frame output, no socket dance required.
+- **For golden-image / regression tests**: use `cargo run --bin shots -- --mode offscreen --out target/<dir>` for deterministic scenario output.
 - **For video walkthroughs**: use `cargo run --bin shots -- --mode recording --scenario <name> --out file.h264`.
-- **For looking at the live UI as a human**: use `cargo run --bin shots -- --mode window` (real winit window).
-
-The control socket is for **ad-hoc, programmatic, headless** drives — primarily AI agents and integration tests that need to verify post-action state.
+- **For a windowed preview**: use `cargo run --bin shots -- --mode window`.
 
 ## Further reading
 
 - `docs/headless-testing.md` — the maintained overview and protocol guide for the three e2e layers (shots / socket / headless backend)
-- `shell/src/compositor/test_control.rs` — the protocol's source of truth (every command + response variant lives in the `Command` and `Response` enums)
+- `shell/src/compositor/test_control.rs` — `Command` and `Response` protocol definitions
 - `shell/src/bin/shots/scenario.rs` — pre-written scenarios that exercise the same code paths in-process

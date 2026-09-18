@@ -715,6 +715,11 @@ COPY --from=doubletake-builder /out/doubletake /usr/libexec/tilo-doubletake
 COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
 COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
 
+FROM scratch AS remote-capture-files
+COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
+COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf
+COPY os/etc/modules-load.d/tilo-remote-camera.conf /etc/modules-load.d/tilo-remote-camera.conf
+
 FROM scratch AS rollback-files
 COPY --from=builder /out/tilo-rollback /usr/bin/tilo-rollback
 COPY \
@@ -895,6 +900,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     pipewire-pulseaudio \
     pipewire-utils \
     wireplumber \
+    v4l-utils \
+    sane-backends \
+    sane-backends-drivers-scanners \
     libcanberra-gtk3 \
     sound-theme-freedesktop \
     && dnf clean all && ${FINALIZE_RPMDB}
@@ -1313,8 +1321,10 @@ COPY --chmod=0755 \
     /usr/libexec/
 COPY os/usr/lib/systemd/user/tilo-graphical-session.target /usr/lib/systemd/user/tilo-graphical-session.target
 
-# Default compositor config
-COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
+# Default compositor config plus one fixed, signed loopback camera for
+# consented personal-device capture. The shell recognizes only this exact card
+# label; arbitrary local V4L2 nodes are never advertised as remote receivers.
+COPY --from=remote-capture-files / /
 
 # greetd display manager config
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml

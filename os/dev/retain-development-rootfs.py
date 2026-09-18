@@ -78,9 +78,9 @@ def verify_signing_key(key, public_key, scratch, environment):
         raise ValueError('unexpected derived Cosign public key size')
     derived_path = scratch / 'derived-cosign.pub'
     derived_path.write_text(derived)
-    canonical = lambda path: source.command(
-        ['openssl', 'pkey', '-pubin', '-in', str(path), '-outform', 'PEM'], environment)
-    if canonical(derived_path) != canonical(public_key):
+    identity = lambda path: source.command(
+        ['/usr/local/bin/tilo-crypto', 'p256-public-key-sha256', str(path)], environment)
+    if identity(derived_path) != identity(public_key):
         raise ValueError('external Cosign signing identity differs from the public bundle')
 
 

@@ -3367,6 +3367,18 @@ fn install_device_fabric_bridge(
                         &target,
                     )?;
                 }
+                DeviceFabricUiAction::CancelMediaHandoff { request_id } => {
+                    crate::shell::device_fabric_runtime::cancel_media_handoff(
+                        &fabric_net,
+                        request_id,
+                    )?;
+                }
+                DeviceFabricUiAction::RetryMediaHandoff { request_id } => {
+                    let _ = crate::shell::device_fabric_runtime::retry_media_handoff(
+                        &fabric_net,
+                        request_id,
+                    )?;
+                }
                 DeviceFabricUiAction::RouteLocalAudio { node_id } => {
                     crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
                 }

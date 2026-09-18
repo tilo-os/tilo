@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Release-image contract for shell-owned remote capture backends.
+set -euo pipefail
+
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd -- "$here/../.." && pwd)"
+containerfile="$repo/os/Containerfile"
+
+fail=0
+ok() { printf 'ok    %s\n' "$*"; }
+bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
+
+for package in sane-backends sane-backends-drivers-scanners; do
+  if grep -q "^    $package \\\\$" "$containerfile"; then
+    ok "$package is part of the immutable scanner source"
+  else
+    bad "$package is absent while the shell advertises remote scanner support"
+  fi
+done
+
+# Keep the image contract tied to the production probe rather than merely
+# proving that an unrelated scanner package happens to be installed.
+source_adapter="$repo/shell/src/shell/remote_capture_source.rs"
+if grep -Fq 'trusted_command("scanimage")' "$source_adapter"; then
+  ok 'remote scanner discovery requires the packaged scanimage binary'
+else
+  bad 'remote scanner discovery no longer matches the image contract'
+fi
+
+camera_adapter="$repo/shell/src/shell/remote_capture_adapter.rs"
+kernel_containerfile="$repo/os/kernel/Containerfile"
+kernel_acceptance="$repo/os/kernel/tests/test-rpm.sh"
+camera_options="$repo/os/etc/modprobe.d/tilo-remote-camera.conf"
+camera_modules="$repo/os/etc/modules-load.d/tilo-remote-camera.conf"
+
+if grep -q '^    v4l-utils \\$' "$containerfile"; then
+  ok 'v4l2-ctl is part of the immutable remote camera receiver'
+else
+  bad 'v4l-utils is absent while camera detection requires v4l2-ctl'
+fi
+
+if grep -Fq 'starts_with("Tilo Remote Camera")' "$camera_adapter" \
+    && grep -Fq 'card_label="Tilo Remote Camera"' "$camera_options"; then
+  ok 'runtime detection and the module card label agree exactly'
+else
+  bad 'remote camera runtime detection and module label have diverged'
+fi
+
+if grep -Fqx 'v4l2loopback' "$camera_modules" \
+    && grep -Fq 'video_nr=42' "$camera_options" \
+    && grep -Fq 'exclusive_caps=1' "$camera_options"; then
+  ok 'one exclusive compositor-owned loopback camera loads at boot'
+else
+  bad 'remote camera module boot configuration is incomplete'
+fi
+
+if grep -Fq 'v4l2loopback-0.15.3-a7e4a4d.tar.gz' "$kernel_containerfile" \
+    && grep -Fq 'extra/v4l2loopback.ko' "$kernel_containerfile" \
+    && grep -Fq "modinfo -F signer" "$kernel_acceptance"; then
+  ok 'the exact-kernel signed loopback module is packaged and release-tested'
+else
+  bad 'remote camera is advertised without a signed packaged kernel backend'
+fi
+
+if grep -Fq 'COPY --from=remote-capture-files / /' "$containerfile" \
+    && grep -Fq 'COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf' "$containerfile" \
+    && grep -Fq 'COPY os/etc/modules-load.d/tilo-remote-camera.conf /etc/modules-load.d/tilo-remote-camera.conf' "$containerfile"; then
+  ok 'image installs both remote camera module configurations'
+else
+  bad 'image does not install the remote camera module configuration overlay'
+fi
+
+exit "$fail"

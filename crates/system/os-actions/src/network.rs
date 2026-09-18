@@ -764,6 +764,75 @@ pub struct SavedNetworkProfile {
     pub autoconnect: bool,
 }
 
+/// The only NetworkManager profile fields eligible for personal-device
+/// roaming. UUID is deliberately absent: it is a machine-local lookup
+/// capability, never portable state.
+pub struct PortableWifiProfileSecret {
+    pub ssid: String,
+    pub security: WifiSecurity,
+    pub password: Zeroizing<String>,
+}
+
+/// Resolve one explicit NetworkManager profile into portable Wi-Fi semantics.
+/// The query allowlist excludes interface names, MAC addresses, routes, DNS,
+/// autoconnect state, and every other machine-specific property.
+///
+/// # Errors
+///
+/// Returns an error for malformed UUIDs, non-Wi-Fi/enterprise/open profiles,
+/// missing secrets, or an unavailable NetworkManager command.
+pub fn portable_wifi_profile_secret(uuid: &str) -> Result<PortableWifiProfileSecret, String> {
+    validate_uuid(uuid)?;
+    let output = Zeroizing::new(run_capture(
+        "nmcli",
+        &[
+            "--show-secrets",
+            "-g",
+            "connection.type,802-11-wireless.ssid,802-11-wireless-security.key-mgmt,802-11-wireless-security.psk",
+            "connection",
+            "show",
+            uuid,
+        ],
+    )?);
+    parse_portable_wifi_profile(&output)
+}
+
+fn parse_portable_wifi_profile(output: &str) -> Result<PortableWifiProfileSecret, String> {
+    let values = output.lines().map(str::trim).collect::<Vec<_>>();
+    let [kind, ssid, key_mgmt, password] = values.as_slice() else {
+        return Err("NetworkManager returned an incomplete Wi-Fi profile".into());
+    };
+    if *kind != "802-11-wireless" {
+        return Err("only Wi-Fi profiles can be shared across devices".into());
+    }
+    if ssid.is_empty() || ssid.len() > runtime_wifi_ssid_limit() {
+        return Err("the saved Wi-Fi profile has an invalid network name".into());
+    }
+    let security = match key_mgmt.to_ascii_lowercase().as_str() {
+        "wpa-psk" | "wpa-none" => WifiSecurity::Wpa2,
+        "sae" => WifiSecurity::Wpa3,
+        "wpa-eap" | "ieee8021x" => {
+            return Err("enterprise Wi-Fi identity and certificates stay device-local".into());
+        }
+        "none" | "owe" | "" => {
+            return Err("this Wi-Fi profile has no portable passphrase".into());
+        }
+        _ => return Err("unrecognized Wi-Fi security cannot be shared safely".into()),
+    };
+    if password.is_empty() || password.len() > 512 {
+        return Err("the saved Wi-Fi passphrase is missing or too large".into());
+    }
+    Ok(PortableWifiProfileSecret {
+        ssid: (*ssid).to_string(),
+        security,
+        password: Zeroizing::new((*password).to_string()),
+    })
+}
+
+const fn runtime_wifi_ssid_limit() -> usize {
+    256
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MeteredPolicy {
     #[default]
@@ -2022,6 +2091,28 @@ mod wired_tests {
         let (speed, ipv4) = parse_nmcli_wired_show("CAPABILITIES.SPEED:unknown\n");
         assert!(speed.is_none());
         assert!(ipv4.is_none());
+    }
+}
+
+#[cfg(test)]
+mod portable_profile_tests {
+    use super::*;
+
+    #[test]
+    fn portable_profile_keeps_only_ssid_mode_and_secret() {
+        let profile = parse_portable_wifi_profile(
+            "802-11-wireless\nHome network\nwpa-psk\ncorrect horse battery staple\n",
+        )
+        .unwrap();
+        assert_eq!(profile.ssid, "Home network");
+        assert_eq!(profile.security, WifiSecurity::Wpa2);
+        assert_eq!(profile.password.as_str(), "correct horse battery staple");
+    }
+
+    #[test]
+    fn enterprise_and_non_wifi_profiles_fail_closed() {
+        assert!(parse_portable_wifi_profile("802-11-wireless\nWork\nwpa-eap\nsecret\n").is_err());
+        assert!(parse_portable_wifi_profile("802-3-ethernet\nLAN\nwpa-psk\nsecret\n").is_err());
     }
 }
 
