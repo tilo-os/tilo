@@ -12,8 +12,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_INTERCEPTED = 73
-KERNEL_PIN = "registry.invalid/tilo/kernel@sha256:" + "1" * 64
-RPMS_PIN = "registry.invalid/tilo/rpms@sha256:" + "2" * 64
+KERNEL_PIN = "code.sandbox.example/qos/qos-kernel@sha256:" + "1" * 64
+RPMS_PIN = "code.sandbox.example/qos/rpms@sha256:" + "2" * 64
 TARGET_REF = "code.sandbox.example/qos/tilo:board-fixture"
 
 
@@ -51,6 +51,7 @@ die() { printf '%s\\n' "$*" >&2; exit 1; }
         # podman stub ensures execution never reaches any disk-image operation.
         for path in (
             "os/dev/cache-github-assets.sh",
+            "os/dev/derive-rpm-package-set.py",
             "os/dev/verify-rpm-snapshot-package-set.sh",
             "os/tests/containerfile_sources.sh",
             "os/tests/app_store.sh",
@@ -58,7 +59,11 @@ die() { printf '%s\\n' "$*" >&2; exit 1; }
             self.write(path, "#!/bin/bash\nexit 0\n", executable=True)
         self.write("os/base-snapshot.env", "BASE_REF=registry.invalid/tilo/base:fixture\n")
         self.write("os/rpms-snapshot.env", f"RPMS_REF={RPMS_PIN}\n")
-        self.write("os/kernel-snapshot.env", f"KERNEL_RPMS_REF={KERNEL_PIN}\n")
+        self.write(
+            "os/kernel-snapshot.env",
+            f"KERNEL_RPMS_X86_64_REF={KERNEL_PIN}\n"
+            f"KERNEL_RPMS_AARCH64_REF={KERNEL_PIN}\n",
+        )
         self.write("bin/uname", """\
 #!/bin/sh
 [ "$#" = 1 ] && [ "$1" = -m ] || exit 72
@@ -70,6 +75,21 @@ printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 [ "$1" != --remote=false ] || shift
 [ "$1" = build ] || exit 72
 exit {BUILD_INTERCEPTED}
+""", executable=True)
+        self.write("bin/cosign", "#!/bin/sh\nexit 0\n", executable=True)
+        self.write("bin/skopeo", "#!/bin/sh\nprintf '%s\\n' '{}'\n", executable=True)
+        self.write("bin/jq", """\
+#!/bin/sh
+case "$*" in
+  *sort_by*) printf '%s\\n' '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ;;
+  *Architecture*)
+    case "$TILO_TEST_ARCH" in
+      x86_64) printf '%s\\n' amd64 ;;
+      aarch64) printf '%s\\n' arm64 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+esac
 """, executable=True)
         # Do not inherit credentials, signing settings, profile overrides, or
         # shell startup hooks from the developer/CI environment.
@@ -433,8 +453,8 @@ print('sha256:' + '6' * 64)
                         self.run_builder(**{key: value}), "Windows provider inputs are incomplete")
 
     def test_explicit_unpublished_refs_survive_loading_the_snapshot_pins(self):
-        kernel = "localhost/tilo-kernel:lenovo-83ed-fixture"
-        rpms = "localhost/tilo-rpms:arm64-fixture"
+        kernel = "code.sandbox.example/qos/qos-kernel@sha256:" + "5" * 64
+        rpms = "code.sandbox.example/qos/rpms@sha256:" + "6" * 64
         arguments = self.build_arguments(self.run_builder(KERNEL_RPMS_REF=kernel, RPMS_REF=rpms))
         self.assertEqual(arguments["KERNEL_RPMS_REF"], kernel)
         self.assertEqual(arguments["RPMS_REF"], rpms)
