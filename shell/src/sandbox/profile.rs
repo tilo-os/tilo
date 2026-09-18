@@ -154,7 +154,7 @@ pub struct SandboxProfile {
     /// network namespace. Defaults to `true` for safety; the portal flow
     /// flips this for the owner session.
     pub net_isolated: bool,
-    /// Optional path to the Landlock launcher shim (`plan/security.md`
+    /// Optional path to the Landlock launcher shim (`docs/architecture/security.md`
     /// §7.1). When `Some`, [`Self::into_argv`] makes `bwrap` exec the
     /// shim — `<shim> __sandbox-exec --ro <p>… --rw <p>… [--net-restricted]
     /// -- <real argv>` — instead of the app directly. The shim applies an
@@ -985,7 +985,7 @@ mod tests {
         );
     }
 
-    /// Landlock (`plan/security.md` §7.1): when `landlock_shim` is set,
+    /// Landlock (`docs/architecture/security.md` §7.1): when `landlock_shim` is set,
     /// `into_argv` must make bwrap exec the shim — `<shim> __sandbox-exec
     /// --ro <p>… --rw <p>… [--net-restricted] -- <app argv>` — rather than
     /// the app directly. The `--ro`/`--rw` paths must be the *sandbox-side*

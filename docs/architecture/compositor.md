@@ -127,7 +127,7 @@ pub struct State {
 }
 ```
 
-Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; per-workspace bridge sockets register additional sources on the same loop (see `plan/security.md`).
+Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; per-workspace bridge sockets register additional sources on the same loop (see `docs/architecture/security.md`).
 
 The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
 
@@ -178,7 +178,7 @@ wired to nothing: it reads as progress, it accumulates callers, and the
 first person to implement scanout has to re-derive whether the existing
 predicate was ever right. The decision and the route land together.
 
-The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `plan/architecture.md` for the e2e infrastructure overview.
+The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `docs/architecture/overview.md` for the e2e infrastructure overview.
 
 ## Foreign-client adoption
 
@@ -212,7 +212,7 @@ These are **rules**, not preferences:
 Backend events (`BackendEvent::Pointer / Key / …`) flow into `smithay::input::Seat::input`, which dispatches through smithay's focus rules. The compositor adds policy on top:
 
 - Shell-chrome shortcuts (palette open, wheel disc, workspace switching) are intercepted before the seat dispatch.
-- Per-workspace input policy (host-priority over guests, per-peer `read_only` flags) is enforced when `RemoteInput` arrives — see `plan/collaboration.md`.
+- Per-workspace input policy (host-priority over guests, per-peer `read_only` flags) is enforced when `RemoteInput` arrives — see `docs/architecture/collaboration.md`.
 
 ### Test-control input (`TILO_TEST_CONTROL`)
 
@@ -231,7 +231,7 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 | Ctrl+W         | Close active tab                                  |
 | Super+Esc      | Kill switch — drop peers, revoke caps, lock      |
 
-(Remote-injected keystrokes go through a scrubber that denies system shortcuts. See `plan/security.md`.)
+(Remote-injected keystrokes go through a scrubber that denies system shortcuts. See `docs/architecture/security.md`.)
 
 ## Outputs
 
@@ -267,10 +267,10 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 ## What's not here
 
-- **Sandboxing protocol details and the per-workspace Wayland bridge socket** — `plan/security.md`.
-- **Peer sync, foreign-surface streaming, remote input replay** — `plan/collaboration.md`.
-- **xdg-desktop-portal backend** — `plan/security.md` and `shell/src/portal/`.
-- **WorkspaceTree CRDT shape** — `plan/architecture.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
+- **Sandboxing protocol details and the per-workspace Wayland bridge socket** — `docs/architecture/security.md`.
+- **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
+- **xdg-desktop-portal backend** — `docs/architecture/security.md` and `shell/src/portal/`.
+- **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
 - **Future**: vello → DMA-BUF direct interop, libei input emulation in addition to the control socket, multi-monitor workspace pinning.
 
 ## Where to read first

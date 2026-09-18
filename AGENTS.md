@@ -222,8 +222,8 @@ path rather than a tautological helper.
 
 ## Where to read first
 
-`docs/architecture.md`, `docs/headless-testing.md`, `ui/HIG.md`, and
-`plan/{architecture,collaboration,compositor,security}.md` before non-trivial changes in
+`docs/architecture/{README,overview,collaboration,compositor,security}.md`,
+`docs/headless-testing.md`, and `ui/HIG.md` before non-trivial changes in
 those subsystems. `DEVELOPMENT.md` for the build environment.
 
 ## CI
