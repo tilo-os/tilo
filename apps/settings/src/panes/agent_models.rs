@@ -103,6 +103,10 @@ pub struct LocalModelPackage {
     /// revision. It is not inferred from a model name.
     #[serde(default)]
     pub vision: bool,
+    /// Signed capability for the dedicated face-recognition path. Generic
+    /// vision models must not be promoted to this capability by Settings.
+    #[serde(default)]
+    pub face_recognition: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1579,6 +1583,7 @@ mod tests {
             download_bytes: 5_368_709_120,
             installed_bytes: 10_737_418_240,
             vision: false,
+            face_recognition: false,
         }
     }
 
