@@ -35,6 +35,8 @@ pub struct DeviceHandle {
     pub device: Device,
     pub queue: Queue,
     loss: DeviceLossMonitor,
+    #[cfg(windows)]
+    shader_cache: Option<crate::dx12_shader_cache::CacheSession>,
 }
 
 /// Shared, read-only observation of the context-owned device loss callback.
@@ -52,6 +54,14 @@ impl DeviceLossMonitor {
 }
 
 impl DeviceHandle {
+    #[cfg(windows)]
+    pub(crate) fn finish_shader_cache(&self) {
+        crate::dx12_shader_cache::report(&self.device);
+        if let Some(cache) = &self.shader_cache {
+            cache.finish(&self.device);
+        }
+    }
+
     /// Observe loss without replacing the context-owned callback.
     pub fn loss_monitor(&self) -> DeviceLossMonitor {
         self.loss.clone()
@@ -68,6 +78,8 @@ impl DeviceHandle {
 pub struct RenderContext {
     pub instance: Instance,
     pub devices: Vec<DeviceHandle>,
+    #[cfg(windows)]
+    compiler_identity: Option<Arc<crate::dx12_shader_cache::CompilerIdentity>>,
 }
 
 impl Default for RenderContext {
@@ -123,6 +135,17 @@ impl RenderContext {
         };
         // Every field spelled out: `InstanceDescriptor` has no `Default`, and
         // these are the values vello would have used.
+        #[cfg(windows)]
+        let compiler_identity =
+            crate::dx12_shader_cache::CompilerIdentity::open(&backend_options.dx12.shader_compiler);
+        #[cfg(windows)]
+        let backend_options = {
+            let mut options = backend_options;
+            if let Some(compiler) = &compiler_identity {
+                options.dx12.shader_compiler = compiler.compiler();
+            }
+            options
+        };
         let instance = Instance::new(wgpu::InstanceDescriptor {
             display: None,
             // Use the host's native graphics API on Windows. Probing every
@@ -143,6 +166,8 @@ impl RenderContext {
         Self {
             instance,
             devices: Vec::new(),
+            #[cfg(windows)]
+            compiler_identity,
         }
     }
 
@@ -239,11 +264,16 @@ impl RenderContext {
                 *recorded = Some(format!("{reason:?}: {message}"));
             }
         });
+        #[cfg(windows)]
+        let shader_cache =
+            crate::dx12_shader_cache::CacheSession::load(&device, self.compiler_identity.clone());
         self.devices.push(DeviceHandle {
             adapter,
             device,
             queue,
             loss,
+            #[cfg(windows)]
+            shader_cache,
         });
         Some(self.devices.len().saturating_sub(1))
     }

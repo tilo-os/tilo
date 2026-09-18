@@ -11,6 +11,7 @@ exclude = [
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
     "vendor/winit",
+    "vendor/wgpu-hal",
 ]
 # `runtime-dylib` is a workspace member (so it shares the lockfile,
 # target dir, and crate SVHs with the apps that link it) but is kept
@@ -487,6 +488,8 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Pinned DX12 compiled-shader import/export; see vendor/wgpu-hal/TILO-PATCH.md.
+wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 winit = { path = "vendor/winit" }
 # Vendored vello variants size scratch buffers from the current scene and
