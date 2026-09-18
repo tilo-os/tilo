@@ -17,18 +17,12 @@ run 'Repository layout' python3 tools/check_repository_layout.py
 run 'Workflow timeouts' python3 tools/check_workflow_timeouts.py
 run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
-run 'Builder canary dependency triggers' \
+run 'Path-filtered package dependency triggers' \
   python3 tools/check_workflow_package_paths.py \
-  atomic-file .forgejo/workflows/build-builder-image.yml
-run 'Development source signer dependency triggers' \
-  python3 tools/check_workflow_package_paths.py \
-  tilo-crypto .forgejo/workflows/development-source.yml
-run 'Filesystem contract dependency triggers' \
-  python3 tools/check_workflow_package_paths.py \
-  fs .forgejo/workflows/fs-fuse.yml
-run 'Relay dependency triggers' \
-  python3 tools/check_workflow_package_paths.py \
-  tilo-relay .forgejo/workflows/tilo-relay.yaml
+  --check atomic-file .forgejo/workflows/build-builder-image.yml \
+  --check tilo-crypto .forgejo/workflows/development-source.yml \
+  --check fs .forgejo/workflows/fs-fuse.yml \
+  --check tilo-relay .forgejo/workflows/tilo-relay.yaml
 run 'Repository policy unit tests' \
   python3 -m unittest discover -s tools/tests -p 'test_*.py'
 run 'Compiler-cache helper tests' bash tools/tests/ci_sccache.sh
