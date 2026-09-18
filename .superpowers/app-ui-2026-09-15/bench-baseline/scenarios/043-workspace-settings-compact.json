@@ -1,0 +1,119 @@
+{
+  "name": "Rename a workspace",
+  "goal": "Reach workspace settings, change the name, and verify the desktop reflects it",
+  "viewport": [
+    800,
+    700
+  ],
+  "budget": {
+    "clicks": 2,
+    "keys": 8
+  },
+  "steps": [
+    {
+      "op": "input",
+      "action": {
+        "click_named": "semantic:topbar:workspace-settings"
+      }
+    },
+    {
+      "op": "checkpoint",
+      "name": "settings",
+      "checks": [
+        {
+          "kind": "visible",
+          "target": "semantic:Workspace settings"
+        }
+      ]
+    },
+    {
+      "op": "wheel",
+      "target": "semantic:Workspace settings content",
+      "delta": [
+        0,
+        -1000
+      ],
+      "unit": "physical_pixels",
+      "phase": "moved"
+    },
+    {
+      "op": "checkpoint",
+      "name": "settings-summary",
+      "checks": [
+        {
+          "kind": "visible",
+          "target": "semantic:At a glance"
+        }
+      ]
+    },
+    {
+      "op": "wheel",
+      "target": "semantic:Workspace settings content",
+      "delta": [
+        0,
+        1000
+      ],
+      "unit": "physical_pixels",
+      "phase": "ended"
+    },
+    {
+      "op": "input",
+      "action": {
+        "click_named": "semantic:Workspace name"
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "modifiers": [
+          "ctrl"
+        ]
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "key": "a"
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "modifiers": []
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "type": "Bench"
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "key": "Enter"
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "key": "Escape"
+      }
+    },
+    {
+      "op": "checkpoint",
+      "name": "renamed",
+      "checks": [
+        {
+          "kind": "state",
+          "pointer": "/active_workspace",
+          "equals": "Bench"
+        },
+        {
+          "kind": "visible",
+          "target": "semantic:topbar:workspace-settings"
+        }
+      ]
+    }
+  ]
+}

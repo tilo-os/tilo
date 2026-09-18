@@ -13,6 +13,7 @@ autoexamples = false
 ignored = ["pkg-config"]
 
 [features]
+test-support = []
 presentation-feedback = ["dep:wgpu-hal"]
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any

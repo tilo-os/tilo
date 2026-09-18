@@ -1,0 +1,15 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `ui` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 29.90s
+     Running unittests src/lib.rs (target/debug/deps/ui-c93bc6d5c202339c)
+
+running 2 tests
+test widget::rich_text_line::tests::rich_marks_paint_each_glyph_once ... ok
+test widget::rich_text_line::tests::rich_marks_style_only_changes_refresh_authoritative_geometry ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3168 filtered out; finished in 0.40s
+

@@ -41,7 +41,7 @@ impl PreviewCanvas {
     }
 }
 impl Widget for PreviewCanvas {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Historical content"
     }
     fn test_id(&self) -> Option<&str> {

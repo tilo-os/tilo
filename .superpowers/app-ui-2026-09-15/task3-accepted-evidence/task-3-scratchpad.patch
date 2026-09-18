@@ -1,0 +1,10 @@
+--- a/apps/scratchpad/src/lib.rs
++++ b/apps/scratchpad/src/lib.rs
+@@ -118,6 +118,7 @@
+                 .push(Box::new(
+                     Scrollable::new_vertical()
+                         .fill_parent_height()
++                        .with_content_min_viewport_height()
+                         .with_child(Box::new(editor)),
+                 )),
+         ))

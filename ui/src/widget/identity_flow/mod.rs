@@ -2216,28 +2216,19 @@ fn draw_done_card(
         Align::Start,
         false,
     );
-    paint_text(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        saved,
-        SAVED,
-        Role::Caption,
-        Align::Start,
-        false,
-    );
-    paint_text(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        next,
-        NEXT,
-        Role::Caption,
-        Align::Start,
-        false,
-    );
+    for (rect, label) in [(saved, SAVED), (next, NEXT)] {
+        paint_text(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            label,
+            Role::Caption,
+            Align::Start,
+            false,
+        );
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

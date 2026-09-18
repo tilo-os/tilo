@@ -1,0 +1,9 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+    Finished `test` profile [unoptimized] target(s) in 15.34s
+     Running tests/it.rs (target/debug/deps/it-3162d7e8d403d620)
+
+running 1 test
+test scrollable_test::fractional_height_editor_routes_first_wheel_to_outer_scrollable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 303 filtered out; finished in 0.40s
+

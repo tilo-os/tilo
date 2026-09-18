@@ -11,8 +11,14 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 /// Trusted owner-side transport. This handle is never included in preview input.
 pub trait FileHistoryTransport: Send + Sync {
+    /// # Errors
+    /// Returns the transport or checked-read failure for the requested scope.
     fn read(&self, query: Query) -> Result<ReadValue, ReadError>;
+    /// # Errors
+    /// Returns a checked-read failure when the requested version cannot be retrieved.
     fn preview(&self, scope: ReadScope, version: FileVersionId) -> Result<Vec<u8>, ReadError>;
+    /// # Errors
+    /// Returns the checked operation outcome when a restore review cannot be produced.
     fn review(&self) -> Result<Review, Outcome>;
     fn submit(&self, request: Request) -> Outcome;
     fn result(&self, intent: uuid::Uuid) -> Outcome;
@@ -27,17 +33,22 @@ pub struct FileHistoryTarget {
 /// A root retains its own handle; the runner validates this exact source witness.
 #[derive(Clone, Default)]
 pub struct FileHistorySource(Rc<RefCell<FileHistorySourceState>>);
+/// An admitted open request; `None` does not request a specific version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileHistoryOpenRequest {
+    pub version: Option<FileVersionId>,
+}
 #[derive(Default)]
 struct FileHistorySourceState {
     target: Option<FileHistoryTarget>,
-    open: Option<Option<FileVersionId>>,
+    open: Option<FileHistoryOpenRequest>,
 }
 impl FileHistorySource {
     pub fn set_target(&self, target: Option<FileHistoryTarget>) {
         self.0.borrow_mut().target = target;
     }
     pub fn open(&self, version: Option<FileVersionId>) {
-        self.0.borrow_mut().open = Some(version);
+        self.0.borrow_mut().open = Some(FileHistoryOpenRequest { version });
     }
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
@@ -45,7 +56,7 @@ impl FileHistorySource {
     pub(crate) fn target(&self) -> Option<FileHistoryTarget> {
         self.0.borrow().target.clone()
     }
-    pub(crate) fn take_open(&self) -> Option<Option<FileVersionId>> {
+    pub(crate) fn take_open(&self) -> Option<FileHistoryOpenRequest> {
         self.0.borrow_mut().open.take()
     }
     pub(crate) fn wants_open(&self) -> bool {
@@ -167,6 +178,25 @@ impl FileRestoreSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_request_distinguishes_idle_unspecified_and_exact_version_and_is_consumed_once() {
+        let source = super::FileHistorySource::default();
+        assert!(!source.wants_open());
+        assert!(source.take_open().is_none());
+        source.open(None);
+        assert!(source.wants_open());
+        assert_eq!(source.take_open().unwrap().version, None);
+        assert!(!source.wants_open());
+        assert!(source.take_open().is_none());
+        let version = collab_types::FileVersionId(uuid::Uuid::new_v4());
+        source.open(Some(version));
+        assert_eq!(source.take_open().unwrap().version, Some(version));
+        assert!(source.take_open().is_none());
+        source.open(Some(version));
+        source.open(None);
+        assert_eq!(source.take_open().unwrap().version, None);
+    }
+
     use super::*;
     fn review() -> Review {
         Review {

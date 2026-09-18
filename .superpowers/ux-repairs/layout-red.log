@@ -1,0 +1,23 @@
+    Blocking waiting for file lock on build directory
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 12s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 1 test
+test widget::tests::enlarged_layout_controls_fit_their_labels ... FAILED
+
+failures:
+
+---- widget::tests::enlarged_layout_controls_fit_their_labels stdout ----
+
+thread 'widget::tests::enlarged_layout_controls_fit_their_labels' (3831388) panicked at apps/word-processor/src/widget.rs:14793:13:
+label needs 87.07715, got Rect { x0: 12.0, y0: 573.0, x1: 81.19999999999999, y1: 595.0 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    widget::tests::enlarged_layout_controls_fit_their_labels
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 314 filtered out; finished in 0.31s
+
+error: test failed, to rerun pass `-p word-processor --lib`

@@ -364,6 +364,7 @@ fn admit_record(
     }
 }
 
+#[allow(clippy::struct_excessive_bools, reason = "history policy, record refusal, focus, layout dirtiness and presentation latches are independent")]
 pub struct TileHost {
     content: TileContent,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,

@@ -119,6 +119,7 @@ pub enum Affordance {
     Back,
 }
 
+#[allow(clippy::struct_excessive_bools, reason = "toggle policy, layout cache validity, animation activity and dirtiness are independent flags")]
 pub struct NavShell {
     sidebar: Option<Element>,
     overview: Element,

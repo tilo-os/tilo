@@ -450,22 +450,18 @@ impl RichTextLayout {
         };
         let prefix = buffer.lines.iter().zip(&previous.lines)
             .take_while(|(a, b)| same(a, b)).count();
-        let suffix = buffer.lines[prefix..].iter().rev()
-            .zip(previous.lines[prefix..].iter().rev())
+        let suffix = buffer.lines.iter().skip(prefix).rev()
+            .zip(previous.lines.iter().skip(prefix).rev())
             .take_while(|(a, b)| same(a, b)).count();
-        let old_len = previous.lines.len();
-        let new_len = buffer.lines.len();
-        for (index, line) in previous.lines.into_iter().enumerate() {
-            let target = if index < prefix {
-                Some(index)
-            } else if index >= old_len - suffix {
-                Some(new_len - (old_len - index))
-            } else {
-                None
-            };
-            if let Some(target) = target {
-                buffer.lines[target] = line;
-            }
+        let mut old_lines = previous.lines.into_iter();
+        let mut new_lines = buffer.lines.iter_mut();
+        for (old, new) in old_lines.by_ref().take(prefix).zip(new_lines.by_ref().take(prefix)) {
+            *new = old;
+        }
+        // Both iterators now exclude the common prefix, so a fully unchanged
+        // document cannot reuse a paragraph twice when walking the suffix.
+        for (old, new) in old_lines.rev().take(suffix).zip(new_lines.rev().take(suffix)) {
+            *new = old;
         }
     }
 

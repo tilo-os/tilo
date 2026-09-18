@@ -24,7 +24,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::Arc;
+
 use std::sync::mpsc::{Receiver, SyncSender};
 
 use automerge::{AutoCommit, ObjId};
@@ -32,7 +32,7 @@ use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::ImageData;
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::icons::{Icon, draw_icon};
@@ -208,23 +208,12 @@ const LIBRARY_PAGE_SIZE: usize = 24;
 /// shelf works well; below this a single card preserves independent Details,
 /// favourite, and removal targets at the 44px touch minimum.
 const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
-const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
 
 /// Grid density is presentation-local, but text scale is part of that
 /// presentation. Keep the decision pure so wide/high-text and sheet-open
 /// regressions cannot silently drift apart.
 fn library_column_count(width: f64, large_text: bool, metadata_editor: bool) -> usize {
-    if large_text && width >= 620.0 {
-        if metadata_editor { 1 } else { 2 }
-    } else if width < LIBRARY_ONE_COLUMN_MAX_W {
-        1
-    } else if width < LIBRARY_TWO_COLUMN_MAX_W {
-        2
-    } else if width >= 1_440.0 {
-        5
-    } else {
-        4
-    }
+    crate::presentation::library_column_count(width, large_text, metadata_editor)
 }
 
 #[derive(Clone)]
@@ -314,6 +303,7 @@ enum MetadataEditorHit {
 #[derive(Clone)]
 struct LibraryItem {
     id: String,
+    thumbnail_key: String,
     name: String,
     favorite: bool,
     metadata: String,
@@ -520,12 +510,29 @@ fn faces_for_width(width: f32, btn_h: f32) -> Vec<Face> {
     TOOLBAR.iter().map(|_| Face::IconOnly).collect()
 }
 
+/// Authored content observed by local transient work, excluding operational metadata.
+#[derive(Clone, PartialEq)]
+struct LiveContent {
+    image: Option<OpenImage>,
+    edits: Edits,
+    library: crate::model::PhotoLibrary,
+}
+impl LiveContent {
+    fn read(doc: &AutoCommit) -> Self {
+        Self {
+            image: PhotosDoc::image(doc),
+            edits: PhotosDoc::edits(doc),
+            library: PhotosDoc::library(doc),
+        }
+    }
+}
+
 /// The rendered image, and the inputs it was rendered from.
 ///
 /// Keeping the inputs beside the output is what lets `sync` decide in a couple
 /// of comparisons whether anything needs redoing.
 struct Rendered {
-    path: String,
+    identity: String,
     edits: Edits,
     /// The edited pixels, kept so Copy and Save export exactly what is shown
     /// rather than re-running the pipeline and hoping it agrees.
@@ -541,6 +548,10 @@ pub struct PhotosApp {
     actions: ui::ActionHost,
     /// Decoded original, before any edit. `None` until a file opens.
     original: Option<(String, Rgba)>,
+    original_identity: Option<String>,
+    observed_content: Option<LiveContent>,
+    import_content: Option<LiveContent>,
+    picker_stale: bool,
     rendered: Option<Rendered>,
     viewer: Option<ImageViewer>,
     buttons: Vec<(Hit, Button)>,
@@ -708,6 +719,10 @@ impl PhotosApp {
         Self {
             actions: ui::ActionHost::new(),
             original: None,
+            original_identity: None,
+            observed_content: None,
+            import_content: None,
+            picker_stale: false,
             rendered: None,
             viewer: None,
             buttons,
@@ -846,6 +861,7 @@ impl PhotosApp {
                 };
                 let open = OpenImage::from_path(path, img.w, img.h).with_content(content);
                 self.original = Some((path.to_string(), img));
+                self.original_identity = Some(decode_key(&open.clone().portable()));
                 self.rendered = None;
                 self.viewer = None;
                 self.original_decode_failed = None;
@@ -1672,6 +1688,8 @@ impl PhotosApp {
             // Resource/search routing has already brought this Photos
             // instance forward. Viewing does not alter document or OS state.
             crate::actions::PhotosOperation::Open { path: None } => {
+                self.import_content = Some(LiveContent::read(doc));
+                self.picker_stale = false;
                 self.picker = Some(
                     ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
                         .thread_name("photos-portal-open")
@@ -1805,7 +1823,8 @@ impl PhotosApp {
 
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
-        if self.original.as_ref().map(|(p, _)| p.as_str()) != Some(open.path.as_str()) {
+        let identity = decode_key(&open);
+        if self.original_identity.as_ref() != Some(&identity) || self.original.is_none() {
             let key = decode_key(&open);
             if self.original_decode_failed.as_deref() == Some(&key) {
                 self.original = None;
@@ -1816,7 +1835,8 @@ impl PhotosApp {
             }
             let bytes = crate::doc::bytes_of(&open);
             if let Some(img) = bytes.as_deref().and_then(pixels::decode) {
-                self.original = Some((open.path.clone(), img));
+                self.original = Some((open.path, img));
+                self.original_identity = Some(identity.clone());
                 self.original_decode_failed = None;
             } else {
                 self.original = None;
@@ -1838,7 +1858,7 @@ impl PhotosApp {
         let unchanged = self
             .rendered
             .as_ref()
-            .is_some_and(|r| r.path == open.path && r.edits == edits);
+            .is_some_and(|r| r.identity == identity && r.edits == edits);
         if unchanged {
             return;
         }
@@ -1853,7 +1873,7 @@ impl PhotosApp {
         self.viewer = Some(ImageViewer::new(image));
         self.canvas_state = CanvasState::Ready;
         self.rendered = Some(Rendered {
-            path: open.path,
+            identity,
             edits,
             rgba,
         });
@@ -2484,10 +2504,32 @@ impl PhotosApp {
         match rx.try_recv() {
             Ok(ui::portal::PortalOutcome::Opened(path)) => {
                 self.picker = None;
+                self.import_content = None;
+                if self.picker_stale {
+                    // The chooser already ran. Settle its real selection outcome
+                    // without importing into content changed since dispatch.
+                    let message = format!(
+                        "Selected {}; import was invalidated by changed document content",
+                        path.display()
+                    );
+                    self.notice = Some(message.clone());
+                    if let Some(invocation) = self.resource_invocation.take() {
+                        self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "photos.stale_selection".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        });
+                    }
+                    return;
+                }
                 let path = path.to_string_lossy().into_owned();
                 self.open_path(doc, &path);
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(if self.open_image_path().is_some() {
+                    self.resource_result = Some(if self.notice.is_none() {
                         qos_actions::InvocationUpdate::Succeeded {
                             invocation,
                             output: qos_actions::ActionOutput::default(),
@@ -3025,115 +3067,23 @@ impl PhotosApp {
             let y = top + row as f64 * (card_h + gap);
             let card = Rect::new(x, y, x + card_w, y + card_h);
             let preview = Rect::new(x, y, x + card_w, y + preview_h);
-            scene.fill(
-                Fill::NonZero,
+            crate::presentation::paint_card(
+                scene,
                 transform,
-                if card.contains(self.pointer) {
-                    theme.tokens.colors.neutral[3]
-                } else {
-                    theme.tokens.colors.surfaces.window_card
-                },
-                None,
-                &card,
+                text_renderer,
+                theme,
+                card,
+                preview,
+                self.library_thumbnails.get(&item.thumbnail_key),
+                name,
+                &item.metadata,
+                card.contains(self.pointer),
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.neutral[2],
-                None,
-                &preview,
-            );
-            if let Some(image) = self.library_thumbnails.get(id) {
-                let scale = (preview.width() / f64::from(image.width))
-                    .min(preview.height() / f64::from(image.height));
-                let drawn_w = f64::from(image.width) * scale;
-                let drawn_h = f64::from(image.height) * scale;
-                let image_transform = transform
-                    * Affine::translate((
-                        preview.x0 + (preview.width() - drawn_w) * 0.5,
-                        preview.y0 + (preview.height() - drawn_h) * 0.5,
-                    ))
-                    * Affine::scale(scale);
-                scene.draw_image(image, image_transform);
-            } else {
-                // Decoding happens off the UI thread and is deliberately
-                // bounded to one small job per sync.  A quiet image glyph is
-                // an honest loading/unavailable placeholder that keeps a
-                // shelf recognisable while it catches up, instead of a row
-                // of anonymous empty rectangles.
-                let icon_side = preview.width().min(preview.height()).min(34.0);
-                let icon_rect = Rect::from_center_size(preview.center(), (icon_side, icon_side));
-                draw_icon(
-                    scene,
-                    transform,
-                    icon_rect,
-                    Icon::Image,
-                    theme.text_dim,
-                    1.5,
-                );
-            }
-            let footer = Rect::new(card.x0, preview.y1, card.x1, card.y1);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &footer,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.border_standard,
-                None,
-                &Rect::new(footer.x0, footer.y0, footer.x1, footer.y0 + 1.0),
-            );
-            // One description of the action row (see `card_action_controls`):
-            // paint, hit-testing and the accessibility export all read it.
             let CardActions {
                 details,
                 remove,
                 favorite: star,
             } = card_action_controls(card);
-            // Both text rows are explicitly constrained to this card. The
-            // action row owns the bottom 44px, so no title can collide with a
-            // neighboring column or a control.
-            let display_name = compact_label(
-                name,
-                ((card_w - 18.0) / if large_text { 16.0 } else { 8.0 })
-                    .floor()
-                    .max(8.0) as usize,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &display_name,
-                13.0,
-                theme.text_primary,
-                transform
-                    * Affine::translate((x + 9.0, preview.y1 + if large_text { 8.0 } else { 9.0 })),
-                Some((card_w - 18.0) as f32),
-                TextWeight::Medium,
-            );
-            if !item.metadata.is_empty() {
-                let metadata = compact_label(
-                    &item.metadata,
-                    ((card_w - 18.0) / if large_text { 14.0 } else { 6.5 })
-                        .floor()
-                        .max(12.0) as usize,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &metadata,
-                    11.0,
-                    theme.text_dim,
-                    transform
-                        * Affine::translate((
-                            x + 9.0,
-                            preview.y1 + if large_text { 34.0 } else { 29.0 },
-                        )),
-                    Some((card_w - 18.0) as f32),
-                    TextWeight::Regular,
-                );
-            }
             if !self.album_editor {
                 for (target, active) in [
                     (details, details.contains(self.pointer)),
@@ -4105,13 +4055,7 @@ fn build_album_page_buttons(
 
 /// Wrap an RGBA buffer as the image type the scene draws.
 fn to_peniko(img: &Rgba) -> ImageData {
-    ImageData {
-        data: Blob::new(Arc::new(img.bytes.clone())),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: img.w,
-        height: img.h,
-    }
+    pixels::to_peniko(img)
 }
 
 /// A local decode-cache key. The content hash, when present, is immutable;
@@ -4124,7 +4068,70 @@ fn decode_key(open: &OpenImage) -> String {
     )
 }
 
+fn thumbnail_key(open: &OpenImage) -> String {
+    format!("{}:320x180", decode_key(open))
+}
+
 impl PhotosApp {
+    fn reconcile_content(&mut self, doc: &AutoCommit) {
+        let current = LiveContent::read(doc);
+        if self
+            .import_content
+            .as_ref()
+            .is_some_and(|old| old != &current)
+        {
+            self.picker_stale = true;
+            if let Some((invocation, _)) = self.pending_resource_open.take() {
+                self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("Photo import invalidated by changed document content".into()),
+                });
+                self.import_content = None;
+            }
+        }
+        if let Some(old) = &self.observed_content
+            && old != &current
+        {
+            self.pending.take();
+            self.album_page_pending.take();
+            self.compact_more_open = false;
+            self.library_cards.clear();
+            self.library_details_cards.clear();
+            let metadata_changed = self
+                .metadata_editor_id
+                .as_ref()
+                .is_some_and(|id| old.library.photo(id) != current.library.photo(id));
+            let album_changed = self
+                .album_editor_id
+                .as_ref()
+                .is_some_and(|id| old.library.album(id) != current.library.album(id))
+                || self
+                    .album_editor_members
+                    .iter()
+                    .any(|id| current.library.photo(id).is_none());
+            if metadata_changed {
+                self.cancel_metadata_editor();
+                self.notice = Some("Photo changed; unsaved details discarded".into());
+            }
+            if album_changed {
+                self.cancel_album_editor();
+                self.notice =
+                    Some("Album or membership changed; unsaved album changes discarded".into());
+            }
+            if self
+                .active_album
+                .as_ref()
+                .is_some_and(|id| current.library.album(id).is_none())
+            {
+                self.active_album = None;
+            }
+        }
+        self.observed_content = Some(current);
+        // Recreating the viewer on changed immutable identity/edits also drops
+        // an active drag before the next input can apply its stale viewport.
+        self.refresh(doc);
+    }
+
     /// Take completed thumbnail work without blocking the UI thread.
     fn drain_thumbnail_results(&mut self) {
         while let Ok(result) = self.thumbnail_rx.try_recv() {
@@ -4153,7 +4160,10 @@ impl PhotosApp {
     /// Keep thumbnail work to one small queued item per synchronization. The
     /// worker, rather than this method, may read a file or decode bytes.
     fn schedule_library_thumbnail(&mut self, sources: Vec<LibraryPhoto>, document_changed: bool) {
-        let ids: Vec<_> = sources.iter().map(|photo| photo.id.clone()).collect();
+        let ids: Vec<_> = sources
+            .iter()
+            .map(|photo| thumbnail_key(&photo.image))
+            .collect();
         if document_changed || ids != self.thumbnail_visible_ids {
             let Some(next_generation) = self
                 .thumbnail_generation
@@ -4171,6 +4181,9 @@ impl PhotosApp {
             self.thumbnail_generation = Some(next_generation);
             self.thumbnail_visible_ids = ids;
             self.thumbnail_queued.clear();
+            if document_changed {
+                self.library_thumbnails.clear();
+            }
             self.library_thumbnails
                 .retain(|id, _| self.thumbnail_visible_ids.contains(id));
             self.thumbnail_unavailable
@@ -4181,13 +4194,17 @@ impl PhotosApp {
             return;
         };
         let Some(photo) = sources.into_iter().find(|photo| {
-            !self.library_thumbnails.contains_key(&photo.id)
-                && !self.thumbnail_unavailable.contains(&photo.id)
-                && !self.thumbnail_queued.contains(&photo.id)
+            !self
+                .library_thumbnails
+                .contains_key(&thumbnail_key(&photo.image))
+                && !self
+                    .thumbnail_unavailable
+                    .contains(&thumbnail_key(&photo.image))
+                && !self.thumbnail_queued.contains(&thumbnail_key(&photo.image))
         }) else {
             return;
         };
-        let id = photo.id.clone();
+        let id = thumbnail_key(&photo.image);
         let job = ThumbnailJob {
             generation,
             id: id.clone(),
@@ -4200,6 +4217,9 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::PHOTOS_OPERATION_TYPE]
     }
@@ -4274,6 +4294,7 @@ impl Widget for PhotosApp {
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
         }
         if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
+            self.import_content = Some(LiveContent::read(doc));
             self.pending_resource_open = Some((invocation, file));
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
@@ -4313,10 +4334,11 @@ impl Widget for PhotosApp {
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
-        PhotosDoc::seed(doc);
+        self.reconcile_content(doc);
         if let Some((invocation, path)) = self.pending_resource_open.take() {
+            self.import_content = None;
             self.open_path(doc, &path);
-            self.resource_result = Some(if self.open_image_path().is_some() {
+            self.resource_result = Some(if self.notice.is_none() {
                 qos_actions::InvocationUpdate::Succeeded {
                     invocation,
                     output: qos_actions::ActionOutput::default(),
@@ -4391,6 +4413,7 @@ impl Widget for PhotosApp {
             .take(120)
             .map(|photo| LibraryItem {
                 id: photo.id.clone(),
+                thumbnail_key: thumbnail_key(&photo.image),
                 name: photo.image.name.clone(),
                 favorite: photo.favorite,
                 metadata: photo.metadata_summary(),
@@ -4679,6 +4702,7 @@ impl Widget for PhotosApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.reconcile_content(doc);
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
@@ -5019,6 +5043,7 @@ impl Widget for PhotosApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        self.reconcile_content(state);
         self.perform_toolbar_semantic_action(target, action, state)
             || self.perform_library_semantic_action(target, action, state)
     }
@@ -5553,6 +5578,7 @@ mod tests {
         let image = OpenImage::from_path("/tmp/accessible.png", 100, 50);
         PhotosDoc::set_image(&mut doc, Some(&image));
         app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
+        app.original_identity = Some(decode_key(&image));
         app.refresh(&doc);
         app.sync(&mut doc, &ROOT);
         assert!(Widget::perform_semantic_action(
@@ -5590,6 +5616,7 @@ mod tests {
         let image = OpenImage::from_path("/tmp/compact.png", 100, 50);
         PhotosDoc::set_image(&mut doc, Some(&image));
         app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
+        app.original_identity = Some(decode_key(&image));
         app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
         app.sync(&mut doc, &ROOT);
         app.compact_more_open = true;
@@ -6082,5 +6109,438 @@ mod tests {
                 "card {card:?}: Details inset {left_inset} vs star inset {right_inset}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod history_reconcile_tests {
+    use super::*;
+    use automerge::ROOT;
+    fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
+        let heads = doc.get_heads();
+        let plan = ui::history_mode::restore::prepare_content_restore(
+            doc,
+            &crate::framework_history::SCHEMA,
+            &heads,
+            selected,
+        )
+        .unwrap();
+        ui::history_mode::restore::apply_prepared_content_restore(doc, &plan).unwrap();
+    }
+    fn setup() -> (PhotosApp, AutoCommit, String) {
+        let mut doc = AutoCommit::new();
+        let image = OpenImage::from_path("historical-missing.png", 4, 3);
+        PhotosDoc::set_image(&mut doc, Some(&image));
+        let id = PhotosDoc::library(&doc).photos[0].id.clone();
+        let mut app = PhotosApp::new();
+        app.sync(&mut doc, &ROOT);
+        (app, doc, id)
+    }
+    #[test]
+    fn changed_target_invalidates_metadata_draft_before_input_but_unrelated_change_preserves_it() {
+        let (mut app, mut doc, id) = setup();
+        let mut lib = PhotosDoc::library(&doc);
+        lib.photos[0].tags = vec!["restored".into()];
+        PhotosDoc::set_library(&mut doc, &lib);
+        let selected = doc.get_heads();
+        lib.photos[0].tags = vec!["live".into()];
+        PhotosDoc::set_library(&mut doc, &lib);
+        app.sync(&mut doc, &ROOT);
+        app.begin_metadata_editor(&doc, &id);
+        app.metadata_tags_input.set_text("unsaved draft");
+        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+        app.sync(&mut doc, &ROOT);
+        assert!(app.metadata_editor);
+        assert_eq!(app.metadata_tags_input.value(), "unsaved draft");
+        restore(&mut doc, &selected);
+        app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+        assert!(
+            !app.metadata_editor,
+            "stale draft must detach before any new input"
+        );
+        app.save_metadata_editor(&mut doc);
+        assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["restored"]);
+        app.begin_metadata_editor(&doc, &id);
+        app.metadata_tags_input.set_text("next edit");
+        app.save_metadata_editor(&mut doc);
+        assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["next edit"]);
+    }
+    #[test]
+    fn changed_photo_identity_invalidates_cached_thumbnail_and_late_old_result() {
+        let (mut app, mut doc, id) = setup();
+        let old = app.thumbnail_generation.unwrap();
+        app.library_thumbnails
+            .insert(id.clone(), to_peniko(&crate::shots_pattern(4, 3)));
+        let mut lib = PhotosDoc::library(&doc);
+        lib.photos[0].image.content = Some("a".repeat(64));
+        PhotosDoc::set_library(&mut doc, &lib);
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.library_thumbnails.contains_key(&id));
+        app.accept_thumbnail_result(ThumbnailResult {
+            generation: old,
+            id: id.clone(),
+            preview: Some(crate::shots_pattern(4, 3)),
+        });
+        assert!(!app.library_thumbnails.contains_key(&id));
+    }
+    #[test]
+    fn pending_resource_open_cannot_overwrite_changed_content_and_settles_once() {
+        let (mut app, mut doc, _) = setup();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("import.png");
+        std::fs::write(
+            &path,
+            pixels::encode_png(&crate::shots_pattern(4, 3)).unwrap(),
+        )
+        .unwrap();
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::PhotosOperation::Open {
+            path: Some(path.to_string_lossy().into()),
+        })
+        .unwrap();
+        app.start_resource_operation(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::PHOTOS_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &ROOT,
+        )
+        .unwrap();
+        PhotosDoc::set_image(&mut doc, None);
+        let heads = doc.get_heads();
+        app.sync(&mut doc, &ROOT);
+        assert!(PhotosDoc::image(&doc).is_none());
+        assert_eq!(doc.get_heads(), heads);
+        assert!(
+            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(qos_actions::InvocationUpdate::Cancelled{invocation:id,..}) if id==invocation)
+        );
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                .is_none()
+        );
+    }
+    #[test]
+    fn already_dispatched_picker_reports_actual_outcome_without_importing_stale_selection() {
+        for outcome in [0, 1, 2] {
+            let (mut app, mut doc, _) = setup();
+            let invocation = qos_actions::InvocationId::new();
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.picker = Some(rx);
+            app.resource_invocation = Some(invocation);
+            app.import_content = Some(LiveContent::read(&doc));
+            PhotosDoc::set_image(&mut doc, None);
+            app.sync(&mut doc, &ROOT);
+            tx.send(match outcome {
+                0 => ui::portal::PortalOutcome::Opened(std::path::PathBuf::from("chosen.png")),
+                1 => ui::portal::PortalOutcome::Cancelled,
+                _ => ui::portal::PortalOutcome::Failed("actual picker failure".into()),
+            })
+            .unwrap();
+            let heads = doc.get_heads();
+            app.sync(&mut doc, &ROOT);
+            assert_eq!(doc.get_heads(), heads);
+            assert!(PhotosDoc::image(&doc).is_none());
+            match app
+                .poll_resource_operation(invocation, false, &doc, &ROOT)
+                .unwrap()
+            {
+                qos_actions::InvocationUpdate::Failed {
+                    invocation: id,
+                    error,
+                } => {
+                    assert_eq!(id, invocation);
+                    assert_eq!(
+                        error.code,
+                        if outcome == 0 {
+                            "photos.stale_selection"
+                        } else {
+                            "photos.portal_failed"
+                        }
+                    );
+                    if outcome == 0 {
+                        assert!(error.message.contains("chosen.png"));
+                    } else {
+                        assert_eq!(error.message, "actual picker failure");
+                    }
+                }
+                qos_actions::InvocationUpdate::Cancelled { invocation: id, .. } => {
+                    assert_eq!(id, invocation);
+                    assert_eq!(outcome, 1);
+                }
+                other => panic!("unexpected settlement {other:?}"),
+            }
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                    .is_none()
+            );
+        }
+    }
+    #[test]
+    fn changed_album_or_deleted_member_detaches_draft_and_cannot_resurrect_it() {
+        let (mut app, mut doc, id) = setup();
+        let selected = doc.get_heads();
+        let mut lib = PhotosDoc::library(&doc);
+        lib.albums.push(crate::model::Album {
+            id: "album".into(),
+            name: "Original".into(),
+            photo_ids: vec![id],
+        });
+        PhotosDoc::set_library(&mut doc, &lib);
+        app.sync(&mut doc, &ROOT);
+        app.active_album = Some("album".into());
+        app.begin_edit_album(&doc);
+        app.album_name_input.set_text("stale draft");
+        restore(&mut doc, &selected);
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.album_editor);
+        app.save_album_editor(&mut doc);
+        assert!(PhotosDoc::library(&doc).albums.is_empty());
+        app.begin_new_album(&doc);
+        app.album_name_input.set_text("Next album");
+        app.save_album_editor(&mut doc);
+        assert_eq!(PhotosDoc::library(&doc).albums[0].name, "Next album");
+    }
+
+    fn album_membership_fixture() -> (PhotosApp, AutoCommit, [String; 4]) {
+        let mut doc = AutoCommit::new();
+        // Browse order deliberately differs from lexical identity order.
+        let photos: Vec<_> = ["c", "a", "d", "b"]
+            .into_iter()
+            .map(|label| {
+                LibraryPhoto::from_image(
+                    OpenImage::from_path(&format!("{label}.png"), 4, 3)
+                        .with_content(label.repeat(64)),
+                )
+            })
+            .collect();
+        let ids = std::array::from_fn(|i| photos[i].id.clone());
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos,
+                albums: Vec::new(),
+            },
+        );
+        let mut app = PhotosApp::new();
+        app.library_mode = true;
+        app.sync(&mut doc, &ROOT);
+        (app, doc, ids)
+    }
+
+    fn activate_album_control(app: &mut PhotosApp, doc: &mut AutoCommit, target: &str) {
+        assert!(app.perform_semantic_action(target, &AccessAction::Activate, doc, &ROOT));
+        app.sync(doc, &ROOT);
+    }
+
+    fn seed_membership_album(doc: &mut AutoCommit, ids: &[String; 4]) {
+        let mut library = PhotosDoc::library(doc);
+        library.albums.push(crate::model::Album {
+            id: "album".into(),
+            name: "Original".into(),
+            photo_ids: vec![ids[0].clone(), ids[3].clone()],
+        });
+        PhotosDoc::set_library(doc, &library);
+    }
+
+    #[test]
+    fn album_membership_create_saves_selected_ids_in_browse_order() {
+        let (mut app, mut doc, ids) = album_membership_fixture();
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:new");
+        app.album_name_input.set_text("Selected photographs");
+        // Select in reverse browse order; toggle a third photograph off again.
+        for i in [3, 1, 0, 1] {
+            activate_album_control(
+                &mut app,
+                &mut doc,
+                &format!("photos:library-photo:{}", ids[i]),
+            );
+        }
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+        let library = PhotosDoc::library(&doc);
+        assert_eq!(library.albums.len(), 1);
+        assert_eq!(library.albums[0].name, "Selected photographs");
+        assert_eq!(
+            library.albums[0].photo_ids,
+            vec![ids[0].clone(), ids[3].clone()]
+        );
+        assert!(!app.album_editor);
+    }
+
+    #[test]
+    fn album_membership_rename_preserves_selected_ids_and_order() {
+        let (mut app, mut doc, ids) = album_membership_fixture();
+        seed_membership_album(&mut doc, &ids);
+        app.sync(&mut doc, &ROOT);
+        activate_album_control(&mut app, &mut doc, "photos:library-album:album");
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+        app.album_name_input.set_text("Renamed album");
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+        let library = PhotosDoc::library(&doc);
+        assert_eq!(library.albums.len(), 1);
+        let album = library.album("album").unwrap();
+        assert_eq!(album.name, "Renamed album");
+        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
+        assert!(!app.album_editor);
+    }
+
+    #[test]
+    fn album_membership_after_restore_supports_normal_edit_and_browse_order() {
+        let (mut app, mut doc, ids) = album_membership_fixture();
+        seed_membership_album(&mut doc, &ids);
+        let selected = doc.get_heads();
+        let mut library = PhotosDoc::library(&doc);
+        library.albums[0].name = "Later album".into();
+        library.albums[0].photo_ids = vec![ids[1].clone(), ids[2].clone()];
+        PhotosDoc::set_library(&mut doc, &library);
+        app.sync(&mut doc, &ROOT);
+        activate_album_control(&mut app, &mut doc, "photos:library-album:album");
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+        app.album_name_input.set_text("Unsaved later draft");
+        restore(&mut doc, &selected);
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.album_editor, "restore must detach the obsolete draft");
+        let restored = PhotosDoc::library(&doc);
+        let album = restored.album("album").unwrap();
+        assert_eq!(album.name, "Original");
+        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
+
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+        app.album_name_input.set_text("Edited after restore");
+        activate_album_control(&mut app, &mut doc, "photos:library-album:all");
+        for i in [3, 2] {
+            activate_album_control(
+                &mut app,
+                &mut doc,
+                &format!("photos:library-photo:{}", ids[i]),
+            );
+        }
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+        let library = PhotosDoc::library(&doc);
+        let album = library.album("album").unwrap();
+        assert_eq!(album.name, "Edited after restore");
+        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[2].clone()]);
+        assert_eq!(library.photos.len(), 4);
+        assert!(!app.album_editor);
+    }
+
+    #[test]
+    fn content_restore_drops_active_viewer_drag_before_next_pointer_move() {
+        let mut doc = AutoCommit::new();
+        let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
+        let open = OpenImage::from_path("same.png", 6, 4)
+            .with_content(qdoc::blobstore::put(&bytes).unwrap());
+        PhotosDoc::set_image(&mut doc, Some(&open));
+        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+        let selected = doc.get_heads();
+        PhotosDoc::set_edits(&mut doc, &Edits::default());
+        let mut app = PhotosApp::new();
+        app.sync(&mut doc, &ROOT);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let theme = Theme::dark();
+        let node = app.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .set_style(
+                node,
+                Style {
+                    size: Size {
+                        width: Dimension::length(800.),
+                        height: Dimension::length(600.),
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(800.),
+                    height: AvailableSpace::Definite(600.),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+        let center = app.viewer.as_ref().unwrap().get_rect().center();
+        let device_id = unsafe { std::mem::zeroed() };
+        let mut handled = false;
+        let mut focus = None;
+        for event in [
+            winit::event::WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+            },
+            winit::event::WindowEvent::MouseInput {
+                device_id,
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            app.viewer.as_mut().unwrap().handle_event(
+                &event,
+                1.,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+        }
+        restore(&mut doc, &selected);
+        app.handle_event(
+            &winit::event::WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(center.x + 40., center.y + 20.),
+            },
+            1.,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert_eq!(app.viewer.as_ref().unwrap().pan(), vello::kurbo::Vec2::ZERO);
+        assert!((app.viewer.as_ref().unwrap().zoom() - 1.).abs() < f32::EPSILON);
+        let next = PhotosDoc::edits(&doc).rotated_right();
+        app.commit_edits(&mut doc, next);
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 2);
+    }
+
+    #[test]
+    fn failed_import_reports_failure_even_when_previous_photo_is_still_decoded() {
+        let mut doc = AutoCommit::new();
+        let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
+        let open = OpenImage::from_path("existing.png", 6, 4)
+            .with_content(qdoc::blobstore::put(&bytes).unwrap());
+        PhotosDoc::set_image(&mut doc, Some(&open));
+        let mut app = PhotosApp::new();
+        app.sync(&mut doc, &ROOT);
+        assert!(app.open_image_path().is_some());
+        let invocation = qos_actions::InvocationId::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = serde_json::to_vec(&crate::actions::PhotosOperation::Open {
+            path: Some(tmp.path().join("absent.png").to_string_lossy().into()),
+        })
+        .unwrap();
+        app.start_resource_operation(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::PHOTOS_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &ROOT,
+        )
+        .unwrap();
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(qos_actions::InvocationUpdate::Failed{invocation:id,..}) if id==invocation)
+        );
+        assert_eq!(PhotosDoc::image(&doc), Some(open));
     }
 }

@@ -1,0 +1,4 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling notes v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/notes)
+    Finished `dev` profile [unoptimized] target(s) in 12.72s

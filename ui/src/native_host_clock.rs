@@ -1,6 +1,6 @@
 //! Direct host-clock bounds for opt-in native input diagnostics.
 //!
-//! Metal's presentedTime and CACurrentMediaTime use host seconds. Keep these
+//! Metal's `presentedTime` and `CACurrentMediaTime` use host seconds. Keep these
 //! bounds separate from Instant offsets: no assumption about Instant's epoch
 //! or cross-clock rate is needed. The caller serializes after all reads finish.
 use std::time::Instant;

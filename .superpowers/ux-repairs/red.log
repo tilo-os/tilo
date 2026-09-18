@@ -1,0 +1,41 @@
+    Blocking waiting for file lock on build directory
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.53s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 3 tests
+test widget::tests::menu_ux_open_menus_capture_editing_keys_and_keyboard_activation ... FAILED
+test widget::tests::menu_ux_right_click_preserves_selected_text_and_clipboard_actions ... FAILED
+test widget::tests::menu_ux_context_actions_stay_in_the_viewport ... FAILED
+
+failures:
+
+---- widget::tests::menu_ux_open_menus_capture_editing_keys_and_keyboard_activation stdout ----
+
+thread 'widget::tests::menu_ux_open_menus_capture_editing_keys_and_keyboard_activation' (3738861) panicked at apps/word-processor/src/widget.rs:14675:13:
+assertion `left == right` failed
+  left: Some("Keep my draf")
+ right: Some("Keep my draft")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- widget::tests::menu_ux_right_click_preserves_selected_text_and_clipboard_actions stdout ----
+
+thread 'widget::tests::menu_ux_right_click_preserves_selected_text_and_clipboard_actions' (3738862) panicked at apps/word-processor/src/widget.rs:14655:9:
+assertion `left == right` failed
+  left: ""
+ right: "Hello world"
+
+---- widget::tests::menu_ux_context_actions_stay_in_the_viewport stdout ----
+
+thread 'widget::tests::menu_ux_context_actions_stay_in_the_viewport' (3738860) panicked at apps/word-processor/src/widget.rs:14697:17:
+row outside viewport: Rect { x0: 598.0, y0: 404.0, x1: 818.0, y1: 432.0 }
+
+
+failures:
+    widget::tests::menu_ux_context_actions_stay_in_the_viewport
+    widget::tests::menu_ux_open_menus_capture_editing_keys_and_keyboard_activation
+    widget::tests::menu_ux_right_click_preserves_selected_text_and_clipboard_actions
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 287 filtered out; finished in 0.31s
+
+error: test failed, to rerun pass `-p word-processor --lib`

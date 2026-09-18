@@ -2327,3 +2327,92 @@ fn native_store_failure_invalidates_admitted_tokens() {
         Err(StoreError::StaleRevision)
     ));
 }
+
+#[test]
+fn native_intent_atomically_records_budget_marker_while_legacy_stays_unknown() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 710);
+    let session = store.transaction_session(record.id).unwrap();
+    let live = store.begin_native(intent(&record), &session).unwrap();
+    let encoded = serde_json::to_value(store.operation(live.id()).unwrap()).unwrap();
+    assert_eq!(encoded["native_budget"]["version"], 1);
+    assert_eq!(encoded["native_budget"]["reserved"], 0);
+    assert_eq!(encoded["native_budget"]["sequence"], 0);
+    let id = live.id();
+    store.checkpoint().unwrap();
+    drop(store);
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    assert_eq!(serde_json::to_value(store.operation(id).unwrap()).unwrap(), encoded);
+    let legacy = create(&mut store, 711);
+    let operation = store.begin_intent(intent(&legacy)).unwrap().value;
+    let encoded = serde_json::to_value(store.operation(operation).unwrap()).unwrap();
+    assert!(encoded.get("native_budget").is_none_or(serde_json::Value::is_null));
+}
+
+#[test]
+fn native_read_reservations_are_durable_shared_and_burn_on_reopen() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 712);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store.begin_native(intent(&record), &session).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let cancel = AtomicBool::new(false);
+    assert!(live.operation_reads().charge(1).is_err());
+    store.reserve_native_reads(&mut live, &session, 1, deadline, &cancel).unwrap();
+    let budget = store.operation(live.id()).unwrap().native_budget.unwrap();
+    assert_eq!(budget.reserved, format::READ_QUANTUM);
+    assert_eq!(budget.sequence, 1);
+    assert_eq!(store.load_connection(record.id).unwrap().revision, live.revision());
+    let same = store.resume_native(live.id(), &session).unwrap();
+    assert!(Arc::ptr_eq(live.operation_reads(), same.operation_reads()));
+    assert!(same.operation_reads().charge(format::READ_QUANTUM - 1).is_ok());
+    assert!(live.operation_reads().charge(1).is_ok());
+    assert!(same.operation_reads().charge(1).is_err());
+    let id = live.id();
+    store.reserve_native_reads(&mut live, &session, 1, deadline, &cancel).unwrap();
+    store.checkpoint().unwrap();
+    drop(same); drop(live); drop(session); drop(store);
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store.resume_native(id, &session).unwrap();
+    assert!(live.operation_reads().charge(1).is_err());
+    assert_eq!(store.operation(id).unwrap().native_budget.unwrap().reserved, 2 * format::READ_QUANTUM);
+    store.reserve_native_reads(&mut live, &session, 1, deadline, &cancel).unwrap();
+    assert!(live.operation_reads().charge(format::READ_QUANTUM).is_ok());
+    assert!(live.operation_reads().charge(1).is_err());
+    assert_eq!(store.operation(id).unwrap().native_budget.unwrap().sequence, 3);
+}
+
+#[test]
+fn native_read_reservations_refuse_busy_stale_cancelled_and_over_limit() {
+    use crate::setup::connection::transaction::StepKind;
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 713);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store.begin_native(intent(&record), &session).unwrap();
+    let mut stale = store.resume_native(live.id(), &session).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let cancel = AtomicBool::new(false);
+    let step = session.admit_step(&store, &live, StepKind::Namespace, &cancel).unwrap();
+    assert!(matches!(store.reserve_native_reads(&mut live, &session, 1, deadline, &cancel), Err(StoreError::Busy)));
+    drop(step);
+    assert!(matches!(store.reserve_native_reads(&mut live, &session, u64::MAX, deadline, &cancel), Err(StoreError::LimitExceeded)));
+    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(store.reserve_native_reads(&mut live, &session, 1, deadline, &cancel), Err(StoreError::Cancelled)));
+    cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(store.operation(live.id()).unwrap().native_budget.unwrap().reserved, 0);
+    store.reserve_native_reads(&mut live, &session, format::READ_LIMIT, deadline, &cancel).unwrap();
+    assert!(matches!(store.reserve_native_reads(&mut stale, &session, 1, deadline, &cancel), Err(StoreError::StaleRevision)));
+    assert!(matches!(store.reserve_native_reads(&mut live, &session, 1, deadline, &cancel), Err(StoreError::LimitExceeded)));
+    assert!(live.operation_reads().charge(format::READ_LIMIT).is_ok());
+    assert!(live.operation_reads().charge(1).is_err());
+    session.request_disconnect();
+    assert!(matches!(store.reserve_native_reads(&mut live, &session, 1, deadline, &cancel), Err(StoreError::Cancelled)));
+    let legacy = create(&mut store, 714);
+    let id = store.begin_intent(intent(&legacy)).unwrap().value;
+    let session = store.transaction_session(legacy.id).unwrap();
+    assert!(matches!(store.resume_native(id, &session), Err(StoreError::RecoveryRequired)));
+}

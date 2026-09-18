@@ -993,7 +993,7 @@ fn valid_site_event(value: &Value, event: &str) -> bool {
         && if event == "site_result" {
             value["success"].is_boolean()
                 && value["action"].as_str().is_some_and(|s| {
-                    matches!(s, "status" | "clear" | "revoke" | "enable" | "disable")
+                    matches!(s, "status" | "clear" | "revoke" | "enable" | "disable" | "reload")
                 })
                 && value["message"].as_str().is_some_and(|s| s.len() <= 1024)
         } else {
@@ -1195,7 +1195,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && origin.len() <= 8192
                 && *generation > 0
                 && *generation <= 9_007_199_254_740_991
-                && matches!(action.as_str(), "clear" | "revoke" | "enable" | "disable")
+                && matches!(action.as_str(), "clear" | "revoke" | "enable" | "disable" | "reload")
         }
         WebViewCommand::ContextMenuAction { id, command } => {
             *id > 0 && i32::try_from(*id).is_ok() && i32::try_from(*command).is_ok()

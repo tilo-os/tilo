@@ -81,6 +81,14 @@ impl TransactionSession {
         }
         Ok(())
     }
+    pub(super) fn require_idle(&self) -> Result<(), StoreError> {
+        let state = self.gate.state.lock().map_err(|_| StoreError::RecoveryRequired)?;
+        if state.closed || self.gate.stopped.load(Ordering::Acquire) {
+            return Err(StoreError::Cancelled);
+        }
+        if state.in_flight != 0 { return Err(StoreError::Busy); }
+        Ok(())
+    }
     pub(super) fn admit_step(
         &self,
         store: &ConnectionStore,

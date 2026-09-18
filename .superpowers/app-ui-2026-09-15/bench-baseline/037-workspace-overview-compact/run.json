@@ -1,0 +1,11 @@
+{
+  "executable": "/Users/xaver/dev/qos-macos-shell/target/debug/ux-bench",
+  "executable_blake3": "7273ca90f35067deac54f8d41473c937530d885179de00a6817b07464bf5ba15",
+  "fixture_profile": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/bench-baseline/037-workspace-overview-compact/profile",
+  "persisted_workspace_names": [
+    "Home",
+    "Untitled"
+  ],
+  "platform": "macos",
+  "scenario": "{\n  \"name\": \"Reach workspace overview\",\n  \"goal\": \"Find and select a workspace using visible desktop navigation\",\n  \"viewport\": [\n    800,\n    700\n  ],\n  \"budget\": {\n    \"clicks\": 3,\n    \"keys\": 0\n  },\n  \"steps\": [\n    {\n      \"op\": \"input\",\n      \"action\": {\n        \"click_named\": \"semantic:topbar:overview\"\n      }\n    },\n    {\n      \"op\": \"checkpoint\",\n      \"name\": \"overview\",\n      \"checks\": [\n        {\n          \"kind\": \"visible\",\n          \"target\": \"semantic:Home\"\n        }\n      ]\n    },\n    {\n      \"op\": \"input\",\n      \"action\": {\n        \"click_named\": \"semantic:New workspace\"\n      }\n    },\n    {\n      \"op\": \"checkpoint\",\n      \"name\": \"workspace-created\",\n      \"checks\": [\n        {\n          \"kind\": \"state\",\n          \"pointer\": \"/workspace_count\",\n          \"equals\": 2\n        }\n      ]\n    },\n    {\n      \"op\": \"input\",\n      \"action\": {\n        \"click_named\": \"semantic:topbar:workspace-up\"\n      }\n    },\n    {\n      \"op\": \"checkpoint\",\n      \"name\": \"returned-home\",\n      \"checks\": [\n        {\n          \"kind\": \"state\",\n          \"pointer\": \"/active_workspace\",\n          \"equals\": \"Home\"\n        },\n        {\n          \"kind\": \"state\",\n          \"pointer\": \"/workspace_count\",\n          \"equals\": 2\n        }\n      ]\n    }\n  ]\n}\n"
+}

@@ -507,6 +507,22 @@ impl HistoryHost {
             .fit_content(32.0)
             .on_click(move || queue.borrow_mut().push_back(command))
     }
+    fn preview_page_toolbar(&self, mut toolbar: Column) -> Column {
+    if let Some(preview) = &self.canvas().preview {
+        let pages = preview.accessibility().pages;
+        if pages.len() > 1 {
+            let current = preview.view().page;
+            let label = pages.iter().find(|(id, _)| Some(id) == current.as_ref())
+                .map_or("Page", |(_, title)| title.as_str());
+            toolbar = toolbar.push(Box::new(Text::new(label)))
+                .push(Box::new(Row::new()
+                    .push(Box::new(self.command_button("history-previous-page", "Previous page", Command::PreviousPage)))
+                    .push(Box::new(self.command_button("history-next-page", "Next page", Command::NextPage)))));
+        }
+    }
+        toolbar
+    }
+
     fn rebuild_toolbar(&mut self) {
         let title = self
             .registration
@@ -578,18 +594,7 @@ impl HistoryHost {
                     Row::new().push(Box::new(header)).push(Box::new(compare)),
                 ));
             }
-            if let Some(preview) = &self.canvas().preview {
-                let pages = preview.accessibility().pages;
-                if pages.len() > 1 {
-                    let current = preview.view().page;
-                    let label = pages.iter().find(|(id, _)| Some(id) == current.as_ref())
-                        .map_or("Page", |(_, title)| title.as_str());
-                    toolbar = toolbar.push(Box::new(Text::new(label)))
-                        .push(Box::new(Row::new()
-                            .push(Box::new(self.command_button("history-previous-page", "Previous page", Command::PreviousPage)))
-                            .push(Box::new(self.command_button("history-next-page", "Next page", Command::NextPage)))));
-                }
-            }
+            toolbar = self.preview_page_toolbar(toolbar);
         }
         if self
             .controller

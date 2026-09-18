@@ -1,0 +1,460 @@
+[
+  {
+    "app": "store",
+    "name": "short",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/store/short.png",
+      "--viewport",
+      "800x480"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      800,
+      480
+    ],
+    "binary_sha256": "9a92651de0967091fbf14318c5289723a22feb7aeb68b1fa253a0b337c2305bf"
+  },
+  {
+    "app": "settings",
+    "name": "short",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/settings/short.png",
+      "--viewport",
+      "800x480"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      800,
+      480
+    ],
+    "binary_sha256": "8944d4896ae42a51e89d73b28399e934a4db910ef184500f6c4d43b4114bb495"
+  },
+  {
+    "app": "themes",
+    "name": "short",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/themes/short.png",
+      "--viewport",
+      "800x480"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      800,
+      480
+    ],
+    "binary_sha256": "05de106e611ce53ce523cf8ec488015b79010ca0235cbf764f2243fb52b61304"
+  },
+  {
+    "app": "vpn",
+    "name": "short",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/short.png",
+      "--viewport",
+      "800x480"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      800,
+      480
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "themes",
+    "name": "scroll-wide",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/themes/scroll-wide.png",
+      "--viewport",
+      "1200x800"
+    ],
+    "extra_env": {
+      "QOS_THEMES_SHOT": "scroll"
+    },
+    "exit": 0,
+    "dimensions": [
+      1200,
+      800
+    ],
+    "binary_sha256": "05de106e611ce53ce523cf8ec488015b79010ca0235cbf764f2243fb52b61304"
+  },
+  {
+    "app": "themes",
+    "name": "scroll-compact",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/themes/scroll-compact.png",
+      "--viewport",
+      "800x700"
+    ],
+    "extra_env": {
+      "QOS_THEMES_SHOT": "scroll"
+    },
+    "exit": 0,
+    "dimensions": [
+      800,
+      700
+    ],
+    "binary_sha256": "05de106e611ce53ce523cf8ec488015b79010ca0235cbf764f2243fb52b61304"
+  },
+  {
+    "app": "themes",
+    "name": "scroll-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/themes/scroll-narrow.png",
+      "--viewport",
+      "480x900"
+    ],
+    "extra_env": {
+      "QOS_THEMES_SHOT": "scroll"
+    },
+    "exit": 0,
+    "dimensions": [
+      480,
+      900
+    ],
+    "binary_sha256": "05de106e611ce53ce523cf8ec488015b79010ca0235cbf764f2243fb52b61304"
+  },
+  {
+    "app": "themes",
+    "name": "live-wide",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/themes/live-wide.png",
+      "--viewport",
+      "1200x800"
+    ],
+    "extra_env": {
+      "QOS_THEMES_SHOT": "live"
+    },
+    "exit": 0,
+    "dimensions": [
+      1200,
+      800
+    ],
+    "binary_sha256": "05de106e611ce53ce523cf8ec488015b79010ca0235cbf764f2243fb52b61304"
+  },
+  {
+    "app": "themes",
+    "name": "live-compact",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/themes/live-compact.png",
+      "--viewport",
+      "800x700"
+    ],
+    "extra_env": {
+      "QOS_THEMES_SHOT": "live"
+    },
+    "exit": 0,
+    "dimensions": [
+      800,
+      700
+    ],
+    "binary_sha256": "05de106e611ce53ce523cf8ec488015b79010ca0235cbf764f2243fb52b61304"
+  },
+  {
+    "app": "themes",
+    "name": "live-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/themes/live-narrow.png",
+      "--viewport",
+      "480x900"
+    ],
+    "extra_env": {
+      "QOS_THEMES_SHOT": "live"
+    },
+    "exit": 0,
+    "dimensions": [
+      480,
+      900
+    ],
+    "binary_sha256": "05de106e611ce53ce523cf8ec488015b79010ca0235cbf764f2243fb52b61304"
+  },
+  {
+    "app": "vpn",
+    "name": "detail-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/detail-narrow.png",
+      "--viewport",
+      "480x900",
+      "--scenario",
+      "detail"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      480,
+      900
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "vpn",
+    "name": "detail-compact",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/detail-compact.png",
+      "--viewport",
+      "800x700",
+      "--scenario",
+      "detail"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      800,
+      700
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "vpn",
+    "name": "import-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/import-narrow.png",
+      "--viewport",
+      "480x900",
+      "--scenario",
+      "import"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      480,
+      900
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "vpn",
+    "name": "import-compact",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/import-compact.png",
+      "--viewport",
+      "800x700",
+      "--scenario",
+      "import"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      800,
+      700
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "vpn",
+    "name": "error-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/error-narrow.png",
+      "--viewport",
+      "480x900",
+      "--scenario",
+      "error"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      480,
+      900
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "vpn",
+    "name": "error-compact",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/error-compact.png",
+      "--viewport",
+      "800x700",
+      "--scenario",
+      "error"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      800,
+      700
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "vpn",
+    "name": "loading-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/loading-narrow.png",
+      "--viewport",
+      "480x900",
+      "--scenario",
+      "loading"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      480,
+      900
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "vpn",
+    "name": "loading-compact",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/vpn/loading-compact.png",
+      "--viewport",
+      "800x700",
+      "--scenario",
+      "loading"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      800,
+      700
+    ],
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4"
+  },
+  {
+    "app": "store",
+    "name": "detail-wide",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/store/detail-wide.png",
+      "--viewport",
+      "1200x800",
+      "--scenario",
+      "detail"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      1200,
+      800
+    ],
+    "binary_sha256": "9a92651de0967091fbf14318c5289723a22feb7aeb68b1fa253a0b337c2305bf"
+  },
+  {
+    "app": "store",
+    "name": "detail-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/store/detail-narrow.png",
+      "--viewport",
+      "480x900",
+      "--scenario",
+      "detail"
+    ],
+    "extra_env": {},
+    "exit": 0,
+    "dimensions": [
+      480,
+      900
+    ],
+    "binary_sha256": "9a92651de0967091fbf14318c5289723a22feb7aeb68b1fa253a0b337c2305bf"
+  },
+  {
+    "app": "settings",
+    "name": "panel-external-accounts-wide",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/settings/panel-external-accounts-wide.png"
+    ],
+    "extra_env": {
+      "QOS_SHOTS_PANEL": "external-accounts"
+    },
+    "exit": 0,
+    "dimensions": [
+      1200,
+      760
+    ],
+    "binary_sha256": "8944d4896ae42a51e89d73b28399e934a4db910ef184500f6c4d43b4114bb495"
+  },
+  {
+    "app": "settings",
+    "name": "panel-external-accounts-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/settings/panel-external-accounts-narrow.png"
+    ],
+    "extra_env": {
+      "QOS_SHOTS_PANEL": "external-accounts"
+    },
+    "exit": 101,
+    "dimensions": null,
+    "binary_sha256": "8944d4896ae42a51e89d73b28399e934a4db910ef184500f6c4d43b4114bb495"
+  },
+  {
+    "app": "settings",
+    "name": "panel-region-formats-wide",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/settings/panel-region-formats-wide.png"
+    ],
+    "extra_env": {
+      "QOS_SHOTS_PANEL": "region-formats"
+    },
+    "exit": 0,
+    "dimensions": [
+      1200,
+      760
+    ],
+    "binary_sha256": "8944d4896ae42a51e89d73b28399e934a4db910ef184500f6c4d43b4114bb495"
+  },
+  {
+    "app": "settings",
+    "name": "panel-region-formats-narrow",
+    "command": [
+      "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+      "--shots",
+      "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-final-20260915/routes/settings/panel-region-formats-narrow.png"
+    ],
+    "extra_env": {
+      "QOS_SHOTS_PANEL": "region-formats"
+    },
+    "exit": 101,
+    "dimensions": null,
+    "binary_sha256": "8944d4896ae42a51e89d73b28399e934a4db910ef184500f6c4d43b4114bb495"
+  }
+]

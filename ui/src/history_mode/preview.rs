@@ -61,6 +61,8 @@ pub struct PreviewAccessibility {
 }
 
 pub trait HistoryPreview {
+    /// # Errors
+    /// Returns a description when the preview cannot lay out the frozen content.
     fn layout(
         &mut self,
         bounds: Rect,

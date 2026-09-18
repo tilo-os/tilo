@@ -266,13 +266,41 @@ mod tests {
 // Shared by native copying and Connected observation so neither can reset the
 // same operation's aggregate read budget by opening another reader.
 pub(in crate::setup::connection) struct OperationReads {
-    used: std::sync::atomic::AtomicU64,
+    credit: std::sync::Mutex<ReadCredit>,
+}
+#[derive(Default)]
+struct ReadCredit {
+    sequence: u64,
+    available: u64,
 }
 impl OperationReads {
     pub(in crate::setup::connection) fn new() -> Self {
-        Self {
-            used: std::sync::atomic::AtomicU64::new(0),
+        Self::reopened(0)
+    }
+    pub(in crate::setup::connection) fn reopened(sequence: u64) -> Self {
+        Self { credit: std::sync::Mutex::new(ReadCredit { sequence, available: 0 }) }
+    }
+    /// Only the serialized store owner grants credit after ReadReserve fsync.
+    pub(in crate::setup::connection) fn grant(&self, sequence: u64, bytes: u64) -> Result<(), ()> {
+        let mut credit = self.credit.lock().map_err(|_| ())?;
+        if sequence != credit.sequence.checked_add(1).ok_or(())? {
+            return Err(());
         }
+        let available = credit.available.checked_add(bytes).filter(|n| *n <= 1_073_741_824).ok_or(())?;
+        credit.sequence = sequence;
+        credit.available = available;
+        Ok(())
+    }
+    pub(in crate::setup::connection) fn charge(&self, count: u64) -> Result<(), ()> {
+        let mut credit = self.credit.lock().map_err(|_| ())?;
+        credit.available = credit.available.checked_sub(count).ok_or(())?;
+        Ok(())
+    }
+    #[cfg(test)]
+    fn funded_for_test() -> std::sync::Arc<Self> {
+        let reads = std::sync::Arc::new(Self::new());
+        reads.grant(1, 1_073_741_824).unwrap();
+        reads
     }
 }
 struct ReadBudget {
@@ -290,26 +318,48 @@ impl ReadBudget {
         if std::time::Instant::now() >= self.deadline {
             return Err(());
         }
-        self.reads
-            .used
-            .fetch_update(
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-                |used| {
-                    used.checked_add(count)
-                        .filter(|next| *next <= 1024 * 1024 * 1024)
-                },
-            )
-            .map(|_| ())
-            .map_err(|_| ())
+        self.reads.charge(count)
     }
 }
 #[cfg(test)]
 mod budget_tests {
     use super::*;
     #[test]
-    fn new_epoch_keeps_the_same_operation_read_allowance() {
+    fn granted_credit_is_single_issue_and_atomic_across_readers() {
         let reads = std::sync::Arc::new(OperationReads::new());
+        let unit = 1024 * 1024;
+        reads.grant(1, 16 * unit).unwrap();
+        assert!(reads.grant(1, 16 * unit).is_err());
+        assert!(reads.grant(3, unit).is_err());
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let reads = &reads;
+                let count = &count;
+                scope.spawn(move || {
+                    for _ in 0..4 {
+                        if reads.charge(unit).is_ok() { count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+                    }
+                });
+            }
+        });
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 16);
+        assert!(reads.charge(1).is_err());
+        reads.grant(2, 1).unwrap();
+        assert!(reads.charge(1).is_ok());
+        assert!(reads.charge(u64::MAX).is_err());
+    }
+    #[test]
+    fn unreserved_native_reads_have_no_spendable_credit() {
+        let reads = std::sync::Arc::new(OperationReads::new());
+        let budget = ReadBudget::for_operation(&reads,
+            std::time::Instant::now() + std::time::Duration::from_secs(30));
+        assert!(budget.charge(0).is_ok());
+        assert!(budget.charge(1).is_err());
+    }
+    #[test]
+    fn new_epoch_keeps_the_same_operation_read_allowance() {
+        let reads = OperationReads::funded_for_test();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let first = ReadBudget::for_operation(&reads, deadline);
         assert!(first.charge(1024 * 1024 * 1024).is_ok());
@@ -320,7 +370,7 @@ mod budget_tests {
     #[test]
     fn aggregate_reads_cannot_reset_the_limit_or_outlive_the_deadline() {
         let budget = std::sync::Arc::new(ReadBudget {
-            reads: std::sync::Arc::new(OperationReads::new()),
+            reads: OperationReads::funded_for_test(),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
         });
         let second_reader = std::sync::Arc::clone(&budget);
@@ -329,8 +379,8 @@ mod budget_tests {
         assert!(budget.charge(1).is_err());
         assert!(second_reader.charge(u64::MAX).is_err());
         assert_eq!(
-            budget.reads.used.load(std::sync::atomic::Ordering::Relaxed),
-            1024 * 1024 * 1024
+            budget.reads.credit.lock().unwrap().available,
+            0
         );
         let expired = ReadBudget {
             reads: std::sync::Arc::new(OperationReads::new()),

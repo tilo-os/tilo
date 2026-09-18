@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "workspaces": [
+    {
+      "id": 5417267401773285377,
+      "room": "e7df619d-323c-48fc-af76-0f1d3500ba1e",
+      "name": "Home",
+      "strips": [
+        {
+          "id": 5417267401773285378,
+          "name": "Main",
+          "window_groups": []
+        }
+      ],
+      "collaborators": [],
+      "owner": "xaver",
+      "pending_ownership_transfer": null,
+      "ownership_transfer_audit": [],
+      "ownership_transfer_cancellations": [],
+      "capabilities": [
+        {
+          "subject": {
+            "Principal": {
+              "Person": "xaver"
+            }
+          },
+          "scope": {
+            "Room": "e7df619d-323c-48fc-af76-0f1d3500ba1e"
+          },
+          "effect": "Grant",
+          "verb": "Admin",
+          "id": "owner-5417267401773285377",
+          "expiry": "Never",
+          "granted_by": null
+        }
+      ],
+      "default_apps": {
+        "policy": {},
+        "user_choices": {}
+      },
+      "tasks": [],
+      "effect_receipts": [],
+      "shared_surfaces": {}
+    }
+  ],
+  "active": 5417267401773285377,
+  "active_strip": {
+    "5417267401773285377": 5417267401773285378
+  },
+  "active_group": {},
+  "collaborators": [],
+  "room_authority": {},
+  "room_peer_names": {},
+  "room_peer_identities": {},
+  "room_share_floor": {},
+  "continuation_tabs": [],
+  "continuation_rooms": [],
+  "continuation_owned_tabs": {},
+  "continuation_closed_tabs": {},
+  "continuation_file_references": {},
+  "native_document_tabs": {}
+}

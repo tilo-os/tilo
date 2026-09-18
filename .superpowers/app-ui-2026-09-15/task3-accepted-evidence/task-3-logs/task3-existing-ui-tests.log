@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on build directory
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+error[E0308]: mismatched types
+   --> ui/src/webview/chromium/tests.rs:410:67
+    |
+410 |     assert_eq!(encode_command(WebViewCommand::SetZoomLevel(1.0)), json!({"op":"zoom","level":1.0}));
+    |                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Value>`, found `Value`
+    |
+    = note: expected enum `std::option::Option<serde_json::Value>`
+               found enum `serde_json::Value`
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `json` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: call `Into::into` on this expression to convert `serde_json::Value` into `std::option::Option<serde_json::Value>`
+    |
+410 |     assert_eq!(encode_command(WebViewCommand::SetZoomLevel(1.0)), json!({"op":"zoom","level":1.0}).into());
+    |                                                                                                   +++++++
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `ui` (lib test) due to 1 previous error

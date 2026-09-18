@@ -47,3 +47,9 @@ Fresh CUA enumeration confirmed an unlocked desktop. Isolated optimized QA38 run
 A second bounded run `task9-startup-unlocked-40` sampled its own native host at eight seconds. The host was waiting in SecItemCopyMatching → Keychain item decryption → SecurityServer mach_msg throughout the sample. This demonstrates that the locked desktop alone did not cause the startup stall. It does not establish the service-side reason or prove that an access prompt exists. Computer-use safety controls rejected inspection of SecurityAgent; no alternate access path was attempted. Asked the user whether a Keychain prompt is visible, with no instruction to change access controls.
 
 Both owned process groups were terminated after the bounded runs, required forced remaining-child cleanup, and were verified absent. They do not establish clean shutdown. GUI coordination hold released. Startup reliability, native marker causality and representative window performance remain open.
+
+### Saved-evidence review, cycle80
+
+Independent read-only review confirmed all 1,597 samples of the unlocked native host were in the same Keychain/SecurityServer wait. The `-67030` signature warning does not distinguish stalled startup: `target/browser-complete-ux/task9-window-command-trace/app.log` records a completed password-lookup histogram at 327 ms (line62), the same warning (line621), and the result again at five seconds (line1435). This evidence does not justify a signing-identity change. Synthetic credential operations succeeding separately do not resolve Chromium startup.
+
+The outstanding useful observation is whether a Keychain prompt was visible during a controlled stall, including only its application/item labels. The old processes have been terminated, so absence of a prompt now cannot establish its absence then. No unchanged launch or alternate inspection of SecurityAgent was attempted; its earlier safety rejection remains respected.

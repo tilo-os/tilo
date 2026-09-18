@@ -1,0 +1,8 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling qos-scratchpad v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/scratchpad)
+    Finished `test` profile [unoptimized] target(s) in 13.47s
+  Executable unittests src/lib.rs (target/debug/deps/qos_scratchpad-e852b5641a8a6892)
+  Executable unittests src/main.rs (target/debug/deps/qos_scratchpad-fd941e718268a863)
+  Executable tests/scratchpad.rs (target/debug/deps/scratchpad-43c30d0629dc06f2)
+  Executable tests/task3_surface.rs (target/debug/deps/task3_surface-b32c6a49fb72a68a)

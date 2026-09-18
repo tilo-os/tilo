@@ -1,5 +1,6 @@
 //! Checked Files uses the same retained chrome, timeline, canvases and dialog.
-use super::*;
+use super::{HistoryHost, HistorySourceRegistration, Text, PreviewSide, HistoryPresentation, PreviewView, review, Column, Row, Command};
+use std::fmt::Write as _;
 use crate::history_mode::{checked_files::FilePreviewInput, files_session::FileController};
 use collab_types::{FileVersionId, files::CheckedHistoryOperationV1 as Operation};
 
@@ -49,9 +50,9 @@ impl HistoryHost {
         let source = source.clone();
         changed |= self.reconcile_file_target();
         let request = source.take_open();
-        if let Some(version) = request {
+        if let Some(request) = request {
             self.open = true;
-            self.requested_file_version = version;
+            self.requested_file_version = request.version;
             changed = true;
         }
         if self.open {
@@ -112,7 +113,7 @@ impl HistoryHost {
                         .requested_file_version
                         .or_else(|| self.files.as_ref().and_then(FileController::selected));
                     if let Some(fresh) = &self.files {
-                        retained.target.label = fresh.target.label.clone();
+                        retained.target.label.clone_from(&fresh.target.label);
                     }
                     self.close_files_presentation();
                     retained.activate();
@@ -124,6 +125,10 @@ impl HistoryHost {
                 self.file_target_resolved = true;
             }
         }
+        self.refresh_file_selection(selected, changed);
+    }
+
+    fn refresh_file_selection(&mut self, mut selected: Option<FileVersionId>, mut changed: bool) {
         let Some(files) = &mut self.files else {
             if changed {
                 self.rebuild_toolbar();
@@ -150,44 +155,7 @@ impl HistoryHost {
                 changed = true;
             }
         }
-        self.timeline.set_entries(
-            files
-                .versions
-                .iter()
-                .map(|version| {
-                    let person = version.actor.person.as_bytes();
-                    let identity: String =
-                        person.iter().take(6).map(|b| format!("{b:02x}")).collect();
-                    let author = if person.iter().all(|b| *b == 0) {
-                        "Unknown author".to_owned()
-                    } else {
-                        format!("Author {identity}")
-                    };
-                    crate::HistoryEntry {
-                        id: crate::HistoryEntryId(*version.id.0.as_bytes()),
-                        author: crate::HistoryAuthor::new(
-                            author,
-                            crate::history_source::stable_hue(&identity),
-                            identity,
-                        ),
-                        op_class: collab_types::OpClass::Compaction,
-                        artifact_kind: collab_types::ArtifactKind::File,
-                        timestamp: std::time::UNIX_EPOCH
-                            .checked_add(std::time::Duration::from_millis(version.timestamp_ms))
-                            .unwrap_or(std::time::UNIX_EPOCH),
-                        summary: format!(
-                            "{} · {}",
-                            version_label(&version.provenance),
-                            files.target.label
-                        ),
-                        text_delta: None,
-                        diff_payload: None,
-                        redaction: None,
-                        context: None,
-                    }
-                })
-                .collect(),
-        );
+        self.timeline.set_entries(file_timeline_entries(files));
         if files.preview_changed {
             files.preview_changed = false;
             changed = true;
@@ -252,6 +220,7 @@ impl HistoryHost {
             self.rebuild_toolbar();
         }
     }
+
     pub(super) fn service_file_review(&mut self, command: review::ReviewCommand) {
         // Root callbacks can change selection after refresh but before the
         // runner services a queued dialog command. Recheck at this final door.
@@ -412,9 +381,54 @@ fn version_label(provenance: &collab_types::FileProvenance) -> &'static str {
     }
 }
 
+
+fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
+    files
+        .versions
+        .iter()
+        .map(|version| {
+            let person = version.actor.person.as_bytes();
+            let identity: String =
+                person.iter().take(6).fold(String::with_capacity(12), |mut label, byte| {
+                    let _ = write!(label, "{byte:02x}");
+                    label
+                });
+            let author = if person.iter().all(|b| *b == 0) {
+                "Unknown author".to_owned()
+            } else {
+                format!("Author {identity}")
+            };
+            crate::HistoryEntry {
+                id: crate::HistoryEntryId(*version.id.0.as_bytes()),
+                author: crate::HistoryAuthor::new(
+                    author,
+                    crate::history_source::stable_hue(&identity),
+                    identity,
+                ),
+                op_class: collab_types::OpClass::Compaction,
+                artifact_kind: collab_types::ArtifactKind::File,
+                timestamp: std::time::UNIX_EPOCH
+                    .checked_add(std::time::Duration::from_millis(version.timestamp_ms))
+                    .unwrap_or(std::time::UNIX_EPOCH),
+                summary: format!(
+                    "{} · {}",
+                    version_label(&version.provenance),
+                    files.target.label
+                ),
+                text_delta: None,
+                diff_payload: None,
+                redaction: None,
+                context: None,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
+    use crate::history_mode::HistoryRegistration;
     fn test_host() -> HistoryHost {
         fn preview(
             _: FilePreviewInput,

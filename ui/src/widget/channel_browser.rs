@@ -1024,6 +1024,13 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     }
 }
 
+/// Top edge that centres one line of `size`-px text on `center_y`, using the
+/// line box the renderer will actually paint (1.25 × size by default, and
+/// carrying the accessibility text scale) rather than the bare font size.
+fn text_top(tr: &mut TextRenderer, size: f32, center_y: f64) -> f64 {
+    center_y - f64::from(tr.measure("Ag", size, None).1) / 2.0
+}
+
 /// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
 /// pure `f64` matrix multiply-add with no overflow trap, so it cannot
 /// panic regardless of operand magnitude — centralised here rather than
@@ -1032,13 +1039,6 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     clippy::arithmetic_side_effects,
     reason = "Affine composition is float matrix math and cannot panic"
 )]
-/// Top edge that centres one line of `size`-px text on `center_y`, using the
-/// line box the renderer will actually paint (1.25 × size by default, and
-/// carrying the accessibility text scale) rather than the bare font size.
-fn text_top(tr: &mut TextRenderer, size: f32, center_y: f64) -> f64 {
-    center_y - f64::from(tr.measure("Ag", size, None).1) / 2.0
-}
-
 fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }

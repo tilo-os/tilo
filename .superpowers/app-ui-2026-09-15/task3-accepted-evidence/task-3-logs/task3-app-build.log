@@ -1,0 +1,26 @@
+    Blocking waiting for file lock on build directory
+   Compiling hyper-rustls v0.27.7
+   Compiling iroh-dns v1.0.3
+   Compiling runtime-fs v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-fs)
+   Compiling portmapper v0.19.1
+   Compiling reqwest v0.13.2
+   Compiling irpc v0.17.0
+   Compiling qdoc v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc)
+   Compiling cli v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/cli)
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling iroh-relay v1.0.3
+   Compiling app-state v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/app-state)
+   Compiling runtime-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-identity)
+   Compiling runtime-collab v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-collab)
+   Compiling iroh v1.0.3
+   Compiling iroh-util v0.6.0
+   Compiling iroh-gossip v0.101.0
+   Compiling iroh-blobs v0.103.0
+   Compiling fs v0.1.0 (/Users/xaver/dev/qos-macos-shell/fs)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling qos-scratchpad v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/scratchpad)
+    Finished `test` profile [unoptimized] target(s) in 25.95s
+  Executable unittests src/lib.rs (target/debug/deps/qos_scratchpad-e852b5641a8a6892)
+  Executable unittests src/main.rs (target/debug/deps/qos_scratchpad-fd941e718268a863)
+  Executable tests/scratchpad.rs (target/debug/deps/scratchpad-43c30d0629dc06f2)
+  Executable tests/task3_surface.rs (target/debug/deps/task3_surface-b32c6a49fb72a68a)

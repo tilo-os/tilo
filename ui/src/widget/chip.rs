@@ -599,13 +599,10 @@ impl Widget for Chip {
         node: NodeId,
         text_renderer: &mut TextRenderer,
     ) -> bool {
-        let footprint = match self.footprint {
-            Some(footprint) => footprint,
-            None => {
-                let footprint = self.measured_footprint(text_renderer);
-                self.footprint = Some(footprint);
-                footprint
-            }
+        let footprint = if let Some(footprint) = self.footprint { footprint } else {
+            let footprint = self.measured_footprint(text_renderer);
+            self.footprint = Some(footprint);
+            footprint
         };
         let Ok(current) = taffy.style(node) else {
             return false;
@@ -631,13 +628,10 @@ impl Widget for Chip {
         _a: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        match self.footprint {
-            Some(footprint) => footprint,
-            None => {
-                let footprint = self.measured_footprint(text_renderer);
-                self.footprint = Some(footprint);
-                footprint
-            }
+        if let Some(footprint) = self.footprint { footprint } else {
+            let footprint = self.measured_footprint(text_renderer);
+            self.footprint = Some(footprint);
+            footprint
         }
     }
 

@@ -1,0 +1,24 @@
+    Blocking waiting for file lock on build directory
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.13s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 1 test
+test widget::tests::file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt ... FAILED
+
+failures:
+
+---- widget::tests::file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt stdout ----
+
+thread 'widget::tests::file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt' (3800332) panicked at apps/word-processor/src/widget.rs:18081:9:
+assertion failed: matches!(wp.poll_resource_operation(invocation, true, &state.doc,
+    &state.root), Some(qos_actions::InvocationUpdate::Cancelled { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    widget::tests::file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 311 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p word-processor --lib`

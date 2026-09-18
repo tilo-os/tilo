@@ -22,6 +22,13 @@ struct Sample {
 }
 
 impl Observer {
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "presentation-feedback")),
+        allow(
+            clippy::unused_self,
+            reason = "the enabled backend reads the observer worker identity"
+        )
+    )]
     fn worker_id(&self) -> Option<u64> {
         #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
         {
@@ -35,8 +42,11 @@ impl Observer {
 
     /// Emitted only under the native timing gate. The caller brackets complete
     /// row construction and this emission, reporting that cost one frame later.
-    pub(crate) fn log_native_handoff(&self, mut row: serde_json::Value) {
-        row["worker_id"] = serde_json::json!(self.worker_id());
+    pub(crate) fn log_native_handoff(&self, row: serde_json::Value) {
+        let Some(row) = handoff_row(row, self.worker_id()) else {
+            eprintln!("qos-display-error handoff row is not an object");
+            return;
+        };
         crate::native_scenario::log::emit_json("qos-native-worker-handoff", row);
     }
 
@@ -56,7 +66,7 @@ impl Observer {
                 "before_host_hi_s": bounds.before.map(|b| b.hi_s),
                 "after_host_lo_s": bounds.after.map(|b| b.lo_s),
                 "after_host_hi_s": bounds.after.map(|b| b.hi_s),
-            })
+            }),
         );
     }
 
@@ -85,7 +95,7 @@ impl Observer {
                 "render_end_host_lo_s": end.map(|b| b.lo_s),
                 "render_end_host_hi_s": end.map(|b| b.hi_s),
                 "outcome": format!("{outcome:?}"),
-            })
+            }),
         );
     }
 
@@ -116,7 +126,7 @@ impl Observer {
                 "maximum_drawable_count": readback.map(|r| r.0),
                 "display_sync_enabled": readback.map(|r| r.1),
                 "presents_with_transaction": readback.map(|r| r.2),
-            })
+            }),
         );
     }
 
@@ -156,6 +166,13 @@ impl Observer {
         }
     }
 
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "presentation-feedback")),
+        allow(
+            clippy::unused_self,
+            reason = "the enabled backend reads the observer sender and identity"
+        )
+    )]
     pub(crate) fn arm(
         &self,
         surface: &vello::wgpu::Surface<'_>,
@@ -190,10 +207,44 @@ impl Observer {
                 "qos-display-request",
                 serde_json::json!({
                     "worker_id": self.worker_id, "worker_frame_ix": worker_frame_ix, "cpu_frame_id": cpu_frame_id,
-                })
+                }),
             );
         }
         #[cfg(not(all(target_os = "macos", feature = "presentation-feedback")))]
         let _ = (surface, worker_frame_ix, cpu_frame_id);
+    }
+}
+
+fn handoff_row(mut row: serde_json::Value, worker_id: Option<u64>) -> Option<serde_json::Value> {
+    row.as_object_mut()?
+        .insert("worker_id".into(), serde_json::json!(worker_id));
+    Some(row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handoff_row;
+
+    #[test]
+    fn handoff_keeps_frame_and_clock_fields_with_explicit_worker_identity() {
+        let original = serde_json::json!({"cpu_frame_id": 42, "before_receive_host_lo_s": null});
+        for worker in [None, Some(9)] {
+            let row = handoff_row(original.clone(), worker).unwrap();
+            assert_eq!(row["cpu_frame_id"], 42);
+            assert!(row["before_receive_host_lo_s"].is_null());
+            assert_eq!(row["worker_id"], serde_json::json!(worker));
+            assert_eq!(row.as_object().unwrap().len(), 3);
+        }
+    }
+
+    #[test]
+    fn malformed_handoff_cannot_be_emitted_as_a_qualifying_row() {
+        for row in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(3),
+        ] {
+            assert!(handoff_row(row, Some(1)).is_none());
+        }
     }
 }

@@ -1,0 +1,24 @@
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.89s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 1 test
+test widget::tests::mouse_selection_between_paragraphs_stays_near_the_pointer ... FAILED
+
+failures:
+
+---- widget::tests::mouse_selection_between_paragraphs_stays_near_the_pointer stdout ----
+
+thread 'widget::tests::mouse_selection_between_paragraphs_stays_near_the_pointer' (3910655) panicked at apps/word-processor/src/widget.rs:14202:17:
+assertion `left == right` failed: gap hit must choose a neighbouring paragraph at 0.5x
+  left: "e4c266e6c73eaabbf7d18e1a31d3cbe9.2"
+ right: "e4c266e6c73eaabbf7d18e1a31d3cbe9.0"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    widget::tests::mouse_selection_between_paragraphs_stays_near_the_pointer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 322 filtered out; finished in 0.24s
+
+error: test failed, to rerun pass `-p word-processor --lib`

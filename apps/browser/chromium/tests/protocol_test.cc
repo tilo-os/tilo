@@ -4,8 +4,15 @@
 #include <cassert>
 #include <sstream>
 #include <iostream>
+#include <limits>
 using namespace qos;
 int main() {
+  assert(ValidDocumentGeneration(1));
+  assert(ValidDocumentGeneration(9007199254740991.0));
+  for(double value:{0.0,-1.0,1.5,9007199254740992.0,1e100,
+      std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
+    assert(!ValidDocumentGeneration(value));
+  }
   for (int n = 1; n < 4; ++n) {
     std::istringstream s(std::string(n, '\0')); Packet p;
     assert(ReadPacket(s, p) == ReadResult::Error);

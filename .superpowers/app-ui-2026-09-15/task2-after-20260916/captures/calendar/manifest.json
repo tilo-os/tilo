@@ -1,0 +1,87 @@
+{
+  "app": "apps/calendar",
+  "status": "captured",
+  "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/calendar",
+  "binary_sha256": "679423cc454b9d6f6ecff26bbb83c9c024e02b0bb675f2159550dc008237588c",
+  "source_head": "59ffa17fec08f519b62c6e8c9993db14cc0e0fe4",
+  "working_diff_sha256": "2a55846fb401506de46b51319a8308c00244ab1b37c1d55c2b0dae4b3ec1b440",
+  "captures": [
+    {
+      "variant": "wide",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/calendar",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/wide.png",
+        "--viewport",
+        "1200x800"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 1.26,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/wide.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "compact",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/calendar",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/compact.png",
+        "--viewport",
+        "800x700"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.37,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/compact.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "narrow",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/calendar",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/narrow.png",
+        "--viewport",
+        "480x900"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.26,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/narrow.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "large-text",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/calendar",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/large-text.png",
+        "--viewport",
+        "800x900",
+        "--text-scale",
+        "2"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.37,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/large-text.png",
+      "requested_scale": 2
+    },
+    {
+      "variant": "scale-baseline",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/calendar",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/scale-baseline.png",
+        "--viewport",
+        "800x900"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.37,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-after-20260916/captures/calendar/scale-baseline.png",
+      "requested_scale": 1
+    }
+  ]
+}

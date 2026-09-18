@@ -58,7 +58,8 @@ extern crate runtime_dylib;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new("dev.qos.photos", photos::app_root)
-            .open_state_with_args(open_state)
+            .history(&photos::framework_history::HISTORY)
+            .open_app_global_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
             .allowed_live_options(&["--open"])

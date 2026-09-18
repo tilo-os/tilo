@@ -2424,7 +2424,9 @@ impl Widget for TabBar {
                 // that can't see it gets it as a description instead.
                 // `AccessState` has no flag for this and inventing one would
                 // ripple through every widget.
-                let node = if !self.pinned_ids.contains(&t.id) {
+                let node = if self.pinned_ids.contains(&t.id) {
+                    node
+                } else {
                     node.with_children(vec![
                         AccessNode::new(Role::Button)
                             .with_name(format!("Close {}", t.title))
@@ -2434,8 +2436,6 @@ impl Widget for TabBar {
                                 ..Default::default()
                             }),
                     ])
-                } else {
-                    node
                 };
                 if self.modified_ids.contains(&t.id) {
                     node.with_description(crate::i18n!("tab-modified"))

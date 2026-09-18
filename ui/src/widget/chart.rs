@@ -228,6 +228,31 @@ impl Chart {
         self.max.unwrap_or(derived).max(1e-3)
     }
 
+    fn draw_series(scene: &mut Scene, transform: Affine, plot: Rect, series: &[Series], ceil: f32, area: bool) {
+        // Series: area fill (optional) then top line.
+        for s in series {
+            if s.data.len() < 2 {
+                continue;
+            }
+            if area {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    with_alpha(s.color, AREA_FILL_ALPHA),
+                    None,
+                    &area_path(plot, &s.data, ceil),
+                );
+            }
+            scene.stroke(
+                &Stroke::new(LINE_WIDTH),
+                transform,
+                s.color,
+                None,
+                &line_path(plot, &s.data, ceil),
+            );
+        }
+    }
+
     /// Immediate-mode draw: render a full chart into `scene` at `rect`,
     /// reading colours from `theme`. Lets a host that lays out its own
     /// dashboard cards paint a chart at a known rect without a widget.
@@ -342,28 +367,7 @@ impl Chart {
             );
         }
 
-        // Series: area fill (optional) then top line.
-        for s in series {
-            if s.data.len() < 2 {
-                continue;
-            }
-            if area {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    with_alpha(s.color, AREA_FILL_ALPHA),
-                    None,
-                    &area_path(plot, &s.data, ceil),
-                );
-            }
-            scene.stroke(
-                &Stroke::new(LINE_WIDTH),
-                transform,
-                s.color,
-                None,
-                &line_path(plot, &s.data, ceil),
-            );
-        }
+        Self::draw_series(scene, transform, plot, series, ceil, area);
     }
 }
 

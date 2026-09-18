@@ -1,0 +1,32 @@
+{
+  "name": "Fresh desktop discoverability",
+  "goal": "Find a visible way to open an app from a fresh desktop",
+  "viewport": [
+    1280,
+    800
+  ],
+  "budget": {
+    "clicks": 0,
+    "keys": 0
+  },
+  "steps": [
+    {
+      "op": "checkpoint",
+      "name": "desktop",
+      "checks": [
+        {
+          "kind": "visible",
+          "target": "semantic:Open an app"
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Open an app",
+          "min": [
+            24,
+            24
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -441,9 +441,12 @@ pub trait Widget {
 
     /// Explicit root-owned History custody, including selected external resources.
     /// Runners consume this bundle; preview renderers never receive the root.
+    ///
+    /// # Errors
+    /// Returns a registration error when the root cannot provide valid History custody.
     fn history_registration(&self) -> Result<Option<crate::history_mode::HistoryRegistration>,crate::history_mode::HistoryRegistrationError> { Ok(None) }
     /// Presentation declaration for a legacy tile's eventual checked record.
-    /// The TileHost resolves custody after binding; this grants no authority.
+    /// The `TileHost` resolves custody after binding; this grants no authority.
     fn document_history_definition(&self) -> Option<&'static crate::history_mode::HistoryDefinition> { None }
 
 

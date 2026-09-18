@@ -1,0 +1,136 @@
+[
+  {
+    "app": "apps/db_client",
+    "status": "captured",
+    "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/db_client",
+    "binary_sha256": "b6034bc385b14fe7d7bb3a8ee63ce94b7c463961568ad6832eb14087f0d94172",
+    "binary_sha256_after": "b6034bc385b14fe7d7bb3a8ee63ce94b7c463961568ad6832eb14087f0d94172",
+    "binary_stable": true,
+    "source_head": "6a9b63208ebad8f3a1a1b243aafb982948e014ff",
+    "working_diff_sha256": "009c52544805c64139fb4f803823311344419ae0ad6d06dc79bb6a1c54a83582",
+    "captures": [
+      {
+        "variant": "wide",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/db_client",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/wide.png",
+          "--viewport",
+          "1200x800"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 1.17,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/wide.png",
+        "png_sha256": "77590a1dd4566b41df41b381ce67960ad59320daf39906965d97e3eb801f44d8",
+        "actual_dimensions": [
+          1200,
+          800
+        ],
+        "requested_scale": 1
+      },
+      {
+        "variant": "compact",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/db_client",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/compact.png",
+          "--viewport",
+          "800x700"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.3,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/compact.png",
+        "png_sha256": "99ce62b346ccf75df1c7fe5f5fb6915b66e46ea21a005dd34e22a17e3e320273",
+        "actual_dimensions": [
+          800,
+          700
+        ],
+        "requested_scale": 1
+      },
+      {
+        "variant": "narrow",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/db_client",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/narrow.png",
+          "--viewport",
+          "480x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.24,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/narrow.png",
+        "png_sha256": "e6c4f68888a0bfeb3162f65d9cd5dbed32a7d8ef26aa50335663e998c758d2b7",
+        "actual_dimensions": [
+          480,
+          900
+        ],
+        "requested_scale": 1
+      },
+      {
+        "variant": "large-text",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/db_client",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/large-text.png",
+          "--viewport",
+          "800x900",
+          "--text-scale",
+          "2"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.29,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/large-text.png",
+        "png_sha256": "a92e557932082212d46d91c46478607bef41a536ef18472f00817242773348f4",
+        "actual_dimensions": [
+          800,
+          900
+        ],
+        "requested_scale": 2
+      },
+      {
+        "variant": "scale-baseline",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/db_client",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/scale-baseline.png",
+          "--viewport",
+          "800x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.3,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/scale-baseline.png",
+        "png_sha256": "ac08d3f691915aa8035e6de656b54e69231d67fbd426401846ed8ea4e7d17260",
+        "actual_dimensions": [
+          800,
+          900
+        ],
+        "requested_scale": 1
+      },
+      {
+        "variant": "short",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/db_client",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/short.png",
+          "--viewport",
+          "800x480"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.24,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task12-db-settled-20260916/captures/db_client/short.png",
+        "png_sha256": "17dba54d4f7a2c59f26e171e9c7777986cbe57334ae7fff91777cf153ef86a05",
+        "actual_dimensions": [
+          800,
+          480
+        ],
+        "requested_scale": 1
+      }
+    ]
+  }
+]

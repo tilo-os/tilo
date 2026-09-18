@@ -89,6 +89,7 @@ pub(crate) struct SiteControls {
     sequence: u32,
     query: Option<(u32, Instant)>,
     action: Option<(u32, String, u64, String, Instant)>,
+    pending_reload: Option<(String, u64)>,
     next_poll: Instant,
     notice: String,
     filters: crate::native_blocker::Status,
@@ -107,6 +108,7 @@ impl Default for SiteControls {
             sequence: 0,
             query: None,
             action: None,
+            pending_reload: None,
             next_poll: Instant::now(),
             notice: String::new(),
             filters: crate::native_blocker::status(),
@@ -145,6 +147,7 @@ impl SiteControls {
         self.status = None;
         self.query = None;
         self.action = None;
+        self.pending_reload = None;
         self.pending.set(None);
         self.notice.clear();
         self.next_poll = Instant::now();
@@ -199,9 +202,11 @@ impl SiteControls {
                     return false;
                 }
                 self.action = None;
-                self.notice = message;
-                if success && matches!(action.as_str(), "enable" | "disable")
-                    && let Ok(mut exceptions) = self.runtime_exceptions.lock() {
+                if action != "reload" || !success {
+                    self.notice = message;
+                }
+                if success && matches!(action.as_str(), "enable" | "disable") {
+                    if let Ok(mut exceptions) = self.runtime_exceptions.lock() {
                         exceptions.set(&origin, action == "disable");
                         if self.persistent
                             && let Some(path) =
@@ -212,6 +217,10 @@ impl SiteControls {
                                 "Changed for this session; could not save the preference".into();
                         }
                     }
+                    // This belongs to the accepted action, not the popover's
+                    // replaceable button-intent slot. Dismissal must not lose it.
+                    self.pending_reload = Some((origin, generation));
+                }
                 self.next_poll = Instant::now();
                 true
             }
@@ -221,8 +230,42 @@ impl SiteControls {
     pub fn deadline(&self) -> Option<Instant> {
         self.open.then_some(self.next_poll)
     }
+    fn start_action(
+        &mut self,
+        engine: &SharedEngine,
+        origin: String,
+        generation: u64,
+        kind: String,
+    ) -> bool {
+        if self.action.is_some()
+            || self.committed.as_deref() != Some(origin.as_str())
+            || self
+                .status
+                .as_ref()
+                .is_none_or(|status| status.generation != generation)
+        {
+            return false;
+        }
+        let request_id = self.id();
+        engine.send(WebViewCommand::SiteAction {
+            request_id,
+            origin: origin.clone(),
+            generation,
+            action: kind.clone(),
+        });
+        if kind != "reload" {
+            self.notice = "Working…".into();
+        }
+        self.action = Some((request_id, origin, generation, kind, Instant::now()));
+        true
+    }
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
         let mut dirty = false;
+        if self.action.is_none()
+            && let Some((origin, generation)) = self.pending_reload.take()
+        {
+            dirty |= self.start_action(engine, origin, generation, "reload".into());
+        }
         if let Some(pending) = self.pending.get() {
             self.pending.set(None);
             dirty = true;
@@ -240,23 +283,7 @@ impl SiteControls {
                     generation,
                     kind,
                 } => {
-                    if self.action.is_none()
-                        && self.committed.as_deref() == Some(origin.as_str())
-                        && self
-                            .status
-                            .as_ref()
-                            .is_some_and(|s| s.generation == generation)
-                    {
-                        let request_id = self.id();
-                        engine.send(WebViewCommand::SiteAction {
-                            request_id,
-                            origin: origin.clone(),
-                            generation,
-                            action: kind.clone(),
-                        });
-                        self.action = Some((request_id, origin, generation, kind, Instant::now()));
-                        self.notice = "Working…".into();
-                    }
+                    self.start_action(engine, origin, generation, kind);
                 }
             }
         }
@@ -339,7 +366,10 @@ impl SiteControls {
         })
         // The toolbar's control height: this sits between the navigation
         // buttons and the address field.
-        .with_size(56.0, crate::browser_widget::TOOLBAR_CONTROL_HEIGHT)
+        .with_size(
+            56.0,
+            crate::browser_widget::toolbar_control_height(self.text_scale),
+        )
         .tooltip(if information {
             "Connection, permissions and stored data"
         } else {
@@ -456,8 +486,8 @@ impl SiteControls {
                 column=column.push(line(if !status.global_enabled{"Global protection is off in Settings"}else if status.excepted{"Protection is off for this origin"}else{"Protection is on for this origin"}))
                     .push(line(&format!("{} requests blocked or replaced in this document",status.blocked)))
                     .push(line("This exact origin includes its embedded frames. Requests without a known top-level page stay protected and are not counted here."))
-                    .push(Box::new(self.button("browser.site.toggle",if status.excepted{"Enable for this origin"}else{"Disable for this origin"},action(if status.excepted{"enable"}else{"disable"})).with_size(crate::browser_widget::labelled_width(210.0,self.text_scale),32.0).with_enabled(self.action.is_none())))
-                    .push(line("Reload after changing protection to apply all network, cosmetic and scriptlet rules."))
+                    .push(Box::new(self.button("browser.site.toggle",if status.excepted{"Enable and reload"}else{"Disable and reload"},action(if status.excepted{"enable"}else{"disable"})).with_size(crate::browser_widget::labelled_width(210.0,self.text_scale),32.0).with_enabled(self.action.is_none() && self.pending_reload.is_none())))
+                    .push(line("The page reloads after protection changes."))
                     .push(line(&self.filters.message));
                 if let Some(updated) = self.filters.updated {
                     column = column.push(line(&format!(
@@ -739,6 +769,167 @@ mod tests {
             "1970-01-02 00:00 UTC"
         );
         assert_eq!(tls_version(6), "TLS 1.3");
+    }
+
+    fn protection_toggle(kind: &str) -> SiteControls {
+        SiteControls {
+            committed: Some("https://one.test".into()),
+            status: Some(SiteStatus {
+                request_id: 1,
+                origin: "https://one.test".into(),
+                generation: 3,
+                blocked: 0,
+                global_enabled: true,
+                excepted: kind == "enable",
+                effective: kind != "enable",
+                security: "secure".into(),
+                certificate_status: 0,
+                tls_version: 0,
+                content_status: 0,
+                subject: String::new(),
+                issuer: String::new(),
+                expires: 0.0,
+                permissions: Vec::new(),
+            }),
+            action: Some((7, "https://one.test".into(), 3, kind.into(), Instant::now())),
+            ..SiteControls::default()
+        }
+    }
+
+    fn toggle_reply(kind: &str, success: bool) -> WebViewEvent {
+        WebViewEvent::SiteResult {
+            request_id: 7,
+            origin: "https://one.test".into(),
+            generation: 3,
+            action: kind.into(),
+            success,
+            message: "toggle result".into(),
+        }
+    }
+
+    #[test]
+    fn successful_protection_toggle_reloads_once_even_after_panel_dismissal() {
+        for kind in ["enable", "disable"] {
+            for dismiss in [false, true] {
+                let recorder = ui::webview::test_engine::TestEngine::new();
+                let engine: SharedEngine = recorder.clone();
+                let mut controls = protection_toggle(kind);
+                assert!(controls.apply(toggle_reply(kind, true)));
+                assert_eq!(
+                    controls
+                        .runtime_exceptions
+                        .lock()
+                        .unwrap()
+                        .contains("https://one.test"),
+                    kind == "disable"
+                );
+                assert!(
+                    !controls.apply(toggle_reply(kind, true)),
+                    "duplicate toggle reply"
+                );
+                if dismiss {
+                    controls.close();
+                }
+                controls.sync(&engine);
+                controls.sync(&engine);
+                let reloads: Vec<_> = recorder.commands().into_iter().filter(|command| {
+                    matches!(command, WebViewCommand::SiteAction { action, .. } if action == "reload")
+                }).collect();
+                assert_eq!(reloads.len(), 1, "{kind}, dismiss={dismiss}");
+                let WebViewCommand::SiteAction {
+                    request_id,
+                    origin,
+                    generation,
+                    ..
+                } = &reloads[0]
+                else {
+                    unreachable!()
+                };
+                assert_ne!(*request_id, 7);
+                assert_eq!(origin, "https://one.test");
+                assert_eq!(*generation, 3);
+                assert!(controls.apply(WebViewEvent::SiteResult {
+                    request_id: *request_id,
+                    origin: origin.clone(),
+                    generation: *generation,
+                    action: "reload".into(),
+                    success: true,
+                    message: "Reloading".into(),
+                }));
+                controls.sync(&engine);
+                assert_eq!(recorder.commands().iter().filter(|command| matches!(command, WebViewCommand::SiteAction { action, .. } if action == "reload")).count(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn protection_reload_is_cancelled_by_navigation_or_new_document() {
+        for target in [
+            "https://two.test/page",
+            "https://one.test/other",
+            "new-generation",
+        ] {
+            let recorder = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = recorder.clone();
+            let mut controls = protection_toggle("disable");
+            assert!(controls.apply(toggle_reply("disable", true)));
+            if target == "new-generation" {
+                controls.status.as_mut().unwrap().generation = 4;
+            } else {
+                controls.navigation(target);
+            }
+            controls.sync(&engine);
+            assert!(
+                !recorder
+                    .commands()
+                    .iter()
+                    .any(|command| matches!(command, WebViewCommand::SiteAction { .. })),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_or_stale_protection_replies_do_not_reload() {
+        for case in [
+            "failure",
+            "request",
+            "origin",
+            "generation",
+            "action",
+            "navigation",
+        ] {
+            let recorder = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = recorder.clone();
+            let mut controls = protection_toggle("disable");
+            let mut reply = toggle_reply("disable", case != "failure");
+            if let WebViewEvent::SiteResult {
+                request_id,
+                origin,
+                generation,
+                action,
+                ..
+            } = &mut reply
+            {
+                match case {
+                    "request" => *request_id = 8,
+                    "origin" => *origin = "https://two.test".into(),
+                    "generation" => *generation = 4,
+                    "action" => *action = "enable".into(),
+                    "navigation" => controls.navigation("https://one.test/other"),
+                    _ => {}
+                }
+            }
+            assert_eq!(controls.apply(reply), case == "failure");
+            controls.sync(&engine);
+            assert!(
+                !recorder
+                    .commands()
+                    .iter()
+                    .any(|command| matches!(command, WebViewCommand::SiteAction { .. })),
+                "{case}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,10 @@
+
+running 1 test
+wide: editor Rect { x0: 32.0, y0: 122.0, x1: 968.0, y1: 581.0 }, save Rect { x0: 32.0, y0: 599.0, x1: 152.0, y1: 639.0 }, long Rect { x0: 32.0, y0: 122.0, x1: 968.0, y1: 1196.0 }, bottom Rect { x0: 32.0, y0: -493.0, x1: 968.0, y1: 581.0 }; persisted 2516 bytes
+narrow: editor Rect { x0: 32.0, y0: 122.0, x1: 448.0, y1: 481.0 }, save Rect { x0: 32.0, y0: 499.0, x1: 152.0, y1: 539.0 }, long Rect { x0: 32.0, y0: 122.0, x1: 448.0, y1: 1196.0 }, bottom Rect { x0: 32.0, y0: -593.0, x1: 448.0, y1: 481.0 }; persisted 2518 bytes
+double: editor Rect { x0: 32.0, y0: 179.0, x1: 608.0, y1: 346.0 }, save Rect { x0: 32.0, y0: 364.0, x1: 152.0, y1: 404.0 }, long Rect { x0: 32.0, y0: 179.0, x1: 608.0, y1: 4380.0 }, bottom Rect { x0: 32.0, y0: -3855.0, x1: 608.0, y1: 346.0 }; persisted 2518 bytes
+narrow-double: editor Rect { x0: 32.0, y0: 179.0, x1: 448.0, y1: 436.0 }, save Rect { x0: 32.0, y0: 454.0, x1: 152.0, y1: 494.0 }, long Rect { x0: 32.0, y0: 179.0, x1: 448.0, y1: 6495.0 }, bottom Rect { x0: 32.0, y0: -5880.0, x1: 448.0, y1: 436.0 }; persisted 2525 bytes
+test writing_surface_captures_edit_save_reopen_and_overflow ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.52s
+

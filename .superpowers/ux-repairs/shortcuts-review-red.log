@@ -1,0 +1,13 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.72s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 3 tests
+test widget::tests::native_text_shortcuts_option_right_keeps_adjacent_unicode_words ... ok
+test widget::tests::native_text_shortcuts_select_then_delete_through_the_host ... ok
+test widget::tests::native_text_shortcuts_select_words_and_lines_after_menu_dismissal ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 304 filtered out; finished in 0.38s
+

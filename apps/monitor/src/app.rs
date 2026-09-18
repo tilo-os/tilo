@@ -597,7 +597,7 @@ impl MonitorApp {
         let model = MonitorModel::sample();
         // "now" ⇒ the first (screenshot) frame skips the live refresh and
         // renders the seeded sample untouched.
-        let mut app = Self::build(model, None, Instant::now());
+        let mut app = Self::build(model, None, Instant::now(), Sampler::inert());
         // The default tree starts collapsed. Select a row from that *visible*
         // projection rather than the globally busiest process, which may be a
         // hidden descendant. A detail pane with destructive controls must
@@ -622,13 +622,18 @@ impl MonitorApp {
         let stale = Instant::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
-        Self::build(MonitorModel::empty(), None, stale)
+        Self::build(MonitorModel::empty(), None, stale, Sampler::new())
     }
 
-    fn build(model: MonitorModel, selected_pid: Option<u32>, last_refresh: Instant) -> Self {
+    fn build(
+        model: MonitorModel,
+        selected_pid: Option<u32>,
+        last_refresh: Instant,
+        sampler: Sampler,
+    ) -> Self {
         Self {
             model,
-            sampler: Sampler::new(),
+            sampler,
             prefs: Prefs::default(),
             tab: Tab::Processes,
             sort_key: SortKey::Cpu,
@@ -675,6 +680,31 @@ impl MonitorApp {
             table_cols_w: 0.0,
             hit: Hit::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_test_with_pending_kill(
+        signal_probe: crate::sampler::SignalProbe,
+    ) -> (Self, u32, u64) {
+        let mut app = Self::build(
+            MonitorModel::sample(),
+            None,
+            Instant::now(),
+            Sampler::controlled(signal_probe),
+        );
+        app.prefs.auto_refresh = false;
+        let process = app.model.processes.first().expect("sample process").clone();
+        app.selected_pid = Some(process.pid);
+        app.perform_operation(
+            &MonitorOperation::Signal {
+                pid: process.pid,
+                started_at: process.started_at,
+                signal: MonitorSignal::Kill,
+            },
+            SignalConfirmation::LocalPreference,
+        )
+        .expect("sample kill confirmation");
+        (app, process.pid, process.started_at)
     }
 
     /// Refresh from sysinfo at most once per preference interval. The very
@@ -4971,6 +5001,10 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[MONITOR_OPERATION_TYPE]
     }

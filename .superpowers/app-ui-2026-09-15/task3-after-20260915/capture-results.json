@@ -1,0 +1,350 @@
+[
+  {
+    "app": "apps/settings",
+    "status": "captured",
+    "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+    "binary_sha256": "02535d69a5b3c10e1adc924fed51e4e1e3e3bc40bd5fc7b1f39135e6ed781bc2",
+    "source_head": "4f0cc6b27b76b8114510e47b13385aa8f02bb13c",
+    "working_diff_sha256": "44b2ceaacc595487187a6af19c77075512ad3a7a4686f6e1006be8005bc84e6f",
+    "captures": [
+      {
+        "variant": "wide",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/wide.png",
+          "--viewport",
+          "1200x800"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 1.8,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/wide.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "compact",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/compact.png",
+          "--viewport",
+          "800x700"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.44,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/compact.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "narrow",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/narrow.png",
+          "--viewport",
+          "480x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.33,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/narrow.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "large-text",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/large-text.png",
+          "--viewport",
+          "800x900",
+          "--text-scale",
+          "2"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.5,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/large-text.png",
+        "requested_scale": 2
+      },
+      {
+        "variant": "scale-baseline",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/settings",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/scale-baseline.png",
+          "--viewport",
+          "800x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.41,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/settings/scale-baseline.png",
+        "requested_scale": 1
+      }
+    ]
+  },
+  {
+    "app": "apps/store",
+    "status": "captured",
+    "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+    "binary_sha256": "295518aecbcf6c58f37a968e675f282574e21fffdd11d5c3f921d6951cdb63d5",
+    "source_head": "4f0cc6b27b76b8114510e47b13385aa8f02bb13c",
+    "working_diff_sha256": "44b2ceaacc595487187a6af19c77075512ad3a7a4686f6e1006be8005bc84e6f",
+    "captures": [
+      {
+        "variant": "wide",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/wide.png",
+          "--viewport",
+          "1200x800"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 1.81,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/wide.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "compact",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/compact.png",
+          "--viewport",
+          "800x700"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.52,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/compact.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "narrow",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/narrow.png",
+          "--viewport",
+          "480x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.49,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/narrow.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "large-text",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/large-text.png",
+          "--viewport",
+          "800x900",
+          "--text-scale",
+          "2"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.54,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/large-text.png",
+        "requested_scale": 2
+      },
+      {
+        "variant": "scale-baseline",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/store",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/scale-baseline.png",
+          "--viewport",
+          "800x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.54,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/store/scale-baseline.png",
+        "requested_scale": 1
+      }
+    ]
+  },
+  {
+    "app": "apps/themes",
+    "status": "captured",
+    "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+    "binary_sha256": "05de106e611ce53ce523cf8ec488015b79010ca0235cbf764f2243fb52b61304",
+    "source_head": "4f0cc6b27b76b8114510e47b13385aa8f02bb13c",
+    "working_diff_sha256": "44b2ceaacc595487187a6af19c77075512ad3a7a4686f6e1006be8005bc84e6f",
+    "captures": [
+      {
+        "variant": "wide",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/wide.png",
+          "--viewport",
+          "1200x800"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 1.61,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/wide.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "compact",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/compact.png",
+          "--viewport",
+          "800x700"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.38,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/compact.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "narrow",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/narrow.png",
+          "--viewport",
+          "480x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.38,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/narrow.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "large-text",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/large-text.png",
+          "--viewport",
+          "800x900",
+          "--text-scale",
+          "2"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.49,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/large-text.png",
+        "requested_scale": 2
+      },
+      {
+        "variant": "scale-baseline",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/themes",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/scale-baseline.png",
+          "--viewport",
+          "800x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.45,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/themes/scale-baseline.png",
+        "requested_scale": 1
+      }
+    ]
+  },
+  {
+    "app": "apps/vpn",
+    "status": "captured",
+    "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+    "binary_sha256": "820037b3217bed40d0b2f08aab17ef6c99914ae848c16ebd68e3b238740a51d4",
+    "source_head": "4f0cc6b27b76b8114510e47b13385aa8f02bb13c",
+    "working_diff_sha256": "44b2ceaacc595487187a6af19c77075512ad3a7a4686f6e1006be8005bc84e6f",
+    "captures": [
+      {
+        "variant": "wide",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/wide.png",
+          "--viewport",
+          "1200x800"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 4.01,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/wide.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "compact",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/compact.png",
+          "--viewport",
+          "800x700"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.21,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/compact.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "narrow",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/narrow.png",
+          "--viewport",
+          "480x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.21,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/narrow.png",
+        "requested_scale": 1
+      },
+      {
+        "variant": "large-text",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/large-text.png",
+          "--viewport",
+          "800x900",
+          "--text-scale",
+          "2"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.26,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/large-text.png",
+        "requested_scale": 2
+      },
+      {
+        "variant": "scale-baseline",
+        "command": [
+          "/Users/xaver/dev/qos-macos-shell/target/debug/vpn",
+          "--shots",
+          "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/scale-baseline.png",
+          "--viewport",
+          "800x900"
+        ],
+        "status": "captured",
+        "exit_code": 0,
+        "seconds": 0.26,
+        "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task3-after-20260915/captures/vpn/scale-baseline.png",
+        "requested_scale": 1
+      }
+    ]
+  }
+]

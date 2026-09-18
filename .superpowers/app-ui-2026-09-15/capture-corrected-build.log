@@ -1,0 +1,454 @@
+   Compiling subtle v2.6.1
+   Compiling getrandom v0.4.1
+   Compiling vcpkg v0.2.15
+   Compiling serde_json v1.0.151
+   Compiling ctutils v0.4.2
+   Compiling hybrid-array v0.4.13
+   Compiling libz-sys v1.1.23
+   Compiling block-buffer v0.12.1
+   Compiling block-padding v0.4.2
+   Compiling inout v0.2.2
+   Compiling digest v0.10.7
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling cpubits v0.1.1
+   Compiling rustix v1.1.4
+   Compiling crypto-common v0.2.2
+   Compiling digest v0.11.3
+   Compiling cipher v0.5.2
+   Compiling flate2 v1.1.9
+   Compiling sha2 v0.11.0
+   Compiling chacha20 v0.10.0
+   Compiling hmac v0.13.0
+   Compiling uuid v1.26.0
+   Compiling rand v0.10.1
+   Compiling universal-hash v0.6.1
+   Compiling block-padding v0.3.3
+   Compiling polyval v0.7.3
+   Compiling inout v0.1.4
+   Compiling ghash v0.6.0
+   Compiling cipher v0.4.4
+   Compiling pbkdf2 v0.13.0
+   Compiling aes v0.9.3
+   Compiling ctr v0.10.1
+   Compiling aead v0.6.1
+   Compiling der v0.8.1
+   Compiling salsa20 v0.11.0
+   Compiling aes-gcm v0.11.1
+   Compiling scrypt v0.12.0
+   Compiling cbc v0.2.1
+   Compiling sha2 v0.10.9
+   Compiling universal-hash v0.5.1
+   Compiling rustls v0.23.36
+   Compiling signature v3.0.0
+   Compiling spki v0.8.0
+   Compiling pkcs5 v0.8.1
+   Compiling signature v2.2.0
+   Compiling curve25519-dalek v5.0.0
+   Compiling pkcs8 v0.11.0
+   Compiling curve25519-dalek v4.1.3
+   Compiling png v0.18.1
+   Compiling tiff v0.10.3
+   Compiling aes v0.8.4
+   Compiling ed25519 v2.2.3
+   Compiling polyval v0.6.2
+   Compiling ed25519-dalek v2.2.0
+   Compiling ghash v0.5.1
+   Compiling image v0.25.9
+   Compiling ctr v0.9.2
+   Compiling chrono v0.4.45
+   Compiling aes-gcm v0.10.3
+   Compiling automerge v0.8.0
+   Compiling hmac v0.12.1
+   Compiling polling v3.11.0
+   Compiling hkdf v0.13.0
+   Compiling ff v0.13.1
+   Compiling async-io v2.6.0
+   Compiling group v0.13.0
+   Compiling hkdf v0.12.4
+   Compiling sec1 v0.7.3
+   Compiling collab-types v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/collab-types)
+   Compiling poly1305 v0.8.0
+   Compiling chacha20 v0.9.1
+   Compiling sha1 v0.10.6
+   Compiling crypto-bigint v0.5.5
+   Compiling zvariant v4.2.0
+   Compiling elliptic-curve v0.13.8
+   Compiling chacha20poly1305 v0.10.1
+   Compiling async-signal v0.2.13
+   Compiling async-process v2.5.0
+   Compiling frost-ed25519 v3.0.0
+   Compiling zip v4.6.1
+   Compiling zbus_names v3.0.0
+   Compiling module-lattice v0.2.3
+   Compiling zbus v4.4.0
+   Compiling threshold-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/threshold-identity)
+   Compiling fs-set-times v0.20.3
+   Compiling rfc6979 v0.4.0
+   Compiling blake2 v0.11.0
+   Compiling cap-primitives v3.4.6
+   Compiling argon2 v0.6.0
+   Compiling ecdsa v0.16.9
+   Compiling qdoc v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc)
+   Compiling shake v0.1.0
+   Compiling primeorder v0.13.6
+   Compiling sha3 v0.11.0
+   Compiling settings-store v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/settings-store)
+   Compiling kem v0.3.0
+   Compiling ml-kem v0.3.2
+   Compiling cap-std v3.4.6
+   Compiling sha3 v0.12.0
+   Compiling naga v29.0.3
+   Compiling libcrux-traits v0.0.8
+   Compiling runtime-fs v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-fs)
+   Compiling p384 v0.13.1
+   Compiling p256 v0.13.2
+   Compiling x25519-dalek v2.0.1
+   Compiling x25519-dalek v3.0.0
+   Compiling hpke-rs-crypto v0.7.0
+   Compiling libcrux-sha3 v0.0.10
+   Compiling x-wing v0.1.0
+   Compiling ml-dsa v0.1.1
+   Compiling runtime-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-identity)
+   Compiling k256 v0.13.4
+   Compiling accesskit v0.25.0
+   Compiling vello_shaders v0.9.0 (/Users/xaver/dev/qos-macos-shell/vendor/vello_shaders)
+   Compiling flatbuffers v25.12.19
+   Compiling psl-types v2.0.11
+   Compiling psl v2.1.190
+   Compiling hpke-rs-rust-crypto v0.7.0
+   Compiling accesskit_consumer v0.39.0
+   Compiling hpke-rs v0.7.0
+   Compiling openmls_memory_storage v0.6.0
+   Compiling openmls_rust_crypto v0.6.0
+   Compiling addr v0.15.6
+   Compiling accesskit_macos v0.27.0
+   Compiling openmls_basic_credential v0.6.0
+   Compiling cli v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/cli)
+   Compiling ashpd v0.9.3
+   Compiling qos-actions v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/actions)
+   Compiling itertools v0.13.0
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling precomputed-hash v0.1.1
+   Compiling seahash v4.1.0
+   Compiling vello v0.9.0 (/Users/xaver/dev/qos-macos-shell/vendor/vello)
+   Compiling app-state v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/app-state)
+   Compiling adblock v0.12.1
+   Compiling channel-crypto v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/channel-crypto)
+   Compiling accesskit_winit v0.34.0
+   Compiling runtime-collab v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-collab)
+   Compiling arboard v3.6.1
+   Compiling media v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/media)
+   Compiling qos-ui-graph v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/dev/ui-graph)
+   Compiling qos-headless-schema v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/dev/headless-schema)
+   Compiling qos-startup-metrics v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/qos-startup-metrics)
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-util v0.1.20
+   Compiling compression-codecs v0.4.36
+   Compiling async-compression v0.4.39
+   Compiling tempfile v3.27.0
+   Compiling tower-http v0.6.8
+   Compiling hyper-rustls v0.27.7
+   Compiling base16ct v1.0.0
+   Compiling native-tls v0.2.16
+   Compiling unicode-properties v0.1.4
+   Compiling tokio-native-tls v0.3.1
+   Compiling serdect v0.4.3
+   Compiling hyper-tls v0.6.0
+   Compiling ed25519 v3.0.0
+   Compiling reqwest v0.12.28
+   Compiling moka v0.12.15
+   Compiling ed25519-dalek v3.0.0
+   Compiling num-integer v0.1.46
+   Compiling hickory-proto v0.26.1
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling noq-proto v1.1.0
+   Compiling iroh-base v1.0.3
+   Compiling hickory-net v0.26.1
+   Compiling num-bigint v0.4.6
+   Compiling hickory-resolver v0.26.1
+   Compiling noq v1.1.0
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling attohttpc v0.30.1
+   Compiling tokio-websockets v0.13.3
+   Compiling igd-next v0.17.1
+   Compiling iroh-dns v1.0.3
+   Compiling hayro-syntax v0.4.0
+   Compiling reqwest v0.13.2
+   Compiling portmapper v0.19.1
+   Compiling iroh-relay v1.0.3
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling rustybuzz v0.20.1
+   Compiling iroh v1.0.3
+   Compiling png v0.17.16
+   Compiling irpc v0.17.0
+   Compiling syntect v5.3.0
+   Compiling cmake v0.1.58
+   Compiling usvg v0.45.1
+   Compiling pdfium-render v0.8.37
+   Compiling iroh-tickets v1.0.0
+   Compiling iroh-util v0.6.0
+   Compiling ff v0.14.0
+   Compiling typst-timing v0.14.2
+   Compiling iroh-blobs v0.103.0
+   Compiling crypto-bigint v0.7.5
+   Compiling chinese-number v0.7.8
+   Compiling typst-syntax v0.14.2
+   Compiling hayagriva v0.9.1
+   Compiling group v0.14.0
+   Compiling two-face v0.4.5
+   Compiling qos-power-mgmt v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/power)
+   Compiling glob v0.3.3
+   Compiling typst-library v0.14.2
+   Compiling clang-sys v1.8.1
+   Compiling thumbnail v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/thumbnail)
+   Compiling stringprep v0.1.5
+   Compiling sec1 v0.8.1
+   Compiling qos-user-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/identity/qos-user-identity)
+   Compiling elliptic-curve v0.14.1
+   Compiling accounts v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/accounts)
+   Compiling minimal-lexical v0.2.1
+   Compiling regex-syntax v0.8.11
+   Compiling nom v7.1.3
+   Compiling regex-automata v0.4.18
+   Compiling hayro-interpret v0.4.0
+   Compiling iroh-gossip v0.101.0
+   Compiling wnaf v0.14.0
+   Compiling rfc6979 v0.6.0
+   Compiling primefield v0.14.0
+   Compiling pkg v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/pkg)
+   Compiling fs_extra v1.3.0
+   Compiling dunce v1.0.5
+   Compiling either v1.15.0
+   Compiling bindgen v0.72.1
+   Compiling aws-lc-sys v0.43.0
+   Compiling fs v0.1.0 (/Users/xaver/dev/qos-macos-shell/fs)
+   Compiling primeorder v0.14.0
+   Compiling ecdsa v0.17.0
+   Compiling regex v1.13.1
+   Compiling cexpr v0.6.0
+   Compiling xattr v1.6.1
+   Compiling foldhash v0.1.5
+   Compiling hashbrown v0.15.5
+   Compiling hayro v0.4.0
+   Compiling tiny-skia v0.11.4
+   Compiling runtime-bundle v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/runtime-bundle)
+   Compiling ssh-encoding v0.3.0
+   Compiling md-5 v0.11.0
+   Compiling nix v0.31.3
+   Compiling subprocess v0.2.15
+   Compiling fallible-iterator v0.2.0
+   Compiling postgres-protocol v0.6.12
+   Compiling mysql_common v0.32.4
+   Compiling launcher v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/launcher)
+   Compiling resvg v0.45.1
+   Compiling hayro-write v0.3.0
+   Compiling hayro-svg v0.2.0
+   Compiling qos-bluez v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/qos-bluez)
+   Compiling poly1305 v0.9.1
+   Compiling blowfish v0.10.0
+   Compiling libsqlite3-sys v0.35.0
+   Compiling libgit2-sys v0.18.5+1.9.4
+   Compiling aws-lc-rs v1.17.3
+   Compiling pom v1.1.0
+   Compiling typst-svg v0.14.2
+   Compiling krilla v0.6.0
+   Compiling tar v0.4.46
+   Compiling bcrypt-pbkdf v0.11.0
+   Compiling ssh-cipher v0.3.0
+   Compiling os-actions v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/os-actions)
+   Compiling rqrr v0.10.1
+   Compiling postgres-types v0.2.14
+   Compiling qos-relay v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/hosting/qos-relay)
+   Compiling p256 v0.14.0
+   Compiling p384 v0.14.0
+   Compiling p521 v0.14.0
+   Compiling whoami v2.1.1
+   Compiling qos-reference v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/reference)
+   Compiling ecb v0.1.2
+   Compiling cbc v0.1.2
+   Compiling sha1 v0.11.0
+   Compiling md-5 v0.10.6
+   Compiling crossbeam-queue v0.3.13
+   Compiling btoi v0.4.3
+   Compiling nom v8.0.0
+   Compiling derive_utils v0.15.1
+   Compiling untrusted v0.7.1
+   Compiling saturating v0.1.0
+   Compiling mysql v25.0.1
+   Compiling base64 v0.21.7
+   Compiling zip v8.6.0
+   Compiling lopdf v0.42.0
+   Compiling io-enum v1.2.1
+   Compiling ssh-key v0.7.0-rc.11
+   Compiling crossbeam v0.8.4
+   Compiling tokio-postgres v0.7.18
+   Compiling typst-layout v0.14.2
+   Compiling russh-cryptovec v0.62.0
+   Compiling typst-eval v0.14.2
+   Compiling app-registry v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/app-registry)
+   Compiling krilla-svg v0.3.0
+   Compiling zip v2.4.2
+   Compiling typst-html v0.14.2
+   Compiling type1-encoding-parser v0.1.1
+   Compiling adobe-cmap-parser v0.4.1
+   Compiling terminal v0.2.1 (/Users/xaver/dev/qos-macos-shell/apps/terminal)
+   Compiling typst-realize v0.14.2
+   Compiling hashlink v0.10.0
+   Compiling lru v0.12.5
+   Compiling internal-russh-num-bigint v0.5.0
+   Compiling qdoc-html v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc-html)
+   Compiling agent-provider-config v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/agent/provider-config)
+   Compiling enum_dispatch v0.3.13
+   Compiling twox-hash v1.6.3
+   Compiling registry-types v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/registry-types)
+   Compiling gethostname v1.1.0
+   Compiling generic-array v1.4.5
+   Compiling hashify v0.2.9
+   Compiling russh-util v0.52.0
+   Compiling euclid v0.20.14
+   Compiling mediatype v0.21.0
+   Compiling delegate v0.13.5
+   Compiling socket2 v0.5.10
+   Compiling bufstream v0.1.4
+   Compiling postscript v0.14.1
+   Compiling cff-parser v0.2.0
+   Compiling fallible-iterator v0.3.0
+   Compiling md5 v0.8.1
+   Compiling hex-literal v1.1.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling calamine v0.36.1
+   Compiling rusqlite v0.37.0
+   Compiling pdf-extract v0.12.0
+   Compiling typst-pdf v0.14.2
+   Compiling feed-rs v2.4.0
+   Compiling mail-parser v0.11.4
+   Compiling app-catalogue v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/app-catalogue)
+   Compiling mail-builder v0.4.4
+   Compiling typst-render v0.14.2
+   Compiling qos-model-gateway v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/agent/model-gateway)
+   Compiling qdoc-epub v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc-epub)
+   Compiling typst v0.14.2
+   Compiling rust_xlsxwriter v0.79.4
+   Compiling app-host v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/app-host)
+   Compiling postgres v0.19.14
+   Compiling webpki-roots v0.26.11
+   Compiling runtime-portal-xdg v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-portal-xdg)
+   Compiling qos-callstream v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/qos-callstream)
+   Compiling qdoc-rtf v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc-rtf)
+   Compiling qdoc-pdf v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc-pdf)
+   Compiling desktop-policy v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/desktop-policy)
+   Compiling des v0.8.1
+   Compiling similar v2.7.0
+   Compiling settings v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/settings)
+   Compiling diffmerge v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/diffmerge)
+   Compiling file-explorer v0.2.0 (/Users/xaver/dev/qos-macos-shell/apps/file-explorer)
+   Compiling git2 v0.21.0
+   Compiling git_client v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/git_client)
+   Compiling monitor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/monitor)
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+   Compiling db_client v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/db_client)
+   Compiling sheets v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/sheets)
+   Compiling store v0.1.2 (/Users/xaver/dev/qos-macos-shell/apps/store)
+   Compiling typst_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/typst_editor)
+   Compiling mail v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/mail)
+   Compiling feeds v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/feeds)
+   Compiling vpn v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/vpn)
+warning: function `report_engine_error` is never used
+   --> apps/mail/src/engine.rs:284:4
+    |
+284 | fn report_engine_error(
+    |    ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling pdf_viewer v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/pdf_viewer)
+warning: `mail` (lib) generated 1 warning
+   Compiling code_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/code_editor)
+   Compiling photos v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/photos)
+   Compiling chat v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/chat)
+   Compiling totp v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/totp)
+   Compiling camera v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/camera)
+   Compiling qos-scratchpad v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/scratchpad)
+   Compiling imager v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/imager)
+   Compiling calendar v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/calendar)
+   Compiling ebook v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/ebook)
+warning: constant `MAX_XML_BYTES` is never used
+  --> apps/calendar/src/caldav.rs:41:7
+   |
+41 | const MAX_XML_BYTES: usize = 8 * 1024 * 1024;
+   |       ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `MAX_RESOURCES` is never used
+  --> apps/calendar/src/caldav.rs:42:7
+   |
+42 | const MAX_RESOURCES: usize = 10_000;
+   |       ^^^^^^^^^^^^^
+
+warning: constant `MAX_HREF_BYTES` is never used
+  --> apps/calendar/src/caldav.rs:43:7
+   |
+43 | const MAX_HREF_BYTES: usize = 4096;
+   |       ^^^^^^^^^^^^^^
+
+warning: constant `MAX_ICAL_BYTES` is never used
+  --> apps/calendar/src/caldav.rs:44:7
+   |
+44 | const MAX_ICAL_BYTES: usize = 2 * 1024 * 1024;
+   |       ^^^^^^^^^^^^^^
+
+warning: struct `ParsedMultistatus` is never constructed
+   --> apps/calendar/src/caldav.rs:493:8
+    |
+493 | struct ParsedMultistatus {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `parse_multistatus` is never used
+   --> apps/calendar/src/caldav.rs:502:4
+    |
+502 | fn parse_multistatus(xml: &str) -> Result<ParsedMultistatus, String> {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `sync_collection_body` is never used
+   --> apps/calendar/src/caldav.rs:580:4
+    |
+580 | fn sync_collection_body(token: &str) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `xml_escape` is never used
+   --> apps/calendar/src/caldav.rs:590:4
+    |
+590 | fn xml_escape(value: &str) -> String {
+    |    ^^^^^^^^^^
+
+   Compiling disks v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/disks)
+warning: `calendar` (lib) generated 8 warnings
+   Compiling firewall v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/firewall)
+   Compiling tube v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/tube)
+   Compiling logs v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/logs)
+   Compiling music v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/music)
+   Compiling containers v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/containers)
+   Compiling themes v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/themes)
+   Compiling calculator v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/calculator)
+   Compiling browser v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/browser)
+   Compiling contacts v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/contacts)
+   Compiling slides v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/slides)
+   Compiling russh v0.63.1
+   Compiling video_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/video_editor)
+   Compiling hex_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/hex_editor)
+   Compiling snippets v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/snippets)
+   Compiling weather v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/weather)
+   Compiling remote v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/remote)
+   Compiling maps v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/maps)
+   Compiling notes v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/notes)
+   Compiling video-player v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/video-player)
+   Compiling backups v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/backups)
+   Compiling api_tester v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/api_tester)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `typst_editor` (bin "typst_editor") generated 1 warning
+    Finished `dev` profile [unoptimized] target(s) in 1m 47s

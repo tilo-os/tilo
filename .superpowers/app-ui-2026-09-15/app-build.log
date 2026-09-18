@@ -1,0 +1,951 @@
+   Compiling serde_core v1.0.228
+   Compiling subtle v2.6.1
+   Compiling getrandom v0.4.1
+   Compiling vcpkg v0.2.15
+   Compiling yoke v0.8.3
+   Compiling serde_json v1.0.151
+   Compiling ctutils v0.4.2
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling hybrid-array v0.4.13
+   Compiling libz-sys v1.1.23
+   Compiling bytemuck v1.25.0
+   Compiling digest v0.10.7
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.4
+   Compiling cpubits v0.1.1
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling block-padding v0.4.2
+   Compiling icu_locale_core v2.3.0
+   Compiling inout v0.2.2
+   Compiling icu_collections v2.3.0
+   Compiling block-padding v0.3.3
+   Compiling indexmap v2.14.0
+   Compiling flate2 v1.1.9
+   Compiling digest v0.11.3
+   Compiling cipher v0.5.2
+   Compiling serde v1.0.228
+   Compiling bitflags v2.11.0
+   Compiling icu_provider v2.3.1
+   Compiling sha2 v0.11.0
+   Compiling chacha20 v0.10.0
+   Compiling smallvec v1.15.1
+   Compiling portable-atomic v1.13.1
+   Compiling bytes v1.11.1
+   Compiling icu_properties v2.3.0
+   Compiling parking_lot_core v0.9.12
+   Compiling once_cell v1.21.4
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.3.0
+   Compiling tracing-core v0.1.36
+   Compiling tokio v1.52.3
+   Compiling heapless v0.7.17
+   Compiling tracing v0.1.44
+   Compiling idna_adapter v1.2.1
+   Compiling uuid v1.26.0
+   Compiling postcard v1.1.3
+   Compiling idna v1.1.0
+   Compiling hmac v0.13.0
+   Compiling rustix v1.1.4
+   Compiling rand v0.10.1
+   Compiling universal-hash v0.6.1
+   Compiling url v2.5.8
+   Compiling inout v0.1.4
+   Compiling cipher v0.4.4
+   Compiling ipnet v2.12.0
+   Compiling dispatch2 v0.3.0
+   Compiling polyval v0.7.3
+   Compiling objc2-core-foundation v0.3.2
+   Compiling ghash v0.6.0
+   Compiling pbkdf2 v0.13.0
+   Compiling ctr v0.10.1
+   Compiling aes v0.9.3
+   Compiling aead v0.6.1
+   Compiling der v0.8.1
+   Compiling quick-xml v0.41.0
+   Compiling aes-gcm v0.11.1
+   Compiling salsa20 v0.11.0
+   Compiling unicode-normalization v0.1.25
+   Compiling scrypt v0.12.0
+   Compiling spki v0.8.0
+   Compiling cbc v0.2.1
+   Compiling regex-automata v0.4.18
+   Compiling pkcs5 v0.8.1
+   Compiling sha2 v0.10.9
+   Compiling universal-hash v0.5.1
+   Compiling rustls v0.23.36
+   Compiling serde_bytes v0.11.19
+   Compiling tokio-util v0.7.18
+   Compiling pkcs8 v0.11.0
+   Compiling toml_edit v0.23.10+spec-1.0.0
+   Compiling bumpalo v3.20.3
+   Compiling proc-macro-crate v3.4.0
+   Compiling objc2-foundation v0.3.2
+   Compiling signature v3.0.0
+   Compiling signature v2.2.0
+   Compiling curve25519-dalek v4.1.3
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling yoke v0.7.5
+   Compiling toml_edit v0.22.27
+   Compiling curve25519-dalek v5.0.0
+   Compiling png v0.18.1
+   Compiling unicode-bidi v0.3.18
+   Compiling zerovec v0.10.4
+   Compiling toml v0.8.23
+   Compiling unic-langid-impl v0.9.6
+   Compiling tiff v0.10.3
+   Compiling ed25519 v2.2.3
+   Compiling ttf-parser v0.25.1
+   Compiling ed25519-dalek v2.2.0
+   Compiling unic-langid-macros-impl v0.9.6
+   Compiling aes v0.8.4
+   Compiling image v0.25.9
+   Compiling polyval v0.6.2
+   Compiling unic-langid-macros v0.9.6
+   Compiling litemap v0.7.5
+   Compiling ghash v0.5.1
+   Compiling tinystr v0.7.6
+   Compiling unic-langid v0.9.6
+   Compiling ctr v0.9.2
+   Compiling smol_str v0.3.6
+   Compiling icu_locid v1.5.0
+   Compiling aes-gcm v0.10.3
+   Compiling regex v1.13.1
+   Compiling nix v0.30.1
+   Compiling icu_provider v1.5.0
+   Compiling font-types v0.10.1
+   Compiling font-types v0.11.3
+   Compiling fontdb v0.23.0
+   Compiling chrono v0.4.45
+   Compiling read-fonts v0.35.0
+   Compiling zopfli v0.8.3
+   Compiling serdect v0.2.0
+   Compiling frost-core v3.0.0
+   Compiling automerge v0.8.0
+   Compiling runtime-portal v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-portal)
+   Compiling collab-types v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/collab-types)
+   Compiling poly1305 v0.8.0
+   Compiling chacha20 v0.9.1
+   Compiling hmac v0.12.1
+   Compiling chacha20poly1305 v0.10.1
+   Compiling frost-rerandomized v3.0.0
+   Compiling icu_collections v1.5.0
+   Compiling polling v3.11.0
+   Compiling hkdf v0.13.0
+   Compiling ff v0.13.1
+   Compiling enumflags2 v0.7.12
+   Compiling group v0.13.0
+   Compiling async-io v2.6.0
+   Compiling frost-ed25519 v3.0.0
+   Compiling sec1 v0.7.3
+   Compiling bip39 v2.2.2
+   Compiling skrifa v0.37.0
+   Compiling zvariant_derive v4.2.0
+   Compiling hkdf v0.12.4
+   Compiling sha1 v0.10.6
+   Compiling crypto-bigint v0.5.5
+   Compiling zvariant v4.2.0
+   Compiling elliptic-curve v0.13.8
+   Compiling kurbo v0.13.1
+   Compiling threshold-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/threshold-identity)
+   Compiling async-signal v0.2.13
+   Compiling read-fonts v0.39.2
+   Compiling blake2 v0.11.0
+   Compiling hashbrown v0.16.1
+   Compiling argon2 v0.6.0
+   Compiling async-process v2.5.0
+   Compiling zbus_names v3.0.0
+   Compiling nix v0.29.0
+   Compiling zbus_macros v4.4.0
+   Compiling zip v4.6.1
+   Compiling module-lattice v0.2.3
+   Compiling tls_codec v0.5.0
+   Compiling pulldown-cmark v0.12.2
+   Compiling fs-set-times v0.20.3
+   Compiling objc2-metal v0.3.2
+   Compiling rfc6979 v0.4.0
+   Compiling matchers v0.2.0
+   Compiling tracing-log v0.2.0
+   Compiling cap-primitives v3.4.6
+   Compiling tracing-subscriber v0.3.22
+   Compiling zbus v4.4.0
+   Compiling ecdsa v0.16.9
+   Compiling qdoc v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc)
+   Compiling skrifa v0.42.1
+   Compiling objc2-quartz-core v0.3.2
+   Compiling naga v29.0.3
+   Compiling wgpu-types v29.0.3
+   Compiling shake v0.1.0
+   Compiling primeorder v0.13.6
+   Compiling sha3 v0.11.0
+   Compiling settings-store v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/settings-store)
+   Compiling kem v0.3.0
+   Compiling ml-kem v0.3.2
+   Compiling raw-window-metal v1.1.0
+   Compiling cap-std v3.4.6
+   Compiling openmls_traits v0.6.0
+   Compiling runtime-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-identity)
+   Compiling wgpu-naga-bridge v29.0.3
+   Compiling sha3 v0.12.0
+   Compiling wgpu-hal v29.0.3
+   Compiling objc2-foundation v0.2.2
+   Compiling libcrux-traits v0.0.8
+   Compiling runtime-fs v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-fs)
+   Compiling p384 v0.13.1
+   Compiling p256 v0.13.2
+   Compiling x25519-dalek v3.0.0
+   Compiling x25519-dalek v2.0.1
+   Compiling hpke-rs-crypto v0.7.0
+   Compiling peniko v0.6.1
+   Compiling libcrux-sha3 v0.0.10
+   Compiling x-wing v0.1.0
+   Compiling objc2-app-kit v0.2.2
+   Compiling wgpu-core-deps-apple v29.0.3
+   Compiling ml-dsa v0.1.1
+   Compiling k256 v0.13.4
+   Compiling read-fonts v0.37.0
+   Compiling accesskit v0.25.0
+   Compiling safe_arch v0.7.4
+   Compiling intl-memoizer v0.5.3
+   Compiling hpke-rs-rust-crypto v0.7.0
+   Compiling wide v0.7.33
+   Compiling vello_shaders v0.9.0 (/Users/xaver/dev/qos-macos-shell/vendor/vello_shaders)
+   Compiling accesskit_consumer v0.39.0
+   Compiling icu_segmenter v1.5.0
+   Compiling wgpu-core v29.0.3
+   Compiling hpke-rs v0.7.0
+   Compiling vello_encoding v0.9.0 (/Users/xaver/dev/qos-macos-shell/vendor/vello_encoding)
+   Compiling openmls_memory_storage v0.6.0
+   Compiling intl_pluralrules v7.0.2
+   Compiling fluent-langneg v0.13.1
+   Compiling objc2-core-graphics v0.3.2
+   Compiling swash v0.2.6
+   Compiling objc2-app-kit v0.3.2
+   Compiling skrifa v0.40.0
+   Compiling harfrust v0.5.2
+   Compiling wgpu v29.0.3
+   Compiling winit v0.30.13 (/Users/xaver/dev/qos-macos-shell/vendor/winit)
+   Compiling fluent-bundle v0.16.0
+   Compiling openmls v0.9.0
+   Compiling openmls_rust_crypto v0.6.0
+   Compiling openh264 v0.9.3
+   Compiling accesskit_macos v0.27.0
+   Compiling openmls_basic_credential v0.6.0
+   Compiling flatbuffers v25.12.19
+   Compiling cli v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/cli)
+   Compiling ashpd v0.9.3
+   Compiling qos-actions v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/actions)
+   Compiling futures-intrusive v0.5.0
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling cosmic-text v0.19.0
+   Compiling adblock v0.12.1
+   Compiling vello v0.9.0 (/Users/xaver/dev/qos-macos-shell/vendor/vello)
+   Compiling app-state v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/app-state)
+   Compiling accesskit_winit v0.34.0
+   Compiling runtime-collab v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-collab)
+   Compiling channel-crypto v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/channel-crypto)
+   Compiling fluent v0.17.0
+   Compiling ash v0.38.0+1.3.281
+   Compiling arboard v3.6.1
+   Compiling media v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/media)
+   Compiling qos-startup-metrics v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/qos-startup-metrics)
+   Compiling qos-headless-schema v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/dev/headless-schema)
+   Compiling qos-ui-graph v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/dev/ui-graph)
+   Compiling http v1.4.0
+   Compiling siphasher v1.0.3
+   Compiling security-framework v3.6.0
+   Compiling system-configuration v0.7.0
+   Compiling h2 v0.4.19
+   Compiling http-body v1.0.1
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling tokio-rustls v0.26.4
+   Compiling alloc-stdlib v0.2.2
+   Compiling brotli-decompressor v5.0.0
+   Compiling http-body-util v0.1.3
+   Compiling compression-core v0.4.31
+   Compiling tower v0.5.3
+   Compiling tempfile v3.27.0
+   Compiling brotli v8.0.2
+   Compiling time-macros v0.2.27
+   Compiling native-tls v0.2.16
+   Compiling tokio-native-tls v0.3.1
+   Compiling base16ct v1.0.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling time v0.3.47
+   Compiling unicode-properties v0.1.4
+   Compiling objc2-security v0.3.2
+   Compiling objc2-system-configuration v0.3.2
+   Compiling hyper v1.8.1
+   Compiling compression-codecs v0.4.36
+   Compiling plist v1.10.0
+   Compiling async-compression v0.4.39
+   Compiling hyper-util v0.1.20
+   Compiling tower-http v0.6.8
+   Compiling serdect v0.4.3
+   Compiling ed25519 v3.0.0
+   Compiling moka v0.12.15
+   Compiling ed25519-dalek v3.0.0
+   Compiling n0-future v0.3.2
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling phf_generator v0.13.1
+   Compiling hyper-rustls v0.27.7
+   Compiling hyper-tls v0.6.0
+   Compiling noq-udp v1.1.0
+   Compiling reqwest v0.12.28
+   Compiling prefix-trie v0.8.4
+   Compiling phf_macros v0.13.1
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling hickory-proto v0.26.1
+   Compiling fastbloom v0.17.0
+   Compiling objc2-security-foundation v0.3.2
+   Compiling num_enum_derive v0.7.5
+   Compiling noq-proto v1.1.0
+   Compiling num_enum v0.7.5
+   Compiling objc2-core-wlan v0.3.2
+   Compiling hickory-net v0.26.1
+   Compiling phf v0.13.1
+   Compiling iroh-base v1.0.3
+   Compiling tokio-stream v0.1.18
+   Compiling netdev v0.45.0
+   Compiling hickory-resolver v0.26.1
+   Compiling iroh-metrics v1.0.1
+   Compiling noq v1.1.0
+   Compiling n0-watcher v1.0.0
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling attohttpc v0.30.1
+   Compiling kurbo v0.12.0
+   Compiling simple-dns v0.11.3
+   Compiling float-cmp v0.9.0
+   Compiling tokio-websockets v0.13.3
+   Compiling iroh-dns v1.0.3
+   Compiling hayro-syntax v0.4.0
+   Compiling strict-num v0.1.1
+   Compiling igd-next v0.17.1
+   Compiling reqwest v0.13.2
+   Compiling netwatch v0.19.1
+   Compiling bit-vec v0.8.0
+   Compiling bit-set v0.8.0
+   Compiling tiny-skia-path v0.11.4
+   Compiling yasna v0.5.2
+   Compiling iroh-relay v1.0.3
+   Compiling portmapper v0.19.1
+   Compiling backon v1.6.0
+   Compiling unicode-ccc v0.4.0
+   Compiling linked-hash-map v0.5.6
+   Compiling icu_locid_transform_data v1.5.1
+   Compiling unicode-bidi-mirroring v0.4.0
+   Compiling rustybuzz v0.20.1
+   Compiling yaml-rust v0.4.5
+   Compiling rcgen v0.14.7
+   Compiling fancy-regex v0.16.2
+   Compiling png v0.17.16
+   Compiling iroh v1.0.3
+   Compiling inplace-vec-builder v0.1.1
+   Compiling kurbo v0.11.3
+   Compiling bincode v1.3.3
+   Compiling xmlwriter v0.1.0
+   Compiling range-collections v0.4.6
+   Compiling svgtypes v0.15.3
+   Compiling syntect v5.3.0
+   Compiling irpc v0.17.0
+   Compiling iroh-io v0.6.2
+   Compiling strum_macros v0.27.2
+   Compiling simplecss v0.2.2
+   Compiling cmake v0.1.58
+   Compiling comemo-macros v0.5.1
+   Compiling icu_properties_data v1.5.1
+   Compiling ciborium-io v0.2.2
+   Compiling unicode-vo v0.1.0
+   Compiling imagesize v0.13.0
+   Compiling pico-args v0.5.0
+   Compiling wasmparser v0.228.0
+   Compiling unscanny v0.1.0
+   Compiling data-url v0.3.2
+   Compiling ciborium-ll v0.2.2
+   Compiling usvg v0.45.1
+   Compiling comemo v0.5.1
+   Compiling strum v0.27.2
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling bao-tree v0.16.0
+   Compiling pdfium-render v0.8.37
+   Compiling icu_locid_transform v1.5.0
+   Compiling iroh-tickets v1.0.0
+   Compiling nested_enum_utils v0.2.3
+   Compiling quick-xml v0.38.4
+   Compiling ff v0.14.0
+   Compiling wasmi_core v0.51.5
+   Compiling enum-ordinalize-derive v4.4.1
+   Compiling by_address v1.2.1
+   Compiling thin-vec v0.2.19
+   Compiling unsafe-libyaml v0.2.11
+   Compiling roman-numerals-rs v3.1.0
+   Compiling unicode-math-class v0.1.0
+   Compiling rust_decimal v1.42.1
+   Compiling codex v0.2.0
+   Compiling palette v0.7.6
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling typst-utils v0.14.2
+   Compiling biblatex v0.11.0
+   Compiling palette_derive v0.7.6
+   Compiling wasmi_ir v0.51.5
+   Compiling citationberg v0.6.1
+   Compiling enum-ordinalize v4.4.1
+   Compiling iroh-util v0.6.0
+   Compiling ciborium v0.2.2
+   Compiling iroh-blobs v0.103.0
+   Compiling pkg v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/pkg)
+   Compiling zerotrie v0.1.3
+   Compiling typst-timing v0.14.2
+   Compiling ecow v0.2.6
+   Compiling crypto-bigint v0.7.5
+   Compiling approx v0.5.1
+   Compiling csv-core v0.1.13
+   Compiling fast-srgb8 v1.0.0
+   Compiling chinese-variant v1.1.6
+   Compiling mutate_once v0.1.2
+   Compiling spin v0.9.8
+   Compiling wasmi_collections v0.51.5
+   Compiling kamadak-exif v0.6.1
+   Compiling chinese-number v0.7.8
+   Compiling csv v1.4.0
+   Compiling typst-syntax v0.14.2
+   Compiling wasmi v0.51.5
+   Compiling icu_provider_blob v1.5.0
+   Compiling hayagriva v0.9.1
+   Compiling icu_properties v1.5.1
+   Compiling group v0.14.0
+   Compiling two-face v0.4.5
+   Compiling qos-power-mgmt v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/power)
+   Compiling accounts v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/accounts)
+   Compiling lipsum v0.9.1
+   Compiling typst-macros v0.14.2
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling typst-assets v0.14.2
+   Compiling az v1.3.0
+   Compiling glob v0.3.3
+   Compiling typed-arena v2.0.2
+   Compiling object v0.37.3
+   Compiling glidesort v0.1.2
+   Compiling clang-sys v1.8.1
+   Compiling typst-library v0.14.2
+   Compiling thumbnail v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/thumbnail)
+   Compiling runtime-bundle v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/runtime-bundle)
+   Compiling stringprep v0.1.5
+   Compiling sec1 v0.8.1
+   Compiling qos-user-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/identity/qos-user-identity)
+   Compiling futures-concurrency v7.7.1
+   Compiling launcher v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/launcher)
+   Compiling elliptic-curve v0.14.1
+   Compiling hayro-font v0.3.0
+   Compiling regex-syntax v0.8.11
+   Compiling zstd-safe v7.2.4
+   Compiling minimal-lexical v0.2.1
+   Compiling nom v7.1.3
+   Compiling ar_archive_writer v0.5.2
+   Compiling iroh-gossip v0.101.0
+   Compiling fuser v0.17.0
+   Compiling hayro-interpret v0.4.0
+   Compiling icu_locale_fallback v2.3.0
+   Compiling wnaf v0.14.0
+   Compiling rfc6979 v0.6.0
+   Compiling primefield v0.14.0
+   Compiling wayland-sys v0.31.11
+   Compiling fs_extra v1.3.0
+   Compiling dunce v1.0.5
+   Compiling bindgen v0.72.1
+   Compiling either v1.15.0
+   Compiling itertools v0.13.0
+   Compiling aws-lc-sys v0.43.0
+   Compiling primeorder v0.14.0
+   Compiling ecdsa v0.17.0
+   Compiling cexpr v0.6.0
+   Compiling fs v0.1.0 (/Users/xaver/dev/qos-macos-shell/fs)
+   Compiling psm v0.1.31
+   Compiling gif v0.13.3
+   Compiling xattr v1.6.1
+   Compiling wayland-backend v0.3.15
+   Compiling g2poly v1.2.2
+   Compiling g2gen v1.2.2
+   Compiling zstd v0.13.3
+   Compiling hayro v0.4.0
+   Compiling tiny-skia v0.11.4
+   Compiling pdf-writer v0.14.0
+   Compiling qos-reference v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/reference)
+   Compiling write-fonts v0.48.1
+   Compiling ssh-encoding v0.3.0
+   Compiling md-5 v0.11.0
+   Compiling rgb v0.8.52
+   Compiling nix v0.31.3
+   Compiling stacker v0.1.24
+   Compiling subprocess v0.2.15
+   Compiling wayland-client v0.31.14
+   Compiling fallible-iterator v0.2.0
+   Compiling wayland-scanner v0.31.11
+   Compiling postgres-protocol v0.6.12
+   Compiling mysql_common v0.32.4
+   Compiling resvg v0.45.1
+   Compiling hayro-write v0.3.0
+   Compiling subsetter v0.2.6
+   Compiling nix v0.28.0
+   Compiling g2p v1.2.2
+   Compiling hayro-svg v0.2.0
+   Compiling agent-provider-config v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/agent/provider-config)
+   Compiling qos-bluez v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/qos-bluez)
+   Compiling qdoc-html v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc-html)
+   Compiling lru v0.16.3
+   Compiling calendrical_calculations v0.2.4
+   Compiling poly1305 v0.9.1
+   Compiling fixed_decimal v0.7.2
+   Compiling blowfish v0.10.0
+   Compiling libsqlite3-sys v0.35.0
+   Compiling float-cmp v0.10.0
+   Compiling libgit2-sys v0.18.5+1.9.4
+   Compiling xmlparser v0.13.6
+   Compiling pom v1.1.0
+   Compiling zip v2.4.2
+   Compiling aws-lc-rs v1.17.3
+   Compiling imagesize v0.14.0
+   Compiling xmp-writer v0.3.3
+   Compiling icu_calendar v2.3.0
+   Compiling portable-pty v0.9.0
+   Compiling krilla v0.6.0
+   Compiling typst-svg v0.14.2
+   Compiling tar v0.4.46
+   Compiling bcrypt-pbkdf v0.11.0
+   Compiling ssh-cipher v0.3.0
+   Compiling os-actions v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/os-actions)
+   Compiling rqrr v0.10.1
+   Compiling qdoc-epub v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc-epub)
+   Compiling qos-model-gateway v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/agent/model-gateway)
+   Compiling qos-relay v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/hosting/qos-relay)
+   Compiling postgres-types v0.2.14
+   Compiling p521 v0.14.0
+   Compiling p256 v0.14.0
+   Compiling p384 v0.14.0
+   Compiling icu_provider_adapters v1.5.0
+   Compiling whoami v2.1.1
+   Compiling qdoc-pdf v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc-pdf)
+   Compiling qdoc-rtf v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc-rtf)
+   Compiling app-host v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/app-host)
+   Compiling ecb v0.1.2
+   Compiling cbc v0.1.2
+   Compiling sha1 v0.11.0
+   Compiling md-5 v0.10.6
+   Compiling crossbeam-queue v0.3.13
+   Compiling btoi v0.4.3
+   Compiling swipe v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/swipe)
+   Compiling nom v8.0.0
+   Compiling derive_utils v0.15.1
+   Compiling typed-path v0.12.3
+   Compiling saturating v0.1.0
+   Compiling debug_unsafe v0.1.4
+   Compiling untrusted v0.7.1
+   Compiling sdd v3.0.10
+   Compiling mysql v25.0.1
+   Compiling base64 v0.21.7
+   Compiling zip v8.6.0
+   Compiling scc v2.4.0
+   Compiling atoi_simd v0.18.1
+   Compiling lopdf v0.42.0
+   Compiling io-enum v1.2.1
+   Compiling ssh-key v0.7.0-rc.11
+   Compiling crossbeam v0.8.4
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+   Compiling tokio-postgres v0.7.18
+   Compiling typst-layout v0.14.2
+   Compiling icu_time v2.3.0
+   Compiling icu_plurals v2.3.0
+   Compiling wayland-protocols v0.32.12
+   Compiling icu_decimal v2.3.0
+   Compiling russh-cryptovec v0.62.0
+   Compiling typst-eval v0.14.2
+   Compiling app-registry v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/app-registry)
+   Compiling typst-html v0.14.2
+   Compiling krilla-svg v0.3.0
+   Compiling terminal v0.2.1 (/Users/xaver/dev/qos-macos-shell/apps/terminal)
+   Compiling adobe-cmap-parser v0.4.1
+   Compiling type1-encoding-parser v0.1.1
+   Compiling photos v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/photos)
+   Compiling chat v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/chat)
+   Compiling typst-realize v0.14.2
+   Compiling hashlink v0.10.0
+   Compiling windows-vm v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/windows-vm)
+   Compiling internal-russh-num-bigint v0.5.0
+   Compiling enum_dispatch v0.3.13
+   Compiling twox-hash v1.6.3
+   Compiling pixglyph v0.6.1
+   Compiling registry-types v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/registry-types)
+   Compiling generic-array v1.4.5
+   Compiling russh-util v0.52.0
+   Compiling gethostname v1.1.0
+   Compiling compat-catalogue v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/windows/compat-catalogue)
+   Compiling mediatype v0.21.0
+   Compiling hashify v0.2.9
+   Compiling codepage v0.1.2
+   Compiling icu_pattern v0.5.0
+   Compiling euclid v0.20.14
+   Compiling delegate v0.13.5
+   Compiling serial_test_derive v3.4.0
+   Compiling socket2 v0.5.10
+   Compiling fast-float2 v0.2.4
+   Compiling hex-literal v1.1.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling md5 v0.8.1
+   Compiling bufstream v0.1.4
+   Compiling infer v0.19.0
+   Compiling cff-parser v0.2.0
+   Compiling fallible-iterator v0.3.0
+   Compiling postscript v0.14.1
+   Compiling typst-pdf v0.14.2
+   Compiling rusqlite v0.37.0
+   Compiling pdf-extract v0.12.0
+   Compiling calamine v0.36.1
+   Compiling serial_test v3.4.0
+   Compiling mail-parser v0.11.4
+   Compiling icu_datetime v2.3.0
+   Compiling compat-service v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/windows/compat-service)
+error[E0432]: unresolved import `launcher::gpu::select_for_node`
+   --> crates/windows/compat-service/src/plan.rs:6:32
+    |
+  6 | use launcher::gpu::{IcdSearch, select_for_node};
+    |                                ^^^^^^^^^^^^^^^ no `select_for_node` in `gpu`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/gpu.rs:315:8
+    |
+314 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+315 | pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
+    |        ^^^^^^^^^^^^^^^
+help: a similar name exists in the module
+    |
+  6 - use launcher::gpu::{IcdSearch, select_for_node};
+  6 + use launcher::gpu::{IcdSearch, select_for_driver};
+    |
+
+error[E0432]: unresolved import `launcher::sandbox`
+  --> crates/windows/compat-service/src/plan.rs:7:15
+   |
+ 7 | use launcher::sandbox::NetGateBind;
+   |               ^^^^^^^ could not find `sandbox` in `launcher`
+   |
+note: found an item that was configured out
+  --> crates/packaging/launcher/src/lib.rs:59:9
+   |
+58 | #[cfg(target_os = "linux")]
+   |       ------------------- the item is gated behind the `linux` feature
+59 | pub mod sandbox;
+   |         ^^^^^^^
+
+error[E0432]: unresolved import `launcher::sandbox`
+  --> crates/windows/compat-service/src/resources.rs:7:15
+   |
+ 7 | use launcher::sandbox::NetGateBind;
+   |               ^^^^^^^ could not find `sandbox` in `launcher`
+   |
+note: found an item that was configured out
+  --> crates/packaging/launcher/src/lib.rs:59:9
+   |
+58 | #[cfg(target_os = "linux")]
+   |       ------------------- the item is gated behind the `linux` feature
+59 | pub mod sandbox;
+   |         ^^^^^^^
+
+error[E0433]: cannot find `sandbox` in `launcher`
+   --> crates/windows/compat-service/src/plan.rs:342:23
+    |
+342 |             launcher::sandbox::wayland_bind_for(&self.session.wayland_socket, self.session.uid);
+    |                       ^^^^^^^ could not find `sandbox` in `launcher`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/lib.rs:59:9
+    |
+ 58 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+ 59 | pub mod sandbox;
+    |         ^^^^^^^
+
+error[E0433]: cannot find `sandbox` in `launcher`
+   --> crates/windows/compat-service/src/plan.rs:345:19
+    |
+345 |         launcher::sandbox::push_clean_environment(&mut argv);
+    |                   ^^^^^^^ could not find `sandbox` in `launcher`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/lib.rs:59:9
+    |
+ 58 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+ 59 | pub mod sandbox;
+    |         ^^^^^^^
+
+error[E0433]: cannot find `sandbox` in `launcher`
+   --> crates/windows/compat-service/src/plan.rs:393:19
+    |
+393 |         launcher::sandbox::push_wayland_bind(&mut argv, &wayland);
+    |                   ^^^^^^^ could not find `sandbox` in `launcher`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/lib.rs:59:9
+    |
+ 58 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+ 59 | pub mod sandbox;
+    |         ^^^^^^^
+
+error[E0433]: cannot find `sandbox` in `launcher`
+   --> crates/windows/compat-service/src/plan.rs:395:19
+    |
+395 |         launcher::sandbox::push_gpu_selection(&mut argv, &gpu, true);
+    |                   ^^^^^^^ could not find `sandbox` in `launcher`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/lib.rs:59:9
+    |
+ 58 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+ 59 | pub mod sandbox;
+    |         ^^^^^^^
+
+error[E0433]: cannot find `sandbox` in `launcher`
+   --> crates/windows/compat-service/src/plan.rs:400:23
+    |
+400 |             launcher::sandbox::push_net_gate(&mut argv, gate);
+    |                       ^^^^^^^ could not find `sandbox` in `launcher`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/lib.rs:59:9
+    |
+ 58 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+ 59 | pub mod sandbox;
+    |         ^^^^^^^
+
+error[E0433]: cannot find `sandbox` in `launcher`
+   --> crates/windows/compat-service/src/plan.rs:408:19
+    |
+408 |         launcher::sandbox::push_workspace_id(&mut argv, workspace_id);
+    |                   ^^^^^^^ could not find `sandbox` in `launcher`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/lib.rs:59:9
+    |
+ 58 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+ 59 | pub mod sandbox;
+    |         ^^^^^^^
+
+error[E0433]: cannot find `landlock_shim` in `launcher`
+   --> crates/windows/compat-service/src/plan.rs:417:23
+    |
+417 |             launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string(),
+    |                       ^^^^^^^^^^^^^ could not find `landlock_shim` in `launcher`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/lib.rs:51:9
+    |
+ 50 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+ 51 | pub mod landlock_shim;
+    |         ^^^^^^^^^^^^^
+
+error[E0425]: cannot find function `compile_baseline` in module `launcher::seccomp`
+   --> crates/windows/compat-service/src/execute.rs:31:45
+    |
+ 31 |             let filter = launcher::seccomp::compile_baseline(profile)
+    |                                             ^^^^^^^^^^^^^^^^ not found in `launcher::seccomp`
+    |
+note: found an item that was configured out
+   --> crates/packaging/launcher/src/seccomp.rs:366:8
+    |
+365 | #[cfg(target_os = "linux")]
+    |       ------------------- the item is gated behind the `linux` feature
+366 | pub fn compile_baseline(profile: SeccompProfile) -> Result<Vec<u8>, SeccompError> {
+    |        ^^^^^^^^^^^^^^^^
+
+error[E0425]: cannot find value `SYS_memfd_create` in crate `libc`
+  --> crates/windows/compat-service/src/execute.rs:85:19
+   |
+85 |             libc::SYS_memfd_create,
+   |                   ^^^^^^^^^^^^^^^^ not found in `libc`
+
+error[E0425]: cannot find value `MFD_CLOEXEC` in crate `libc`
+   --> crates/windows/compat-service/src/execute.rs:87:19
+    |
+ 87 |             libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+    |                   ^^^^^^^^^^^
+    |
+   ::: /Users/xaver/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/src/unix/mod.rs:259:9
+    |
+259 |         pub const FD_CLOEXEC: c_int = 0x1;
+    |         --------------------------- similarly named constant `FD_CLOEXEC` defined here
+    |
+help: a constant with a similar name exists
+    |
+ 87 -             libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+ 87 +             libc::FD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+    |
+
+error[E0425]: cannot find value `MFD_ALLOW_SEALING` in crate `libc`
+  --> crates/windows/compat-service/src/execute.rs:87:39
+   |
+87 |             libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+   |                                       ^^^^^^^^^^^^^^^^^ not found in `libc`
+
+error[E0422]: cannot find struct, variant or union type `ucred` in crate `libc`
+   --> crates/windows/compat-service/src/session.rs:422:33
+    |
+422 |     let mut credentials = libc::ucred {
+    |                                 ^^^^^
+    |
+   ::: /Users/xaver/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/src/macros.rs:182:9
+    |
+182 |         $pub struct $i { $($field)* }
+    |         -------------- similarly named struct `xucred` defined here
+    |
+help: a struct with a similar name exists
+    |
+422 |     let mut credentials = libc::xucred {
+    |                                 +
+
+error[E0425]: cannot find type `ucred` in crate `libc`
+   --> crates/windows/compat-service/src/session.rs:427:74
+    |
+427 |     let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
+    |                                                                          ^^^^^
+    |
+   ::: /Users/xaver/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/src/macros.rs:182:9
+    |
+182 |         $pub struct $i { $($field)* }
+    |         -------------- similarly named struct `xucred` defined here
+    |
+help: a struct with a similar name exists
+    |
+427 |     let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::xucred>())
+    |                                                                          +
+
+error[E0425]: cannot find value `SO_PEERCRED` in crate `libc`
+   --> crates/windows/compat-service/src/session.rs:435:19
+    |
+435 |             libc::SO_PEERCRED,
+    |                   ^^^^^^^^^^^ not found in `libc`
+
+error[E0425]: cannot find type `ucred` in crate `libc`
+   --> crates/windows/compat-service/src/session.rs:440:86
+    |
+440 |     if result != 0 || usize::try_from(length).ok() != Some(std::mem::size_of::<libc::ucred>()) {
+    |                                                                                      ^^^^^
+    |
+   ::: /Users/xaver/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/src/macros.rs:182:9
+    |
+182 |         $pub struct $i { $($field)* }
+    |         -------------- similarly named struct `xucred` defined here
+    |
+help: a struct with a similar name exists
+    |
+440 |     if result != 0 || usize::try_from(length).ok() != Some(std::mem::size_of::<libc::xucred>()) {
+    |                                                                                      +
+
+error[E0425]: cannot find value `MSG_CMSG_CLOEXEC` in crate `libc`
+    --> crates/windows/compat-service/src/session.rs:1370:39
+     |
+1370 |             libc::MSG_WAITALL | libc::MSG_CMSG_CLOEXEC,
+     |                                       ^^^^^^^^^^^^^^^^ not found in `libc`
+
+   Compiling feed-rs v2.4.0
+error[E0599]: no associated function or constant named `default` found for struct `IcdSearch` in the current scope
+   --> crates/windows/compat-service/src/plan.rs:304:36
+    |
+304 |             icd_search: IcdSearch::default(),
+    |                                    ^^^^^^^ associated function or constant not found in `IcdSearch`
+
+error[E0308]: mismatched types
+    --> crates/windows/compat-service/src/session.rs:1363:30
+     |
+1363 |     message.msg_controllen = control_bytes;
+     |     ----------------------   ^^^^^^^^^^^^^ expected `u32`, found `usize`
+     |     |
+     |     expected due to the type of this binding
+
+error[E0308]: mismatched types
+    --> crates/windows/compat-service/src/session.rs:1394:42
+     |
+1394 |                 || (*header).cmsg_len != expected
+     |                                          ^^^^^^^^ expected `u32`, found `usize`
+
+error[E0277]: can't compare `u32` with `usize`
+    --> crates/windows/compat-service/src/session.rs:1394:39
+     |
+1394 |                 || (*header).cmsg_len != expected
+     |                                       ^^ no implementation for `u32 == usize`
+     |
+     = help: the trait `PartialEq<usize>` is not implemented for `u32`
+help: `u32` implements trait `PartialEq<Rhs>`
+    --> /Users/xaver/.rustup/toolchains/1.97.1-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/cmp.rs:1876:13
+     |
+1876 |               impl const PartialEq for $t {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PartialEq`
+...
+1898 | /     partial_eq_impl! {
+1899 | |         bool char usize u8 u16 u32 u64 u128 isize i8 i16 i32 i64 i128 f16 f32 f64 f128
+1900 | |     }
+     | |_____- in this macro invocation
+     |
+    ::: /Users/xaver/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/src/value/partial_eq.rs:76:13
+     |
+  76 |               impl PartialEq<Value> for $ty {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PartialEq<Value>`
+...
+  97 | / partialeq_numeric! {
+  98 | |     eq_i64[i8 i16 i32 i64 isize]
+  99 | |     eq_u64[u8 u16 u32 u64 usize]
+ 100 | |     eq_f32[f32]
+ 101 | |     eq_f64[f64]
+ 102 | |     eq_bool[bool]
+ 103 | | }
+     | |_- in this macro invocation
+     = note: this error originates in the macro `partial_eq_impl` which comes from the expansion of the macro `partialeq_numeric` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+    --> crates/windows/compat-service/src/session.rs:1442:30
+     |
+1442 |     message.msg_controllen = control_bytes;
+     |     ----------------------   ^^^^^^^^^^^^^ expected `u32`, found `usize`
+     |     |
+     |     expected due to the type of this binding
+
+error[E0308]: mismatched types
+    --> crates/windows/compat-service/src/session.rs:1452:30
+     |
+1452 |         (*header).cmsg_len = libc::CMSG_LEN(SCM_RIGHTS_FD_BYTES) as usize;
+     |         ------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `u32`, found `usize`
+     |         |
+     |         expected due to the type of this binding
+
+error[E0308]: mismatched types
+    --> crates/windows/compat-service/src/store.rs:730:81
+     |
+ 730 |     let result = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), mode) };
+     |                           -------------                                         ^^^^ expected `u16`, found `u32`
+     |                           |
+     |                           arguments to this function are incorrect
+     |
+note: function defined here
+    --> /Users/xaver/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/src/unix/mod.rs:1058:12
+     |
+1058 |     pub fn mkdirat(dirfd: c_int, pathname: *const c_char, mode: mode_t) -> c_int;
+     |            ^^^^^^^
+help: you can convert a `u32` to a `u16` and panic if the converted value doesn't fit
+     |
+ 730 |     let result = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), mode.try_into().unwrap()) };
+     |                                                                                     ++++++++++++++++++++
+
+   Compiling app-catalogue v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/app-catalogue)
+   Compiling mail-builder v0.4.4
+Some errors have detailed explanations: E0277, E0308, E0422, E0425, E0432, E0433, E0599.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `compat-service` (lib) due to 26 previous errors
+warning: build failed, waiting for other jobs to finish...

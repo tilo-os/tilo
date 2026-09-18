@@ -1,3 +1,4 @@
+use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
@@ -452,6 +453,9 @@ pub struct App {
     state: State,
     root_widget: Box<dyn Widget>,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    #[cfg(any(test, feature = "test-support"))]
+    controlled_installed_history_definition:
+        Option<&'static crate::history_mode::HistoryDefinition>,
     framework_input: std::rc::Rc<Cell<bool>>,
     history_key_release: bool,
     history_focus: Option<crate::widget::layout::CompositionFocus>,
@@ -786,7 +790,7 @@ impl AppConstructionInputs {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn controlled() -> Self {
         Self {
             collab_manager: CollaborationManager::disabled(),
@@ -1009,7 +1013,13 @@ impl App {
         let _entry = self.enter_wake_scope();
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
         registration.validate_root(self.root_widget.as_ref())?;
+        #[cfg(any(test, feature = "test-support"))]
+        let controlled_definition = registration.definition;
         self.history = Some(Box::new(crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)?));
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.controlled_installed_history_definition = Some(controlled_definition);
+        }
         self.init_layout();
         self.validate_history_registration()
     }
@@ -1132,7 +1142,7 @@ impl App {
         Self::with_parts(Some(wake_scope), state, root_widget, inputs())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn from_scoped_parts_with_controlled_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
@@ -1202,6 +1212,8 @@ impl App {
             state,
             root_widget,
             history: None,
+            #[cfg(any(test, feature = "test-support"))]
+            controlled_installed_history_definition: None,
             framework_input: std::rc::Rc::new(Cell::new(false)),
             history_key_release: false,
             history_focus: None,
@@ -2403,7 +2415,6 @@ impl App {
         parent_resource: &str,
         may_descend: bool,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let explicit = self.directory_explicit_visibility(resource);
         // Preserve the explicit-or-View disclosure rule, finding only the
         // needed descriptor in this bounded provider result, not surveying a
         // complete action catalogue for each displayed row.
@@ -2428,6 +2439,7 @@ impl App {
                         .find_map(|child| visibility(child, explicit))
                 })
         }
+        let explicit = self.directory_explicit_visibility(resource);
         let visibility = visibility(resource, explicit.as_ref())?;
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: parent_resource.to_owned(),
@@ -6522,6 +6534,22 @@ impl App {
         self.install_history(registration)
     }
 
+    /// Inspect controlled launch composition without opening a native window.
+    /// Available only to downstream runner tests through `test-support`.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn controlled_history_definitions_for_test(
+        &self,
+    ) -> (
+        Option<&'static crate::history_mode::HistoryDefinition>,
+        Option<&'static crate::history_mode::HistoryDefinition>,
+    ) {
+        (
+            self.controlled_installed_history_definition,
+            self.root_widget.document_history_definition(),
+        )
+    }
+
     /// Takes effect when the window is created, so set before [`App::run`].
     #[must_use]
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
@@ -6744,6 +6772,7 @@ impl App {
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
+        #[allow(clippy::panic, reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario")]
         let native_scenario = crate::native_scenario::load_from_env()
             .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
         assert!(
@@ -8655,7 +8684,6 @@ impl AppHandler {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
         }
 
-        use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
         let mut native_main_stages = (self.native_input_origin.is_some()
             && crate::render_thread::timing::enabled())
             .then(MainStages::default);
@@ -9432,7 +9460,7 @@ impl AppHandler {
 }
 
 impl AppHandler {
-    /// UserEvent injection keeps the ordinary window dispatch after admission.
+    /// `UserEvent` injection keeps the ordinary window dispatch after admission.
     fn injected_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,

@@ -1,0 +1,10 @@
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.13s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 2 tests
+test widget::tests::trackpad_pinch_respects_overlays_bounds_and_invalid_deltas ... ok
+test widget::tests::trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 317 filtered out; finished in 0.31s
+

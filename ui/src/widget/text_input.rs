@@ -3787,6 +3787,10 @@ impl Widget for TextInput {
             let style = self.multiline_style(scale);
             let renderer_style = text_renderer.renderer_input_style(&style);
             self.update_gutter_metrics(text_renderer, &renderer_style, scale);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "layout width originates as f32; nonnegative insets only reduce it before shaping at f32 precision"
+            )]
             let available_width = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0) as f32;
             let display = self.layout_display_text();
             let signature =
@@ -3808,13 +3812,10 @@ impl Widget for TextInput {
             self.multiline_shaped = true;
             self.lines.clear();
             self.refresh_multiline_origin();
-            let height = self
-                .single_layout
-                .as_ref()
-                .map_or(f64::from(style.line_height_px()), |layout| {
-                    f64::from(layout.height())
-                })
-                + ML_PAD_Y * 2.0;
+            let height = self.single_layout.as_ref().map_or_else(
+                || f64::from(style.line_height_px()),
+                |layout| f64::from(layout.height()),
+            ) + ML_PAD_Y * 2.0;
             self.model_layout_dirty = false;
             #[allow(
                 clippy::cast_possible_truncation,

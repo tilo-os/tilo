@@ -40,7 +40,7 @@ const WHEEL_LINE_PX: f64 = 40.0;
 /// the `f32` the engine's command protocol expects.
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "on-screen physical coordinates never approach f32::MAX; this narrowing is exact for every practical viewport size"
+    reason = "on-screen physical coordinates never approach f32::MAX; f32 precision is sufficient for engine screen coordinates and device scale"
 )]
 fn to_f32(v: f64) -> f32 {
     v as f32
@@ -310,8 +310,11 @@ impl Widget for WebView {
         // First layout can precede all window/input events. The host's draw
         // transform already carries the actual device scale at that point.
         let coefficients = transform.as_coeffs();
-        let device_scale = coefficients[0].hypot(coefficients[1]) as f32;
-        if device_scale.is_finite() && device_scale > 0.0 && device_scale != self.scale_factor {
+        let device_scale = to_f32(coefficients[0].hypot(coefficients[1]));
+        if device_scale.is_finite()
+            && device_scale > 0.0
+            && device_scale.to_bits() != self.scale_factor.to_bits()
+        {
             self.scale_factor = device_scale;
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();

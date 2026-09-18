@@ -1,0 +1,15 @@
+    Blocking waiting for file lock on build directory
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `ui` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.02s
+     Running unittests src/lib.rs (target/debug/deps/ui-c514f5321372d418)
+
+running 2 tests
+test chrome::toolbar::tests::draw_returns_a_rect_per_item_and_hit_tests ... ok
+test chrome::toolbar::tests::scaled_toolbar_labels_fit_inside_their_hit_rects_and_row ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3230 filtered out; finished in 0.12s
+

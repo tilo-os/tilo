@@ -557,7 +557,7 @@ impl Widget for InviteMintScreen {
             Align::Start,
             false,
         );
-        let labels: Vec<&str> = EXPIRIES.iter().map(|e| e.label()).collect();
+        let labels: Vec<&str> = EXPIRIES.iter().map(super::InviteExpiry::label).collect();
         let hovered = plan
             .segments
             .iter()

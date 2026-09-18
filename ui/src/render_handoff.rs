@@ -84,7 +84,7 @@ impl Recorder {
             put_bounds(
                 &mut row,
                 name,
-                previous.and_then(|frame| frame.points[index]),
+                previous.and_then(|frame| frame.points.get(index).copied().flatten()),
             );
         }
         put_bounds(&mut row, "before_receive", before);
@@ -108,11 +108,12 @@ fn put_bounds(row: &mut serde_json::Value, name: &str, bounds: Option<HostClockB
 }
 
 pub(crate) fn set(recorder: &mut Option<Recorder>, stage: Stage, bounds: Option<HostClockBracket>) {
-    if let Some(frame) = recorder
+    if let Some(point) = recorder
         .as_mut()
         .and_then(|recorder| recorder.frame.as_mut())
+        .and_then(|frame| frame.points.get_mut(stage as usize))
     {
-        frame.points[stage as usize] = bounds;
+        *point = bounds;
     }
 }
 pub(crate) fn record(recorder: &mut Option<Recorder>, stage: Stage) {

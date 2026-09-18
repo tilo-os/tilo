@@ -126,11 +126,43 @@ impl LaunchSpec {
         Ok(())
     }
 
+    /// Exercise the native builder with deterministic in-process services.
+    /// The spec's real root, state opener, configure hook, and History
+    /// installation path are retained; only native window/runtime discovery is
+    /// omitted. Downstream app tests enable this with the `test-support`
+    /// feature and provide an in-memory state opener on the spec.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn build_controlled_app_for_test(&self) -> Result<App, LaunchError> {
+        let args = parse_args_extended(
+            &["controlled-launch".to_string()],
+            self.allowed_flags,
+            self.allowed_options,
+            self.allowed_live_flags,
+            self.allowed_live_options,
+            self.max_positionals,
+        )?;
+        validate_spec_args(&args, self)?;
+        build_native_app_with_constructor(
+            self,
+            &args,
+            App::from_scoped_parts_with_controlled_inputs,
+        )
+    }
+
     /// Explicit provenance for a custom app-global preferences/state opener.
     /// User-file documents use a real owned-record adapter instead.
     #[must_use]
     pub fn open_app_global_state(mut self, open: OpenState) -> Self {
         self = self.open_state(open);
+        self.history_app_global_storage = true;
+        self
+    }
+
+    /// Explicit app-global state provenance for an argument-aware opener.
+    /// User-file documents require an owned-record adapter instead.
+    #[must_use]
+    pub fn open_app_global_state_with_args(mut self, open: OpenStateWithArgs) -> Self {
+        self = self.open_state_with_args(open);
         self.history_app_global_storage = true;
         self
     }
@@ -1455,15 +1487,133 @@ mod tests {
             }],
         };
         LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
-        let mut spec = LaunchSpec::new(HISTORY.app_id, scoped_root).open_app_global_state(scoped_open_state).configure_app(scoped_configure);
-        spec.history_definition = Some(&HISTORY);
-        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
-        let app = build_native_app_with_constructor(&spec, &args, App::from_scoped_parts_with_controlled_inputs).unwrap();
+        let spec = LaunchSpec::new(HISTORY.app_id, scoped_root)
+            .open_app_global_state(scoped_open_state)
+            .configure_app(scoped_configure)
+            .history(&HISTORY);
+        let app = spec.build_controlled_app_for_test().unwrap();
         assert!(app.build_a11y_tree_update(1.0).nodes.iter().any(|(_, node)| node.label() == Some("History")), "production constructor must consume managed History metadata");
         let captures = LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
         assert!(captures.iter().all(crate::WakeHandle::is_active));
         drop(app);
         assert!(captures.iter().all(|handle| !handle.is_active()));
+    }
+
+    #[test]
+    fn photos_argument_global_opener_reaches_managed_production_constructor() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        static HISTORY: crate::history_mode::HistoryDefinition =
+            crate::history_mode::HistoryDefinition {
+                app_id: "dev.qos.argument-test",
+                scopes: &[crate::history_mode::HistoryScopeDefinition {
+                    key: "photos",
+                    title: "Photos",
+                    presentation: crate::history_mode::HistoryPresentation::Domain {
+                        create: crate::history_mode::test_preview,
+                    },
+                    content_schema: None,
+                }],
+            };
+        fn open(_: &'static str, args: &LaunchArgs) -> (State, crate::persist::Autosave) {
+            let mut state = State::new();
+            state
+                .doc
+                .put(
+                    automerge::ROOT,
+                    "selected_argument",
+                    args.value("--open").unwrap_or("saved-state"),
+                )
+                .unwrap();
+            (
+                state,
+                crate::persist::Autosave::disabled("detached argument opener test"),
+            )
+        }
+        fn replace_storage(app: &mut App) {
+            let owned = std::mem::replace(
+                app,
+                App::from_scoped_parts_with_controlled_inputs(
+                    crate::WakeScope::new(),
+                    State::new(),
+                    dummy_root(),
+                ),
+            );
+            *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
+        }
+        for raw in [
+            strings(&["app"]),
+            strings(&["app", "--open", "selected.png"]),
+        ] {
+            let args = parse_args_extended(&raw, &[], &[], &[], &["--open"], 0).unwrap();
+            let spec = LaunchSpec::new(HISTORY.app_id, dummy_root)
+                .open_app_global_state_with_args(open)
+                .history(&HISTORY);
+            let app = build_native_app_with_constructor(&spec, &args, |scope, state, root| {
+                assert_eq!(
+                    state
+                        .doc
+                        .get(automerge::ROOT, "selected_argument")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .to_str(),
+                    Some(args.value("--open").unwrap_or("saved-state"))
+                );
+                App::from_scoped_parts_with_controlled_inputs(scope, state, root)
+            })
+            .unwrap();
+            assert!(
+                app.build_a11y_tree_update(1.)
+                    .nodes
+                    .iter()
+                    .any(|(_, n)| n.label() == Some("History"))
+            );
+            drop(app);
+            let (state, saver) = spec.open_state_with_args.unwrap()(HISTORY.app_id, &args);
+            let registration = crate::history_mode::HistoryRegistration::installed_app_state(
+                &HISTORY,
+                Some(&saver),
+                uuid::Uuid::new_v4(),
+            )
+            .unwrap();
+            let mut driver = crate::headless::Driver::from_managed_root(
+                state,
+                crate::history_mode::ManagedRoot::new(dummy_root(), registration),
+                (900, 650),
+            )
+            .unwrap();
+            driver.click_named("history-open").unwrap();
+            assert!(driver.targets().contains_key("activity_timeline"));
+            assert_eq!(
+                driver
+                    .state_mut()
+                    .doc
+                    .get(automerge::ROOT, "selected_argument")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str(),
+                Some(args.value("--open").unwrap_or("saved-state"))
+            );
+            for rejected in [
+                LaunchSpec::new(HISTORY.app_id, dummy_root)
+                    .open_state_with_args(open)
+                    .history(&HISTORY),
+                LaunchSpec::new(HISTORY.app_id, dummy_root)
+                    .open_app_global_state_with_args(open)
+                    .open_state_with_args(open)
+                    .history(&HISTORY),
+                LaunchSpec::new(HISTORY.app_id, dummy_root)
+                    .open_app_global_state_with_args(open)
+                    .open_state(scoped_open_state)
+                    .history(&HISTORY),
+                spec.configure_app(replace_storage),
+            ] {
+                assert!(
+                    matches!(build_native_app_with_constructor(&rejected,&args,App::from_scoped_parts_with_controlled_inputs),Err(LaunchError::Operation(message)) if message.contains("storage provenance"))
+                );
+            }
+        }
     }
 
     #[test]

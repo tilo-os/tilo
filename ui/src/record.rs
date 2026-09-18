@@ -1731,6 +1731,9 @@ impl RecordStore {
 
     /// Generation of the record-owned action frame, for retained callers that
     /// need to invalidate a previously resolved operation.
+    ///
+    /// # Errors
+    /// Returns `Busy` if the record set is borrowed, or `MissingRecord` if the record is not open.
     pub fn action_generation(&self, id: &RecordId) -> Result<Option<u64>, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;

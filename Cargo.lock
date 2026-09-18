@@ -8106,6 +8106,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "ui",
  "vello",
  "winit",
 ]
@@ -8523,6 +8524,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "taffy",
+ "ui",
  "vello",
  "winit",
 ]

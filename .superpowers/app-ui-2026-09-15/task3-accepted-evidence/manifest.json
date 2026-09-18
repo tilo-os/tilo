@@ -1,0 +1,277 @@
+[
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-double-long-bottom.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-double-long-bottom.png",
+    "sha256": "51e476ca1df3e461fda88e1826d22d121930de04900d576031c996e8b2acccdf"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/wide-saved.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/wide-saved.png",
+    "sha256": "044d2975ab6aad380a2b4db91362d0d6e6aed8543be64a2a75cba8468a71e789"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/double-saved.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/double-saved.png",
+    "sha256": "da8789c22a208b02864876c2eae3bf04ce3a4bd36e211e98da191378ebe184fc"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/wide-empty.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/wide-empty.png",
+    "sha256": "71acbedad6fcc64873b2cf39e1461b85c946bca123665c7eeeb33cf09845e01e"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/double-empty.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/double-empty.png",
+    "sha256": "179f51fa828a410c00fa28756ba946433842e660e4c0d210476471b268ff0c10"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/double-long-bottom.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/double-long-bottom.png",
+    "sha256": "debf3190e4aa7f16e7368a454397cc5c90ec4003d1a2098b7dc0bd0445f3fdec"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/wide-long-bottom.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/wide-long-bottom.png",
+    "sha256": "3b8e59872a8fc14ad1d1ff19efacce00c97e6bd125bb5213cd5c13564074575c"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-double-reopened.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-double-reopened.png",
+    "sha256": "ee328bfdf59039b24114858465e039e669a52e908fe57cd464bbdec1d9447af7"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-double-long-top.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-double-long-top.png",
+    "sha256": "60da4340f0ee6de019e7801fcf10f76b4228f18243ca6fff08dcc2173f378b37"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/wide-reopened.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/wide-reopened.png",
+    "sha256": "620fddebeb7f4d1b3489f4babfe6c4e32bc0461091228ee347b13757816db8d6"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-long-top.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-long-top.png",
+    "sha256": "b3bee1d01339cdb5ad7c7d260e1b39029d9ecc64dcf8a413bf3a78cfd69400c9"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/double-reopened.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/double-reopened.png",
+    "sha256": "48149f1fdf982bf3a013cb9e62531fb112ee883014a4d11cd5205f7f01cf5137"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-reopened.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-reopened.png",
+    "sha256": "5bc992e994903d1a5c98671f19f7083961169934f2e85771da52a76020c9420f"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/double-long-top.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/double-long-top.png",
+    "sha256": "85bd3834e9fdbce5b182f143a4920021320105792a3cbbceac98e533d5e3f60a"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/wide-long-top.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/wide-long-top.png",
+    "sha256": "3e75bfcb278d2af24c99fb1500bb90629a803031d57717db6d79736089735088"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-saved.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-saved.png",
+    "sha256": "a27df455469017206067317f5eaf090428316057051a36a0cfdf50211c15af78"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-double-saved.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-double-saved.png",
+    "sha256": "557dbac84117d4a6bba0a3bd59cdf37ef3a3da7920fe649e6a6dcd5a584b6ffc"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-long-bottom.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-long-bottom.png",
+    "sha256": "7b133d648ca272589ff3d86116295c313e5910e5333027cce5c91249ceb72b83"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-empty.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-empty.png",
+    "sha256": "aaa3bcd43f24913a4661c36f8b0ece3e057266c7b47efac014292167d053cfd0"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-double-empty.png",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-double-empty.png",
+    "sha256": "5fec9a32eff509da459529f3c62d9c531b12a55133b2bd53e9b854c7f4a7cb39"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/double-empty.json",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/double-empty.json",
+    "sha256": "ae9c39d7defaa5bdbcfd8aa90799638b753efb50699db7d14da71f0b7c64b5a5"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-empty.json",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-empty.json",
+    "sha256": "7046e8e2d6b20c9ed5673ddb35aa00248a324f1e1bad23309c43a216349e0aa9"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/wide-empty.json",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/wide-empty.json",
+    "sha256": "9f79fb908ca28c802cb5909827905bd286e92bf5f77f8e704834ec2f5ab8a176"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-captures-final/narrow-double-empty.json",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-captures-final/narrow-double-empty.json",
+    "sha256": "f753eb52ea1f390ee3aad5d93a1941652e74c6c27824bb4953ff41fbfee74ed6"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-fractional-red4.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-fractional-red4.log",
+    "sha256": "0554a71637ab02a11f5177e470924db0d7af5db8a86ac67fa61180b7ddb48778"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-text-input-final.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-text-input-final.log",
+    "sha256": "6deb07615e86ed931d54db8696cfbf68ac97108f4143f11503961767efe707ca"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-captures.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-captures.log",
+    "sha256": "48ccc3bcc46f03527c963f376bbfd888cd687d073b8c895acd1026b370f95178"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-existing-app-tests.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-existing-app-tests.log",
+    "sha256": "b668fcf1d21defcec43d995ebcdcb72eb661284bd54e493f8064305c33a2a1db"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-green2.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-green2.log",
+    "sha256": "d8cac5d2e2ce6e824882251548f6b67d3d8c6dfdea85d5e08767016d3ef0daa4"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-fractional-red2.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-fractional-red2.log",
+    "sha256": "227138a93ee4074fb2383954346b938fc584f413847547e782d7028bc77a4b8b"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-fractional-green.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-fractional-green.log",
+    "sha256": "9ad98ccfa0198d284cc4157e2d6a7a85638bd1834b1ff83855f164ce1d046be0"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-fractional-red3.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-fractional-red3.log",
+    "sha256": "10ab5fb50a637f23a52f8682ffbd7b97c80f994099a1f1b38bce77eda7fe0ef9"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-existing-ui-tests.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-existing-ui-tests.log",
+    "sha256": "00deeacda595c6d33d907ff0fd3fdbb2e7e24efaa87399cc0e8a8c4916831bcc"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-red-integration.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-red-integration.log",
+    "sha256": "25b8125706e5017d66a51c9dc978ecd6142738c8f761264ade650bf8a984b5cd"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-fractional-diagnostic.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-fractional-diagnostic.log",
+    "sha256": "e005a97549abdd32c542314e742252e6dcab7a7eecac716fb12527305ef5a1f0"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-existing-ui-final.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-existing-ui-final.log",
+    "sha256": "b25614f6fc317078a2c266f9b4496de2f7e41509779063c88661bce9389ae6c6"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-app-final-build.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-app-final-build.log",
+    "sha256": "10b6291caa169e7daaf1faa351b20bfbd82986abc436655fbc8f6c5fc0c153f3"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-check.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-check.log",
+    "sha256": "fb81d3ed044bd7cfe379668a686895e0a9e3893717c58eabf80b3709ab3656fe"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-existing-app-final.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-existing-app-final.log",
+    "sha256": "9baeef9a24b6142e75dcb1942c5e4dd8c32b19106c6aaf7fe1bff7a006416584"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-existing-ui-tests2.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-existing-ui-tests2.log",
+    "sha256": "0ddbbc6495c9e555afb94f2e69c2ba911f81fd8f399ad6e232448f2c5bf121ed"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-red.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-red.log",
+    "sha256": "33df11b2841c0f217841604cfb1bffa7a2efd9e69d2a8c56fc9649d18a466151"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-final-integration.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-final-integration.log",
+    "sha256": "ec3a48065dab42d373fd6ed2011e2a85ef4cde6bb29e921e5222b275fdb4a966"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-app-build.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-app-build.log",
+    "sha256": "ce57a1ed58930bb25a5d45c1746fa8c6ad50edc469261973dc50d63c5bd0f9b0"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-captures-v3.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-captures-v3.log",
+    "sha256": "21a782db51fc8d2895882b94864f71b900189197d94c4ced7944a97a8706c4b0"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-captures-v2.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-captures-v2.log",
+    "sha256": "5abe5dd83deedce48ef8f2dc7de4c8c80bec2579fd7b13ebf4805b2ab37868b1"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-fractional-red.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-fractional-red.log",
+    "sha256": "8f0fd11e1f835f71c6c8633dd4a8bd10108dda5b6fc22419d379f5b7f790f191"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-focus-red.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-focus-red.log",
+    "sha256": "8e7546c54481d06d914ebbbd52d45989cc814af6853d754dc153c1f038a5b34e"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-code-editor-final.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-code-editor-final.log",
+    "sha256": "2c5d46097b453d314487328293e41755dd044e967f16101316925f912144ee21"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-app-build2.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-app-build2.log",
+    "sha256": "121b6a19061eb40d9d83e20a70d030c9af260a6c8460ac2574bd8ad69cfe3da8"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-app-build3.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-app-build3.log",
+    "sha256": "efa01f0081cf1571cad430abb645120b515f557f5ae486706baceb3f4f909a64"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-green.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-green.log",
+    "sha256": "5f37c9a74f4b8a2ef2bca91f4ed1d4b1312a83786c1eb4e094d7cf4bc5434ed1"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-check-final.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-check-final.log",
+    "sha256": "af7d186963d5f828c89a2c1b31c1adc261722e74b0a37d18146478582c09e71e"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-logs/task3-captures-final.log",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-logs/task3-captures-final.log",
+    "sha256": "f0a8c388f4513488d97f656db511c241d1b924501243ea2e3b67c131ccf76ebd"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-scratchpad-check.rs",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-scratchpad-check.rs",
+    "sha256": "e5bd09ed0ca1122da6cffb06bcbedf6cf91317465a1032761bb040188aa35615"
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-15-measured-ui-components/task-3-scratchpad.patch",
+    "archive": ".superpowers/app-ui-2026-09-15/task3-accepted-evidence/task-3-scratchpad.patch",
+    "sha256": "9b841ce0a116273d889fbbbbb7d49ac4f1fb78a234f33b5354e256a15efc5132"
+  }
+]

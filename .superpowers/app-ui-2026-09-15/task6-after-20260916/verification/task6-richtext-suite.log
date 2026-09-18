@@ -1,0 +1,25 @@
+
+running 20 tests
+test richtext::tests::offset_map_round_trips_document_boundaries_around_virtual_breaks ... ok
+test richtext::tests::background_span_records_a_paintable_band ... ok
+test richtext::tests::balanced_wrap_avoids_a_short_final_line_without_adding_lines ... ok
+test richtext::tests::shapes_caret_hit_and_selection ... ok
+test richtext::tests::rtl_caret_geometry_follows_visual_direction ... ok
+test richtext::tests::line_height_mult_scales_line_advance ... ok
+test richtext::tests::multiline_hit_and_caret_use_global_byte_offsets ... ok
+test richtext::tests::plain_thai_layout_uses_the_same_dictionary_wrapping ... ok
+test richtext::tests::mixed_bidi_selection_can_produce_disjoint_visual_bands ... ok
+test richtext::tests::real_layout_wraps_cjk_but_preserves_nbsp_and_emoji_zwj_clusters ... ok
+test richtext::tests::center_alignment_offsets_text ... ok
+test richtext::tests::terminal_empty_row_inherits_the_final_run_metrics_and_alignment ... ok
+test richtext::tests::hyphenated_attributed_layout_keeps_document_offsets_and_decorations ... ok
+test richtext::tests::paragraph_controls_shape_and_fragment_the_authoritative_layout ... ok
+test richtext::tests::mixed_bidi_boundary_preserves_both_visual_affinities ... ok
+test richtext::tests::super_run_shapes_smaller_and_offsets_up ... ok
+test richtext::tests::virtual_dictionary_hints_have_no_visible_advance ... ok
+test richtext::tests::wrapping_produces_multiple_lines ... ok
+test richtext::tests::attributed_thai_wraps_at_dictionary_boundaries_in_document_byte_space ... ok
+test richtext::tests::attributed_terminal_lf_preserves_the_plain_layout_final_row ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 3160 filtered out; finished in 13.48s
+

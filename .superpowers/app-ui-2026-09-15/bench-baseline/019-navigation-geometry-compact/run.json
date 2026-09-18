@@ -1,0 +1,10 @@
+{
+  "executable": "/Users/xaver/dev/qos-macos-shell/target/debug/ux-bench",
+  "executable_blake3": "7273ca90f35067deac54f8d41473c937530d885179de00a6817b07464bf5ba15",
+  "fixture_profile": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/bench-baseline/019-navigation-geometry-compact/profile",
+  "persisted_workspace_names": [
+    "Home"
+  ],
+  "platform": "macos",
+  "scenario": "{\n  \"name\": \"Desktop navigation geometry\",\n  \"goal\": \"Read the current workspace and distinguish the controls for navigation\",\n  \"viewport\": [\n    800,\n    700\n  ],\n  \"budget\": {\n    \"clicks\": 0,\n    \"keys\": 0\n  },\n  \"steps\": [\n    {\n      \"op\": \"checkpoint\",\n      \"name\": \"navigation\",\n      \"checks\": [\n        {\n          \"kind\": \"visible\",\n          \"target\": \"semantic:topbar:workspace-settings\"\n        },\n        {\n          \"kind\": \"target_size\",\n          \"target\": \"semantic:topbar:overview\",\n          \"min\": [\n            24,\n            24\n          ]\n        },\n        {\n          \"kind\": \"gap\",\n          \"first\": \"semantic:topbar:workspace-down\",\n          \"second\": \"semantic:topbar:workspace-settings\",\n          \"axis\": \"x\",\n          \"min\": 4,\n          \"max\": 12\n        },\n        {\n          \"kind\": \"aligned\",\n          \"first\": \"semantic:topbar:overview\",\n          \"second\": \"semantic:topbar:workspace-settings\",\n          \"axis\": \"y\",\n          \"tolerance\": 1\n        },\n        {\n          \"kind\": \"no_overlap\",\n          \"first\": \"semantic:topbar:workspace-down\",\n          \"second\": \"semantic:topbar:workspace-settings\"\n        }\n      ]\n    }\n  ]\n}\n"
+}

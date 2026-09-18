@@ -1,0 +1,47 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `ui` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 28.48s
+     Running unittests src/lib.rs (target/debug/deps/ui-98aece3f3d10fdcd)
+
+running 34 tests
+test widget::scrollable::tests::bottom_content_inset_does_not_create_overflow_when_content_already_fits ... ok
+test widget::scrollable::tests::focusable_only_when_it_can_scroll ... ok
+test widget::scrollable::tests::bottom_content_inset_keeps_overflow_out_of_a_sticky_footer_lane ... ok
+test widget::scrollable::tests::overlay_bar_fades_in_on_activity_and_out_when_idle ... ok
+test widget::scrollable::tests::needs_animation_frame_only_while_fading_or_holding ... ok
+test widget::scrollable::tests::overlay_fade_pins_visible_when_pinned_or_reduced_motion_or_persistent ... ok
+test widget::scrollable::tests::scrolling_invalidates_duplicate_cursor_coalescing ... ok
+test widget::scrollable::tests::persisted_offset_survives_a_rebuild_into_a_fresh_scrollable ... ok
+test widget::scrollable::tests::persisted_offset_reclamps_and_rewrites_when_content_shrinks ... ok
+test widget::scrollable::tests::thumb_hidden_when_content_fits ... ok
+test widget::scrollable::tests::accessibility_reports_group_role_and_no_name ... ok
+test widget::scrollable::tests::thumb_hidden_when_scrollbar_disabled ... ok
+test widget::scrollable::tests::thumb_length_scales_with_viewport_over_content_ratio ... ok
+test widget::scrollable::tests::thumb_never_shorter_than_minimum ... ok
+test widget::scrollable::tests::thumb_tracks_offset ... ok
+test widget::scrollable::tests::duplicate_cursor_motion_is_coalesced_without_becoming_an_action ... ok
+test widget::scrollable::tests::wheel_still_scrolls_with_scrollbar_present ... ok
+test widget::scrollable::tests::tilt_wheel_scrolls_horizontally_without_shift ... ok
+test widget::scrollable::tests::shift_wheel_scrolls_horizontally ... ok
+test widget::scrollable::tests::keyboard_ignored_when_unfocused ... ok
+test widget::scrollable::tests::horizontal_thumb_drag_updates_offset_x ... ok
+test widget::scrollable::tests::clicking_track_pages_toward_click ... ok
+test widget::scrollable::tests::dragging_thumb_updates_offset ... ok
+test widget::scrollable::tests::keyboard_pages_home_end_and_lines_when_focused ... ok
+test widget::scrollable::tests::holding_track_pages_repeatedly_then_settles_at_click ... ok
+test widget::scrollable::tests::terminal_fade_frame_damages_the_track_after_draw_omits_the_thumb ... ok
+test widget::scrollable::tests::ordinary_draw_publishes_and_restores_the_content_viewport ... ok
+test widget::scrollable::tests::bottom_content_inset_blocks_pointer_and_focus_from_invisible_content ... ok
+test widget::scrollable::tests::with_height_pins_viewport_under_indefinite_parent ... ok
+test widget::scrollable::tests::content_gutter_insets_the_child_so_the_bar_never_overlaps_it ... ok
+test widget::scrollable::tests::default_scrollable_cannot_scroll_under_indefinite_parent ... ok
+test widget::scrollable::tests::scroll_is_layout_dirty_but_needs_no_remeasure ... ok
+test widget::scrollable::tests::pinned_height_makes_pane_scrollable_under_indefinite_parent ... ok
+test widget::scrollable::tests::max_height_keeps_short_documents_compact_and_long_ones_scrollable ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 3099 filtered out; finished in 0.26s
+

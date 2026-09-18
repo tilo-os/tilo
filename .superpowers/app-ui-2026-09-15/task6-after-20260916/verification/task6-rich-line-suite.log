@@ -1,0 +1,34 @@
+
+running 29 tests
+test widget::rich_text_line::tests::link_at_byte_finds_mark ... ok
+test widget::rich_text_line::tests::diff_splice_detects_simple_insertion ... ok
+test widget::rich_text_line::tests::accessibility_focus_tracks_inner_input ... ok
+test widget::rich_text_line::tests::new_starts_empty_unfocused ... ok
+test widget::rich_text_line::tests::accessibility_reports_single_line_text_input_with_value ... ok
+test widget::rich_text_line::tests::rich_marks_utf8_replacement_keeps_complete_boundaries ... ok
+test widget::rich_text_line::tests::enter_at_end_yields_signal_with_full_length ... ok
+test widget::rich_text_line::tests::arrow_up_down_emit_signals ... ok
+test widget::rich_text_line::tests::cursor_at_start_after_set_cursor_pos_zero ... ok
+test widget::rich_text_line::tests::enter_key_yields_signal_with_cursor_byte ... ok
+test widget::rich_text_line::tests::backspace_at_byte_zero_yields_signal ... ok
+test widget::rich_text_line::tests::unfocused_line_ignores_keys ... ok
+test widget::rich_text_line::tests::with_text_seeds_value_and_parks_cursor_at_end ... ok
+test widget::rich_text_line::tests::toggle_mark_on_selection_wraps_it ... ok
+test widget::rich_text_line::tests::bound_line_reads_text_from_doc ... ok
+test widget::rich_text_line::tests::typing_marks_dirty_and_appends ... ok
+test widget::rich_text_line::tests::pending_mark_applies_to_next_typed_char ... ok
+test widget::rich_text_line::tests::marks_shift_on_insert_before ... ok
+test widget::rich_text_line::tests::marks_shift_on_delete_before ... ok
+test widget::rich_text_line::tests::set_text_does_not_mark_dirty ... ok
+test widget::rich_text_line::tests::backspace_after_byte_zero_falls_through_to_inner ... ok
+test widget::rich_text_line::tests::editing_bound_line_splices_into_doc ... ok
+test widget::rich_text_line::tests::authored_edit_stamps_mark_caches_run_and_survives_round_trip ... ok
+test widget::rich_text_line::tests::typing_double_bracket_emits_link_open_signal ... ok
+test widget::rich_text_line::tests::rich_marks_paint_each_glyph_once ... ok
+test widget::rich_text_line::tests::chip_mono_width_uses_monospace_face_not_sans ... ok
+test widget::rich_text_line::tests::base_font_override_scales_once_across_relayout_caret_selection_and_pointer ... ok
+test widget::rich_text_line::tests::rich_marks_scrolled_selection_and_pointer_share_the_painted_end ... ok
+test widget::rich_text_line::tests::rich_marks_style_only_changes_refresh_authoritative_geometry ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 3151 filtered out; finished in 0.52s
+

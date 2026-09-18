@@ -37,12 +37,23 @@ pub(crate) struct MainStages {
 
 impl MainStages {
     pub(crate) fn row(&self, cpu_frame_id: Option<u64>) -> serde_json::Value {
-        let mut row = serde_json::json!({ "cpu_frame_id": cpu_frame_id, "host_clock": host_clock::CLOCK_NAME });
+        let mut row = serde_json::Map::new();
+        row.insert("cpu_frame_id".into(), serde_json::json!(cpu_frame_id));
+        row.insert(
+            "host_clock".into(),
+            serde_json::json!(host_clock::CLOCK_NAME),
+        );
         for (name, bounds) in MAIN_STAGE_NAMES.into_iter().zip(self.points) {
-            row[format!("{name}_host_lo_s")] = serde_json::json!(bounds.map(|b| b.lo_s));
-            row[format!("{name}_host_hi_s")] = serde_json::json!(bounds.map(|b| b.hi_s));
+            row.insert(
+                format!("{name}_host_lo_s"),
+                serde_json::json!(bounds.map(|b| b.lo_s)),
+            );
+            row.insert(
+                format!("{name}_host_hi_s"),
+                serde_json::json!(bounds.map(|b| b.hi_s)),
+            );
         }
-        row
+        serde_json::Value::Object(row)
     }
 }
 
@@ -55,8 +66,11 @@ fn record_main_stage_with(
     stage: MainStage,
     clock: impl FnOnce() -> Option<HostClockBracket>,
 ) {
-    if let Some(stages) = stages {
-        stages.points[stage as usize] = clock();
+    if let Some(point) = stages
+        .as_mut()
+        .and_then(|stages| stages.points.get_mut(stage as usize))
+    {
+        *point = clock();
     }
 }
 

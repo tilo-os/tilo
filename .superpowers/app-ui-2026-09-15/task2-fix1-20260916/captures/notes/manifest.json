@@ -1,0 +1,72 @@
+{
+  "app": "apps/notes",
+  "status": "captured",
+  "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/notes",
+  "binary_sha256": "90def1c0ed2558c4bba2483328c1c57ab69a269c9360f7a02d25df4f427bb2f2",
+  "source_head": "83c269dac5d2fa49078472887d9c4dda530c2ae6",
+  "working_diff_sha256": "a76d9e15ddc5538ef33c347cb6cf4e839b17017b3239500ceb5009e86f141c0f",
+  "captures": [
+    {
+      "variant": "wide",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/notes",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-fix1-20260916/captures/notes/wide.png",
+        "--viewport",
+        "1200x800"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 1.33,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-fix1-20260916/captures/notes/wide.png",
+      "png_sha256": "fefe338205ad79f29221e3c42e4e0735edb666e4285870d16f9967058a0a5afa",
+      "actual_dimensions": [
+        1200,
+        800
+      ],
+      "requested_scale": 1
+    },
+    {
+      "variant": "narrow",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/notes",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-fix1-20260916/captures/notes/narrow.png",
+        "--viewport",
+        "480x900"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.35,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-fix1-20260916/captures/notes/narrow.png",
+      "png_sha256": "281f73cdc867118001e96a26458d95eeff9aaa192d2b7af66552f19a37339ad1",
+      "actual_dimensions": [
+        480,
+        900
+      ],
+      "requested_scale": 1
+    },
+    {
+      "variant": "large-text",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/notes",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-fix1-20260916/captures/notes/large-text.png",
+        "--viewport",
+        "800x900",
+        "--text-scale",
+        "2"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.46,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/task2-fix1-20260916/captures/notes/large-text.png",
+      "png_sha256": "523e122d01a6332bc0bf24a17a4e46319a9904b0317219a7aab2d7367f8fe647",
+      "actual_dimensions": [
+        800,
+        900
+      ],
+      "requested_scale": 2
+    }
+  ]
+}

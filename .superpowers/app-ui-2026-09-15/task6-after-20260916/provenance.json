@@ -1,0 +1,36 @@
+{
+  "source_head": "fe4908e594a1179b6d9ecb50c0cd42831990c2a9",
+  "source_base": "90e68a2e9",
+  "source_files": {
+    "ui/src/widget/text_input.rs": "5359dc2111d614f731bb32af8c7d089cab0c77d4c796d27ba242a661c3553163",
+    "ui/src/widget/rich_text_line.rs": "15dd3d3c7ded67e5fd1183f0127831f463c54425cdacb7e64747c939fbfa9223",
+    "ui/src/widget/block_editor.rs": "295028156e91baf336127fdafc7e366a6c69747b4a389b66c4c6f6cf5f112e61"
+  },
+  "notes_binary_sha256": "c1f09b8aede7e4a2021a9f0704818a13d0ae739dda8ba782d722bfd8eb655039",
+  "interaction_binary_sha256": "41f1420cac73815e8b9be590568fa393ccc675458a6cb069c09b52fcc3c159a2",
+  "interaction_source_sha256": "77008762c9f6edeb59b441e24eec19feee07c632efa867dd5d5e7381d24daade",
+  "screenshots": {
+    "interactions-final-verified/bold-link-1x.png": "50519924928a81ddfd7fa66d2e4ecb1d20fd3ef951dbc6bd83828aa094f32b91",
+    "interactions-final-verified/bold-link-2x.png": "cea92f3d12ac31c956de7f25afb97d67792950d5f21ec018b28239ed98a55154",
+    "interactions-final-verified/caret-1x.png": "5f866b01e01cdfc16ef9045689bff31043dcae3dcab953cd2f5c1aae3a58b4f6",
+    "interactions-final-verified/caret-2x.png": "d8c033e4c5b6486d17f30544fd4225398c978e3e53c51865ecc1d077991e8ffb",
+    "interactions-final-verified/code-selection-1x.png": "9ef4893b50e0d2caf2b270568df1c7e01959b1424602c9edbf823abbcb2edb86",
+    "interactions-final-verified/code-selection-2x.png": "5165b72c92e9e7cc450254609a29aeb0e65c5168cf2f04a2dd939bca8d357413",
+    "interactions-final-verified/initial-1x.png": "1e058b358a14f84c4e99aeba952a115b224f9bae8a497eee05fdb2d29835614e",
+    "interactions-final-verified/initial-2x.png": "221a46d6519eabbce1125cd70216b2fe1f426333e34f2e36e73dbf924d5574fb",
+    "interactions-final-verified/link-opened-1x.png": "82c6b45f3930d5e90f430deb16633de370b1f4e27a0ab3a509b0ff0f1e9e65a6",
+    "interactions-final-verified/link-opened-2x.png": "3849f6be1991cf6ffef2413454d4f40164d50279c2747b66494d96b994c9b5c6",
+    "interactions-final-verified/selection-1x.png": "d884cfa27c4f1f492fc2d4e8899655c441b1bd1aca4c79de9b1368ef2ee043c2",
+    "interactions-final-verified/selection-2x.png": "c287eb4bfc13db519ee95d34f5cbb8c2249a2c0f0c044372bc9ea3c5c3bc1593"
+  },
+  "interaction_linked_rlibs": {
+    "notes": {
+      "path": "/Users/xaver/dev/qos-macos-shell/target/debug/deps/libnotes-fc6a7ce267f08124.rlib",
+      "sha256": "e5126bb709058b94e50d980d080c09e44794c22ecbc9dadeea9bbf7f874adf9a"
+    },
+    "ui": {
+      "path": "/Users/xaver/dev/qos-macos-shell/target/debug/deps/libqos_app-eaa179ab5f32175f.rlib",
+      "sha256": "601680b04c9bb90fb71974ac2451f9c79347675557aca7d7107a7f3745447d8b"
+    }
+  }
+}
