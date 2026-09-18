@@ -49,6 +49,13 @@ class PreCommitContractTests(unittest.TestCase):
         self.assertNotIn("refusing a false baseline", script)
         self.assertNotIn("accepting the base-repair path", script)
 
+    def test_non_diagnostic_head_failure_retries_without_cache_hits(self) -> None:
+        script = CLIPPY_DIFF.read_text(encoding="utf-8")
+
+        self.assertIn('has_compiler_errors "$head_json"', script)
+        self.assertIn("SCCACHE_RECACHE=1 run_clippy", script)
+        self.assertIn('tail -160 "$head_stderr"', script)
+
 
 if __name__ == "__main__":
     unittest.main()

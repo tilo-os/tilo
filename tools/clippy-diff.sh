@@ -129,11 +129,39 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 PY
 }
 
+has_compiler_errors() {
+    python3 - "$1" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("reason") == "compiler-message" and (record.get("message") or {}).get("level") == "error":
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 if ! run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
-    echo "HEAD did not compile under Clippy." >&2
-    print_compiler_errors "$head_json"
-    sed -n '1,160p' "$head_stderr" >&2
-    exit 1
+    if has_compiler_errors "$head_json"; then
+        echo "HEAD did not compile under Clippy." >&2
+        print_compiler_errors "$head_json"
+        tail -160 "$head_stderr" >&2
+        exit 1
+    fi
+    echo "HEAD Clippy exited without a compiler diagnostic; rebuilding its disposable graph once without compiler-cache hits." >&2
+    tail -80 "$head_stderr" >&2
+    rm -rf "$head_target_dir"
+    if ! SCCACHE_RECACHE=1 run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
+        echo "HEAD did not compile under Clippy after the cache-bypassing retry." >&2
+        print_compiler_errors "$head_json"
+        tail -160 "$head_stderr" >&2
+        exit 1
+    fi
 fi
 # The captured JSON is the only HEAD artifact needed for comparison.
 rm -rf "$head_target_dir"
