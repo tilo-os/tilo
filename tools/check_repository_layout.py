@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject generated build and interpreter artifacts tracked as source files."""
+"""Reject generated artifacts and retired source roots tracked in the repository."""
 
 from __future__ import annotations
 
@@ -18,6 +18,12 @@ GENERATED_DIRECTORIES = frozenset(
     }
 )
 
+RETIRED_SOURCE_ROOTS = {
+    "crates/system/windows-vm/": "crates/windows/windows-vm/",
+    "fs/": "crates/system/fs/",
+    "plan/": "docs/architecture/",
+}
+
 
 def generated_artifact_violations(paths: list[str]) -> list[str]:
     violations = []
@@ -27,6 +33,22 @@ def generated_artifact_violations(paths: list[str]) -> list[str]:
         if generated is not None:
             violations.append(f"tracked file is inside generated `{generated}` directory: {path}")
     return sorted(violations)
+
+
+def retired_source_root_violations(paths: list[str]) -> list[str]:
+    violations = []
+    for path in paths:
+        for retired, replacement in RETIRED_SOURCE_ROOTS.items():
+            if path.startswith(retired):
+                violations.append(
+                    f"tracked file uses retired source root `{retired}`; move it under `{replacement}`: {path}"
+                )
+                break
+    return sorted(violations)
+
+
+def repository_layout_violations(paths: list[str]) -> list[str]:
+    return sorted(generated_artifact_violations(paths) + retired_source_root_violations(paths))
 
 
 def tracked_files(root: Path) -> list[str]:
@@ -49,16 +71,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
-        violations = generated_artifact_violations(tracked_files(root))
+        violations = repository_layout_violations(tracked_files(root))
     except (OSError, subprocess.CalledProcessError) as error:
         print(f"repository layout check failed: {error}", file=sys.stderr)
         return 1
     if violations:
         for violation in violations:
             print(f"  {violation}", file=sys.stderr)
-        print("FAIL: move source assets out of generated directories", file=sys.stderr)
+        print("FAIL: repair the repository layout violations above", file=sys.stderr)
         return 1
-    print("repository layout OK (no generated artifacts tracked as source)")
+    print("repository layout OK (no generated artifacts or retired source roots)")
     return 0
 
 
