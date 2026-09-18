@@ -1480,6 +1480,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # through the ukify build spec, so use that existing transaction, render the
 # immutable PNGs, then remove both packages in the same layer. UKI construction
 # later uses its own throwaway uki-tools stage.
+# Retain the base's openssh and openssh-clients: virt-viewer requires them later,
+# and the frozen RPM transaction assumes dependencies already in the base remain
+# installed. The SSH server remains forbidden by the runtime crypto policy.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-ukify \
     && python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/tilo \
@@ -1487,10 +1490,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && test "$(plymouth-set-default-theme)" = tilo \
     && dnf --disablerepo='*' remove -y systemd-ukify python3-pillow \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && printf '%s\n' "$installed" | awk '/^(systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server)$/' \
+    && printf '%s\n' "$installed" | awk '/^(systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$/' \
            | xargs -r dnf --disablerepo='*' remove -y \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && ! printf '%s\n' "$installed" | grep -Eq '^(python3-pillow|systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server)$' \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(python3-pillow|systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$' \
+    && rpm -q openssh openssh-clients \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # The install-config drop-in that flips bootc's bootloader choice to

@@ -10,7 +10,6 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
@@ -26,8 +25,29 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+mod history;
+mod shortcuts;
+
 #[cfg(test)]
-#[path = "../../tests/support/offscreen.rs"]
+use history::notification_severity_label;
+use history::{
+    HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
+    clipboard_history_source_label, history_target_address,
+    notification_history_accessible_description, notification_history_relative_time, unix_time_ms,
+};
+#[cfg(test)]
+use shortcuts::configured_shortcut_matches;
+pub(crate) use shortcuts::shortcut_chord_matches;
+use shortcuts::{
+    configured_shortcut_action, shortcut_action_label, shortcut_chord_from_event,
+    shortcut_guide_chord, shortcut_reference_columns, shortcut_reference_group_height,
+    shortcut_reference_rows, shortcut_reference_step,
+};
+#[cfg(test)]
+use std::path::PathBuf;
+
+#[cfg(test)]
+#[path = "../../../tests/support/offscreen.rs"]
 mod overlay_test_offscreen;
 
 use ui::ColorCompat;
@@ -53,7 +73,7 @@ use crate::shell::collaborators_overlay::{
 pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
-use crate::shell::notification::{Notification, NotificationSeverity, NotificationStack};
+use crate::shell::notification::NotificationStack;
 use crate::shell::peer_sync_overlay::{
     EventOutcome as PeerSyncEventOutcome, InviteContext, PeerSyncOverlay,
 };
@@ -76,13 +96,6 @@ pub use crate::shell::workspace_settings_overlay::GrantComposerRects;
 use crate::shell::workspace_settings_overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum HistoryTargetAddress {
-    File(PathBuf),
-    Uri(String),
-    App,
-}
 
 #[derive(Debug)]
 struct SessionActionResult {
@@ -1145,111 +1158,6 @@ mod idle_io_animation_tests {
         );
         release_tx.send(()).expect("release test worker");
     }
-}
-
-fn notification_history_relative_time(notification: &Notification, now: Instant) -> String {
-    let seconds = now
-        .saturating_duration_since(notification.created_at)
-        .as_secs();
-    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
-}
-
-fn clipboard_history_relative_time(created_unix_ms: u64, now_unix_ms: u64) -> String {
-    let seconds = now_unix_ms.saturating_sub(created_unix_ms) / 1_000;
-    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
-}
-
-fn clipboard_history_source_label(
-    item: &crate::compositor::selection::ClipboardHistorySnapshot,
-    fabric: Option<&DeviceFabricView>,
-) -> String {
-    let Some(source) = item.source_device.as_ref() else {
-        return "This device".to_string();
-    };
-    fabric
-        .and_then(|fabric| fabric.devices.iter().find(|device| &device.id == source))
-        .map_or_else(
-            || source.as_str().to_string(),
-            |device| device.label.clone(),
-        )
-}
-
-fn clipboard_history_matches_query(
-    item: &crate::compositor::selection::ClipboardHistorySnapshot,
-    query: &str,
-    fabric: Option<&DeviceFabricView>,
-) -> bool {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return true;
-    }
-    let source = clipboard_history_source_label(item, fabric);
-    let mut searchable = source.to_lowercase();
-    for mime in &item.mime_types {
-        searchable.push(' ');
-        searchable.push_str(&mime.to_lowercase());
-    }
-    if let Some(preview) = item.text_preview.as_deref() {
-        searchable.push(' ');
-        searchable.push_str(&preview.to_lowercase());
-    }
-    query
-        .split_whitespace()
-        .all(|term| searchable.contains(term))
-}
-
-fn unix_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-fn notification_severity_label(severity: NotificationSeverity) -> &'static str {
-    match severity {
-        NotificationSeverity::Info => "Information",
-        NotificationSeverity::Warning => "Warning",
-        NotificationSeverity::Error => "Error",
-    }
-}
-
-/// Screen-reader description for one retained notification card. Kept beside
-/// the visual card's source/age helpers so both presentations expose the same
-/// hierarchy even when a busy compositor crosses a relative-time boundary.
-fn notification_history_accessible_description(
-    notification: &Notification,
-    now: Instant,
-) -> String {
-    let source = notification
-        .app_name
-        .as_deref()
-        .or(notification.app_id.as_deref())
-        .unwrap_or("System");
-    let severity = notification_severity_label(notification.severity);
-    let relative_time = notification_history_relative_time(notification, now);
-    if notification.body.is_empty() {
-        format!("{severity}. From {source}. {relative_time}")
-    } else {
-        format!(
-            "{severity}. From {source}. {relative_time}. {}",
-            notification.body
-        )
-    }
-}
-
-/// Resolve only addresses the action explicitly declared. Semantic resource
-/// ids such as `notes.page:abc` are labels within an app, not record ids or
-/// URIs; treating them as either would make History's Open control navigate
-/// somewhere other than the selected action.
-fn history_target_address(target: &ui::HistoryResourceTarget) -> HistoryTargetAddress {
-    if let Some(path) = target.id.strip_prefix("file:") {
-        return HistoryTargetAddress::File(PathBuf::from(path));
-    }
-    if target.id.contains("://") && crate::shell::uri_open::resource_for_uri(&target.id).is_ok() {
-        return HistoryTargetAddress::Uri(target.id.clone());
-    }
-    HistoryTargetAddress::App
 }
 
 /// Draw a relationship line with a visible head at the followed person. This
@@ -13999,238 +13907,6 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// Height of the fade over the bottom of an overflowing room list, so a
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
-
-/// Match a persisted shortcut against a live winit key event.
-///
-/// The native compositor uses this for session-owned bindings too. Keeping
-/// that path on the same key-name translation as the shortcut editor avoids
-/// claiming a configured named key before a client sees it and then failing
-/// to perform its action.
-pub(crate) fn shortcut_chord_matches(
-    logical_key: &Key,
-    modifiers: winit::event::Modifiers,
-    chord: &settings_store::hardware::KeyChord,
-) -> bool {
-    let state = modifiers.state();
-    let key_matches = shortcut_key_name(logical_key).is_some_and(|key| {
-        chord.key.eq_ignore_ascii_case(&key)
-            || state.shift_key()
-                && unshifted_shortcut_key(&key)
-                    .is_some_and(|base| chord.key.eq_ignore_ascii_case(base))
-    });
-    key_matches
-        && chord.modifiers.contains("Super") == state.super_key()
-        && chord.modifiers.contains("Ctrl") == state.control_key()
-        && chord.modifiers.contains("Alt") == state.alt_key()
-        && chord.modifiers.contains("Shift") == state.shift_key()
-}
-
-/// Winit reports the logical character produced by Shift, while shortcut
-/// configuration stores the physical punctuation printed on the key. Keep
-/// those two representations equivalent without weakening modifier matching.
-fn unshifted_shortcut_key(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "?" => "/",
-        ":" => ";",
-        "\"" => "'",
-        "<" => ",",
-        ">" => ".",
-        "_" => "-",
-        "+" => "=",
-        "{" => "[",
-        "}" => "]",
-        "|" => "\\",
-        "~" => "`",
-        "!" => "1",
-        "@" => "2",
-        "#" => "3",
-        "$" => "4",
-        "%" => "5",
-        "^" => "6",
-        "&" => "7",
-        "*" => "8",
-        "(" => "9",
-        ")" => "0",
-        _ => return None,
-    })
-}
-
-/// The sole configurable shortcut resolver.  The input pre-router owns a
-/// press exactly when this returns an action; the shell dispatcher performs
-/// that same action from the same result.
-fn configured_shortcut_action(
-    shortcuts: &settings_store::hardware::ShortcutConfig,
-    logical_key: &Key,
-    modifiers: winit::event::Modifiers,
-) -> Option<settings_store::hardware::ShortcutAction> {
-    shortcuts.bindings.iter().find_map(|(action, chord)| {
-        shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
-    })
-}
-
-#[cfg(test)]
-fn configured_shortcut_matches(
-    shortcuts: &settings_store::hardware::ShortcutConfig,
-    logical_key: &Key,
-    modifiers: winit::event::Modifiers,
-) -> bool {
-    configured_shortcut_action(shortcuts, logical_key, modifiers).is_some()
-}
-
-fn shortcut_key_name(logical_key: &Key) -> Option<String> {
-    let name = match logical_key {
-        Key::Character(key) if key.as_str() == " " => "space".to_string(),
-        Key::Character(key) if key.chars().count() == 1 => key.to_ascii_lowercase(),
-        Key::Named(named) => match named {
-            NamedKey::ArrowLeft => "left",
-            NamedKey::ArrowRight => "right",
-            NamedKey::ArrowUp => "up",
-            NamedKey::ArrowDown => "down",
-            NamedKey::Tab => "tab",
-            NamedKey::Enter => "enter",
-            NamedKey::Space => "space",
-            NamedKey::Home => "home",
-            NamedKey::End => "end",
-            NamedKey::PageUp => "pageup",
-            NamedKey::PageDown => "pagedown",
-            NamedKey::Backspace => "backspace",
-            NamedKey::Delete => "delete",
-            NamedKey::Insert => "insert",
-            NamedKey::PrintScreen => "printscreen",
-            NamedKey::F1 => "f1",
-            NamedKey::F2 => "f2",
-            NamedKey::F3 => "f3",
-            NamedKey::F4 => "f4",
-            NamedKey::F5 => "f5",
-            NamedKey::F6 => "f6",
-            NamedKey::F7 => "f7",
-            NamedKey::F8 => "f8",
-            NamedKey::F9 => "f9",
-            NamedKey::F10 => "f10",
-            NamedKey::F11 => "f11",
-            NamedKey::F12 => "f12",
-            _ => return None,
-        }
-        .to_string(),
-        _ => return None,
-    };
-    Some(name)
-}
-
-fn shortcut_chord_from_event(
-    logical_key: &Key,
-    modifiers: winit::event::Modifiers,
-) -> Option<settings_store::hardware::KeyChord> {
-    let key = shortcut_key_name(logical_key)?;
-    let state = modifiers.state();
-    let mut names = std::collections::BTreeSet::new();
-    if state.super_key() {
-        names.insert("Super".to_string());
-    }
-    if state.control_key() {
-        names.insert("Ctrl".to_string());
-    }
-    if state.alt_key() {
-        names.insert("Alt".to_string());
-    }
-    if state.shift_key() {
-        names.insert("Shift".to_string());
-    }
-    Some(settings_store::hardware::KeyChord {
-        modifiers: names,
-        key,
-    })
-}
-
-fn shortcut_action_label(action: settings_store::hardware::ShortcutAction) -> &'static str {
-    use settings_store::hardware::ShortcutAction;
-    match action {
-        ShortcutAction::Search => "open search",
-        ShortcutAction::WorkspaceOverview => "open the workspace overview",
-        ShortcutAction::Lock => "lock the screen",
-        ShortcutAction::QuickSettings => "open Quick Settings",
-        ShortcutAction::ShortcutHelp => "open this guide",
-        ShortcutAction::FocusPreviousWindow => "focus the previous window",
-        ShortcutAction::FocusNextWindow => "focus the next window",
-        ShortcutAction::PreviousTab => "select the previous tab",
-        ShortcutAction::NextTab => "select the next tab",
-        ShortcutAction::PreviousStrip => "select the previous strip",
-        ShortcutAction::NextStrip => "select the next strip",
-        ShortcutAction::PreviousWorkspace => "select the previous workspace",
-        ShortcutAction::NextWorkspace => "select the next workspace",
-        ShortcutAction::MoveGroupLeft => "move the group left",
-        ShortcutAction::MoveGroupRight => "move the group right",
-        ShortcutAction::ResizeNarrower => "make the window narrower",
-        ShortcutAction::ResizeWider => "make the window wider",
-    }
-}
-
-/// Compact, non-editable reference shown below the configurable navigation
-/// pairs. Configurable global actions use their live chord so the guide never
-/// promises a default the user has rebound; the remaining entries correspond
-/// directly to unconditional branches in the production shell dispatcher.
-/// The guide itself is intentionally omitted: the title and opening copy
-/// already explain how to reopen this surface, so repeating F1 in the action
-/// wall adds noise rather than a new affordance.
-fn shortcut_reference_rows(
-    shortcuts: &settings_store::hardware::ShortcutConfig,
-) -> Vec<(&'static str, String)> {
-    use settings_store::hardware::ShortcutAction;
-    let chord = |action| {
-        shortcuts
-            .bindings
-            .get(&action)
-            .map_or_else(|| "Unassigned".into(), shortcut_guide_chord)
-    };
-    vec![
-        ("Switch windows", "Alt+Tab".into()),
-        ("Close tab", "Alt+F4  /  Super+W".into()),
-        ("Change workspace", "Super+Page Up / Down".into()),
-        ("New window", "Super+N".into()),
-        ("Add tab here", "Super+T".into()),
-        ("Duplicate tab", "Super+D".into()),
-        ("Global search", chord(ShortcutAction::Search)),
-        ("Global search", "Super+Space".into()),
-        ("Overview", chord(ShortcutAction::WorkspaceOverview)),
-        ("Quick Settings", chord(ShortcutAction::QuickSettings)),
-        ("Workspace wheel", "Super+S".into()),
-        ("Lock", chord(ShortcutAction::Lock)),
-        ("Screenshot", "Print Screen".into()),
-        ("Wireless display", "Super+P".into()),
-        ("Capture screenshot", "Super+Shift+S".into()),
-        ("Open terminal", "Super+Enter".into()),
-        ("Picture in picture", "Super+Shift+P".into()),
-        ("Save recent replay", "Super+Shift+R".into()),
-    ]
-}
-
-/// The reference is deliberately split into three semantic columns. That
-/// keeps the complete desktop vocabulary scannable without turning the lower
-/// half of the guide into a grid of equally loud buttons.
-fn shortcut_reference_columns(body_width: f64) -> usize {
-    let _ = body_width;
-    3
-}
-
-fn shortcut_reference_step(compact: bool) -> f64 {
-    if compact { 31.0 } else { 34.0 }
-}
-
-fn shortcut_reference_group_height(compact: bool) -> f64 {
-    if compact { 221.0 } else { 238.0 }
-}
-
-fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
-    let display = chord.display();
-    let Some((modifiers, key)) = display.rsplit_once('+') else {
-        return display;
-    };
-    if key.chars().count() == 1 {
-        format!("{modifiers}+{}", key.to_uppercase())
-    } else {
-        display
-    }
-}
 
 impl Widget for ShellOverlayHost {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

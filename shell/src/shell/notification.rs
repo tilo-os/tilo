@@ -86,7 +86,7 @@ pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 /// arithmetic a single code path.
 pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(86400);
 
-/// In/out animation duration; matches `overlay_host.rs`'s modal entry timing.
+/// In/out animation duration; matches the overlay host's modal entry timing.
 const ANIM_MS: u64 = 220;
 
 /// Put a startup refusal on the screen and leave it there. The compositor
