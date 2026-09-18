@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
-pub const RPC_VERSION: u16 = 2;
+pub const RPC_VERSION: u16 = 3;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 /// The only encoded-preview media types accepted by the local vision RPC.
 /// Keeping this vocabulary closed means a caller cannot ask the trusted
@@ -27,6 +27,17 @@ pub struct VisionImage {
     /// Standard base64 of a caller-decoded, downscaled preview.
     pub data_base64: String,
     /// SHA-256 of the original photo bytes, not of `data_base64`.
+    pub source_content_hash: String,
+}
+
+/// One deliberately small photograph reference supplied to the dedicated
+/// local face runtime.  `photo_id` is an app address, not a pathname; the
+/// runtime never receives an identity label or an instruction from Photos.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct FaceImage {
+    pub photo_id: String,
+    pub media_type: String,
+    pub data_base64: String,
     pub source_content_hash: String,
 }
 
@@ -49,6 +60,15 @@ pub enum Request {
         profile_id: String,
         model_id: String,
         image: VisionImage,
+    },
+    /// Fixed, consent-gated face detection and clustering.  The gateway owns
+    /// the request schema and admits it only for the signed local face model.
+    /// It returns opaque cluster/photo membership; no embedding, crop, face
+    /// rectangle, identity name, or raw path can cross this boundary.
+    ClusterFaces {
+        profile_id: String,
+        model_id: String,
+        images: Vec<FaceImage>,
     },
     SecretStatus {
         profile_id: String,
@@ -185,6 +205,28 @@ pub fn analyze_image(
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no image analysis".into()))
+}
+
+/// Run the dedicated local face model against one bounded batch.  This is not
+/// a generic multimodal request and cannot be redirected to a hosted model.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] if the launcher gateway is absent, the local model
+/// refuses the fixed protocol, or its response is unavailable.
+pub fn cluster_faces(
+    profile_id: &str,
+    model_id: &str,
+    images: Vec<FaceImage>,
+) -> Result<String, ClientError> {
+    let response = request(Request::ClusterFaces {
+        profile_id: profile_id.to_string(),
+        model_id: model_id.to_string(),
+        images,
+    })?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
 }
 
 /// Query whether the profile has a secret stored by the isolated gateway.

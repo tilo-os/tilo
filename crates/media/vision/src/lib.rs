@@ -24,6 +24,9 @@ pub const MAX_DESCRIPTION_CHARS: usize = 480;
 pub const MAX_LABELS: usize = 24;
 pub const MAX_LABEL_CHARS: usize = 96;
 pub const MAX_OCR_CHARS: usize = 24 * 1024;
+pub const MAX_FACE_BATCH: usize = 12;
+pub const MAX_FACE_PREVIEW_BYTES: usize = 128 * 1024;
+pub const MAX_FACE_PREVIEW_EDGE: u32 = 512;
 
 /// One model the signed local-model manager has published as vision capable.
 /// The revision is kept alongside each result so an index can be refreshed
@@ -54,6 +57,22 @@ pub struct LocalFaceCapability {
 pub struct FaceClusterRequest {
     pub operation: String,
     pub source_content_hash: String,
+}
+
+/// Opaque membership returned by the verified face runtime.  Names,
+/// embeddings, crops, geometry, and confidences are intentionally absent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaceClusterResponse {
+    #[serde(default)]
+    pub clusters: Vec<FaceCluster>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaceCluster {
+    pub id: String,
+    pub photo_ids: Vec<String>,
 }
 
 /// Discover only an explicitly declared, revision-pinned, loopback face
@@ -103,6 +122,8 @@ pub struct Analysis {
     pub description: String,
     #[serde(default)]
     pub labels: Vec<String>,
+    #[serde(default)]
+    pub pets: Vec<String>,
     #[serde(default)]
     pub ocr: String,
 }
@@ -249,6 +270,41 @@ pub fn analyze(
     parse_analysis(&output)
 }
 
+/// Prepare and cluster one small, explicit face batch.  The caller supplies
+/// stable Photos ids and decoded local images; no pathname, identity label,
+/// face crop, or geometry is sent to the runtime.
+///
+/// # Errors
+///
+/// Returns [`Error::EmptyImage`] for an empty/oversized batch or unusable
+/// image, and [`Error::InvalidResponse`] when the local runtime emits a
+/// cluster outside the supplied photo ids.
+pub fn cluster_faces(
+    capability: &LocalFaceCapability,
+    images: Vec<(String, DynamicImage, Vec<u8>)>,
+) -> Result<FaceClusterResponse, Error> {
+    if images.is_empty() || images.len() > MAX_FACE_BATCH {
+        return Err(Error::EmptyImage);
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut requests = Vec::with_capacity(images.len());
+    for (photo_id, image, bytes) in images {
+        if !valid_photo_id(&photo_id) || !ids.insert(photo_id.clone()) {
+            return Err(Error::InvalidResponse);
+        }
+        let preview = prepare_face_preview(&image, &bytes)?;
+        requests.push(tilo_model_gateway::FaceImage {
+            photo_id,
+            media_type: preview.media_type.to_owned(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(preview.jpeg),
+            source_content_hash: preview.source_content_hash,
+        });
+    }
+    let output =
+        tilo_model_gateway::cluster_faces(&capability.profile_id, &capability.model_id, requests)?;
+    parse_face_clusters(&output, &ids)
+}
+
 /// Parse and bound a model response. Keeping this separate lets callers test
 /// their persistence boundary without an inference runtime.
 ///
@@ -279,7 +335,100 @@ pub fn parse_analysis(raw: &str) -> Result<Analysis, Error> {
         .filter(|label| !label.is_empty())
         .take(MAX_LABELS)
         .collect();
+    result.pets = result
+        .pets
+        .into_iter()
+        .map(|label| bounded_text(&label, MAX_LABEL_CHARS))
+        .filter(|label| !label.is_empty())
+        .take(MAX_LABELS)
+        .collect();
     Ok(result)
+}
+
+/// Validate a face-runtime response against the exact image ids in the batch.
+/// This prevents a model from creating a phantom photo association or leaking
+/// an arbitrary string into the local People manager.
+pub fn parse_face_clusters(
+    raw: &str,
+    allowed_photo_ids: &std::collections::BTreeSet<String>,
+) -> Result<FaceClusterResponse, Error> {
+    let response = serde_json::from_str::<FaceClusterResponse>(raw)
+        .or_else(|_| {
+            let envelope = serde_json::from_str::<serde_json::Value>(raw)
+                .map_err(|_| serde_json::Error::io(std::io::Error::other("invalid envelope")))?;
+            let content = envelope
+                .pointer("/choices/0/message/content")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::other("missing model content"))
+                })?;
+            serde_json::from_str::<FaceClusterResponse>(content)
+        })
+        .map_err(|_| Error::InvalidResponse)?;
+    if response.clusters.len() > MAX_FACE_BATCH
+        || response.clusters.iter().any(|cluster| {
+            !valid_cluster_id(&cluster.id)
+                || cluster.photo_ids.len() < 2
+                || cluster.photo_ids.len() > MAX_FACE_BATCH
+                || cluster
+                    .photo_ids
+                    .iter()
+                    .any(|id| !allowed_photo_ids.contains(id))
+                || {
+                    let unique: std::collections::BTreeSet<_> = cluster.photo_ids.iter().collect();
+                    unique.len() != cluster.photo_ids.len()
+                }
+        })
+    {
+        return Err(Error::InvalidResponse);
+    }
+    Ok(response)
+}
+
+fn prepare_face_preview(
+    image: &DynamicImage,
+    original_bytes: &[u8],
+) -> Result<PreparedImage, Error> {
+    if image.width() == 0 || image.height() == 0 || original_bytes.is_empty() {
+        return Err(Error::EmptyImage);
+    }
+    let mut preview = image.resize(
+        MAX_FACE_PREVIEW_EDGE,
+        MAX_FACE_PREVIEW_EDGE,
+        image::imageops::FilterType::Triangle,
+    );
+    for quality in [78, 65, 52, 42] {
+        let jpeg = encode_jpeg(&preview, quality)?;
+        if jpeg.len() <= MAX_FACE_PREVIEW_BYTES {
+            return Ok(PreparedImage {
+                media_type: "image/jpeg",
+                jpeg,
+                source_content_hash: hex::encode(Sha256::digest(original_bytes)),
+                width: preview.width(),
+                height: preview.height(),
+            });
+        }
+        preview = preview.resize(
+            (preview.width() * 3 / 4).max(1),
+            (preview.height() * 3 / 4).max(1),
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    Err(Error::EmptyImage)
+}
+
+fn valid_photo_id(value: &str) -> bool {
+    value.starts_with("photos.photo:")
+        && value.len() <= 4_096
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_cluster_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 160
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 fn bounded_resize(image: &DynamicImage) -> DynamicImage {
@@ -410,5 +559,28 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.description, "A dog");
         assert_eq!(parsed.labels, vec!["dog"]);
+    }
+
+    #[test]
+    fn pet_labels_are_model_output_and_face_clusters_cannot_escape_the_batch() {
+        let parsed =
+            parse_analysis(r#"{"description":"","labels":["dog"],"pets":["dog"],"ocr":""}"#)
+                .unwrap();
+        assert_eq!(parsed.pets, ["dog"]);
+        let ids = std::collections::BTreeSet::from([
+            "photos.photo:one".to_owned(),
+            "photos.photo:two".to_owned(),
+        ]);
+        let accepted = parse_face_clusters(
+            r#"{"clusters":[{"id":"local-1","photo_ids":["photos.photo:one","photos.photo:two"]}]}"#,
+            &ids,
+        )
+        .unwrap();
+        assert_eq!(accepted.clusters.len(), 1);
+        assert!(parse_face_clusters(
+            r#"{"clusters":[{"id":"local-1","photo_ids":["photos.photo:one","photos.photo:other"]}]}"#,
+            &ids,
+        )
+        .is_err());
     }
 }
