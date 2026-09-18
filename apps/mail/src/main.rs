@@ -1,5 +1,6 @@
 //! Mail — standard Tilo application entry point.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
 // overflow is a tax a third-party app author would pay too. The lints that
@@ -78,6 +79,9 @@ pub fn main() {
                 "error",
             ])
             .shot_viewport(shot_viewport)
-            .configure_app(|app| mail::actions::register(app.action_registry_mut())),
+            .configure_app(|app| {
+                app.set_window_title(Some("Mail".into()));
+                mail::actions::register(app.action_registry_mut());
+            }),
     );
 }

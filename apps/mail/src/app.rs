@@ -25,6 +25,7 @@
 //! account shows an empty state. The bundled sample corpus is used only by the
 //! hermetic `--shots` / test constructors.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
@@ -280,6 +281,7 @@ pub struct MailApp {
     /// can emit several events, while successful IMAP writes emit none besides
     /// their terminal worker acknowledgement.
     awaiting_engine: bool,
+    background_poll_deadline: Cell<Option<std::time::Instant>>,
     pending_engine_requests: HashMap<EngineRequestId, EngineRequestKind>,
     /// The one refresh invocation currently owned by the resource-operation
     /// host.  It remains occupied until the host has polled its terminal
@@ -412,6 +414,7 @@ impl MailApp {
             persisted_compose_format: compose_format,
             connect_requested: false,
             awaiting_engine: false,
+            background_poll_deadline: Cell::new(None),
             pending_engine_requests: HashMap::new(),
             resource_refresh_invocation: None,
             resource_refresh_result: None,
@@ -1541,14 +1544,20 @@ impl MailApp {
             } else {
                 cfg.email.clone()
             };
-            st.accounts.upsert(account);
+            let mut updated = st.accounts.clone();
+            updated.upsert(account);
             // Persist to the shared on-disk store + vault so the account (and
             // its password) survive a restart. Routed through `accounts_persist`
             // so sample / shots / test builds never touch the real store.
-            match self.accounts_persist.persist(&st.accounts) {
-                Ok(()) => st.status = Some("Account saved".into()),
-                Err(e) => st.status = Some(format!("Saved, but could not write to disk: {e}")),
+            if let Err(error) = self.accounts_persist.persist(&updated) {
+                let message = format!("Couldn’t save account: {error}");
+                self.setup_error = Some(message.clone());
+                st.status = Some(message);
+                self.dirty = true;
+                return;
             }
+            st.accounts = updated;
+            st.status = Some("Account saved".into());
             self.persisted_active_account = st
                 .accounts
                 .active_account()
@@ -1572,11 +1581,17 @@ impl MailApp {
             let Some(id) = st.accounts.accounts.get(idx).map(|a| a.id.clone()) else {
                 return;
             };
-            st.accounts.remove(&id);
-            match self.accounts_persist.persist(&st.accounts) {
-                Ok(()) => st.status = Some("Account removed".into()),
-                Err(e) => st.status = Some(format!("Removed, but could not write to disk: {e}")),
+            let mut updated = st.accounts.clone();
+            updated.remove(&id);
+            if let Err(error) = self.accounts_persist.persist(&updated) {
+                let message = format!("Couldn’t remove account: {error}");
+                self.setup_error = Some(message.clone());
+                st.status = Some(message);
+                self.dirty = true;
+                return;
             }
+            st.accounts = updated;
+            st.status = Some("Account removed".into());
             // The removed account's mailbox is no longer relevant; clear it so a
             // stale inbox doesn't linger. A fresh connect repopulates from the
             // new active account.
@@ -3132,6 +3147,7 @@ impl Widget for MailApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.background_poll_deadline.set(None);
         if self.first_run.take_action() {
             self.open_setup_edit(None);
         }
@@ -4332,6 +4348,22 @@ impl Widget for MailApp {
             || self.setup_inputs.iter().any(ui::Widget::needs_redraw)
     }
 
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        // Worker and native-picker completions are not animation. Keep their
+        // deadline fixed until sync consumes a tick, even with reduced motion.
+        let pending = self.awaiting_engine
+            || self.attachment_save_rx.is_some()
+            || self.compose_attachment_rx.is_some();
+        let background = pending.then(|| {
+            let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
+                std::time::Instant::now() + std::time::Duration::from_millis(16)
+            });
+            self.background_poll_deadline.set(Some(deadline));
+            deadline
+        });
+        background.into_iter().chain(self.toast_deadline).min()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while a worker request is in
         // flight so its result (a fetched batch, a send ack, an error) drains
@@ -5416,6 +5448,10 @@ mod tests {
         app.pending_engine_requests
             .insert(unrelated_id, EngineRequestKind::StoreFlag);
         app.awaiting_engine = true;
+        let deadline = app
+            .next_wake_deadline()
+            .expect("worker results wake independently of animation");
+        assert_eq!(app.next_wake_deadline(), Some(deadline));
 
         incoming_tx
             .send(EngineEvent::Error {
@@ -5507,6 +5543,7 @@ mod tests {
         app.drain_engine(&mut doc);
         assert!(app.pending_send.is_none());
         assert!(!app.awaiting_engine);
+        assert_eq!(app.next_wake_deadline(), app.toast_deadline);
     }
 
     #[test]
@@ -6307,6 +6344,7 @@ mod tests {
             "toast shows immediately"
         );
         assert!(app.toast_pending(), "a dismiss deadline is armed");
+        assert_eq!(app.next_wake_deadline(), Some(t0 + TOAST_TTL));
         app.expire_toast_at(t0 + std::time::Duration::from_secs(1));
         assert!(
             app.shared.borrow().status.is_some(),
@@ -6318,6 +6356,44 @@ mod tests {
             "toast auto-dismissed past its deadline"
         );
         assert!(!app.toast_pending(), "the deadline cleared once dismissed");
+        assert!(app.next_wake_deadline().is_none());
+    }
+
+    #[test]
+    fn compose_picker_completion_wakes_without_animation_and_stops_polling() {
+        for (outcome, expected) in [
+            (
+                Some(OpenFileOutcome::Cancelled),
+                "Attachment selection cancelled",
+            ),
+            (
+                Some(OpenFileOutcome::Failed("fixture denial".into())),
+                "Couldn’t open attachment picker: fixture denial",
+            ),
+            (
+                None,
+                "Attachment picker disconnected before selecting a file",
+            ),
+        ] {
+            let (mut app, mut doc) = app();
+            app.compose.open_blank();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            if let Some(outcome) = outcome {
+                sender.send(outcome).unwrap();
+            }
+            drop(sender);
+            app.compose_attachment_rx = Some(receiver);
+            let deadline = app
+                .next_wake_deadline()
+                .expect("picker completion must wake");
+            assert_eq!(app.next_wake_deadline(), Some(deadline));
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.compose_attachment_rx.is_none());
+            assert_eq!(app.shared.borrow().status.as_deref(), Some(expected));
+            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+            app.expire_toast_at(app.toast_deadline.unwrap());
+            assert!(app.next_wake_deadline().is_none());
+        }
     }
 
     #[test]
@@ -6385,7 +6461,7 @@ mod tests {
 
     #[test]
     fn attachment_save_cancellation_and_direct_path_bypass_are_truthful() {
-        let (mut app, doc) = app();
+        let (mut app, mut doc) = app();
         let (message_id, index) = {
             let state = app.shared.borrow();
             state
@@ -6423,7 +6499,13 @@ mod tests {
         app.begin_attachment_save(message_id, index).unwrap();
         app.resource_attachment_save_invocation = Some(invocation);
         app.attachment_save_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
-        app.drain_attachment_save();
+        let deadline = app
+            .next_wake_deadline()
+            .expect("native picker results wake independently of animation");
+        assert_eq!(app.next_wake_deadline(), Some(deadline));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.attachment_save_rx.is_none());
+        assert_eq!(app.next_wake_deadline(), app.toast_deadline);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
             Some(tilo_actions::InvocationUpdate::Cancelled { .. })
@@ -6564,5 +6646,48 @@ mod tests {
         );
         assert!(!app.setup_open, "the sheet closes on success");
         assert!(app.setup_error.is_none());
+    }
+
+    #[test]
+    fn account_custody_failure_keeps_setup_open_and_live_accounts_unchanged() {
+        let (mut app, mut doc) = app();
+        let root = app
+            .accounts_persist_root()
+            .expect("isolated account fixture");
+        let before = app.shared.borrow().accounts.clone();
+        before.persist_in(&root).unwrap();
+        let metadata_path = accounts::store_path_in(&root);
+        let original_metadata = std::fs::read(&metadata_path).unwrap();
+        let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
+        std::fs::write(&vault_path, b"damaged fixture vault").unwrap();
+
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("new@host.example");
+        app.setup_inputs[2].set_text("new@host.example");
+        app.setup_inputs[4].set_text("imap.host.example");
+        app.setup_inputs[6].set_text("smtp.host.example");
+        app.save_setup_with(&mut doc, &FixedProbe { imap_ok: true });
+        assert!(app.setup_open);
+        assert!(
+            app.setup_error
+                .as_deref()
+                .unwrap()
+                .contains("Couldn’t save account")
+        );
+        assert_eq!(app.shared.borrow().accounts, before);
+        assert!(app.pending_engine_requests.is_empty());
+
+        app.open_setup_edit(Some(0));
+        app.remove_editing_account(&mut doc);
+        assert!(app.setup_open);
+        assert!(
+            app.setup_error
+                .as_deref()
+                .unwrap()
+                .contains("Couldn’t remove account")
+        );
+        assert_eq!(app.shared.borrow().accounts, before);
+        assert_eq!(std::fs::read(metadata_path).unwrap(), original_metadata);
+        assert_eq!(std::fs::read(vault_path).unwrap(), b"damaged fixture vault");
     }
 }
