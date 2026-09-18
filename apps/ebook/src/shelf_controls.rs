@@ -5,9 +5,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Toggle, ToggleFace};
@@ -135,10 +133,13 @@ impl ShelfControls {
         cursor: Point,
         prefs: LibraryPrefs,
     ) -> Rect {
+        use crate::chrome::rhythm;
         let colors = &theme.tokens.colors;
         let y = viewport.y0 + 13.0;
         let compact = viewport.width() < 560.0;
-        let mut right = open_book_x - if compact { 12.0 } else { 16.0 };
+        // Bar controls are siblings: one `s3` between every neighbour, on
+        // every width.
+        let mut right = open_book_x - rhythm::SIBLING;
 
         let label = if compact {
             "Sort".to_string()
@@ -151,29 +152,20 @@ impl ShelfControls {
         let width = f64::from(label_width) + if compact { 38.0 } else { 46.0 };
         right -= width;
         let sort = Rect::new(right, y, right + width, y + 30.0);
-        paint::fill_round(
+        // A dropdown field rests like a Neutral button — raised face, derived
+        // edge (HIG §9.5) — and wears the focus ring while its menu is open.
+        crate::chrome::quiet_pill(
             scene,
             transform,
+            theme,
             sort,
             15.0,
-            if self.sort_menu_open || sort.contains(cursor) {
-                theme.bg_hover
-            } else {
-                colors.surfaces.overlay
-            },
+            colors.surfaces.raised,
+            self.sort_menu_open || sort.contains(cursor),
         );
-        paint::stroke_round(
-            scene,
-            transform,
-            sort,
-            15.0,
-            if self.sort_menu_open {
-                theme.border_focus
-            } else {
-                colors.border_standard
-            },
-            1.0,
-        );
+        if self.sort_menu_open {
+            paint::stroke_round(scene, transform, sort, 15.0, theme.border_focus, 2.0);
+        }
         text.draw_text_weighted(
             scene,
             &label,
@@ -192,7 +184,7 @@ impl ShelfControls {
         );
         self.hits.push((sort, ShelfControlAction::ToggleSortMenu));
 
-        right -= if compact { 10.0 } else { 18.0 };
+        right -= rhythm::SIBLING;
         let toggle = Rect::new(right - 40.0, y + 4.0, right, y + 26.0);
         Toggle::paint(
             scene,
@@ -200,7 +192,10 @@ impl ShelfControls {
             theme,
             &ToggleFace::new(toggle, prefs.hide_read).hovered(toggle.contains(cursor)),
         );
-        self.hits.push((toggle, ShelfControlAction::ToggleHideRead));
+        self.hits.push((
+            crate::chrome::pointer_target(toggle, theme),
+            ShelfControlAction::ToggleHideRead,
+        ));
         if !compact {
             let hide = "Hide read";
             let hide_width = text
@@ -211,7 +206,11 @@ impl ShelfControls {
                 hide,
                 13.0,
                 colors.text_dim,
-                transform * Affine::translate((toggle.x0 - 8.0 - f64::from(hide_width), y + 8.0)),
+                transform
+                    * Affine::translate((
+                        toggle.x0 - rhythm::RELATED - f64::from(hide_width),
+                        y + 8.0,
+                    )),
                 None,
                 TextWeight::Medium,
             );
@@ -237,66 +236,62 @@ impl ShelfControls {
         if !self.sort_menu_open {
             return;
         }
+        use crate::chrome::{MENU_ROW_H, rhythm};
         let colors = &theme.tokens.colors;
         let width = 190.0_f64.max(anchor.width());
-        let row_height = 34.0;
-        let x = (anchor.x1 - width).max(viewport.x0 + 8.0);
-        let top = anchor.y1 + 6.0;
+        // Menu rows share the settings menu's pitch: a `MENU_ROW_H` face plus
+        // a related step, with a related step of panel padding around them.
+        let row_height = MENU_ROW_H + rhythm::RELATED;
+        let x = (anchor.x1 - width).max(viewport.x0 + rhythm::RELATED);
+        let top = anchor.y1 + rhythm::RELATED;
         let menu = Rect::new(
             x,
             top,
             x + width,
-            top + LibrarySort::ALL.len() as f64 * row_height + 8.0,
+            top + LibrarySort::ALL.len() as f64 * row_height + rhythm::RELATED,
         );
-        paint::fill_round(
-            scene,
-            transform,
-            Rect::new(menu.x0 - 1.0, menu.y0 + 3.0, menu.x1 + 1.0, menu.y1 + 6.0),
-            12.0,
-            Color::from_rgba8(0, 0, 0, 80),
-        );
-        paint::fill_round(
-            scene,
-            transform,
-            menu,
-            f64::from(theme.tokens.radii.lg),
-            colors.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            transform,
-            menu,
-            f64::from(theme.tokens.radii.lg),
-            colors.border_standard,
-            1.0,
-        );
+        crate::chrome::panel(scene, transform, theme, menu);
         self.hits.push((menu, ShelfControlAction::Swallow));
 
-        let mut row_y = top + 4.0;
+        let mut row_y = top + rhythm::RELATED;
         for choice in LibrarySort::ALL {
-            let row = Rect::new(x + 6.0, row_y, x + width - 6.0, row_y + row_height - 4.0);
+            let row = Rect::new(
+                x + rhythm::RELATED,
+                row_y,
+                x + width - rhythm::RELATED,
+                row_y + MENU_ROW_H,
+            );
             let active = selected == choice;
-            if active {
-                paint::fill_round(
-                    scene,
-                    transform,
-                    row,
-                    8.0,
-                    theme.accent_primary.with_alpha_factor(0.16),
-                );
-            } else if row.contains(cursor) {
-                paint::fill_round(scene, transform, row, 8.0, theme.bg_hover);
-            }
+            // The current sort is a lift (HIG §9.3), not an accent wash.
+            crate::chrome::row(
+                scene,
+                transform,
+                theme,
+                row,
+                f64::from(theme.tokens.radii.md),
+                ui::chrome::SelectionState::new(active, row.contains(cursor), false),
+                false,
+            );
+            let (_, label_h) = text.measure_weighted(
+                choice.label(),
+                13.0,
+                None,
+                if active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Medium
+                },
+            );
             text.draw_text_weighted(
                 scene,
                 choice.label(),
                 13.0,
-                if active {
-                    theme.accent_primary
-                } else {
-                    colors.text_primary
-                },
-                transform * Affine::translate((x + 16.0, row_y + 8.0)),
+                colors.text_primary,
+                transform
+                    * Affine::translate((
+                        row.x0 + rhythm::RELATED,
+                        row.y0 + (row.height() - f64::from(label_h)) / 2.0,
+                    )),
                 None,
                 if active {
                     TextWeight::Semibold
@@ -378,9 +373,20 @@ mod tests {
             controls.hit_test(progress),
             Some(ShelfControlAction::SetSort(LibrarySort::Progress))
         );
+        // The menu opens a related step under its anchor and pads its rows
+        // by another related step: a point inside that top padding is the
+        // panel's own (swallowed), a point in the gap above it is nobody's.
+        use crate::chrome::rhythm;
         assert_eq!(
-            controls.hit_test(Point::new(anchor.x0, anchor.y1 + 7.0)),
+            controls.hit_test(Point::new(
+                anchor.x0,
+                anchor.y1 + rhythm::RELATED + rhythm::TIGHT
+            )),
             Some(ShelfControlAction::Swallow)
+        );
+        assert_eq!(
+            controls.hit_test(Point::new(anchor.x0, anchor.y1 + rhythm::TIGHT)),
+            None
         );
         controls.close_sort_menu();
         assert!(!controls.sort_menu_open());
