@@ -237,6 +237,16 @@ jobs:
           chmod 700 /tmp/tilo-xdg-runtime
           bash tools/ci-sccache.sh prepare
 
+      # Older/explicitly selected builders may predate the audio fixture.
+      # Excluding installed packages forbids changing their pinned versions.
+      - name: Ensure isolated audio test dependency
+        run: |
+          if ! command -v pulseaudio >/dev/null; then
+            installed=$(rpm -qa --qf '%{NAME}\n' | sort -u | paste -sd, -)
+            dnf install -y --setopt=install_weak_deps=False --setopt=obsoletes=False --setopt=best=False \
+              --exclude="$installed" pulseaudio
+          fi
+
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
       # perform metadata-only work before doing codegen for the same crates.
@@ -256,7 +266,7 @@ jobs:
         run: >-
           bash tools/ci-measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
-          cargo nextest run --locked --profile ci ${{ matrix.packages }}
+          bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.packages }}
           -E "not ($GOLDEN_FILTER)"
 
       - name: Check all targets in shard ${{ matrix.shard }}

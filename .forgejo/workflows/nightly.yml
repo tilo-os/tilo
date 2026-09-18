@@ -70,6 +70,17 @@ jobs:
           chmod 700 "$XDG_RUNTIME_DIR"
           bash tools/ci-sccache.sh prepare
 
+      # This golden-pinned image predates the audio fixture. Install only new
+      # packages: never upgrade/remove its reviewed fonts, Mesa or libraries.
+      # A dependency requiring an existing package upgrade must fail the job.
+      - name: Ensure isolated audio test dependency
+        run: |
+          if ! command -v pulseaudio >/dev/null; then
+            installed=$(rpm -qa --qf '%{NAME}\n' | sort -u | paste -sd, -)
+            dnf install -y --setopt=install_weak_deps=False --setopt=obsoletes=False --setopt=best=False \
+              --exclude="$installed" pulseaudio
+          fi
+
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
@@ -82,7 +93,7 @@ jobs:
         run: >-
           bash tools/ci-measure.sh "nightly workspace nextest" --
           bash scripts/ci-run.sh "cargo nextest --workspace" --
-          cargo nextest run --workspace --locked --profile ci
+          bash tools/with-headless-audio.sh cargo nextest run --workspace --locked --profile ci
           -E "not ($GOLDEN_FILTER)"
 
       # This reuses the artifacts compiled above and executes the same number
