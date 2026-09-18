@@ -22,10 +22,20 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
+#[cfg(not(target_os = "linux"))]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::Read as _;
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd as _;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt as _;
+#[cfg(all(unix, not(target_os = "linux")))]
+use std::os::unix::fs::OpenOptionsExt as _;
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use agent_provider_config::local::{
@@ -44,6 +54,61 @@ use system_extension::{
 use zeroize::Zeroizing;
 
 const CATALOG_SCHEMA: u16 = 1;
+
+#[cfg(target_os = "linux")]
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<File> {
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path contains an embedded NUL byte",
+        )
+    })?;
+    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
+    let how = OpenHow {
+        flags,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: path is a live NUL-terminated string and `how` is the exact
+    // three-u64 ABI accepted by openat2. The returned descriptor is uniquely
+    // transferred into File on success.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
+    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    options.open(path)
+}
 const CATALOG_SIGNATURE_DOMAIN: &str = "tilo.local-model.catalog.v1";
 
 #[derive(Parser)]
@@ -375,12 +440,7 @@ fn resolve_artifact(
     } else {
         source_dir.join(&source.file)
     };
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
-    let mut file = options
-        .open(&path)
+    let mut file = open_readonly_without_symlinks(&path)
         .map_err(|error| format!("could not securely open {}: {error}", path.display()))?;
     let metadata = file
         .metadata()
@@ -515,11 +575,7 @@ fn read_signing_key(path: &Path) -> Result<SigningKey, String> {
         ));
     }
 
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
-    let file = options.open(path).map_err(|error| {
+    let file = open_readonly_without_symlinks(path).map_err(|error| {
         format!(
             "could not securely open signing key {}: {error}",
             path.display()
@@ -682,14 +738,22 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
-        let source = source(temp.path());
+        let catalog = source(temp.path());
         let runtime = temp.path().join("runtime.bin");
         let replacement = temp.path().join("replacement.bin");
         fs::write(&replacement, b"substituted release payload").unwrap();
         fs::remove_file(&runtime).unwrap();
         symlink(&replacement, &runtime).unwrap();
 
-        let error = compile(source, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+        let error = compile(catalog, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+        assert!(error.contains("could not securely open"));
+
+        fs::remove_file(&runtime).unwrap();
+        fs::write(&runtime, b"restored runtime payload").unwrap();
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).unwrap();
+        let source = source(temp.path());
+        let error = compile(source, &linked_parent, &SigningKey::from_bytes(&[3; 32])).unwrap_err();
         assert!(error.contains("could not securely open"));
     }
 
@@ -766,6 +830,15 @@ mod tests {
             read_signing_key(&path)
                 .unwrap_err()
                 .contains("exactly one directory entry")
+        );
+
+        fs::remove_file(&alias).unwrap();
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).unwrap();
+        assert!(
+            read_signing_key(&linked_parent.join("key"))
+                .unwrap_err()
+                .contains("securely open")
         );
     }
 
