@@ -175,6 +175,7 @@ impl WindowWidth {
     reason = "independent UI flags on a widely-shared pub struct; not a state bitset"
 )]
 pub struct WindowGroup {
+    external_navigation: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
@@ -299,6 +300,7 @@ impl WindowGroup {
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             rect: Rect::ZERO,
+            external_navigation: false,
             resize_origin: None,
             hover_resize: false,
             maximized: false,
@@ -327,6 +329,9 @@ impl WindowGroup {
         self.width
     }
 
+    pub fn set_external_navigation(&mut self, external: bool) {
+        if self.external_navigation != external { self.external_navigation = external; self.style_dirty = true; }
+    }
     #[must_use]
     pub fn with_maximized(mut self, maximized: bool) -> Self {
         self.maximized = maximized;
@@ -381,7 +386,7 @@ impl WindowGroup {
     }
 
     pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
-        self.maximized && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
+        !self.external_navigation && self.maximized && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
     }
 
     pub fn strip_usable_px(&self) -> f64 {
@@ -631,6 +636,7 @@ impl WindowGroup {
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             rect: Rect::ZERO,
+            external_navigation: false,
             resize_origin: None,
             hover_resize: false,
             maximized: false,
@@ -672,6 +678,7 @@ impl WindowGroup {
     /// right-edge resize band. Used by [`GroupRow`] to arbitrate a press
     /// into a group-reorder drag vs. a tab/resize gesture.
     pub fn bar_grab_hit(&self, p: Point) -> bool {
+        if self.external_navigation { return false; }
         if !self.bar_rect().contains(p) {
             return false;
         }
@@ -1460,6 +1467,11 @@ impl WindowGroup {
 }
 
 impl Widget for WindowGroup {
+    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> { self.active_host()?.primary_vertical_scroll() }
+    fn apply_primary_vertical_scroll(&mut self, action: crate::widget::PrimaryScrollAction) -> crate::widget::PrimaryScrollResult {
+        self.active_host_mut().map_or(crate::widget::PrimaryScrollResult::Unsupported, |host| host.apply_primary_vertical_scroll(action))
+    }
+
     // Modal capture and presentation polling follow visible content, never inactive tabs.
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
@@ -1531,7 +1543,7 @@ impl Widget for WindowGroup {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::new();
-        if !self.maximized {
+        if !self.maximized && !self.external_navigation {
             children.push(&self.bar);
         }
         if let Some(host) = self.active_host() {
@@ -1542,7 +1554,7 @@ impl Widget for WindowGroup {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let active = self.bar.active_id();
         let mut children: Vec<&mut dyn Widget> = Vec::new();
-        if !self.maximized {
+        if !self.maximized && !self.external_navigation {
             children.push(&mut self.bar);
         }
         if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
@@ -1608,7 +1620,7 @@ impl Widget for WindowGroup {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let bar_node = self.bar.build_layout(taffy, theme, node_map);
+        let bar_node = (!self.external_navigation).then(|| self.bar.build_layout(taffy, theme, node_map));
         let active_id = self.bar.active_id();
         // See `built_active`'s field doc: forces a rebuild when the
         // active tab switches.
@@ -1644,11 +1656,14 @@ impl Widget for WindowGroup {
             style.flex_basis = Dimension::length(0.0);
             // Fullscreen: the tab strip neither paints (see `draw`) nor
             // reserves height; the floating pill draws over the content.
-            let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
-            bar_style.display = taffy::Display::None;
-            let _ = taffy.set_style(bar_node, bar_style);
+            if let Some(bar_node) = bar_node {
+                let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
+                bar_style.display = taffy::Display::None;
+                let _ = taffy.set_style(bar_node, bar_style);
+            }
         }
-        let node = taffy.parent_node(style, &[bar_node, tile_node]);
+        let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
+        let node = taffy.parent_node(style, &nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -1662,14 +1677,11 @@ impl Widget for WindowGroup {
         );
         let children = taffy.children(node).unwrap_or_default();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        let Some(&bar_child) = children.first() else {
-            return;
-        };
-        self.bar.apply_layout(taffy, bar_child, new_origin);
+        if !self.external_navigation { if let Some(&bar_child) = children.first() { self.bar.apply_layout(taffy, bar_child, new_origin); } }
         let active_id = self.bar.active_id();
         if let (Some((_, h)), Some(&tile_child)) = (
             self.hosts.iter_mut().find(|(i, _)| *i == active_id),
-            children.get(1),
+            children.get(usize::from(!self.external_navigation)),
         ) {
             h.apply_layout(taffy, tile_child, new_origin);
         }
@@ -1746,7 +1758,7 @@ impl Widget for WindowGroup {
         };
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
-        if !self.maximized {
+        if !self.maximized && !self.external_navigation {
             self.bar
                 .set_group_focused(self.focused || self.search_active);
             self.bar.draw(scene, transform, tr, theme, presence);
@@ -1771,7 +1783,7 @@ impl Widget for WindowGroup {
             h.draw(scene, transform, tr, theme, presence);
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
-        if !self.maximized {
+        if !self.maximized && !self.external_navigation {
             self.draw_resize_grip(scene, transform, theme);
         }
 
@@ -1802,15 +1814,15 @@ impl Widget for WindowGroup {
         taffy: &TaffyTree<()>,
     ) {
         let children = taffy.children(node_id).unwrap_or_default();
-        let bar_child = children.first().copied();
-        let tile_child = children.get(1).copied();
+        let bar_child = (!self.external_navigation).then(|| children.first().copied()).flatten();
+        let tile_child = children.get(usize::from(!self.external_navigation)).copied();
         let handle_rect = Rect::new(
             self.rect.x1 - RESIZE_HANDLE_PX,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1,
         );
-        if self.handle_direct_input(event, scale_factor, *m, handle_rect) {
+        if !self.external_navigation && self.handle_direct_input(event, scale_factor, *m, handle_rect) {
             *handled = true;
             return;
         }
@@ -1937,6 +1949,7 @@ impl Widget for WindowGroup {
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.external_navigation { return None; }
         let band = Rect::new(
             self.rect.x1 - RESIZE_HANDLE_PX,
             self.rect.y0,
@@ -1996,7 +2009,7 @@ impl Widget for WindowGroup {
         spawn_in_flight
             || close_in_flight
             || group_close_in_flight
-            || self.bar.needs_animation_frame()
+            || (!self.external_navigation && self.bar.needs_animation_frame())
             || host
     }
 }
@@ -2006,6 +2019,18 @@ mod tests {
     use super::*;
     use crate::widget::{AppKind, TabDescriptor, TileContent};
 
+    #[test]
+    fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
+        let mut group = make_group();
+        assert_eq!(group.children().len(), 2);
+        group.set_external_navigation(true);
+        let mut tree = TaffyTree::new();
+        let node = group.build_layout(&mut tree, &Theme::default(), &mut Default::default());
+        assert_eq!(tree.children(node).unwrap().len(), 1);
+        assert_eq!(group.children().len(), 1);
+        assert_eq!(group.tabs().len(), 2);
+        assert!(!group.should_show_maximized_chrome(Some(0.0)));
+    }
     fn make_group() -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = vec![
             (

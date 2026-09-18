@@ -1117,3 +1117,47 @@ pub fn acknowledge_desktop_command(id: u64, invocation: &str) -> Result<(), JsVa
         Ok(())
     })
 }
+
+#[wasm_bindgen]
+pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let mount=mounts.get(&id).ok_or_else(||error("Desktop disposed"))?;
+        Ok(mount.desktop.as_ref().map(|d| d.navigation.borrow().to_string()))
+    })
+}
+#[wasm_bindgen]
+pub fn desktop_navigation_revision(id: u64) -> Result<String, JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let mount=mounts.get(&id).ok_or_else(||error("Desktop disposed"))?;
+        Ok(mount.desktop.as_ref().map(|d|d.navigation_revision.get()).unwrap_or(0).to_string())
+    })
+}
+#[wasm_bindgen]
+pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
+    let command=serde_json::from_str(command).map_err(error)?;
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
+        if mount.peer_suspended { return Err(error("Desktop unavailable while peer is suspended")); }
+        let desktop=mount.desktop.clone().ok_or_else(||error("Desktop navigation unavailable"))?;
+        *desktop.navigation_result.borrow_mut()=None;
+        *desktop.navigation_command.borrow_mut()=Some(command);
+        mount.frame.relayout();
+        let result=desktop.navigation_result.borrow_mut().take().ok_or_else(||error("Desktop did not accept navigation"))?;
+        result.map_err(error)?;
+        mount.pending=true; mount.window.request_redraw();
+        Ok(())
+    })
+}
+
+#[wasm_bindgen]
+pub fn desktop_command_search(id: u64, generation: &str, query: &str) -> Result<(), JsValue> {
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
+        if mount.peer_suspended { return Err(error("Desktop suspended")); }
+        let desktop=mount.desktop.as_ref().ok_or_else(||error("Desktop search unavailable"))?;
+        if desktop.navigation.borrow()["generation"].as_str()!=Some(generation) { return Err(error("Stale desktop surface")); }
+        if query.len()>512 { return Err(error("Search is too long")); }
+        mount.frame.open_caller_search(query).map_err(error)?;
+        mount.pending=true; mount.window.request_redraw(); Ok(())
+    })
+}

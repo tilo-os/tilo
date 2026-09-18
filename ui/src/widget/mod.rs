@@ -434,6 +434,10 @@ pub enum WindowCloseAdmission {
 }
 
 pub trait Widget {
+    /// Explicit app-owned region; never search secondary children implicitly.
+    fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> { None }
+    fn apply_primary_vertical_scroll(&mut self, _action: PrimaryScrollAction) -> PrimaryScrollResult { PrimaryScrollResult::Unsupported }
+
     /// A successful, locally applied resource Document action on this exact owner.
     /// Immutable document access permits cache reconciliation only. Not called for
     /// submissions, failed execution, replay, remote merge, or History restore.
@@ -1966,7 +1970,7 @@ pub use dropdown::Dropdown;
 pub mod tabs;
 pub use tabs::{TabBar, TabDescriptor};
 pub mod scrollbar;
-pub use scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+pub use scrollbar::{PressOutcome, ScrollMetrics, Scrollbar, PrimaryScrollRegion, PrimaryScrollAction, PrimaryScrollResult};
 pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;

@@ -2266,6 +2266,9 @@ impl ui::widget::AppWidget for NotesApp {
 }
 
 impl Widget for NotesApp {
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> { self.main.primary_vertical_scroll() }
+    fn apply_primary_vertical_scroll(&mut self, action: ui::widget::PrimaryScrollAction) -> ui::widget::PrimaryScrollResult { self.main.apply_primary_vertical_scroll(action) }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::NOTES_OPERATION_TYPE]
     }

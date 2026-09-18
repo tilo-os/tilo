@@ -86,6 +86,14 @@ pub struct HistoryHost {
     canvas_node: Option<NodeId>,
 }
 impl HistoryHost {
+    /// Request the same read-only presentation as the History button. Restore
+    /// remains owned by the existing review/authority path.
+    pub(crate) fn request_open(&self) -> bool {
+        if self.invalid_owner { return false; }
+        if !self.open { self.open_requested.set(true); }
+        true
+    }
+
     pub(crate) fn new(
         registration: HistoryRegistration,
         doc: &AutoCommit,

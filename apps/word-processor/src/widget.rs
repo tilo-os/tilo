@@ -1964,6 +1964,7 @@ pub struct WordProcessorWidget {
     /// Vertical scroll offset (px) and the max scroll (content overflow), updated
     /// each frame from the laid-out content height.
     scroll_y: f64,
+    scroll_viewport: f64,
     max_scroll: f64,
     /// The document's stylesheet (component-instance styles). Authoritative copy
     /// in the widget; reloaded from the doc when not mid-drag, persisted on edit.
@@ -2170,6 +2171,7 @@ impl WordProcessorWidget {
             toolbar: Vec::new(),
             rich_clip: None,
             scroll_y: 0.0,
+            scroll_viewport: 0.0,
             max_scroll: 0.0,
             sheet: crate::styles::StyleSheet::default(),
             margins: Edges::uniform(72.0),
@@ -6908,6 +6910,7 @@ impl WordProcessorWidget {
         // is magnified by `zoom`, so the visible window covers `fg.canvas.height() /
         // zoom` of content — divide by zoom so the overflow (and thus max scroll)
         // grows when zoomed in and shrinks when zoomed out.
+        self.scroll_viewport = fg.canvas.height() / self.zoom.factor();
         self.max_scroll =
             (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom.factor()).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
@@ -9168,6 +9171,18 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        Some(ui::widget::PrimaryScrollRegion { key: "primary", owner_generation: None, metrics: ui::widget::ScrollMetrics::new(self.max_scroll + self.scroll_viewport, self.scroll_viewport, self.scroll_y) })
+    }
+    fn apply_primary_vertical_scroll(&mut self, action: ui::widget::PrimaryScrollAction) -> ui::widget::PrimaryScrollResult {
+        use ui::widget::PrimaryScrollResult;
+        let Some(region) = self.primary_vertical_scroll() else { return PrimaryScrollResult::Unsupported; };
+        let Some(next) = action.offset(region.metrics) else { return PrimaryScrollResult::Unsupported; };
+        if next == region.metrics.offset { return PrimaryScrollResult::Unchanged(region); }
+        self.scroll_y = next; self.dirty = true;
+        PrimaryScrollResult::Changed(self.primary_vertical_scroll().unwrap())
+    }
+
     fn native_input_snapshot(
         &self,
         state: &AutoCommit,
@@ -12540,6 +12555,24 @@ mod tests {
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
 
+    #[test]
+    fn primary_scroll_uses_drawn_geometry_without_document_mutation() {
+        use ui::widget::PrimaryScrollAction;
+        let mut state=ui::State::new();let mut wp=WordProcessorWidget::new();
+        wp.sync(&mut state.doc,&state.root);
+        for _ in 0..40 { wp.model_mut().insert_str(&mut state.doc,"A retained paragraph.");wp.model_mut().enter(&mut state.doc); }
+        pipeline_draw(&mut wp,&mut state,1000,400);
+        let heads=state.doc.get_heads();let before=wp.primary_vertical_scroll().unwrap().metrics;
+        assert!(before.max_scroll()>0.0);
+        wp.apply_primary_vertical_scroll(PrimaryScrollAction::End);
+        pipeline_draw(&mut wp,&mut state,1000,400);
+        let after=wp.primary_vertical_scroll().unwrap().metrics;
+        assert!(after.offset>before.offset);assert_eq!(after.offset,after.max_scroll());
+        assert_eq!(heads,state.doc.get_heads());
+        wp.apply_primary_vertical_scroll(PrimaryScrollAction::Start);
+        assert_eq!(wp.scroll_y,0.0);
+        assert!(matches!(wp.apply_primary_vertical_scroll(PrimaryScrollAction::Absolute(f64::NAN)),ui::widget::PrimaryScrollResult::Unsupported));
+    }
     #[test]
     fn native_input_snapshot_reads_real_caret_text_without_mutation() {
         let mut state = ui::State::new();

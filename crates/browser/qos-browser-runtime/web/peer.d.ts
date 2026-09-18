@@ -13,7 +13,7 @@ export interface CertifiedPeer {
  readonly actionsV1?:CertifiedActionsV1;
  getSnapshot():PeerSnapshot;
  subscribe(listener:(snapshot:PeerSnapshot)=>void):()=>void;
- mountDesktop(target:HTMLElement,options:Pick<MountOptions,'app'|'instance'|'signal'|'onStatus'>&{onSurface?:(surfaceId:string)=>void;onMount?:(mount:DesktopMount)=>void}):Promise<DesktopMount>;
+ mountDesktop(target:HTMLElement,options:Pick<MountOptions,'app'|'instance'|'signal'|'onStatus'|'onNavigation'>&{onSurface?:(surfaceId:string)=>void;onMount?:(mount:DesktopMount)=>void}):Promise<DesktopMount>;
  recover(request:RecoveryRequest):Promise<RecoveryResult>;
  reconnect():Promise<void>;
  retryPersistence():Promise<void>;

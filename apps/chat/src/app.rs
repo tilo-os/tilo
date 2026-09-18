@@ -511,6 +511,8 @@ pub struct ChatApp {
     pub(crate) active_channel: Id,
     pub(crate) focus: Focus,
     pub(crate) scroll: f64,
+    pub(crate) scroll_content: f64,
+    pub(crate) scroll_viewport: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
     pub(crate) revealed_person: Option<Id>,
@@ -799,6 +801,8 @@ impl ChatApp {
             active_channel: "c_crit".into(),
             focus: Focus::Main,
             scroll: 0.0,
+            scroll_content: 0.0,
+            scroll_viewport: 0.0,
             thread_open: Some("m_concept".into()),
             revealed_message: None,
             revealed_person: None,
@@ -2748,6 +2752,18 @@ fn chat_navigation_kind(kind: qos_actions::OperationKind) -> Result<bool, String
 }
 
 impl Widget for ChatApp {
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        Some(ui::widget::PrimaryScrollRegion { key: "primary", owner_generation: None, metrics: ui::widget::ScrollMetrics::new(self.scroll_content, self.scroll_viewport, (self.scroll_content - self.scroll_viewport).max(0.0) - self.scroll.clamp(0.0, (self.scroll_content - self.scroll_viewport).max(0.0))) })
+    }
+    fn apply_primary_vertical_scroll(&mut self, action: ui::widget::PrimaryScrollAction) -> ui::widget::PrimaryScrollResult {
+        use ui::widget::PrimaryScrollResult;
+        let Some(region) = self.primary_vertical_scroll() else { return PrimaryScrollResult::Unsupported; };
+        let Some(next) = action.offset(region.metrics) else { return PrimaryScrollResult::Unsupported; };
+        if next == region.metrics.offset { return PrimaryScrollResult::Unchanged(region); }
+        self.scroll = region.metrics.max_scroll() - next; self.canonical_dirty = true;
+        PrimaryScrollResult::Changed(self.primary_vertical_scroll().unwrap())
+    }
+
     fn is_focusable(&self) -> bool { true }
     fn is_focused(&self) -> bool { self.host_focused }
     fn set_focus(&mut self, focused: bool) {
@@ -3853,6 +3869,17 @@ mod screenshare_reuse_tests {
 #[cfg(test)]
 mod identity_on_screen {
     use super::*;
+    #[test]
+    fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
+        use ui::widget::PrimaryScrollAction;
+        let mut app=ChatApp::new_ephemeral();app.scroll_content=1000.0;app.scroll_viewport=200.0;app.scroll=0.0;
+        assert_eq!(app.primary_vertical_scroll().unwrap().metrics.offset,800.0);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::Start);assert_eq!(app.scroll,800.0);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::Line(1));assert_eq!(app.scroll,752.0);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::End);assert_eq!(app.scroll,0.0);
+        app.scroll_content=100.0;assert_eq!(app.primary_vertical_scroll().unwrap().metrics.max_scroll(),0.0);
+    }
+
 
     fn user(id: &str, is_agent: bool) -> User {
         User {

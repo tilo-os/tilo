@@ -45,6 +45,8 @@ mod desktop;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod desktop_host;
+#[cfg(any(target_arch = "wasm32", test))]
+mod desktop_navigation;
 
 /// Private browser action correlation, also exercised by the ordinary host harness.
 pub mod action_client;

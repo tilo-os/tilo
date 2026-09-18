@@ -133,6 +133,7 @@ pub struct CrossStripDetach {
               any call site clearer"
 )]
 pub struct GroupRow {
+    external_navigation: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub groups: Vec<WindowGroup>,
     /// One resize handle per gap: `max(0, groups.len() - 1)`.
@@ -286,6 +287,7 @@ impl GroupRow {
         Self {
             groups,
             close_reports: vec![],
+            external_navigation: false,
             handles: Vec::new(),
             handle_node_ids: Vec::new(),
             rect: Rect::ZERO,
@@ -325,6 +327,10 @@ impl GroupRow {
     /// Set (or clear) the transient fullscreen override, driven by the
     /// shell each frame from compositor state. `(None, false)` restores
     /// normal tiling exactly.
+    pub fn set_external_navigation(&mut self, external: bool) {
+        if self.external_navigation != external { self.external_navigation = external; self.structure_dirty = true; }
+        for group in &mut self.groups { group.set_external_navigation(external); }
+    }
     pub fn set_fullscreen(&mut self, fullscreen_group: Option<u64>, hidden: bool) {
         if self.fullscreen_group != fullscreen_group || self.hidden != hidden {
             self.fullscreen_group = fullscreen_group;
@@ -1394,6 +1400,11 @@ impl Widget for GroupRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.node_ids.clear();
+        if self.external_navigation && self.hidden {
+            let node = taffy.leaf_node(Style { display: Display::None, ..Default::default() });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
         // Resolve every group's width fraction before it builds its node
         // (walking left to right so each group's basis is the display its
         // left edge lands on), with no dependency on a previous frame's
@@ -1419,7 +1430,7 @@ impl Widget for GroupRow {
         // Grow/truncate the handle pool to `max(0, N-1)`; truncating from
         // the tail is fine since an active drag's handle would have had
         // its neighbours change structurally anyway.
-        let desired_handles = self.groups.len().saturating_sub(1);
+        let desired_handles = if self.external_navigation { 0 } else { self.groups.len().saturating_sub(1) };
         if self.handles.len() < desired_handles {
             self.handles
                 .extend((self.handles.len()..desired_handles).map(|_| ResizeHandle::new()));
@@ -1517,6 +1528,7 @@ impl Widget for GroupRow {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if self.external_navigation && self.hidden { self.rect = Rect::ZERO; return; }
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -1604,6 +1616,7 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.external_navigation && self.hidden { return; }
         self.scroll_dirty = false;
         // Clip to the row's rect: `content_width` routinely exceeds
         // `rect.width()`, so off-screen-right groups would bleed past
@@ -1648,6 +1661,7 @@ impl Widget for GroupRow {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.external_navigation && self.hidden { return; }
         // Track the cursor so our post-dispatch detach sweep can hit-test
         // sibling bars even after a child has swallowed the event.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -1987,7 +2001,7 @@ impl GroupRow {
     fn sync_handle_neighbours(&mut self) {
         debug_assert_eq!(
             self.handles.len(),
-            self.groups.len().saturating_sub(1),
+            if self.external_navigation { 0 } else { self.groups.len().saturating_sub(1) },
             "ResizeHandle pool must mirror inter-group gap count after build_layout",
         );
         for (i, h) in self.handles.iter_mut().enumerate() {

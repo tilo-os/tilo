@@ -1,3 +1,5 @@
+import type {DesktopNavigationV1} from "./navigation";
+export type * from "./navigation";
 import type {CertifiedActionsV1,PrivateInvocation} from './peer';
 export type Application = 'writer' | 'chat' | 'desktop';
 export interface RuntimeStatus {
@@ -16,6 +18,7 @@ export interface RuntimeStatus {
   [diagnostic: string]: unknown;
 }
 export interface MountOptions {
+  onNavigation?: (controller: DesktopNavigationV1) => void;
   app?: Application;
   actionsV1?: CertifiedActionsV1;
   profile?: string;
@@ -31,6 +34,7 @@ export interface MountOptions {
   loadAsset?: (url: string, signal: AbortSignal) => Promise<Uint8Array>;
 }
 export interface DesktopMount {
+  navigation?: DesktopNavigationV1;
   cleanup(): Promise<void>;
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;

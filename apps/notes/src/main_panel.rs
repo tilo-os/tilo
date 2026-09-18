@@ -116,6 +116,8 @@ pub struct MainPanel {
     /// as boxed Elements — wrapping in Scrollable would require
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
+    scroll_viewport: f64,
+    scroll_content: f64,
     /// Local user's id for authorship attribution, re-applied to the
     /// editor whenever a page is (re)bound.
     local_author: Option<String>,
@@ -158,6 +160,8 @@ impl MainPanel {
             title_node: None,
             dirty: true,
             scroll_y: 0.0,
+            scroll_viewport: 0.0,
+            scroll_content: 0.0,
             local_author: None,
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
@@ -618,6 +622,18 @@ impl Default for MainPanel {
 }
 
 impl Widget for MainPanel {
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        Some(ui::widget::PrimaryScrollRegion { key: "primary", owner_generation: None, metrics: ui::widget::ScrollMetrics::new(self.scroll_content, self.scroll_viewport, self.scroll_y) })
+    }
+    fn apply_primary_vertical_scroll(&mut self, action: ui::widget::PrimaryScrollAction) -> ui::widget::PrimaryScrollResult {
+        use ui::widget::PrimaryScrollResult;
+        let Some(region) = self.primary_vertical_scroll() else { return PrimaryScrollResult::Unsupported; };
+        let Some(next) = action.offset(region.metrics) else { return PrimaryScrollResult::Unsupported; };
+        if next == region.metrics.offset { return PrimaryScrollResult::Unchanged(region); }
+        self.scroll_y = next; self.dirty = true;
+        PrimaryScrollResult::Changed(self.primary_vertical_scroll().unwrap())
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if self.page_id.is_some() {
             vec![&self.title_label, &self.editor]
@@ -794,6 +810,8 @@ impl Widget for MainPanel {
                     .iter()
                     .any(|b| b.line.get_rect().height() > 0.0);
             if measured {
+                self.scroll_content = content_h;
+                self.scroll_viewport = viewport_h;
                 let clamped = self.scroll_y.clamp(0.0, max_scroll);
                 if (clamped - self.scroll_y).abs() > f64::EPSILON {
                     self.scroll_y = clamped;

@@ -1,3 +1,4 @@
+import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {bindActionPalette} from './action-palette-bridge.mjs';
 import {bindDesktopCommands} from './desktop-command-bridge.mjs';
 import {commitPeerBatches} from './peer-persistence.mjs';
@@ -38,8 +39,8 @@ export async function mountDesktop(target,options={}) {
   };
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
-  delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;
-  let semanticKeys,actionPalette,desktopCommands;
+  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;
+  let semanticKeys,actionPalette,desktopCommands,navigation;
   const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
     keydown:(...args)=>active()&&semanticKeys?.keydown(...args),
     keyup:(...args)=>active()&&semanticKeys?.keyup(...args),
@@ -49,6 +50,7 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
   function update(raw){
     if(closed||!registry.current(token))return;
+    navigation?.refresh();
     if(desktopCommands)void desktopCommands.pump();
     if(actionPalette){
       const request=runtime.take_caller_action(id);
@@ -119,7 +121,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      actionPalette?.close();desktopCommands?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      navigation?.close();actionPalette?.close();desktopCommands?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
       surface.remove();
     },
@@ -196,7 +198,11 @@ export async function mountDesktop(target,options={}) {
     if(!active())throw Error('mount disposed');
     if(options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
     if(options.actionsV1)desktopCommands=bindDesktopCommands({actions:options.actionsV1,peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report});
-    return {retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
+    if(runtime.desktop_navigation_snapshot && runtime.desktop_navigation_snapshot(id)) {
+      navigation=createDesktopNavigation({active,snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>runtime.desktop_navigate(id,command),search:(generation,query)=>runtime.desktop_command_search(id,generation,query)});
+      options.onNavigation?.(navigation.controller);
+    }
+    return {navigation: navigation?.controller,retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,editor,semantics:accessibility,
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args)};

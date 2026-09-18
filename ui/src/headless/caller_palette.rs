@@ -31,6 +31,17 @@ impl FrameHarness {
 
     /// Transfer one UI intent. The host owns durable invocation admission and
     /// recovery; this frame never acknowledges an effect or mutates its document.
+    /// Browser-owned command search opens the same authoritative palette.
+    pub fn open_caller_search(&mut self, query: &str) -> Result<(), String> {
+        if self.root.modal_capture().is_some() || self.focus_trap_active || self.caller_palette.pending.is_some() { return Err("Finish the current dialog or command first".into()); }
+        let mut palette = ActionPalette::with_host_text(self.text.font_system.locale().to_owned());
+        palette.load_open_resources(&self.caller_resources());
+        palette.open();
+        palette.set_query(query);
+        self.caller_palette.palette = Some(palette);
+        self.relayout();
+        Ok(())
+    }
     pub fn take_caller_operation(&mut self) -> Option<PendingOperation> {
         self.caller_palette.pending.take()
     }

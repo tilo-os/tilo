@@ -474,6 +474,18 @@ impl TileHost {
     /// store/checkout/lifetime. No outer State or invented component is used.
     /// # Errors
     /// Refuses missing, stale or foreign document custody and invalid scope metadata.
+    /// Exact live component token for this retained history owner.
+    pub fn document_history_target(&self) -> Option<String> {
+        self.history.as_ref()?;
+        let TileContent::App(app) = &self.content else { return None; };
+        let binding = app.callback_binding()?;
+        let _entry = binding.enter().ok()?;
+        Some(binding.lifetime_id.to_string())
+    }
+    pub fn request_document_history(&self, target: &str) -> bool {
+        if self.document_history_target().as_deref() != Some(target) { return false; }
+        self.history.as_ref().is_some_and(|history| history.request_open())
+    }
     pub fn register_document_history(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
@@ -885,6 +897,15 @@ impl TileHost {
 }
 
 impl Widget for TileHost {
+    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+        if self.history.as_ref().is_some_and(|history| !history.live_interactive()) { return None; }
+        if let TileContent::App(app) = &self.content { app.primary_vertical_scroll() } else { None }
+    }
+    fn apply_primary_vertical_scroll(&mut self, action: crate::widget::PrimaryScrollAction) -> crate::widget::PrimaryScrollResult {
+        if self.history.as_ref().is_some_and(|history| !history.live_interactive()) { return crate::widget::PrimaryScrollResult::Unsupported; }
+        if let TileContent::App(app) = &mut self.content { app.apply_primary_vertical_scroll(action) } else { crate::widget::PrimaryScrollResult::Unsupported }
+    }
+
     fn visit_framework_history(&self, visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget)) {
         if let TileContent::App(live) = &self.content {
             if let Some(history) = &self.history { visitor(history, live.as_ref()); }

@@ -67,6 +67,11 @@ impl DesktopSurface {
             }
         }
         self.navigation.active_strip = active_strip;
+        if self.external_navigation {
+            for strip in self.strip_ids() {
+                if let Some(row) = self.row_mut(strip) { row.set_external_navigation(true); row.set_fullscreen(None, Some(strip) != active_strip); }
+            }
+        }
         self.navigation.groups = self
             .strip_ids()
             .into_iter()

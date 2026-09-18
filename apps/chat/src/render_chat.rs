@@ -1804,6 +1804,9 @@ impl ChatApp {
         // Empty channel: a quiet start-of-conversation marker rather than a
         // blank void, so a fresh channel reads as ready, not broken.
         if self.messages.is_empty() {
+            self.scroll_content = 0.0;
+            self.scroll_viewport = area.height().max(0.0);
+            self.scroll = 0.0;
             self.draw_empty_channel_marker(scene, tf, tr, theme, area);
             return;
         }
@@ -1812,6 +1815,8 @@ impl ChatApp {
         let divider_h = 36.0;
         let (rows, total) = self.measure_message_rows(tr, theme, &groups, text_w, divider_h);
 
+        self.scroll_content = total;
+        self.scroll_viewport = area.height().max(0.0);
         let start_y = if total > area.height() {
             area.y1 - total
         } else {
@@ -1832,6 +1837,7 @@ impl ChatApp {
                 self.scroll = area.center().y - start_y - target_mid;
             }
         }
+        self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
         let y = (start_y + self.scroll).clamp(min_start, max_start);
 
         let mut y = self.draw_messages_date_divider(scene, tf, tr, theme, area, y, divider_h);

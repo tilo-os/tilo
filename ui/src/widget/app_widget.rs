@@ -127,6 +127,20 @@ mod component_adapter {
         reason = "existing Widget callback signatures"
     )]
     impl Widget for BoundAppWidget {
+        fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+            let binding = self.component.callback_binding();
+            let _entry = binding.enter().ok()?;
+            let mut region = self.component.root.as_deref()?.primary_vertical_scroll()?;
+            region.owner_generation = Some(binding.lifetime_id);
+            Some(region)
+        }
+        fn apply_primary_vertical_scroll(&mut self, action: crate::widget::PrimaryScrollAction) -> crate::widget::PrimaryScrollResult {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else { return crate::widget::PrimaryScrollResult::Unsupported; };
+            let Some(root) = self.component.root.as_deref_mut() else { return crate::widget::PrimaryScrollResult::Unsupported; };
+            root.apply_primary_vertical_scroll(action).stamp(binding.lifetime_id)
+        }
+
         fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
             self.component.close();
             self.component.take_close_reports()
