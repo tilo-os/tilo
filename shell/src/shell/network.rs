@@ -5620,13 +5620,13 @@ mod tests {
             .upsert(snapshot)
             .expect("stage checkpoint");
         let tab = crate::shell::personal_continuity::AppInstanceId(0xA6A6);
-        let launch = crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser")
+        let launch = crate::shell::personal_continuity::LaunchIntent::app("dev.tilo.browser")
             .expect("valid launch");
         {
             let registry = crate::shell::personal_continuity_registry::global_registry();
             let mut registry = registry.lock().expect("continuation registry");
             registry.clear_remote();
-            registry.store_remote_record(room, tab, "dev.qos.browser".into(), tab);
+            registry.store_remote_record(room, tab, "dev.tilo.browser".into(), tab);
             assert_eq!(
                 registry.record_instance_for_tab(room, tab, &launch),
                 Some(tab)

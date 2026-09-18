@@ -1122,7 +1122,10 @@ COPY \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
     os/usr/lib/systemd/system/tilo-relay-firstboot.service \
     os/usr/lib/systemd/system/tilo-network-start.timer \
+    os/usr/lib/systemd/system/tilo-network-start.target \
     /usr/lib/systemd/system/
+COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf \
+    /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
 COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
 COPY os/usr/share/polkit-1/actions/org.tilo.home-peer.policy /usr/share/polkit-1/actions/org.tilo.home-peer.policy
 COPY \
@@ -1924,6 +1927,7 @@ RUN cp -a /etc/selinux/targeted /var/tmp/tilo-sestore \
 # modem, power, homed, hardening, boot assessment, automatic bootc updates and
 # NetworkManager are system services/timers.
 RUN systemctl enable greetd.service && \
+    systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
@@ -1939,8 +1943,6 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable tilo-fs-recipient.socket && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
     systemctl enable cups.socket && \
-    systemctl enable chronyd.service && \
-    systemctl enable firewalld.service && \
     systemctl enable tilo-hidepid.service && \
     systemctl enable tilo-security-audit.timer && \
     systemctl enable tilo-rollback-harden.timer && \
@@ -2229,7 +2231,18 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # /usr/lib/modules/$kver *directories*, and the split leaves that directory in
 # place, so one kernel is still one kernel; `nonempty-boot` is a warning, not a
 # fatal, so a UKI in /boot does not fail it either.
-RUN bash /usr/local/bin/verify-runtime-crypto-packages.sh \
+# Fedora's OpenSSL libraries carry optional legacy-provider and ENGINE DSOs for
+# compatibility with old applications. Tilo has no consumer for either plugin
+# API: Rust-native code owns signing/TLS, while foundational distro consumers
+# use the built-in provider. Delete the loadable algorithm surface before the
+# composefs root is sealed, on both Fedora library layouts.
+RUN find /usr/lib /usr/lib64 \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \) \
+      \( -type f -o -type l \) -delete \
+    && ! find /usr/lib /usr/lib64 \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \) \
+      \( -type f -o -type l \) -print -quit | grep -q . \
+    && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bootc container lint
 

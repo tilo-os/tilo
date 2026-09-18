@@ -195,19 +195,27 @@ if grep -Eq 'systemctl enable (fs\.service|tilo-security-audit\.service)' \
 fi
 grep -Fq 'systemctl enable tilo-fs-start.timer fs-identity.path' "$repo/os/Containerfile"
 grep -Fq 'systemctl enable tilo-security-audit.timer' "$repo/os/Containerfile"
-if grep -Fq 'systemctl enable NetworkManager.service' "$repo/os/Containerfile"; then
-  echo 'NetworkManager readiness still blocks multi-user.target' >&2
+if grep -Eq 'systemctl enable (NetworkManager|firewalld|chronyd)\.service' "$repo/os/Containerfile"; then
+  echo 'network, firewall, or clock readiness still blocks multi-user.target' >&2
   exit 1
 fi
+grep -Fq 'systemctl disable NetworkManager.service firewalld.service chronyd.service' "$repo/os/Containerfile"
 grep -Fq 'systemctl enable tilo-network-start.timer' "$repo/os/Containerfile"
 network_timer="$repo/os/usr/lib/systemd/system/tilo-network-start.timer"
 grep -Fqx 'OnBootSec=0' "$network_timer"
 grep -Fqx 'AccuracySec=1ms' "$network_timer"
-grep -Fqx 'Unit=NetworkManager.service' "$network_timer"
+grep -Fqx 'Unit=tilo-network-start.target' "$network_timer"
 if grep -Eq '^(Before|After|Wants|Requires)=.*(greetd|graphical)' "$network_timer"; then
   echo 'asynchronous network start gained login-path ordering' >&2
   exit 1
 fi
+network_target="$repo/os/usr/lib/systemd/system/tilo-network-start.target"
+grep -Fqx 'Requires=firewalld.service NetworkManager.service' "$network_target"
+grep -Fqx 'Wants=chronyd.service' "$network_target"
+grep -Fqx 'After=firewalld.service' "$network_target"
+network_manager_firewall="$repo/os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf"
+grep -Fqx 'Requires=firewalld.service' "$network_manager_firewall"
+grep -Fqx 'After=firewalld.service' "$network_manager_firewall"
 grep -Fq 'OnUnitInactiveSec=1h' \
   "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
 if grep -Fq 'RemainAfterExit=yes' \

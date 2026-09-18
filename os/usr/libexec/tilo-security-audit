@@ -66,6 +66,14 @@ if [ -n "$avoidable_crypto_consumers" ]; then
 else
   ok "general signing tools and Git/OpenVPN/OpenSSH consumers absent from the immutable host"
 fi
+optional_openssl_module="$(find /usr/lib /usr/lib64 \
+  \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \) \
+  \( -type f -o -type l \) -print -quit 2>/dev/null || true)"
+if [ -n "$optional_openssl_module" ]; then
+  warn "optional OpenSSL legacy provider/engine remains: $optional_openssl_module"
+else
+  ok "optional OpenSSL legacy provider and engines absent"
+fi
 case "$(readlink /etc/resolv.conf 2>/dev/null || true)" in
   ../run/NetworkManager/resolv.conf|/run/NetworkManager/resolv.conf)
     ok "/etc/resolv.conf follows NetworkManager"

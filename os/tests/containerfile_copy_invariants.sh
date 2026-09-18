@@ -19,7 +19,8 @@ containerfile="$repo/os/Containerfile"
 # BootPack status-projection timer, the physical-disk BFQ policy, the
 # root-owned device-key initializer, the off-critical-path TPM hardening timer,
 # the authenticated Chrony policy used by the image-trust freshness floor, the
-# zero-delay NetworkManager timer that keeps networking off the login chain, and
+# zero-delay firewall-first network target that keeps both services off the
+# login chain without exposing an unfiltered interface, and
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
 # the build-only residual OpenSSL ABI package gate (removed after it runs).
 # Rustls now compiles the fixed CA-bundle path
@@ -29,7 +30,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=1bc28394faf141ebe72ed58b8cbd31545301f59f34bf791e4a3ef5c6e4ed31d7
+expected_contract=3a1c238a191949d6fa11d88b754a5feab7f5925991a4bf8cbbacfd0e3c5bbede
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -56,9 +57,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # native dynamic-linker validation RUN. Public trust adds four ARGs, two
 # additional COPYs and a validation RUN before initramfs generation. External
 # AT-SPI validation adds two narrowly scoped COPY instructions.
-# Keep the current 136-instruction bound exact and reviewed.
-[ "$instructions" -le 136 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 136)" >&2
+# Firewall-first NetworkManager ordering adds one explicit drop-in COPY.
+# Keep the current 137-instruction bound exact and reviewed.
+[ "$instructions" -le 137 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 137)" >&2
   exit 1
 }
 
