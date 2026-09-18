@@ -56,7 +56,7 @@ else
 fi
 
 avoidable_crypto_consumers=""
-for package in pesign nss-tools gnutls-utils git git-core openvpn NetworkManager-openvpn openssh openssh-clients openssh-server; do
+for package in pesign nss-tools git git-core openvpn NetworkManager-openvpn openssh-server; do
   if rpm -q "$package" >/dev/null 2>&1; then
     avoidable_crypto_consumers="$avoidable_crypto_consumers $package"
   fi
@@ -64,7 +64,7 @@ done
 if [ -n "$avoidable_crypto_consumers" ]; then
   warn "avoidable OpenSSL consumers remain installed:$avoidable_crypto_consumers"
 else
-  ok "general signing tools and Git/OpenVPN/OpenSSH consumers absent from the immutable host"
+  ok "unused signing tools, Git/OpenVPN and OpenSSH server absent from the immutable host"
 fi
 optional_crypto_module="$(find /usr/lib /usr/lib64 \
   \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
@@ -81,6 +81,20 @@ if [ -n "$optional_crypto_module" ]; then
 else
   ok "optional OpenSSL modules and unused network media plugins absent"
 fi
+# Fedora swtpm_localca needs certtool for fresh VM TPM provisioning; Fedora
+# virt-viewer requires the SSH client package even for Tilo's local-only path.
+# Report these distribution exceptions explicitly, never as absent tooling.
+for pair in gnutls-utils:swtpm-tools openssh:virt-viewer openssh-clients:virt-viewer; do
+  package="${pair%%:*}"
+  parent="${pair#*:}"
+  if rpm -q "$package" >/dev/null 2>&1; then
+    if rpm -q "$parent" >/dev/null 2>&1; then
+      note "reviewed Fedora VM dependency retained: $package ($parent)"
+    else
+      warn "unexpected VM dependency without its consumer: $package ($parent absent)"
+    fi
+  fi
+done
 case "$(readlink /etc/resolv.conf 2>/dev/null || true)" in
   ../run/NetworkManager/resolv.conf|/run/NetworkManager/resolv.conf)
     ok "/etc/resolv.conf follows NetworkManager"
@@ -460,14 +474,24 @@ esac
 policy=/etc/containers/policy.json
 
 legacy_crypto_tools=""
-for tool in openssl sbsign sbverify efi-updatevar cert-to-efi-sig-list mokutil pesign efikeygen certutil pk12util p11tool gnutls-cli; do
+for tool in openssl sbsign sbverify efi-updatevar cert-to-efi-sig-list mokutil pesign efikeygen certutil pk12util; do
   command -v "$tool" >/dev/null 2>&1 && legacy_crypto_tools="$legacy_crypto_tools $tool"
 done
 if [ -z "$legacy_crypto_tools" ]; then
-  ok "general-purpose crypto and legacy EFI signing CLIs are absent"
+  ok "OpenSSL and legacy EFI/NSS signing CLIs are absent"
 else
-  warn "legacy cryptographic command-line attack surface remains:$legacy_crypto_tools"
+  warn "unapproved cryptographic command-line tools remain:$legacy_crypto_tools"
 fi
+
+for tool in p11tool gnutls-cli; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    if rpm -q gnutls-utils swtpm-tools >/dev/null 2>&1; then
+      note "Fedora gnutls-utils companion retained with required TPM certtool: $tool"
+    else
+      warn "unapproved cryptographic command-line tool remains: $tool"
+    fi
+  fi
+done
 
 if [ -r "$policy" ] \
    && grep -Fq '"code.sandbox.example/qos/tilo"' "$policy" \
