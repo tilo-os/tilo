@@ -31,7 +31,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  signing-preflight:
+    runs-on: runner
+    timeout-minutes: 2
+    steps:
+      - name: Require non-exportable builder signing authority
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+        run: |
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+
   build:
+    needs: signing-preflight
     strategy:
       fail-fast: false
       matrix:
@@ -132,12 +147,18 @@ jobs:
         run: ./os/dev/install-cached-cosign.sh
       - name: Sign and describe the native builder
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           CHILD_ARCH: ${{ matrix.arch }}
           CHILD_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "code.sandbox.example/qos/tilo-builder@${CHILD_DIGEST}"
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+          ref="code.sandbox.example/qos/tilo-builder@${CHILD_DIGEST}"
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
+          cosign verify --key keys/cosign.pub "$ref" >/dev/null
           mkdir -p native-child
           python3 - <<'PY'
           import json, os
@@ -319,11 +340,14 @@ jobs:
           fi
       - name: Verify and publish the tested native builder index
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           BUILDER_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
           # Index assembly needs manifest metadata, not mounted image layers.
           # Use an isolated VFS store inside the containerized runner; its
           # overlay root cannot host another unconfigured overlay store.
@@ -343,7 +367,7 @@ jobs:
             --repository code.sandbox.example/qos/tilo-builder \
             "${tags[@]}" \
             --revision "$GITHUB_SHA" --descriptors native-children \
-            --signing-key env://COSIGN_PRIVATE_KEY --output builder-index.txt
+            --signing-key "$COSIGN_KEY_REF" --output builder-index.txt
           cat builder-index.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Retain the immutable builder reference
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
