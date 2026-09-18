@@ -308,6 +308,7 @@ RUN set -eux; \
         '# CONFIG_USB_GADGET is not set' \
         '# CONFIG_USBIP_CORE is not set' \
         '# CONFIG_ATM is not set' \
+        '# CONFIG_ATALK is not set' \
         '# CONFIG_CAN is not set' \
         '# CONFIG_HAMRADIO is not set' \
         '# CONFIG_6LOWPAN is not set' \
@@ -316,6 +317,7 @@ RUN set -eux; \
         '# CONFIG_IP_SCTP is not set' \
         '# CONFIG_LAPB is not set' \
         '# CONFIG_MCTP is not set' \
+        '# CONFIG_MISDN is not set' \
         '# CONFIG_NFC is not set' \
         '# CONFIG_PHONET is not set' \
         '# CONFIG_RDS is not set' \
