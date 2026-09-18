@@ -62,7 +62,15 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.backups", backups::app_root)
             .shot_root(shot_root)
-            .scenarios(&["status", "progress", "failure", "restore"])
+            .scenarios(&[
+                "status",
+                "progress",
+                "failure",
+                "restore",
+                "sources",
+                "destinations",
+                "schedules",
+            ])
             .allowed_flags(&["--empty"])
             .configure_app(|app| backups::actions::register(app.action_registry_mut())),
     );
