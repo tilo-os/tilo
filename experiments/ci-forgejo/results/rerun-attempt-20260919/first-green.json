@@ -1,0 +1,52 @@
+{
+  "run": {
+    "id": 22787,
+    "index_in_repo": 15,
+    "workflow_id": "rerun-attempt.yml",
+    "commit_sha": "f2806833e594ae657ba25a91b7411ba37f1512df",
+    "event": "push",
+    "status": "success",
+    "created": "2026-09-18T23:14:53Z",
+    "started": "2026-09-18T23:15:13Z",
+    "stopped": "2026-09-18T23:16:42Z",
+    "updated": "2026-09-18T23:16:42Z",
+    "repository": {
+      "id": 59,
+      "full_name": "qos/ci-workflow-pilot-20260918-9245-repeat"
+    }
+  },
+  "jobs": [
+    {
+      "id": 83702,
+      "run_id": 22787,
+      "attempt": 1,
+      "handle": "e8e51a5c-60c9-4844-a6e2-01ea6d2c0d4e",
+      "repo_id": 59,
+      "owner_id": 11,
+      "name": "steady",
+      "needs": null,
+      "runs_on": [
+        "runner-quality"
+      ],
+      "task_id": 75136,
+      "status": "success"
+    },
+    {
+      "id": 83703,
+      "run_id": 22787,
+      "attempt": 1,
+      "handle": "cdc236e5-c39b-4be7-95a8-7a79b2957b5c",
+      "repo_id": 59,
+      "owner_id": 11,
+      "name": "switch",
+      "needs": [
+        "steady"
+      ],
+      "runs_on": [
+        "runner-quality"
+      ],
+      "task_id": 75141,
+      "status": "success"
+    }
+  ]
+}

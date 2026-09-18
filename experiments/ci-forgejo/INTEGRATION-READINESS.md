@@ -48,8 +48,14 @@ repository/run identity, event and retry attempts. It collects twice and rejects
 head/base/review/job changes between observations. No commit status is consulted.
 The installed API schema exposes the jobs endpoint as an unpaginated array with
 no page/limit parameters; missing jobs fail the explicit expected-set comparison.
-Uniform attempt numbers and two stable observations do not independently prove
-that these are the latest attempts. That needs separate server qualification.
+The installed schema defines each job's `attempt`, opaque `handle` and `task_id`
+as its current attempt counter, unique attempt identity and latest task. A
+[live partial-rerun pilot](results/rerun-attempt-20260919/README.md) verified that
+the jobs endpoint replaces the rerun job's prior green state immediately while
+retaining untouched jobs. The audit requires valid per-job identity and binds
+all three fields across its two reads. Attempt counters need not be uniform:
+partial reruns legitimately leave an untouched green job on an earlier attempt.
+No read-only snapshot can prevent another rerun after the final observation.
 Exit 2 means incomplete or rejected evidence. Receipts are created exclusively;
 prior evidence cannot be overwritten accidentally.
 

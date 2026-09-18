@@ -1,0 +1,4 @@
+2026-09-18T23:17:41.4145748Z Runner b56f3fbc-6792-4fa3-b0fc-fa465eb51f8c (version:v13.0.0) received task 75146 of job switch, triggered by event: push
+2026-09-18T23:17:47.8986071Z FIXTURE_MODE=fail
+2026-09-18T23:17:56.0150786Z ⚙️ [runner]: exitcode '1': failure
+2026-09-18T23:17:56.0151685Z 🏁  Job failed

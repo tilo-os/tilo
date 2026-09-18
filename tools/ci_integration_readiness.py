@@ -67,10 +67,18 @@ def run_errors(run, jobs, repo, head, requirement):
     ids = [j.get("id") for j in jobs]
     if any(type(i) is not int or i <= 0 for i in ids) or len(ids) != len(set(ids)):
         errors.append("missing or duplicate job IDs")
-    attempts = {j.get("attempt") for j in jobs}
-    if len(attempts) != 1 or any(type(a) is not int or a < 1 for a in attempts):
-        errors.append("ambiguous job attempt")
+    # Forgejo exposes each job's current attempt, not one run-wide attempt.
+    # Partial reruns legitimately leave other successful jobs at older numbers.
+    # Bind the opaque attempt identity and latest task as well as the counter.
+    handles = [j.get("handle") for j in jobs]
+    if (any(not isinstance(h, str) or not h for h in handles)
+            or len(handles) != len(set(handles))):
+        errors.append("missing or duplicate job attempt handles")
     for job in jobs:
+        if type(job.get("attempt")) is not int or job["attempt"] < 1:
+            errors.append("missing valid current job attempt")
+        if type(job.get("task_id")) is not int or job["task_id"] <= 0:
+            errors.append("missing valid latest job task")
         if job.get("run_id") != run_id or job.get("repo_id") != repo_id:
             errors.append("foreign job record")
         if job.get("status") != "success":
@@ -215,7 +223,7 @@ def fingerprint(observation):
                      "user": r.get("user", {}).get("login")} for r in observation["reviews"]],
         "runs": [{"run": {**{k: r["run"].get(k) for k in ("id", "status", "commit_sha", "workflow_id", "event", "started", "stopped")},
                           "repository": {k: r["run"].get("repository", {}).get(k) for k in ("id", "full_name")}},
-                  "jobs": [{k: j.get(k) for k in ("id", "run_id", "repo_id", "name", "status", "attempt", "task_id")}
+                  "jobs": [{k: j.get(k) for k in ("id", "run_id", "repo_id", "name", "status", "attempt", "handle", "task_id")}
                            for j in r["jobs"]]} for r in observation["runs"]],
     }
 
@@ -242,7 +250,7 @@ def main():
                "policy": policy, "merge_authorized": False,
                "limitations": ["No runner isolation or credential separation qualification",
                                "Protected path closure must be supplied by trusted policy",
-                               "Uniform job attempts and stable snapshots do not independently prove latest attempt",
+                               "Current job attempts can change after the final observation; receipts are not timeless authority",
                                "Snapshots are not an atomic merge authorization; server must recheck exact head and base"]}
     try:
         if not errors:

@@ -22,7 +22,8 @@ def fixture():
               "commit_id": HEAD, "official": True, "dismissed": False}
     run = {"id": 12, "repository": {"id": 7, "full_name": "qos/qos"}, "commit_sha": HEAD,
            "workflow_id": "check.yml", "event": "pull_request", "status": "success"}
-    job = {"id": 20, "run_id": 12, "repo_id": 7, "name": "check", "status": "success", "attempt": 1}
+    job = {"id": 20, "run_id": 12, "repo_id": 7, "name": "check", "status": "success",
+           "attempt": 1, "handle": "current-attempt-a", "task_id": 30}
     observation = {"pr": {"number": 3, "state": "open", "draft": False, "merged": False,
                           "user": {"login": "author"}, "head": {"sha": HEAD},
                           "base": {"ref": "main", "repo": {"full_name": "qos/qos"}}},
@@ -103,6 +104,28 @@ class EvidenceTests(unittest.TestCase):
         self.observation["runs"][0]["jobs"][0]["attempt"] = 2
         self.assertNotEqual(before, AUDIT.fingerprint(self.observation))
 
+    def test_partial_rerun_keeps_each_jobs_own_attempt(self):
+        self.policy["runs"][0]["jobs"].append("other")
+        self.observation["runs"][0]["jobs"].append({
+            **self.observation["runs"][0]["jobs"][0], "id": 21, "name": "other",
+            "attempt": 3, "handle": "current-attempt-b", "task_id": 31})
+        self.assertEqual([], self.errors())
+        for status in ("waiting", "running", "failure"):
+            self.observation["runs"][0]["jobs"][1]["status"] = status
+            self.assertTrue(self.errors())
+
+    def test_attempt_handle_changes_fingerprint_independently(self):
+        before = AUDIT.fingerprint(self.observation)
+        self.observation["runs"][0]["jobs"][0]["handle"] = "different-attempt"
+        self.assertNotEqual(before, AUDIT.fingerprint(self.observation))
+
+    def test_missing_attempt_identity_or_latest_task_fails(self):
+        for key in ("handle", "task_id", "attempt"):
+            with self.subTest(key=key):
+                self.policy, self.observation = fixture()
+                del self.observation["runs"][0]["jobs"][0][key]
+                self.assertTrue(self.errors())
+
     def test_review_pagination_is_complete(self):
         seen = []
         def read(host, repo, path):
@@ -164,6 +187,65 @@ class GitProvenanceTests(unittest.TestCase):
                 self.assertTrue(AUDIT.provenance_errors(root, base, git("rev-parse", "HEAD"), policy))
             # A newer integration base cannot be certified by an older candidate.
             self.assertTrue(AUDIT.provenance_errors(root, git("rev-parse", "HEAD"), head, policy))
+
+
+class LiveAttemptEvidenceTests(unittest.TestCase):
+    ROOT = Path(__file__).parents[2] / "experiments/ci-forgejo/results/rerun-attempt-20260919"
+
+    def read(self, name):
+        return json.loads((self.ROOT / (name + ".json")).read_text(encoding="utf-8-sig"))
+
+    def requirement(self):
+        return {"run_id": 22787, "workflow": "rerun-attempt.yml", "events": ["push"],
+                "jobs": ["steady", "switch"]}
+
+    def errors(self, record):
+        return AUDIT.run_errors(record["run"], record["jobs"],
+                                "qos/ci-workflow-pilot-20260918-9245-repeat",
+                                self.read("setup")["head"], self.requirement())
+
+    def test_latest_endpoint_replaces_old_green_attempt(self):
+        first = self.read("first-green")
+        self.assertEqual([], self.errors(first))
+        original = next(j for j in first["jobs"] if j["name"] == "switch")
+        for name in ("second-immediate", "second-failed", "third-immediate", "third-running"):
+            current = self.read(name)
+            self.assertTrue(self.errors(current), name)
+            selected = next(j for j in current["jobs"] if j["name"] == "switch")
+            self.assertEqual(original["id"], selected["id"])
+            self.assertGreater(selected["attempt"], original["attempt"])
+            self.assertNotEqual(original["handle"], selected["handle"])
+            self.assertEqual(2, len(current["jobs"]))
+
+    def test_live_new_failure_during_audit_rejects_old_success(self):
+        first, second = self.read("first-green"), self.read("second-failed")
+        policy, observation = fixture()
+        policy["runs"] = [self.requirement()]
+        head = self.read("setup")["head"]
+        observation["pr"]["head"]["sha"] = head
+        observation["reviews"][0]["commit_id"] = head
+        repo = first["run"]["repository"]["full_name"]
+        observation["pr"]["base"]["repo"]["full_name"] = repo
+        responses = []
+        for record in (first, second):
+            responses += [observation["pr"], observation["base"], observation["reviews"], record["run"], record["jobs"]]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy_path, receipt_path = root / "policy.json", root / "receipt.json"
+            policy_path.write_text(json.dumps(policy))
+            args = ["audit", "--repo", repo, "--pr", "3", "--git-root", directory,
+                    "--policy", str(policy_path), "--out", str(receipt_path)]
+            with mock.patch("sys.argv", args), mock.patch.object(AUDIT, "api", side_effect=responses), \
+                    mock.patch.object(AUDIT, "provenance_errors", return_value=[]), mock.patch("builtins.print"):
+                self.assertEqual(2, AUDIT.main())
+            receipt = json.loads(receipt_path.read_text())
+            self.assertFalse(receipt["observed_ready"])
+            self.assertIn("candidate/review/run evidence changed during audit; retry", receipt["errors"])
+
+    def test_live_recovered_partial_rerun_accepts_current_mixed_attempts(self):
+        recovered = self.read("third-green")
+        self.assertEqual({1, 3}, {job["attempt"] for job in recovered["jobs"]})
+        self.assertEqual([], self.errors(recovered))
 
 
 if __name__ == "__main__":

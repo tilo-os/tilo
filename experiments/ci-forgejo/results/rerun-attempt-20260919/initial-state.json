@@ -1,0 +1,46 @@
+{
+  "jobs": [
+    {
+      "id": 83692,
+      "run_id": 22786,
+      "attempt": 1,
+      "handle": "46d2b4bb-7c75-4808-814c-e938cf2cfe97",
+      "repo_id": 59,
+      "owner_id": 11,
+      "name": "steady",
+      "needs": null,
+      "runs_on": [
+        "runner"
+      ],
+      "task_id": 0,
+      "status": "waiting"
+    },
+    {
+      "id": 83693,
+      "run_id": 22786,
+      "attempt": 1,
+      "handle": "303fc815-cebc-4605-b69b-b4b558540926",
+      "repo_id": 59,
+      "owner_id": 11,
+      "name": "switch",
+      "needs": [
+        "steady"
+      ],
+      "runs_on": [
+        "runner"
+      ],
+      "task_id": 0,
+      "status": "blocked"
+    }
+  ],
+  "run": {
+    "id": 22786,
+    "index_in_repo": 14,
+    "status": "waiting",
+    "commit_sha": "a5aaa73d482df4be13d2e596bdc0a791b827eb83",
+    "workflow_id": "rerun-attempt.yml",
+    "created": "2026-09-18T23:12:18Z",
+    "started": "1970-01-01T00:00:00Z",
+    "stopped": "1970-01-01T00:00:00Z"
+  }
+}

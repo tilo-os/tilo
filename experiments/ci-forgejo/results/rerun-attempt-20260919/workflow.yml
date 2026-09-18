@@ -1,0 +1,33 @@
+name: Isolated current attempt probe
+on:
+  push:
+    branches: [probe-rerun-attempt]
+jobs:
+  steady:
+    runs-on: runner-quality
+    timeout-minutes: 2
+    container:
+      image: docker.io/library/python:3.13-alpine
+    steps:
+      - run: python3 -c "print('STEADY_PASS')"
+  switch:
+    needs: steady
+    runs-on: runner-quality
+    timeout-minutes: 2
+    container:
+      image: docker.io/library/python:3.13-alpine
+    steps:
+      - name: Read isolated mutable fixture mode
+        env:
+          PROBE_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64,json,os,time,urllib.request
+          req=urllib.request.Request('https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/contents/mode.txt?ref=probe-rerun-state',headers={'Authorization':'token '+os.environ['PROBE_TOKEN']})
+          with urllib.request.urlopen(req,timeout=20) as r:
+              mode=base64.b64decode(json.load(r)['content']).decode().strip()
+          assert mode in ('pass','fail')
+          print('FIXTURE_MODE='+mode,flush=True)
+          time.sleep(8)
+          raise SystemExit(0 if mode=='pass' else 1)
+          PY
