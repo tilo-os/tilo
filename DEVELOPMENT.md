@@ -533,6 +533,23 @@ establish Windows hardware decoding, zero-copy presentation or audio-device
 routing. GStreamer DLLs and codec plugins must also be available when running an
 app; this development setup is not a standalone installer runtime bundle.
 
+The installer bundles a shared, manifest-verified runtime for Music and Video
+Player. Check installed apps from an ordinary, unpackaged PowerShell session:
+
+```powershell
+./tools/test-windows-installed-media.ps1
+./tools/test-windows-gstreamer.ps1 -RuntimeDirectory "$env:LOCALAPPDATA/Tilo/Applications" -MediaPath ./apps/video-player/tests/fixtures/h264-aac.mp4
+```
+
+The first check rejects package-private installation paths, uses isolated
+profiles and a system-only `PATH`, and opens no visible windows. It runs Music's
+CPU widget benchmark and decodes the local H.264/AAC fixture in Video Player
+into an offscreen PNG. Its output directory retains stdout, stderr, the PNG and
+JSON results. Reported durations cover the entire test process, not time to the
+first visible frame. The second check verifies runtime hashes, plugin origins
+and decoding to completion; it needs `llvm-readobj.exe` on `PATH`. Neither
+check proves audible output or Windows hardware decoding.
+
 ### If you build in a container (optional)
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the
