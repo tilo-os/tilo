@@ -7944,6 +7944,42 @@ mod tests {
     }
 
     #[test]
+    fn source_media_cancel_uses_exact_target_and_only_personal_transfer_id() {
+        let (network, mut commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0x4341_4e43_454c,
+        );
+        let endpoint = iroh::SecretKey::from_bytes(&[0xC1; 32]).public();
+        let target = DeviceId::new(hex::encode(endpoint.as_bytes())).unwrap();
+        let transfer_id = [0xC2; 16];
+        let status = MediaHandoffStatus {
+            request_id: [0xC3; 16],
+            session_id: "personal-file-session".into(),
+            title: "Track".into(),
+            target: target.clone(),
+            phase: MediaHandoffPhase::Pending,
+            updated: Instant::now(),
+            route: crate::shell::network::AuthenticatedPersonalRoute::for_test(target.clone()),
+            personal_transfer_id: Some(transfer_id),
+        };
+        cancel_status_personal_transfer(&network, &status);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(crate::network::actor::NetCmd::CancelPersonalMedia {
+                target: cancelled_target,
+                transfer_id: cancelled_id,
+            }) if cancelled_target == endpoint && cancelled_id == transfer_id
+        ));
+
+        let streaming = MediaHandoffStatus {
+            personal_transfer_id: None,
+            ..status
+        };
+        cancel_status_personal_transfer(&network, &streaming);
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
     fn incoming_media_cancel_is_exact_and_timeout_clears_late_authority() {
         let (network, _commands) = crate::shell::network::shell_network_for_test(
             crate::shell::state::WorkspaceTree::default().shared(),
