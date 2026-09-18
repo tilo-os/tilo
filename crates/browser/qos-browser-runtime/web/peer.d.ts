@@ -16,7 +16,7 @@ export interface CertifiedPeer {
  dispose():Promise<void>;
 }
 /** Resolves after authenticated join; observe ready for admitted durable records. */
-export function connectPeer(options?:{enrollmentBaseUrl?:string;identitySlots?:string[];signal?:AbortSignal;onStatus?:(snapshot:PeerSnapshot)=>void}):Promise<CertifiedPeer>;
+export function connectPeer(options?:{enrollmentBaseUrl?:string;signal?:AbortSignal;onStatus?:(snapshot:PeerSnapshot)=>void}):Promise<CertifiedPeer>;
 
 export function pendingPeerRecoveryCount():number;
 export function retryPendingPeerRecovery():Promise<void>;

@@ -13,3 +13,7 @@ pub mod coverage;
 pub use collab_types::DocumentMutation;
 
 pub mod outbox;
+
+#[cfg(test)] mod enrollment_tests;
+
+pub mod enrollment;

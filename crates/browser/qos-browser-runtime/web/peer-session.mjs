@@ -2,28 +2,14 @@ import {commitPeerWrites} from './peer-persistence.mjs';
 const recoveryOwners=new Set();
 export const pendingPeerRecoveryCount=()=>recoveryOwners.size;
 export async function retryPendingPeerRecovery(){const results=await Promise.allSettled([...recoveryOwners].map(close=>close()));const failure=results.find(result=>result.status==='rejected');if(failure)throw failure.reason;}
-export function createConnectPeer({init,runtime,mountDesktop,acquireStorage,locks=navigator.locks,fetchEnrollment=fetch}){
+export function createConnectPeer({init,runtime,mountDesktop,acquireStorage,acquireIdentity,fetchEnrollment=fetch,session=globalThis.sessionStorage}){
 let initialized;
-async function leaseIdentity(slots,signal){
-  if(!locks)throw Error('Certified actor custody requires Web Locks');
-  for(const slot of slots){
-    if(signal?.aborted)throw signal.reason??new DOMException('Aborted','AbortError');
-    let resolve,reject,release;
-    const acquired=new Promise((yes,no)=>{resolve=yes;reject=no;});
-    const held=new Promise(yes=>{release=yes;});
-    const task=locks.request(`qos-certified-peer:${slot}`,{ifAvailable:true,mode:'exclusive'},async lock=>{resolve(Boolean(lock));if(lock)await held;});
-    task.catch(reject);
-    if(await acquired)return {slot,release:async()=>{release();await task;}};
-    await task;
-  }
-  throw Error('All certified browser identities are in use; close another session before connecting');
-}
 return async function connectPeer(options={}){
-  const {enrollmentBaseUrl='/qos-peer/enrollment',identitySlots=['browser-a','browser-b'],signal}=options;
-  const lease=await leaseIdentity(identitySlots,signal);
+  const {enrollmentBaseUrl='/qos-peer/enrollment',signal}=options;
+  let lease;
   let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),failed=false,generation=0;
   const subscribers=new Set(),mounts=new Set(),failedMounts=new Set(),pendingMounts=new Set(),mountControllers=new Set();
-  let reconnecting,closePromise;
+  let reconnecting,closePromise,setup;
   const report=next=>{snapshot={...snapshot,...next};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);};
   async function persist(publish=true){
     if(id===undefined||!storage||closed||failed)return;
@@ -38,9 +24,27 @@ return async function connectPeer(options={}){
     return flush;
   }
   const update=value=>{if(closed||closing)return;let next=JSON.parse(value);if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);if(next.persistenceNeeded)void persist().catch(()=>{});};
+  async function post(route,body){
+    const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json'},body,signal,cache:'no-store',credentials:'same-origin'});
+    const text=await response.text();
+    if(!response.ok){let reason;try{const value=JSON.parse(text);reason=typeof value.error==='string'?value.error:undefined;}catch{}throw Error(`Enrollment HTTP ${response.status}${reason?`: ${reason}`:''}`);}
+    return text;
+  }
+  async function refreshEnrollment(){
+    const challenge=await post('challenge',runtime.identity_request(lease.material));
+    const next=await post('complete',runtime.identity_complete(lease.material,challenge));
+    // Opaque signed timestamps go directly to Rust. Pin authority before dial.
+    const bound=runtime.bind_identity(lease.material,challenge,next);
+    const nextNamespace=JSON.parse(runtime.peer_enrollment(next));
+    if(namespace&&JSON.stringify(namespace)!==JSON.stringify(nextNamespace))throw Error('Enrolled workspace changed; retained owner requires explicit migration');
+    await lease.save(bound);raw=next;namespace=nextNamespace;
+    if(!storage){storage=await acquireStorage(namespace.profile,namespace.device);if(storage.fresh){runtime.refresh_storage_lease(namespace.profile,namespace.device);storage.fresh=false;}}
+  }
   const connect=async(old)=>{
+    await refreshEnrollment();
+    if(closed||closing)throw Error('Session disposed during enrollment');
     const current=++generation;
-    connection=runtime.connect_peer(raw,await storage.hydrate(),value=>queueMicrotask(()=>{if(current===generation)update(value);}));
+    connection=runtime.connect_peer(raw,lease.material,await storage.hydrate(),value=>queueMicrotask(()=>{if(current===generation)update(value);}));
     const next=await connection;
     if(closed||closing){await runtime.close_peer(next);return;}
     id=next;
@@ -60,6 +64,7 @@ return async function connectPeer(options={}){
       for(const controller of mountControllers)controller.abort();
       await Promise.allSettled([...pendingMounts]);
       await reconnecting?.catch(()=>{});
+      await setup?.catch(()=>{});
       await connection?.catch(()=>{});
       // Stop the replaceable endpoint even when component settlement retains
       // custody. Keep its durable owner addressable for the next retry.
@@ -67,7 +72,7 @@ return async function connectPeer(options={}){
       await settleMounts(mounts);
       failed=false;await persist(false);
       generation++;if(id!==undefined){await runtime.close_peer(id);id=undefined;}
-      await storage?.release();await lease.release();closed=true;recoveryOwners.delete(close);report({phase:'closed',error:null});
+      await storage?.release();await lease?.release();closed=true;recoveryOwners.delete(close);report({phase:'closed',error:null});
     })().catch(error=>{recoveryOwners.add(close);report({phase:'incomplete',error:String(error),recoveryAvailable:true});throw error;}).finally(()=>{closing=false;closePromise=undefined;});
     return closePromise;
   }
@@ -87,15 +92,10 @@ return async function connectPeer(options={}){
   }
   try{
     await (initialized??=init());
-    const response=await fetchEnrollment(`${enrollmentBaseUrl}/${encodeURIComponent(lease.slot)}`,{signal,cache:'no-store',credentials:'same-origin'});
-    if(!response.ok)throw Error(`Enrollment HTTP ${response.status}`);
-    // Signed u64 timestamps must never pass through JS numeric JSON decoding.
-    raw=await response.text();namespace=JSON.parse(runtime.peer_enrollment(raw));
-    storage=await acquireStorage(namespace.profile,namespace.device);
-    if(storage.fresh){runtime.refresh_storage_lease(namespace.profile,namespace.device);storage.fresh=false;}
+    lease=await acquireIdentity(enrollmentBaseUrl,session,signal);
     signal?.addEventListener('abort',()=>{void close().catch(error=>report({phase:'incomplete',error:String(error)}));},{once:true});
     if(signal?.aborted)throw signal.reason??Error('Session aborted');
-    await connect();
+    setup=connect();await setup;
     if(closed||closing)throw signal?.reason??Error('Session disposed during connection');
     return {getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},
       async mountDesktop(target,mountOptions={}){

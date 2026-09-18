@@ -637,10 +637,8 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
             now,
         )
         .unwrap();
-    assert!(
-        learned.metadata_changed,
-        "learned governed certificate must be journaled"
-    );
+    assert!(!learned.metadata_changed, "governed SyncResp already imported certificate");
+    assert!(receiver.certificates().contains(&bc));
     let restored = StatePeer::restore(
         &receiver.durable().unwrap(),
         native.room(),
@@ -768,12 +766,9 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
                 collab_types::sign_op(envelope, &b).unwrap();
             }
         }
-        assert!(
-            receiver
-                .receive_from(TransportOrigin::RelayDelta(author), encrypted, now)
-                .unwrap()
-                .deferred
-        );
+        let encrypted_outcome = receiver.receive_from(TransportOrigin::RelayDelta(author), encrypted, now).unwrap();
+        assert_eq!(encrypted_outcome.deferred, !existing);
+        if existing { assert!(encrypted_outcome.metadata_changed); assert!(encrypted_outcome.incomplete.is_some()); }
         if existing {
             receiver
                 .receive_from(
@@ -794,8 +789,8 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
             )
             .unwrap();
         assert!(
-            outcome.metadata_changed,
-            "deferred metadata must survive outer room outcome"
+            outcome.metadata_changed || (existing && encrypted_outcome.metadata_changed),
+            "immediate or deferred metadata must be journaled"
         );
         assert!(outcome.incomplete.is_some());
         if existing {
@@ -1170,4 +1165,167 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
     let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
     assert_eq!(final_doc.text(text).unwrap(), "one two");
     assert_eq!(client.outbox_status(&outbox, reconnect).pending, 0);
+}
+
+#[test]
+fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
+    let (mut governor, a, b, _, now) = seeded();
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let new_key = SigningKey::from_bytes(&[8; 32]);
+    let mut cert = governor.authority().clone();
+    cert.device_public_key = new_key.verifying_key().to_bytes();
+    cert.device_label = "dynamic client".into();
+    sign_device_cert(&mut cert, &root).unwrap();
+    let mut existing = governor.clone();
+    let before = governor.durable().unwrap();
+    assert!(governor.admit_certificate(cert.clone(), &b, now).is_err());
+    assert_eq!(before, governor.durable().unwrap());
+    let rows = governor.rows();
+    let floors = governor.replay_floors();
+    assert!(governor.admit_certificate(cert.clone(), &a, now).unwrap());
+    assert!(!governor.admit_certificate(cert.clone(), &a, now).unwrap());
+    assert_eq!(rows, governor.rows());
+    assert_eq!(floors, governor.replay_floors());
+    let outcome = existing
+        .receive_from(
+            TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+            governor.room_message(),
+            now,
+        )
+        .unwrap();
+    assert!(outcome.metadata_changed);
+    assert!(existing.certificates().contains(&cert));
+    assert!(
+        existing
+            .permissions(new_key.verifying_key().to_bytes(), now)
+            .is_ok()
+    );
+    assert_eq!(rows, existing.rows());
+    let mut doc = AutoCommit::load(&existing.document("test.app", "tab:1").unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        new_key.verifying_key().to_bytes().to_vec(),
+    ));
+    let before = doc.get_heads();
+    doc.put(ROOT, "joined", true).unwrap();
+    doc.commit();
+    let message = existing
+        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
+        .unwrap();
+    assert!(
+        governor
+            .receive_from(
+                TransportOrigin::RelayDelta(new_key.verifying_key().to_bytes()),
+                message,
+                now
+            )
+            .unwrap()
+            .changed
+    );
+    let restored = StatePeer::restore(
+        &existing.durable().unwrap(),
+        existing.room(),
+        existing.authority().clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    assert!(restored.certificates().contains(&cert));
+    let other_root = SigningKey::from_bytes(&[9; 32]);
+    cert.user_public_key = other_root.verifying_key().to_bytes();
+    sign_device_cert(&mut cert, &other_root).unwrap();
+    assert!(governor.admit_certificate(cert, &a, now).is_err());
+}
+
+#[test]
+fn expired_known_identity_does_not_block_governed_join() {
+    let (mut governor, a, _, _, now) = seeded();
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let mut cert = governor.authority().clone();
+    cert.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+    cert.expires_at_ns = Some(
+        (now + Duration::from_secs(1))
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+    );
+    sign_device_cert(&mut cert, &root).unwrap();
+    governor.admit_certificate(cert.clone(), &a, now).unwrap();
+    let mut existing = governor.clone();
+    let later = now + Duration::from_secs(2);
+    let mut next = governor.authority().clone();
+    next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
+    sign_device_cert(&mut next, &root).unwrap();
+    assert!(governor.admit_certificate(next.clone(), &a, later).unwrap());
+    assert!(
+        existing
+            .receive(a.verifying_key().to_bytes(), governor.room_message(), later)
+            .unwrap()
+            .metadata_changed
+    );
+    assert!(
+        existing
+            .permissions(cert.device_public_key, later)
+            .unwrap_err()
+            .contains("expired")
+    );
+    assert!(existing.permissions(next.device_public_key, later).is_ok());
+    let mut empty = StatePeer::new(
+        governor.room(),
+        governor.authority().clone(),
+        vec![],
+        RevocationList::new(),
+        later,
+    )
+    .unwrap();
+    assert!(
+        empty
+            .receive(a.verifying_key().to_bytes(), governor.room_message(), later)
+            .is_err(),
+        "previously unknown expired certificate cannot be imported"
+    );
+}
+#[test]
+fn governed_import_is_atomic_even_for_direct_admission() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let (mut source, a, _, _, now) = seeded();
+    let mut receiver = source.clone();
+    let mut valid = source.authority().clone();
+    valid.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+    sign_device_cert(&mut valid, &root).unwrap();
+    source.admit_certificate(valid, &a, now).unwrap();
+    let NeighbourMsg::SyncResp { changes, room } = source.room_message() else {
+        unreachable!()
+    };
+    let mut candidate = room::candidate(None, &changes).unwrap();
+    use automerge::ReadDoc;
+    let (_, identities) = candidate.get(ROOT, "peer_identities_v1").unwrap().unwrap();
+    candidate
+        .put(
+            &identities,
+            "zz-invalid",
+            automerge::ScalarValue::Bytes(vec![0]),
+        )
+        .unwrap();
+    candidate.commit();
+    let changes = candidate
+        .get_changes(&[])
+        .into_iter()
+        .map(|c| c.raw_bytes().to_vec())
+        .collect();
+    let before = receiver.durable().unwrap();
+    assert!(
+        receiver
+            .receive(
+                a.verifying_key().to_bytes(),
+                NeighbourMsg::SyncResp { changes, room },
+                now
+            )
+            .is_err()
+    );
+    assert_eq!(
+        before,
+        receiver.durable().unwrap(),
+        "direct receive cannot partly import certificate metadata"
+    );
 }

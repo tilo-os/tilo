@@ -20,9 +20,9 @@ use ui::portable_storage::{PortableStorage, StorageKey};
 use wasm_bindgen::prelude::*;
 use web_time::SystemTime;
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Enrollment {
     version: u32,
-    device_secret: [u8; 32],
     certificate: DeviceCert,
     root_public_key: [u8; 32],
     host_certificate: DeviceCert,
@@ -95,14 +95,15 @@ fn report(peer: &Peer, phase: &str, error: Option<String>) {
 #[wasm_bindgen]
 pub async fn connect_peer(
     raw: String,
+    identity: Vec<u8>,
     hydrated: JsValue,
     callback: js_sys::Function,
 ) -> Result<u32, JsValue> {
     let config: Enrollment = serde_json::from_str(&raw).map_err(error)?;
-    if config.version != 1 {
+    if config.version != 2 {
         return Err(error("unsupported enrollment version"));
     }
-    let key = SigningKey::from_bytes(&config.device_secret);
+    let key = crate::identity::key(&identity,&raw).map_err(error)?;
     let device = key.verifying_key().to_bytes();
     if device != config.certificate.device_public_key
         || config.certificate.user_public_key != config.root_public_key
@@ -350,6 +351,14 @@ pub async fn close_peer(id: u32) {
     }
 }
 
+#[wasm_bindgen]
+pub fn create_identity()->Vec<u8>{crate::identity::create()}
+#[wasm_bindgen]
+pub fn identity_request(material:&[u8])->Result<String,JsValue>{crate::identity::request(material).map_err(error)}
+#[wasm_bindgen]
+pub fn identity_complete(material:&[u8],challenge:&str)->Result<String,JsValue>{crate::identity::complete(material,challenge).map_err(error)}
+#[wasm_bindgen]
+pub fn bind_identity(material:&[u8],challenge:&str,raw:&str)->Result<Vec<u8>,JsValue>{crate::identity::bind(material,challenge,raw).map_err(error)}
 #[wasm_bindgen]
 pub fn peer_enrollment(raw: &str) -> Result<String, JsValue> {
     let config: Enrollment = serde_json::from_str(raw).map_err(error)?;

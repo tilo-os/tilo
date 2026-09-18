@@ -139,6 +139,124 @@ impl StatePeer {
             checkpoint_times: BTreeMap::new(),
         })
     }
+    /// Add a root-certified viewer to existing governed history. Only the pinned
+    /// room authority may issue this local governance mutation.
+    pub fn admit_certificate(
+        &mut self,
+        cert: DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if key.verifying_key().to_bytes() != self.authority.device_public_key {
+            return Err("governance writer is not pinned authority".into());
+        }
+        self.certificate(&self.authority.device_public_key, now)?;
+        if cert.user_public_key != self.authority.user_public_key {
+            return Err("enrollment root mismatch".into());
+        }
+        qos_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
+        if self.revocations.is_revoked(&cert.device_public_key) {
+            return Err("device revoked".into());
+        }
+        if let Some(old) = self.certificates.get(&cert.device_public_key) {
+            if old != &cert {
+                return Err("certificate conflict".into());
+            }
+        }
+        let mut doc = self.room_doc.clone().ok_or("room governance missing")?;
+        let identity = GovernedIdentity {
+            device_cert: cert.clone(),
+            revocations: vec![],
+        };
+        let id = hex::encode(cert.device_public_key);
+        let encoded = serde_json::to_vec(&identity).map_err(err)?;
+        if room::governance_of(Some(&doc))
+            .3
+            .get(&id)
+            .and_then(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).ok())
+            .is_some_and(|old| old.device_cert == cert)
+        {
+            return Ok(false);
+        }
+        use automerge::ReadDoc;
+        let identities = doc
+            .get(ROOT, "peer_identities_v1")
+            .map_err(err)?
+            .ok_or("governed identities missing")?
+            .1;
+        let names = doc
+            .get(ROOT, "peers")
+            .map_err(err)?
+            .ok_or("governed peers missing")?
+            .1;
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        doc.put(&identities, &id, automerge::ScalarValue::Bytes(encoded))
+            .map_err(err)?;
+        doc.put(&names, &id, cert.device_label.as_str())
+            .map_err(err)?;
+        doc.commit();
+        let changes = doc
+            .get_changes(&[])
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        let room = self.room.clone();
+        let outcome = self.receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp { changes, room },
+            now,
+        )?;
+        Ok(outcome.changed || outcome.metadata_changed)
+    }
+    fn import_governed_certificates(
+        &mut self,
+        doc: &AutoCommit,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let mut changed = false;
+        let mut certificates = self.certificates.clone();
+        let mut revocations = self.revocations.clone();
+        for (id, bytes) in room::governance_of(Some(doc)).3 {
+            let identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
+            let cert = identity.device_cert;
+            if id != hex::encode(cert.device_public_key) {
+                return Err("governed identity key mismatch".into());
+            }
+            if let Some(known) = certificates.get(&cert.device_public_key) {
+                if known != &cert {
+                    return Err("certificate conflict".into());
+                }
+            } else {
+                qos_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
+            }
+            // Existing roots remain supported; a new enrollment cannot expand
+            // trust beyond the pinned authority's root.
+            if !self.certificates.contains_key(&cert.device_public_key)
+                && cert.user_public_key != self.authority.user_public_key
+            {
+                return Err("enrollment root mismatch".into());
+            }
+            for entry in identity.revocations {
+                if entry.user_public_key != cert.user_public_key {
+                    return Err("revocation root mismatch".into());
+                }
+                if certificates
+                    .get(&entry.revoked_device_public_key)
+                    .is_some_and(|target| target.user_public_key != entry.user_public_key)
+                {
+                    return Err("revocation cannot cross identity roots".into());
+                }
+                changed |= revocations.insert(entry).map_err(err)?;
+            }
+            changed |= certificates.get(&cert.device_public_key) != Some(&cert);
+            certificates.insert(cert.device_public_key, cert);
+        }
+        self.certificates = certificates;
+        self.revocations = revocations;
+        Ok(changed)
+    }
     /// Verified public identity metadata; never includes signing keys.
     pub fn certificates(&self) -> Vec<DeviceCert> {
         self.certificates.values().cloned().collect()
@@ -479,12 +597,12 @@ impl StatePeer {
                     .room_doc
                     .as_ref()
                     .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
+                let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
                 self.receipts = receipts;
                 self.room_doc = Some(candidate);
                 let pending = std::mem::take(&mut self.pending);
                 self.pending_bytes = 0;
                 let mut applied = changed;
-                let mut metadata_changed = false;
                 let mut rejected = 0;
                 for (author, message) in pending {
                     match self.receive(author, message, now) {
