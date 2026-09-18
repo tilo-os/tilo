@@ -684,6 +684,25 @@ struct DeleteDialog {
     cancel: Rc<Cell<bool>>,
 }
 
+/// Private, review-only state for a potential duplicate.  It is rebuilt from
+/// the current collaborative contacts whenever opened; no tentative choices
+/// leak into the shared document until the explicit Merge button emits the
+/// typed `ContactsAction::MergeContacts` envelope.
+struct DuplicateReview {
+    survivor: Contact,
+    source: Contact,
+    reasons: Vec<crate::actions::DuplicateReason>,
+    take_from_source: std::collections::HashSet<crate::actions::MergeField>,
+    focus: usize,
+}
+
+struct DuplicateReviewGeometry {
+    panel: Rect,
+    rows: Vec<(crate::actions::MergeField, Rect)>,
+    merge: Rect,
+    cancel: Rect,
+}
+
 /// The explicit decision point for an untrusted imported UID collision.  The
 /// primary action is intentionally destructive: importing under a new local
 /// identity adds data to the shared address book, whereas keeping the current
@@ -861,6 +880,7 @@ pub struct ContactsApp {
     /// imported-UID collision. Remaining collisions are presented one at a
     /// time after each explicit decision.
     import_conflict_dialog: Option<ImportConflictDialog>,
+    duplicate_review: Option<DuplicateReview>,
 
     /// Self-contained export selection modal: state, drawing and input routing.
     export_dialog: ExportDialog,
@@ -1028,6 +1048,7 @@ impl ContactsApp {
             confirm_delete: None,
             delete_dialog: None,
             import_conflict_dialog: None,
+            duplicate_review: None,
             export_dialog: ExportDialog::new(),
             pending_switch: None,
             unsaved_focus: UnsavedFocus::Cancel,
@@ -1172,6 +1193,49 @@ impl ContactsApp {
             }];
             self.import_conflict_dialog = None;
             self.dirty = true;
+        }
+    }
+
+    /// Max-conflict duplicate review for the visual matrix.  This touches only
+    /// the hermetic shot store: it proves the seven-row field chooser remains
+    /// readable at 390×844/200% without manufacturing a collaborative write.
+    pub fn shots_show_duplicate_review(&mut self) {
+        let mut contacts = self.store.contacts.clone();
+        contacts.sort_by_key(|contact| contact.id);
+        let Some(survivor) = contacts.first().cloned() else {
+            return;
+        };
+        let Some(mut source) = contacts.get(1).cloned() else {
+            return;
+        };
+        source.first = survivor.first.clone();
+        source.last = survivor.last.clone();
+        source.org = "Alternative organization".into();
+        source.title = "Different role".into();
+        source.website = "https://other.example.test".into();
+        source.notes = "A deliberately longer alternate note for the review layout.".into();
+        source.birthday = Some(Birthday::MonthDay { month: 12, day: 10 });
+        source.emails = vec![Labeled::new("home", "ada@example.test")];
+        let mut survivor = survivor;
+        survivor.org = "Primary organization".into();
+        survivor.title = "Primary role".into();
+        survivor.website = "https://primary.example.test".into();
+        survivor.notes = "A deliberately longer primary note for the review layout.".into();
+        survivor.birthday = Some(Birthday::MonthDay { month: 1, day: 1 });
+        survivor.emails = vec![Labeled::new("home", "ada@example.test")];
+        self.store.upsert(survivor.clone());
+        self.store.upsert(source.clone());
+        if let Some(candidate) = crate::actions::duplicate_candidate(&survivor, &source) {
+            self.duplicate_review = Some(DuplicateReview {
+                survivor: survivor.clone(),
+                source,
+                reasons: candidate.reasons,
+                take_from_source: std::collections::HashSet::new(),
+                focus: 0,
+            });
+            self.selected = Some(survivor.id);
+            self.dirty = true;
+            self.relayout = true;
         }
     }
 
@@ -1426,6 +1490,10 @@ impl ContactsApp {
             ContactsAction::PatchContact { id, .. }
             | ContactsAction::DeleteContact { id }
             | ContactsAction::SetFavorite { id, .. } => id.parse().ok()?,
+            // A merge changes two projections. Let the next normal document
+            // sync reconcile both together rather than risking a one-sided
+            // optimistic list update.
+            ContactsAction::MergeContacts { .. } => return None,
         };
         let before = self.indexed_contact(id).cloned();
         if matches!(action, ContactsAction::CreateContact(_)) || before.is_some() {
@@ -1684,6 +1752,21 @@ impl ContactsApp {
                         .map_or_else(|| "Deleted contact".into(), Contact::display_name),
                 })
                 .collect(),
+            duplicates: crate::actions::duplicate_candidates(
+                &self.store.contacts,
+                crate::actions::MAX_CONTEXT_DUPLICATE_RESOURCES,
+            )
+            .into_iter()
+            .filter_map(|candidate| {
+                let survivor = self.store.get(candidate.survivor_id)?.clone();
+                let source = self.store.get(candidate.source_id)?.clone();
+                Some(crate::actions::DuplicateResource {
+                    candidate,
+                    survivor,
+                    source,
+                })
+            })
+            .collect(),
         }
     }
 
@@ -1703,11 +1786,26 @@ impl ContactsApp {
             import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
             export_busy: self.export_dialog.is_open() || self.export_rx.is_some(),
             import_conflicts: Vec::new(),
+            duplicates: Vec::new(),
         };
         if id == "contacts.book" {
             return Some(ctx);
         }
         if id == crate::actions::FAVORITES_RESOURCE_ID {
+            return Some(ctx);
+        }
+        if let Some(rest) = id.strip_prefix("contacts.duplicate:") {
+            let (survivor, source) = rest.split_once(':')?;
+            let survivor_id = survivor.parse::<ContactId>().ok()?;
+            let source_id = source.parse::<ContactId>().ok()?;
+            let survivor = self.store.get(survivor_id)?.clone();
+            let source = self.store.get(source_id)?.clone();
+            let candidate = crate::actions::duplicate_candidate(&survivor, &source)?;
+            ctx.duplicates.push(crate::actions::DuplicateResource {
+                candidate,
+                survivor,
+                source,
+            });
             return Some(ctx);
         }
         if let Some(raw) = id.strip_prefix("contacts.contact:") {
@@ -3056,6 +3154,10 @@ impl ContactsApp {
                 self.last_mouse,
             );
         }
+        if let Some(review) = self.duplicate_review.as_ref() {
+            let geometry = self.duplicate_review_geometry(review);
+            self.draw_duplicate_review(scene, transform, tr, theme, review, &geometry);
+        }
         if self.pending_switch.is_some() {
             self.draw_unsaved_modal(scene, transform, tr, theme);
         }
@@ -3084,6 +3186,120 @@ impl ContactsApp {
                 &ToastCard::new(msg, ToastKind::Info),
             );
         }
+    }
+
+    fn draw_duplicate_review(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        review: &DuplicateReview,
+        geometry: &DuplicateReviewGeometry,
+    ) {
+        let c = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::BLACK.with_alpha_factor(0.72),
+            None,
+            &self.rect,
+        );
+        let shape = RoundedRect::from_rect(geometry.panel, f64::from(theme.tokens.radii.md));
+        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &shape);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_standard,
+            None,
+            &shape,
+        );
+        tr.draw_text(
+            scene,
+            "Review possible duplicate",
+            16.0,
+            c.text_primary,
+            transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 18.0)),
+            None,
+        );
+        let reasons = review
+            .reasons
+            .iter()
+            .map(crate::actions::DuplicateReason::label)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let intro =
+            format!("Matches: {reasons}. Unique phones, emails, groups, and addresses are kept.");
+        tr.draw_text(
+            scene,
+            &intro,
+            10.0,
+            c.text_dim,
+            transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 52.0)),
+            Some((geometry.panel.width() - 36.0).max(40.0) as f32),
+        );
+        if self.text_scale < 1.75 {
+            tr.draw_text(
+                scene,
+                "Choose current or other for each conflicting value.",
+                11.0,
+                c.text_tertiary,
+                transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 82.0)),
+                Some((geometry.panel.width() - 36.0).max(40.0) as f32),
+            );
+        }
+        for (index, (field, rect)) in geometry.rows.iter().enumerate() {
+            let take_source = review.take_from_source.contains(field);
+            let selected_name = if take_source { "other" } else { "current" };
+            let selected_value = if take_source {
+                Self::duplicate_field_value(&review.source, *field)
+            } else {
+                Self::duplicate_field_value(&review.survivor, *field)
+            };
+            let selected_value = if selected_value.chars().count() > 30 {
+                format!("{}…", selected_value.chars().take(29).collect::<String>())
+            } else {
+                selected_value
+            };
+            let fill = if review.focus == index {
+                c.overlay_medium
+            } else {
+                c.overlay_subtle
+            };
+            let row = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
+            scene.fill(Fill::NonZero, transform, fill, None, &row);
+            scene.stroke(
+                &Stroke::new(if review.focus == index { 2.0 } else { 1.0 }),
+                transform,
+                if review.focus == index {
+                    c.border_focus
+                } else {
+                    c.border_standard
+                },
+                None,
+                &row,
+            );
+            tr.draw_text(
+                scene,
+                Self::duplicate_field_label(*field),
+                8.0,
+                c.text_dim,
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 5.0)),
+                None,
+            );
+            tr.draw_text(
+                scene,
+                &format!("Keep {selected_name}: {selected_value}"),
+                10.0,
+                c.text_primary,
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 25.0)),
+                Some((rect.width() - 20.0).max(40.0) as f32),
+            );
+        }
+        let cancel = ButtonFace::new(geometry.cancel, "Cancel").style(ButtonStyle::Neutral);
+        Button::paint(scene, transform, tr, theme, &cancel);
+        let merge = ButtonFace::new(geometry.merge, "Merge contacts").style(ButtonStyle::Danger);
+        Button::paint(scene, transform, tr, theme, &merge);
     }
 
     /// The master pane: the contact list chrome, its embedded search input,
@@ -4587,6 +4803,172 @@ impl ContactsApp {
         }
     }
 
+    fn duplicate_conflicts(review: &DuplicateReview) -> Vec<crate::actions::MergeField> {
+        use crate::actions::MergeField;
+        let differs = |left: &str, right: &str| {
+            !left.trim().is_empty() && !right.trim().is_empty() && left != right
+        };
+        let mut fields = Vec::new();
+        for (field, left, right) in [
+            (
+                MergeField::First,
+                &review.survivor.first,
+                &review.source.first,
+            ),
+            (MergeField::Last, &review.survivor.last, &review.source.last),
+            (
+                MergeField::Organization,
+                &review.survivor.org,
+                &review.source.org,
+            ),
+            (
+                MergeField::Title,
+                &review.survivor.title,
+                &review.source.title,
+            ),
+            (
+                MergeField::Website,
+                &review.survivor.website,
+                &review.source.website,
+            ),
+            (
+                MergeField::Notes,
+                &review.survivor.notes,
+                &review.source.notes,
+            ),
+        ] {
+            if differs(left, right) {
+                fields.push(field);
+            }
+        }
+        if review.survivor.birthday.is_some()
+            && review.source.birthday.is_some()
+            && review.survivor.birthday != review.source.birthday
+        {
+            fields.push(MergeField::Birthday);
+        }
+        fields
+    }
+
+    fn duplicate_field_label(field: crate::actions::MergeField) -> &'static str {
+        use crate::actions::MergeField;
+        match field {
+            MergeField::First => "First name",
+            MergeField::Last => "Last name",
+            MergeField::Organization => "Organization",
+            MergeField::Title => "Job title",
+            MergeField::Website => "Website",
+            MergeField::Birthday => "Birthday",
+            MergeField::Notes => "Notes",
+        }
+    }
+
+    fn duplicate_field_value(contact: &Contact, field: crate::actions::MergeField) -> String {
+        use crate::actions::MergeField;
+        match field {
+            MergeField::First => contact.first.clone(),
+            MergeField::Last => contact.last.clone(),
+            MergeField::Organization => contact.org.clone(),
+            MergeField::Title => contact.title.clone(),
+            MergeField::Website => contact.website.clone(),
+            MergeField::Birthday => contact
+                .birthday
+                .map(|birthday| birthday.pretty())
+                .unwrap_or_default(),
+            MergeField::Notes => contact.notes.clone(),
+        }
+    }
+
+    fn duplicate_review_geometry(&self, review: &DuplicateReview) -> DuplicateReviewGeometry {
+        let scale = self.text_scale.max(1.0);
+        let row_h = if scale >= 1.75 { 54.0 } else { 42.0 };
+        let header_h = if scale >= 1.75 { 160.0 } else { 118.0 };
+        let conflicts = Self::duplicate_conflicts(review);
+        let wanted_h = header_h + row_h * conflicts.len() as f64 + 62.0;
+        let w = (self.rect.width() - 32.0).min(680.0).max(280.0);
+        let h = wanted_h.min((self.rect.height() - 24.0).max(240.0));
+        let panel = Rect::new(
+            self.rect.center().x - w / 2.0,
+            self.rect.center().y - h / 2.0,
+            self.rect.center().x + w / 2.0,
+            self.rect.center().y + h / 2.0,
+        );
+        let mut y = panel.y0 + header_h;
+        let rows = conflicts
+            .into_iter()
+            .map(|field| {
+                let rect = Rect::new(panel.x0 + 18.0, y, panel.x1 - 18.0, y + row_h - 6.0);
+                y += row_h;
+                (field, rect)
+            })
+            .collect();
+        let footer_y = panel.y1 - 50.0;
+        DuplicateReviewGeometry {
+            panel,
+            rows,
+            merge: Rect::new(panel.x1 - 142.0, footer_y, panel.x1 - 18.0, footer_y + 34.0),
+            cancel: Rect::new(
+                panel.x1 - 266.0,
+                footer_y,
+                panel.x1 - 152.0,
+                footer_y + 34.0,
+            ),
+        }
+    }
+
+    fn open_duplicate_review(
+        &mut self,
+        survivor_id: ContactId,
+        source_id: ContactId,
+    ) -> Result<(), String> {
+        let survivor = self
+            .store
+            .get(survivor_id)
+            .cloned()
+            .ok_or_else(|| "surviving contact no longer exists".to_string())?;
+        let source = self
+            .store
+            .get(source_id)
+            .cloned()
+            .ok_or_else(|| "source contact no longer exists".to_string())?;
+        let candidate = crate::actions::duplicate_candidate(&survivor, &source)
+            .ok_or_else(|| "contacts are no longer a likely duplicate".to_string())?;
+        self.selected = Some(survivor_id);
+        self.duplicate_review = Some(DuplicateReview {
+            survivor,
+            source,
+            reasons: candidate.reasons,
+            take_from_source: std::collections::HashSet::new(),
+            focus: 0,
+        });
+        self.popup = None;
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn merge_duplicate_review(&mut self, state: &mut AutoCommit) {
+        let Some(review) = self.duplicate_review.take() else {
+            return;
+        };
+        let action = crate::actions::merge_contacts_action(
+            &review.survivor,
+            &review.source,
+            &review.take_from_source,
+        );
+        match self.try_perform_action(state, &action) {
+            Ok(()) => {
+                self.selected = Some(review.survivor.id);
+                self.show_toast(format!(
+                    "Merged {} into {}. Undo is available in history.",
+                    review.source.display_name(),
+                    review.survivor.display_name()
+                ));
+            }
+            Err(error) => self.show_toast(format!("Couldn't merge contacts: {error}")),
+        }
+        self.dirty = true;
+    }
+
     fn build_import_conflict_dialog(&self, conflict: &ImportConflict) -> ImportConflictDialog {
         let import_as_new = Rc::new(Cell::new(false));
         let keep_existing = Rc::new(Cell::new(false));
@@ -5712,6 +6094,19 @@ impl Widget for ContactsApp {
                 self.set_group_filter(Some(FAVORITES_FILTER.into()));
             }
             (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenDuplicateReview {
+                    survivor_id,
+                    source_id,
+                },
+            ) => {
+                let survivor = uuid::Uuid::parse_str(&survivor_id)
+                    .map_err(|_| "invalid surviving contact id".to_string())?;
+                let source = uuid::Uuid::parse_str(&source_id)
+                    .map_err(|_| "invalid source contact id".to_string())?;
+                self.open_duplicate_review(survivor, source)?;
+            }
+            (
                 tilo_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::ImportVcard { path },
             ) => {
@@ -5864,6 +6259,7 @@ impl Widget for ContactsApp {
             crate::actions::ContactsOperation::Open { .. }
             | crate::actions::ContactsOperation::OpenGroup { .. }
             | crate::actions::ContactsOperation::OpenFavorites
+            | crate::actions::ContactsOperation::OpenDuplicateReview { .. }
             | crate::actions::ContactsOperation::KeepImportConflict { .. }
             | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
                 .invoke_resource_operation(kind, type_id, payload, doc, path)
@@ -5934,10 +6330,14 @@ impl Widget for ContactsApp {
         self.confirm_delete.is_some()
             || !self.import_conflicts.is_empty()
             || self.export_dialog.is_open()
+            || self.duplicate_review.is_some()
             || self.pending_switch.is_some()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
+        if let Some(review) = self.duplicate_review.as_ref() {
+            return Some(self.duplicate_review_geometry(review).panel);
+        }
         self.import_conflict_dialog
             .as_ref()
             .and_then(|review| review.dialog.modal_capture())
@@ -5965,6 +6365,56 @@ impl Widget for ContactsApp {
         reason = "the accessibility tree mirrors the toolbar, empty state, search, and contact list in one auditable hierarchy"
     )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if let Some(review) = self.duplicate_review.as_ref() {
+            let geometry = self.duplicate_review_geometry(review);
+            let mut children = geometry
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, (field, bounds))| {
+                    AccessNode::new(Role::RadioButton)
+                        .with_name(format!(
+                            "{}: keep {}",
+                            Self::duplicate_field_label(*field),
+                            if review.take_from_source.contains(field) {
+                                review.source.display_name()
+                            } else {
+                                review.survivor.display_name()
+                            }
+                        ))
+                        .with_description("Activate to choose the other contact's value")
+                        .with_action_target(format!("contacts.duplicate.field:{field:?}"))
+                        .with_bounds(*bounds)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(review.focus == index)
+                                .checked(review.take_from_source.contains(field)),
+                        )
+                })
+                .collect::<Vec<_>>();
+            children.extend([
+                AccessNode::new(Role::Button)
+                    .with_name("Cancel merge")
+                    .with_action_target("contacts.duplicate.cancel")
+                    .with_bounds(geometry.cancel)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name("Merge contacts")
+                    .with_description("Confirmation action. The source contact is removed; Undo is available in history.")
+                    .with_action_target("contacts.duplicate.merge")
+                    .with_bounds(geometry.merge)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Review possible duplicate")
+                    .with_description("Review every conflicting scalar field before merging. Unique repeated data is kept.")
+                    .with_bounds(geometry.panel)
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(children),
+            );
+        }
         if self.export_dialog.is_open() {
             return Some(
                 self.export_dialog
@@ -6332,6 +6782,39 @@ impl Widget for ContactsApp {
             self.popup = None;
             self.execute_context_action(state, menu_target, context_action);
             return true;
+        }
+
+        if matches!(action, Action::Activate) && self.duplicate_review.is_some() {
+            if target == "contacts.duplicate.cancel" {
+                self.duplicate_review = None;
+                self.dirty = true;
+                return true;
+            }
+            if target == "contacts.duplicate.merge" {
+                self.merge_duplicate_review(state);
+                return true;
+            }
+            if let Some(raw) = target.strip_prefix("contacts.duplicate.field:") {
+                let field = match raw {
+                    "First" => Some(crate::actions::MergeField::First),
+                    "Last" => Some(crate::actions::MergeField::Last),
+                    "Organization" => Some(crate::actions::MergeField::Organization),
+                    "Title" => Some(crate::actions::MergeField::Title),
+                    "Website" => Some(crate::actions::MergeField::Website),
+                    "Birthday" => Some(crate::actions::MergeField::Birthday),
+                    "Notes" => Some(crate::actions::MergeField::Notes),
+                    _ => None,
+                };
+                if let Some(field) = field
+                    && let Some(review) = self.duplicate_review.as_mut()
+                {
+                    if !review.take_from_source.insert(field) {
+                        review.take_from_source.remove(&field);
+                    }
+                    self.dirty = true;
+                    return true;
+                }
+            }
         }
 
         if matches!(action, Action::Activate)
@@ -6849,6 +7332,10 @@ impl ContactsApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) -> bool {
+        if self.duplicate_review.is_some() {
+            self.route_duplicate_review_event(event, state, handled);
+            return true;
+        }
         if !self.import_conflicts.is_empty() {
             self.route_import_conflict_dialog_event(
                 event,
@@ -6880,6 +7367,127 @@ impl ContactsApp {
             }
         }
         false
+    }
+
+    fn route_duplicate_review_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let Some(review) = self.duplicate_review.as_ref() else {
+            return;
+        };
+        let geometry = self.duplicate_review_geometry(review);
+        let field_count = geometry.rows.len();
+        let mut toggle = None;
+        let mut merge = false;
+        let mut cancel = false;
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => cancel = true,
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::ArrowDown),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(review) = self.duplicate_review.as_mut() {
+                    review.focus = (review.focus + 1) % (field_count + 2).max(1);
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::ArrowUp),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(review) = self.duplicate_review.as_mut() {
+                    review.focus = (review.focus + field_count + 1) % (field_count + 2).max(1);
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Space),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(review) = self.duplicate_review.as_ref()
+                    && review.focus < field_count
+                {
+                    toggle = geometry.rows.get(review.focus).map(|(field, _)| *field);
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(review) = self.duplicate_review.as_ref() {
+                    if review.focus < field_count {
+                        toggle = geometry.rows.get(review.focus).map(|(field, _)| *field);
+                    } else if review.focus == field_count {
+                        merge = true;
+                    } else {
+                        cancel = true;
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if geometry.merge.contains(self.last_mouse) {
+                    merge = true;
+                } else if geometry.cancel.contains(self.last_mouse)
+                    || !geometry.panel.contains(self.last_mouse)
+                {
+                    cancel = true;
+                } else if let Some((field, _)) = geometry
+                    .rows
+                    .iter()
+                    .find(|(_, rect)| rect.contains(self.last_mouse))
+                {
+                    toggle = Some(*field);
+                }
+            }
+            _ => {}
+        }
+        if let Some(field) = toggle
+            && let Some(review) = self.duplicate_review.as_mut()
+        {
+            if !review.take_from_source.insert(field) {
+                review.take_from_source.remove(&field);
+            }
+        }
+        if merge {
+            self.merge_duplicate_review(state);
+        } else if cancel {
+            self.duplicate_review = None;
+            self.dirty = true;
+        }
+        *handled = true;
     }
 
     /// Divider drag, primary/secondary click, mouse wheel scroll, and
