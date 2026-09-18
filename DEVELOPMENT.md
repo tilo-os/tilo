@@ -42,6 +42,17 @@ For an actual installer VM cycle with an already prepared medium, continue using
 session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
 artifact-backed VM orchestration remain planned work.
 
+For CI timing, use an explicit internal run ID from the Forgejo API:
+
+```sh
+python3 tools/ci_timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
+```
+
+This uses your configured `fgj` authentication and reports queue time separately
+from run duration and the observed container pull-to-create interval. It does not
+sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
+credentials are not written to the report; use `--input` for saved local fixtures.
+
 ## What the build needs
 
 Install Rust through rustup and the native dependencies below, either on the host
