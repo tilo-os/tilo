@@ -525,7 +525,7 @@ impl ContactStore {
 }
 
 /// Case-insensitive comparison used by [`ContactStore::filtered_sorted`].
-fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
+pub(crate) fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let key = |c: &Contact| -> (String, String) {
         match sort {

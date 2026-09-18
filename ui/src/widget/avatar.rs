@@ -659,6 +659,26 @@ mod tests {
     }
 
     #[test]
+    fn draw_at_keeps_initials_when_motion_is_reduced() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Avatar::draw_at(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 72.0, 72.0),
+            "AL",
+            Avatar::color_for_initials("AL", &theme),
+            &theme,
+            &mut tr,
+        );
+        assert!(
+            !scene.encoding().resources.glyph_runs.is_empty(),
+            "reduced motion must freeze animation only, never omit static identity text"
+        );
+    }
+
+    #[test]
     fn draw_at_color_matches_widget_background() {
         let theme = Theme::dark();
         let a = Avatar::from_initials("QD", 40.0);
