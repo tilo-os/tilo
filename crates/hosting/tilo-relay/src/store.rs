@@ -410,6 +410,25 @@ impl WorkspaceStore {
             .collect()
     }
 
+    /// Acknowledge one delivered compute envelope for the exact target.
+    /// Missing entries are treated as an idempotent repeated acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an existing queue entry cannot be removed.
+    pub fn ack_compute_pending(&self, device: &[u8; 32], sequence: u64) -> Result<(), StoreError> {
+        let path = self
+            .root
+            .join(COMPUTE_PENDING_DIR)
+            .join(hex::encode(device))
+            .join(format!("{sequence:016x}.compute"));
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Append an audit log entry. Non-fatal if the log file fails —
     /// the audit trail is best-effort, forwarding must not depend
     /// on it.
