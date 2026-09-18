@@ -2,7 +2,7 @@ use ui::ColorCompat;
 use ui::{
     Theme,
     text_render::{FontChoice, TextRenderer, TextWeight},
-    widget::Widget,
+    widget::{PressOutcome, ScrollMetrics, Scrollbar, Widget},
 };
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
@@ -521,6 +521,12 @@ pub struct TerminalWidget {
     /// Rows scrolled up from the bottom of the buffer. 0 == pinned to the
     /// live output; a new keystroke or fresh PTY output snaps it back to 0.
     scroll_offset: usize,
+    /// Sub-row precision retained between high-resolution touchpad events.
+    /// Terminal storage is row based, but discarding each fractional delta
+    /// made slow two-finger gestures feel sticky and unpredictable.
+    wheel_remainder_px: f64,
+    /// Shared toolkit interaction model for the terminal history bar.
+    scrollbar: Scrollbar,
 
     /// Last palette-derived cursor color, captured on every `draw`. Exposed
     /// for behavioural tests that want to verify palette swaps actually
@@ -737,6 +743,8 @@ impl TerminalWidget {
             scroll_bottom: height - 1,
             modes: TermModes::default(),
             scroll_offset: 0,
+            wheel_remainder_px: 0.0,
+            scrollbar: Scrollbar::vertical(),
             last_cursor_color: Color::from_rgba8(0, 0, 0, 0),
             last_fg_default: Color::from_rgba8(0, 0, 0, 0),
             last_bg_default: Color::from_rgba8(0, 0, 0, 0),
@@ -1486,6 +1494,28 @@ impl TerminalWidget {
         self.grid.len().saturating_sub(self.current_visible_rows())
     }
 
+    fn scrollbar_track(&self) -> Rect {
+        let x1 = self.rect.x1 - self.chrome_body_pad;
+        let width = (self.chrome_scrollbar_w - 2.0).max(3.0);
+        Rect::new(x1 - width, self.grid_rect.y0, x1, self.grid_rect.y1)
+    }
+
+    fn scrollbar_metrics(&self) -> ScrollMetrics {
+        let visible = self.current_visible_rows() as f64;
+        let total = self.grid.len() as f64;
+        // Scrollbar offsets are measured from the top; terminal history is
+        // measured back from the live bottom.
+        let from_top = self.max_scroll().saturating_sub(self.scroll_offset) as f64;
+        ScrollMetrics::new(total, visible, from_top)
+    }
+
+    fn set_scrollbar_offset(&mut self, from_top: f64) {
+        let max = self.max_scroll();
+        let top = from_top.round().clamp(0.0, max as f64) as usize;
+        self.scroll_offset = max.saturating_sub(top);
+        self.wheel_remainder_px = 0.0;
+    }
+
     /// Scroll the viewport back (toward older output) by `n` rows.
     pub fn scroll_up(&mut self, n: usize) {
         if self.alt_active {
@@ -1507,6 +1537,7 @@ impl TerminalWidget {
     /// Pin the viewport back to the live output.
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
+        self.wheel_remainder_px = 0.0;
     }
 
     /// Drain queued PTY bytes and replay them through the vte parser into the
@@ -2728,7 +2759,12 @@ impl TerminalWidget {
         }
         let lines = match delta {
             MouseScrollDelta::LineDelta(_, y) => (*y * 3.0).round() as i32,
-            MouseScrollDelta::PixelDelta(pos) => (pos.y / self.char_h.max(1.0)).round() as i32,
+            MouseScrollDelta::PixelDelta(pos) => {
+                self.wheel_remainder_px += pos.y;
+                let lines = (self.wheel_remainder_px / self.char_h.max(1.0)).trunc() as i32;
+                self.wheel_remainder_px -= f64::from(lines) * self.char_h.max(1.0);
+                lines
+            }
         };
         if lines == 0 {
             return;
@@ -2784,6 +2820,18 @@ impl TerminalWidget {
         // winit (Pressed arrives without coordinates).
         let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor_pos = logical;
+        if self.scrollbar.is_dragging() {
+            let track = self.scrollbar_track();
+            let metrics = self.scrollbar_metrics();
+            if let Some(offset) = self.scrollbar.drag_to(track, metrics, logical) {
+                self.set_scrollbar_offset(offset);
+                *handled = true;
+            }
+            return;
+        }
+        let track = self.scrollbar_track();
+        let metrics = self.scrollbar_metrics();
+        self.scrollbar.update_hover(track, metrics, logical);
         if self.modes.mouse_report
             && !modifiers.state().shift_key()
             && (self.modes.mouse_tracking == 1003
@@ -2822,6 +2870,27 @@ impl TerminalWidget {
         // selection, primary paste, and the context menu reachable while a TUI
         // owns ordinary pointer input.
         let pressed = matches!(element_state, ElementState::Pressed);
+        if button == MouseButton::Left && !self.alt_active {
+            if pressed && self.scrollbar_visible(self.current_visible_rows()) {
+                let track = self.scrollbar_track();
+                let metrics = self.scrollbar_metrics();
+                match self.scrollbar.press(track, metrics, self.last_cursor_pos) {
+                    PressOutcome::Thumb => {
+                        *handled = true;
+                        return;
+                    }
+                    PressOutcome::Page(offset) => {
+                        self.set_scrollbar_offset(offset);
+                        *handled = true;
+                        return;
+                    }
+                    PressOutcome::Miss => {}
+                }
+            } else if !pressed && self.scrollbar.release() {
+                *handled = true;
+                return;
+            }
+        }
         if self.modes.mouse_report
             && !modifiers.state().shift_key()
             && (self.grid_rect.contains(self.last_cursor_pos)
@@ -3658,35 +3727,29 @@ impl TerminalWidget {
         if !self.scrollbar_visible(visible_rows) {
             return;
         }
-        let total = self.grid.len();
-        let gr = self.grid_rect;
-        let track_x1 = self.rect.x1 - self.chrome_body_pad;
-        let track_w = (self.chrome_scrollbar_w - 2.0).max(3.0);
-        let track_x0 = track_x1 - track_w;
-        let track_h = (gr.y1 - gr.y0).max(1.0);
-
-        let thumb_frac = (visible_rows as f64 / total as f64).clamp(0.06, 1.0);
-        let thumb_h = (track_h * thumb_frac).max(24.0).min(track_h);
-        let max_top = total.saturating_sub(visible_rows).max(1);
-        let pos_frac = (start_y as f64 / max_top as f64).clamp(0.0, 1.0);
-        let thumb_y0 = gr.y0 + pos_frac * (track_h - thumb_h);
+        let track = self.scrollbar_track();
+        let track_w = track.width();
 
         // Faint track groove so the bar has a visible extent even when pinned.
-        let track =
-            RoundedRect::from_rect(Rect::new(track_x0, gr.y0, track_x1, gr.y1), track_w / 2.0);
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.lift(0.2),
             None,
-            &track,
+            &RoundedRect::from_rect(track, track_w / 2.0),
         );
 
-        let thumb_alpha = if self.scroll_offset > 0 { 0.85 } else { 0.4 };
-        let thumb = RoundedRect::from_rect(
-            Rect::new(track_x0, thumb_y0, track_x1, thumb_y0 + thumb_h),
-            track_w / 2.0,
-        );
+        let thumb_alpha = if self.scrollbar.is_active() || self.scroll_offset > 0 {
+            0.9
+        } else {
+            0.4
+        };
+        let metrics =
+            ScrollMetrics::new(self.grid.len() as f64, visible_rows as f64, start_y as f64);
+        let Some(thumb_rect) = self.scrollbar.thumb_rect(track, metrics) else {
+            return;
+        };
+        let thumb = RoundedRect::from_rect(thumb_rect, track_w / 2.0);
         scene.fill(
             Fill::NonZero,
             transform,
