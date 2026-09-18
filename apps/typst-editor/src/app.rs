@@ -30,6 +30,7 @@
 //! else here (caret, scroll, zoom, the split ratio, cached page bitmaps) is
 //! ephemeral view state.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -159,6 +160,31 @@ enum TbAction {
     ToggleMenu,
 }
 
+// Native accessibility invokes the same logical operations as the painted toolbar.
+const TOOLBAR_ACTIONS: [(TbAction, &str, &str); 13] = [
+    (
+        TbAction::PrevDoc,
+        "typst.previous-document",
+        "Previous document",
+    ),
+    (TbAction::NextDoc, "typst.next-document", "Next document"),
+    (TbAction::Compile, "typst.compile", "Compile"),
+    (TbAction::Save, "typst.save", "Save"),
+    (TbAction::Open, "typst.open", "Open"),
+    (TbAction::ExportPdf, "typst.export-pdf", "Export PDF"),
+    (TbAction::ZoomOut, "typst.zoom-out", "Zoom out"),
+    (TbAction::ZoomIn, "typst.zoom-in", "Zoom in"),
+    (TbAction::Fit, "typst.fit-width", "Fit width"),
+    (
+        TbAction::ToggleProblems,
+        "typst.toggle-problems",
+        "Toggle problems",
+    ),
+    (TbAction::ShowEditor, "typst.show-editor", "Show editor"),
+    (TbAction::ShowPreview, "typst.show-preview", "Show preview"),
+    (TbAction::ToggleMenu, "typst.toggle-menu", "Toggle menu"),
+];
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool tracks an independent piece of ephemeral view/drag \
@@ -187,6 +213,7 @@ pub struct TypstApp {
     /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
     /// when no Open / Save / Export chooser is open.
     io: Option<(PendingIo, PortalChannel)>,
+    background_poll_deadline: Cell<Option<Instant>>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     pending_resource_io: Option<(tilo_actions::InvocationId, ResourceIo)>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
@@ -334,7 +361,7 @@ impl TypstApp {
         if documents.is_empty() {
             documents.push(Document {
                 name: "untitled.typ".into(),
-                source: crate::samples::STARTER.to_string(),
+                source: String::new(),
                 from_disk: false,
             });
         }
@@ -354,6 +381,7 @@ impl TypstApp {
             documents,
             current,
             io: None,
+            background_poll_deadline: Cell::new(None),
             resource_invocation: None,
             pending_resource_io: None,
             resource_result: None,
@@ -1912,6 +1940,7 @@ impl Widget for TypstApp {
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        self.background_poll_deadline.set(None);
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let result = match operation {
                 ResourceIo::Open(path) => self.open_typ_from(doc, &path),
@@ -2129,12 +2158,19 @@ impl Widget for TypstApp {
             })
             .with_semantic_key("typst.preview")
             .with_hashed_key("typst.preview");
+        let mut children = vec![source, preview];
+        children.extend(TOOLBAR_ACTIONS.iter().map(|(_, target, label)| {
+            AccessNode::new(Role::Button)
+                .with_name(*label)
+                .with_state(AccessState::new().focusable(true))
+                .with_action_target(*target)
+        }));
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Typst editor")
                 .with_description("Editable Typst source with a live document preview")
                 .with_state(AccessState::new().focusable(true))
-                .with_children(vec![source, preview]),
+                .with_children(children),
         )
     }
 
@@ -2145,6 +2181,16 @@ impl Widget for TypstApp {
         doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if let Some((operation, _, _)) = TOOLBAR_ACTIONS.iter().find(|(_, id, _)| *id == target) {
+            return match action {
+                ui::a11y::Action::Focus => true,
+                ui::a11y::Action::Activate => {
+                    self.do_action(*operation, doc);
+                    true
+                }
+                _ => false,
+            };
+        }
         if target != "typst.source" {
             return false;
         }
@@ -2200,6 +2246,21 @@ impl Widget for TypstApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
+            return None;
+        }
+        // Poll completed work independently of animation preferences. Repeated
+        // queries retain the same deadline until sync consumes it.
+        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
+            Instant::now()
+                .checked_add(std::time::Duration::from_millis(16))
+                .unwrap_or_else(Instant::now)
+        });
+        self.background_poll_deadline.set(Some(deadline));
+        Some(deadline)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2867,7 +2928,7 @@ mod tests {
     }
 
     #[test]
-    fn live_library_seeds_starter_when_empty() {
+    fn live_library_starts_with_empty_source() {
         let dir = std::env::temp_dir().join(format!(
             "typst_editor_empty_{}_{}",
             std::process::id(),
@@ -2882,6 +2943,10 @@ mod tests {
         assert_eq!(app.documents.len(), 1);
         assert_eq!(app.documents[0].name, "untitled.typ");
         assert!(!app.documents[0].from_disk, "starter is not a disk file");
+        assert!(
+            app.documents[0].source.is_empty(),
+            "live documents must not contain sample text"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3256,6 +3321,77 @@ mod tests {
                 .is_some_and(|value| value.contains("Page"))
         );
         assert!(tree.children.iter().all(|node| node.semantic_key.is_some()));
+    }
+
+    #[test]
+    fn native_toolbar_controls_are_exposed_without_focus_activation() {
+        let (mut app, mut doc) = fresh();
+        let tree = app.accessibility().expect("Typst semantics");
+        for target in [
+            "typst.open",
+            "typst.save",
+            "typst.export-pdf",
+            "typst.compile",
+            "typst.show-preview",
+        ] {
+            assert!(
+                tree.children
+                    .iter()
+                    .any(|node| node.action_target.as_deref() == Some(target)),
+                "missing control {target}"
+            );
+        }
+        app.compact = true;
+        assert!(matches!(app.compact_view, CompactPane::Editor));
+        assert!(app.perform_semantic_action(
+            "typst.show-preview",
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &ROOT
+        ));
+        assert!(
+            matches!(app.compact_view, CompactPane::Editor),
+            "focusing a control must not activate it"
+        );
+        assert!(app.perform_semantic_action(
+            "typst.show-preview",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT
+        ));
+        assert!(matches!(app.compact_view, CompactPane::Preview));
+    }
+
+    #[test]
+    fn pending_native_dialog_has_a_stable_non_animation_deadline() {
+        let (mut app, mut doc) = fresh();
+        assert!(app.next_wake_deadline().is_none());
+        app.io = Some((
+            PendingIo::OpenTyp,
+            ui::portal::inject_for_test(PortalOutcome::Cancelled),
+        ));
+        let deadline = app
+            .next_wake_deadline()
+            .expect("file dialogs must complete without animation or further input");
+        assert_eq!(
+            app.next_wake_deadline(),
+            Some(deadline),
+            "queries must not keep postponing polling"
+        );
+        app.sync(&mut doc, &ROOT);
+        assert!(app.io.is_none());
+        assert!(app.next_wake_deadline().is_none());
+    }
+
+    #[test]
+    fn pending_compile_has_a_non_animation_deadline() {
+        let (mut app, _) = fresh();
+        app.request_compile("= Native compile wakeup");
+        assert!(app.compiling());
+        assert!(
+            app.next_wake_deadline().is_some(),
+            "compile completion must be observed with reduced motion"
+        );
     }
 
     #[test]
