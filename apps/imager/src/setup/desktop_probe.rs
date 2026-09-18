@@ -400,6 +400,20 @@ fn parse_package_status(
     Ok(InstalledPackage::Installed { version })
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn sandbox_environment_marker_present(mut present: impl FnMut(&str) -> bool) -> bool {
+    [
+        "FLATPAK_ID",
+        "SNAP",
+        "SNAP_NAME",
+        "container",
+        "QOS_IMAGER_FLATPAK",
+        "TILO_IMAGER_FLATPAK",
+    ]
+    .into_iter()
+    .any(&mut present)
+}
+
 // Also compile the read-only primitives on Unix test hosts for bounded IO tests.
 #[cfg(any(target_os = "linux", all(test, unix)))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -708,16 +722,10 @@ mod native {
     }
 
     fn sandboxed() -> Result<bool, String> {
-        for variable in [
-            "FLATPAK_ID",
-            "SNAP",
-            "SNAP_NAME",
-            "container",
-            "QOS_IMAGER_FLATPAK",
-        ] {
-            if std::env::var_os(variable).is_some() {
-                return Ok(true);
-            }
+        if super::sandbox_environment_marker_present(|variable| {
+            std::env::var_os(variable).is_some()
+        }) {
+            return Ok(true);
         }
         for path in [
             "/.flatpak-info",
@@ -878,6 +886,25 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_environment_markers_refuse_even_empty_present_values() {
+        for marker in [
+            "FLATPAK_ID",
+            "SNAP",
+            "SNAP_NAME",
+            "container",
+            "QOS_IMAGER_FLATPAK",
+            "TILO_IMAGER_FLATPAK",
+        ] {
+            let observations = HashMap::from([(marker, "")]);
+            assert!(
+                sandbox_environment_marker_present(|candidate| observations.contains_key(candidate)),
+                "ignored present sandbox marker {marker}"
+            );
+        }
+        assert!(!sandbox_environment_marker_present(|_| false));
+    }
 
     #[cfg(unix)]
     #[test]
