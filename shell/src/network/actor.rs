@@ -4,6 +4,7 @@
 //! iroh. Tilo only names authenticated endpoint ids and workspace topics.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -284,27 +285,28 @@ pub enum NetEvent {
     PeerJoined {
         ws: WorkspaceId,
         peer: PeerId,
+        membership_epoch: MembershipEpoch,
     },
     PeerLeft {
         ws: WorkspaceId,
         peer: PeerId,
         cause: PeerDepartureCause,
+        membership_epoch: Option<MembershipEpoch>,
     },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
-    HostReady {
-        ws: WorkspaceId,
-        peer: PeerId,
-    },
+    HostReady { ws: WorkspaceId, peer: PeerId },
     Msg {
         ws: WorkspaceId,
         peer: PeerId,
+        membership_epoch: Option<MembershipEpoch>,
         msg: NeighbourMsg,
     },
     PersonalFabric {
         ws: WorkspaceId,
         peer: PeerId,
+        membership_epoch: MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     },
@@ -322,6 +324,19 @@ pub enum NetEvent {
         total_bytes: u64,
         status: PersonalMediaTransferStatus,
     },
+}
+
+/// Actor-minted identity of one endpoint's membership incarnation on one
+/// workspace topic. This value never crosses the wire: it is authority only
+/// for local consumers of [`NetEvent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MembershipEpoch(u64);
+
+impl MembershipEpoch {
+    #[cfg(test)]
+    pub(crate) const fn for_test(value: u64) -> Self {
+        Self(value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,8 +389,13 @@ enum InternalEvent {
     PersonalFabric {
         ws: WorkspaceId,
         peer: EndpointId,
+        connection_incarnation: u64,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
+    },
+    PersonalFabricClosed {
+        peer: EndpointId,
+        connection_incarnation: u64,
     },
     Closed {
         ws: WorkspaceId,
@@ -470,6 +490,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
 #[derive(Clone)]
 struct PersonalFabricProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
+    next_connection_incarnation: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for PersonalFabricProtocol {
@@ -482,9 +503,19 @@ impl ProtocolHandler for PersonalFabricProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
         let tx = self.internal_tx.clone();
+        let connection_incarnation = self
+            .next_connection_incarnation
+            .fetch_add(1, Ordering::Relaxed)
+            .max(1);
         tokio::spawn(async move {
             loop {
                 let Ok(mut recv) = connection.accept_uni().await else {
+                    let _ = tx
+                        .send(InternalEvent::PersonalFabricClosed {
+                            peer,
+                            connection_incarnation,
+                        })
+                        .await;
                     return;
                 };
                 let bytes = match recv
@@ -511,6 +542,7 @@ impl ProtocolHandler for PersonalFabricProtocol {
                     .send(InternalEvent::PersonalFabric {
                         ws: frame.workspace,
                         peer,
+                        connection_incarnation,
                         user_public_key: frame.user_public_key,
                         payload: frame.payload,
                     })
@@ -567,7 +599,12 @@ struct ActorState {
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
-    peers_seen: HashMap<(WorkspaceId, EndpointId), Instant>,
+    peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
+    next_membership_epoch: u64,
+    /// Inbound ALPN connections are bound once to the membership active on
+    /// their first frame. `None` is a tombstone retained until that concrete
+    /// connection closes, so an old connection cannot rebind after reconnect.
+    personal_fabric_ingress: HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
@@ -576,7 +613,95 @@ struct ActorState {
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
 }
 
+#[derive(Clone, Copy)]
+struct PeerMembership {
+    last_seen: Instant,
+    epoch: MembershipEpoch,
+}
+
+fn bind_personal_fabric_ingress(
+    ingress: &mut HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
+    peer: EndpointId,
+    connection_incarnation: u64,
+    ws: WorkspaceId,
+    epoch: MembershipEpoch,
+) -> bool {
+    let key = (peer, connection_incarnation);
+    match ingress.get(&key).copied() {
+        Some(Some(bound)) => bound == (ws, epoch),
+        Some(None) => false,
+        None => {
+            ingress.insert(key, Some((ws, epoch)));
+            true
+        }
+    }
+}
+
+fn revoke_personal_fabric_ingress(
+    ingress: &mut HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
+    ws: WorkspaceId,
+    epoch: MembershipEpoch,
+) {
+    for binding in ingress.values_mut() {
+        if binding.is_some_and(|bound| bound == (ws, epoch)) {
+            *binding = None;
+        }
+    }
+}
+
 impl ActorState {
+    fn touch_or_mint_membership(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+    ) -> (MembershipEpoch, bool) {
+        if let Some(membership) = self.peers_seen.get_mut(&(ws, peer)) {
+            membership.last_seen = Instant::now();
+            return (membership.epoch, false);
+        }
+        self.next_membership_epoch = self.next_membership_epoch.saturating_add(1).max(1);
+        let epoch = MembershipEpoch(self.next_membership_epoch);
+        self.peers_seen.insert(
+            (ws, peer),
+            PeerMembership {
+                last_seen: Instant::now(),
+                epoch,
+            },
+        );
+        (epoch, true)
+    }
+
+    fn touch_existing_membership(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+    ) -> Option<MembershipEpoch> {
+        let membership = self.peers_seen.get_mut(&(ws, peer))?;
+        membership.last_seen = Instant::now();
+        Some(membership.epoch)
+    }
+
+    fn remove_membership_if_epoch(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        epoch: MembershipEpoch,
+    ) -> bool {
+        if !self
+            .peers_seen
+            .get(&(ws, peer))
+            .is_some_and(|membership| membership.epoch == epoch)
+        {
+            return false;
+        }
+        self.peers_seen.remove(&(ws, peer));
+        revoke_personal_fabric_ingress(&mut self.personal_fabric_ingress, ws, epoch);
+        if let Some(connection) = self.personal_fabric_connections.remove(&peer) {
+            connection.close(0_u32.into(), b"membership departed");
+        }
+        true
+    }
+
     /// Handle one [`NetCmd`]. Returns `false` once the command channel has
     /// closed, so [`run`]'s loop should stop.
     #[allow(
@@ -590,7 +715,16 @@ impl ActorState {
             }
             Some(NetCmd::LeaveWorkspace { ws }) => {
                 self.subscribers.remove(&ws);
-                self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
+                let leaving = self
+                    .peers_seen
+                    .iter()
+                    .filter_map(|(&(peer_ws, peer), membership)| {
+                        (peer_ws == ws).then_some((peer, membership.epoch))
+                    })
+                    .collect::<Vec<_>>();
+                for (peer, epoch) in leaving {
+                    self.remove_membership_if_epoch(ws, peer, epoch);
+                }
                 if let Some(topic) = self.topics.remove(&ws) {
                     topic.pump.abort();
                 }
@@ -1215,6 +1349,16 @@ impl ActorState {
             }
             Some(InternalEvent::Closed { ws }) => {
                 self.topics.remove(&ws);
+                let closed = self
+                    .peers_seen
+                    .iter()
+                    .filter_map(|(&(peer_ws, peer), membership)| {
+                        (peer_ws == ws).then_some((peer, membership.epoch))
+                    })
+                    .collect::<Vec<_>>();
+                for (peer, epoch) in closed {
+                    self.remove_membership_if_epoch(ws, peer, epoch);
+                }
             }
             Some(InternalEvent::HostConnected {
                 ws,
@@ -1237,43 +1381,67 @@ impl ActorState {
                 // the peer to have appeared on this workspace's authenticated
                 // gossip topic first; ShellNetwork performs the capability
                 // and claimed-publisher checks before dispatch.
-                if !self.peers_seen.contains_key(&(ws, peer)) {
+                let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
                     tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
                     return true;
-                }
-                self.peers_seen.insert((ws, peer), Instant::now());
+                };
                 // Input has no event id or timestamp, so two deliberate
                 // identical key/button events must not be content-deduped.
                 if (matches!(&msg, NeighbourMsg::RemoteInput { .. })
                     || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
                     && let Some(tx) = self.subscribers.get(&ws)
                 {
-                    let _ = tx.send(NetEvent::Msg { ws, peer, msg }).await;
+                    let _ = tx
+                        .send(NetEvent::Msg {
+                            ws,
+                            peer,
+                            membership_epoch: Some(membership_epoch),
+                            msg,
+                        })
+                        .await;
                 }
             }
             Some(InternalEvent::PersonalFabric {
                 ws,
                 peer,
+                connection_incarnation,
                 user_public_key,
                 payload,
             }) => {
                 // Topic membership establishes reachability only. ShellNetwork
                 // still binds the frame to the peer's certified person/device.
-                if !self.peers_seen.contains_key(&(ws, peer)) {
+                let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
                     tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
                     return true;
+                };
+                if !bind_personal_fabric_ingress(
+                    &mut self.personal_fabric_ingress,
+                    peer,
+                    connection_incarnation,
+                    ws,
+                    membership_epoch,
+                ) {
+                    tracing::warn!(ws, peer = %peer, "personal fabric connection crossed membership authority");
+                    return true;
                 }
-                self.peers_seen.insert((ws, peer), Instant::now());
                 if let Some(tx) = self.subscribers.get(&ws) {
                     let _ = tx
                         .send(NetEvent::PersonalFabric {
                             ws,
                             peer,
+                            membership_epoch,
                             user_public_key,
                             payload,
                         })
                         .await;
                 }
+            }
+            Some(InternalEvent::PersonalFabricClosed {
+                peer,
+                connection_incarnation,
+            }) => {
+                self.personal_fabric_ingress
+                    .remove(&(peer, connection_incarnation));
             }
             None => return false,
         }
@@ -1289,35 +1457,55 @@ impl ActorState {
             // announcement and be rejected by the peer.
             self.announce_identity(ws).await;
         }
-        let Some(tx) = self.subscribers.get(&ws) else {
+        let Some(tx) = self.subscribers.get(&ws).cloned() else {
             return;
         };
         let event = match event {
             GossipEvent::NeighborUp(peer) => {
-                self.peers_seen.insert((ws, peer), Instant::now());
-                Some(NetEvent::PeerJoined { ws, peer })
+                let (membership_epoch, _) = self.touch_or_mint_membership(ws, peer);
+                Some(NetEvent::PeerJoined {
+                    ws,
+                    peer,
+                    membership_epoch,
+                })
             }
             GossipEvent::NeighborDown(peer) => {
-                self.peers_seen.remove(&(ws, peer));
+                let membership_epoch = self
+                    .peers_seen
+                    .get(&(ws, peer))
+                    .map(|membership| membership.epoch);
+                if let Some(epoch) = membership_epoch {
+                    self.remove_membership_if_epoch(ws, peer, epoch);
+                }
                 Some(NetEvent::PeerLeft {
                     ws,
                     peer,
                     cause: PeerDepartureCause::GossipNeighborDown,
+                    membership_epoch,
                 })
             }
             GossipEvent::Received(message) => {
                 let peer = message.delivered_from;
-                let rediscovered = self.peers_seen.insert((ws, peer), Instant::now()).is_none();
+                let (membership_epoch, rediscovered) = self.touch_or_mint_membership(ws, peer);
                 let fingerprint = message_fingerprint(&message.content);
                 if !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order) {
                     return;
                 }
                 match postcard::from_bytes::<NeighbourMsg>(&message.content) {
                     Ok(NeighbourMsg::Heartbeat { .. }) if rediscovered => {
-                        Some(NetEvent::PeerJoined { ws, peer })
+                        Some(NetEvent::PeerJoined {
+                            ws,
+                            peer,
+                            membership_epoch,
+                        })
                     }
                     Ok(NeighbourMsg::Heartbeat { .. }) => None,
-                    Ok(msg) => Some(NetEvent::Msg { ws, peer, msg }),
+                    Ok(msg) => Some(NetEvent::Msg {
+                        ws,
+                        peer,
+                        membership_epoch: Some(membership_epoch),
+                        msg,
+                    }),
                     Err(error) => {
                         tracing::warn!(ws, %error, "invalid collaboration message");
                         None
@@ -1385,6 +1573,7 @@ impl ActorState {
                 Some(NetEvent::Msg {
                     ws,
                     peer: author,
+                    membership_epoch: None,
                     msg,
                 })
             }
@@ -1396,6 +1585,7 @@ impl ActorState {
                     ws,
                     peer,
                     cause: PeerDepartureCause::HostSessionClosed,
+                    membership_epoch: None,
                 })
             }
         };
@@ -1410,18 +1600,25 @@ impl ActorState {
         let stale: Vec<_> = self
             .peers_seen
             .iter()
-            .filter_map(|(&(ws, peer), seen)| {
-                (now.duration_since(*seen) > PEER_TIMEOUT).then_some((ws, peer))
+            .filter_map(|(&(ws, peer), membership)| {
+                (now.duration_since(membership.last_seen) > PEER_TIMEOUT).then_some((
+                    ws,
+                    peer,
+                    membership.epoch,
+                ))
             })
             .collect();
-        for (ws, peer) in stale {
-            self.peers_seen.remove(&(ws, peer));
+        for (ws, peer, membership_epoch) in stale {
+            if !self.remove_membership_if_epoch(ws, peer, membership_epoch) {
+                continue;
+            }
             if let Some(tx) = self.subscribers.get(&ws) {
                 let _ = tx
                     .send(NetEvent::PeerLeft {
                         ws,
                         peer,
                         cause: PeerDepartureCause::LivenessTimedOut,
+                        membership_epoch: Some(membership_epoch),
                     })
                     .await;
             }
@@ -1828,6 +2025,7 @@ async fn run(
             PERSONAL_FABRIC_ALPN,
             PersonalFabricProtocol {
                 internal_tx: internal_tx.clone(),
+                next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
         .spawn();
@@ -1846,6 +2044,8 @@ async fn run(
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
+        next_membership_epoch: 0,
+        personal_fabric_ingress: HashMap::new(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         surface_connections: HashMap::new(),
@@ -2360,6 +2560,30 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn departed_personal_connection_cannot_rebind_after_membership_reconnect() {
+        let peer = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
+        let old_epoch = MembershipEpoch::for_test(7);
+        let new_epoch = MembershipEpoch::for_test(8);
+        let mut ingress = HashMap::new();
+        assert!(bind_personal_fabric_ingress(
+            &mut ingress,
+            peer,
+            11,
+            21,
+            old_epoch,
+        ));
+        revoke_personal_fabric_ingress(&mut ingress, 21, old_epoch);
+        assert!(
+            !bind_personal_fabric_ingress(&mut ingress, peer, 11, 21, new_epoch),
+            "the old QUIC connection stays tombstoned after reconnect"
+        );
+        assert!(
+            bind_personal_fabric_ingress(&mut ingress, peer, 12, 21, new_epoch),
+            "a fresh connection may bind the fresh membership epoch"
+        );
+    }
     use iroh::endpoint::presets;
     use tilo_relay::{
         Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
