@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::{AccountId, Secret, SecretVault};
+use crate::{AccountId, Secret, SecretCustody, SecretVault};
 
 const ITEM_PREFIX: &str = "tilo-secret-item:";
 const GRANT_PREFIX: &str = "tilo-secret-grant:";
@@ -128,6 +128,14 @@ impl SecretStore {
         Self {
             vault: SecretVault::open_in(root),
         }
+    }
+
+    /// Describe where the vault encryption key is currently held.
+    ///
+    /// Callers should surface a local-file fallback honestly rather than
+    /// implying that a desktop keyring accepted the credential.
+    pub fn custody(&self) -> SecretCustody {
+        self.vault.custody()
     }
 
     pub fn list(&self) -> Vec<SecretItem> {
