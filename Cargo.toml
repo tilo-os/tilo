@@ -102,6 +102,7 @@ members = [
     "crates/collab/reference",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-user-identity",
 
     # Dev
     "crates/dev/collab-link",
@@ -114,21 +115,16 @@ members = [
     "crates/dev/ui-graph",
 
     # Doc
+    "crates/doc/format-host",
+    "crates/doc/format-provider-wit",
     "crates/doc/qdoc",
     "crates/doc/qdoc-epub",
     "crates/doc/qdoc-html",
     "crates/doc/qdoc-pdf",
     "crates/doc/qdoc-rtf",
 
-    # Format
-    "crates/format/format-host",
-    "crates/format/format-provider-wit",
-
     # Hosting
     "crates/hosting/tilo-relay",
-
-    # Identity
-    "crates/identity/tilo-user-identity",
 
     # Media
     "crates/media/core",
