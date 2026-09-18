@@ -49,7 +49,7 @@ const BODY_BREAKPOINT_PX: f64 = 640.0;
 /// Space kept clear at the bottom of the file viewport for the transient
 /// item/status pill. The pill includes its hover shadow, so this is larger
 /// than its measured text capsule: no file label or target may sit beneath it.
-const STATUS_BUBBLE_SAFE_INSET: f32 = 64.0;
+pub const STATUS_BUBBLE_SAFE_INSET_PX: f32 = 64.0;
 /// Long absolute paths clip at narrow widths and obscure the recovery action.
 /// Preserve the recognisable tail here; the full location stays in the path bar
 /// and the root accessibility description.
@@ -1074,7 +1074,7 @@ impl FileExplorerWidget {
                 // interactive viewport. Besides making the count easy to
                 // scan, that means it cannot obscure a file name, target, or
                 // keyboard focus ring at the bottom of a compact grid.
-                .with_bottom_content_inset(STATUS_BUBBLE_SAFE_INSET)
+                .with_bottom_content_inset(STATUS_BUBBLE_SAFE_INSET_PX)
                 .with_child(view_child),
         ));
         Box::new(view_col)
@@ -12830,7 +12830,7 @@ mod responsive_body_tests {
 
         assert!(
             scrollable.y1 - content_viewport.y1
-                >= f64::from(STATUS_BUBBLE_SAFE_INSET) - f64::EPSILON,
+                >= f64::from(STATUS_BUBBLE_SAFE_INSET_PX) - f64::EPSILON,
             "the item/status pill has a dedicated bottom lane rather than overlaying files: \
              scrollable={scrollable:?} viewport={content_viewport:?}"
         );
