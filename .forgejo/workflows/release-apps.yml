@@ -9,7 +9,7 @@ on:
     paths:
       - "apps/**"
       - "crates/**"
-      - "ui/**"
+      - "crates/sdk/ui-core/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -28,7 +28,7 @@ on:
     paths:
       - "apps/**"
       - "crates/**"
-      - "ui/**"
+      - "crates/sdk/ui-core/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"

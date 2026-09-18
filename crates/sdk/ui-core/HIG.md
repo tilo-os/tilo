@@ -279,8 +279,8 @@ shared widgets, and are themselves candidates for a shared editor primitive
 for `Color::rgb`", and that pattern is why hard-coded colour accumulated under
 it for months: `Color::rgb8(…)` is the *old* peniko constructor and this tree
 does not call it. The one automated check that implemented the rule
-(`ui/tests/design_token_audit.rs`) was green over 125 literal
-`Color::from_rgb8(…)` colours in `ui/src` alone, because it was looking for a
+(`crates/sdk/ui-core/tests/design_token_audit.rs`) was green over 125 literal
+`Color::from_rgb8(…)` colours in `crates/sdk/ui-core/src` alone, because it was looking for a
 string that appears nowhere. Two more spellings were invisible for the same
 reason:
 
@@ -297,7 +297,7 @@ reason:
   `Colors::lift()` and `Colors::hairline_on()` do measure.
 
 `design_token_audit.rs` now covers all three, ratcheted against
-`ui/tests/design_token_baseline.txt`: a file may never gain one, and a file that
+`crates/sdk/ui-core/tests/design_token_baseline.txt`: a file may never gain one, and a file that
 sheds one lowers its record in the same commit. The count only goes down. That
 file, not this document, is the authority on how many are left.
 
@@ -665,9 +665,9 @@ One regex covering the colour half, so it can be pasted rather than remembered:
 git diff -U0 | grep -nE 'Color::(from_)?rgba?8\(|Color::(WHITE|BLACK)|(surface|border)_white_'
 ```
 
-The first three are enforced for `ui/src` by
-`ui/tests/design_token_audit.rs::theme_escape_hatches_do_not_grow`, ratcheted
-against `ui/tests/design_token_baseline.txt` so the count can only fall. Apps
+The first three are enforced for `crates/sdk/ui-core/src` by
+`crates/sdk/ui-core/tests/design_token_audit.rs::theme_escape_hatches_do_not_grow`, ratcheted
+against `crates/sdk/ui-core/tests/design_token_baseline.txt` so the count can only fall. Apps
 are not scanned yet; until they are, the grep above is what stands between an
 app and a colour the user's theme cannot reach.
 

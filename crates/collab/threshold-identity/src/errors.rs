@@ -2,7 +2,7 @@
 //!
 //! `ThresholdError` is the single error type from every fallible public
 //! operation — `pub` so downstream code (the enrolment-UI controller in
-//! `shell/`, the recovery-flow widget in `ui/`) can pattern-match for
+//! `shell/`, the recovery-flow widget in `crates/sdk/ui-core/`) can pattern-match for
 //! human-actionable messages.
 //!
 //! Each variant captures *what* went wrong, not *why*: e.g. `DkgFailed`
