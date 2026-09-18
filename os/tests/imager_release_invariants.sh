@@ -417,11 +417,13 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'debugfs mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat mtype ntfscp' "$workflow" \
   && grep -Fq 'qemu-img "$qemu_binary" sfdisk socat tesseract' "$workflow" \
   && grep -Fq 'name: tilo-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
-  && grep -Fq '"$vm" boot-installer --gl --no-tpm' "$cycle" \
-  && grep -Fq '"$vm" boot-target --gl --no-tpm' "$cycle" \
+  && grep -Fxq 'os/tests/installer_cycle_graphics.py' "$repo/tools/security-boundary-invariants.txt" \
+  && grep -Fq 'Build and pin the isolated installer profile encoder' "$workflow" \
+  && grep -Fq -- '--manifest-path apps/imager/profile-tool/Cargo.toml' "$workflow" \
+  && grep -Fq 'encoder_sha256="$(sha256sum "$encoder"' "$workflow" \
+  && grep -Fq 'TILO_PROFILE_ENCODER=%s\nTILO_PROFILE_ENCODER_SHA256=%s\n' "$workflow" \
   && grep -Fq '"$vm" login --passcode-only "$TILO_PASS"' "$cycle" \
   && grep -Fq '"$vm" init-cycle' "$cycle" \
-  && grep -Fq 'cargo run -q -p imager --locked --example embed-profile' "$cycle" \
   && grep -Fq 'truncate -s "+$((64 * 1024))" "$profiled_raw"' "$cycle" \
   && grep -Fq 'profiled live installer did not start at Disk' "$cycle" \
   && grep -Fq 'embedded username did not reach the account screen' "$cycle" \
