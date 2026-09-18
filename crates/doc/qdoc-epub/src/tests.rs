@@ -328,7 +328,7 @@ fn chapters_are_well_formed_xml_with_self_closing_void_elements() {
     snap.properties.insert("title".into(), "WF".into());
     snap.blocks = vec![
         heading(1, "Title <with> & ampersand"),
-        block("paragraph", ""), // empty paragraph → qdoc-html emits a <br>
+        block("paragraph", ""), // empty paragraph emits a <br>
         block("paragraph", "ok"),
     ];
 
