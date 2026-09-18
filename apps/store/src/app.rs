@@ -45,8 +45,8 @@ use ui::tilo_actions::{
     ExecutionMode, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use ui::widget::{
-    CardGrid, Column, Container, Dropdown, EmptyState, Row, ScrollAxis, Scrollable, Spacer, Text,
-    TextInput, Widget,
+    Banner, CardGrid, Column, Container, Dropdown, EmptyState, Row, ScrollAxis, Scrollable, Spacer,
+    Text, TextInput, Widget,
 };
 use ui::{
     Theme,
@@ -264,14 +264,6 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.1} KiB", bytes as f64 / 1024.0)
     }
-}
-
-/// Keep failure feedback in the masthead's single-line reading measure. The
-/// full worker message remains in the status surface and operation record;
-/// injecting an arbitrary remote error verbatim here can force an unbreakable
-/// layout width and corrupt the retained header scene.
-fn operation_error_summary() -> &'static str {
-    "The last operation failed. Refresh the catalogue and try again."
 }
 
 /// A compact, printable status detail for the visible progress/error surface.
@@ -1486,20 +1478,10 @@ impl StoreApp {
     }
 
     fn catalogue_source_summary(&self) -> String {
-        // Reuse the catalogue's stable summary slot for progress rather than
-        // growing the masthead while a worker is busy. On a narrow window an
-        // extra header row can otherwise consume the scroll body's negotiated
-        // height and make the top controls appear to slide underneath it.
-        if self.worker_busy {
-            return format!(
-                "Status · {}",
-                if self.status_line.is_empty() {
-                    "Package operation in progress…".to_string()
-                } else {
-                    visible_operation_status(&self.status_line)
-                }
-            );
-        }
+        // This line stays about catalogue scope even while an operation is
+        // running. Progress and failures receive their own semantic notice
+        // below, rather than making this quiet provenance label unexpectedly
+        // change meaning or compete with the result count.
         let source_count = self
             .items
             .iter()
@@ -1518,6 +1500,29 @@ impl StoreApp {
                 if source_count == 1 { "" } else { "s" }
             )
         }
+    }
+
+    /// Persistent operation feedback belongs in document flow, not in a
+    /// tiny subtitle or a transient overlay. `Banner` is the shared native
+    /// alert treatment: it honours every theme, retains a readable measure at
+    /// 200% type, and exposes a status role to assistive technology.
+    fn operation_notice(&self) -> Option<Box<dyn Widget>> {
+        if self.worker_busy {
+            let detail = if self.status_line.is_empty() {
+                "Package operation in progress…".to_string()
+            } else {
+                visible_operation_status(&self.status_line)
+            };
+            return Some(Box::new(
+                Banner::info("Working in background").with_message(detail),
+            ));
+        }
+        self.operation_error.as_ref().map(|_| {
+            Box::new(
+                Banner::error("The last operation failed")
+                    .with_message(visible_operation_status(&self.status_line)),
+            ) as Box<dyn Widget>
+        })
     }
 
     /// Detail, remote-management, and moderation views have a much shorter
@@ -2896,25 +2901,29 @@ impl StoreApp {
                                 .push(Box::new(refresh_btn)),
                         )),
                 ));
-            return Box::new(
-                Container::new().with_no_padding().with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(8.0)
-                        .push(Box::new(main))
+            let mut header = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(main))
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(self.build_filter_row(theme))
+                        .push(self.build_category_row(theme))
                         .push(Box::new(
-                            Row::new()
-                                .no_wrap()
-                                .push(self.build_filter_row(theme))
-                                .push(self.build_category_row(theme))
-                                .push(Box::new(
-                                    Text::new(&self.catalogue_source_summary())
-                                        .with_scaled_size(12.0)
-                                        .with_color(theme.text_dim),
-                                )),
+                            Text::new(&self.catalogue_source_summary())
+                                .with_scaled_size(12.0)
+                                .with_color(theme.text_dim),
                         )),
-                )),
+                ));
+            if let Some(notice) = self.operation_notice() {
+                header = header.push(notice);
+            }
+            return Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(header)),
             );
         }
         if compact_header {
@@ -2954,35 +2963,15 @@ impl StoreApp {
                         .push(Box::new(refresh_btn)),
                 ))
                 .push(scope_controls);
-            if !self.readable_type_layout() || self.worker_busy {
+            if !self.readable_type_layout() {
                 header = header.push(Box::new(
                     Text::new(&self.catalogue_source_summary())
                         .with_scaled_size(12.0)
                         .with_color(theme.text_tertiary),
                 ));
             }
-            if self.operation_error.is_some() && !self.items.is_empty() {
-                header = header.push(Box::new(
-                    Container::new().with_background().with_child(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .with_intrinsic_height()
-                            .with_gap(4.0)
-                            .push(Box::new(
-                                Text::new(operation_error_summary())
-                                    .with_scaled_size(13.0)
-                                    .with_color(theme.text_dim),
-                            ))
-                            .push(Box::new(
-                                Text::new(&format!(
-                                    "Status · {}",
-                                    visible_operation_status(&self.status_line)
-                                ))
-                                .with_scaled_size(12.0)
-                                .with_color(theme.text_tertiary),
-                            )),
-                    )),
-                ));
+            if let Some(notice) = self.operation_notice() {
+                header = header.push(notice);
             }
             return Box::new(
                 Container::new()
@@ -3054,28 +3043,8 @@ impl StoreApp {
                         )),
                 )),
         ));
-        if self.operation_error.is_some() && !self.items.is_empty() {
-            header = header.push(Box::new(
-                Container::new().with_background().with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(4.0)
-                        .push(Box::new(
-                            Text::new(operation_error_summary())
-                                .with_scaled_size(13.0)
-                                .with_color(theme.text_dim),
-                        ))
-                        .push(Box::new(
-                            Text::new(&format!(
-                                "Status · {}",
-                                visible_operation_status(&self.status_line)
-                            ))
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_tertiary),
-                        )),
-                )),
-            ));
+        if let Some(notice) = self.operation_notice() {
+            header = header.push(notice);
         }
         Box::new(
             Container::new()
@@ -5105,6 +5074,31 @@ mod tests {
     }
 
     #[test]
+    fn operation_notice_uses_shared_live_banner_semantics() {
+        let mut app = seeded_app();
+        assert!(app.operation_notice().is_none());
+
+        app.set_status_line("Installing Notes…");
+        app.set_worker_busy(true);
+        let busy = app
+            .operation_notice()
+            .and_then(|notice| notice.accessibility())
+            .expect("busy work has a semantic notice");
+        assert_eq!(busy.name.as_deref(), Some("Working in background"));
+        assert_eq!(busy.live, Some(Politeness::Polite));
+        assert_eq!(busy.description.as_deref(), Some("Installing Notes…"));
+
+        app.set_worker_busy(false);
+        app.set_operation_error(Some("signature mismatch".into()));
+        let error = app
+            .operation_notice()
+            .and_then(|notice| notice.accessibility())
+            .expect("failure has a semantic notice");
+        assert_eq!(error.name.as_deref(), Some("The last operation failed"));
+        assert_eq!(error.live, Some(Politeness::Assertive));
+    }
+
+    #[test]
     fn live_constructor_starts_empty() {
         // The live app must show a real (empty) catalog until the
         // refresh worker streams one — never a fabricated one.
@@ -5697,16 +5691,6 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("ed25519:abababababab…abababababab"));
         assert!(lines[0].contains("64 characters"));
-    }
-
-    #[test]
-    fn operation_error_summary_stays_within_the_masthead_reading_measure() {
-        assert_eq!(
-            operation_error_summary(),
-            "The last operation failed. Refresh the catalogue and try again."
-        );
-        assert!(operation_error_summary().chars().count() <= 72);
-        assert!(!operation_error_summary().contains('\n'));
     }
 
     #[test]
