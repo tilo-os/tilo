@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,18 @@ def module(path, name):
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, **kwargs).stdout.decode().strip()
+
+
+def stage_tools_context(source, build, cosign):
+    """Keep executable metadata explicit across the isolated COPY context."""
+    shutil.copyfile(source / 'os/Containerfile.development-compile', build / 'Containerfile')
+    staged = build / 'cosign'
+    shutil.copyfile(cosign, staged)
+    staged.chmod(0o755)
+    # Run in the actual image during its existing build, before allocating a
+    # worker or pulling application inputs. The frozen source remains untouched.
+    with (build / 'Containerfile').open('a') as recipe:
+        recipe.write('\nRUN /usr/local/bin/cosign version\n')
 
 
 def prepare_receipts(environment):
@@ -156,9 +169,7 @@ def main():
         secrets.mkdir(mode=0o700)
         compile_driver.stage_cache_credentials(secrets)
         # Existing tools convention: no source or cache credentials in context.
-        import shutil
-        shutil.copyfile(args.source / 'os/Containerfile.development-compile', build / 'Containerfile')
-        shutil.copyfile(run('which', 'cosign'), build / 'cosign')
+        stage_tools_context(args.source, build, run('which', 'cosign'))
         try:
             require(subprocess.run(['docker', 'image', 'inspect', name + ':tools'], capture_output=True).returncode != 0,
                     'existing tools tag requires operator recovery')
