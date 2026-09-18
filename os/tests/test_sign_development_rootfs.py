@@ -15,11 +15,32 @@ sys.path.insert(0, str(DEV))
 SPEC = importlib.util.spec_from_file_location('rootfs_signing', DEV / 'sign-development-rootfs.py')
 producer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(producer)
+FIXTURE_SPEC = importlib.util.spec_from_file_location(
+    'development_rootfs_fixture', Path(__file__).with_name('development_rootfs.py'))
+fixture = importlib.util.module_from_spec(FIXTURE_SPEC)
+FIXTURE_SPEC.loader.exec_module(fixture)
 IMAGE = 'sha256:' + 'a' * 64
 REVISION = 'b' * 40
 
 
 class RootfsIdentityTests(unittest.TestCase):
+    def test_native_fixture_installs_the_crypto_verifier_into_the_raw_rootfs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source-crypto'
+            source.write_bytes(b'fixture verifier')
+            source.chmod(0o755)
+            context = root / 'context'
+            context.mkdir()
+            destination = fixture.stage_rootfs_crypto(context, source)
+
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+            self.assertTrue(os.access(destination, os.X_OK))
+            self.assertIn(
+                'COPY tilo-crypto /usr/local/bin/tilo-crypto',
+                fixture.raw_rootfs_containerfile(),
+            )
+
     def test_podman_preserves_explicit_local_storage_without_caller_secrets(self):
         settings = {name: '/fixture/' + name.lower() for name in producer.LOCAL_STORAGE_ENVIRONMENT}
         settings.update({'PATH': '/untrusted/bin', 'UNRELATED_SECRET': 'not-for-child',
