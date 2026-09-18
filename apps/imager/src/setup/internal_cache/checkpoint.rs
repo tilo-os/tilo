@@ -159,6 +159,11 @@ impl Record {
         if generation == 0
             || generation > MAX_GENERATION
             || epoch >= generation
+            || (kind != Kind::Reset
+                && epoch > 0
+                && epoch
+                    .checked_add(2)
+                    .is_none_or(|minimum| generation < minimum))
             || (generation == 1 && (kind != Kind::Prefix || length != 0))
             || length > full_size
             || full_size == 0
