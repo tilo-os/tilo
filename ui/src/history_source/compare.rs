@@ -29,7 +29,7 @@ pub enum CompareError {
 
 /// Compare the dependency frontier immediately before the selected changes to
 /// the frontier after every selected change. Concurrent changes outside the
-/// selection are excluded.
+/// selection are excluded. Pending edits are neither committed nor included.
 ///
 /// # Errors
 ///
@@ -43,6 +43,13 @@ pub fn compare_entries(
     if entries.is_empty() {
         return Err(CompareError::EmptySelection);
     }
+    super::with_committed_history(doc, |doc| compare_committed_entries(doc, entries))
+}
+
+fn compare_committed_entries(
+    doc: &mut AutoCommit,
+    entries: &[HistoryEntryId],
+) -> Result<HistoryComparison, CompareError> {
     let changes = doc.get_changes(&[]);
     let mut selected = Vec::with_capacity(entries.len());
     for id in entries {
