@@ -905,7 +905,10 @@ fn parse_args(
     parse_args_extended(args, allowed_flags, allowed_options, &[], &[], 0)
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one shared argument scan keeps duplicate checks and cross-mode validation together"
+)]
 fn parse_args_extended(
     args: &[String],
     allowed_flags: &[&str],

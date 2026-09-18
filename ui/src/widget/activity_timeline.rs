@@ -1415,7 +1415,10 @@ impl ActivityTimeline {
         self.dirty = true;
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "recursive grouping threads two output collections and a shared expansion budget alongside the active filters"
+    )]
     fn emit_group(
         &self,
         g: &HistoryGroup,
@@ -1622,7 +1625,10 @@ fn draw_chip(
 }
 
 impl ActivityTimeline {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "row composition passes shared paint inputs plus independent hover, selection and focus state to its drawing stages"
+    )]
     fn draw_row(
         &self,
         scene: &mut Scene,
@@ -1740,7 +1746,10 @@ impl ActivityTimeline {
 
     /// The depth rail plus the selection/hover backdrop, under everything
     /// else in the row.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "row chrome needs both full and indented bounds plus independent selection, hover and focus treatments"
+    )]
     fn draw_row_chrome(
         scene: &mut Scene,
         transform: Affine,
@@ -1811,7 +1820,10 @@ impl ActivityTimeline {
     }
 
     /// The author name, and its identity-hash suffix when there's room for it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "author rendering shares the row layout measurements so avatar, name and identity hash fit the same allocated slot"
+    )]
     fn draw_row_author(
         scene: &mut Scene,
         transform: Affine,
@@ -1881,7 +1893,10 @@ impl ActivityTimeline {
     /// strike-through when the change was redacted. Returns whether it was —
     /// the caller uses that to veto the revert chip across a redaction
     /// boundary.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "summary rendering consumes the parent row geometry and trailing action reservation without recomputing layout"
+    )]
     fn draw_row_body(
         &self,
         scene: &mut Scene,
@@ -1966,7 +1981,10 @@ impl ActivityTimeline {
     }
 
     /// The relative-time slot, and the `[Revert]` chip when it applies.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "timestamp and revert rendering share row geometry, current time and independent hover and redaction conditions"
+    )]
     fn draw_row_trailing(
         &self,
         scene: &mut Scene,
@@ -2021,7 +2039,10 @@ impl ActivityTimeline {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "group rendering combines shared paint inputs with the selected group, interaction state and optional name field"
+    )]
     fn draw_group_row(
         &self,
         scene: &mut Scene,
@@ -2095,7 +2116,10 @@ impl ActivityTimeline {
 
     /// The band header's depth rail, backdrop, name spine and disclosure
     /// triangle — everything drawn before any text.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "group chrome uses full and indented geometry, group nesting data and independent hover and focus state"
+    )]
     fn draw_group_row_chrome(
         scene: &mut Scene,
         transform: Affine,
@@ -2179,7 +2203,10 @@ impl ActivityTimeline {
 
     /// The band title, or the in-place rename field when `naming` is set;
     /// plus the "still open" dot.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "group title and inline rename share measured title geometry and the actual action-chip boundary"
+    )]
     fn draw_group_row_title(
         scene: &mut Scene,
         transform: Affine,
@@ -2244,7 +2271,10 @@ impl ActivityTimeline {
 
     /// Line two: subtitle, right-aligned relative time, and the packed
     /// author dots between them.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "group metadata shares typography and alignment measurements with the title while formatting its timestamp"
+    )]
     fn draw_group_row_meta(
         scene: &mut Scene,
         transform: Affine,
@@ -2428,7 +2458,10 @@ impl ActivityTimeline {
 
     /// The `[All] [Edits] [Comments] ...` chip row; populates
     /// [`Self::chip_rects`] so hit-testing lines up with what was painted.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "filter chip rendering uses measured strip capacity and label mode together with resolved active and idle colors"
+    )]
     fn draw_filter_chips(
         &mut self,
         scene: &mut Scene,
@@ -2483,7 +2516,10 @@ impl ActivityTimeline {
     }
 
     /// The right-anchored `author:...` pill.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "author pill rendering uses the measured label width and strip geometry together with resolved active and idle colors"
+    )]
     fn draw_author_pill(
         &mut self,
         scene: &mut Scene,
