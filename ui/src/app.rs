@@ -626,6 +626,8 @@ pub struct ActionUiRoute {
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
 )]
 pub struct App {
+    #[cfg(windows)]
+    startup_renderer: Option<RendererPreparation>,
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
@@ -1273,6 +1275,8 @@ impl App {
         );
         let configured_theme = inputs.configured_theme.resolve();
         let mut app = Self {
+            #[cfg(windows)]
+            startup_renderer: None,
             wake_scope,
             state,
             root_widget,
@@ -7003,6 +7007,12 @@ impl App {
         self.run_with_setup(|_| {});
     }
 
+    #[cfg(windows)]
+    pub(crate) fn with_startup_renderer(mut self, renderer: Option<RendererPreparation>) -> Self {
+        self.startup_renderer = renderer;
+        self
+    }
+
     /// Like [`App::run`] but exposes the winit [`EventLoopProxy`] before the
     /// loop starts, so callers can spawn threads that inject [`UserEvent`]s.
     ///
@@ -7716,9 +7726,71 @@ fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
 ) -> Result<RenderThreadHandle, String> {
+    create_window_render_prepared(window, transparent, None)
+}
+
+pub(crate) struct PreparedRenderer {
+    context: RenderContext,
+    device_id: usize,
+    renderer: Renderer,
+}
+
+#[cfg(windows)]
+pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, String>>;
+
+/// Start only for a real native launch, before loading app state and fonts.
+/// This owns no window/surface and can safely finish if construction fails:
+/// dropping the receiving end drops the prepared GPU resources at send.
+#[cfg(windows)]
+pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
+    if std::env::var_os("TILO_SERIAL_RENDER_INIT").is_some() {
+        return None;
+    }
+    let (sender, receiver) = mpsc::channel();
+    match std::thread::Builder::new()
+        .name("native-render-prepare".into())
+        .spawn(move || {
+            let prepare = || {
+                tilo_startup_metrics::mark("native-render-prepare-start");
+                let mut context = RenderContext::new();
+                let device_id = pollster::block_on(context.device(None))
+                    .ok_or_else(|| "could not prepare a drawing device".to_string())?;
+                let device = context
+                    .devices
+                    .get(device_id)
+                    .ok_or_else(|| "prepared drawing device index out of range".to_string())?;
+                let renderer = create_native_renderer(&device.device)?;
+                tilo_startup_metrics::mark("native-render-prepare-done");
+                Ok(PreparedRenderer {
+                    context,
+                    device_id,
+                    renderer,
+                })
+            };
+            let _ = sender.send(prepare());
+        }) {
+        Ok(_) => Some(receiver),
+        Err(error) => {
+            tracing::warn!(%error, "could not prepare renderer in parallel");
+            None
+        }
+    }
+}
+
+fn create_window_render_prepared(
+    window: &Arc<Window>,
+    transparent: bool,
+    prepared: Option<PreparedRenderer>,
+) -> Result<RenderThreadHandle, String> {
     tilo_startup_metrics::mark("window-render-context-start");
     let size = window.inner_size();
-    let mut render_cx = RenderContext::new();
+    let (mut render_cx, prepared_renderer) = match prepared {
+        Some(prepared) => (
+            prepared.context,
+            Some((prepared.device_id, prepared.renderer)),
+        ),
+        None => (RenderContext::new(), None),
+    };
     let mut surface = pollster::block_on(render_cx.create_surface(
         window.clone(),
         size.width.max(1),
@@ -7751,9 +7823,20 @@ fn create_window_render(
     if let Some(err) = pollster::block_on(configure_scope.pop()) {
         return Err(format!("could not configure the drawing surface: {err}"));
     }
+    // create_surface checks presentation support and selects another device
+    // if necessary. Never use pipelines built for a different device.
+    let renderer = match prepared_renderer {
+        Some((device_id, renderer)) if device_id == surface.dev_id => renderer,
+        _ => create_native_renderer(&device_handle.device)?,
+    };
+    // After this, every GPU call happens on its render worker.
+    spawn_render_thread(render_cx, surface, renderer)
+}
+
+fn create_native_renderer(device: &vello::wgpu::Device) -> Result<Renderer, String> {
     tilo_startup_metrics::mark("window-vello-init-start");
     let renderer = Renderer::new(
-        &device_handle.device,
+        device,
         RendererOptions {
             // Diagnostic/low-end fallback: CPU coarse stages with the same
             // GPU fine raster. Kept opt-in until the benchmark proves it is
@@ -7770,8 +7853,7 @@ fn create_window_render(
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
     tilo_startup_metrics::mark("window-vello-init-done");
-    // After this, every GPU call happens on its render worker.
-    spawn_render_thread(render_cx, surface, renderer)
+    Ok(renderer)
 }
 
 fn begin_window_render_init(
@@ -7802,6 +7884,25 @@ impl AppHandler {
     /// initial focus events. `Err` is returned, not panicked, since every step here can
     /// fail when the compositor exits mid-open.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
+        #[cfg(windows)]
+        if let Some(preparation) = self.app.startup_renderer.take() {
+            match preparation.recv() {
+                Ok(Ok(prepared)) => {
+                    self.render = Some(create_window_render_prepared(
+                        window,
+                        false,
+                        Some(prepared),
+                    )?);
+                    return Ok(());
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "renderer preparation disconnected; selecting device for the actual surface")
+                }
+            }
+        }
         self.render = Some(create_window_render(window, false)?);
         Ok(())
     }

@@ -572,8 +572,22 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     });
 
     if spec.definition.is_some() {
+        #[cfg(windows)]
+        let renderer = if args.shots.is_none()
+            && args.responsive_matrix.is_none()
+            && args.headless.is_none()
+            && !args.native_audit
+        {
+            crate::app::prepare_native_renderer()
+        } else {
+            None
+        };
         match dispatch_definition(spec, &args)? {
-            DefinitionDispatch::Native(app) => (*app).run(),
+            DefinitionDispatch::Native(app) => {
+                #[cfg(windows)]
+                let app = Box::new((*app).with_startup_renderer(renderer));
+                (*app).run();
+            }
             DefinitionDispatch::Headless(status) => std::process::exit(status),
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
@@ -799,7 +813,12 @@ fn build_native_app_with_constructor(
 }
 
 fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
-    build_native_app(spec, args)?.run();
+    #[cfg(windows)]
+    let renderer = crate::app::prepare_native_renderer();
+    let app = build_native_app(spec, args)?;
+    #[cfg(windows)]
+    let app = app.with_startup_renderer(renderer);
+    app.run();
     Ok(())
 }
 
