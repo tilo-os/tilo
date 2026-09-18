@@ -8,7 +8,7 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
@@ -468,6 +468,15 @@ fn personal_media_object_matches(path: &Path, total_bytes: u64, expected: [u8; 3
 struct PersonalFabricReplayWindow {
     seen: std::collections::HashSet<[u8; 16]>,
     order: VecDeque<[u8; 16]>,
+}
+
+const PERSONAL_DISPLAY_AUTHORIZATION_TTL: Duration = Duration::from_secs(90);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PersonalDisplayAuthorization {
+    source: crate::shell::personal_continuity::DeviceId,
+    target: crate::shell::personal_continuity::DeviceId,
+    expires: Instant,
 }
 
 impl PersonalFabricReplayWindow {
@@ -1021,6 +1030,10 @@ pub struct ShellNetwork {
     /// Authenticated display lifecycle and latest-wins frames. This queue is
     /// deliberately separate from actions so video cannot starve control.
     personal_display_messages: Mutex<VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>>,
+    /// Explicit mirror routes authorized by target consent. They are bounded,
+    /// session-local, and never projected into durable placement state.
+    personal_display_authorizations:
+        Mutex<std::collections::BTreeMap<[u8; 16], PersonalDisplayAuthorization>>,
     /// Bounded session-local replay filter for action request ids.
     personal_fabric_action_replays: Mutex<PersonalFabricReplayWindow>,
     /// Streaming, content-verified cache for explicit device-local media
@@ -1393,6 +1406,7 @@ impl ShellNetwork {
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
             personal_display_messages: Mutex::new(VecDeque::new()),
+            personal_display_authorizations: Mutex::new(std::collections::BTreeMap::new()),
             personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
             personal_media_cache_root: personal_media_cache_root(),
             personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
@@ -3237,6 +3251,65 @@ impl ShellNetwork {
             .map_or_else(|_| Vec::new(), |mut actions| actions.drain(..).collect())
     }
 
+    /// Install one exact mirror route after target-local consent.
+    pub fn authorize_personal_display_session(
+        &self,
+        session_id: [u8; 16],
+        source: crate::shell::personal_continuity::DeviceId,
+        target: crate::shell::personal_continuity::DeviceId,
+    ) -> Result<(), String> {
+        const MAX_AUTHORIZATIONS: usize = 8;
+        let local = self
+            .personal_continuity_device
+            .as_ref()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        if session_id == [0; 16] || source == target || (local != &source && local != &target) {
+            return Err("invalid personal display session binding".into());
+        }
+        let peer = if local == &source { &target } else { &source };
+        if !self
+            .device_fabric
+            .lock()
+            .map_err(|_| "personal display fabric is unavailable".to_string())?
+            .snapshots()
+            .get(peer)
+            .is_some_and(|snapshot| snapshot.presence.online)
+        {
+            return Err("the certified display peer is offline".into());
+        }
+        let mut authorizations = self
+            .personal_display_authorizations
+            .lock()
+            .map_err(|_| "personal display authorization store is unavailable".to_string())?;
+        let now = Instant::now();
+        authorizations.retain(|_, authorization| authorization.expires > now);
+        if let Some(existing) = authorizations.get_mut(&session_id) {
+            if existing.source != source || existing.target != target {
+                return Err("personal display session id is already bound".into());
+            }
+            existing.expires = now + PERSONAL_DISPLAY_AUTHORIZATION_TTL;
+            return Ok(());
+        }
+        if authorizations.len() >= MAX_AUTHORIZATIONS {
+            return Err("too many personal display sessions are active".into());
+        }
+        authorizations.insert(
+            session_id,
+            PersonalDisplayAuthorization {
+                source,
+                target,
+                expires: now + PERSONAL_DISPLAY_AUTHORIZATION_TTL,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn purge_personal_display_session(&self, session_id: [u8; 16]) {
+        if let Ok(mut authorizations) = self.personal_display_authorizations.lock() {
+            authorizations.remove(&session_id);
+        }
+    }
+
     /// Send one display lifecycle/frame message to its exact certified peer.
     /// Saved placement is the durable authorization; absent or stale bindings
     /// fail closed before bytes reach the actor.
@@ -3303,17 +3376,38 @@ impl ShellNetwork {
             | PersonalDisplayMessage::Feedback { source, target, .. }
             | PersonalDisplayMessage::End { source, target, .. } => (source, target),
         };
-        self.device_fabric
+        let session_id = match message {
+            PersonalDisplayMessage::Offer { session_id, .. }
+            | PersonalDisplayMessage::Accept { session_id, .. }
+            | PersonalDisplayMessage::Frame { session_id, .. }
+            | PersonalDisplayMessage::Feedback { session_id, .. }
+            | PersonalDisplayMessage::End { session_id, .. } => *session_id,
+        };
+        let ephemeral = self
+            .personal_display_authorizations
             .lock()
             .ok()
-            .and_then(|fabric| fabric.snapshots().get(target).cloned())
-            .is_some_and(|snapshot| {
-                snapshot.presence.online
-                    && snapshot.presence.capabilities.video_output
-                    && snapshot
-                        .display
-                        .is_some_and(|display| display.stream_source.as_ref() == Some(source))
-            })
+            .is_some_and(|mut authorizations| {
+                let now = Instant::now();
+                authorizations.retain(|_, authorization| authorization.expires > now);
+                let Some(authorization) = authorizations.get(&session_id) else {
+                    return false;
+                };
+                authorization.source == *source && authorization.target == *target
+            });
+        ephemeral
+            || self
+                .device_fabric
+                .lock()
+                .ok()
+                .and_then(|fabric| fabric.snapshots().get(target).cloned())
+                .is_some_and(|snapshot| {
+                    snapshot.presence.online
+                        && snapshot.presence.capabilities.video_output
+                        && snapshot
+                            .display
+                            .is_some_and(|display| display.stream_source.as_ref() == Some(source))
+                })
     }
 
     /// Replace this machine's self-authored fabric snapshot and advertise it
@@ -5238,6 +5332,7 @@ pub(crate) fn shell_network_for_test(
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
         personal_display_messages: Mutex::new(VecDeque::new()),
+        personal_display_authorizations: Mutex::new(std::collections::BTreeMap::new()),
         personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
         personal_media_cache_root: None,
         personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
@@ -5328,6 +5423,80 @@ mod tests {
             queue
                 .iter()
                 .all(|message| matches!(message, PersonalDisplayMessage::End { .. }))
+        );
+    }
+
+    #[test]
+    fn personal_display_authorization_is_exact_expiring_and_purgeable() {
+        use crate::shell::device_fabric::PersonalDisplayMessage;
+
+        let tree = WorkspaceTreeHandle::new(WorkspaceTree::new());
+        let (network, _) = shell_network_for_test(tree, 41);
+        let source = test_device(1);
+        let target = test_device(2);
+        let other = test_device(3);
+        let session_id = [7; 16];
+        let message = |session_id, source, target| PersonalDisplayMessage::End {
+            session_id,
+            source,
+            target,
+        };
+        network
+            .personal_display_authorizations
+            .lock()
+            .unwrap()
+            .insert(
+                session_id,
+                PersonalDisplayAuthorization {
+                    source: source.clone(),
+                    target: target.clone(),
+                    expires: Instant::now() + Duration::from_secs(1),
+                },
+            );
+
+        assert!(network.display_route_authorized(&message(
+            session_id,
+            source.clone(),
+            target.clone()
+        )));
+        assert!(!network.display_route_authorized(&message(
+            [8; 16],
+            source.clone(),
+            target.clone()
+        )));
+        assert!(!network.display_route_authorized(&message(
+            session_id,
+            other.clone(),
+            target.clone()
+        )));
+        assert!(!network.display_route_authorized(&message(session_id, source.clone(), other)));
+
+        network.purge_personal_display_session(session_id);
+        assert!(!network.display_route_authorized(&message(
+            session_id,
+            source.clone(),
+            target.clone()
+        )));
+
+        network
+            .personal_display_authorizations
+            .lock()
+            .unwrap()
+            .insert(
+                session_id,
+                PersonalDisplayAuthorization {
+                    source: source.clone(),
+                    target: target.clone(),
+                    expires: Instant::now(),
+                },
+            );
+        assert!(!network.display_route_authorized(&message(session_id, source, target)));
+        assert!(
+            network
+                .personal_display_authorizations
+                .lock()
+                .unwrap()
+                .is_empty()
         );
     }
 

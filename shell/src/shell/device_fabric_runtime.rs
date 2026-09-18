@@ -184,6 +184,7 @@ struct OutboundDisplaySession {
     last_offer: Option<Instant>,
     sequence: u64,
     request_keyframe: bool,
+    mirror_only: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -193,6 +194,7 @@ struct InboundDisplaySession {
     profile: DisplayStreamProfile,
     last_activity: Instant,
     last_sequence: u64,
+    mirror_only: bool,
 }
 
 #[derive(Default)]
@@ -239,6 +241,7 @@ impl PersonalDisplayState {
             session_id: session.session_id,
             source: session.source,
             profile: session.profile,
+            mirror_only: session.mirror_only,
         });
     }
 
@@ -272,6 +275,7 @@ pub enum PersonalDisplayEvent {
         session_id: [u8; 16],
         source: crate::shell::personal_continuity::DeviceId,
         profile: DisplayStreamProfile,
+        mirror_only: bool,
     },
     Frame {
         session_id: [u8; 16],
@@ -285,6 +289,101 @@ pub enum PersonalDisplayEvent {
     Ended {
         session_id: [u8; 16],
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayMirrorFailure {
+    Denied,
+    PeerOffline,
+    TimedOut,
+    Transport,
+    Policy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayMirrorPhase {
+    AwaitingConsent,
+    Starting,
+    Streaming,
+    Failed(DisplayMirrorFailure),
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayMirrorConsentView {
+    pub session_id: [u8; 16],
+    pub source_label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayMirrorStatusView {
+    pub session_id: [u8; 16],
+    pub peer: crate::shell::personal_continuity::DeviceId,
+    pub peer_label: String,
+    pub outbound: bool,
+    pub phase: DisplayMirrorPhase,
+}
+
+#[derive(Clone, Debug)]
+struct DisplayMirrorSession {
+    peer: crate::shell::personal_continuity::DeviceId,
+    outbound: bool,
+    phase: DisplayMirrorPhase,
+    updated: Instant,
+}
+
+impl DisplayMirrorSession {
+    fn matches(
+        &self,
+        peer: &crate::shell::personal_continuity::DeviceId,
+        outbound: bool,
+        phase: DisplayMirrorPhase,
+    ) -> bool {
+        self.peer == *peer && self.outbound == outbound && self.phase == phase
+    }
+}
+
+#[derive(Default)]
+struct DisplayMirrorState {
+    sessions: BTreeMap<[u8; 16], DisplayMirrorSession>,
+}
+
+const MAX_DISPLAY_MIRROR_SESSIONS: usize = 8;
+const DISPLAY_MIRROR_CONSENT_TIMEOUT: Duration = Duration::from_secs(60);
+const DISPLAY_MIRROR_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+const DISPLAY_MIRROR_HISTORY_TTL: Duration = Duration::from_secs(5 * 60);
+
+impl DisplayMirrorState {
+    fn prune(&mut self) {
+        self.sessions.retain(|_, session| {
+            !matches!(
+                session.phase,
+                DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+            ) || session.updated.elapsed() < DISPLAY_MIRROR_HISTORY_TTL
+        });
+        while self.sessions.len() > MAX_DISPLAY_MIRROR_SESSIONS {
+            let Some(oldest) = self
+                .sessions
+                .iter()
+                .filter(|(_, session)| {
+                    matches!(
+                        session.phase,
+                        DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+                    )
+                })
+                .min_by_key(|(_, session)| session.updated)
+                .map(|(session_id, _)| *session_id)
+            else {
+                break;
+            };
+            self.sessions.remove(&oldest);
+        }
+    }
+}
+
+fn display_mirror_state() -> &'static Mutex<DisplayMirrorState> {
+    static STATE: OnceLock<Mutex<DisplayMirrorState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(DisplayMirrorState::default()))
 }
 
 fn personal_display_state() -> &'static Mutex<PersonalDisplayState> {
@@ -1352,6 +1451,7 @@ impl DeviceFabricRuntime {
         } else {
             discard_nearby_staging_results();
         }
+        pump_display_mirrors(network, policy);
         pump_personal_displays(network, policy);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
@@ -1753,6 +1853,11 @@ impl DeviceFabricRuntime {
                         &envelope.source,
                         action,
                     );
+                }
+                action @ (PersonalFabricAction::DisplayMirrorRequest { .. }
+                | PersonalFabricAction::DisplayMirrorDecision { .. }
+                | PersonalFabricAction::DisplayMirrorStop { .. }) => {
+                    handle_display_mirror_action(network, &envelope.source, action);
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
@@ -3093,6 +3198,9 @@ fn handle_spatial_action(
         | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
         | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
         | PersonalFabricAction::BluetoothHandoffCancel { .. }
+        | PersonalFabricAction::DisplayMirrorRequest { .. }
+        | PersonalFabricAction::DisplayMirrorDecision { .. }
+        | PersonalFabricAction::DisplayMirrorStop { .. }
         | PersonalFabricAction::NearbyDrop { .. }
         | PersonalFabricAction::NearbyDropResult { .. }
         | PersonalFabricAction::NearbyTransferOffer { .. }
@@ -5007,6 +5115,50 @@ fn bluetooth_handoff_status_views(
     statuses
 }
 
+fn display_mirror_views(
+    fabric: &crate::shell::device_fabric::DeviceFabric,
+) -> (Vec<DisplayMirrorConsentView>, Vec<DisplayMirrorStatusView>) {
+    let Ok(mut state) = display_mirror_state().lock() else {
+        return (Vec::new(), Vec::new());
+    };
+    state.prune();
+    let label = |peer: &crate::shell::personal_continuity::DeviceId| {
+        fabric.snapshots().get(peer).map_or_else(
+            || peer.as_str().to_string(),
+            |snapshot| snapshot.presence.label.clone(),
+        )
+    };
+    let mut consents = state
+        .sessions
+        .iter()
+        .filter(|(_, session)| {
+            !session.outbound && session.phase == DisplayMirrorPhase::AwaitingConsent
+        })
+        .map(|(session_id, session)| DisplayMirrorConsentView {
+            session_id: *session_id,
+            source_label: label(&session.peer),
+        })
+        .collect::<Vec<_>>();
+    let mut statuses = state
+        .sessions
+        .iter()
+        .map(|(session_id, session)| DisplayMirrorStatusView {
+            session_id: *session_id,
+            peer: session.peer.clone(),
+            peer_label: label(&session.peer),
+            outbound: session.outbound,
+            phase: session.phase,
+        })
+        .collect::<Vec<_>>();
+    consents.sort_by(|left, right| left.source_label.cmp(&right.source_label));
+    statuses.sort_by(|left, right| {
+        left.peer_label
+            .cmp(&right.peer_label)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
+    (consents, statuses)
+}
+
 fn gamepad_authorization_views(
     fabric: &crate::shell::device_fabric::DeviceFabric,
 ) -> Vec<crate::shell::overlay_host::GamepadAuthorizationView> {
@@ -5667,6 +5819,379 @@ pub fn take_personal_display_events() -> Vec<PersonalDisplayEvent> {
         .map_or_else(|_| Vec::new(), |mut state| state.events.drain(..).collect())
 }
 
+fn finish_display_mirror(
+    network: &ShellNetwork,
+    session_id: [u8; 16],
+    phase: DisplayMirrorPhase,
+    send_end: bool,
+) {
+    let session = display_mirror_state().lock().ok().and_then(|mut state| {
+        let session = state.sessions.get_mut(&session_id)?;
+        if matches!(
+            session.phase,
+            DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+        ) {
+            return None;
+        }
+        session.phase = phase;
+        session.updated = Instant::now();
+        Some(session.clone())
+    });
+    let Some(session) = session else { return };
+    let local = network
+        .local_device_fabric_identity()
+        .map(|(device, _)| device);
+    if let Ok(mut display) = personal_display_state().lock() {
+        if session.outbound {
+            if display
+                .outbound
+                .get(&session.peer)
+                .is_some_and(|active| active.session_id == session_id && active.mirror_only)
+            {
+                display.outbound.remove(&session.peer);
+            }
+        } else if display
+            .inbound
+            .as_ref()
+            .is_some_and(|active| active.session_id == session_id && active.mirror_only)
+        {
+            display.inbound = None;
+            display.events.retain(|event| {
+                !matches!(event, PersonalDisplayEvent::Frame { session_id: queued, .. } if queued == &session_id)
+            });
+            display.queue_event(PersonalDisplayEvent::Ended { session_id });
+        }
+    }
+    if send_end
+        && let Some(local) = local
+        && let Some(message) = display_mirror_end_message(session_id, &local, &session)
+    {
+        let _ = network.send_personal_display(&session.peer, message);
+    }
+    network.purge_personal_display_session(session_id);
+}
+
+fn display_mirror_end_message(
+    session_id: [u8; 16],
+    local: &crate::shell::personal_continuity::DeviceId,
+    session: &DisplayMirrorSession,
+) -> Option<PersonalDisplayMessage> {
+    session.outbound.then(|| PersonalDisplayMessage::End {
+        session_id,
+        source: local.clone(),
+        target: session.peer.clone(),
+    })
+}
+
+fn display_mirror_receiver_available(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+) -> bool {
+    let Some((local, _)) = network.local_device_fabric_identity() else {
+        return false;
+    };
+    let fabric = network.device_fabric();
+    fabric
+        .snapshots()
+        .get(source)
+        .is_some_and(|snapshot| snapshot.presence.online)
+        && fabric.snapshots().get(&local).is_some_and(|snapshot| {
+            snapshot.presence.online && snapshot.presence.capabilities.video_output
+        })
+}
+
+fn handle_display_mirror_action(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+    action: PersonalFabricAction,
+) {
+    match action {
+        PersonalFabricAction::DisplayMirrorRequest { session_id } => {
+            if !display_mirror_receiver_available(network, source)
+                || personal_display_state()
+                    .lock()
+                    .is_ok_and(|state| state.inbound.is_some())
+            {
+                let _ = network.send_personal_fabric_action(
+                    source,
+                    PersonalFabricAction::DisplayMirrorDecision {
+                        session_id,
+                        approved: false,
+                        profile: None,
+                    },
+                );
+                return;
+            }
+            if let Ok(mut state) = display_mirror_state().lock() {
+                state.prune();
+                if state.sessions.len() >= MAX_DISPLAY_MIRROR_SESSIONS
+                    || state.sessions.contains_key(&session_id)
+                {
+                    return;
+                }
+                state.sessions.insert(
+                    session_id,
+                    DisplayMirrorSession {
+                        peer: source.clone(),
+                        outbound: false,
+                        phase: DisplayMirrorPhase::AwaitingConsent,
+                        updated: Instant::now(),
+                    },
+                );
+            }
+        }
+        PersonalFabricAction::DisplayMirrorDecision {
+            session_id,
+            approved,
+            profile,
+        } => {
+            let valid = display_mirror_state().lock().is_ok_and(|state| {
+                state.sessions.get(&session_id).is_some_and(|session| {
+                    session.matches(source, true, DisplayMirrorPhase::AwaitingConsent)
+                })
+            });
+            if !valid {
+                return;
+            }
+            if !approved {
+                finish_display_mirror(
+                    network,
+                    session_id,
+                    DisplayMirrorPhase::Failed(DisplayMirrorFailure::Denied),
+                    false,
+                );
+                return;
+            }
+            let Some(profile) = profile else { return };
+            let Some((local, _)) = network.local_device_fabric_identity() else {
+                return;
+            };
+            if network
+                .authorize_personal_display_session(session_id, local, source.clone())
+                .is_err()
+            {
+                finish_display_mirror(
+                    network,
+                    session_id,
+                    DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+                    false,
+                );
+                return;
+            }
+            if let Ok(mut display) = personal_display_state().lock() {
+                if display.outbound.contains_key(source) {
+                    drop(display);
+                    finish_display_mirror(
+                        network,
+                        session_id,
+                        DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+                        false,
+                    );
+                    let _ = network.send_personal_fabric_action(
+                        source,
+                        PersonalFabricAction::DisplayMirrorStop { session_id },
+                    );
+                    return;
+                }
+                display.outbound.insert(
+                    source.clone(),
+                    OutboundDisplaySession {
+                        session_id,
+                        profile,
+                        accepted: false,
+                        last_offer: None,
+                        sequence: 0,
+                        request_keyframe: false,
+                        mirror_only: true,
+                    },
+                );
+            }
+            if let Ok(mut state) = display_mirror_state().lock()
+                && let Some(session) = state.sessions.get_mut(&session_id)
+            {
+                session.phase = DisplayMirrorPhase::Starting;
+                session.updated = Instant::now();
+            }
+        }
+        PersonalFabricAction::DisplayMirrorStop { session_id } => {
+            let valid = display_mirror_state().lock().is_ok_and(|state| {
+                state
+                    .sessions
+                    .get(&session_id)
+                    .is_some_and(|session| session.peer == *source)
+            });
+            if valid {
+                finish_display_mirror(network, session_id, DisplayMirrorPhase::Stopped, true);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn request_display_mirror(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let (local, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+    if target == &local {
+        return Err("this display is already local".into());
+    }
+    if personal_display_state()
+        .lock()
+        .map_err(|_| "personal display coordinator is unavailable".to_string())?
+        .outbound
+        .contains_key(target)
+    {
+        return Err("that device already has an active display stream".into());
+    }
+    let fabric = network.device_fabric();
+    if !fabric.snapshots().get(target).is_some_and(|snapshot| {
+        snapshot.presence.online && snapshot.presence.capabilities.video_output
+    }) {
+        return Err("the certified target cannot receive video".into());
+    }
+    drop(fabric);
+    let mut session_id = [0; 16];
+    while session_id == [0; 16] {
+        OsRng.fill_bytes(&mut session_id);
+    }
+    {
+        let mut state = display_mirror_state()
+            .lock()
+            .map_err(|_| "display mirror coordinator is unavailable".to_string())?;
+        state.prune();
+        if state.sessions.len() >= MAX_DISPLAY_MIRROR_SESSIONS {
+            return Err("too many display mirror sessions are active".into());
+        }
+        state.sessions.insert(
+            session_id,
+            DisplayMirrorSession {
+                peer: target.clone(),
+                outbound: true,
+                phase: DisplayMirrorPhase::AwaitingConsent,
+                updated: Instant::now(),
+            },
+        );
+    }
+    if let Err(error) = network.send_personal_fabric_action(
+        target,
+        PersonalFabricAction::DisplayMirrorRequest { session_id },
+    ) {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+            false,
+        );
+        return Err(error);
+    }
+    Ok(session_id)
+}
+
+pub fn resolve_display_mirror_consent(
+    network: &ShellNetwork,
+    session_id: [u8; 16],
+    approved: bool,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let session = display_mirror_state()
+        .lock()
+        .map_err(|_| "display mirror coordinator is unavailable".to_string())?
+        .sessions
+        .get(&session_id)
+        .filter(|session| !session.outbound && session.phase == DisplayMirrorPhase::AwaitingConsent)
+        .cloned()
+        .ok_or_else(|| "that display mirror consent is no longer pending".to_string())?;
+    if approved && !display_mirror_receiver_available(network, &session.peer) {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+            false,
+        );
+        return network
+            .send_personal_fabric_action(
+                &session.peer,
+                PersonalFabricAction::DisplayMirrorDecision {
+                    session_id,
+                    approved: false,
+                    profile: None,
+                },
+            )
+            .map(|_| ());
+    }
+    if approved {
+        if personal_display_state()
+            .lock()
+            .map_err(|_| "personal display coordinator is unavailable".to_string())?
+            .inbound
+            .is_some()
+        {
+            return Err("this display is already receiving another stream".into());
+        }
+        let (local, _) = network
+            .local_device_fabric_identity()
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        network.authorize_personal_display_session(session_id, session.peer.clone(), local)?;
+        if let Ok(mut state) = display_mirror_state().lock()
+            && let Some(pending) = state.sessions.get_mut(&session_id)
+        {
+            pending.phase = DisplayMirrorPhase::Starting;
+            pending.updated = Instant::now();
+        }
+    } else {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Denied),
+            false,
+        );
+    }
+    let result = network.send_personal_fabric_action(
+        &session.peer,
+        PersonalFabricAction::DisplayMirrorDecision {
+            session_id,
+            approved,
+            profile: approved.then(default_display_profile),
+        },
+    );
+    if result.is_err() {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+            false,
+        );
+    }
+    result.map(|_| ())
+}
+
+pub fn stop_display_mirror(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let session = display_mirror_state()
+        .lock()
+        .map_err(|_| "display mirror coordinator is unavailable".to_string())?
+        .sessions
+        .get(&session_id)
+        .filter(|session| {
+            !matches!(
+                session.phase,
+                DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+            )
+        })
+        .cloned()
+        .ok_or_else(|| "that display mirror session is no longer active".to_string())?;
+    let result = network.send_personal_fabric_action(
+        &session.peer,
+        PersonalFabricAction::DisplayMirrorStop { session_id },
+    );
+    finish_display_mirror(network, session_id, DisplayMirrorPhase::Stopped, true);
+    result.map(|_| ())
+}
+
 /// The strictest profile accepted by all active receivers. A single encoded
 /// whole-desktop packet can therefore be fanned out without exceeding any
 /// negotiated target ceiling.
@@ -5714,6 +6239,7 @@ pub fn publish_personal_display_packet(
         return false;
     };
     let mut delivered = false;
+    let mut failed_mirrors = Vec::new();
     for (target, session) in &mut state.outbound {
         if !session.accepted {
             continue;
@@ -5730,7 +6256,20 @@ pub fn publish_personal_display_packet(
             height: packet.height,
             annex_b: packet.annex_b.clone(),
         };
-        delivered |= network.send_personal_display(target, message).is_ok();
+        if network.send_personal_display(target, message).is_ok() {
+            delivered = true;
+        } else if session.mirror_only {
+            failed_mirrors.push(session.session_id);
+        }
+    }
+    drop(state);
+    for session_id in failed_mirrors {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+            false,
+        );
     }
     delivered
 }
@@ -5794,6 +6333,88 @@ pub fn take_personal_display_keyframe_request() -> bool {
     clippy::too_many_lines,
     reason = "session reconciliation and its exhaustive wire transition match stay together as one fail-closed boundary"
 )]
+fn pump_display_mirrors(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    if let Some((local, _)) = network.local_device_fabric_identity() {
+        let active = display_mirror_state().lock().map_or_else(
+            |_| Vec::new(),
+            |state| {
+                state
+                    .sessions
+                    .iter()
+                    .filter(|(_, session)| {
+                        matches!(
+                            session.phase,
+                            DisplayMirrorPhase::Starting | DisplayMirrorPhase::Streaming
+                        )
+                    })
+                    .map(|(session_id, session)| (*session_id, session.clone()))
+                    .collect::<Vec<_>>()
+            },
+        );
+        for (session_id, session) in active {
+            let (source, target) = if session.outbound {
+                (local.clone(), session.peer)
+            } else {
+                (session.peer, local.clone())
+            };
+            let _ = network.authorize_personal_display_session(session_id, source, target);
+        }
+    }
+    let online = network
+        .device_fabric()
+        .snapshots()
+        .values()
+        .filter(|snapshot| snapshot.presence.online)
+        .map(|snapshot| snapshot.owner.clone())
+        .collect::<BTreeSet<_>>();
+    let terminal = display_mirror_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            state.prune();
+            state
+                .sessions
+                .iter()
+                .filter_map(|(session_id, session)| {
+                    if matches!(
+                        session.phase,
+                        DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+                    ) {
+                        return None;
+                    }
+                    let failure = if !policy.permits(ContinuityCapability::DisplayInput) {
+                        DisplayMirrorFailure::Policy
+                    } else if !online.contains(&session.peer) {
+                        DisplayMirrorFailure::PeerOffline
+                    } else {
+                        let timeout = if session.phase == DisplayMirrorPhase::Streaming {
+                            DISPLAY_MIRROR_IDLE_TIMEOUT
+                        } else {
+                            DISPLAY_MIRROR_CONSENT_TIMEOUT
+                        };
+                        if session.updated.elapsed() < timeout {
+                            return None;
+                        }
+                        DisplayMirrorFailure::TimedOut
+                    };
+                    Some((*session_id, session.peer.clone(), failure))
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+    for (session_id, peer, failure) in terminal {
+        let _ = network.send_personal_fabric_action(
+            &peer,
+            PersonalFabricAction::DisplayMirrorStop { session_id },
+        );
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(failure),
+            true,
+        );
+    }
+}
+
 fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
     if !policy.permits(ContinuityCapability::DisplayInput) {
         // Drain transport ingress while disabled so stale offers cannot become
@@ -5848,9 +6469,9 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
     }
     let stale_targets = state
         .outbound
-        .keys()
-        .filter(|target| !desired.contains(target))
-        .cloned()
+        .iter()
+        .filter(|(target, session)| !session.mirror_only && !desired.contains(target))
+        .map(|(target, _)| target.clone())
         .collect::<Vec<_>>();
     for target in stale_targets {
         if let Some(session) = state.outbound.remove(&target) {
@@ -5877,6 +6498,7 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                 last_offer: None,
                 sequence: 0,
                 request_keyframe: false,
+                mirror_only: false,
             }
         });
         let offer_interval = if session.accepted {
@@ -5902,6 +6524,34 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
             ));
         }
     }
+    for (target, session) in state
+        .outbound
+        .iter_mut()
+        .filter(|(_, session)| session.mirror_only)
+    {
+        let offer_interval = if session.accepted {
+            DISPLAY_KEEPALIVE
+        } else {
+            DISPLAY_OFFER_RETRY
+        };
+        if session
+            .last_offer
+            .is_none_or(|last| now.saturating_duration_since(last) >= offer_interval)
+        {
+            session.last_offer = Some(now);
+            sends.push((
+                target.clone(),
+                PersonalDisplayMessage::Offer {
+                    protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
+                    session_id: session.session_id,
+                    source: local.clone(),
+                    target: target.clone(),
+                    profile: session.profile,
+                    issued_unix_ms: unix_ms(),
+                },
+            ));
+        }
+    }
 
     for message in network.take_personal_display_messages() {
         match message {
@@ -5912,6 +6562,21 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                 profile,
                 ..
             } if target == local => {
+                let mirror_only = display_mirror_state().lock().is_ok_and(|state| {
+                    state.sessions.get(&session_id).is_some_and(|session| {
+                        !session.outbound
+                            && session.peer == source
+                            && session.phase == DisplayMirrorPhase::Starting
+                    })
+                });
+                if !mirror_only && authorized_inbound.as_ref() != Some(&source) {
+                    continue;
+                }
+                if state.inbound.as_ref().is_some_and(|active| {
+                    active.session_id != session_id || active.source != source
+                }) {
+                    continue;
+                }
                 let negotiated = profile.negotiate(default_display_profile());
                 let Some(profile) = negotiated else { continue };
                 state.install_inbound(InboundDisplaySession {
@@ -5920,6 +6585,7 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                     profile,
                     last_activity: now,
                     last_sequence: 0,
+                    mirror_only,
                 });
                 sends.push((
                     source.clone(),
@@ -5945,6 +6611,13 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                 {
                     session.profile = profile;
                     session.accepted = true;
+                    if session.mirror_only
+                        && let Ok(mut mirrors) = display_mirror_state().lock()
+                        && let Some(mirror) = mirrors.sessions.get_mut(&session_id)
+                    {
+                        mirror.phase = DisplayMirrorPhase::Streaming;
+                        mirror.updated = now;
+                    }
                 }
             }
             PersonalDisplayMessage::Frame {
@@ -5959,6 +6632,14 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                 annex_b,
             } if target == local => {
                 if state.accept_frame(session_id, &source, sequence, width, height, now) {
+                    if let Ok(mut mirrors) = display_mirror_state().lock()
+                        && let Some(mirror) = mirrors.sessions.get_mut(&session_id)
+                        && !mirror.outbound
+                        && mirror.peer == source
+                    {
+                        mirror.phase = DisplayMirrorPhase::Streaming;
+                        mirror.updated = now;
+                    }
                     state.events.retain(|event| !matches!(event, PersonalDisplayEvent::Frame { session_id: queued, .. } if queued == &session_id));
                     state.queue_event(PersonalDisplayEvent::Frame {
                         session_id,
@@ -5983,6 +6664,12 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                     && session.session_id == session_id
                 {
                     session.request_keyframe |= request_keyframe || queue_pressure >= 80;
+                    if session.mirror_only
+                        && let Ok(mut mirrors) = display_mirror_state().lock()
+                        && let Some(mirror) = mirrors.sessions.get_mut(&session_id)
+                    {
+                        mirror.updated = now;
+                    }
                 }
             }
             PersonalDisplayMessage::End {
@@ -5993,15 +6680,46 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                     .as_ref()
                     .is_some_and(|session| session.session_id == session_id) =>
             {
+                let mirror_only = state
+                    .inbound
+                    .as_ref()
+                    .is_some_and(|session| session.mirror_only);
                 state.inbound = None;
                 state.queue_event(PersonalDisplayEvent::Ended { session_id });
+                if mirror_only {
+                    if let Ok(mut mirrors) = display_mirror_state().lock()
+                        && let Some(mirror) = mirrors.sessions.get_mut(&session_id)
+                    {
+                        mirror.phase = DisplayMirrorPhase::Stopped;
+                        mirror.updated = now;
+                    }
+                    network.purge_personal_display_session(session_id);
+                }
             }
             _ => {}
         }
     }
     drop(state);
     for (target, message) in sends {
-        let _ = network.send_personal_display(&target, message);
+        let session_id = match &message {
+            PersonalDisplayMessage::Offer { session_id, .. }
+            | PersonalDisplayMessage::Accept { session_id, .. }
+            | PersonalDisplayMessage::Frame { session_id, .. }
+            | PersonalDisplayMessage::Feedback { session_id, .. }
+            | PersonalDisplayMessage::End { session_id, .. } => *session_id,
+        };
+        if network.send_personal_display(&target, message).is_err()
+            && display_mirror_state()
+                .lock()
+                .is_ok_and(|state| state.sessions.contains_key(&session_id))
+        {
+            finish_display_mirror(
+                network,
+                session_id,
+                DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+                false,
+            );
+        }
     }
 }
 
@@ -7462,6 +8180,7 @@ mod tests {
             profile,
             last_activity: Instant::now(),
             last_sequence: 0,
+            mirror_only: false,
         });
         state.events.clear();
         state.install_inbound(InboundDisplaySession {
@@ -7470,6 +8189,7 @@ mod tests {
             profile,
             last_activity: Instant::now(),
             last_sequence: 0,
+            mirror_only: false,
         });
         assert!(matches!(
             state.events.pop_front(),
@@ -7491,11 +8211,79 @@ mod tests {
             profile: default_display_profile(),
             last_activity: Instant::now(),
             last_sequence: 0,
+            mirror_only: false,
         });
         assert!(state.accept_frame([9; 16], &source, 2, 1280, 720, Instant::now()));
         assert!(!state.accept_frame([9; 16], &source, 1, 1280, 720, Instant::now()));
         assert!(!state.accept_frame([9; 16], &source, 2, 1280, 720, Instant::now()));
         assert_eq!(state.inbound.as_ref().unwrap().last_sequence, 2);
+    }
+
+    #[test]
+    fn display_mirror_authority_is_exact_and_active_sessions_are_never_pruned() {
+        let source = DeviceId::new("source").unwrap();
+        let other = DeviceId::new("other").unwrap();
+        let session = DisplayMirrorSession {
+            peer: source.clone(),
+            outbound: false,
+            phase: DisplayMirrorPhase::AwaitingConsent,
+            updated: Instant::now() - DISPLAY_MIRROR_CONSENT_TIMEOUT - Duration::from_secs(1),
+        };
+        assert!(session.matches(&source, false, DisplayMirrorPhase::AwaitingConsent));
+        assert!(!session.matches(&other, false, DisplayMirrorPhase::AwaitingConsent));
+        assert!(!session.matches(&source, true, DisplayMirrorPhase::AwaitingConsent));
+
+        let mut state = DisplayMirrorState::default();
+        state.sessions.insert([1; 16], session);
+        state.sessions.insert(
+            [2; 16],
+            DisplayMirrorSession {
+                peer: source,
+                outbound: true,
+                phase: DisplayMirrorPhase::Stopped,
+                updated: Instant::now() - DISPLAY_MIRROR_HISTORY_TTL - Duration::from_secs(1),
+            },
+        );
+        state.prune();
+        assert!(state.sessions.contains_key(&[1; 16]));
+        assert!(!state.sessions.contains_key(&[2; 16]));
+    }
+
+    #[test]
+    fn mirror_frames_keep_exact_peer_session_and_monotonic_sequence() {
+        let source = DeviceId::new("source").unwrap();
+        let other = DeviceId::new("other").unwrap();
+        let mut state = PersonalDisplayState::default();
+        state.install_inbound(InboundDisplaySession {
+            session_id: [3; 16],
+            source: source.clone(),
+            profile: default_display_profile(),
+            last_activity: Instant::now(),
+            last_sequence: 0,
+            mirror_only: true,
+        });
+        assert!(state.accept_frame([3; 16], &source, 1, 1280, 720, Instant::now()));
+        assert!(!state.accept_frame([3; 16], &source, 1, 1280, 720, Instant::now()));
+        assert!(!state.accept_frame([4; 16], &source, 2, 1280, 720, Instant::now()));
+        assert!(!state.accept_frame([3; 16], &other, 2, 1280, 720, Instant::now()));
+    }
+
+    #[test]
+    fn only_the_mirror_source_authors_display_end() {
+        let local = DeviceId::new("local").unwrap();
+        let peer = DeviceId::new("peer").unwrap();
+        let session = |outbound| DisplayMirrorSession {
+            peer: peer.clone(),
+            outbound,
+            phase: DisplayMirrorPhase::Streaming,
+            updated: Instant::now(),
+        };
+        assert!(matches!(
+            display_mirror_end_message([5; 16], &local, &session(true)),
+            Some(PersonalDisplayMessage::End { source, target, .. })
+                if source == local && target == peer
+        ));
+        assert!(display_mirror_end_message([5; 16], &local, &session(false)).is_none());
     }
 
     fn pending_gamepad(source: &str) -> PendingGamepadAuthorization {
