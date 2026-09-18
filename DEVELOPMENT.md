@@ -319,8 +319,17 @@ Git Client opens local repositories, including Unicode Windows paths, and suppor
 staging, commits, history, branches and local filesystem remotes. Text fields and
 repository opening work through native Windows accessibility. Its toolbar wraps
 to retain every control in narrow windows. Discard operations respect the
-repository's LF/CRLF checkout policy. HTTPS and SSH transports are not yet enabled
-in the current Git dependency configuration.
+repository's LF/CRLF checkout policy. The Git backend includes HTTPS and SSH
+transports, uses configured credential helpers and SSH-agent credentials, and
+stops retrying rejected credentials. Pull refuses to overwrite conflicting local
+edits, and Push reports server-side ref rejection.
+
+Remote integration tests require Git, Python 3 (`python` on Windows, `python3`
+elsewhere), and the OpenSSL CLI on PATH. They use disposable loopback servers and
+fake credentials to verify authenticated HTTP fetch/push/pull, rejection handling,
+and refusal of an untrusted HTTPS certificate. SSH transfer and trusted HTTPS
+transfer are not covered by these fixtures. Remote operations still run
+synchronously in the app; background progress and cancellation remain to be added.
 
 ```powershell
 cargo test --locked -p git-client --all-targets
