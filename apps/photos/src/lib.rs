@@ -173,6 +173,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "selection-many-albums",
     "album-manage",
     "metadata-edit",
+    "metadata-batch",
     "cropping",
     "edited",
 ];
@@ -358,7 +359,8 @@ pub fn seed_scenario(
         | "selection"
         | "selection-many-albums"
         | "album-manage"
-        | "metadata-edit" => {
+        | "metadata-edit"
+        | "metadata-batch" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
             for (variant, (name, captured_at)) in [
@@ -451,6 +453,8 @@ pub fn seed_scenario(
                 app.show_album_editor_for_shot(doc);
             } else if scenario == "metadata-edit" {
                 app.show_metadata_editor_for_shot(doc);
+            } else if scenario == "metadata-batch" {
+                app.show_batch_metadata_editor_for_shot(doc);
             } else if matches!(scenario, "people" | "people-detail") {
                 // A manual, explicitly labelled fixture exercises the review
                 // layout without pretending that a face model recognized

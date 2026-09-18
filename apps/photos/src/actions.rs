@@ -81,7 +81,7 @@ const MAX_RESOURCE_ID_CHARS: usize = 4_096;
 const MAX_ALBUM_ID_CHARS: usize = 160;
 const MAX_NAME_CHARS: usize = 256;
 const MAX_ALBUM_MEMBERS: usize = 4_096;
-const MAX_BATCH_PHOTOS: usize = 4_096;
+pub(crate) const MAX_BATCH_PHOTOS: usize = 4_096;
 const MAX_ANALYSIS_TEXT_CHARS: usize = crate::analysis::MAX_OCR_CHARS;
 const MAX_ANALYSIS_LABELS: usize = 64;
 const MAX_ANALYSIS_LABEL_CHARS: usize = 128;
@@ -396,10 +396,21 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     })
 }
 
+/// An explicit field-level decision in an atomic multi-photo metadata edit.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MetadataPatch<T> {
+    /// Preserve the value already stored on each addressed photograph.
+    Keep,
+    /// Remove the value (or empty the complete label list).
+    Clear,
+    /// Replace the value with this explicit final value.
+    Set(T),
+}
+
 /// Every collaborative operation on the open photograph.
 ///
-/// One variant, carrying the absolute post-edit state. See the module docs for
-/// why it is absolute rather than incremental.
+/// Each variant carries absolute post-action state. See the module docs for
+/// why durable changes are deterministic rather than incremental UI commands.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PhotosAction {
     /// Replace the edits in force with exactly this value.
@@ -443,6 +454,19 @@ pub enum PhotosAction {
         people: Vec<String>,
         tags: Vec<String>,
         captured_at: Option<String>,
+    },
+    /// Atomically edit the chosen metadata dimensions across a bounded,
+    /// explicit selection. `Keep` is distinct from `Clear`, so a mixed-value
+    /// batch editor never destroys data merely because its field starts
+    /// blank. Location belongs in the same action so collaborators cannot
+    /// observe labels from one save and coordinates from another.
+    SetMetadataBatch {
+        photo_ids: Vec<String>,
+        folder: MetadataPatch<String>,
+        people: MetadataPatch<Vec<String>>,
+        tags: MetadataPatch<Vec<String>>,
+        captured_at: MetadataPatch<String>,
+        location: MetadataPatch<PhotoLocation>,
     },
     /// Replace one person's complete, explicit membership.  This is the
     /// collaboration boundary for the local People review: face clusters,
@@ -807,6 +831,117 @@ impl Action for PhotosAction {
                 photo.people.clone_from(people);
                 photo.tags.clone_from(tags);
                 photo.captured_at.clone_from(captured_at);
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetMetadataBatch {
+                photo_ids,
+                folder,
+                people,
+                tags,
+                captured_at,
+                location,
+            } => {
+                if photo_ids.is_empty()
+                    || photo_ids.len() > MAX_BATCH_PHOTOS
+                    || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
+                    || photo_ids.iter().enumerate().any(|(index, id)| {
+                        photo_ids
+                            .get(..index)
+                            .is_some_and(|previous| previous.contains(id))
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "metadata batch must contain unique, valid photograph ids".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                    return Err(ActionError::Refused(
+                        "a selected photograph is no longer in the library".into(),
+                    ));
+                }
+
+                // Validate the complete post-action record for every photo
+                // before changing any of them. This is the atomicity boundary
+                // for both collaboration replay and local multi-edit UX.
+                for photo in library
+                    .photos
+                    .iter()
+                    .filter(|photo| photo_ids.contains(&photo.id))
+                {
+                    let next_folder = match folder {
+                        MetadataPatch::Keep => photo.folder.clone(),
+                        MetadataPatch::Clear => None,
+                        MetadataPatch::Set(value) => Some(value.clone()),
+                    };
+                    let next_people = match people {
+                        MetadataPatch::Keep => photo.people.clone(),
+                        MetadataPatch::Clear => Vec::new(),
+                        MetadataPatch::Set(value) => value.clone(),
+                    };
+                    let next_tags = match tags {
+                        MetadataPatch::Keep => photo.tags.clone(),
+                        MetadataPatch::Clear => Vec::new(),
+                        MetadataPatch::Set(value) => value.clone(),
+                    };
+                    let next_captured_at = match captured_at {
+                        MetadataPatch::Keep => photo.captured_at.clone(),
+                        MetadataPatch::Clear => None,
+                        MetadataPatch::Set(value) => Some(value.clone()),
+                    };
+                    let next_location = match location {
+                        MetadataPatch::Keep => photo.location.clone(),
+                        MetadataPatch::Clear => None,
+                        MetadataPatch::Set(value) => Some(value.clone()),
+                    };
+                    if !valid_metadata(
+                        next_folder.as_deref(),
+                        &next_people,
+                        &next_tags,
+                        next_captured_at.as_deref(),
+                    ) || next_location
+                        .as_ref()
+                        .is_some_and(|value| !value.is_valid())
+                    {
+                        return Err(ActionError::Refused(
+                            "batch metadata must be short, valid, and free of duplicate labels"
+                                .into(),
+                        ));
+                    }
+                }
+
+                for photo in library
+                    .photos
+                    .iter_mut()
+                    .filter(|photo| photo_ids.contains(&photo.id))
+                {
+                    match folder {
+                        MetadataPatch::Keep => {}
+                        MetadataPatch::Clear => photo.folder = None,
+                        MetadataPatch::Set(value) => photo.folder = Some(value.clone()),
+                    }
+                    match people {
+                        MetadataPatch::Keep => {}
+                        MetadataPatch::Clear => photo.people.clear(),
+                        MetadataPatch::Set(value) => photo.people.clone_from(value),
+                    }
+                    match tags {
+                        MetadataPatch::Keep => {}
+                        MetadataPatch::Clear => photo.tags.clear(),
+                        MetadataPatch::Set(value) => photo.tags.clone_from(value),
+                    }
+                    match captured_at {
+                        MetadataPatch::Keep => {}
+                        MetadataPatch::Clear => photo.captured_at = None,
+                        MetadataPatch::Set(value) => photo.captured_at = Some(value.clone()),
+                    }
+                    match location {
+                        MetadataPatch::Keep => {}
+                        MetadataPatch::Clear => photo.location = None,
+                        MetadataPatch::Set(value) => photo.location = Some(value.clone()),
+                    }
+                }
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -1424,7 +1559,8 @@ pub(crate) fn library_root_resource() -> Resource {
         .with_action(import_directory_spec(false))
         .with_action(import_directory_spec(true))
         .with_action(create_album_spec())
-        .with_action(set_favorites_spec());
+        .with_action(set_favorites_spec())
+        .with_action(set_metadata_batch_spec());
     root = root.with_child(library_analysis_resource());
     root
 }
@@ -2543,6 +2679,100 @@ fn set_favorites_spec() -> ActionSpec {
     )
     .reversible()
     .with_description("Set the favorite marker for a bounded batch of selected photographs")
+}
+
+/// The same atomic multi-edit exposed by the visible selection inspector.
+/// Every dimension has an explicit apply bit, so omitted/mixed values mean
+/// keep rather than accidentally clearing collaborators' metadata.
+fn set_metadata_batch_spec() -> ActionSpec {
+    ActionSpec::typed(
+        "set-metadata-batch",
+        "Edit selected photo details",
+        "Photograph ids and explicit metadata dimensions to replace",
+        ExecutionLocus::ClientLocal,
+        vec![
+            photo_ids_param(
+                true,
+                "non-empty JSON array of stable photograph resource ids",
+                1,
+            ),
+            ActionParam::required("apply_folder", ParamType::Boolean, "replace folder values"),
+            ActionParam::optional("folder", ParamType::Text, "new folder; omit to clear"),
+            ActionParam::required("apply_people", ParamType::Boolean, "replace people labels"),
+            ActionParam::optional("people", ParamType::Text, "comma-separated people labels"),
+            ActionParam::required("apply_tags", ParamType::Boolean, "replace tag labels"),
+            ActionParam::optional("tags", ParamType::Text, "comma-separated tag labels"),
+            ActionParam::required(
+                "apply_captured_at",
+                ParamType::Boolean,
+                "replace capture date/time",
+            ),
+            ActionParam::optional(
+                "captured_at",
+                ParamType::Text,
+                "new capture date/time; omit to clear",
+            ),
+            ActionParam::required(
+                "apply_location",
+                ParamType::Boolean,
+                "replace or clear shared location",
+            ),
+            ActionParam::optional("latitude", ParamType::Number, "latitude from -90 to 90"),
+            ActionParam::optional("longitude", ParamType::Number, "longitude from -180 to 180"),
+            ActionParam::optional("place", ParamType::Text, "optional shared place label"),
+        ],
+        |args| {
+            let text_patch = |apply: &str, value: &str| {
+                if !args.boolean(apply).unwrap_or(false) {
+                    MetadataPatch::Keep
+                } else {
+                    optional_metadata_text(args, value)
+                        .map_or(MetadataPatch::Clear, MetadataPatch::Set)
+                }
+            };
+            let labels_patch = |apply: &str, value: &str| {
+                if !args.boolean(apply).unwrap_or(false) {
+                    MetadataPatch::Keep
+                } else {
+                    let labels = metadata_labels(args, value);
+                    if labels.is_empty() {
+                        MetadataPatch::Clear
+                    } else {
+                        MetadataPatch::Set(labels)
+                    }
+                }
+            };
+            let location = if !args.boolean("apply_location").unwrap_or(false) {
+                MetadataPatch::Keep
+            } else if let (Some(latitude), Some(longitude)) =
+                (args.number("latitude"), args.number("longitude"))
+            {
+                MetadataPatch::Set(PhotoLocation {
+                    latitude,
+                    longitude,
+                    label: optional_metadata_text(args, "place"),
+                    provenance: crate::model::LocationProvenance {
+                        source: "user".to_owned(),
+                        scope: "shared".to_owned(),
+                    },
+                })
+            } else {
+                MetadataPatch::Clear
+            };
+            encode(&PhotosAction::SetMetadataBatch {
+                photo_ids: membership_ids(args),
+                folder: text_patch("apply_folder", "folder"),
+                people: labels_patch("apply_people", "people"),
+                tags: labels_patch("apply_tags", "tags"),
+                captured_at: text_patch("apply_captured_at", "captured_at"),
+                location,
+            })
+        },
+    )
+    .reversible()
+    .with_description(
+        "Atomically replace only the chosen folder, people, tags, date, and location dimensions",
+    )
 }
 
 fn album_save_spec(album_id: &str) -> ActionSpec {
@@ -4012,6 +4242,77 @@ mod tests {
                 .iter()
                 .all(|photo| photo.favorite)
         );
+    }
+
+    #[test]
+    fn metadata_batch_distinguishes_keep_clear_and_set_atomically() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut first = portable_photo("/photos/first.png", 20, 10);
+        first.folder = Some("Old folder".into());
+        first.people = vec!["Sam".into()];
+        first.tags = vec!["old".into()];
+        first.captured_at = Some("2024-01-02".into());
+        let mut second = portable_photo("/photos/second.png", 20, 10);
+        second.folder = Some("Other folder".into());
+        second.people = vec!["Noor".into()];
+        second.tags = vec!["other".into()];
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first.clone(), second.clone()],
+                albums: Vec::new(),
+            },
+        );
+
+        PhotosAction::SetMetadataBatch {
+            photo_ids: vec![first.id.clone(), second.id.clone()],
+            folder: MetadataPatch::Clear,
+            people: MetadataPatch::Keep,
+            tags: MetadataPatch::Set(vec!["trip".into(), "rain".into()]),
+            captured_at: MetadataPatch::Set("2026-09-18 14:30".into()),
+            location: MetadataPatch::Set(PhotoLocation {
+                latitude: 52.3676,
+                longitude: 4.9041,
+                label: Some("Amsterdam".into()),
+                provenance: crate::model::LocationProvenance {
+                    source: "user".into(),
+                    scope: "shared".into(),
+                },
+            }),
+        }
+        .apply(&mut doc)
+        .expect("a complete valid selection applies as one action");
+        let library = PhotosDoc::library(&doc);
+        assert!(library.photos.iter().all(|photo| photo.folder.is_none()));
+        assert_eq!(library.photos[0].people, ["Sam"]);
+        assert_eq!(library.photos[1].people, ["Noor"]);
+        assert!(
+            library
+                .photos
+                .iter()
+                .all(|photo| photo.tags == ["trip", "rain"])
+        );
+        assert!(library.photos.iter().all(|photo| {
+            photo
+                .location
+                .as_ref()
+                .and_then(|value| value.label.as_deref())
+                == Some("Amsterdam")
+        }));
+
+        let before = library;
+        PhotosAction::SetMetadataBatch {
+            photo_ids: vec![first.id, "photos.photo:gone".into()],
+            folder: MetadataPatch::Set("Must not apply".into()),
+            people: MetadataPatch::Keep,
+            tags: MetadataPatch::Keep,
+            captured_at: MetadataPatch::Keep,
+            location: MetadataPatch::Keep,
+        }
+        .apply(&mut doc)
+        .expect_err("a stale selection refuses the complete batch");
+        assert_eq!(PhotosDoc::library(&doc), before);
     }
 
     #[test]
