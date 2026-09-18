@@ -329,7 +329,7 @@ jobs:
   checks:
     if: always()
     needs: [select, security, affected]
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     steps:
       - name: Require applicable checks and explain intentional non-applicability
@@ -347,7 +347,7 @@ jobs:
           test "$SECURITY_RESULT" = success
           case "$RUST_REQUIRED:$SELECTED_COUNT:$AFFECTED_RESULT" in
             false:0:skipped)
-              echo 'Rust checks not applicable: design prose only.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Rust checks not applicable: audited documentation only.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             true:*:success)
               [[ "$SELECTED_COUNT" =~ ^[1-9][0-9]*$ ]]
@@ -365,7 +365,7 @@ jobs:
       (github.ref == 'refs/heads/main' ||
        github.ref == 'refs/heads/codex/package-desktop-release')
     needs: [select, security, checks]
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 10
     env:
       SELECT_RESULT: ${{ needs.select.result }}
