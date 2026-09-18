@@ -23,8 +23,9 @@
 //! returns [`PersistError::InsecurePermissions`] rather than being read.
 //! `privkey.bin` is user-scoped and must be 0600. `keypair.bin` is the
 //! device key, read by two components running as two uids, so it may
-//! additionally be group-readable ([`DEVICE_KEY_MODE`]) but never
-//! reachable by anyone outside that group.
+//! additionally be group-readable ([`DEVICE_KEY_MODE`]) but must be owned by
+//! root (or the reader for an injected/test store) and never reachable by
+//! anyone outside that group.
 
 #[cfg(unix)]
 use std::ffi::CString;
@@ -160,6 +161,16 @@ pub enum PersistError {
         /// Number of directory entries referencing the inode.
         links: u64,
     },
+    /// A shared device key was created by neither root nor the reading account.
+    #[error("device key {path} is owned by uid {owner}; expected root or uid {reader}")]
+    InsecureOwner {
+        /// Key path whose opened inode has an unexpected owner.
+        path: String,
+        /// Owner reported by the opened inode.
+        owner: u32,
+        /// Effective uid of the reader.
+        reader: u32,
+    },
     /// An Ed25519 key file was not 32 bytes.
     #[error("expected 32-byte Ed25519 key, got {0} bytes")]
     WrongKeyLength(usize),
@@ -248,13 +259,17 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// cannot be read, or [`PersistError::WrongKeyLength`] if it is not
 /// exactly 32 bytes.
 pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o077)
+    signing_key_from_file(path, 0o077, false)
 }
 
 /// The length check and expansion shared by every secret-key reader.
 /// The mode policy is the caller's — see [`read_signing_key`] and
 /// [`read_device_key`].
-fn signing_key_from_file(path: &Path, forbidden_mode: u32) -> Result<SigningKey, PersistError> {
+fn signing_key_from_file(
+    path: &Path,
+    forbidden_mode: u32,
+    require_device_owner: bool,
+) -> Result<SigningKey, PersistError> {
     protect_secret_process()?;
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -278,6 +293,21 @@ fn signing_key_from_file(path: &Path, forbidden_mode: u32) -> Result<SigningKey,
     {
         use std::os::unix::fs::MetadataExt;
         reject_metadata_mode(path, &metadata, forbidden_mode)?;
+        if require_device_owner {
+            // The installed key is provisioned by root and then shared
+            // read-only with the device-identity group. Custom/test stores may
+            // be owned by the caller, but a third account may never substitute
+            // the signing identity merely by matching its mode.
+            // SAFETY: geteuid takes no arguments and has no failure mode.
+            let reader = unsafe { libc::geteuid() };
+            if !device_key_owner_is_accepted(metadata.uid(), reader) {
+                return Err(PersistError::InsecureOwner {
+                    path: path.display().to_string(),
+                    owner: metadata.uid(),
+                    reader,
+                });
+            }
+        }
         if metadata.nlink() != 1 {
             return Err(PersistError::InsecureLinkCount {
                 path: path.display().to_string(),
@@ -296,6 +326,11 @@ fn signing_key_from_file(path: &Path, forbidden_mode: u32) -> Result<SigningKey,
     let mut seed = Zeroizing::new([0u8; 32]);
     seed.copy_from_slice(&bytes);
     Ok(SigningKey::from_bytes(&seed))
+}
+
+#[cfg(unix)]
+fn device_key_owner_is_accepted(owner: u32, reader: u32) -> bool {
+    owner == 0 || owner == reader
 }
 
 /// Write a 32-byte Ed25519 signing key to disk with mode 0600.
@@ -336,10 +371,25 @@ pub const DEVICE_KEY_MODE: u32 = 0o640;
 ///
 /// Returns [`PersistError::InsecurePermissions`] if the file is
 /// accessible to users outside the device-trust group,
+/// [`PersistError::InsecureOwner`] if it is owned by neither root nor the
+/// reader,
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o007)
+    signing_key_from_file(path, 0o007, true)
+}
+
+/// Read the former group-owned key during its one-time privileged migration.
+/// Historical versions allowed the session account to create that inode, so
+/// ownership can be tightened only after adoption into the protected store.
+/// New callers must use [`read_device_key`].
+///
+/// # Errors
+///
+/// Applies the same bounded no-follow, regular-file, mode, link-count, and
+/// length checks as [`read_device_key`], except for the historical owner rule.
+pub fn read_legacy_device_key(path: &Path) -> Result<SigningKey, PersistError> {
+    signing_key_from_file(path, 0o007, false)
 }
 
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
@@ -739,6 +789,14 @@ mod tests {
             PersistError::InsecureLinkCount { links, .. } => assert_eq!(links, 2),
             other => panic!("expected hard-link refusal, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn device_key_owner_accepts_only_root_or_the_reader() {
+        assert!(device_key_owner_is_accepted(0, 1000));
+        assert!(device_key_owner_is_accepted(1000, 1000));
+        assert!(!device_key_owner_is_accepted(1001, 1000));
     }
 
     #[test]
