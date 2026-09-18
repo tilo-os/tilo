@@ -17,7 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 # The default app includes live search, stream resolution, and audio output.
 # The bundled sample library and runtime offline switch keep shots and tests
-# hermetic; `lyrics` and `p2p` remain opt-in.
+# hermetic; `lyrics` remains opt-in.
 default = ["audio", "live"]
 # Desktop audio output/control and the XDG file chooser for playlist covers.
 audio = ["dep:gstreamer", "dep:zbus", "dep:tokio", "ui/portal"]
@@ -27,8 +27,6 @@ audio = ["dep:gstreamer", "dep:zbus", "dep:tokio", "ui/portal"]
 live = ["dep:rustypipe", "dep:tokio", "dep:reqwest"]
 # Synced lyrics from lrclib.net over HTTP; off by default.
 lyrics = ["dep:reqwest"]
-# Async P2P library-sync transport; only its Tokio executor is feature-gated.
-p2p = ["dep:tokio"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -55,13 +53,13 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
-# Optional: enabled only by the `audio` / `live` / `lyrics` / `p2p`
+# Optional: enabled only by the `audio` / `live` / `lyrics`
 # features above. Versions pinned to match the workspace lock so no extra
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
 reqwest = { workspace = true, optional = true, features = ["blocking", "json", "rustls-tls"] }
 gstreamer = { workspace = true, optional = true }
 # MPRIS D-Bus media control. The version matches `apps/chat` and `ashpd` to
-# keep one zbus copy; `p2p` also supports socket-pair round-trip tests.
+# keep one zbus copy; zbus's own `p2p` capability supports socket-pair tests.
 zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
 # Native XDG file-chooser portal for playlist covers; `url` maps returned URIs.
 # Kept non-optional so URI mapping and its tests build in the default
