@@ -28,11 +28,14 @@ use crate::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 /// accessibility.  A ten-year collection may have 120 monthly boundaries;
 /// presenting all of them in a 700px track is both unreadable and wasteful.
 pub const MAX_PROJECTED_MARKERS: usize = 28;
-/// Wider than the visible track, allowing a calm label preview when hovering
-/// beside the bar while keeping the actual thumb target precise.
-/// Generous invisible pointer lane: the date rail stays easy to acquire
-/// without reserving a visible sidebar over the content.
-pub const PREVIEW_LANE_WIDTH: f64 = 156.0;
+/// The visible 16px rail gets an 8px acquisition margin either side.  This
+/// remains a 32px target, rather than stealing a photo column with an
+/// invisible sidebar-sized hover lane.
+pub const PREVIEW_LANE_WIDTH: f64 = 8.0;
+/// Horizontal target expansion is deliberately independent of the vertical
+/// marker tolerance: a marker may be easy to find along the timeline without
+/// capturing unrelated image content beside it.
+pub const HORIZONTAL_HIT_EXPANSION: f64 = 8.0;
 /// The visible date bubble is deliberately much narrower than its hit lane.
 /// A timeline index should name the nearby day, not occlude a column of
 /// photographs while the pointer travels near the edge.
@@ -293,7 +296,7 @@ impl DateIndexedScrollbar {
         Rect::new(
             self.rect.x0 - PREVIEW_LANE_WIDTH,
             self.rect.y0 - MARKER_HIT_RADIUS,
-            self.rect.x1 + MARKER_HIT_RADIUS,
+            self.rect.x1 + HORIZONTAL_HIT_EXPANSION,
             self.rect.y1 + MARKER_HIT_RADIUS,
         )
     }
@@ -511,7 +514,7 @@ impl DateIndexedScrollbar {
             let bounds = Rect::new(
                 self.rect.x0 - PREVIEW_LANE_WIDTH,
                 marker.axis - MARKER_HIT_RADIUS,
-                self.rect.x1 + MARKER_HIT_RADIUS,
+                self.rect.x1 + HORIZONTAL_HIT_EXPANSION,
                 marker.axis + MARKER_HIT_RADIUS,
             );
             children.push(
@@ -593,7 +596,7 @@ impl DateIndexedScrollbar {
         self.paint_preview(scene, transform, text_renderer, theme, lane, &projected);
     }
 
-    fn paint_track(&self, scene: &mut Scene, transform: Affine, theme: &Theme, active: bool) {
+    fn paint_track(&self, scene: &mut Scene, transform: Affine, theme: &Theme, _active: bool) {
         let colors = &theme.tokens.colors;
         // The broad lane is an invisible acquisition target. Painting it on
         // hover turned a scrollbar into an opaque side panel over photos.
@@ -875,6 +878,19 @@ mod tests {
                 .as_deref()
                 .is_some_and(|target| target.contains(":jump:"))
         );
+    }
+
+    #[test]
+    fn acquisition_lane_is_a_tight_rail_not_a_sidebar() {
+        let bar = scrollbar();
+        let lane = bar.preview_lane();
+        assert!(
+            lane.width() <= 32.0,
+            "date index must not capture photo tiles"
+        );
+        assert_eq!(PREVIEW_BUBBLE_MAX_WIDTH, 96.0);
+        assert!(!bar.contains_interaction_point(Point::new(250.0, 220.0)));
+        assert!(bar.contains_interaction_point(Point::new(304.0, 220.0)));
     }
 
     #[test]
