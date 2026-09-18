@@ -134,17 +134,11 @@ pub enum PhotosOperation {
     /// grants one; a supplied path is for an already-authorised host/agent.
     ImportDirectory {
         path: Option<String>,
+        retain_exif_location: bool,
     },
     ImportCameraMedia {
         media_id: String,
         name: String,
-    },
-    /// Start a cancellable, device-local directory index. The selected path
-    /// is never retained in the CRDT; every accepted result becomes the
-    /// normal portable `ImportPhoto` action with actual EXIF metadata.
-    ImportDirectory {
-        path: String,
-        retain_exif_location: bool,
     },
     /// Re-scan a user-selected directory. This intentionally has the same
     /// explicit path boundary as import; Photos never watches arbitrary local
@@ -233,7 +227,6 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::Save { .. }
         | PhotosOperation::ImportCameraMedia { .. }
-        | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::ReindexDirectory { .. } => vec![
             "device-local".into(),
             "filesystem".into(),
@@ -299,7 +292,6 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         PhotosOperation::Save { .. }
         | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::ImportCameraMedia { .. }
-        | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::ReindexDirectory { .. }
         | PhotosOperation::AnalyzeText { .. }
         | PhotosOperation::AnalyzeImage { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
@@ -1308,6 +1300,7 @@ fn directory_import_spec() -> ActionSpec {
                         .text("path")
                         .filter(|path| !path.trim().is_empty())
                         .map(str::to_owned),
+                    retain_exif_location: true,
                 },
             )
             .unwrap_or_else(|error| EncodedAction {
@@ -2347,7 +2340,10 @@ fn import_directory_spec(reindex: bool) -> ActionSpec {
             let operation = if reindex {
                 PhotosOperation::ReindexDirectory { path, retain_exif_location }
             } else {
-                PhotosOperation::ImportDirectory { path, retain_exif_location }
+                PhotosOperation::ImportDirectory {
+                    path: Some(path),
+                    retain_exif_location,
+                }
             };
             EncodedAction::encode_operation(PHOTOS_OPERATION_TYPE, &operation).unwrap_or_else(|error| EncodedAction {
                 type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
