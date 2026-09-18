@@ -1,4 +1,4 @@
-"""Explicit frozen-native reuse after one reviewed Python validator correction."""
+"""Explicit frozen-native reuse after reviewed provider/rootfs-only corrections."""
 import hashlib
 import json
 from pathlib import Path
@@ -40,10 +40,12 @@ def read_approval(path, digest):
 def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_sha256):
     """Compare complete committed trees before any source compatibility adoption."""
     approval = read_approval(path, digest)
+    rootfs = approval.get('purpose') == 'tilo-rootfs-native-source-compatibility'
+    extra = {'provider_revision', 'wpe_bridge'} if rootfs else set()
     require(set(approval) == {'schema', 'purpose', 'native_source_revision', 'assembly_source_revision',
-        'native_receipt_sha256', 'approved_reconstruction_sha256', 'changes'}, 'source admission schema differs')
+        'native_receipt_sha256', 'approved_reconstruction_sha256', 'changes'} | extra, 'source admission schema differs')
     require(type(approval['schema']) is int and approval['schema'] == 1
-        and approval['purpose'] == 'tilo-windows-provider-native-source-compatibility'
+        and approval['purpose'] in ('tilo-windows-provider-native-source-compatibility', 'tilo-rootfs-native-source-compatibility')
         and approval['native_source_revision'] == SOURCE
         and approval['assembly_source_revision'] == revision and revision != SOURCE
         and re.fullmatch('[0-9a-f]{40}', revision)
@@ -53,15 +55,21 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
     require(git(repo, 'rev-parse', 'HEAD').decode().strip() == revision
         and not git(repo, 'status', '--porcelain', '--untracked-files=all').strip(),
         'compatible assembly source must be clean and exact')
-    # Two-deep authenticated checkout contains both commits. No hidden ancestor
-    # chain, rename heuristics, or unrecorded changes are permitted.
-    require(git(repo, 'show', '-s', '--format=%P', revision).decode().strip() == SOURCE,
+    # Authenticated checkout includes the explicit two/three-commit chain.
+    # No hidden ancestors, rename heuristics, or unrecorded changes are permitted.
+    parent = approval['provider_revision'] if rootfs else SOURCE
+    if rootfs:
+        require(re.fullmatch('[0-9a-f]{40}', parent or '') and
+            git(repo, 'show', '-s', '--format=%P', parent).decode().strip() == SOURCE, 'provider correction ancestry differs')
+        require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', parent, revision) == b'os/Containerfile\0', 'rootfs correction must change only Containerfile')
+    require(git(repo, 'show', '-s', '--format=%P', revision).decode().strip() == parent,
         'assembly correction must directly descend from frozen native source')
     changed = git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', SOURCE, revision)
-    require(changed.split(b'\0')[:-1] == [name.encode() for name in PATHS]
-            and set(approval['changes']) == set(PATHS), 'complete tree diff exceeds reviewed Python correction')
+    paths = tuple(sorted((*PATHS, 'os/Containerfile'))) if rootfs else PATHS
+    require(changed.split(b'\0')[:-1] == [name.encode() for name in paths]
+            and set(approval['changes']) == set(paths), 'complete tree diff exceeds reviewed Python correction')
     changes = {}
-    for name in PATHS:
+    for name in paths:
         records = []
         for commit in (SOURCE, revision):
             entry = git(repo, 'ls-tree', commit, '--', name).decode().strip().split()
@@ -73,6 +81,10 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
                         old_sha256=records[0][2], new_sha256=records[1][2])
         require(approval['changes'][name] == expected, 'source correction blob differs: ' + name)
         changes[name] = expected
+    if rootfs:
+        verify_rootfs(git(repo, 'show', SOURCE + ':os/Containerfile'), git(repo, 'show', revision + ':os/Containerfile'))
+        verify_wpe_bridge(approval['wpe_bridge'], changes['os/Containerfile'],
+            sha(git(repo, 'show', SOURCE + ':os/dev/build-wpe.sh')))
     return dict(schema=1, purpose='tilo-native-source-compatibility-verified', approval_sha256=digest,
         approval=approval, native_source_revision=SOURCE, assembly_source_revision=revision,
         native_epoch=int(git(repo, 'show', '-s', '--format=%ct', SOURCE)),
@@ -85,4 +97,49 @@ def original_native_inputs(assembly_inputs, admission):
     """Reproduce original inputs after proving all other tracked source unchanged."""
     require(assembly_inputs['revision'] == admission['assembly_source_revision']
             and assembly_inputs['epoch'] == admission['assembly_epoch'], 'assembly input identity differs')
-    return dict(assembly_inputs, revision=SOURCE, epoch=admission['native_epoch'])
+    result = dict(assembly_inputs, revision=SOURCE, epoch=admission['native_epoch'])
+    if 'wpe_bridge' in admission['approval']:
+        bridge = admission['approval']['wpe_bridge']
+        recipe = admission['changes']['os/Containerfile']
+        require(result['containerfile_sha256'] == recipe['new_sha256']
+            and result['wpe_receipt_sha256'] == bridge['assembly_receipt_sha256']
+            and result['wpe_reference'] == json.loads(bridge['original_receipt_json'])['reference'], 'assembly recipe/WPE input differs')
+        result.update(containerfile_sha256=recipe['old_sha256'], wpe_receipt_sha256=bridge['original_receipt_sha256'])
+    return result
+
+
+def verify_rootfs(old, new):
+    """Only the body of the existing rootfs stage may differ."""
+    start = b'FROM ${BASE_REF} AS rootfs\n'
+    end = b'FROM rootfs AS split\n'
+    for raw in (old, new):
+        require(raw.count(start) == 1 and raw.count(end) == 1, 'unique rootfs boundaries required')
+    a, b = old.index(start) + len(start), old.index(end)
+    c, d = new.index(start) + len(start), new.index(end)
+    require(a < b and c < d and old[:a] == new[:c] and old[b:] == new[d:], 'non-rootfs recipe bytes changed')
+    directives = lambda raw: re.findall(rb'^\s*FROM[ \t]+[^\r\n]+', raw, re.M | re.I)
+    require(directives(old) == directives(new), 'recipe stage directives changed')
+
+
+def verify_wpe_bridge(bridge, recipe, build_wpe_sha):
+    require(set(bridge) == {'original_receipt_json', 'original_receipt_sha256', 'assembly_receipt_json', 'assembly_receipt_sha256'}, 'WPE bridge schema differs')
+    receipts = []
+    for prefix in ('original', 'assembly'):
+        raw = bridge[prefix + '_receipt_json'].encode('utf-8')
+        require(sha(raw) == bridge[prefix + '_receipt_sha256'], 'WPE bridge receipt bytes differ')
+        receipts.append(json.loads(raw))
+    old, new = receipts
+    require(old['audit']['compatible_recipes'] == {'os/Containerfile': recipe['old_sha256'], 'os/dev/build-wpe.sh': build_wpe_sha}, 'original WPE recipe identity differs')
+    expected = json.loads(json.dumps(old))
+    expected['audit']['compatible_recipes']['os/Containerfile'] = recipe['new_sha256']
+    expected['audit_sha256'] = new['audit_sha256']
+    require(re.fullmatch('[0-9a-f]{64}', new['audit_sha256']) and new == expected, 'WPE bridge changes more than consumer recipe/audit pin')
+    # The new audit is encoded canonically for an independently reproducible pin.
+    require(new['audit_sha256'] == sha((json.dumps(new['audit'], sort_keys=True, separators=(',', ':')) + '\n').encode()), 'new WPE audit hash differs')
+
+
+def verify_selected_wpe(admission, raw, digest):
+    bridge = admission['approval'].get('wpe_bridge')
+    if bridge:
+        require(digest == bridge['assembly_receipt_sha256'] and sha(raw) == digest
+            and raw.decode('utf-8') == bridge['assembly_receipt_json'], 'selected WPE receipt differs from source admission')

@@ -61,3 +61,29 @@ The adoption receipt records the original native expected inputs separately.
 
 This compatibility proof says nothing about correctness of the reviewed Python
 fix itself; review that change independently before approving its exact blobs.
+
+## Rootfs-only follow-up
+
+Purpose `tilo-rootfs-native-source-compatibility` additionally requires
+`provider_revision` and `wpe_bridge`. The explicit chain is frozen source,
+provider-only correction, then a Containerfile-only correction. Full tree diff
+contains exactly the two provider files and Containerfile. Prefix through the
+rootfs FROM, suffix from the split FROM, and every FROM directive must remain
+byte-identical. Exact changed blobs still require independent review.
+
+`wpe_bridge` contains `original_receipt_json`, `original_receipt_sha256`,
+`assembly_receipt_json`, and `assembly_receipt_sha256`. These are exact UTF-8
+receipt bytes, not reserialized historical documents. The new receipt must
+differ only in audit.compatible_recipes["os/Containerfile"] and audit_sha256.
+Encode the new audit as sorted compact JSON followed by LF to calculate its
+SHA256. Preserve original unknown build provenance and all image/config/payload
+identities. Save both receipts independently. This is a new consumer compatibility
+review; it does not claim the historical WPE build used the new recipe.
+
+The workflow uses the new receipt normally. Before reproducing native inputs,
+the controller verifies the selected receipt's exact bytes against this bridge.
+Only then does it restore the original native source epoch, source revision,
+Containerfile hash, and WPE receipt hash for the unchanged strict native importer.
+Actual assembly input evidence continues to identify the new source and receipt.
+Three-deep authenticated source checkout is required. No compilation fallback
+is introduced, and WPE payload/config inspection still runs in its importer.
