@@ -123,43 +123,16 @@ pub fn resolve_full_audio(video_id: &str) -> Option<ResolvedStream> {
 
 /// Run `bin args…`, returning its stdout as a `String` if it exits successfully
 /// within `timeout`; `None` on spawn failure (not installed), non-zero exit, or
-/// timeout (the child is killed). `-g` output is a few hundred bytes, well under
-/// the pipe buffer, so reading stdout after the child exits cannot deadlock.
+/// timeout. The shared runner drains concurrently, caps both streams, and kills
+/// the complete Unix process group so a helper cannot inherit pipes past exit.
 #[cfg(feature = "live")]
 fn run_with_timeout(bin: &str, args: &[&str], timeout: std::time::Duration) -> Option<String> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new(bin)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?; // yt-dlp not installed → None (graceful fallback)
-
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut s = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_string(&mut s);
-                }
-                return if status.success() { Some(s) } else { None };
-            }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    tracing::warn!(target: "music::ytdlp", "yt-dlp timed out — falling back");
-                    return None;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(_) => return None,
-        }
-    }
+    const OUTPUT_LIMIT: usize = 64 * 1024;
+    let output = bounded_command::run(bin, args, None, OUTPUT_LIMIT, timeout).ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]
