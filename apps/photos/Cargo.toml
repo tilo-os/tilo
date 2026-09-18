@@ -23,6 +23,7 @@ tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
 tilo-vision = { path = "../../crates/media/vision" }
+agent-provider-config = { path = "../../crates/agent/provider-config" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 automerge.workspace = true
 serde.workspace = true

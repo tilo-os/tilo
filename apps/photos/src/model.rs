@@ -41,12 +41,20 @@ pub struct ImageAnalysis {
 /// The bounded provenance attached to an analysis result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalysisProvenance {
-    /// `local-ocr`, `local-description`, or `user`.
+    /// `local-ocr`, `local-vision`, `local-description` (legacy), or `user`.
     #[serde(default = "default_analysis_source")]
     pub source: String,
     /// Stable engine/model family identifier, never an error or command line.
     #[serde(default)]
     pub engine: String,
+    /// Signed local model identifier when a vision result was produced. Empty
+    /// for OCR, user-authored, and older records.
+    #[serde(default)]
+    pub model_id: String,
+    /// Immutable signed model revision when a vision result was produced.
+    /// Empty preserves backwards compatibility with pre-provenance records.
+    #[serde(default)]
+    pub model_revision: String,
     /// OCR language when text recognition was used.
     #[serde(default)]
     pub language: String,
@@ -72,6 +80,8 @@ impl Default for AnalysisProvenance {
         Self {
             source: default_analysis_source(),
             engine: String::new(),
+            model_id: String::new(),
+            model_revision: String::new(),
             language: String::new(),
             content: String::new(),
             scope: default_analysis_scope(),
@@ -505,6 +515,20 @@ impl OpenImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_analysis_provenance_deserializes_without_model_identity() {
+        let legacy = r#"{
+            "source":"local-ocr",
+            "engine":"tilo-ocr",
+            "language":"eng",
+            "content":"abc",
+            "scope":"shared"
+        }"#;
+        let provenance: AnalysisProvenance = serde_json::from_str(legacy).unwrap();
+        assert!(provenance.model_id.is_empty());
+        assert!(provenance.model_revision.is_empty());
+    }
 
     #[test]
     fn a_fresh_edit_set_is_the_identity() {
