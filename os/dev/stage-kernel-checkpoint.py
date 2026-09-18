@@ -33,10 +33,15 @@ def stage(source, destination, approval_bytes, approval_sha, checkpoint):
         path = source / name
         if not path.is_file() or path.is_symlink() or restore.sha(path) != approval[field]:
             raise ValueError('checkpoint file differs: ' + name)
+    corrections=restore.source_corrections(Path(__file__).resolve().parents[1]/'kernel/patches',approval)
     destination.mkdir()
     for name in files:
         # Same workspace filesystem: do not duplicate the large archive.
         os.link(source / name, destination / name)
+    if corrections:
+        (destination/'source-corrections').mkdir()
+        for correction in corrections:
+            shutil.copyfile(correction,destination/'source-corrections'/correction.name)
     shutil.copyfile(helper, destination / 'kernel_checkpoint_restore.py')
     (destination / 'approval.json').write_bytes(approval_bytes)
 
