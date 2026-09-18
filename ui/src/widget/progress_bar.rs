@@ -125,6 +125,16 @@ impl ProgressBar {
         }
     }
 
+    /// Place a retained progress bar inside an app-owned canvas without
+    /// constructing a second Taffy tree. This mirrors the embedding support
+    /// on [`crate::widget::Button`] and [`crate::widget::TextInput`].
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        if self.rect != rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+    }
+
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
     #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {

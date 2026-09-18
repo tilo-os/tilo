@@ -454,10 +454,7 @@ fn approve_enrollment(
     }
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(90))?;
-    if !output.status.success() {
-        bail!("home-server enrollment was not completed");
-    }
-    Ok(())
+    enrollment_command_result(output, "home-server enrollment was not completed")
 }
 
 fn validate_identity_dir(path: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
@@ -490,6 +487,21 @@ fn validate_peer_ids(device: &str, service: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn enrollment_command_result(
+    output: bounded_command::Output,
+    incomplete: &'static str,
+) -> anyhow::Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        bail!("{incomplete} ({})", output.status);
+    }
+    bail!("{incomplete}: {detail}")
+}
+
 fn personal_device_command(
     operation: &str,
     identity_root: &Path,
@@ -510,10 +522,7 @@ fn personal_device_command(
     extra(&mut command);
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
-    if !output.status.success() {
-        bail!("personal-device enrollment was not completed");
-    }
-    Ok(())
+    enrollment_command_result(output, "personal-device enrollment was not completed")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -577,6 +586,41 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn enrollment_failure_preserves_the_bounded_child_diagnostic() {
+        let error = enrollment_command_result(
+            bounded_command::Output {
+                status: std::process::ExitStatus::from_raw(1 << 8),
+                stdout: Vec::new(),
+                stderr: b"requester lease expired\n".to_vec(),
+            },
+            "personal-device enrollment was not completed",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "personal-device enrollment was not completed: requester lease expired"
+        );
+    }
+
+    #[test]
+    fn enrollment_failure_without_stderr_still_reports_exit_status() {
+        let error = enrollment_command_result(
+            bounded_command::Output {
+                status: std::process::ExitStatus::from_raw(2 << 8),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+            "home-server enrollment was not completed",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "home-server enrollment was not completed (exit status: 2)"
+        );
+    }
 
     #[test]
     fn personal_device_ids_are_exact_ed25519_width_hex() {
