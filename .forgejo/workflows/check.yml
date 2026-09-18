@@ -20,7 +20,10 @@ on:
 
 concurrency:
   group: check-${{ github.ref }}
-  cancel-in-progress: true
+  # Main is continuously integrated by multiple agents; cancelling its
+  # security gate on every newer push can prevent any revision from finishing.
+  # Feature branches still supersede obsolete work immediately.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_HOME: /cargo-home
