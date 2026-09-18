@@ -8,8 +8,12 @@
 //! sends requests through a mailbox and only the compositor thread reads or
 //! mutates the widget tree.
 
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{
+    Arc,
+    mpsc::{self, Receiver, Sender},
+};
 
+use calloop::ping::Ping;
 use ui::accesskit::{
     ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, Rect, TreeUpdate,
 };
@@ -26,8 +30,30 @@ pub enum Request {
     Deactivated,
 }
 
-struct Activation {
+/// The Unix AccessKit adapter calls its handlers from a worker thread. The
+/// compositor cannot safely inspect its widget tree there, so every callback
+/// enters this mailbox and wakes the compositor's `calloop` poll.
+///
+/// Waking is part of the endpoint contract: an idle compositor must respond
+/// to an AT-SPI activation or action without waiting for unrelated input.
+#[derive(Clone)]
+struct Mailbox {
     tx: Sender<Request>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl Mailbox {
+    fn send(&self, request: Request) {
+        if self.tx.send(request).is_ok()
+            && let Some(wake) = &self.wake
+        {
+            wake();
+        }
+    }
+}
+
+struct Activation {
+    mailbox: Mailbox,
 }
 
 impl ActivationHandler for Activation {
@@ -35,28 +61,28 @@ impl ActivationHandler for Activation {
         // The widget tree is compositor-thread-owned. Returning `None` is the
         // documented asynchronous path; `pump` publishes the full tree during
         // this event-loop iteration (well before the next display refresh).
-        let _ = self.tx.send(Request::InitialTree);
+        self.mailbox.send(Request::InitialTree);
         None
     }
 }
 
 struct Actions {
-    tx: Sender<Request>,
+    mailbox: Mailbox,
 }
 
 impl ActionHandler for Actions {
     fn do_action(&mut self, request: ActionRequest) {
-        let _ = self.tx.send(Request::Action(request));
+        self.mailbox.send(Request::Action(request));
     }
 }
 
 struct Deactivation {
-    tx: Sender<Request>,
+    mailbox: Mailbox,
 }
 
 impl DeactivationHandler for Deactivation {
     fn deactivate_accessibility(&mut self) {
-        let _ = self.tx.send(Request::Deactivated);
+        self.mailbox.send(Request::Deactivated);
     }
 }
 
@@ -67,12 +93,23 @@ pub struct NativeAccessibility {
 }
 
 impl NativeAccessibility {
-    pub fn new(viewport: (u32, u32)) -> Self {
+    /// `wake` is the compositor event-loop ping paired with this bridge. It
+    /// lets AT-SPI requests interrupt an idle poll; tree mutation remains on
+    /// the compositor thread when [`Self::drain`] runs.
+    pub fn new(viewport: (u32, u32), wake: Ping) -> Self {
         let (tx, rx) = mpsc::channel();
+        let mailbox = Mailbox {
+            tx,
+            wake: Some(Arc::new(move || wake.ping())),
+        };
         let mut adapter = accesskit_unix::Adapter::new(
-            Activation { tx: tx.clone() },
-            Actions { tx: tx.clone() },
-            Deactivation { tx },
+            Activation {
+                mailbox: mailbox.clone(),
+            },
+            Actions {
+                mailbox: mailbox.clone(),
+            },
+            Deactivation { mailbox },
         );
         adapter.update_window_focus_state(true);
         let bounds = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
@@ -108,13 +145,26 @@ impl NativeAccessibility {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn handlers_mailbox_activation_actions_and_deactivation() {
         let (tx, rx) = mpsc::channel();
-        let mut activation = Activation { tx: tx.clone() };
-        let mut actions = Actions { tx: tx.clone() };
-        let mut deactivation = Deactivation { tx };
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake_counter = Arc::clone(&wakes);
+        let mailbox = Mailbox {
+            tx,
+            wake: Some(Arc::new(move || {
+                wake_counter.fetch_add(1, Ordering::SeqCst);
+            })),
+        };
+        let mut activation = Activation {
+            mailbox: mailbox.clone(),
+        };
+        let mut actions = Actions {
+            mailbox: mailbox.clone(),
+        };
+        let mut deactivation = Deactivation { mailbox };
 
         assert!(activation.request_initial_tree().is_none());
         actions.do_action(ActionRequest {
@@ -124,6 +174,12 @@ mod tests {
             data: None,
         });
         deactivation.deactivate_accessibility();
+
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            3,
+            "every cross-thread accessibility callback wakes an idle compositor"
+        );
 
         assert!(matches!(rx.recv().unwrap(), Request::InitialTree));
         assert!(matches!(

@@ -4982,7 +4982,24 @@ pub fn run() {
     // Compositor chrome has no application window for `accesskit_winit` to
     // attach to. Publish its existing `ui::Widget` semantics directly over
     // AT-SPI, including the trusted OOBE and desktop tour shown before apps.
-    let mut native_accessibility = NativeAccessibility::new(initial_size);
+    // The provider's callbacks run on AccessKit's thread, so pair its mailbox
+    // with a calloop ping. An idle compositor must wake for a reader's first
+    // tree request or action instead of waiting for unrelated Wayland input.
+    let (a11y_ping, a11y_ping_source) = match calloop::ping::make_ping() {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!("tilo compositor: create AT-SPI wake source failed: {error}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = event_loop
+        .handle()
+        .insert_source(a11y_ping_source, |(), (), _| {})
+    {
+        eprintln!("tilo compositor: insert AT-SPI wake source failed: {error}");
+        std::process::exit(1);
+    }
+    let mut native_accessibility = NativeAccessibility::new(initial_size, a11y_ping);
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -5292,6 +5309,13 @@ pub fn run() {
             match request {
                 AccessibilityRequest::InitialTree => accessibility_changed = true,
                 AccessibilityRequest::Action(request) => {
+                    // This endpoint publishes exactly the root AccessKit tree.
+                    // Do not let a malformed or stale request for another
+                    // tree alias a compositor-owned node id.
+                    if request.target_tree != ui::accesskit::TreeId::ROOT {
+                        accessibility_changed = true;
+                        continue;
+                    }
                     if session.is_locked() {
                         // The lock owns a deliberately tiny, non-leaking tree.
                         // Only its password field is actionable; stale ids from
@@ -7164,6 +7188,12 @@ pub fn run() {
     // Flush the frame trace / write the summary before backend teardown; a
     // no-op unless instrumentation was enabled.
     metrics.finish();
+
+    // Tear down the AT-SPI adapter while the compositor event loop and its
+    // session-bus context still exist. This unregisters the native chrome
+    // tree before Wayland clients and the display are severed, so a restarting
+    // shell cannot leave screen readers holding a dead endpoint.
+    drop(native_accessibility);
 
     // Sever clients before service endpoints disappear. The backend and
     // event loop remain in scope until the function returns below, ensuring
