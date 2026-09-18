@@ -492,6 +492,7 @@ impl DateIndexedScrollbar {
             .with_value(value)
             .with_bounds(self.rect)
             .with_state(AccessState::new().focusable(true).focused(self.focused))
+            .with_hashed_key(format!("{}:position", self.semantic_id))
             .with_action_target(format!("{}:position", self.semantic_id))];
         for marker in self.project_markers(markers, 12) {
             let bounds = Rect::new(
@@ -505,6 +506,7 @@ impl DateIndexedScrollbar {
                     .with_name(format!("Jump to {}", marker.label))
                     .with_bounds(bounds)
                     .with_state(AccessState::new().focusable(true))
+                    .with_hashed_key(format!("{}:jump:{}", self.semantic_id, marker.id))
                     .with_action_target(format!("{}:jump:{}", self.semantic_id, marker.id)),
             );
         }
@@ -513,6 +515,7 @@ impl DateIndexedScrollbar {
             .with_description("Date-indexed scrollbar")
             .with_bounds(self.preview_lane())
             .with_semantic_key(format!("{}:index", self.semantic_id))
+            .with_hashed_key(format!("{}:index", self.semantic_id))
             .with_children(children)
     }
 
