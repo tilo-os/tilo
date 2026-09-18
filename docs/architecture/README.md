@@ -55,14 +55,14 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 
 | | |
 |---|---|
-| `architecture.md` | component overview and system stack |
+| `overview.md` | component overview and system stack |
 | `compositor.md` | strips, window model, input |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
 | `security.md` | sandbox, permissions, capability grants |
 | `search.md` | providers and per-resource-type rendering |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
-| `../docs/system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
+| `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
 | `distribution.md` | how software, settings and content reach a machine |
 | `language-checking.md` | spelling, grammar, text actions |
 | `os-layer.md` | image, boot, system services |

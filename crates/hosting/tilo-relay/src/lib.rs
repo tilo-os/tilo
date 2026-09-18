@@ -50,7 +50,7 @@
 //!   [`compute::ComputeWorker`], which binds certified routes and content
 //!   digests to the normal signed-package launcher sandbox.
 //! - No content byte transfer — content hydration continues to
-//!   travel over `iroh-blobs` inside the `fs/` crate; the relay
+//!   travel over `iroh-blobs` inside the `crates/system/fs/` crate; the relay
 //!   handles only the CRDT-directory tier.
 
 #![deny(rust_2018_idioms)]
