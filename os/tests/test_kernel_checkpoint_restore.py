@@ -106,8 +106,39 @@ class Restoration(unittest.TestCase):
   original=subprocess.check_output(['git','-c','safe.directory='+str(repo),'-C',str(repo),'show',m.SOURCE+':os/kernel/Containerfile'])
   derived=m.derive(original,'a'*64)
   tail=b'    KVER="$(make -s kernelrelease)";'
-  self.assertEqual(original[original.index(tail):],derived[derived.index(tail):])
+  self.assertEqual(original[original.index(tail):],derived[derived.index(tail):-len(m.EXPORT_STAGE)])
+  self.assertTrue(derived.endswith(m.EXPORT_STAGE))
   self.assertIn(b'assert-embedded',derived)
   self.assertIn(b'from=kernel-checkpoint',derived)
   with self.assertRaises(ValueError):m.derive(original+b'changed','a'*64)
+ def test_actual_public_runtime_evidence_and_missing_certificate_refusal(self):
+  with tempfile.TemporaryDirectory() as d:
+   work=Path(d);root=work/'source'
+   (work/'module-signing').mkdir();(root/'certs').mkdir(parents=True)
+   (root/'arch/arm64/boot').mkdir(parents=True)
+   cert=b'fixture public DER bytes'
+   (work/'module-signing/signing-cert.der').write_bytes(cert)
+   (root/'certs/signing_key.x509').write_bytes(cert)
+   (root/'arch/arm64/boot/Image').write_bytes(b'image prefix'+cert+b'tail')
+   inv=work/'kernel-reconstruction-invalidations.json';inv.write_text('["certs/system_certificates.o"]')
+   m.assert_embedded(work,root)
+   evidence=json.loads((work/'kernel-reconstruction-evidence.json').read_bytes())
+   self.assertEqual(evidence['module_certificate_der_sha256'],hashlib.sha256(cert).hexdigest())
+   self.assertEqual(evidence['invalidations_sha256'],m.sha(inv))
+   self.assertEqual(evidence['invalidated_paths'],1)
+   self.assertTrue(evidence['embedded_certificate_verified'])
+   self.assertTrue(evidence['regenerated_certificate_matches'])
+   (work/'kernel-reconstruction-evidence.json').unlink()
+   (root/'arch/arm64/boot/Image').write_bytes(b'no certificate')
+   with self.assertRaisesRegex(ValueError,'absent'):m.assert_embedded(work,root)
+   self.assertFalse((work/'kernel-reconstruction-evidence.json').exists())
+ def test_wrapped_arm_final_images_invalidated(self):
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);boot=root/'arch/arm64/boot';boot.mkdir(parents=True)
+   for name in ('vmlinuz.efi','image.fit','.vmlinuz.efi.cmd','.image.fit.d'):
+    (boot/name).write_text('stale final output')
+   removed=m.invalidations(root,[])
+   self.assertIn('arch/arm64/boot/vmlinuz.efi',removed)
+   self.assertIn('arch/arm64/boot/image.fit',removed)
+   self.assertEqual(list(boot.iterdir()),[])
 if __name__=='__main__':unittest.main()

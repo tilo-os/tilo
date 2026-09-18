@@ -20,10 +20,16 @@ context read-only into the original recipe at its sole `make all` seam.
 The build uses four jobs and checks the exact installed toolchain before restoring.
 It regenerates the embedded module certificate with a new ephemeral identity.
 The original packaging, module signing/verification and key deletion tail is unchanged.
+An appended `reconstructed-publish` stage copies only public runtime evidence
+and the invalidation manifest alongside the original `/repo`. Runtime evidence
+records the actual certificate DER SHA256 and successful regeneration and embedding
+checks. The workflow validates and binds this evidence to the output receipt.
 
 Output is in `tilo-development-reconstructed-kernel-aarch64`, with receipt purpose
 `tilo-development-reconstructed-kernel`. Its `reconstruction` object identifies
 the original and derived recipes, checkpoint digest, approval hash and helper.
+It also binds archive, scan, capture and toolchain receipt hashes, and explicitly
+states `original_recipe_executed_verbatim=false` and `installable=false`.
 The successful build plus unchanged RPM/config audit are required; preparation
 metadata alone does not establish successful restoration, boot or installation.
 
