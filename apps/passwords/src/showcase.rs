@@ -218,6 +218,7 @@ pub struct PasswordsSurface {
     export_portal: Option<ui::portal::PortalChannel>,
     backup_portal: Option<ui::portal::PortalChannel>,
     restore_portal: Option<ui::portal::OpenFileChannel>,
+    transfer_poll_deadline: std::cell::Cell<Option<std::time::Instant>>,
     backup_password: TextInput,
     backup_confirmation: TextInput,
     backup_focus: usize,
@@ -481,6 +482,7 @@ impl PasswordsSurface {
             export_portal: None,
             backup_portal: None,
             restore_portal: None,
+            transfer_poll_deadline: std::cell::Cell::new(None),
             backup_password: backup_input("Backup password"),
             backup_confirmation: backup_input("Confirm password"),
             backup_focus: 0,
@@ -570,6 +572,7 @@ impl PasswordsSurface {
             export_portal: None,
             backup_portal: None,
             restore_portal: None,
+            transfer_poll_deadline: std::cell::Cell::new(None),
             backup_password: backup_input("Backup password"),
             backup_confirmation: backup_input("Confirm password"),
             backup_focus: 0,
@@ -3816,6 +3819,7 @@ impl PasswordsSurface {
 
 impl Widget for PasswordsSurface {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        self.transfer_poll_deadline.set(None);
         self.poll_transfers();
         if self
             .revealed
@@ -5063,8 +5067,12 @@ impl Widget for PasswordsSurface {
                 TransferDialog::Backup => vec![
                     AccessNode::new(Role::StaticText)
                         .with_name("Encrypted locally; preserves every item and custom field"),
-                    AccessNode::new(Role::TextInput).with_name("Backup password"),
-                    AccessNode::new(Role::TextInput).with_name("Confirm password"),
+                    self.backup_password
+                        .accessibility()?
+                        .with_action_target("passwords.backup.password"),
+                    self.backup_confirmation
+                        .accessibility()?
+                        .with_action_target("passwords.backup.confirmation"),
                     AccessNode::new(Role::Button)
                         .with_name("Cancel backup")
                         .with_action_target("passwords.transfer.cancel"),
@@ -5073,7 +5081,9 @@ impl Widget for PasswordsSurface {
                         .with_action_target("passwords.transfer.backup"),
                 ],
                 TransferDialog::Restore { .. } => vec![
-                    AccessNode::new(Role::TextInput).with_name("Backup password"),
+                    self.backup_password
+                        .accessibility()?
+                        .with_action_target("passwords.backup.password"),
                     AccessNode::new(Role::Button)
                         .with_name("Cancel restore")
                         .with_action_target("passwords.transfer.cancel"),
@@ -5189,6 +5199,29 @@ impl Widget for PasswordsSurface {
             ("passwords.transfer.cancel", Action::Activate) => {
                 self.transfer_dialog = None;
                 self.clear_backup_form();
+            }
+            (
+                "passwords.backup.password" | "passwords.backup.confirmation",
+                Action::SetValue(_) | Action::Focus,
+            ) => {
+                let confirming = target == "passwords.backup.confirmation";
+                if !matches!(self.transfer_dialog, Some(TransferDialog::Backup))
+                    && (confirming
+                        || !matches!(self.transfer_dialog, Some(TransferDialog::Restore { .. })))
+                {
+                    return false;
+                }
+                self.backup_focus = usize::from(confirming);
+                self.backup_password.set_focus(!confirming);
+                self.backup_confirmation.set_focus(confirming);
+                if let Action::SetValue(value) = action {
+                    let field = if confirming {
+                        &mut self.backup_confirmation
+                    } else {
+                        &mut self.backup_password
+                    };
+                    field.set_text(value);
+                }
             }
             ("passwords.transfer.backup", Action::Activate) => self.begin_encrypted_backup(),
             ("passwords.transfer.restore", Action::Activate) => self.apply_encrypted_restore(),
@@ -5323,10 +5356,30 @@ impl Widget for PasswordsSurface {
         true
     }
     fn next_wake_deadline(&self) -> Option<std::time::Instant> {
-        (self.import_portal.is_some()
+        let pending = self.import_portal.is_some()
             || self.import_parse.is_some()
-            || self.export_portal.is_some())
-        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(16))
+            || self.export_portal.is_some()
+            || self.backup_portal.is_some()
+            || self.restore_portal.is_some();
+        let transfer = if pending {
+            // Keep the deadline fixed until sync consumes the tick. Returning
+            // now + 16 ms on every query would postpone it indefinitely.
+            let deadline = self.transfer_poll_deadline.get().unwrap_or_else(|| {
+                std::time::Instant::now() + std::time::Duration::from_millis(16)
+            });
+            self.transfer_poll_deadline.set(Some(deadline));
+            Some(deadline)
+        } else {
+            self.transfer_poll_deadline.set(None);
+            None
+        };
+        [
+            transfer,
+            self.revealed.as_ref().map(|(_, _, deadline)| *deadline),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
     fn modal_capture(&self) -> Option<Rect> {
         self.transfer_dialog.as_ref().map(|_| self.transfer_rect())
@@ -5856,6 +5909,80 @@ mod tests {
             PasswordsSurface::unescape_custom_value(&escaped).unwrap(),
             "first\nsecond\\third"
         );
+    }
+
+    #[test]
+    fn pending_transfer_keeps_host_polling_and_reveal_has_an_expiry_deadline() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.export_portal = Some(rx);
+        let first = app.next_wake_deadline().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(app.next_wake_deadline(), Some(first));
+        tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
+        app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(app.next_wake_deadline().is_none());
+        let deadline = std::time::Instant::now();
+        app.revealed = Some((SecretId("test".into()), "fixture secret".into(), deadline));
+        assert_eq!(app.next_wake_deadline(), Some(deadline));
+        app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(app.revealed.is_none());
+        assert!(app.next_wake_deadline().is_none());
+    }
+
+    #[test]
+    fn backup_and_restore_fields_share_protected_semantic_entry() {
+        use ui::a11y::Action;
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let mut doc = AutoCommit::new();
+        for restoring in [false, true] {
+            app.transfer_dialog = Some(if restoring {
+                TransferDialog::Restore {
+                    bytes: Zeroizing::new(Vec::new()),
+                }
+            } else {
+                TransferDialog::Backup
+            });
+            let tree = app.accessibility().unwrap();
+            let controls = &tree.children[0].children;
+            let password = controls
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Backup password"))
+                .unwrap();
+            assert!(password.state.protected);
+            assert_eq!(password.value, None);
+            assert!(app.perform_semantic_action(
+                "passwords.backup.password",
+                &Action::SetValue("Owned fixture password 52!".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.backup_password.value(), "Owned fixture password 52!");
+            if !restoring {
+                assert!(app.perform_semantic_action(
+                    "passwords.backup.confirmation",
+                    &Action::SetValue("Owned fixture password 52!".into()),
+                    &mut doc,
+                    &automerge::ROOT,
+                ));
+                assert!(app.backup_form_error(true).is_none());
+            }
+            let tree = app.accessibility().unwrap();
+            assert!(
+                tree.children[0]
+                    .children
+                    .iter()
+                    .filter(|node| node.state.protected)
+                    .all(|node| node.value.is_none())
+            );
+        }
+        app.transfer_dialog = None;
+        assert!(!app.perform_semantic_action(
+            "passwords.backup.password",
+            &Action::SetValue("outside dialog".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
     }
 
     #[test]
