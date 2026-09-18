@@ -38,8 +38,8 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexedScrollbar,
-    EmptyState, ImageViewer, ProgressBar, ScrollMetrics, SearchField, TextInput, TextInputKind,
-    Widget,
+    EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec,
+    ProgressBar, ScrollMetrics, SearchField, TextInput, TextInputKind, Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -93,6 +93,10 @@ const THUMBNAIL_MAX_W: u32 = 320;
 const THUMBNAIL_MAX_H: u32 = 180;
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
 const DIRECTORY_IMPORT_PER_FRAME: usize = 2;
+/// A receipt must not retain an unbounded directory's diagnostics. The total
+/// count remains visible; these are the concrete entries a person can inspect.
+const DIRECTORY_FAILURE_DETAIL_LIMIT: usize = 20;
+const DIRECTORY_FAILURES_PER_PAGE: usize = 4;
 const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// One bounded materialized library page. This is intentionally independent
 /// of the number of cards that happen to fit in a particular window.
@@ -566,6 +570,13 @@ enum CollectionPageHit {
     PlacesNext,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectoryStatusHit {
+    Stop,
+    Details,
+    Dismiss,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PeopleSelection {
     Approved(String),
@@ -897,6 +908,12 @@ pub struct PhotosApp {
     /// Last completed local job remains visible until the next one begins.
     /// Paths stay device-local and are reduced to file names in presentation.
     directory_import_receipt: Option<DirectoryImportReceipt>,
+    directory_import_details_open: bool,
+    directory_import_details_page: usize,
+    directory_import_details_layout: Option<ModalLayout>,
+    directory_import_pending: Rc<Cell<Option<DirectoryStatusHit>>>,
+    directory_import_buttons: Vec<(DirectoryStatusHit, Button)>,
+    directory_import_progress: ProgressBar,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     pending_resource_open: Option<(tilo_actions::InvocationId, String)>,
@@ -1124,6 +1141,9 @@ struct DirectoryImport {
     cancelled: bool,
     limit_reached: bool,
     produced_resources: Vec<String>,
+    /// Keeps deterministic offscreen progress fixtures alive. Real jobs own
+    /// their sender on the worker and always leave this empty.
+    _shot_sender: Option<std::sync::mpsc::Sender<DirectoryImportEvent>>,
 }
 
 enum DirectoryImportEvent {
@@ -1145,6 +1165,7 @@ struct DirectoryImportReceipt {
     refreshed: usize,
     unchanged: usize,
     failures: Vec<crate::import::ImportFailure>,
+    failure_count: usize,
     cancelled: bool,
     limit_reached: bool,
 }
@@ -1584,6 +1605,8 @@ impl PhotosApp {
         let people_pending = Rc::new(RefCell::new(None));
         let library_analysis_pending: Rc<Cell<Option<LibraryAnalysisHit>>> =
             Rc::new(Cell::new(None));
+        let directory_import_pending: Rc<Cell<Option<DirectoryStatusHit>>> =
+            Rc::new(Cell::new(None));
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
@@ -1616,6 +1639,13 @@ impl PhotosApp {
             directory_picker_retain_exif_location: true,
             directory_import: None,
             directory_import_receipt: None,
+            directory_import_details_open: false,
+            directory_import_details_page: 0,
+            directory_import_details_layout: None,
+            directory_import_buttons: build_directory_import_buttons(&directory_import_pending),
+            directory_import_pending,
+            directory_import_progress: ProgressBar::indeterminate()
+                .with_label("Indexing photo folder"),
             resource_invocation: None,
             resource_result: None,
             pending_resource_open: None,
@@ -2737,6 +2767,77 @@ impl PhotosApp {
             longitude: -40.0,
             zoom: 1.5,
         };
+    }
+
+    /// Pose a running folder import for hermetic offscreen visual coverage.
+    /// The held sender prevents the ordinary sync loop from treating this
+    /// deterministic fixture as a crashed worker.
+    pub fn show_directory_import_progress_for_shot(&mut self) {
+        self.show_library();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.directory_import_receipt = None;
+        self.directory_import_details_open = false;
+        self.directory_import = Some(DirectoryImport {
+            receiver,
+            cancel: Arc::new(AtomicBool::new(false)),
+            invocation: None,
+            mode: DirectoryImportMode::Import,
+            discovered: 184,
+            imported: 112,
+            refreshed: 0,
+            unchanged: 7,
+            skipped: 2,
+            sequence: 184,
+            pending: VecDeque::new(),
+            failures: vec![
+                crate::import::ImportFailure {
+                    source: "damaged-scan.jpg".into(),
+                    message: "This image cannot be decoded safely".into(),
+                    retryable: true,
+                },
+                crate::import::ImportFailure {
+                    source: "archive-link".into(),
+                    message: "Symbolic links are not followed during photo import".into(),
+                    retryable: false,
+                },
+            ],
+            worker_done: false,
+            cancelled: false,
+            limit_reached: false,
+            produced_resources: Vec::new(),
+            _shot_sender: Some(sender),
+        });
+    }
+
+    /// Pose a completed partial import with a deliberately bounded issue
+    /// receipt. It exists only for offscreen regression images.
+    pub fn show_directory_import_errors_for_shot(&mut self) {
+        self.show_library();
+        self.directory_import = None;
+        let failures = (1..=9)
+            .map(|number| crate::import::ImportFailure {
+                source: format!("photo-{number:02}.jpg").into(),
+                message: if number % 3 == 0 {
+                    "This image cannot be decoded safely".into()
+                } else {
+                    "Could not read this image".into()
+                },
+                retryable: number % 3 != 0,
+            })
+            .collect();
+        self.directory_import_receipt = Some(DirectoryImportReceipt {
+            mode: DirectoryImportMode::Import,
+            discovered: 268,
+            imported: 241,
+            refreshed: 0,
+            unchanged: 0,
+            failures,
+            failure_count: 27,
+            cancelled: false,
+            limit_reached: false,
+        });
+        self.directory_import_details_open = true;
+        self.directory_import_details_page = 0;
     }
 
     /// Pose the ordinary selection shelf for deterministic visual coverage.
@@ -4729,21 +4830,49 @@ impl PhotosApp {
                     .with_hashed_key("photos:status"),
             );
         }
-        if let Some(receipt) = self.directory_import_receipt.as_ref() {
-            let issue_names = receipt
-                .failures
-                .iter()
-                .take(3)
-                .map(|failure| {
-                    failure
-                        .source
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("Unavailable item")
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
+        if let Some(job) = self.directory_import.as_ref() {
+            let mut status_children = vec![
+                AccessNode::new(Role::StaticText)
+                    .with_name(if job.mode == DirectoryImportMode::Reindex {
+                        "Reindexing photo folder"
+                    } else {
+                        "Importing photo folder"
+                    })
+                    .with_description(format!(
+                        "{} found, {} imported, {} refreshed, {} issues",
+                        job.discovered,
+                        job.imported,
+                        job.refreshed,
+                        job.failures.len()
+                    ))
+                    .with_live(Politeness::Polite)
+                    .with_hashed_key("photos:directory-import-progress"),
+                AccessNode::new(Role::Button)
+                    .with_name("Stop")
+                    .with_action_target("photos:directory-import:stop")
+                    .with_hashed_key("photos:directory-import-stop"),
+            ];
+            if !job.failures.is_empty() {
+                status_children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Details")
+                        .with_description(format!("Inspect {} import issues", job.failures.len()))
+                        .with_action_target("photos:directory-import:details")
+                        .with_hashed_key("photos:directory-import-details"),
+                );
+            }
             children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Photo folder progress")
+                    .with_state(AccessState {
+                        busy: true,
+                        ..Default::default()
+                    })
+                    .with_children(status_children)
+                    .with_hashed_key("photos:directory-import-status"),
+            );
+        } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+            let mut status_children = vec![
                 AccessNode::new(Role::StaticText)
                     .with_name(if receipt.mode == DirectoryImportMode::Reindex {
                         "Photo folder reindex result"
@@ -4751,20 +4880,116 @@ impl PhotosApp {
                         "Photo folder import result"
                     })
                     .with_description(format!(
-                        "{} imported, {} refreshed, {} unchanged, {} issues{}",
+                        "{} imported, {} refreshed, {} unchanged, {} issues",
                         receipt.imported,
                         receipt.refreshed,
                         receipt.unchanged,
-                        receipt.failures.len(),
-                        if issue_names.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {issue_names}")
-                        }
+                        receipt.failure_count,
                     ))
                     .with_live(Politeness::Polite)
-                    .with_bounds(self.status_rect)
                     .with_hashed_key("photos:directory-import-result"),
+            ];
+            if receipt.failure_count > 0 {
+                status_children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Details")
+                        .with_description(format!(
+                            "Inspect {} retained issue details",
+                            receipt.failures.len()
+                        ))
+                        .with_action_target("photos:directory-import:details")
+                        .with_hashed_key("photos:directory-import-details"),
+                );
+            }
+            status_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Dismiss")
+                    .with_action_target("photos:directory-import:dismiss")
+                    .with_hashed_key("photos:directory-import-dismiss"),
+            );
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Photo folder result")
+                    .with_children(status_children)
+                    .with_hashed_key("photos:directory-import-status"),
+            );
+        }
+        if self.directory_import_details_open {
+            let (failures, total) = if let Some(job) = self.directory_import.as_ref() {
+                (&job.failures[..], job.failures.len())
+            } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+                (&receipt.failures[..], receipt.failure_count)
+            } else {
+                (&[][..], 0)
+            };
+            let retained = failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT);
+            let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
+            let page = self.directory_import_details_page.min(pages - 1);
+            let mut detail_children = failures
+                .iter()
+                .take(retained)
+                .skip(page * DIRECTORY_FAILURES_PER_PAGE)
+                .take(DIRECTORY_FAILURES_PER_PAGE)
+                .enumerate()
+                .map(|(index, failure)| {
+                    let name = failure
+                        .source
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Unavailable item");
+                    AccessNode::new(Role::ListItem)
+                        .with_name(name)
+                        .with_description(format!(
+                            "{}. {}",
+                            failure.message,
+                            if failure.retryable {
+                                "This item can be retried"
+                            } else {
+                                "This item needs a change before retrying"
+                            }
+                        ))
+                        .with_hashed_key(&format!("photos:directory-failure:{page}:{index}"))
+                })
+                .collect::<Vec<_>>();
+            detail_children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(format!(
+                        "Showing {} retained details out of {total} issues, page {} of {pages}",
+                        retained,
+                        page + 1
+                    ))
+                    .with_hashed_key("photos:directory-failure-summary"),
+            );
+            for (key, label, disabled) in [
+                ("details-previous", "Previous", page == 0),
+                ("details-next", "Next", page + 1 >= pages),
+                ("details-close", "Close", false),
+            ] {
+                detail_children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(label)
+                        .with_state(AccessState {
+                            disabled,
+                            focusable: !disabled,
+                            ..Default::default()
+                        })
+                        .with_action_target(format!("photos:directory-import:{key}"))
+                        .with_hashed_key(&format!("photos:directory-import:{key}")),
+                );
+            }
+            children.push(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Folder import issues")
+                    .with_description(format!(
+                        "{retained} issue details retained; {} additional issues",
+                        total.saturating_sub(retained)
+                    ))
+                    .with_state(AccessState {
+                        modal: true,
+                        ..Default::default()
+                    })
+                    .with_children(detail_children)
+                    .with_hashed_key("photos:directory-import-dialog"),
             );
         }
         AccessNode::new(Role::Group)
@@ -4809,6 +5034,73 @@ impl PhotosApp {
                 self.drain_pending(doc);
                 true
             }
+            _ => false,
+        }
+    }
+
+    fn perform_directory_semantic_action(&mut self, target: &str, action: &AccessAction) -> bool {
+        let Some(command) = target.strip_prefix("photos:directory-import:") else {
+            return false;
+        };
+        if matches!(action, AccessAction::Focus) {
+            let status_hit = match command {
+                "stop" => Some(DirectoryStatusHit::Stop),
+                "details" => Some(DirectoryStatusHit::Details),
+                "dismiss" => Some(DirectoryStatusHit::Dismiss),
+                _ => None,
+            };
+            if let Some(hit) = status_hit {
+                let available = match hit {
+                    DirectoryStatusHit::Stop => self.directory_import.is_some(),
+                    DirectoryStatusHit::Details => {
+                        self.directory_import
+                            .as_ref()
+                            .is_some_and(|job| !job.failures.is_empty())
+                            || self
+                                .directory_import_receipt
+                                .as_ref()
+                                .is_some_and(|receipt| receipt.failure_count > 0)
+                    }
+                    DirectoryStatusHit::Dismiss => {
+                        self.directory_import.is_none() && self.directory_import_receipt.is_some()
+                    }
+                };
+                if available {
+                    for (candidate, button) in &mut self.directory_import_buttons {
+                        button.set_focus(*candidate == hit);
+                    }
+                }
+                return available;
+            }
+            if !self.directory_import_details_open {
+                return false;
+            }
+            let retained = self.directory_import.as_ref().map_or_else(
+                || {
+                    self.directory_import_receipt
+                        .as_ref()
+                        .map_or(0, |receipt| receipt.failures.len())
+                },
+                |job| job.failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT),
+            );
+            let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
+            return match command {
+                "details-previous" => self.directory_import_details_page > 0,
+                "details-next" => self.directory_import_details_page + 1 < pages,
+                "details-close" => true,
+                _ => false,
+            };
+        }
+        if !matches!(action, AccessAction::Activate) {
+            return false;
+        }
+        match command {
+            "stop" => self.activate_directory_status(DirectoryStatusHit::Stop),
+            "details" => self.activate_directory_status(DirectoryStatusHit::Details),
+            "dismiss" => self.activate_directory_status(DirectoryStatusHit::Dismiss),
+            "details-previous" => self.page_directory_details(false),
+            "details-next" => self.page_directory_details(true),
+            "details-close" => self.close_directory_details(),
             _ => false,
         }
     }
@@ -5187,6 +5479,8 @@ impl PhotosApp {
             return;
         }
         self.directory_import_receipt = None;
+        self.directory_import_details_open = false;
+        self.directory_import_details_page = 0;
         self.directory_import = Some(DirectoryImport {
             receiver,
             cancel,
@@ -5204,11 +5498,96 @@ impl PhotosApp {
             cancelled: false,
             limit_reached: false,
             produced_resources: Vec::new(),
+            _shot_sender: None,
         });
         self.notice = Some(match mode {
             DirectoryImportMode::Import => "Preparing folder import…".into(),
             DirectoryImportMode::Reindex => "Preparing folder reindex…".into(),
         });
+    }
+
+    fn stop_directory_import(&mut self) -> bool {
+        let Some(job) = self.directory_import.as_mut() else {
+            return false;
+        };
+        job.cancel.store(true, Ordering::Release);
+        job.cancelled = true;
+        job.pending.clear();
+        if let Some(invocation) = job.invocation.take() {
+            self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(
+                    "Folder indexing was stopped; completed photographs were kept".into(),
+                ),
+            });
+        }
+        self.resource_invocation = None;
+        self.notice = Some("Stopping folder indexing… completed photographs are kept".into());
+        true
+    }
+
+    fn activate_directory_status(&mut self, hit: DirectoryStatusHit) -> bool {
+        match hit {
+            DirectoryStatusHit::Stop => self.stop_directory_import(),
+            DirectoryStatusHit::Details => {
+                let has_failures = self
+                    .directory_import
+                    .as_ref()
+                    .is_some_and(|job| !job.failures.is_empty())
+                    || self
+                        .directory_import_receipt
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.failure_count > 0);
+                if has_failures {
+                    self.directory_import_details_open = true;
+                    self.directory_import_details_page = 0;
+                }
+                has_failures
+            }
+            DirectoryStatusHit::Dismiss => {
+                if self.directory_import.is_some() || self.directory_import_receipt.is_none() {
+                    return false;
+                }
+                self.directory_import_receipt = None;
+                self.directory_import_details_open = false;
+                self.directory_import_details_layout = None;
+                true
+            }
+        }
+    }
+
+    fn page_directory_details(&mut self, forward: bool) -> bool {
+        if !self.directory_import_details_open {
+            return false;
+        }
+        let retained = self.directory_import.as_ref().map_or_else(
+            || {
+                self.directory_import_receipt
+                    .as_ref()
+                    .map_or(0, |receipt| receipt.failures.len())
+            },
+            |job| job.failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT),
+        );
+        let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
+        let next = if forward {
+            (self.directory_import_details_page + 1).min(pages - 1)
+        } else {
+            self.directory_import_details_page.saturating_sub(1)
+        };
+        if next == self.directory_import_details_page {
+            return false;
+        }
+        self.directory_import_details_page = next;
+        true
+    }
+
+    fn close_directory_details(&mut self) -> bool {
+        if !self.directory_import_details_open {
+            return false;
+        }
+        self.directory_import_details_open = false;
+        self.directory_import_details_layout = None;
+        true
     }
 
     fn drain_directory_import(&mut self, doc: &mut AutoCommit) {
@@ -5395,13 +5774,20 @@ impl PhotosApp {
                 if job.failures.len() == 1 { "" } else { "s" }
             );
             self.notice = Some(message);
+            let failure_count = job.failures.len();
             self.directory_import_receipt = Some(DirectoryImportReceipt {
                 mode: job.mode,
                 discovered: job.discovered,
                 imported: job.imported,
                 refreshed: job.refreshed,
                 unchanged: job.unchanged,
-                failures: job.failures.clone(),
+                failures: job
+                    .failures
+                    .iter()
+                    .take(DIRECTORY_FAILURE_DETAIL_LIMIT)
+                    .cloned()
+                    .collect(),
+                failure_count,
                 cancelled: job.cancelled,
                 limit_reached: job.limit_reached,
             });
@@ -6285,66 +6671,72 @@ impl PhotosApp {
     }
 
     fn draw_directory_import_status(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
         use vello::peniko::Fill;
-        let (title, summary, issues) = if let Some(job) = self.directory_import.as_ref() {
-            (
-                if job.mode == DirectoryImportMode::Import {
-                    "Importing photo folder"
-                } else {
-                    "Reindexing photo folder"
-                }
-                .to_owned(),
-                format!(
-                    "{} found · {} imported · {} refreshed · {} issue{}",
-                    job.discovered,
-                    job.imported,
-                    job.refreshed,
+        let (title, summary, issue_count, active) =
+            if let Some(job) = self.directory_import.as_ref() {
+                (
+                    if job.mode == DirectoryImportMode::Import {
+                        "Importing photo folder"
+                    } else {
+                        "Reindexing photo folder"
+                    }
+                    .to_owned(),
+                    format!(
+                        "{} found · {} imported · {} refreshed · {} issue{}",
+                        job.discovered,
+                        job.imported,
+                        job.refreshed,
+                        job.failures.len(),
+                        if job.failures.len() == 1 { "" } else { "s" }
+                    ),
                     job.failures.len(),
-                    if job.failures.len() == 1 { "" } else { "s" }
-                ),
-                &job.failures,
-            )
-        } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
-            let noun = if receipt.mode == DirectoryImportMode::Reindex {
-                "Reindex complete"
+                    true,
+                )
+            } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+                let noun = if receipt.mode == DirectoryImportMode::Reindex {
+                    "Reindex complete"
+                } else {
+                    "Import complete"
+                };
+                (
+                    noun.to_owned(),
+                    format!(
+                        "{} found · {} imported · {} refreshed · {} unchanged · {} issue{}{}{}",
+                        receipt.discovered,
+                        receipt.imported,
+                        receipt.refreshed,
+                        receipt.unchanged,
+                        receipt.failure_count,
+                        if receipt.failure_count == 1 { "" } else { "s" },
+                        if receipt.cancelled {
+                            " · cancelled"
+                        } else {
+                            ""
+                        },
+                        if receipt.limit_reached {
+                            " · folder limit reached"
+                        } else {
+                            ""
+                        },
+                    ),
+                    receipt.failure_count,
+                    false,
+                )
             } else {
-                "Import complete"
+                self.directory_import_details_layout = None;
+                return;
             };
-            (
-                noun.to_owned(),
-                format!(
-                    "{} found · {} imported · {} refreshed · {} unchanged · {} issue{}{}{}",
-                    receipt.discovered,
-                    receipt.imported,
-                    receipt.refreshed,
-                    receipt.unchanged,
-                    receipt.failures.len(),
-                    if receipt.failures.len() == 1 { "" } else { "s" },
-                    if receipt.cancelled {
-                        " · cancelled"
-                    } else {
-                        ""
-                    },
-                    if receipt.limit_reached {
-                        " · folder limit reached"
-                    } else {
-                        ""
-                    },
-                ),
-                &receipt.failures,
-            )
-        } else {
-            return;
-        };
+        let compact = self.canvas_rect.width() < 620.0;
+        let height = if compact { 142.0 } else { 98.0 };
         let bounds = Rect::new(
             self.canvas_rect.x0 + 16.0,
-            (self.canvas_rect.y1 - 94.0).max(self.canvas_rect.y0 + 8.0),
+            (self.canvas_rect.y1 - height - 12.0).max(self.canvas_rect.y0 + 8.0),
             self.canvas_rect.x1 - 16.0,
             self.canvas_rect.y1 - 12.0,
         );
@@ -6367,8 +6759,8 @@ impl PhotosApp {
             &title,
             14.0,
             theme.text_primary,
-            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 13.0)),
-            Some((bounds.width() - 32.0) as f32),
+            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 15.0)),
+            Some((bounds.width() - if compact { 32.0 } else { 260.0 }) as f32),
             TextWeight::Semibold,
         );
         text_renderer.draw_text_weighted(
@@ -6376,36 +6768,228 @@ impl PhotosApp {
             &summary,
             12.0,
             theme.text_dim,
-            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 37.0)),
-            Some((bounds.width() - 32.0) as f32),
+            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 41.0)),
+            Some((bounds.width() - if compact { 32.0 } else { 260.0 }) as f32),
             TextWeight::Regular,
         );
-        if !issues.is_empty() {
-            let first = &issues[0];
-            let name = first
+
+        if active {
+            let progress_right = if compact {
+                bounds.x1 - 16.0
+            } else {
+                bounds.x1 - 244.0
+            };
+            self.directory_import_progress
+                .apply_layout_external(Rect::new(
+                    bounds.x0 + 16.0,
+                    bounds.y0 + 68.0,
+                    progress_right,
+                    bounds.y0 + 76.0,
+                ));
+            self.directory_import_progress.draw(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &PresenceCtx::empty(),
+            );
+        }
+
+        let visible = |hit| match hit {
+            DirectoryStatusHit::Stop => active,
+            DirectoryStatusHit::Details => issue_count > 0,
+            DirectoryStatusHit::Dismiss => !active,
+        };
+        let mut shown = self
+            .directory_import_buttons
+            .iter()
+            .filter(|(hit, _)| visible(*hit))
+            .count();
+        let button_y = if compact {
+            bounds.y1 - 50.0
+        } else {
+            bounds.y0 + 29.0
+        };
+        let mut button_x = if compact {
+            bounds.x0 + 16.0
+        } else {
+            bounds.x1 - 16.0 - shown as f64 * 104.0 - shown.saturating_sub(1) as f64 * 8.0
+        };
+        for (hit, button) in &mut self.directory_import_buttons {
+            if visible(*hit) {
+                let rect = Rect::new(button_x, button_y, button_x + 104.0, button_y + 40.0);
+                button.set_enabled(true);
+                button.apply_layout_external(rect);
+                button.draw(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &PresenceCtx::empty(),
+                );
+                button_x += 112.0;
+                shown = shown.saturating_sub(1);
+            } else {
+                button.set_enabled(false);
+                button.apply_layout_external(Rect::ZERO);
+            }
+        }
+    }
+
+    fn draw_directory_import_details(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.directory_import_details_open {
+            self.directory_import_details_layout = None;
+            return;
+        }
+        let (failures, failure_count) = if let Some(job) = self.directory_import.as_ref() {
+            (&job.failures[..], job.failures.len())
+        } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+            (&receipt.failures[..], receipt.failure_count)
+        } else {
+            self.directory_import_details_open = false;
+            self.directory_import_details_layout = None;
+            return;
+        };
+        if failures.is_empty() {
+            self.directory_import_details_open = false;
+            self.directory_import_details_layout = None;
+            return;
+        }
+        let retained = failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT);
+        let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
+        self.directory_import_details_page = self
+            .directory_import_details_page
+            .min(pages.saturating_sub(1));
+        let page = self.directory_import_details_page;
+        let actions = [
+            ModalAction::secondary("Previous").enabled(page > 0),
+            ModalAction::secondary("Next").enabled(page + 1 < pages),
+            ModalAction::primary("Close"),
+        ];
+        let base_spec = ModalSpec::new("Folder import issues")
+            .actions(&actions)
+            .body_height(282.0)
+            .max_width(620.0)
+            .dismiss_on_scrim(true);
+        let layout = ModalFrame::layout(self.rect, &base_spec, text_renderer, theme);
+        let actions = [
+            ModalAction::secondary("Previous")
+                .enabled(page > 0)
+                .hovered(layout.actions[0].contains(self.pointer)),
+            ModalAction::secondary("Next")
+                .enabled(page + 1 < pages)
+                .hovered(layout.actions[1].contains(self.pointer)),
+            ModalAction::primary("Close").hovered(layout.actions[2].contains(self.pointer)),
+        ];
+        let spec = ModalSpec::new("Folder import issues")
+            .actions(&actions)
+            .body_height(282.0)
+            .max_width(620.0)
+            .dismiss_on_scrim(true)
+            .close_hovered(layout.close.is_some_and(|rect| rect.contains(self.pointer)));
+        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
+        let (ink, dim) = ModalFrame::ink(theme);
+        let not_retained = failure_count.saturating_sub(retained);
+        let overview = if not_retained == 0 {
+            format!(
+                "{failure_count} issue{} · page {} of {pages}",
+                if failure_count == 1 { "" } else { "s" },
+                page + 1
+            )
+        } else {
+            format!(
+                "{failure_count} issues · {retained} details retained · {not_retained} additional"
+            )
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            &overview,
+            12.0,
+            dim,
+            transform * Affine::translate((layout.body.x0, layout.body.y0 + 2.0)),
+            Some(layout.body.width() as f32),
+            TextWeight::Regular,
+        );
+        let list = Rect::new(
+            layout.body.x0,
+            layout.body.y0 + 26.0,
+            layout.body.x1,
+            layout.body.y1,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &list,
+        );
+        for (row, failure) in failures
+            .iter()
+            .take(retained)
+            .skip(page * DIRECTORY_FAILURES_PER_PAGE)
+            .take(DIRECTORY_FAILURES_PER_PAGE)
+            .enumerate()
+        {
+            let y = list.y0 + row as f64 * 58.0;
+            let name = failure
                 .source
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("Unavailable item");
-            let more = issues.len().saturating_sub(1);
             text_renderer.draw_text_weighted(
                 scene,
-                &format!(
-                    "Needs attention: {name} — {}{}",
-                    first.message,
-                    if more == 0 {
-                        String::new()
-                    } else {
-                        format!(" · {more} more")
-                    }
-                ),
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 59.0)),
-                Some((bounds.width() - 32.0) as f32),
+                name,
+                13.0,
+                ink,
+                transform * Affine::translate((list.x0, y + 5.0)),
+                Some((list.width() - 118.0) as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                if failure.retryable {
+                    "Can retry"
+                } else {
+                    "Needs a change"
+                },
+                11.0,
+                if failure.retryable {
+                    theme.accent_primary
+                } else {
+                    dim
+                },
+                transform * Affine::translate((list.x1 - 104.0, y + 6.0)),
+                Some(104.0),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &failure.message,
+                11.0,
+                dim,
+                transform * Affine::translate((list.x0, y + 28.0)),
+                Some(list.width() as f32),
                 TextWeight::Regular,
             );
+            if row + 1 < DIRECTORY_FAILURES_PER_PAGE {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &Rect::new(list.x0, y + 54.0, list.x1, y + 55.0),
+                );
+            }
         }
+        scene.pop_layer();
+        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        self.directory_import_details_layout = Some(layout);
     }
 
     fn draw_people(
@@ -10620,6 +11204,45 @@ fn build_collection_page_buttons(
     .collect()
 }
 
+fn build_directory_import_buttons(
+    pending: &Rc<Cell<Option<DirectoryStatusHit>>>,
+) -> Vec<(DirectoryStatusHit, Button)> {
+    [
+        (
+            DirectoryStatusHit::Stop,
+            "photos-directory-stop",
+            "Stop",
+            Icon::Square,
+        ),
+        (
+            DirectoryStatusHit::Details,
+            "photos-directory-details",
+            "Details",
+            Icon::List,
+        ),
+        (
+            DirectoryStatusHit::Dismiss,
+            "photos-directory-dismiss",
+            "Dismiss",
+            Icon::X,
+        ),
+    ]
+    .into_iter()
+    .map(|(hit, id, label, icon)| {
+        let slot = pending.clone();
+        (
+            hit,
+            Button::new(id, label, None)
+                .with_icon(icon)
+                .with_size(104.0, 40.0)
+                .tooltip(label)
+                .with_accessible_name(label)
+                .on_click(move || slot.set(Some(hit))),
+        )
+    })
+    .collect()
+}
+
 /// Shared retained controls placed over the custom timeline geometry.  The
 /// timeline owns placement, while Button owns its visual states, names and
 /// minimum target treatment.
@@ -11888,7 +12511,6 @@ impl Widget for PhotosApp {
             } else {
                 self.draw_library(scene, transform, text_renderer, theme, presence);
             }
-            self.draw_directory_import_status(scene, transform, text_renderer, theme);
         } else if let Some(v) = self.viewer.as_mut() {
             v.draw(scene, transform, text_renderer, theme, presence);
         } else {
@@ -11898,6 +12520,8 @@ impl Widget for PhotosApp {
         // This is deliberately after the canvas/library so the compact menu
         // is a real popup rather than a panel hidden behind the grid.
         self.draw_compact_more(scene, transform, text_renderer, theme);
+
+        self.draw_directory_import_status(scene, transform, text_renderer, theme);
 
         if !self.status.is_empty() {
             let inner = self.status_rect;
@@ -11911,6 +12535,7 @@ impl Widget for PhotosApp {
                 TextWeight::Regular,
             );
         }
+        self.draw_directory_import_details(scene, transform, text_renderer, theme);
     }
 
     #[allow(
@@ -11943,6 +12568,83 @@ impl Widget for PhotosApp {
                 );
             }
             self.pointer = next;
+        }
+        if self.directory_import_details_open {
+            if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+                && key.state == winit::event::ElementState::Pressed
+            {
+                match &key.logical_key {
+                    Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                        self.close_directory_details();
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        self.page_directory_details(false);
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.page_directory_details(true);
+                    }
+                    _ => return,
+                }
+                *handled = true;
+                return;
+            }
+            if matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            ) {
+                if let Some(layout) = self.directory_import_details_layout.clone() {
+                    match layout.hit(self.pointer) {
+                        Some(ModalHit::Close | ModalHit::Scrim) => {
+                            self.close_directory_details();
+                        }
+                        Some(ModalHit::Action(0)) => {
+                            self.page_directory_details(false);
+                        }
+                        Some(ModalHit::Action(1)) => {
+                            self.page_directory_details(true);
+                        }
+                        Some(ModalHit::Action(2)) => {
+                            self.close_directory_details();
+                        }
+                        Some(ModalHit::Card | ModalHit::Action(_)) | None => {}
+                    }
+                }
+                *handled = true;
+                return;
+            }
+            // A modal swallows pointer/keyboard input that it does not use;
+            // cursor motion still reaches it so hover feedback remains live.
+            if !matches!(event, winit::event::WindowEvent::CursorMoved { .. }) {
+                *handled = true;
+                return;
+            }
+        }
+        for (_, button) in &mut self.directory_import_buttons {
+            let mut sink = None;
+            button.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                doc,
+                path,
+                handled,
+                &mut sink,
+                node_id,
+                taffy,
+            );
+        }
+        if let Some(hit) = self.directory_import_pending.take() {
+            if self.activate_directory_status(hit) {
+                *handled = true;
+            }
+            return;
+        }
+        if *handled {
+            return;
         }
         let people_surface = self.library_mode
             && (self.library_destination == LibraryDestination::People || self.people_mode);
@@ -12819,6 +13521,7 @@ impl Widget for PhotosApp {
         _path: &ObjId,
     ) -> bool {
         self.perform_toolbar_semantic_action(target, action, state)
+            || self.perform_directory_semantic_action(target, action)
             || self.perform_library_semantic_action(target, action, state)
     }
 
@@ -14754,5 +15457,183 @@ mod tests {
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert!(app.take_committed_action().is_some());
+    }
+
+    #[test]
+    fn folder_status_pointer_and_semantic_stop_share_cancellation() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+
+        let mut app = PhotosApp::new();
+        app.canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 720.0);
+        app.rect = Rect::new(0.0, 0.0, 1_000.0, 768.0);
+        app.show_directory_import_progress_for_shot();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        app.draw_directory_import_status(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        let stop = app
+            .directory_import_buttons
+            .iter()
+            .find(|(hit, _)| *hit == DirectoryStatusHit::Stop)
+            .map(|(_, button)| button.get_rect())
+            .expect("stop button");
+        assert!(stop.width() >= 44.0 && stop.height() >= 40.0);
+
+        let mut doc = AutoCommit::new();
+        let mut tree = TaffyTree::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut focus = None;
+        let modifiers = winit::event::Modifiers::default();
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(stop.center().x, stop.center().y),
+            },
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        ] {
+            let mut handled = false;
+            app.handle_event(
+                &event,
+                1.0,
+                &modifiers,
+                &mut doc,
+                &ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
+            );
+        }
+        let job = app
+            .directory_import
+            .as_ref()
+            .expect("job remains until worker exits");
+        assert!(job.cancelled);
+        assert!(job.cancel.load(Ordering::Acquire));
+
+        app.show_directory_import_progress_for_shot();
+        assert!(app.perform_directory_semantic_action(
+            "photos:directory-import:stop",
+            &AccessAction::Activate,
+        ));
+        let job = app
+            .directory_import
+            .as_ref()
+            .expect("semantic stop keeps receipt pending");
+        assert!(job.cancelled && job.cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn folder_issue_details_are_bounded_paged_and_semantically_operable() {
+        let mut app = PhotosApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1_000.0, 760.0);
+        app.canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 730.0);
+        app.show_directory_import_errors_for_shot();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        app.draw_directory_import_details(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        let receipt = app.directory_import_receipt.as_ref().expect("receipt");
+        assert!(receipt.failures.len() <= DIRECTORY_FAILURE_DETAIL_LIMIT);
+        assert_eq!(receipt.failure_count, 27);
+        let dialog = app
+            .accessibility_tree()
+            .children
+            .into_iter()
+            .find(|node| node.role == Role::Dialog)
+            .expect("accessible details dialog");
+        assert!(dialog.state.modal);
+        assert_eq!(
+            dialog
+                .children
+                .iter()
+                .filter(|node| node.role == Role::ListItem)
+                .count(),
+            DIRECTORY_FAILURES_PER_PAGE
+        );
+        assert!(
+            dialog
+                .description
+                .as_deref()
+                .is_some_and(|text| text.contains("18 additional"))
+        );
+        assert!(dialog.children.iter().all(|node| {
+            !node.name.as_deref().unwrap_or_default().contains('/')
+                && !node
+                    .description
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("/home/")
+        }));
+        assert!(app.perform_directory_semantic_action(
+            "photos:directory-import:details-next",
+            &AccessAction::Activate,
+        ));
+        assert_eq!(app.directory_import_details_page, 1);
+        assert!(app.perform_directory_semantic_action(
+            "photos:directory-import:details-close",
+            &AccessAction::Activate,
+        ));
+        assert!(!app.directory_import_details_open);
+        assert!(app.perform_directory_semantic_action(
+            "photos:directory-import:dismiss",
+            &AccessAction::Activate,
+        ));
+        assert!(app.directory_import_receipt.is_none());
+    }
+
+    #[test]
+    fn folder_status_and_details_adapt_to_phone_geometry() {
+        let mut app = PhotosApp::new();
+        app.rect = Rect::new(0.0, 0.0, 390.0, 780.0);
+        app.canvas_rect = Rect::new(0.0, 48.0, 390.0, 750.0);
+        app.show_directory_import_progress_for_shot();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        app.draw_directory_import_status(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::high_contrast(),
+        );
+        let controls = app
+            .directory_import_buttons
+            .iter()
+            .filter_map(|(_, button)| {
+                let rect = button.get_rect();
+                (rect.area() > 0.0).then_some(rect)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(controls.len(), 2);
+        assert!(controls.iter().all(|rect| {
+            rect.width() >= 44.0
+                && rect.height() >= 40.0
+                && rect.x0 >= app.canvas_rect.x0
+                && rect.x1 <= app.canvas_rect.x1
+        }));
+        assert!(controls[0].x1 <= controls[1].x0 || controls[1].x1 <= controls[0].x0);
+
+        app.show_directory_import_errors_for_shot();
+        app.draw_directory_import_details(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::high_contrast(),
+        );
+        let layout = app
+            .directory_import_details_layout
+            .as_ref()
+            .expect("phone details layout");
+        assert!(layout.card.x0 >= app.rect.x0 && layout.card.x1 <= app.rect.x1);
+        assert!(layout.card.y0 >= app.rect.y0 && layout.card.y1 <= app.rect.y1);
+        assert!(layout.close.is_some_and(|rect| rect.width() >= 32.0));
     }
 }
