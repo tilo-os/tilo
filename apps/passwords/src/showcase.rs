@@ -3126,7 +3126,7 @@ impl PasswordsSurface {
         let c = &theme.tokens.colors;
         Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
         let x = rect.x0 + 36.0;
-        let title_x = if Self::editor_is_compact(rect) && rect.width() >= 330.0 {
+        let title_x = if self.drawer.is_overlay() {
             rect.x0 + 60.0
         } else {
             x
