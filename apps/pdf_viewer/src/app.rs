@@ -33,6 +33,7 @@ enum PortalActionKind {
 }
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
+use ui::chrome::SelectionState;
 use ui::theme::Theme;
 use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -41,6 +42,7 @@ use ui::widget::{
     Avatar, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput, ToggleGroup, ViewportState,
 };
 
+use crate::chrome::{self as chrome, rhythm};
 use crate::doc::{PagePlanEntry, PdfDoc};
 use crate::model::{
     self, AnnoKind, Annotation, Comment, Document, MARGIN, Match, PAGE_H, PAGE_W, PtRect, Reply,
@@ -64,6 +66,9 @@ const RAIL_W_MAX: f64 = 280.0;
 const RAIL_GRIP: f64 = 6.0;
 const SIDEBAR_W: f64 = 324.0;
 const SEARCH_H: f64 = 46.0;
+/// One placed-signature row in the sidebar — the panel row metric; rows are a
+/// sibling step apart.
+const SIG_ROW_H: f64 = ui::tokens::metrics::Metrics::BASE.panel_row_height as f64;
 /// Screen-px padding the viewport reserves around the page stack (top / sides
 /// alike). Handed to [`ViewportState::with_padding`] so the shared kernel and
 /// the reader agree on where the content origin sits.
