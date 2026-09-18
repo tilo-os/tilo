@@ -26,6 +26,7 @@ def bounded_process(argv, sink, limit, *, source=None, timeout=120):
     process = subprocess.Popen(argv, stdin=source if source is not None else subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
     deadline, count = time.monotonic() + timeout, 0
+    completed = False
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
@@ -43,9 +44,12 @@ def bounded_process(argv, sink, limit, *, source=None, timeout=120):
                 sink.write(data)
         if process.wait(timeout=max(0.1, deadline - time.monotonic())):
             raise ValueError('authenticated transfer command failed')
+        completed = True
         return count
     finally:
-        if process.poll() is None:
+        # The leader may already have exited while descendants hold stdout.
+        # A failed operation must still terminate the owned process group.
+        if not completed:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
