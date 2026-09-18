@@ -1,5 +1,5 @@
 //! Click-routing wire-up for the quick-settings panel — not a repeat of
-//! the parser-level unit tests in `shell/src/shell/qs_actions.rs`, which
+//! the parser-level unit tests in `os-actions`, which
 //! pin the brightnessctl/wpctl/nmcli/bluetoothctl stdout shapes. Builds a
 //! real [`ShellOverlayHost`], swaps in a [`RecordingDispatcher`], forces
 //! the popover open, drives `handle_event` with a synthetic click at the
@@ -20,8 +20,8 @@ use std::collections::HashMap;
 
 use settings_store::hardware::QuickSettingsConfig;
 use shell::shell::build_tilo_overlay_host_with_chrome;
-use shell::shell::qs_actions::{PowerProfile, QsActions};
 use shell::shell::quick_settings::WifiNetwork;
+use shell::shell::quick_settings::actions::{PowerProfile, QsActions};
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
@@ -375,9 +375,9 @@ fn keyboard_slider_arrows_route_through_the_host() {
         .with_quick_settings_config(QuickSettingsConfig::default());
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-    // None → Edit → six labeled destinations → Brightness. The full set of
+    // None → Edit → four labeled destinations → Brightness. The full set of
     // destinations must remain keyboard-reachable before the live controls.
-    for _ in 0..8 {
+    for _ in 0..6 {
         assert!(press_key(
             &mut host,
             &taffy,
@@ -695,7 +695,7 @@ fn power_profile_chip_click_routes_to_set_power_profile() {
 }
 
 #[test]
-fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
+fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
@@ -765,10 +765,13 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     click_at(&mut host, &taffy, host_node, click_x, row_y(1));
     let calls = recorder.0.calls();
     assert!(
-        calls.contains(&format!("connect_wifi({})", scanned[1].ssid)),
-        "clicking a network that needs no passphrase must connect to it \
-         ({}); got {calls:?}",
-        scanned[1].ssid
+        calls.is_empty(),
+        "the compositor must not block in the injected dispatcher; got {calls:?}"
+    );
+    assert_eq!(
+        chrome.borrow().quick_settings.wifi_joining.as_deref(),
+        Some(scanned[1].ssid.as_str()),
+        "an open or already-known network must enter the asynchronous join lifecycle"
     );
 }
 
