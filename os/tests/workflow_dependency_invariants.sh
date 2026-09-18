@@ -60,6 +60,14 @@ else
   fail=1
 fi
 
+if grep -Fq "cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}" "$check_workflow" \
+   && grep -Fq "cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}" "$workflows/lint.yml"; then
+  printf 'ok    busy main retains complete check and lint verification runs\n'
+else
+  printf 'main verification may starve under continuous integration\n' >&2
+  fail=1
+fi
+
 if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.ref }}" "$rpm_snapshot_workflow" \
    && grep -Fq "cancel-in-progress: \${{ github.event_name != 'workflow_dispatch' }}" "$rpm_snapshot_workflow" \
    && grep -Fq 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' \
