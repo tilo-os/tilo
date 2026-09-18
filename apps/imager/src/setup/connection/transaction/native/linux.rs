@@ -5295,6 +5295,10 @@ mod tests {
             reopened_replacement_with_partials(false, 1, true, partials);
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep bounded real recovery epochs, durable budget progression and terminal reopen assertions together."
+    )]
     fn drain_partial_epochs(
         tree: &std::path::Path,
         id: OperationId,
@@ -5305,8 +5309,16 @@ mod tests {
     ) {
         use crate::setup::connection::store::{ConnectionStore, RecoveryState};
         let cancel = std::sync::atomic::AtomicBool::new(false);
+        let (original, mut previous_budget) = {
+            let store = ConnectionStore::open_at(&tree.join("store")).unwrap();
+            (
+                store.executor_receipt(id).unwrap(),
+                store.native_budget_for_test(id).unwrap(),
+            )
+        };
         let mut previous = 0;
         let mut finished = false;
+        let mut terminal_receipt = None;
         for attempt in 0..16 {
             let mut store = ConnectionStore::open_at(&tree.join("store")).unwrap();
             let current = store.load_connection(id.connection).unwrap();
@@ -5318,6 +5330,8 @@ mod tests {
             let current = store.load_connection(id.connection).unwrap();
             let mut context = store.open_recovery_context(id, current.revision).unwrap();
             assert!(context.recovery_only());
+            assert_eq!(context.id(), id);
+            assert_eq!(store.native_budget_for_test(id).unwrap(), previous_budget);
             // Another persisted reservation against this same operation budget;
             // reopening never refunds unused read credit or creates a new operation.
             store
@@ -5328,6 +5342,12 @@ mod tests {
                     &cancel,
                 )
                 .unwrap();
+            let expected_budget = (
+                previous_budget.0,
+                previous_budget.1 + 4 * 1024 * 1024,
+                previous_budget.2 + 1,
+            );
+            assert_eq!(store.native_budget_for_test(id).unwrap(), expected_budget);
             let record = store
                 .recovery_namespace_records(&context)
                 .unwrap()
@@ -5341,9 +5361,13 @@ mod tests {
             let drained = store.drain_native_recovery(&mut context, &mut reader, &cancel);
             drop(reader);
             if drained.is_ok() {
-                store
-                    .record_boundary(&context, &mut proof, &cancel)
-                    .unwrap();
+                terminal_receipt = Some(
+                    store
+                        .record_boundary(&context, &mut proof, &cancel)
+                        .unwrap()
+                        .value()
+                        .clone(),
+                );
                 finished = true;
             }
             drop((drained, proof, context, store));
@@ -5364,10 +5388,30 @@ mod tests {
                 );
             }
             previous = settled;
+            let (pending, latest) = reopened.executor_position(id.connection).unwrap();
+            assert_eq!(latest, Some(id));
+            let receipt = reopened.executor_receipt(id).unwrap();
+            assert_eq!(receipt.id, id);
+            assert_eq!(receipt.intent, original.intent);
             assert_eq!(
-                reopened.executor_position(id.connection).unwrap().0,
-                Some(id)
+                reopened.native_budget_for_test(id).unwrap(),
+                expected_budget
             );
+            previous_budget = expected_budget;
+            if finished {
+                assert_eq!(pending, None);
+                assert_eq!(
+                    receipt.stage,
+                    crate::setup::connection::store::ReceiptStage::AccountedPending
+                );
+                assert_eq!(Some(&receipt), terminal_receipt.as_ref());
+            } else {
+                assert_eq!(pending, Some(id));
+                assert_ne!(
+                    receipt.stage,
+                    crate::setup::connection::store::ReceiptStage::AccountedPending
+                );
+            }
             assert!(
                 reopened
                     .load_baseline(id.connection)
@@ -8999,6 +9043,8 @@ impl<'a> NativeEpoch<'a> {
         if self.ep(object(&named))? != actual {
             return Err(self.failure(EndpointError::IdentityChanged));
         }
+        // Close the at-name observation before the checkpoint opens its own pair.
+        drop(named);
         self.boundary = Boundary::DurableQuarantine;
         self.witness_checkpoint()?;
         // A break does not erase durable actual-object accounting. No success
@@ -9052,6 +9098,10 @@ impl<'a> NativeEpoch<'a> {
     ) -> Result<NativePublication> {
         self.publish_to_vacancy(staged, target, PublicationVacancy::Original(absent), source)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the admitted rename, retained-object reread and explicit observation-fd closure in one proof scope."
+    )]
     fn publish_to_vacancy(
         &mut self,
         mut staged: StagedFile,
@@ -9130,12 +9180,15 @@ impl<'a> NativeEpoch<'a> {
         {
             return Err(self.failure(EndpointError::Unstable));
         }
+        // The leased staged guard retains the object; this reread fd is temporary.
+        drop(actual);
         self.validate_guard(source, true)?;
         self.check()?;
         let named = self.io(open_at(target.directory.file(), &target.name, libc::O_PATH))?;
         if self.ep(object(&named))? != staged.guard.actual {
             return Err(self.failure(EndpointError::IdentityChanged));
         }
+        drop(named);
         // The reread and source postflight can take time. A retained directory
         // fd still names a detached old parent, so recheck its ancestry/security
         // at the final proof boundary rather than trusting the earlier check.
