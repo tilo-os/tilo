@@ -103,21 +103,37 @@ def sign(home, operation, source, destination):
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 1024 * 1024 * 1024:
                 raise ValueError('signing input must be a bounded nonempty regular file')
-            source_fd = f'/proc/self/fd/{descriptor}'
             # Private keys can stay on a read-only mount. The already-root caller
             # supplies the trusted system temporary parent; no key is copied here.
             scratch_parent = trusted(Path('/var/lib'), directory=True)
             with tempfile.TemporaryDirectory(prefix='tilo-signing-', dir=scratch_parent) as temporary:
+                # The native crypto reader deliberately uses O_NOFOLLOW, so
+                # /proc/self/fd/N is not a valid input path. Snapshot the held
+                # descriptor into this private directory, never reopen source.
+                copied = Path(temporary) / 'input'
+                with copied.open('xb') as snapshot:
+                    remaining = info.st_size
+                    while remaining:
+                        block = os.read(descriptor, min(1024 * 1024, remaining))
+                        if not block:
+                            raise ValueError('signing input truncated during snapshot')
+                        snapshot.write(block)
+                        remaining -= len(block)
+                    if os.read(descriptor, 1):
+                        raise ValueError('signing input grew during snapshot')
+                after = os.fstat(descriptor)
+                if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                    raise ValueError('signing input changed during snapshot')
                 signed = Path(temporary) / 'signed'
                 if operation == 'sign-efi':
                     key = trusted(home / 'efi-signing.key', private=True)
                     argv = [str(crypto), 'sign-efi', str(key), str(certificate),
-                            source_fd, str(signed)]
+                            str(copied), str(signed)]
                 else:
                     key = trusted(home / 'pcr-signing.key', private=True)
-                    argv = [str(crypto), 'sign-rsa-sha256', str(key), source_fd,
+                    argv = [str(crypto), 'sign-rsa-sha256', str(key), str(copied),
                             str(signed)]
-                run(argv, pass_fds=(descriptor,))
+                run(argv)
                 with signed.open('rb') as result:
                     shutil.copyfileobj(result, output)
         finally:
