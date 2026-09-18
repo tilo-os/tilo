@@ -659,7 +659,8 @@ def build_environment(wpe, generation, revision, manifest, signer, cache,
 
 
 
-def assembly_cache(environment, architecture, mode, native_id, adopted_receipt_sha256):
+def assembly_cache(environment, architecture, mode, native_id, adopted_receipt_sha256,
+                   layer_epoch_anchor='', source_revision=''):
     """Enable public intermediate-layer reuse only after strict native import."""
     if (mode != 'full-build' or architecture not in ARCHITECTURES
             or not re.fullmatch(r'sha256:[0-9a-f]{64}', native_id)
@@ -673,12 +674,28 @@ def assembly_cache(environment, architecture, mode, native_id, adopted_receipt_s
     arguments = environment['TILO_BUILD_ARGS']
     if '--secret' in arguments or '--cache-' in arguments or '--layers' in arguments:
         raise ValueError('assembly cache arguments must be controller-owned without compiler secrets')
+    normalization = None
+    if layer_epoch_anchor:
+        if not re.fullmatch(r'[0-9a-f]{40}', layer_epoch_anchor) or not re.fullmatch(r'[0-9a-f]{40}', source_revision):
+            raise ValueError('layer anchor and source must be exact committed revisions')
+        run('git', 'merge-base', '--is-ancestor', layer_epoch_anchor, source_revision)
+        source_epoch = int(run('git', 'show', '-s', '--format=%ct', source_revision))
+        layer_epoch = int(run('git', 'show', '-s', '--format=%ct', layer_epoch_anchor))
+        if (environment.get('SOURCE_DATE_EPOCH') != str(source_epoch)
+                or not 0 <= layer_epoch <= source_epoch <= 253402300799):
+            raise ValueError('layer anchor or source epoch differs from admitted source')
+        normalization = {'policy': 'raw-layer-ancestor-v1', 'anchor_revision': layer_epoch_anchor,
+                         'layer_epoch': layer_epoch, 'source_revision': source_revision,
+                         'source_date_epoch': source_epoch,
+                         'scope': 'OCI raw layers only; source and signing epochs unchanged'}
+        environment['TILO_RAW_LAYER_EPOCH'] = str(layer_epoch)
     repository = 'code.sandbox.example/qos/tilo-development-assembly-cache-' + architecture + '-v1'
     flags = ['--layers=true', '--skip-unused-stages=true', '--cache-from', repository, '--cache-to', repository]
     environment['TILO_BUILD_ARGS'] += ' ' + ' '.join(flags)
     return {'schema': 1, 'purpose': 'development-raw-assembly-registry-cache',
             'repository': repository, 'architecture': architecture, 'flags': flags,
             'native_image_id': native_id, 'wpe_receipt_sha256': adopted_receipt_sha256,
+            'layer_normalization': normalization,
             'intermediate_uploads_during_build': True, 'private_signing_stages': False,
             'final_artifact_verification_required': True,
             'cross_run_cache_hits_verified': False,
@@ -734,6 +751,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('cache-only', 'native-payload', 'full-build'), default='cache-only')
     parser.add_argument('--native-builder-receipt', type=Path)
+    parser.add_argument('--assembly-layer-epoch-anchor', default='',
+                        help='exact ancestor commit timestamp for verified raw assembly layers')
     parser.add_argument('--native-builder-sha256', default='')
     parser.add_argument('--reconstructed-native-receipt', type=Path)
     parser.add_argument('--reconstructed-native-sha256', default='')
@@ -763,6 +782,9 @@ def main(argv=None):
     for name in ('revision', 'branch'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(argv)
+    if args.assembly_layer_epoch_anchor and (args.mode != 'full-build'
+            or not args.reconstructed_native_receipt or not args.wpe_adoption_receipt):
+        raise ValueError('layer anchor requires reconstructed-native and adopted-WPE full assembly')
     if args.resume_thin_cache_approval and (not args.resume_checkpoint or
             not re.fullmatch('[0-9a-f]{64}', args.resume_thin_cache_approval[1])):
         raise ValueError('thin cache approval requires explicit native resume and exact SHA256')
@@ -783,6 +805,8 @@ def main(argv=None):
                     resume_checkpoint=args.resume_checkpoint,
                     native_source_compatibility=args.native_source_compatibility,
                     native_source_compatibility_sha256=args.native_source_compatibility_sha256)
+    if args.assembly_layer_epoch_anchor and '--source-date-epoch "$layer_epoch" --rewrite-timestamp' not in (REPO / 'os/dev/build-image.sh').read_text():
+        raise ValueError('selected source lacks the explicit raw layer epoch API')
     source_compatibility = None
     if args.native_source_compatibility:
         import native_source_compatibility
@@ -909,7 +933,8 @@ def main(argv=None):
             native_id = import_selected_native(native_builder, args, native_inputs)
             env['TILO_NATIVE_BUILDER_IMAGE_ID'] = native_id
             if args.reconstructed_native_receipt and args.wpe_adoption_receipt:
-                registry_cache = assembly_cache(env, args.architecture, args.mode, native_id, args.wpe_adoption_sha256)
+                registry_cache = assembly_cache(env, args.architecture, args.mode, native_id, args.wpe_adoption_sha256,
+                                                args.assembly_layer_epoch_anchor, args.revision)
                 cache_receipt = json.loads((EVIDENCE / 'cache-configuration.json').read_text())
                 cache_receipt['assembly_registry_cache'] = registry_cache
                 write_receipt('cache-configuration.json', cache_receipt)

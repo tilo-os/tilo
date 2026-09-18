@@ -88,6 +88,11 @@ on:
         description: Independently approved SHA256 of exact source compatibility admission
         required: false
         type: string
+      assembly_layer_epoch_anchor:
+        description: Optional exact ancestor commit for verified raw assembly layer timestamps
+        required: false
+        type: string
+        default: ''
       wpe_candidate:
         description: 'Full-build only: reviewed matching native tilo-wpe-buildroot@sha256 candidate'
         required: false
@@ -143,6 +148,7 @@ jobs:
           APPROVED_RECONSTRUCTION_SHA256: ${{ inputs.approved_reconstruction_sha256 }}
           NATIVE_SOURCE_COMPATIBILITY: ${{ inputs.native_source_compatibility }}
           NATIVE_SOURCE_COMPATIBILITY_SHA256: ${{ inputs.native_source_compatibility_sha256 }}
+          ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}
           COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
@@ -179,6 +185,11 @@ jobs:
               raise ValueError('helper selection requires independent source and helper commits')
           if e['RECONSTRUCTED_NATIVE_RECEIPT'] and not e['HELPERS_REVISION']:
               raise ValueError('reconstructed frozen-source assembly requires explicitly reviewed compatible helpers')
+          anchor = e['ASSEMBLY_LAYER_EPOCH_ANCHOR']
+          if anchor and (not re.fullmatch('[0-9a-f]{40}', anchor)
+                  or e['COMPILE_MODE'] != 'full-build' or not e['RECONSTRUCTED_NATIVE_RECEIPT']
+                  or not e['WPE_ADOPTION_RECEIPT']):
+              raise ValueError('layer epoch anchor requires exact commit and reconstructed-native/adopted-WPE full assembly')
           s = importlib.util.spec_from_file_location('compile', 'os/dev/compile-development-os.py')
           m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
           m.validate_inputs(e['WPE_CANDIDATE'], e['TEST_GENERATION'], revision, e['GITHUB_REF'],
@@ -242,6 +253,7 @@ jobs:
           APPROVED_RECONSTRUCTION_SHA256: ${{ inputs.approved_reconstruction_sha256 }}
           NATIVE_SOURCE_COMPATIBILITY: ${{ inputs.native_source_compatibility }}
           NATIVE_SOURCE_COMPATIBILITY_SHA256: ${{ inputs.native_source_compatibility_sha256 }}
+          ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}
           COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
@@ -360,6 +372,10 @@ jobs:
           native_receipt_args=()
           source_args=()
           compatibility_args=()
+          layer_epoch_args=()
+          if [ -n "$ASSEMBLY_LAYER_EPOCH_ANCHOR" ]; then
+            layer_epoch_args=(--assembly-layer-epoch-anchor "$ASSEMBLY_LAYER_EPOCH_ANCHOR")
+          fi
           if [ -n "$NATIVE_SOURCE_COMPATIBILITY" ]; then
             compatibility_args=(--native-source-compatibility /work/native-source-compatibility.json --native-source-compatibility-sha256 "$NATIVE_SOURCE_COMPATIBILITY_SHA256")
           fi
@@ -402,6 +418,7 @@ jobs:
               "${native_receipt_args[@]}" \
               "${source_args[@]}" \
               "${compatibility_args[@]}" \
+              "${layer_epoch_args[@]}" \
               --revision "$application_revision" --branch "$GITHUB_REF"
           docker cp "$execution_controller/." "$name:/work/repo"
           if [ -n "$SOURCE_REVISION" ]; then docker cp ../application-source "$name:/work/source"; fi
