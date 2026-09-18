@@ -748,8 +748,33 @@ impl TubeModel {
             .collect()
     }
 
+    /// Return the durable subscription key associated with a channel. A key
+    /// can be the local catalogue id or a normalized URL imported before this
+    /// device learned that id; callers must use this key when unsubscribing so
+    /// an imported subscription is not accidentally left active.
+    pub fn subscription_key(&self, id: &str) -> Option<&str> {
+        self.subscriptions.iter().find_map(|subscription| {
+            subscription == id
+                || self
+                    .channel(id)
+                    .is_some_and(|channel| {
+                        subscription == &channel.handle
+                            || subscription
+                                .strip_prefix("https://youtube.com/")
+                                .is_some_and(|handle| {
+                                    handle == channel.handle.trim_start_matches('/')
+                                })
+                    })
+                    .then_some(subscription.as_str())
+        })
+    }
+
     pub fn is_subscribed(&self, id: &str) -> bool {
-        self.subscriptions.iter().any(|subscription| {
+        self.subscription_key(id).is_some()
+    }
+
+    pub fn toggle_subscribe(&mut self, id: &str) {
+        if let Some(pos) = self.subscriptions.iter().position(|subscription| {
             subscription == id
                 || self.channel(id).is_some_and(|channel| {
                     subscription == &channel.handle
@@ -757,11 +782,7 @@ impl TubeModel {
                             .strip_prefix("https://youtube.com/")
                             .is_some_and(|handle| handle == channel.handle.trim_start_matches('/'))
                 })
-        })
-    }
-
-    pub fn toggle_subscribe(&mut self, id: &str) {
-        if let Some(pos) = self.subscriptions.iter().position(|c| c == id) {
+        }) {
             self.subscriptions.remove(pos);
         } else {
             self.subscriptions.push(id.to_string());
@@ -1333,6 +1354,18 @@ mod tests {
         assert!(m.is_subscribed("c1"));
         m.toggle_subscribe("c1");
         assert!(!m.is_subscribed("c1"));
+    }
+
+    #[test]
+    fn imported_url_subscription_toggles_the_same_durable_entry() {
+        let mut m = TubeModel::default();
+        m.channels.push(chan("UC_A", "Creator", ""));
+        m.subscriptions.push("https://youtube.com/UC_A".into());
+
+        assert!(m.is_subscribed("UC_A"));
+        assert_eq!(m.subscription_key("UC_A"), Some("https://youtube.com/UC_A"));
+        m.toggle_subscribe("UC_A");
+        assert!(m.subscriptions.is_empty());
     }
 
     #[test]
