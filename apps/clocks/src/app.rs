@@ -72,6 +72,21 @@ fn timer_label(input: &str) -> String {
     }
 }
 
+fn duration_component(input: &str, upper_bound: u64) -> Option<u64> {
+    let input = input.trim();
+    (!input.is_empty() && input.chars().all(|character| character.is_ascii_digit()))
+        .then(|| input.parse::<u64>().ok())
+        .flatten()
+        .filter(|value| *value <= upper_bound)
+}
+
+fn custom_timer_duration_seconds(hours: &str, minutes: &str, seconds: &str) -> Option<u64> {
+    let hours = duration_component(hours, 99)?;
+    let minutes = duration_component(minutes, 59)?;
+    let seconds = duration_component(seconds, 59)?;
+    Some(hours * 3_600 + minutes * 60 + seconds)
+}
+
 fn alarm_label(input: &str) -> String {
     let label = input.trim();
     if label.is_empty() {
@@ -424,7 +439,13 @@ fn timers_screen(
     state: &ui::LocalState<ClockState>,
     validation_error: &ui::LocalState<Option<String>>,
 ) -> Element {
-    let custom = ui::LocalState::new(TimeValue::new(0, 10).with_seconds(0));
+    // Keep the components as distinct fields. A spinner row looked compact at
+    // default size but allowed its values and arrow targets to collide at 200%
+    // text, which made setting a duration unreliable with touch or a screen
+    // magnifier.
+    let custom_hours = ui::LocalState::new("00".to_string());
+    let custom_minutes = ui::LocalState::new("10".to_string());
+    let custom_seconds = ui::LocalState::new("00".to_string());
     let custom_label = ui::LocalState::new(String::new());
     let preset_specs = [
         ("Tea", "Tea · 5m", 300),
@@ -600,7 +621,9 @@ fn timers_screen(
         Box::new(Card::titled("Active timers", Box::new(col)))
     });
     let add_state = state.clone();
-    let add_custom = custom.clone();
+    let add_hours = custom_hours.clone();
+    let add_minutes = custom_minutes.clone();
+    let add_seconds = custom_seconds.clone();
     let add_label = custom_label.clone();
     let add_error = validation_error.clone();
     let error = ModelView::from_state(validation_error, |message| {
@@ -614,6 +637,55 @@ fn timers_screen(
             },
         )
     });
+    // The grid resolves to two columns where there is room and one where
+    // there is not. Unlike the former three-spinner row, it never shrinks a
+    // control below a readable, independently targetable width.
+    let duration_fields = CardGrid::content_sized(vec![
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(6.0)
+                .push(Box::new(Text::new("Hours").with_heading_level(4)))
+                .push(Box::new(
+                    TextInput::from_state(&custom_hours)
+                        .with_id("clocks.timer.custom.hours")
+                        .with_kind(TextInputKind::Number)
+                        .with_accessible_name("Timer duration hours")
+                        .with_placeholder("00"),
+                )),
+        ),
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(6.0)
+                .push(Box::new(Text::new("Minutes").with_heading_level(4)))
+                .push(Box::new(
+                    TextInput::from_state(&custom_minutes)
+                        .with_id("clocks.timer.custom.minutes")
+                        .with_kind(TextInputKind::Number)
+                        .with_accessible_name("Timer duration minutes")
+                        .with_placeholder("10"),
+                )),
+        ),
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(6.0)
+                .push(Box::new(Text::new("Seconds").with_heading_level(4)))
+                .push(Box::new(
+                    TextInput::from_state(&custom_seconds)
+                        .with_id("clocks.timer.custom.seconds")
+                        .with_kind(TextInputKind::Number)
+                        .with_accessible_name("Timer duration seconds")
+                        .with_placeholder("00"),
+                )),
+        ),
+    ])
+    .with_min_card_width(200.0)
+    .with_gap(12.0);
     let setup = CardGrid::content_sized(vec![
         Box::new(Card::titled(
             "Quick starts",
@@ -637,22 +709,25 @@ fn timers_screen(
                         TextInput::from_state(&custom_label)
                             .with_id("clocks.timer.custom.label")
                             .with_kind(TextInputKind::Name)
+                            .with_accessible_name("Timer label")
                             .with_placeholder("What is this timer for?"),
                     ))
-                    .push(Box::new(Text::new("Hours, minutes, seconds").dimmed()))
-                    .push(Box::new(
-                        TimePicker::from_state(&custom)
-                            .with_id("clocks.timer.custom.duration")
-                            .with_accessible_name("Timer duration"),
-                    ))
+                    .push(Box::new(duration_fields))
                     .push(primary_button(
                         "clocks.timer.custom.add",
                         "Start timer",
                         move || {
-                            let v = add_custom.get();
-                            let secs = u64::from(v.hours) * 3600
-                                + u64::from(v.minutes) * 60
-                                + u64::from(v.seconds.unwrap_or(0));
+                            let Some(secs) = custom_timer_duration_seconds(
+                                &add_hours.get(),
+                                &add_minutes.get(),
+                                &add_seconds.get(),
+                            ) else {
+                                add_error.set(Some(
+                                    "Use whole numbers: hours 0–99 and minutes and seconds 0–59."
+                                        .into(),
+                                ));
+                                return;
+                            };
                             if secs > 0 {
                                 let mut t = Timer::new(
                                     timer_label(&add_label.get()),
@@ -1240,12 +1315,13 @@ impl Widget for ClocksApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClocksApp, DueEvent, Timer, WEEKDAYS, alarm_label, remaining_fraction, repeat_summary,
-        timer_label, timezone_label, timezone_results,
+        ClocksApp, DueEvent, Timer, WEEKDAYS, alarm_label, custom_timer_duration_seconds,
+        remaining_fraction, repeat_summary, timer_label, timezone_label, timezone_results,
     };
     use chrono::Utc;
     use std::collections::BTreeSet;
     use std::time::Duration;
+    use ui::{State, headless::FrameHarness, theme::Theme};
 
     #[test]
     fn countdown_progress_visualizes_time_remaining() {
@@ -1290,6 +1366,49 @@ mod tests {
         assert_eq!(timer_label("  Pasta  "), "Pasta");
         assert_eq!(timer_label("   "), "Timer");
         assert_eq!(timer_label(&"x".repeat(120)).chars().count(), 80);
+    }
+
+    #[test]
+    fn custom_timer_duration_requires_bounded_whole_number_fields() {
+        assert_eq!(custom_timer_duration_seconds("01", "02", "03"), Some(3_723));
+        assert_eq!(custom_timer_duration_seconds("", "10", "00"), None);
+        assert_eq!(custom_timer_duration_seconds("100", "10", "00"), None);
+        assert_eq!(custom_timer_duration_seconds("00", "60", "00"), None);
+        assert_eq!(custom_timer_duration_seconds("00", "10", "-1"), None);
+    }
+
+    #[test]
+    fn large_text_custom_duration_controls_have_disjoint_geometry() {
+        let harness = FrameHarness::new_with_theme(
+            State::new(),
+            Box::new(ClocksApp::scenario("timers")),
+            (880, 800),
+            Theme::dark().with_text_scale(2.0),
+        );
+        let targets = harness.targets();
+        let fields = [
+            "clocks.timer.custom.hours",
+            "clocks.timer.custom.minutes",
+            "clocks.timer.custom.seconds",
+        ]
+        .map(|id| {
+            targets
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| panic!("missing {id}"))
+        });
+
+        for (index, earlier) in fields.iter().enumerate() {
+            for later in &fields[index + 1..] {
+                assert!(
+                    !(earlier.x0 < later.x1
+                        && later.x0 < earlier.x1
+                        && earlier.y0 < later.y1
+                        && later.y0 < earlier.y1),
+                    "duration controls must remain disjoint touch targets: {earlier:?} and {later:?}"
+                );
+            }
+        }
     }
 
     #[test]
