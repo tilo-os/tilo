@@ -66,6 +66,7 @@ pub mod app;
 pub mod doc;
 /// Bounded, cancellation-aware real-file discovery and metadata ingestion.
 pub mod import;
+pub mod library_analysis;
 pub mod model;
 pub mod people;
 pub mod pixels;
@@ -151,7 +152,7 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     strings::install();
-    Box::new(PhotosApp::new())
+    Box::new(PhotosApp::new_persistent())
 }
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
@@ -163,7 +164,11 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "opened",
     "library",
     "people",
+    "people-detail",
     "places",
+    "analysis",
+    "import-progress",
+    "import-errors",
     "selection",
     "selection-many-albums",
     "album-manage",
@@ -345,7 +350,11 @@ pub fn seed_scenario(
         // with repeated placeholder art.
         "library"
         | "people"
+        | "people-detail"
         | "places"
+        | "analysis"
+        | "import-progress"
+        | "import-errors"
         | "selection"
         | "selection-many-albums"
         | "album-manage"
@@ -421,7 +430,7 @@ pub fn seed_scenario(
             library.albums.push(crate::model::Album {
                 id: "photos.album:travel".into(),
                 name: "Travel".into(),
-                photo_ids: travel,
+                photo_ids: travel.clone(),
             });
             if scenario == "selection-many-albums" {
                 for number in 1..=17 {
@@ -442,10 +451,28 @@ pub fn seed_scenario(
                 app.show_album_editor_for_shot(doc);
             } else if scenario == "metadata-edit" {
                 app.show_metadata_editor_for_shot(doc);
-            } else if scenario == "people" {
-                app.show_people();
+            } else if matches!(scenario, "people" | "people-detail") {
+                // A manual, explicitly labelled fixture exercises the review
+                // layout without pretending that a face model recognized
+                // anyone. Live launches never seed People data.
+                let _ = app.people_controller_mut().add_cluster(
+                    "shots-imported-suggestion",
+                    travel.into_iter().take(4),
+                    crate::people::ProposalOrigin::ImportedOrManual,
+                );
+                if scenario == "people-detail" {
+                    app.show_people_suggestion_for_shot("shots-imported-suggestion");
+                } else {
+                    app.show_people();
+                }
             } else if scenario == "places" {
                 app.show_places_for_shot();
+            } else if scenario == "analysis" {
+                app.show_library_analysis();
+            } else if scenario == "import-progress" {
+                app.show_directory_import_progress_for_shot();
+            } else if scenario == "import-errors" {
+                app.show_directory_import_errors_for_shot();
             } else {
                 app.show_library();
             }
