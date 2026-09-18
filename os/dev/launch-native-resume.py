@@ -284,7 +284,8 @@ def main():
                 if container and re.fullmatch('[0-9a-f]{64}', container):
                     for filename in ('result.json', 'inputs.json', 'controller-source.json', 'admission-capacity.json',
                                      'cache-configuration.json', 'reconstruction/reconstruction.json',
-                                     'reconstruction/reconstructed-native.json'):
+                                     'reconstruction/reconstructed-native.json', 'reconstruction/unapproved-payload.json',
+                                     'reconstruction/unapproved-reconstruction.json'):
                         try:
                             value = transport.bounded_receipt(container, filename)
                             destination = args.evidence / filename.replace('/', '-')
