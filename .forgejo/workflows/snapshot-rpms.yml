@@ -241,6 +241,14 @@ jobs:
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
+          # The containerized runner's root filesystem is overlayfs, so a
+          # nested default Podman overlay store cannot assemble the index.
+          # Manifest promotion needs metadata only; isolate it in a VFS store.
+          storage="$(mktemp -d "$RUNNER_TEMP/tilo-rpm-manifests.XXXXXX")"
+          trap 'rm -rf -- "$storage"; rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' EXIT
+          export CONTAINERS_STORAGE_CONF="$storage/storage.conf"
+          printf '[storage]\ndriver = "vfs"\ngraphroot = "%s/graph"\nrunroot = "%s/run"\n' \
+            "$storage" "$storage" > "$CONTAINERS_STORAGE_CONF"
           python3 os/dev/promote-native-index.py \
             --repository code.podesta.ai/qos/rpms --tag "$GITHUB_SHA" \
             --revision "$GITHUB_SHA" --descriptors native-children \
