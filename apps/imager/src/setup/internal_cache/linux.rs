@@ -35,7 +35,8 @@ pub(in crate::setup) use native::*;
 #[cfg(target_os = "linux")]
 mod native {
     use super::super::{
-        MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, Provider, checkpoint::Record,
+        MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete, Provider,
+        checkpoint::Record,
     };
     use super::{effective_mode_allowed, raw_components};
     use crate::setup::internal_download::SelectedManifest;
@@ -553,6 +554,7 @@ mod native {
         own: Ownership,
         records: Vec<Journal>,
         scanned: bool,
+        prepared: bool,
         uncertain: bool,
     }
     pub(in crate::setup) struct Partial<'a> {
@@ -765,6 +767,7 @@ mod native {
                     own,
                     records: std::mem::take(&mut scans[index]),
                     scanned: false,
+                    prepared: false,
                     uncertain: false,
                 };
                 result.push(Component::Partial(Partial { provider, file }));
@@ -776,6 +779,24 @@ mod native {
         }
     }
     impl Provider for LinuxProvider<'_> {
+        fn revoke_preparation(&mut self) {
+            self.prepared = false;
+            self.scanned = false;
+            // Uncertain publication is deliberately not cleared by revocation.
+        }
+        fn prepared(&mut self, proof: PreparationComplete<'_>) -> Result<()> {
+            self.prepared = false;
+            require(
+                self.scanned
+                    && !self.uncertain
+                    && proof.authorizes(self.selected, self.index, &self.own)?,
+                "No successful cache preparation receipt",
+            )?;
+            self.lease.check()?;
+            self.payload.check(Some(&self.lease.payload.file))?;
+            self.prepared = true;
+            Ok(())
+        }
         fn ownership(&self) -> Ownership {
             self.own.clone()
         }
@@ -800,7 +821,7 @@ mod native {
             )
         }
         fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {
-            self.scanned = false;
+            self.revoke_preparation();
             require(!self.uncertain, "Uncertain cache operation")?;
             let mut count = 0;
             let fresh = journals_visit(&self.lease, self.selected, self.index, &mut |bytes| {
@@ -938,6 +959,13 @@ mod native {
         }
     }
     impl Provider for &mut LinuxProvider<'_> {
+        fn revoke_preparation(&mut self) {
+            (**self).revoke_preparation();
+        }
+        fn prepared(&mut self, proof: PreparationComplete<'_>) -> Result<()> {
+            (**self).prepared(proof)
+        }
+
         fn ownership(&self) -> Ownership {
             (**self).ownership()
         }
@@ -971,8 +999,8 @@ mod native {
                 let own = self.provider.own.clone();
                 self.provider.verify(&self.file, &own)?;
                 require(
-                    self.provider.scanned,
-                    "Publication requires prepared journal scan",
+                    self.provider.prepared,
+                    "Publication requires successful Session preparation",
                 )?;
                 verify_bytes(
                     &mut self.file,

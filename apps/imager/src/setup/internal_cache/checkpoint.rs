@@ -49,6 +49,24 @@ pub(in crate::setup) struct Ownership {
     pub file: [u8; 32],
     pub leaf: String,
 }
+/// Only Session can issue this borrowed receipt after successful preparation.
+/// It is neither constructible nor recoverable from serialized record hints.
+pub(in crate::setup) struct PreparationComplete<'a> {
+    record: &'a Record,
+}
+impl PreparationComplete<'_> {
+    pub(super) fn authorizes(
+        &self,
+        selected: &SelectedManifest,
+        index: usize,
+        ownership: &Ownership,
+    ) -> Result<bool, String> {
+        Ok(
+            binding(selected, index)? == (self.record.binding, self.record.full_size)
+                && ownership == &self.record.ownership,
+        )
+    }
+}
 /// Native implementations remain private. All methods are synchronous.
 /// `scan` must bound each entry BEFORE allocation/read to MAX_RECORD and stop on
 /// visitor error, including unknown entries. Never remove undecodable entries.
@@ -63,6 +81,12 @@ pub(in crate::setup) struct Ownership {
 /// must establish the payload name's parent durability before any publication.
 /// Journal names live in a separate private parent from payload/final names.
 pub(in crate::setup) trait Provider {
+    /// State-only and infallible: called before attempts and during failed Drop.
+    fn revoke_preparation(&mut self) {}
+    fn prepared(&mut self, _proof: PreparationComplete<'_>) -> Result<(), String> {
+        Ok(())
+    }
+
     fn ownership(&self) -> Ownership;
     fn verify(&mut self, file: &File, ownership: &Ownership) -> Result<(), String>;
     fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<(), String>;
@@ -267,8 +291,9 @@ impl<P: Provider> Session<P> {
         selected: &SelectedManifest,
         index: usize,
         operation: u64,
-        provider: P,
+        mut provider: P,
     ) -> Result<Self, String> {
+        provider.revoke_preparation();
         if operation == 0 {
             return Err("Zero operation ID".into());
         }
@@ -300,6 +325,7 @@ impl<P: Provider> Session<P> {
         file: &'a mut File,
         cancel: &AtomicBool,
     ) -> Result<PreparedPrefix<'a>, String> {
+        self.provider.revoke_preparation();
         stopped(cancel)?;
         if self.recovered || self.poisoned || binding(selected, self.index)?.0 != self.base.binding
         {
@@ -394,6 +420,19 @@ impl<P: Provider> Session<P> {
             file.sync_all().map_err(io)?;
         }
         file.seek(SeekFrom::Start(self.base.length)).map_err(io)?;
+        stopped(cancel)?;
+        // This receipt is the final fallible step, after all history/prefix,
+        // normalization, trimming, cursor and cancellation work. Native scanning
+        // alone never establishes successful preparation.
+        self.poisoned = true;
+        if let Err(error) = self
+            .provider
+            .prepared(PreparationComplete { record: &self.base })
+        {
+            self.provider.revoke_preparation();
+            return Err(error);
+        }
+        self.poisoned = false;
         self.recovered = true;
         let id = self.id(0);
         let committed = self.base.length;
@@ -453,6 +492,14 @@ impl<P: Provider> Session<P> {
         self.base = next;
         self.poisoned = false;
         Ok(())
+    }
+}
+impl<P: Provider> Drop for Session<P> {
+    fn drop(&mut self) {
+        if !self.recovered {
+            // Infallible state-only revocation; no cleanup or filesystem I/O.
+            self.provider.revoke_preparation();
+        }
     }
 }
 impl<P: Provider> Observer for Session<P> {

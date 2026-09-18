@@ -335,59 +335,211 @@ mod native {
     }
     #[test]
     fn safe_effective_acl_and_inherited_default_acl_are_supported() {
-        use std::os::fd::AsRawFd;
-        for mask in [0u16, 2] {
-            let dir = directory();
-            let file = std::fs::File::open(dir.path()).unwrap();
-            let mut acl = 2u32.to_le_bytes().to_vec();
+        use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+        fn acl(owner: u16, mask: u16) -> Vec<u8> {
+            let mut bytes = 2u32.to_le_bytes().to_vec();
             let uid = unsafe { libc::geteuid() };
             for (tag, perm, id) in [
-                (1u16, 7u16, u32::MAX),
+                (1u16, owner, u32::MAX),
                 (2, 7, uid + 1),
                 (4, 0, u32::MAX),
                 (16, mask, u32::MAX),
                 (32, 0, u32::MAX),
             ] {
-                acl.extend_from_slice(&tag.to_le_bytes());
-                acl.extend_from_slice(&perm.to_le_bytes());
-                acl.extend_from_slice(&id.to_le_bytes());
+                bytes.extend_from_slice(&tag.to_le_bytes());
+                bytes.extend_from_slice(&perm.to_le_bytes());
+                bytes.extend_from_slice(&id.to_le_bytes());
             }
+            bytes
+        }
+        fn set(file: &std::fs::File, key: &std::ffi::CStr, bytes: &[u8]) {
             assert_eq!(
                 unsafe {
                     libc::fsetxattr(
                         file.as_raw_fd(),
-                        c"system.posix_acl_access".as_ptr(),
-                        acl.as_ptr().cast(),
-                        acl.len(),
+                        key.as_ptr(),
+                        bytes.as_ptr().cast(),
+                        bytes.len(),
                         0,
                     )
                 },
                 0
             );
-            let s = selected();
+        }
+        fn get(path: &std::path::Path, key: &std::ffi::CStr) -> Vec<u8> {
+            let file = std::fs::File::open(path).unwrap();
+            let mut bytes = [0u8; 256];
+            let count = unsafe {
+                libc::fgetxattr(
+                    file.as_raw_fd(),
+                    key.as_ptr(),
+                    bytes.as_mut_ptr().cast(),
+                    bytes.len(),
+                )
+            };
+            assert!(count >= 0, "{}", std::io::Error::last_os_error());
+            bytes[..count as usize].to_vec()
+        }
+        // Independent ordinary no-ACL positive control.
+        let ordinary = directory();
+        let held = std::fs::File::open(ordinary.path()).unwrap();
+        for key in [c"system.posix_acl_access", c"system.posix_acl_default"] {
+            let rc = unsafe { libc::fremovexattr(held.as_raw_fd(), key.as_ptr()) };
+            assert!(
+                rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ENODATA)
+            );
+        }
+        let s = selected();
+        let components = fixture_acquire(ordinary.path(), &s)
+            .unwrap()
+            .bootstrap(&s, &AtomicBool::new(false))
+            .unwrap();
+        drop(components);
+        // Access-only safe mask and unsafe effective-write mask use fresh roots.
+        for mask in [0u16, 2] {
+            let dir = directory();
+            let held = std::fs::File::open(dir.path()).unwrap();
+            set(&held, c"system.posix_acl_access", &acl(7, mask));
             let result = fixture_acquire(dir.path(), &s);
             assert_eq!(result.is_ok(), mask == 0);
-            drop(result);
-            if mask == 0 {
-                assert_eq!(
-                    unsafe {
-                        libc::fsetxattr(
-                            file.as_raw_fd(),
-                            c"system.posix_acl_default".as_ptr(),
-                            acl.as_ptr().cast(),
-                            acl.len(),
-                            0,
-                        )
-                    },
-                    0
-                );
-                let components = fixture_acquire(dir.path(), &s)
-                    .unwrap()
-                    .bootstrap(&s, &AtomicBool::new(false))
-                    .unwrap();
-                drop(components);
-            }
         }
+        // Install the default BEFORE the provider has created any descendants.
+        // Its broad named grant is reduced by the actual private create modes.
+        let inherited = directory();
+        let held = std::fs::File::open(inherited.path()).unwrap();
+        assert!(!inherited.path().join("qos-internal-install").exists());
+        let default = acl(7, 7);
+        set(&held, c"system.posix_acl_default", &default);
+        assert!(!inherited.path().join("qos-internal-install").exists());
+        let cache = fixture_acquire(inherited.path(), &s).unwrap();
+        let payload = root(inherited.path(), &s).join("payload");
+        for dir in [
+            inherited.path().join("qos-internal-install"),
+            root(inherited.path(), &s),
+            payload.clone(),
+        ] {
+            assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+            assert_eq!(get(&dir, c"system.posix_acl_access"), acl(7, 0));
+            assert_eq!(get(&dir, c"system.posix_acl_default"), default);
+        }
+        let components = cache.bootstrap(&s, &AtomicBool::new(false)).unwrap();
+        for component in components {
+            let Component::Partial(part) = component else {
+                panic!("expected inherited partial")
+            };
+            let path = payload.join(part.provider.ownership().leaf);
+            assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+            assert_eq!(get(&path, c"system.posix_acl_access"), acl(6, 0));
+        }
+    }
+    #[test]
+    fn failed_post_scan_preparation_cannot_publish_or_retire_rejected_records() {
+        use sha2::{Digest, Sha256};
+        fn snapshot(path: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+            let mut entries: Vec<_> = fs::read_dir(path)
+                .unwrap()
+                .map(|e| {
+                    let e = e.unwrap();
+                    (e.file_name(), fs::read(e.path()).unwrap())
+                })
+                .collect();
+            entries.sort();
+            entries
+        }
+        // Each case has a genuine authenticated full component. Native bootstrap
+        // and record decoding succeed; only common history/prefix validation
+        // distinguishes the independently valid control from the two failures.
+        for case in 0..3 {
+            let dir = directory();
+            let s = selected();
+            let [mut a, mut b] = parts(dir.path(), &s);
+            prepare(&mut b, &s, 1);
+            finish(&mut a, &s, 0);
+            let leaf = a.provider.ownership().leaf;
+            drop(a);
+            drop(b);
+            let journal = root(dir.path(), &s).join("journal-0");
+            if case > 0 {
+                let old = journal.join(if case == 1 {
+                    "record-0000000002"
+                } else {
+                    "record-0000000001"
+                });
+                let mut bytes = fs::read(&old).unwrap();
+                if case == 1 {
+                    bytes[147..155].copy_from_slice(&3u64.to_le_bytes());
+                } else {
+                    bytes[179] ^= 1;
+                }
+                let checksum = Sha256::digest(&bytes[..bytes.len() - 32]);
+                let end = bytes.len();
+                bytes[end - 32..].copy_from_slice(&checksum);
+                fs::write(&old, bytes).unwrap();
+                if case == 1 {
+                    fs::rename(old, journal.join("record-0000000003")).unwrap();
+                }
+            }
+            let partial = root(dir.path(), &s).join("payload").join(leaf);
+            let final_path = root(dir.path(), &s)
+                .join("payload")
+                .join(s.bundle().component(0).unwrap().filename);
+            let before_payload = fs::read(&partial).unwrap();
+            let before_records = snapshot(&journal);
+            let [mut a, b] = parts(dir.path(), &s);
+            {
+                let mut session = Session::new(&s, 0, 3, &mut a.provider).unwrap();
+                let result = session.prepare(&s, &mut a.file, &AtomicBool::new(false));
+                if case == 0 {
+                    assert!(result.is_ok());
+                } else {
+                    let error = match result {
+                        Err(e) => e,
+                        Ok(_) => panic!("rejected history prepared"),
+                    };
+                    assert!(error.contains(if case == 1 {
+                        "Conflicting checkpoint history"
+                    } else {
+                        "Checkpoint prefix digest mismatch"
+                    }));
+                }
+            }
+            if case == 0 {
+                let mut final_file = a.publish(&AtomicBool::new(false)).unwrap();
+                assert!(!final_file.has_retained_residue());
+                final_file.verify(&AtomicBool::new(false)).unwrap();
+                assert!(!partial.exists());
+                assert_eq!(fs::read(&final_path).unwrap(), before_payload);
+                assert!(snapshot(&journal).is_empty());
+            } else {
+                assert!(a.provider.retain(&[]).is_err());
+                assert!(a.publish(&AtomicBool::new(false)).is_err());
+                assert!(!final_path.exists());
+                assert_eq!(fs::read(&partial).unwrap(), before_payload);
+                assert_eq!(snapshot(&journal), before_records);
+            }
+            drop(b);
+        }
+    }
+    #[test]
+    fn failed_new_session_revokes_prior_native_preparation_success() {
+        let dir = directory();
+        let s = selected();
+        let [mut a, mut b] = parts(dir.path(), &s);
+        prepare(&mut b, &s, 1);
+        finish(&mut a, &s, 0);
+        let partial = root(dir.path(), &s)
+            .join("payload")
+            .join(a.provider.ownership().leaf);
+        assert!(Session::new(&s, 0, 0, &mut a.provider).is_err());
+        assert!(a.publish(&AtomicBool::new(false)).is_err());
+        assert_eq!(fs::read(partial).unwrap(), vec![b'E'; 4096]);
+        assert!(
+            !root(dir.path(), &s)
+                .join("payload")
+                .join(s.bundle().component(0).unwrap().filename)
+                .exists()
+        );
+        drop(b);
     }
     #[test]
     fn reset_fence_survives_before_and_after_truncation() {
