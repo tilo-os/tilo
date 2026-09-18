@@ -189,11 +189,11 @@ impl HistoryOwner {
                 if package.is_empty() {
                     return None;
                 }
-                Some(crate::collaboration::RouteSpec::record(
-                    package,
-                    uuid::Uuid::parse_str(&workspace).ok()?,
-                    checkout.id.as_str(),
-                ))
+                if checkout.id.is_package_primary() {
+                    Some(crate::collaboration::RouteSpec::app(package, uuid::Uuid::parse_str(&workspace).ok()?))
+                } else {
+                    Some(crate::collaboration::RouteSpec::record(package, uuid::Uuid::parse_str(&workspace).ok()?, checkout.id.as_str()))
+                }
             }
         }
     }

@@ -46,6 +46,11 @@ const INDEX: &str = "qos:records";
 pub struct RecordId(String);
 
 impl RecordId {
+    /// Internal custody key for a package's existing room-primary document.
+    /// It never travels as a record id on the collaboration wire.
+    pub fn package_primary() -> Self { Self("@qos:package-primary".into()) }
+    pub fn is_package_primary(&self) -> bool { self.0 == "@qos:package-primary" }
+
     /// The record a file *is*. Relative paths resolve against the cwd, so
     /// two spellings of one file are one record.
     ///
@@ -86,7 +91,7 @@ impl RecordId {
     /// Adopt an id read back from a document, a room index, or the wire.
     /// `None` for the empty string, which addresses nothing.
     pub fn parse(s: &str) -> Option<Self> {
-        if s.is_empty() {
+        if s.is_empty() || s == "@qos:package-primary" {
             return None;
         }
         Some(Self(s.to_string()))
@@ -215,6 +220,10 @@ pub struct RecordCheckout {
 }
 
 impl RecordCheckout {
+    pub fn package_primary(kind: RecordKind) -> Self {
+        Self::new(RecordId::package_primary(), kind)
+    }
+
     pub fn new(id: RecordId, kind: RecordKind) -> Self {
         Self {
             id,
@@ -268,6 +277,8 @@ pub fn init_scoped(
     home: &str,
     room: Option<&str>,
 ) -> bool {
+    // Primary custody is the checked package/room namespace, never a fake record stamp.
+    if id.is_package_primary() { return primary_document(doc); }
     let Some(m) = meta_obj(doc) else {
         // The document's root object is gone — nothing to stamp.
         return false;
@@ -930,6 +941,9 @@ impl RecordSet {
             .canonical_root
             .as_ref()
             .ok_or(RecordOpenError::IdentityMismatch)?;
+        if want.id.is_package_primary() {
+            return Ok(app_state::DocStore::room_primary_dir_at(root, &self.package_id, &self.home)?);
+        }
         Ok(app_state::DocStore::room_record_dir_at(
             root,
             &self.package_id,
@@ -956,6 +970,7 @@ impl RecordSet {
             return Err(RecordOpenError::Busy);
         }
         if let Some(slot) = self.open.get(&want.id) {
+            if slot.kind != want.kind { return Err(RecordOpenError::IdentityMismatch); }
             let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
             validate_identity(doc, want, &self.home)?;
             return Ok(RecordOpenOutcome::AlreadyOpen);
@@ -1179,11 +1194,26 @@ pub enum RecordOpenError {
     Initialization(String),
 }
 
+fn primary_document(doc: &AutoCommit) -> bool {
+    match doc.get(ROOT, META) {
+        Ok(Some((Value::Object(ObjType::Map), object))) =>
+            matches!(doc.get(&object, "id"), Ok(None)) && matches!(doc.get(&object, "kind"), Ok(None)),
+        Ok(None) => true,
+        _ => false,
+    }
+}
+
 fn validate_identity(
     doc: &AutoCommit,
     want: &RecordCheckout,
     workspace: &str,
 ) -> Result<(), RecordOpenError> {
+    if want.id.is_package_primary() {
+        return if primary_document(doc) && !want.kind.as_str().is_empty()
+            && !workspace.is_empty() && room_scope(doc).is_none_or(|room| room == workspace) {
+            Ok(())
+        } else { Err(RecordOpenError::IdentityMismatch) };
+    }
     if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
         || want.kind.as_str().is_empty()
         || home(doc).is_none_or(|home| home.is_empty())
@@ -1294,6 +1324,19 @@ impl Drop for RecordReservation {
 }
 
 impl RecordStore {
+    /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
+    pub fn route(&self, checkout: &RecordCheckout) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let doc = set.peek(&checkout.id).ok_or(RecordOpenError::MissingRecord)?;
+        validate_identity(doc, checkout, &set.home)?;
+        let room = uuid::Uuid::parse_str(&set.home).map_err(|_| RecordOpenError::IdentityMismatch)?;
+        Ok(if checkout.id.is_package_primary() {
+            crate::collaboration::RouteSpec::app(&set.package_id, room)
+        } else {
+            crate::collaboration::RouteSpec::record(&set.package_id, room, checkout.id.as_str())
+        })
+    }
+
     /// Schedule this already committed History result through its existing writer.
     /// Do not sweep or close unrelated owners' unfinished edits.
     pub(crate) fn schedule_committed_history(&self, id: &RecordId) {

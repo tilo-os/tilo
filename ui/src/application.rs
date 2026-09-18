@@ -31,6 +31,8 @@ pub struct ApplicationDefinition {
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
+    /// Explicit creation of the one room-scoped package-primary document.
+    PrimaryNew,
     Record {
         checkout: RecordCheckout,
         reveal: Option<qos_actions::ActionAddress>,
@@ -117,9 +119,9 @@ impl HostContext {
             }
         }
         let (record, reservation) = match target {
-            LaunchTarget::New => {
+            LaunchTarget::New | LaunchTarget::PrimaryNew => {
                 let checkout =
-                    RecordCheckout::new(RecordId::minted(), definition.record_kind.clone());
+                    RecordCheckout::new(if matches!(target, LaunchTarget::PrimaryNew) { RecordId::package_primary() } else { RecordId::minted() }, definition.record_kind.clone());
                 let reservation = records
                     .reserve_record(&checkout)
                     .map_err(LaunchError::Record)?;
@@ -297,8 +299,12 @@ impl ApplicationDefinition {
         if context.app_id != self.app_id || context.record.kind != self.record_kind {
             return Err(LaunchError::BindingMismatch);
         }
+        if matches!(target, LaunchTarget::New) && context.record.id.is_package_primary()
+            || matches!(target, LaunchTarget::PrimaryNew) && !context.record.id.is_package_primary() {
+            return Err(LaunchError::BindingMismatch);
+        }
         match &target {
-            LaunchTarget::New if context.reservation.is_none() => {
+            LaunchTarget::New | LaunchTarget::PrimaryNew if context.reservation.is_none() => {
                 return Err(LaunchError::BindingMismatch);
             }
             LaunchTarget::Record { checkout, .. }

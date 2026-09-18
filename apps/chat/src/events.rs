@@ -42,8 +42,8 @@ fn new_category_id() -> String {
 }
 
 fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::clock::SystemTime::now()
+        .duration_since(ui::clock::UNIX_EPOCH)
         .map_or(NOW, |d| d.as_secs() as i64)
 }
 
@@ -177,7 +177,7 @@ impl ChatApp {
         let tooltip_target = self.hover_tooltip_target(last_mouse);
         if self
             .tooltips
-            .on_pointer(tooltip_target, std::time::Instant::now())
+            .on_pointer(tooltip_target, ui::clock::Instant::now())
         {
             *handled = true;
         }
@@ -1512,6 +1512,11 @@ impl ChatApp {
         channel: &str,
         path: &std::path::Path,
     ) -> bool {
+        if !self.external_services {
+            self.attachment_status = Some("Attachment import unsupported: no host asset transport".into());
+            return false;
+        }
+
         if !self.can_participate() || self.attachment_pending.is_some() {
             return false;
         }
@@ -2144,7 +2149,7 @@ mod tests {
             if ChatDoc::list_messages(doc, channel).len() == expected_count {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(ui::clock::Duration::from_millis(5));
         }
         panic!("attachment worker did not settle within 500ms");
     }
@@ -2155,7 +2160,7 @@ mod tests {
             if app.attachment_picker_pending.is_none() {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(ui::clock::Duration::from_millis(5));
         }
         panic!("attachment picker worker did not settle within 500ms");
     }

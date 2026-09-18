@@ -31,6 +31,7 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/browser/qos-browser-runtime",
     "crates/session/qos-ntfs-helper",
     "crates/session/qos-ntfs-protocol",
     "crates/browser/chromium-blocker",

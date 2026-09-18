@@ -11250,6 +11250,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-browser-runtime"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "chat",
+ "futures",
+ "js-sys",
+ "qdoc",
+ "qos-actions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ui",
+ "vello",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+ "winit",
+ "word-processor",
+]
+
+[[package]]
 name = "qos-callstream"
 version = "0.1.0"
 dependencies = [

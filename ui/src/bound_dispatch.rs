@@ -1748,15 +1748,11 @@ pub(crate) fn with_owned_record_action<R>(
 
 impl CallbackBinding {
     pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {
-        let (_, app, workspace) = self.records.canonical_namespace()?;
+        let (_, app, _) = self.records.canonical_namespace()?;
         if app != self.app_id {
             return None;
         }
-        Some(crate::collaboration::RouteSpec::record(
-            app,
-            uuid::Uuid::parse_str(&workspace).ok()?,
-            self.checkout.id.as_str(),
-        ))
+        self.records.route(&self.checkout).ok()
     }
     pub(crate) fn matches_broker_route(
         &self,

@@ -19,3 +19,5 @@ mod e2e_html;
 mod e2e_odt;
 #[path = "two_sessions_one_document.rs"]
 mod two_sessions_one_document;
+
+mod canonical_component;

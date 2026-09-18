@@ -31,7 +31,7 @@ use ui::permissions::UserId;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{TextInput, TextInputKind, Widget};
-use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
+use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_paste};
 
 use crate::WpFormat;
 use crate::compact_swatch_palette::{CompactSwatchPalette, PaletteChoice, PaletteKind};
@@ -2099,6 +2099,9 @@ pub struct WordProcessorWidget {
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Option<(String, ToastKind)>,
+    canonical: bool,
+    ime_rect: Option<Rect>,
+    ime_preedit: String,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
@@ -2120,6 +2123,16 @@ impl Default for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
+    /// Construct from the canonical record; this performs no document writes.
+    pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
+        let mut widget = Self::new();
+        widget.inner = WordProcessor::from_document(state)?;
+        widget.canonical = true;
+        widget.refresh_blocks(&mut state.clone());
+        widget.sheet = widget.inner.stylesheet(state);
+        Ok(widget)
+    }
+
     pub fn new() -> Self {
         Self {
             inner: WordProcessor::new(),
@@ -2222,6 +2235,9 @@ impl WordProcessorWidget {
             pending_history_revision: None,
             style_menu: StyleMenu::default(),
             toast: None,
+            canonical: false,
+            ime_rect: None,
+            ime_preedit: String::new(),
             color_picker: StyleColorPicker::default(),
         }
     }
@@ -7244,7 +7260,12 @@ impl WordProcessorWidget {
                     l.text_x + f64::from(cx) + CARET_WIDTH,
                     ly + f64::from(cy) + f64::from(ch),
                 );
+                self.ime_rect = Some(fg.ctf.transform_rect_bbox(caret));
                 scene.fill(Fill::NonZero, fg.ctf, PAPER_CARET, None, &caret);
+                if !self.ime_preedit.is_empty() {
+                    text_renderer.draw_text(scene, &self.ime_preedit, l.size, l.ink,
+                        fg.ctf * Affine::translate((caret.x0, caret.y0)), None);
+                }
             }
             if clipped {
                 scene.pop_layer();
@@ -7854,7 +7875,7 @@ impl WordProcessorWidget {
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
         // A peer's just-typed run glows in their colour, fading; drawn first so it
         // sits under the selection and caret rather than competing with them.
-        for (user, spans) in self.remote_typing_overlays(presence, std::time::Instant::now()) {
+        for (user, spans) in self.remote_typing_overlays(presence, ui::clock::Instant::now()) {
             presence.draw_peer_typing(scene, theme, &user, &spans);
         }
         for sel in &remote_selections {
@@ -7866,7 +7887,7 @@ impl WordProcessorWidget {
         // not fake mouse coordinates. Resolve those anchors through the same
         // shaped layouts as a person's selection and decorate the resulting
         // geometry with the authenticated actor label.
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
                 qos_actions::InteractionAnchor::Text { ranges, .. } => ranges
@@ -9121,10 +9142,9 @@ impl WordProcessorWidget {
             // exclusive; matches common word-processor bindings).
             "." | ">" => self.dispatch_exclusive_mark(state, "super", "sub"),
             "," | "<" => self.dispatch_exclusive_mark(state, "sub", "super"),
-            "c" => self.clipboard_copy(state),
+            "c" => { self.clipboard_copy(state); },
             "x" => {
-                self.clipboard_copy(state);
-                self.insert_text_via_action(state, "");
+                if self.clipboard_copy(state) { self.insert_text_via_action(state, ""); }
             }
             // Ctrl+V keeps formatting; Ctrl+Shift+V pastes plain text.
             "v" if shift => self.clipboard_paste_plain(state),
@@ -9242,6 +9262,10 @@ impl Widget for WordProcessorWidget {
         widget_path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         use crate::actions::WordProcessorOperation;
+        if cfg!(target_arch = "wasm32") && kind == qos_actions::OperationKind::Effect {
+            return Err("file operation unsupported: no browser file/asset transport".into());
+        }
+
 
         if kind == qos_actions::OperationKind::Document {
             return Ok(None);
@@ -9347,7 +9371,7 @@ impl Widget for WordProcessorWidget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.inner.bind(state, root);
+        if self.canonical { self.inner.reconcile(state); } else { self.inner.bind(state, root); }
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
             if self.modified {
                 self.resource_file_invocation = Some(invocation);
@@ -9832,6 +9856,16 @@ impl Widget for WordProcessorWidget {
                 button: MouseButton::Left,
                 ..
             } => self.handle_left_release(state, handled),
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.ime_preedit.clear();
+                self.handle_key_press(state, &Key::Character(text.as_str().into()), Some(text), false, false, handled);
+            }
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
+                self.ime_preedit = text.clone(); self.dirty = true; *handled = true;
+            }
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                self.ime_preedit.clear(); self.dirty = true;
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -10120,18 +10154,10 @@ impl Widget for WordProcessorWidget {
         self.focused
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        if self.find.is_open() {
-            self.find.ime_cursor_rect()
-        } else {
-            None
-        }
+        if self.find.is_open() { self.find.ime_cursor_rect() } else { self.ime_rect }
     }
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        if self.find.is_open() {
-            self.find.ime_purpose()
-        } else {
-            None
-        }
+        if self.find.is_open() { self.find.ime_purpose() } else { Some(winit::window::ImePurpose::Normal) }
     }
     fn needs_commit(&self) -> bool {
         self.needs_commit
@@ -10526,7 +10552,7 @@ impl WordProcessorWidget {
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
-        now: std::time::Instant,
+        now: ui::clock::Instant,
     ) -> Vec<(UserId, Vec<(Rect, f32)>)> {
         let mut out = Vec::new();
         for l in &self.laid {
@@ -11230,13 +11256,14 @@ impl WordProcessorWidget {
         char_highlight(pos, &b.marks)
     }
 
-    fn clipboard_copy(&mut self, state: &AutoCommit) {
+    fn clipboard_copy(&mut self, state: &AutoCommit) -> bool {
         if !self.inner.has_selection() {
-            return;
+            return false;
         }
         let (plain, blocks) = self.inner.copy_fragment(state);
-        clipboard_copy(&plain);
+        if !ui::text_selection::try_clipboard_copy(&plain) { return false; }
         self.rich_clip = Some((plain, blocks));
+        true
     }
 
     /// Paste with formatting when the system clipboard still holds our last rich
@@ -11501,11 +11528,12 @@ impl WordProcessorWidget {
         };
         match action {
             CtxAction::Cut => {
-                self.clipboard_copy(state);
-                self.inner.delete_selection(state);
-                self.needs_commit = true;
+                if self.clipboard_copy(state) {
+                    self.inner.delete_selection(state);
+                    self.needs_commit = true;
+                }
             }
-            CtxAction::Copy => self.clipboard_copy(state),
+            CtxAction::Copy => { self.clipboard_copy(state); },
             CtxAction::Paste => {
                 self.clipboard_paste(state);
                 self.needs_commit = true;
@@ -12494,6 +12522,7 @@ mod r2_chrome_metrics;
 
 #[cfg(test)]
 mod tests {
+    use ui::clipboard_copy;
     use super::*;
     use std::fmt::Write as _;
     use taffy::AvailableSpace;

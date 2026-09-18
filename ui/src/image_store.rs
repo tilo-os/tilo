@@ -176,7 +176,19 @@ impl Drop for HostImageLoader {
     }
 }
 
+thread_local! {
+    static HOST_FACTORY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn() -> ImageStore>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl ImageStore {
+    /// Construct app caches under a host's async service while preserving component wake custody.
+    pub fn with_host_factory<R>(factory: std::rc::Rc<dyn Fn() -> Self>, construct: impl FnOnce() -> R) -> R {
+        struct Restore(Option<std::rc::Rc<dyn Fn() -> ImageStore>>);
+        impl Drop for Restore { fn drop(&mut self) { HOST_FACTORY.with_borrow_mut(|slot| *slot = self.0.take()); } }
+        let _restore = Restore(HOST_FACTORY.with_borrow_mut(|slot| slot.replace(factory)));
+        construct()
+    }
+
     /// A real cache driven by a host's asynchronous fetch executor, without threads.
     pub fn host_driven() -> (Self, HostImageLoader) {
         let (tx, requests) = std::sync::mpsc::sync_channel(IMAGE_JOB_QUEUE_LIMIT);
@@ -186,6 +198,7 @@ impl ImageStore {
 
     /// Build a store with the default worker count.
     pub fn new(fetch: &Fetcher) -> Self {
+        if let Some(factory) = HOST_FACTORY.with_borrow(Clone::clone) { return factory(); }
         Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
     }
 
@@ -610,4 +623,19 @@ fn decoded_slot(bytes: Option<&[u8]>) -> Slot {
             }
             None => Slot::Failed,
         }
+}
+
+#[cfg(test)]
+mod scoped_host_factory_tests {
+    use super::*;
+    #[test]
+    fn host_factory_constructs_async_store_inside_the_component_scope() {
+        let loaders=std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured=loaders.clone();
+        let factory=std::rc::Rc::new(move||{let (store,loader)=ImageStore::host_driven();captured.borrow_mut().push(loader);store});
+        let fetch:Fetcher=Arc::new(|_|panic!("native fetch must not execute"));
+        let store=ImageStore::with_host_factory(factory,||ImageStore::new(&fetch));
+        assert!(store.get("asset").is_none());
+        assert_eq!(loaders.borrow_mut()[0].take_requests(),vec!["asset"]);
+    }
 }

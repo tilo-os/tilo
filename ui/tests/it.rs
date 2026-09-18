@@ -160,3 +160,5 @@ mod application_contract;
 mod bound_component_dispatch;
 
 mod instance_undo;
+
+mod package_primary;

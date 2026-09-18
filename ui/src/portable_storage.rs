@@ -53,6 +53,7 @@ pub enum ProfileNamespace {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StorageKey {
+    Primary { package: String, workspace: String },
     Record {
         package: String,
         workspace: String,
@@ -66,6 +67,7 @@ pub enum StorageKey {
 impl StorageKey {
     fn validate(&self) -> Result<(), String> {
         let ids = match self {
+            Self::Primary { package, workspace } => vec![package, workspace],
             Self::Record {
                 package,
                 workspace,

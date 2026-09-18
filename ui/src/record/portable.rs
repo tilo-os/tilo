@@ -3,6 +3,7 @@
 use super::*;
 
 fn key(package: &str, workspace: &str, id: &RecordId) -> StorageKey {
+    if id.is_package_primary() { return StorageKey::Primary { package: package.into(), workspace: workspace.into() }; }
     StorageKey::Record {
         package: package.into(),
         workspace: workspace.into(),
@@ -32,6 +33,7 @@ impl RecordSet {
             return Err(RecordOpenError::Busy);
         }
         if let Some(slot) = self.open.get(&want.id) {
+            if slot.kind != want.kind { return Err(RecordOpenError::IdentityMismatch); }
             validate_identity(
                 slot.doc.as_ref().ok_or(RecordOpenError::Busy)?,
                 want,

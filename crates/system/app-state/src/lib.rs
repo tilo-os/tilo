@@ -500,6 +500,13 @@ impl DocStore {
         })
     }
 
+    /// The existing room-scoped package-primary directory, with explicit custody.
+    pub fn room_primary_dir_at(profile_root: &Path, package: &str, room: &str) -> Result<PathBuf, StoreError> {
+        validate_record_namespace(package, room)?;
+        validate_absolute_directory(profile_root)?;
+        Ok(profile_root.join(package).join(ROOMS_DIR).join(room))
+    }
+
     /// Resolve one record under an explicit profile root without consulting the environment.
     ///
     /// # Errors

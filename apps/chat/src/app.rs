@@ -404,7 +404,7 @@ impl CallChromeMotion {
             self.transition.set_open(
                 open,
                 if theme.reduce_motion {
-                    std::time::Duration::ZERO
+                    ui::clock::Duration::ZERO
                 } else {
                     theme.tokens.motion.durations.base()
                 },
@@ -416,7 +416,7 @@ impl CallChromeMotion {
             );
             self.target_open = open;
         }
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         self.sampled = self.transition.value(now);
         self.animating = self.transition.is_animating(now);
     }
@@ -709,6 +709,10 @@ pub struct ChatApp {
     /// collaborators do not retain a stale featured-stage reservation.
     screen_share_needs_sync: bool,
     legacy_migration_attempted: bool,
+    pub(crate) canonical: bool,
+    canonical_dirty: bool,
+    host_focused: bool,
+    pub(crate) external_services: bool,
 }
 
 impl Default for ChatApp {
@@ -717,7 +721,25 @@ impl Default for ChatApp {
     }
 }
 
+/// Native external services are explicit; browser peer transport is installed later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatRuntime { Native, Unavailable }
+
 impl ChatApp {
+    pub fn from_document(doc: &AutoCommit, identity: LocalIdentity, runtime: ChatRuntime) -> Result<Self, String> {
+        if !ChatDoc::is_seeded(doc) { return Err("Chat record has no workspace schema".into()); }
+        let mut app = Self::bare();
+        app.canonical = true;
+        app.external_services = runtime == ChatRuntime::Native;
+        app.me = identity;
+        app.active_ws.clear(); app.context_ws.clear(); app.active_channel.clear();
+        app.thread_open = None;
+        app.media_error = (!app.external_services).then(|| "Calls and screen sharing are unsupported until a media transport is connected".into());
+        if app.external_services { app.media = MediaEngine::new(); }
+        app.reload(doc);
+        if app.ensure_selection() { app.reload(doc); }
+        Ok(app)
+    }
     /// The live instance: resolves this peer's real identity. The document
     /// itself is loaded and written by `app-state` (see `main`), so nothing
     /// here touches disk. The resolved identity is what makes two running
@@ -864,6 +886,10 @@ impl ChatApp {
             media_error: None,
             screen_share_needs_sync: false,
             legacy_migration_attempted: false,
+            canonical: false,
+            canonical_dirty: true,
+            host_focused: true,
+            external_services: true,
         }
     }
 
@@ -872,7 +898,7 @@ impl ChatApp {
     /// is blocked from join/speak/camera/screen-share; leaving is always
     /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
-        self.perms.allows(action)
+        self.external_services && self.perms.allows(action)
     }
 
     /// Whether the local peer may post / react / start a call in the active
@@ -1293,7 +1319,7 @@ impl ChatApp {
     fn pump_mic(&mut self, me: &str) {
         use crate::call::CallAction;
         use crate::media::TrackKind;
-        use std::time::Duration;
+        use ui::clock::Duration;
 
         let transmit =
             !self.call.muted && !self.call.deafened && self.call_allows(CallAction::Speak);
@@ -1322,7 +1348,7 @@ impl ChatApp {
     fn pump_camera(&mut self, me: &str) {
         use crate::call::CallAction;
         use crate::media::TrackKind;
-        use std::time::Duration;
+        use ui::clock::Duration;
 
         let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
         if !camera_on {
@@ -1365,12 +1391,12 @@ impl ChatApp {
     #[cfg(feature = "live-media")]
     fn pump_screen(&mut self, me: &str) {
         use crate::media::TrackKind;
-        use std::time::Duration;
+        use ui::clock::Duration;
 
         let screen_result = match (self.screen.as_mut(), self.screen_session.as_mut()) {
             (Some(scr), Some(session)) => scr
                 .poll()
-                .map(|rgba| session.offer_frame(&rgba, std::time::Instant::now())),
+                .map(|rgba| session.offer_frame(&rgba, ui::clock::Instant::now())),
             _ => None,
         };
         let Some(result) = screen_result else {
@@ -1398,7 +1424,7 @@ impl ChatApp {
         &mut self,
         me: &str,
         kind: crate::media::TrackKind,
-        pts: std::time::Duration,
+        pts: ui::clock::Duration,
         payload: Vec<u8>,
     ) -> bool {
         if payload.len() > crate::media::MAX_MEDIA_PAYLOAD {
@@ -1956,13 +1982,13 @@ impl ChatApp {
     /// when no inline editor / rename is capturing input. Idempotent; called
     /// from `reload` and after any focus change.
     pub(crate) fn set_composer_focus(&mut self) {
-        let editing = self.editing.is_some() || self.rename.is_some();
+        let editing = self.editing.is_some() || self.rename.is_some() || !self.host_focused;
         let main = matches!(self.focus, Focus::Main) && !editing;
         let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         ui::Widget::set_focus(&mut self.composer_main, main);
         ui::Widget::set_focus(&mut self.composer_thread, thread);
-        ui::Widget::set_focus(&mut self.edit_input, self.editing.is_some());
-        ui::Widget::set_focus(&mut self.rename_input, self.rename.is_some());
+        ui::Widget::set_focus(&mut self.edit_input, self.host_focused && self.editing.is_some());
+        ui::Widget::set_focus(&mut self.rename_input, self.host_focused && self.rename.is_some());
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
@@ -2451,7 +2477,7 @@ impl ChatApp {
             let _ = self.images.get(&e.key());
         }
         self.images
-            .block_until_idle(std::time::Duration::from_secs(3));
+            .block_until_idle(ui::clock::Duration::from_secs(3));
     }
 
     /// The host-tile video rect for the current call mode, including the
@@ -2722,7 +2748,30 @@ fn chat_navigation_kind(kind: qos_actions::OperationKind) -> Result<bool, String
 }
 
 impl Widget for ChatApp {
+    fn is_focusable(&self) -> bool { true }
+    fn is_focused(&self) -> bool { self.host_focused }
+    fn set_focus(&mut self, focused: bool) {
+        self.host_focused = focused;
+        self.canonical_dirty = true;
+        self.set_composer_focus();
+    }
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.host_focused.then_some(winit::window::ImePurpose::Normal)
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.host_focused { return None; }
+        if self.rename.is_some() { self.rename_input.ime_cursor_rect() }
+        else if self.editing.is_some() { self.edit_input.ime_cursor_rect() }
+        else { self.focused_composer().ime_cursor_rect() }
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        if self.canonical {
+            self.canonical_dirty = true;
+            self.reload(doc);
+            if self.ensure_selection() { self.reload(doc); }
+            return;
+        }
         if self.is_live {
             // Live instance. `app-state` has already restored the previous
             // session's document by now, so an unseeded document really is a
@@ -2921,7 +2970,7 @@ impl Widget for ChatApp {
         // Resolve flap modes + advance their eased reveals for this frame.
         self.reconcile_flaps();
         self.reconcile_huddle_motion(theme);
-        self.tooltips.tick(std::time::Instant::now());
+        self.tooltips.tick(ui::clock::Instant::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let c = &theme.tokens.colors;
@@ -3078,6 +3127,7 @@ impl Widget for ChatApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        self.canonical_dirty = true;
         self.dispatch_event(event, scale_factor, *modifiers, state, handled);
     }
 
@@ -3335,6 +3385,7 @@ impl Widget for ChatApp {
         };
         match &operation {
             crate::actions::ChatOperation::ImportAttachment { .. } => {
+                if !self.external_services { return Err("attachment import unsupported: no host asset transport".into()); }
                 if kind != qos_actions::OperationKind::Effect {
                     return Err("attachment import requires an Effect operation".into());
                 }
@@ -3595,7 +3646,12 @@ impl Widget for ChatApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        true
+        !self.canonical || self.canonical_dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.canonical_dirty = false;
+        self.composer_main.mark_drawn();
+        self.composer_thread.mark_drawn();
     }
 }
 
@@ -3661,7 +3717,7 @@ mod screenshare_reuse_tests {
     use super::*;
     use crate::media::{MediaEngine, MediaObject, TrackKind};
     use qos_callstream::VideoStreamSender;
-    use std::time::{Duration, Instant};
+    use ui::clock::{Duration, Instant};
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity((width * height * 4) as usize);
@@ -3751,7 +3807,7 @@ mod screenshare_reuse_tests {
     #[test]
     fn oversized_screen_object_stops_the_track_instead_of_silent_transport_drop() {
         use crate::media::{MAX_MEDIA_PAYLOAD, TrackKind};
-        use std::time::Duration;
+        use ui::clock::Duration;
 
         let mut app = ChatApp::new_ephemeral();
         app.call.sharing = true;
