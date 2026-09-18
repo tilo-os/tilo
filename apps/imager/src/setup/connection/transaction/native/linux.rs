@@ -59,11 +59,17 @@ mod tests {
     fn native_connected_source_loss_stops_before_displacement() {
         connected_preservation_case(PreservationCase::MissingSource);
     }
+    #[test]
+    #[ignore = "authorized Linux filesystem and QOS_LEASE_HELPER executable required"]
+    fn native_connected_final_ownership_race_is_incomplete_and_retains_bytes() {
+        connected_preservation_case(PreservationCase::OwnershipRace);
+    }
     #[derive(Clone, Copy)]
     enum PreservationCase {
         Success,
         DisconnectAfterBytes,
         MissingSource,
+        OwnershipRace,
     }
     #[expect(
         clippy::too_many_lines,
@@ -305,6 +311,46 @@ mod tests {
             clean.observation(),
             crate::setup::connection::model::Observation::Complete
         ));
+        if matches!(case, PreservationCase::OwnershipRace) {
+            let unknown = target_path.join(&private_name).join("late-user-data");
+            let hook_path = unknown.clone();
+            // First validate_all, exact-name exclusion, then final validate_all.
+            // Mutate only after the final enumeration and named-object reads.
+            AFTER_OWNED_READS.with(|hook| {
+                *hook.borrow_mut() = Some((
+                    2,
+                    Box::new(move || {
+                        std::fs::write(hook_path, b"late retained bytes").unwrap();
+                    }),
+                ));
+            });
+            let raced = endpoint::observe_connected(&target_endpoint, &names, &cancel);
+            assert!(AFTER_OWNED_READS.with(|hook| hook.borrow().is_none()));
+            assert!(matches!(
+                raced.observation(),
+                crate::setup::connection::model::Observation::Incomplete(_)
+            ));
+            assert_eq!(std::fs::read(&unknown).unwrap(), b"late retained bytes");
+            let visible = endpoint::observe_connected(&target_endpoint, &names, &cancel);
+            assert!(
+                visible
+                    .entries()
+                    .contains_key(&RelativePath::unix(private_name.as_bytes()).unwrap())
+            );
+            assert!(matches!(
+                visible.observation(),
+                crate::setup::connection::model::Observation::Incomplete(_)
+            ));
+            assert_eq!(
+                std::fs::read(target_path.join(&private_name).join("stage")).unwrap(),
+                b"proposal"
+            );
+            assert_eq!(
+                std::fs::read(target_path.join(&private_name).join("displaced")).unwrap(),
+                b"original"
+            );
+            return;
+        }
         std::fs::write(target_path.join(".qos-operation-user-file"), b"user bytes").unwrap();
         let ordinary = endpoint::observe(&target_endpoint, &cancel);
         let connected = endpoint::observe_connected(&target_endpoint, &names, &cancel);
@@ -2299,7 +2345,67 @@ impl NativeEpoch<'_> {
         })
     }
 }
+#[cfg(test)]
+type OwnershipReadHook = (usize, Box<dyn FnOnce()>);
+#[cfg(test)]
+thread_local! {
+    static AFTER_OWNED_READS: std::cell::RefCell<Option<OwnershipReadHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn after_owned_reads() {
+    let callback = AFTER_OWNED_READS.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        match hook.as_mut() {
+            Some((0, _)) => hook.take().map(|(_, callback)| callback),
+            Some((remaining, _)) => {
+                *remaining -= 1;
+                None
+            }
+            None => None,
+        }
+    });
+    if let Some(callback) = callback {
+        callback();
+    }
+}
+
+/// Retain the directory handle and content-change stamp throughout a scan.
+/// Stamp includes length, mtime, ctime, mode, owner and link count, matching or
+/// exceeding ordinary observation's metadata/change-token checks on Linux.
+pub(super) struct OwnedSnapshot {
+    directory: NativeDirectory,
+    identity: ObjectId,
+    stamp: Stamp,
+}
+impl OwnedSnapshot {
+    fn capture(directory: NativeDirectory) -> std::result::Result<Self, EndpointError> {
+        let identity = object(directory.file())?;
+        let stamp = Stamp::new(&directory.file().metadata()?);
+        Ok(Self {
+            directory,
+            identity,
+            stamp,
+        })
+    }
+    fn validate(&self) -> std::result::Result<(), EndpointError> {
+        self.directory.validate(false)?;
+        if object(self.directory.file())? != self.identity
+            || Stamp::new(&self.directory.file().metadata()?) != self.stamp
+        {
+            return Err(EndpointError::Unstable);
+        }
+        Ok(())
+    }
+}
+
 impl super::NativeOwnedNames {
+    pub(in crate::setup::connection) fn observation(&self) -> super::NativeOwnedObservation<'_> {
+        super::NativeOwnedObservation {
+            names: self,
+            snapshots: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+        }
+    }
     pub(in crate::setup::connection) fn charge(
         &self,
         count: u64,
@@ -2342,7 +2448,7 @@ impl super::NativeOwnedNames {
         &self,
         root: &NativeDirectory,
         record: &crate::setup::connection::store::NativeNamespaceRecord,
-    ) -> std::result::Result<(), EndpointError> {
+    ) -> std::result::Result<OwnedSnapshot, EndpointError> {
         self.charge(0)?;
         root.validate(false)?;
         if object(root.file())? != self.root {
@@ -2350,6 +2456,7 @@ impl super::NativeOwnedNames {
         }
         let name = record.name();
         let directory = root.child(OsStr::new(&name), false)?;
+        let snapshot = OwnedSnapshot::capture(directory.clone())?;
         destination_security::check_private_file(directory.file())?;
         let (intent_bytes, stage_bytes) = record
             .descriptors()
@@ -2465,26 +2572,64 @@ impl super::NativeOwnedNames {
                 .joined(&intent, staged.as_ref(), displaced.as_ref())
                 .map_err(|_| EndpointError::Unverified)?;
         }
+        #[cfg(test)]
+        after_owned_reads();
         directory.validate(false)?;
         if descriptor_object(&object(directory.file())?) != body.namespace {
             return Err(EndpointError::IdentityChanged);
         }
+        snapshot.validate()?;
         root.validate(false)?;
-        self.charge(0)
+        self.charge(0)?;
+        Ok(snapshot)
+    }
+}
+impl super::NativeOwnedObservation<'_> {
+    pub(in crate::setup::connection) fn charge(
+        &self,
+        count: u64,
+    ) -> std::result::Result<(), EndpointError> {
+        self.names.charge(count)
+    }
+    fn validate_record(
+        &self,
+        root: &NativeDirectory,
+        record: &crate::setup::connection::store::NativeNamespaceRecord,
+    ) -> std::result::Result<(), EndpointError> {
+        let snapshot = self.names.validate_record(root, record)?;
+        let mut snapshots = self.snapshots.borrow_mut();
+        if let Some(previous) = snapshots.get(&record.name()) {
+            previous.validate()?;
+            if snapshot.identity != previous.identity || snapshot.stamp != previous.stamp {
+                return Err(EndpointError::Unstable);
+            }
+        } else {
+            if snapshots.len() >= 128 {
+                return Err(EndpointError::LimitExceeded);
+            }
+            snapshots.insert(record.name(), snapshot);
+        }
+        Ok(())
     }
     pub(in crate::setup::connection) fn validate_all(
         &self,
         root: &NativeDirectory,
     ) -> std::result::Result<(), EndpointError> {
-        if self.records.len() > 128 {
+        if self.names.records.len() > 128 {
             return Err(EndpointError::LimitExceeded);
         }
         self.charge(0)?;
-        if object(root.file())? != self.root {
+        if object(root.file())? != self.names.root {
             return Err(EndpointError::IdentityChanged);
         }
-        for record in &self.records {
+        for record in &self.names.records {
             self.validate_record(root, record)?;
+        }
+        // Recheck earlier records after later records, just as the ordinary
+        // observer rechecks early directory snapshots after later siblings.
+        for snapshot in self.snapshots.borrow().values() {
+            self.charge(0)?;
+            snapshot.validate()?;
         }
         Ok(())
     }
@@ -2494,6 +2639,7 @@ impl super::NativeOwnedNames {
         name: &OsStr,
     ) -> std::result::Result<bool, EndpointError> {
         let Some(record) = self
+            .names
             .records
             .iter()
             .find(|record| OsStr::new(&record.name()) == name)

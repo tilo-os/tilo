@@ -621,7 +621,7 @@ fn validate_snapshot(root: &Arc<Pin>, snapshot: &Snapshot) -> Result<(), Endpoin
 }
 struct Scan<'a> {
     #[cfg(target_os = "linux")]
-    owned: Option<&'a super::transaction::native::NativeOwnedNames>,
+    owned: Option<&'a super::transaction::native::NativeOwnedObservation<'a>>,
     cancelled: &'a AtomicBool,
     entries: BTreeMap<RelativePath, EntryState>,
     issues: Vec<ScopeIssue>,
@@ -838,6 +838,10 @@ fn observe_inner(
             observation: Observation::Unavailable(error.reason()),
         };
     }
+    #[cfg(target_os = "linux")]
+    let ownership = owned.map(super::transaction::native::NativeOwnedNames::observation);
+    #[cfg(target_os = "linux")]
+    let owned = ownership.as_ref();
     let mut scan = Scan {
         #[cfg(target_os = "linux")]
         owned,

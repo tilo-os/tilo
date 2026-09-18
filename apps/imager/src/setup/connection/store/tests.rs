@@ -1951,6 +1951,48 @@ fn native_closed_session_cannot_begin_an_intent() {
     );
 }
 
+#[test]
+fn native_dropped_closed_session_cannot_begin_an_intent() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 708);
+    let session = store.transaction_session(record.id).unwrap();
+    session.request_disconnect();
+    drop(session);
+    let reacquired = store.transaction_session(record.id).unwrap();
+    assert!(matches!(
+        store.begin_native(intent(&record), &reacquired),
+        Err(StoreError::Cancelled)
+    ));
+    assert_eq!(store.load_connection(record.id).unwrap(), record);
+}
+
+#[test]
+fn native_dropped_closed_session_cannot_admit_existing_operation() {
+    use crate::setup::connection::transaction::StepKind;
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 709);
+    let session = store.transaction_session(record.id).unwrap();
+    let live = store.begin_native(intent(&record), &session).unwrap();
+    let cancel = AtomicBool::new(false);
+    let step = session
+        .admit_step(&store, &live, StepKind::Namespace, &cancel)
+        .unwrap();
+    session.request_disconnect();
+    drop(session);
+    drop(step);
+    let reacquired = store.transaction_session(record.id).unwrap();
+    assert!(matches!(
+        reacquired.admit_step(&store, &live, StepKind::Namespace, &cancel),
+        Err(StoreError::Cancelled)
+    ));
+    let current = store.load_connection(record.id).unwrap();
+    assert_eq!(current.lifecycle, Lifecycle::Active);
+    assert_eq!(current.fence_generation, 0);
+    assert_eq!(current.revision, live.revision());
+}
+
 // The exact durable reservation can produce context only at its current revision.
 #[test]
 fn native_namespace_context_rejects_stale_attempt_and_session() {

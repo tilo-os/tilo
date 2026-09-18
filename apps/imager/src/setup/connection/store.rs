@@ -290,7 +290,9 @@ pub(super) struct ConnectionStore {
     session: Arc<()>,
     native_lifetime: Arc<()>,
     native_correlation: [u8; 16],
-    native_gates: BTreeMap<[u8; 16], std::sync::Weak<super::transaction::AdmissionGate>>,
+    // One sticky admission gate per loaded connection, bounded by the store's
+    // 65,536-connection limit. External handle loss cannot undo a requested stop.
+    native_gates: BTreeMap<[u8; 16], Arc<super::transaction::AdmissionGate>>,
     poisoned: bool,
     connections: u64,
     active_intents: u64,
@@ -455,11 +457,7 @@ impl ConnectionStore {
         // Weak live contexts and already-issued step tokens expire immediately,
         // including failures before the store owner itself is dropped.
         self.native_lifetime = Arc::new(());
-        for gate in self
-            .native_gates
-            .values()
-            .filter_map(std::sync::Weak::upgrade)
-        {
+        for gate in self.native_gates.values() {
             gate.close();
         }
     }
@@ -632,18 +630,11 @@ impl ConnectionStore {
         if record.lifecycle != Lifecycle::Active {
             return Err(StoreError::Disconnected);
         }
-        self.native_gates.retain(|_, gate| gate.strong_count() != 0);
-        let gate = if let Some(gate) = self
-            .native_gates
-            .get(&id.0)
-            .and_then(std::sync::Weak::upgrade)
-        {
-            gate
-        } else {
-            let gate = Arc::new(super::transaction::AdmissionGate::new());
-            self.native_gates.insert(id.0, Arc::downgrade(&gate));
-            gate
-        };
+        let gate = Arc::clone(
+            self.native_gates
+                .entry(id.0)
+                .or_insert_with(|| Arc::new(super::transaction::AdmissionGate::new())),
+        );
         gate.set_progress(record.revision);
         Ok(super::transaction::TransactionSession::new(
             id,
@@ -897,11 +888,7 @@ impl ConnectionStore {
         id: ConnectionId,
         expected: Revision,
     ) -> Result<DurableAck<DisconnectFence>, StoreError> {
-        if let Some(gate) = self
-            .native_gates
-            .get(&id.0)
-            .and_then(std::sync::Weak::upgrade)
-        {
+        if let Some(gate) = self.native_gates.get(&id.0) {
             gate.close();
         }
         self.guard()?;
@@ -1216,11 +1203,7 @@ impl ConnectionStore {
     fn commit_rows(&mut self, prepared: PreparedRows) {
         for row in prepared.rows {
             if let Row::Connection(record) = &row {
-                if let Some(gate) = self
-                    .native_gates
-                    .get(&record.id)
-                    .and_then(std::sync::Weak::upgrade)
-                {
+                if let Some(gate) = self.native_gates.get(&record.id) {
                     gate.set_progress(record.revision);
                 }
             }
