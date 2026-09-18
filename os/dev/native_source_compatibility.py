@@ -6,6 +6,8 @@ import re
 import subprocess
 
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
+POLICY_PATHS = ('docs/security/boot-chain.md', 'os/scripts/verify-runtime-crypto-packages.sh',
+                'os/usr/libexec/tilo-security-audit')
 PATHS = ('os/dev/windows_provider.py', 'os/tests/test_windows_provider.py')
 
 
@@ -41,7 +43,10 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
     """Compare complete committed trees before any source compatibility adoption."""
     approval = read_approval(path, digest)
     rootfs = approval.get('purpose') == 'tilo-rootfs-native-source-compatibility'
+    policy = rootfs and 'rootfs_revision' in approval
     extra = {'provider_revision', 'wpe_bridge'} if rootfs else set()
+    if policy:
+        extra.add('rootfs_revision')
     require(set(approval) == {'schema', 'purpose', 'native_source_revision', 'assembly_source_revision',
         'native_receipt_sha256', 'approved_reconstruction_sha256', 'changes'} | extra, 'source admission schema differs')
     require(type(approval['schema']) is int and approval['schema'] == 1
@@ -55,17 +60,22 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
     require(git(repo, 'rev-parse', 'HEAD').decode().strip() == revision
         and not git(repo, 'status', '--porcelain', '--untracked-files=all').strip(),
         'compatible assembly source must be clean and exact')
-    # Authenticated checkout includes the explicit two/three-commit chain.
+    # Authenticated checkout includes the explicit two/three/four-commit chain.
     # No hidden ancestors, rename heuristics, or unrecorded changes are permitted.
+    recipe_revision = approval['rootfs_revision'] if policy else revision
+    if policy:
+        require(re.fullmatch('[0-9a-f]{40}', recipe_revision or '')
+            and git(repo, 'show', '-s', '--format=%P', revision).decode().strip() == recipe_revision, 'policy correction ancestry differs')
+        require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', recipe_revision, revision) .split(b'\0')[:-1] == [p.encode() for p in POLICY_PATHS], 'policy correction must change only reviewed rootfs policy files')
     parent = approval['provider_revision'] if rootfs else SOURCE
     if rootfs:
         require(re.fullmatch('[0-9a-f]{40}', parent or '') and
             git(repo, 'show', '-s', '--format=%P', parent).decode().strip() == SOURCE, 'provider correction ancestry differs')
-        require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', parent, revision) == b'os/Containerfile\0', 'rootfs correction must change only Containerfile')
-    require(git(repo, 'show', '-s', '--format=%P', revision).decode().strip() == parent,
+        require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', parent, recipe_revision) == b'os/Containerfile\0', 'rootfs correction must change only Containerfile')
+    require(git(repo, 'show', '-s', '--format=%P', recipe_revision).decode().strip() == parent,
         'assembly correction must directly descend from frozen native source')
     changed = git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', SOURCE, revision)
-    paths = tuple(sorted((*PATHS, 'os/Containerfile'))) if rootfs else PATHS
+    paths = tuple(sorted((*PATHS, 'os/Containerfile', *(POLICY_PATHS if policy else ())))) if rootfs else PATHS
     require(changed.split(b'\0')[:-1] == [name.encode() for name in paths]
             and set(approval['changes']) == set(paths), 'complete tree diff exceeds reviewed Python correction')
     changes = {}
@@ -82,7 +92,10 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
         require(approval['changes'][name] == expected, 'source correction blob differs: ' + name)
         changes[name] = expected
     if rootfs:
-        verify_rootfs(git(repo, 'show', SOURCE + ':os/Containerfile'), git(repo, 'show', revision + ':os/Containerfile'))
+        recipe = git(repo, 'show', revision + ':os/Containerfile')
+        verify_rootfs(git(repo, 'show', SOURCE + ':os/Containerfile'), recipe)
+        if policy:
+            verify_policy_placement(recipe)
         verify_wpe_bridge(approval['wpe_bridge'], changes['os/Containerfile'],
             sha(git(repo, 'show', SOURCE + ':os/dev/build-wpe.sh')))
     return dict(schema=1, purpose='tilo-native-source-compatibility-verified', approval_sha256=digest,
@@ -143,3 +156,15 @@ def verify_selected_wpe(admission, raw, digest):
     if bridge:
         require(digest == bridge['assembly_receipt_sha256'] and sha(raw) == digest
             and raw.decode('utf-8') == bridge['assembly_receipt_json'], 'selected WPE receipt differs from source admission')
+
+
+def verify_policy_placement(recipe):
+    """The changed policy is a rootfs-only input, never a native build input."""
+    begin = recipe.index(b'FROM ${BASE_REF} AS rootfs\n')
+    end = recipe.index(b'FROM rootfs AS split\n')
+    for path in POLICY_PATHS:
+        name = path.encode()
+        require(name not in recipe[:begin] and name not in recipe[end:]
+            and name in recipe[begin:end], 'policy inputs must be consumed only in rootfs')
+    require(b'RUN bash /usr/local/bin/verify-runtime-crypto-packages.sh' in recipe[begin:end],
+        'runtime crypto gate invocation required')

@@ -211,7 +211,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: application-source
-          fetch-depth: 3 # Frozen source, provider correction, and rootfs-only correction.
+          fetch-depth: 4 # Frozen source, provider, rootfs recipe, and rootfs policy correction.
           ref: ${{ inputs.source_revision }}
           token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
