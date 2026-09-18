@@ -57,6 +57,8 @@ use crate::vcard::{self, VCardVersion};
 
 /// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
+/// Private presentation token; it is never written to the shared document.
+const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
 
 fn contacts_import_request() -> PickRequest {
     PickRequest::open_multiple("Import contacts", "Import")
@@ -682,6 +684,36 @@ struct DeleteDialog {
     cancel: Rc<Cell<bool>>,
 }
 
+/// Private, review-only state for a potential duplicate.  It is rebuilt from
+/// the current collaborative contacts whenever opened; no tentative choices
+/// leak into the shared document until the explicit Merge button emits the
+/// typed `ContactsAction::MergeContacts` envelope.
+struct DuplicateReview {
+    survivor: Contact,
+    source: Contact,
+    reasons: Vec<crate::actions::DuplicateReason>,
+    take_from_source: std::collections::HashSet<crate::actions::MergeField>,
+    focus: usize,
+    scroll: f64,
+}
+
+struct DuplicateReviewGeometry {
+    panel: Rect,
+    list: Rect,
+    rows: Vec<DuplicateReviewRow>,
+    merge: Rect,
+    cancel: Rect,
+    full_screen: bool,
+    max_scroll: f64,
+}
+
+struct DuplicateReviewRow {
+    field: crate::actions::MergeField,
+    card: Rect,
+    current: Rect,
+    other: Rect,
+}
+
 /// The explicit decision point for an untrusted imported UID collision.  The
 /// primary action is intentionally destructive: importing under a new local
 /// identity adds data to the shared address book, whereas keeping the current
@@ -710,6 +742,19 @@ enum ContextAction {
 }
 
 impl ContextAction {
+    /// Stable action component used by the semantic menu.  This is kept
+    /// separate from the display label because the favourite label changes
+    /// with state while an assistive client needs an address that remains
+    /// stable for the lifetime of this one popup.
+    fn id(self) -> &'static str {
+        match self {
+            ContextAction::Edit => "edit",
+            ContextAction::Favorite => "favorite",
+            ContextAction::Export => "export",
+            ContextAction::Delete => "delete",
+        }
+    }
+
     /// The user-facing label. The Favorite entry reads "Add to favorites" or
     /// "Remove from favorites" depending on the contact's current state.
     fn label(self, is_favorite: bool) -> &'static str {
@@ -735,6 +780,13 @@ const CONTEXT_ACTIONS: &[ContextAction] = &[
     ContextAction::Export,
     ContextAction::Delete,
 ];
+
+/// Stable target for one item in a contact's transient context menu.  The
+/// menu itself is presentation state, but its actions are the same canonical
+/// edit/favourite/delete/export paths exposed elsewhere in the app.
+fn context_action_target(id: ContactId, action: ContextAction) -> String {
+    format!("contacts.context:{id}:{}", action.id())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TypeTarget {
@@ -839,6 +891,7 @@ pub struct ContactsApp {
     /// imported-UID collision. Remaining collisions are presented one at a
     /// time after each explicit decision.
     import_conflict_dialog: Option<ImportConflictDialog>,
+    duplicate_review: Option<DuplicateReview>,
 
     /// Self-contained export selection modal: state, drawing and input routing.
     export_dialog: ExportDialog,
@@ -1006,6 +1059,7 @@ impl ContactsApp {
             confirm_delete: None,
             delete_dialog: None,
             import_conflict_dialog: None,
+            duplicate_review: None,
             export_dialog: ExportDialog::new(),
             pending_switch: None,
             unsaved_focus: UnsavedFocus::Cancel,
@@ -1153,6 +1207,50 @@ impl ContactsApp {
         }
     }
 
+    /// Max-conflict duplicate review for the visual matrix.  This touches only
+    /// the hermetic shot store: it proves the seven-row field chooser remains
+    /// readable at 390×844/200% without manufacturing a collaborative write.
+    pub fn shots_show_duplicate_review(&mut self) {
+        let mut contacts = self.store.contacts.clone();
+        contacts.sort_by_key(|contact| contact.id);
+        let Some(survivor) = contacts.first().cloned() else {
+            return;
+        };
+        let Some(mut source) = contacts.get(1).cloned() else {
+            return;
+        };
+        source.first = "Augusta".into();
+        source.last = "King".into();
+        source.org = "Alternative organization".into();
+        source.title = "Different role".into();
+        source.website = "https://other.example.test".into();
+        source.notes = "A deliberately longer alternate note for the review layout.".into();
+        source.birthday = Some(Birthday::MonthDay { month: 12, day: 10 });
+        source.emails = vec![Labeled::new("home", "ada@example.test")];
+        let mut survivor = survivor;
+        survivor.org = "Primary organization".into();
+        survivor.title = "Primary role".into();
+        survivor.website = "https://primary.example.test".into();
+        survivor.notes = "A deliberately longer primary note for the review layout.".into();
+        survivor.birthday = Some(Birthday::MonthDay { month: 1, day: 1 });
+        survivor.emails = vec![Labeled::new("home", "ada@example.test")];
+        self.store.upsert(survivor.clone());
+        self.store.upsert(source.clone());
+        if let Some(candidate) = crate::actions::duplicate_candidate(&survivor, &source) {
+            self.duplicate_review = Some(DuplicateReview {
+                survivor: survivor.clone(),
+                source,
+                reasons: candidate.reasons,
+                take_from_source: std::collections::HashSet::new(),
+                focus: 0,
+                scroll: 0.0,
+            });
+            self.selected = Some(survivor.id);
+            self.dirty = true;
+            self.relayout = true;
+        }
+    }
+
     /// Empty the book for `--shots` so a headless frame captures the genuine
     /// first-launch empty state (what the live app shows before any contact
     /// exists). Shots-only: it mutates nothing the live app relies on.
@@ -1191,23 +1289,13 @@ impl ContactsApp {
     /// `--shots`.
     pub fn shots_show_context_menu(&mut self) {
         if let Some(id) = self.selected {
-            // Anchor the menu near the selected row in the list.
-            let anchor = self
-                .list_rows
-                .iter()
-                .find(|(rid, _)| *rid == id)
-                .map_or_else(
-                    || {
-                        Rect::new(
-                            self.list_rect.x0 + 60.0,
-                            self.list_rect.y0 + 200.0,
-                            self.list_rect.x0 + 60.0,
-                            self.list_rect.y0 + 200.0,
-                        )
-                    },
-                    |(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y),
-                );
-            self.open_popup(Popup::ContextMenu { target: id, anchor });
+            // The screenshot hook runs before its first layout pass. Defer the
+            // anchor instead of guessing a row position that could point at a
+            // different person than the menu target.
+            self.open_popup(Popup::ContextMenu {
+                target: id,
+                anchor: Rect::ZERO,
+            });
         }
     }
 
@@ -1223,8 +1311,25 @@ impl ContactsApp {
 
     /// Ids currently visible after search + group filter, in sort order.
     fn visible_ids(&self) -> Vec<ContactId> {
+        if self.group_filter.as_deref() == Some(FAVORITES_FILTER) {
+            let query = self.search.value();
+            let mut contacts = self
+                .store
+                .contacts
+                .iter()
+                .filter(|contact| contact.favorite && contact.matches(query))
+                .collect::<Vec<_>>();
+            contacts.sort_by(|left, right| crate::model::sort_cmp(left, right, self.sort));
+            return contacts.into_iter().map(|contact| contact.id).collect();
+        }
         self.store
             .filtered_sorted(self.search.value(), self.group_filter.as_deref(), self.sort)
+    }
+
+    fn group_filter_options(&self) -> Vec<String> {
+        let mut options = vec!["All".to_string(), "Favorites".to_string()];
+        options.extend(self.store.all_groups());
+        options
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
@@ -1397,6 +1502,10 @@ impl ContactsApp {
             ContactsAction::PatchContact { id, .. }
             | ContactsAction::DeleteContact { id }
             | ContactsAction::SetFavorite { id, .. } => id.parse().ok()?,
+            // A merge changes two projections. Let the next normal document
+            // sync reconcile both together rather than risking a one-sided
+            // optimistic list update.
+            ContactsAction::MergeContacts { .. } => return None,
         };
         let before = self.indexed_contact(id).cloned();
         if matches!(action, ContactsAction::CreateContact(_)) || before.is_some() {
@@ -1642,7 +1751,7 @@ impl ContactsApp {
                 .collect(),
             contact_count: self.store.contacts.len(),
             import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
-            export_busy: self.export_rx.is_some(),
+            export_busy: self.export_dialog.is_open() || self.export_rx.is_some(),
             import_conflicts: self
                 .import_conflicts
                 .iter()
@@ -1655,6 +1764,21 @@ impl ContactsApp {
                         .map_or_else(|| "Deleted contact".into(), Contact::display_name),
                 })
                 .collect(),
+            duplicates: crate::actions::duplicate_candidates(
+                &self.store.contacts,
+                crate::actions::MAX_CONTEXT_DUPLICATE_RESOURCES,
+            )
+            .into_iter()
+            .filter_map(|candidate| {
+                let survivor = self.store.get(candidate.survivor_id)?.clone();
+                let source = self.store.get(candidate.source_id)?.clone();
+                Some(crate::actions::DuplicateResource {
+                    candidate,
+                    survivor,
+                    source,
+                })
+            })
+            .collect(),
         }
     }
 
@@ -1672,10 +1796,28 @@ impl ContactsApp {
             groups: Vec::new(),
             contact_count: self.store.contacts.len(),
             import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
-            export_busy: self.export_rx.is_some(),
+            export_busy: self.export_dialog.is_open() || self.export_rx.is_some(),
             import_conflicts: Vec::new(),
+            duplicates: Vec::new(),
         };
         if id == "contacts.book" {
+            return Some(ctx);
+        }
+        if id == crate::actions::FAVORITES_RESOURCE_ID {
+            return Some(ctx);
+        }
+        if let Some(rest) = id.strip_prefix("contacts.duplicate:") {
+            let (survivor, source) = rest.split_once(':')?;
+            let survivor_id = survivor.parse::<ContactId>().ok()?;
+            let source_id = source.parse::<ContactId>().ok()?;
+            let survivor = self.store.get(survivor_id)?.clone();
+            let source = self.store.get(source_id)?.clone();
+            let candidate = crate::actions::duplicate_candidate(&survivor, &source)?;
+            ctx.duplicates.push(crate::actions::DuplicateResource {
+                candidate,
+                survivor,
+                source,
+            });
             return Some(ctx);
         }
         if let Some(raw) = id.strip_prefix("contacts.contact:") {
@@ -2293,6 +2435,48 @@ impl ContactsApp {
         true
     }
 
+    /// Start the version-selection workflow for one canonical contact
+    /// resource.  This is intentionally the only path behind both the
+    /// contact resource's `export-contact` operation and the row context
+    /// menu: a stale/busy check therefore has identical behavior for agents,
+    /// keyboard, assistive technology, and pointer input.
+    fn open_contact_export(&mut self, id: ContactId) -> Result<(), String> {
+        if self.store.get(id).is_none() {
+            return Err("contact no longer exists".into());
+        }
+        if self.export_dialog.is_open()
+            || self.export_rx.is_some()
+            || self.resource_invocation.is_some()
+        {
+            return Err("a contact export is already in progress".into());
+        }
+        self.export_dialog.open([id]);
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Serialize the same canonical operation published by the contact
+    /// resource, then route it through the normal decoder/validator.  The
+    /// context-menu affordance intentionally does not call
+    /// [`Self::open_contact_export`] directly: this keeps pointer, keyboard,
+    /// AT-SPI and agent activation on one typed operation boundary.
+    fn invoke_contact_export_operation(
+        &mut self,
+        state: &AutoCommit,
+        id: ContactId,
+    ) -> Result<bool, String> {
+        let operation = crate::actions::export_contact_operation(id);
+        let payload = serde_json::to_vec(&operation)
+            .map_err(|error| format!("couldn't encode contact export: {error}"))?;
+        self.invoke_resource_operation(
+            tilo_actions::OperationKind::Effect,
+            crate::actions::CONTACTS_OPERATION_TYPE,
+            &payload,
+            state,
+            &automerge::ROOT,
+        )
+    }
+
     /// Write the chosen `ids` out as a `.vcf` of `version` to `path`, reporting
     /// the real destination. Hermetic core shared by the live portal drain and
     /// the tests — it takes an explicit path and never consults the picker or
@@ -2881,6 +3065,10 @@ impl ContactsApp {
 // =====================================================================
 
 impl ContactsApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the root render keeps ordered modal and pane composition in one place"
+    )]
     fn render(
         &mut self,
         scene: &mut Scene,
@@ -2958,6 +3146,15 @@ impl ContactsApp {
                 anchor: self.hit.group,
             });
         }
+        if let Some(Popup::ContextMenu { target, anchor }) = self.popup
+            && anchor == Rect::ZERO
+            && let Some((_, row)) = self.list_rows.iter().find(|(id, _)| *id == target)
+        {
+            self.open_popup(Popup::ContextMenu {
+                target,
+                anchor: Rect::new(row.x0 + 40.0, row.center().y, row.x0 + 40.0, row.center().y),
+            });
+        }
         if let Some(popup) = &self.popup {
             self.draw_popup(scene, transform, tr, theme, popup);
         }
@@ -2972,6 +3169,10 @@ impl ContactsApp {
                 self.sort,
                 self.last_mouse,
             );
+        }
+        if let Some(review) = self.duplicate_review.as_ref() {
+            let geometry = self.duplicate_review_geometry(review);
+            self.draw_duplicate_review(scene, transform, tr, theme, review, &geometry);
         }
         if self.pending_switch.is_some() {
             self.draw_unsaved_modal(scene, transform, tr, theme);
@@ -3001,6 +3202,242 @@ impl ContactsApp {
                 &ToastCard::new(msg, ToastKind::Info),
             );
         }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the duplicate review keeps paint, clipping, selected states, and exact choice geometry together"
+    )]
+    fn draw_duplicate_review(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        review: &DuplicateReview,
+        geometry: &DuplicateReviewGeometry,
+    ) {
+        let c = &theme.tokens.colors;
+        if geometry.full_screen {
+            scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
+        } else {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::BLACK.with_alpha_factor(0.72),
+                None,
+                &self.rect,
+            );
+        }
+        let shape = RoundedRect::from_rect(geometry.panel, f64::from(theme.tokens.radii.md));
+        if !geometry.full_screen {
+            scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &shape);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                c.border_standard,
+                None,
+                &shape,
+            );
+        }
+        tr.draw_text(
+            scene,
+            if geometry.full_screen {
+                "Review duplicate"
+            } else {
+                "Review possible duplicate"
+            },
+            16.0,
+            c.text_primary,
+            transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 18.0)),
+            Some((geometry.panel.width() - 36.0).max(40.0) as f32),
+        );
+        let reasons = review
+            .reasons
+            .iter()
+            .map(crate::actions::DuplicateReason::label)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let intro = if geometry.full_screen {
+            format!("{reasons}. Unique phones, emails, groups, and addresses are kept.")
+        } else {
+            format!("Matches: {reasons}. Unique phones, emails, groups, and addresses are kept.")
+        };
+        tr.draw_text(
+            scene,
+            &intro,
+            10.0,
+            c.text_dim,
+            transform
+                * Affine::translate((
+                    geometry.panel.x0 + 18.0,
+                    geometry.panel.y0 + if geometry.full_screen { 56.0 } else { 54.0 },
+                )),
+            Some((geometry.panel.width() - 36.0).max(40.0) as f32),
+        );
+        if geometry.full_screen {
+            tr.draw_text(
+                scene,
+                &format!(
+                    "{} conflicts. Scroll, then choose Current or Other.",
+                    geometry.rows.len()
+                ),
+                9.0,
+                c.text_tertiary,
+                transform
+                    * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 122.0)),
+                Some((geometry.panel.width() - 36.0).max(40.0) as f32),
+            );
+        } else {
+            tr.draw_text(
+                scene,
+                "Choose current or other for each conflicting value.",
+                11.0,
+                c.text_tertiary,
+                transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 82.0)),
+                Some((geometry.panel.width() - 36.0).max(40.0) as f32),
+            );
+        }
+        if geometry.full_screen {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &geometry.list,
+            );
+        }
+        for (index, row) in geometry.rows.iter().enumerate() {
+            let field = row.field;
+            let rect = row.card;
+            if geometry.full_screen
+                && (rect.x1 <= geometry.list.x0
+                    || rect.x0 >= geometry.list.x1
+                    || rect.y1 <= geometry.list.y0
+                    || rect.y0 >= geometry.list.y1)
+            {
+                continue;
+            }
+            let take_source = review.take_from_source.contains(&field);
+            let selected_name = if take_source { "other" } else { "current" };
+            let selected_value = if take_source {
+                Self::duplicate_field_value(&review.source, field)
+            } else {
+                Self::duplicate_field_value(&review.survivor, field)
+            };
+            let selected_value = if selected_value.chars().count() > 30 {
+                format!("{}…", selected_value.chars().take(29).collect::<String>())
+            } else {
+                selected_value
+            };
+            let fill = if review.focus == index {
+                c.overlay_medium
+            } else {
+                c.overlay_subtle
+            };
+            let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+            scene.fill(Fill::NonZero, transform, fill, None, &card);
+            scene.stroke(
+                &Stroke::new(if review.focus == index { 2.0 } else { 1.0 }),
+                transform,
+                if review.focus == index {
+                    c.border_focus
+                } else {
+                    c.border_standard
+                },
+                None,
+                &card,
+            );
+            tr.draw_text(
+                scene,
+                Self::duplicate_field_label(field),
+                8.0,
+                c.text_dim,
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 6.0)),
+                None,
+            );
+            if geometry.full_screen {
+                let current_value = Self::duplicate_field_value(&review.survivor, field);
+                let other_value = Self::duplicate_field_value(&review.source, field);
+                let current_label = tr.elide_to_width(
+                    &format!("Current: {current_value}"),
+                    10.0,
+                    (row.current.width() - 24.0).max(24.0) as f32,
+                );
+                let other_label = tr.elide_to_width(
+                    &format!("Other: {other_value}"),
+                    10.0,
+                    (row.other.width() - 24.0).max(24.0) as f32,
+                );
+                let current = ButtonFace::new(row.current, &current_label)
+                    .style(if take_source {
+                        ButtonStyle::Neutral
+                    } else {
+                        ButtonStyle::Primary
+                    })
+                    .text_size(10.0);
+                Button::paint(scene, transform, tr, theme, &current);
+                let other = ButtonFace::new(row.other, &other_label)
+                    .style(if take_source {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Neutral
+                    })
+                    .text_size(10.0);
+                Button::paint(scene, transform, tr, theme, &other);
+            } else {
+                tr.draw_text(
+                    scene,
+                    &format!("Keep {selected_name}: {selected_value}"),
+                    10.0,
+                    c.text_primary,
+                    transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 25.0)),
+                    Some((rect.width() - 20.0).max(40.0) as f32),
+                );
+            }
+        }
+        if geometry.full_screen {
+            if geometry.max_scroll > 0.0 {
+                let thumb_h = (geometry.list.height() * geometry.list.height()
+                    / (geometry.list.height() + geometry.max_scroll))
+                    .max(40.0);
+                let progress = review.scroll / geometry.max_scroll;
+                let thumb_y = geometry.list.y0
+                    + (geometry.list.height() - thumb_h) * progress.clamp(0.0, 1.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    c.text_tertiary,
+                    None,
+                    &RoundedRect::from_rect(
+                        Rect::new(
+                            geometry.list.x1 - 5.0,
+                            thumb_y,
+                            geometry.list.x1 - 1.0,
+                            thumb_y + thumb_h,
+                        ),
+                        2.0,
+                    ),
+                );
+            }
+            scene.pop_layer();
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c.surfaces.raised,
+                None,
+                &Rect::new(
+                    self.rect.x0,
+                    geometry.cancel.y0 - 10.0,
+                    self.rect.x1,
+                    self.rect.y1,
+                ),
+            );
+        }
+        let cancel = ButtonFace::new(geometry.cancel, "Cancel").style(ButtonStyle::Neutral);
+        Button::paint(scene, transform, tr, theme, &cancel);
+        let merge = ButtonFace::new(geometry.merge, "Merge contacts").style(ButtonStyle::Danger);
+        Button::paint(scene, transform, tr, theme, &merge);
     }
 
     /// The master pane: the contact list chrome, its embedded search input,
@@ -3270,6 +3707,7 @@ impl ContactsApp {
         let sort_label = format!("Sort: {}", self.sort.label());
         chip(scene, t, tr, theme, self.hit.sort, &sort_label, false);
         let group_label = match &self.group_filter {
+            Some(filter) if filter == FAVORITES_FILTER => "Favorites".to_string(),
             Some(g) => format!("Group: {g}"),
             None => "Group: All".to_string(),
         };
@@ -4219,7 +4657,7 @@ impl ContactsApp {
         theme: &Theme,
         anchor: Rect,
     ) {
-        let mut opts = vec!["All".to_string()];
+        let mut opts = vec!["All".to_string(), "Favorites".to_string()];
         opts.extend(self.store.all_groups());
         let (panel, rows) = self.popup_menu_geometry(anchor, opts.len(), 180.0);
         menu_panel(scene, t, theme, panel);
@@ -4230,6 +4668,7 @@ impl ContactsApp {
             };
             let sel = match &self.group_filter {
                 None => i == 0,
+                Some(filter) if filter == FAVORITES_FILTER => opt == "Favorites",
                 Some(g) => opt == g,
             };
             menu_item(scene, t, tr, theme, *r, opt, hov, sel);
@@ -4500,6 +4939,263 @@ impl ContactsApp {
         {
             self.delete_dialog = Some(self.build_delete_dialog(id));
         }
+    }
+
+    fn duplicate_conflicts(review: &DuplicateReview) -> Vec<crate::actions::MergeField> {
+        use crate::actions::MergeField;
+        let differs = |left: &str, right: &str| {
+            !left.trim().is_empty() && !right.trim().is_empty() && left != right
+        };
+        let mut fields = Vec::new();
+        for (field, left, right) in [
+            (
+                MergeField::First,
+                &review.survivor.first,
+                &review.source.first,
+            ),
+            (MergeField::Last, &review.survivor.last, &review.source.last),
+            (
+                MergeField::Organization,
+                &review.survivor.org,
+                &review.source.org,
+            ),
+            (
+                MergeField::Title,
+                &review.survivor.title,
+                &review.source.title,
+            ),
+            (
+                MergeField::Website,
+                &review.survivor.website,
+                &review.source.website,
+            ),
+            (
+                MergeField::Notes,
+                &review.survivor.notes,
+                &review.source.notes,
+            ),
+        ] {
+            if differs(left, right) {
+                fields.push(field);
+            }
+        }
+        if review.survivor.birthday.is_some()
+            && review.source.birthday.is_some()
+            && review.survivor.birthday != review.source.birthday
+        {
+            fields.push(MergeField::Birthday);
+        }
+        fields
+    }
+
+    fn duplicate_field_label(field: crate::actions::MergeField) -> &'static str {
+        use crate::actions::MergeField;
+        match field {
+            MergeField::First => "First name",
+            MergeField::Last => "Last name",
+            MergeField::Organization => "Organization",
+            MergeField::Title => "Job title",
+            MergeField::Website => "Website",
+            MergeField::Birthday => "Birthday",
+            MergeField::Notes => "Notes",
+        }
+    }
+
+    fn duplicate_field_value(contact: &Contact, field: crate::actions::MergeField) -> String {
+        use crate::actions::MergeField;
+        match field {
+            MergeField::First => contact.first.clone(),
+            MergeField::Last => contact.last.clone(),
+            MergeField::Organization => contact.org.clone(),
+            MergeField::Title => contact.title.clone(),
+            MergeField::Website => contact.website.clone(),
+            MergeField::Birthday => contact
+                .birthday
+                .map(|birthday| birthday.pretty())
+                .unwrap_or_default(),
+            MergeField::Notes => contact.notes.clone(),
+        }
+    }
+
+    fn duplicate_field_from_token(raw: &str) -> Option<crate::actions::MergeField> {
+        use crate::actions::MergeField;
+        match raw {
+            "First" => Some(MergeField::First),
+            "Last" => Some(MergeField::Last),
+            "Organization" => Some(MergeField::Organization),
+            "Title" => Some(MergeField::Title),
+            "Website" => Some(MergeField::Website),
+            "Birthday" => Some(MergeField::Birthday),
+            "Notes" => Some(MergeField::Notes),
+            _ => None,
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "desktop dialog and large-text full-screen geometry are two auditable modes of one component"
+    )]
+    fn duplicate_review_geometry(&self, review: &DuplicateReview) -> DuplicateReviewGeometry {
+        let scale = self.text_scale.max(1.0);
+        let conflicts = Self::duplicate_conflicts(review);
+        let full_screen = self.narrow || scale >= 1.75;
+        if full_screen {
+            let panel = self.rect;
+            let header_h = 166.0;
+            let footer_h = 118.0;
+            let list = Rect::new(
+                panel.x0 + 16.0,
+                panel.y0 + header_h,
+                panel.x1 - 16.0,
+                panel.y1 - footer_h,
+            );
+            let card_h = 104.0;
+            let content_h = conflicts.len() as f64 * (card_h + 10.0);
+            let max_scroll = (content_h - list.height()).max(0.0);
+            let scroll = review.scroll.clamp(0.0, max_scroll);
+            let rows = conflicts
+                .into_iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    let y = list.y0 + index as f64 * (card_h + 10.0) - scroll;
+                    let card = Rect::new(list.x0, y, list.x1, y + card_h);
+                    DuplicateReviewRow {
+                        field,
+                        card,
+                        current: Rect::new(
+                            card.x0 + 10.0,
+                            card.y0 + 29.0,
+                            card.x1 - 10.0,
+                            card.y0 + 60.0,
+                        ),
+                        other: Rect::new(
+                            card.x0 + 10.0,
+                            card.y0 + 66.0,
+                            card.x1 - 10.0,
+                            card.y0 + 97.0,
+                        ),
+                    }
+                })
+                .collect();
+            return DuplicateReviewGeometry {
+                panel,
+                list,
+                rows,
+                cancel: Rect::new(
+                    panel.x0 + 16.0,
+                    panel.y1 - 106.0,
+                    panel.x1 - 16.0,
+                    panel.y1 - 64.0,
+                ),
+                merge: Rect::new(
+                    panel.x0 + 16.0,
+                    panel.y1 - 54.0,
+                    panel.x1 - 16.0,
+                    panel.y1 - 12.0,
+                ),
+                full_screen,
+                max_scroll,
+            };
+        }
+        let row_h = 42.0;
+        let header_h = 118.0;
+        let wanted_h = header_h + row_h * conflicts.len() as f64 + 62.0;
+        let w = (self.rect.width() - 32.0).clamp(280.0, 680.0);
+        let h = wanted_h.min((self.rect.height() - 24.0).max(240.0));
+        let panel = Rect::new(
+            self.rect.center().x - w / 2.0,
+            self.rect.center().y - h / 2.0,
+            self.rect.center().x + w / 2.0,
+            self.rect.center().y + h / 2.0,
+        );
+        let mut y = panel.y0 + header_h;
+        let rows = conflicts
+            .into_iter()
+            .map(|field| {
+                let card = Rect::new(panel.x0 + 18.0, y, panel.x1 - 18.0, y + row_h - 6.0);
+                y += row_h;
+                DuplicateReviewRow {
+                    field,
+                    card,
+                    current: card,
+                    other: card,
+                }
+            })
+            .collect();
+        let footer_y = panel.y1 - 50.0;
+        DuplicateReviewGeometry {
+            panel,
+            list: Rect::new(
+                panel.x0 + 18.0,
+                panel.y0 + header_h,
+                panel.x1 - 18.0,
+                footer_y - 8.0,
+            ),
+            rows,
+            merge: Rect::new(panel.x1 - 142.0, footer_y, panel.x1 - 18.0, footer_y + 34.0),
+            cancel: Rect::new(
+                panel.x1 - 266.0,
+                footer_y,
+                panel.x1 - 152.0,
+                footer_y + 34.0,
+            ),
+            full_screen,
+            max_scroll: 0.0,
+        }
+    }
+
+    fn open_duplicate_review(
+        &mut self,
+        survivor_id: ContactId,
+        source_id: ContactId,
+    ) -> Result<(), String> {
+        let survivor = self
+            .store
+            .get(survivor_id)
+            .cloned()
+            .ok_or_else(|| "surviving contact no longer exists".to_string())?;
+        let source = self
+            .store
+            .get(source_id)
+            .cloned()
+            .ok_or_else(|| "source contact no longer exists".to_string())?;
+        let candidate = crate::actions::duplicate_candidate(&survivor, &source)
+            .ok_or_else(|| "contacts are no longer a likely duplicate".to_string())?;
+        self.selected = Some(survivor_id);
+        self.duplicate_review = Some(DuplicateReview {
+            survivor,
+            source,
+            reasons: candidate.reasons,
+            take_from_source: std::collections::HashSet::new(),
+            focus: 0,
+            scroll: 0.0,
+        });
+        self.popup = None;
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn merge_duplicate_review(&mut self, state: &mut AutoCommit) {
+        let Some(review) = self.duplicate_review.take() else {
+            return;
+        };
+        let action = crate::actions::merge_contacts_action(
+            &review.survivor,
+            &review.source,
+            &review.take_from_source,
+        );
+        match self.try_perform_action(state, &action) {
+            Ok(()) => {
+                self.selected = Some(review.survivor.id);
+                self.show_toast(format!(
+                    "Merged {} into {}. Undo is available in history.",
+                    review.source.display_name(),
+                    review.survivor.display_name()
+                ));
+            }
+            Err(error) => self.show_toast(format!("Couldn't merge contacts: {error}")),
+        }
+        self.dirty = true;
     }
 
     fn build_import_conflict_dialog(&self, conflict: &ImportConflict) -> ImportConflictDialog {
@@ -5193,15 +5889,18 @@ impl ContactsApp {
     }
 
     fn accessibility_group_menu(&self, anchor: Rect) -> AccessNode {
-        let mut options = vec!["All".to_string()];
-        options.extend(self.store.all_groups());
+        let options = self.group_filter_options();
         let (panel, rows) = self.popup_menu_geometry(anchor, options.len(), 180.0);
         let children = options
             .iter()
             .zip(rows)
             .enumerate()
             .map(|(index, (option, bounds))| {
-                let selected = self.group_filter.as_deref().unwrap_or("All") == option;
+                let selected = match self.group_filter.as_deref() {
+                    None => option == "All",
+                    Some(FAVORITES_FILTER) => option == "Favorites",
+                    Some(group) => option == group,
+                };
                 AccessNode::new(Role::RadioButton)
                     .with_name(option.clone())
                     .with_action_target(group_option_target(option))
@@ -5244,6 +5943,38 @@ impl ContactsApp {
         AccessNode::new(Role::Menu)
             .with_name("Sort contacts")
             .with_hashed_key("contacts.sort.menu")
+            .with_bounds(panel)
+            .with_children(children)
+    }
+
+    /// The visual row menu is also a real menu to AT-SPI/AccessKit.  This is
+    /// important even though Edit, Favourite, and Delete have other routes:
+    /// Exporting one selected contact is intentionally contextual, and a
+    /// screen-reader user must not need a mouse to reach it.  The target ids
+    /// resolve back to the same implementation used by pointer and keyboard
+    /// activation below.
+    fn accessibility_context_menu(&self, id: ContactId, anchor: Rect) -> AccessNode {
+        let (panel, rows) = self.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        let favorite = self.store.get(id).is_some_and(|contact| contact.favorite);
+        let children = CONTEXT_ACTIONS
+            .iter()
+            .zip(rows)
+            .enumerate()
+            .map(|(index, (action, bounds))| {
+                AccessNode::new(Role::MenuItem)
+                    .with_name(action.label(favorite))
+                    .with_action_target(context_action_target(id, *action))
+                    .with_bounds(bounds)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.popup_focus == index),
+                    )
+            })
+            .collect();
+        AccessNode::new(Role::Menu)
+            .with_name("Contact actions")
+            .with_hashed_key(("contacts.context-menu", id))
             .with_bounds(panel)
             .with_children(children)
     }
@@ -5408,6 +6139,7 @@ impl Widget for ContactsApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
+        self.export_dialog.set_text_scale(theme.text_scale);
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -5558,6 +6290,10 @@ impl Widget for ContactsApp {
         self.actions.take_committed()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all admitted Contacts view operations are centralized so resource routes cannot drift"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -5584,6 +6320,25 @@ impl Widget for ContactsApp {
                 tilo_actions::OperationKind::View,
                 crate::actions::ContactsOperation::OpenGroup { name },
             ) => self.reveal_group(&name)?,
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenFavorites,
+            ) => {
+                self.set_group_filter(Some(FAVORITES_FILTER.into()));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenDuplicateReview {
+                    survivor_id,
+                    source_id,
+                },
+            ) => {
+                let survivor = uuid::Uuid::parse_str(&survivor_id)
+                    .map_err(|_| "invalid surviving contact id".to_string())?;
+                let source = uuid::Uuid::parse_str(&source_id)
+                    .map_err(|_| "invalid source contact id".to_string())?;
+                self.open_duplicate_review(survivor, source)?;
+            }
             (
                 tilo_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::ImportVcard { path },
@@ -5621,6 +6376,20 @@ impl Widget for ContactsApp {
                 if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
                     return Err("there are no contacts to export".into());
                 }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ExportContactVcard { id, path },
+            ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
+                self.open_contact_export(id)?;
             }
             (
                 tilo_actions::OperationKind::Effect,
@@ -5706,8 +6475,24 @@ impl Widget for ContactsApp {
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
+            crate::actions::ContactsOperation::ExportContactVcard { .. } => {
+                // Decode/validate and open the exact same export dialog as a
+                // context-menu activation. This operation completes once the
+                // flow is shown; a portal job begins only after the person
+                // chooses a vCard version and destination in that flow.
+                self.invoke_resource_operation(kind, type_id, payload, doc, path)
+                    .map(|handled| {
+                        handled.then(|| {
+                            ui::widget::ResourceOperationStart::Completed(
+                                tilo_actions::ActionOutput::default(),
+                            )
+                        })
+                    })
+            }
             crate::actions::ContactsOperation::Open { .. }
             | crate::actions::ContactsOperation::OpenGroup { .. }
+            | crate::actions::ContactsOperation::OpenFavorites
+            | crate::actions::ContactsOperation::OpenDuplicateReview { .. }
             | crate::actions::ContactsOperation::KeepImportConflict { .. }
             | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
                 .invoke_resource_operation(kind, type_id, payload, doc, path)
@@ -5778,10 +6563,14 @@ impl Widget for ContactsApp {
         self.confirm_delete.is_some()
             || !self.import_conflicts.is_empty()
             || self.export_dialog.is_open()
+            || self.duplicate_review.is_some()
             || self.pending_switch.is_some()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
+        if let Some(review) = self.duplicate_review.as_ref() {
+            return Some(self.duplicate_review_geometry(review).panel);
+        }
         self.import_conflict_dialog
             .as_ref()
             .and_then(|review| review.dialog.modal_capture())
@@ -5809,6 +6598,92 @@ impl Widget for ContactsApp {
         reason = "the accessibility tree mirrors the toolbar, empty state, search, and contact list in one auditable hierarchy"
     )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if let Some(review) = self.duplicate_review.as_ref() {
+            let geometry = self.duplicate_review_geometry(review);
+            let mut children = Vec::new();
+            for (index, row) in geometry.rows.iter().enumerate() {
+                let field = row.field;
+                let take_source = review.take_from_source.contains(&field);
+                if geometry.full_screen {
+                    let current_value = Self::duplicate_field_value(&review.survivor, field);
+                    let other_value = Self::duplicate_field_value(&review.source, field);
+                    children.push(
+                        AccessNode::new(Role::Group)
+                            .with_name(Self::duplicate_field_label(field))
+                            .with_bounds(row.card)
+                            .with_children(vec![
+                                AccessNode::new(Role::RadioButton)
+                                    .with_name(format!("Current: {current_value}"))
+                                    .with_action_target(format!(
+                                        "contacts.duplicate.field:{field:?}:current"
+                                    ))
+                                    .with_bounds(row.current)
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .focused(review.focus == index && !take_source)
+                                            .checked(!take_source),
+                                    ),
+                                AccessNode::new(Role::RadioButton)
+                                    .with_name(format!("Other: {other_value}"))
+                                    .with_action_target(format!(
+                                        "contacts.duplicate.field:{field:?}:other"
+                                    ))
+                                    .with_bounds(row.other)
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .focused(review.focus == index && take_source)
+                                            .checked(take_source),
+                                    ),
+                            ]),
+                    );
+                } else {
+                    children.push(
+                        AccessNode::new(Role::RadioButton)
+                            .with_name(format!(
+                                "{}: keep {}",
+                                Self::duplicate_field_label(field),
+                                if take_source {
+                                    review.source.display_name()
+                                } else {
+                                    review.survivor.display_name()
+                                }
+                            ))
+                            .with_description("Activate to choose the other contact's value")
+                            .with_action_target(format!("contacts.duplicate.field:{field:?}"))
+                            .with_bounds(row.card)
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(review.focus == index)
+                                    .checked(take_source),
+                            ),
+                    );
+                }
+            }
+            children.extend([
+                AccessNode::new(Role::Button)
+                    .with_name("Cancel merge")
+                    .with_action_target("contacts.duplicate.cancel")
+                    .with_bounds(geometry.cancel)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name("Merge contacts")
+                    .with_description("Confirmation action. The source contact is removed; Undo is available in history.")
+                    .with_action_target("contacts.duplicate.merge")
+                    .with_bounds(geometry.merge)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Review possible duplicate")
+                    .with_description("Review every conflicting scalar field before merging. Unique repeated data is kept.")
+                    .with_bounds(geometry.panel)
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(children),
+            );
+        }
         if self.export_dialog.is_open() {
             return Some(
                 self.export_dialog
@@ -5999,6 +6874,7 @@ impl Widget for ContactsApp {
                             .with_state(
                                 AccessState::new()
                                     .focusable(true)
+                                    .context_menu(true)
                                     .selected(self.selected == Some(*id)),
                             )
                             .with_bounds(*bounds)
@@ -6048,7 +6924,11 @@ impl Widget for ContactsApp {
                     ),
                 AccessNode::new(Role::ComboBox)
                     .with_name("Group filter")
-                    .with_value(self.group_filter.as_deref().unwrap_or("All"))
+                    .with_value(match self.group_filter.as_deref() {
+                        Some(FAVORITES_FILTER) => "Favorites",
+                        Some(group) => group,
+                        None => "All",
+                    })
                     .with_action_target("contacts.group")
                     .with_bounds(self.hit.group)
                     .with_state(
@@ -6100,6 +6980,9 @@ impl Widget for ContactsApp {
             Some(Popup::GroupFilter { anchor }) => {
                 children.push(self.accessibility_group_menu(anchor));
             }
+            Some(Popup::ContextMenu { target, anchor }) => {
+                children.push(self.accessibility_context_menu(target, anchor));
+            }
             Some(Popup::Calendar {
                 year,
                 month,
@@ -6131,6 +7014,78 @@ impl Widget for ContactsApp {
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
+
+        // List rows are hand-painted, but their standard AT-SPI context-menu
+        // action opens precisely the same menu as a secondary pointer click.
+        // This gives keyboard and screen-reader users access to the
+        // per-contact export workflow instead of treating it as mouse-only.
+        if matches!(action, Action::ShowContextMenu)
+            && let Some(raw) = target.strip_prefix("contacts.select:")
+            && let Ok(id) = raw.parse::<ContactId>()
+            && let Some((_, row)) = self.list_rows.iter().find(|(row_id, _)| *row_id == id)
+        {
+            self.selected = Some(id);
+            self.open_popup(Popup::ContextMenu {
+                target: id,
+                anchor: Rect::new(row.x0 + 40.0, row.center().y, row.x0 + 40.0, row.center().y),
+            });
+            self.dirty = true;
+            return true;
+        }
+
+        // Menu items are exposed independently of the list row, with stable
+        // targets.  Only honor them while their matching transient menu is
+        // still open, preventing a stale assistive request from operating on
+        // a contact after the user has dismissed or retargeted the menu.
+        if matches!(action, Action::Activate)
+            && let Some(Popup::ContextMenu {
+                target: menu_target,
+                ..
+            }) = self.popup.as_ref()
+            && let Some(context_action) = CONTEXT_ACTIONS
+                .iter()
+                .copied()
+                .find(|candidate| target == context_action_target(*menu_target, *candidate))
+        {
+            let menu_target = *menu_target;
+            self.popup = None;
+            self.execute_context_action(state, menu_target, context_action);
+            return true;
+        }
+
+        if matches!(action, Action::Activate) && self.duplicate_review.is_some() {
+            if target == "contacts.duplicate.cancel" {
+                self.duplicate_review = None;
+                self.dirty = true;
+                return true;
+            }
+            if target == "contacts.duplicate.merge" {
+                self.merge_duplicate_review(state);
+                return true;
+            }
+            if let Some(raw) = target.strip_prefix("contacts.duplicate.field:") {
+                let (field_token, choice) = raw.split_once(':').unwrap_or((raw, "toggle"));
+                let field = Self::duplicate_field_from_token(field_token);
+                if let Some(field) = field
+                    && let Some(review) = self.duplicate_review.as_mut()
+                {
+                    match choice {
+                        "current" => {
+                            review.take_from_source.remove(&field);
+                        }
+                        "other" => {
+                            review.take_from_source.insert(field);
+                        }
+                        _ if !review.take_from_source.insert(field) => {
+                            review.take_from_source.remove(&field);
+                        }
+                        _ => {}
+                    }
+                    self.dirty = true;
+                    return true;
+                }
+            }
+        }
 
         if matches!(action, Action::Activate)
             && let Some(conflict) = self.import_conflicts.first()
@@ -6416,15 +7371,18 @@ impl Widget for ContactsApp {
         }
 
         if matches!(action, Action::Activate | Action::ToggleCheck) {
-            let mut groups = vec!["All".to_string()];
-            groups.extend(self.store.all_groups());
+            let groups = self.group_filter_options();
             if let Some(group) = groups
                 .iter()
                 .find(|group| target == group_option_target(group))
                 && matches!(self.popup, Some(Popup::GroupFilter { .. }))
             {
                 self.popup = None;
-                self.set_group_filter((group != "All").then(|| group.clone()));
+                self.set_group_filter(match group.as_str() {
+                    "All" => None,
+                    "Favorites" => Some(FAVORITES_FILTER.into()),
+                    _ => Some(group.clone()),
+                });
                 return true;
             }
             for (sort, _) in [(SortKey::Name, "Name"), (SortKey::Org, "Organization")] {
@@ -6644,6 +7602,10 @@ impl ContactsApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) -> bool {
+        if self.duplicate_review.is_some() {
+            self.route_duplicate_review_event(event, state, handled);
+            return true;
+        }
         if !self.import_conflicts.is_empty() {
             self.route_import_conflict_dialog_event(
                 event,
@@ -6675,6 +7637,157 @@ impl ContactsApp {
             }
         }
         false
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "pointer, keyboard, wheel, and modal dismissal share one duplicate-review event boundary"
+    )]
+    fn route_duplicate_review_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let Some(review) = self.duplicate_review.as_ref() else {
+            return;
+        };
+        let geometry = self.duplicate_review_geometry(review);
+        let field_count = geometry.rows.len();
+        let mut toggle = None;
+        let mut choose = None;
+        let mut merge = false;
+        let mut cancel = false;
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => cancel = true,
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::ArrowDown),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(review) = self.duplicate_review.as_mut() {
+                    review.focus = (review.focus + 1) % (field_count + 2).max(1);
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::ArrowUp),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(review) = self.duplicate_review.as_mut() {
+                    review.focus = (review.focus + field_count + 1) % (field_count + 2).max(1);
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Space),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(review) = self.duplicate_review.as_ref()
+                    && review.focus < field_count
+                {
+                    toggle = geometry.rows.get(review.focus).map(|row| row.field);
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(review) = self.duplicate_review.as_ref() {
+                    match review.focus.cmp(&field_count) {
+                        std::cmp::Ordering::Less => {
+                            toggle = geometry.rows.get(review.focus).map(|row| row.field);
+                        }
+                        std::cmp::Ordering::Equal => merge = true,
+                        std::cmp::Ordering::Greater => cancel = true,
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } if geometry.full_screen => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(-y) * 48.0,
+                    MouseScrollDelta::PixelDelta(position) => -position.y,
+                };
+                if let Some(review) = self.duplicate_review.as_mut() {
+                    review.scroll = (review.scroll + amount).clamp(0.0, geometry.max_scroll);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if geometry.merge.contains(self.last_mouse) {
+                    merge = true;
+                } else if geometry.cancel.contains(self.last_mouse)
+                    || !geometry.panel.contains(self.last_mouse)
+                {
+                    cancel = true;
+                } else if let Some(row) = geometry
+                    .rows
+                    .iter()
+                    .find(|row| row.card.contains(self.last_mouse))
+                {
+                    if geometry.full_screen {
+                        if row.current.contains(self.last_mouse) {
+                            choose = Some((row.field, false));
+                        } else if row.other.contains(self.last_mouse) {
+                            choose = Some((row.field, true));
+                        }
+                    } else {
+                        toggle = Some(row.field);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if let Some(field) = toggle
+            && let Some(review) = self.duplicate_review.as_mut()
+            && !review.take_from_source.insert(field)
+        {
+            review.take_from_source.remove(&field);
+        }
+        if let Some((field, take_source)) = choose
+            && let Some(review) = self.duplicate_review.as_mut()
+        {
+            if take_source {
+                review.take_from_source.insert(field);
+            } else {
+                review.take_from_source.remove(&field);
+            }
+        }
+        if merge {
+            self.merge_duplicate_review(state);
+        } else if cancel {
+            self.duplicate_review = None;
+            self.dirty = true;
+        }
+        *handled = true;
     }
 
     /// Divider drag, primary/secondary click, mouse wheel scroll, and
@@ -7514,11 +8627,15 @@ impl ContactsApp {
     /// Group-filter selection: narrows the list to the picked group (or
     /// clears it for "All"), and keeps the selection valid.
     fn handle_popup_group_filter(&mut self, anchor: Rect, p: Point) {
-        let mut opts = vec!["All".to_string()];
-        opts.extend(self.store.all_groups());
+        let opts = self.group_filter_options();
         let (_panel, rows) = self.popup_menu_geometry(anchor, opts.len(), 180.0);
         if let Some(i) = rows.iter().position(|r| r.contains(p)) {
-            self.set_group_filter(if i == 0 { None } else { opts.get(i).cloned() });
+            self.set_group_filter(match opts.get(i).map(String::as_str) {
+                Some("All") => None,
+                Some("Favorites") => Some(FAVORITES_FILTER.into()),
+                Some(group) => Some(group.to_string()),
+                None => return,
+            });
         }
         self.relayout = true;
     }
@@ -7553,6 +8670,19 @@ impl ContactsApp {
         let Some(action) = CONTEXT_ACTIONS.get(i).copied() else {
             return;
         };
+        self.execute_context_action(state, target, action);
+    }
+
+    /// Execute the single source of truth behind context-menu activation.
+    /// Pointer, keyboard and assistive activation must not slowly drift into
+    /// three subtly different implementations (especially for destructive
+    /// Delete and the per-contact Export selection).
+    fn execute_context_action(
+        &mut self,
+        state: &mut AutoCommit,
+        target: ContactId,
+        action: ContextAction,
+    ) {
         match action {
             ContextAction::Edit => {
                 if let Some(c) = self.store.get(target).cloned() {
@@ -7569,17 +8699,16 @@ impl ContactsApp {
                 self.relayout = true;
             }
             ContextAction::Export => {
-                // Open the export dialog pre-ticked with just this
-                // contact.
-                let mut set = std::collections::HashSet::new();
-                set.insert(target);
-                self.export_dialog.open(set);
+                if let Err(error) = self.invoke_contact_export_operation(state, target) {
+                    self.show_toast(format!("Couldn't export contact: {error}"));
+                }
             }
             ContextAction::Delete => {
                 self.selected = Some(target);
                 self.confirm_delete = Some(target);
             }
         }
+        self.dirty = true;
     }
 
     /// Calendar popup interaction: prev/next month, pick a day into the
@@ -8069,7 +9198,7 @@ impl ContactsApp {
         let count = match popup {
             Popup::TypeMenu { .. } => TYPE_OPTIONS.len(),
             Popup::Sort { .. } => 2,
-            Popup::GroupFilter { .. } => self.store.all_groups().len() + 1,
+            Popup::GroupFilter { .. } => self.group_filter_options().len(),
             Popup::ContextMenu { .. } => CONTEXT_ACTIONS.len(),
             Popup::Calendar { year, month, .. } => date::days_in_month(*year, *month) as usize + 2,
         };
@@ -8182,37 +9311,18 @@ impl ContactsApp {
                 self.relayout = true;
             }
             Popup::GroupFilter { .. } => {
-                let mut options = vec!["All".to_string()];
-                options.extend(self.store.all_groups());
-                self.set_group_filter(
-                    (self.popup_focus != 0)
-                        .then(|| options.get(self.popup_focus).cloned())
-                        .flatten(),
-                );
+                let options = self.group_filter_options();
+                self.set_group_filter(match options.get(self.popup_focus).map(String::as_str) {
+                    Some("All") | None => None,
+                    Some("Favorites") => Some(FAVORITES_FILTER.into()),
+                    Some(group) => Some(group.to_string()),
+                });
             }
             Popup::ContextMenu { target, .. } => {
                 let Some(action) = CONTEXT_ACTIONS.get(self.popup_focus).copied() else {
                     return;
                 };
-                match action {
-                    ContextAction::Edit => {
-                        if let Some(contact) = self.store.get(target).cloned() {
-                            self.selected = Some(target);
-                            self.begin_edit(contact, false);
-                        }
-                    }
-                    ContextAction::Favorite => {
-                        self.toggle_favorite(state, target);
-                        self.relayout = true;
-                    }
-                    ContextAction::Export => {
-                        self.export_dialog.open([target]);
-                    }
-                    ContextAction::Delete => {
-                        self.selected = Some(target);
-                        self.confirm_delete = Some(target);
-                    }
-                }
+                self.execute_context_action(state, target, action);
             }
             Popup::Calendar {
                 year,
