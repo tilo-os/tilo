@@ -296,6 +296,7 @@ impl ActiveJobs {
         self.by_job_id.len()
     }
 
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.by_job_id.is_empty()
     }
