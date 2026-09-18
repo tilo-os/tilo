@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_relay::HomePeerRegistration;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token,
+    DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, decode_enrollment_token,
     encode_enrollment_token, mint_enrollment_token, sign_device_cert, verify_device_cert,
-    verify_enrollment_token, verify_revocation_entry,
+    verify_device_cert_at, verify_enrollment_token, verify_revocation_entry,
 };
 
 const PORT: u16 = 45_831;
@@ -266,6 +266,40 @@ fn fleet_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
         .join(format!("{}.json", hex::encode(user)))
 }
 
+fn fleet_revokes_device(
+    identity_dir: &std::path::Path,
+    user: [u8; 32],
+    device: [u8; 32],
+) -> anyhow::Result<bool> {
+    let bytes = std::fs::read(fleet_path(identity_dir, user))?;
+    if bytes.len() > 1024 * 1024 {
+        bail!("device fleet exceeds 1 MiB");
+    }
+    let fleet: FleetProjection =
+        serde_json::from_slice(&bytes).context("device fleet is invalid")?;
+    if fleet.schema_version != 1
+        || fleet.identity_id != hex::encode(user)
+        || fleet.certificates.len() > 256
+        || fleet.revocations.len() > 256
+        || fleet
+            .certificates
+            .iter()
+            .any(|cert| cert.user_public_key != user || verify_device_cert(cert).is_err())
+    {
+        bail!("device fleet violates its bounded verified schema");
+    }
+    let mut revocations = RevocationList::new();
+    for entry in fleet.revocations {
+        if entry.user_public_key != user {
+            bail!("device fleet contains a revocation from another identity");
+        }
+        revocations
+            .insert(entry)
+            .context("device fleet contains an invalid revocation")?;
+    }
+    Ok(revocations.is_revoked(&device))
+}
+
 /// Keep enrollment output owned by the already-validated identity directory
 /// when the polkit broker launches this process as root.
 fn restore_owner_from_directory(
@@ -295,6 +329,7 @@ fn project_personal_device(
     identity_dir: &std::path::Path,
     cert: &DeviceCert,
 ) -> anyhow::Result<Vec<u8>> {
+    verify_device_cert_at(cert, now_ns()?).context("new personal-device certificate validity")?;
     let path = fleet_path(identity_dir, cert.user_public_key);
     let mut fleet = match std::fs::read(&path) {
         Ok(bytes) if bytes.len() <= 1024 * 1024 => {
@@ -781,7 +816,7 @@ fn commit_staged_personal_enrollment(
     let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&cert_bytes)?;
     if cert.user_public_key != marker.user_public_key
         || cert.device_public_key != marker.device_public_key
-        || verify_device_cert(&cert).is_err()
+        || verify_device_cert_at(&cert, now_ns()?).is_err()
         || std::fs::read(staged(&stage_dir, "user-pubkey.bin"))? != marker.user_public_key
     {
         bail!("staged personal enrollment no longer validates");
@@ -1532,7 +1567,8 @@ fn join_with_token(
                 {
                     continue;
                 }
-                verify_device_cert(&response.payload.cert)?;
+                verify_device_cert_at(&response.payload.cert, now_ns()?)
+                    .context("verify enrolled device certificate validity")?;
                 if kind == EnrollmentKind::HomePeer {
                     let home_peer_toml = response
                         .payload
@@ -1843,11 +1879,18 @@ fn approve(
         &paths.device_cert_for_user(&user_public_key),
     )
     .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))?;
-    verify_device_cert(&issuer_cert)?;
+    verify_device_cert_at(&issuer_cert, now_ns()?)
+        .context("verify approving device certificate validity")?;
     if issuer_cert.device_public_key != device.verifying_key().to_bytes()
         || !issuer_cert.capabilities.can_admit_devices
     {
         bail!("this device is not authorised to approve enrollment");
+    }
+    if let Some(directory) = identity_dir.as_deref()
+        && fleet_revokes_device(directory, user_public_key, issuer_cert.device_public_key)
+            .context("verify approving device fleet")?
+    {
+        bail!("this device is revoked and cannot approve enrollment");
     }
     let socket = bind_pair_listener()?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
@@ -2186,7 +2229,9 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_user_identity::DeviceCapabilities;
+    use tilo_user_identity::{
+        DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
+    };
 
     fn personal_payload(
         root: &ed25519_dalek::SigningKey,
@@ -2244,6 +2289,58 @@ mod tests {
             fleet_json: None,
             home_peers_json: None,
         }
+    }
+
+    #[test]
+    fn expired_device_certificate_is_not_projected_into_personal_state() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Expired laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: Some(2),
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let identity = tempfile::tempdir().unwrap();
+
+        let error = project_personal_device(identity.path(), &cert).unwrap_err();
+
+        assert!(error.to_string().contains("certificate validity"));
+        assert!(!fleet_path(identity.path(), cert.user_public_key).exists());
+    }
+
+    #[test]
+    fn revoked_device_cannot_use_approval_capability() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[75; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[76; 32]);
+        let user = root.verifying_key().to_bytes();
+        let device_public_key = device.verifying_key().to_bytes();
+        let mut revocation = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: device_public_key,
+            revoked_at_ns: 10,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revocation, &root).unwrap();
+        let identity = tempfile::tempdir().unwrap();
+        atomic_file::write_creating_parent(
+            &fleet_path(identity.path(), user),
+            &serde_json::to_vec(&FleetProjection {
+                schema_version: 1,
+                identity_id: hex::encode(user),
+                certificates: Vec::new(),
+                revocations: vec![revocation],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(fleet_revokes_device(identity.path(), user, device_public_key).unwrap());
     }
 
     #[test]
