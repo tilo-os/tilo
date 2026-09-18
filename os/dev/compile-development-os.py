@@ -510,9 +510,11 @@ def inspect_compilation(image_name, revision, generation, target, manifest_diges
     return {'image_id': image['Id'], 'hardware_profile': profile, 'loader': loader}
 
 
-def pinned_inputs(architecture='x86_64', kernel_candidate=''):
+def pinned_inputs(architecture='x86_64', kernel_candidate='', *, include_kernel=True):
     result = {}
     for variable, filename in PIN_FILES.items():
+        if variable == 'KERNEL_RPMS_REF' and not include_kernel:
+            continue
         if variable == 'KERNEL_RPMS_REF' and kernel_candidate:
             result[variable] = immutable_candidate(kernel_candidate)
             continue
@@ -538,9 +540,9 @@ def selected_pins(architecture='x86_64', kernel_candidate='', rpms_candidate='',
         raise ValueError('unsupported native architecture')
     if require_kernel and architecture == 'aarch64' and not kernel_candidate:
         raise ValueError('ARM full-build requires an explicit immutable kernel candidate')
-    pins = pinned_inputs(architecture, kernel_candidate)
+    pins = pinned_inputs(architecture, kernel_candidate, include_kernel=require_kernel)
     for name, candidate in (('KERNEL_RPMS_REF', kernel_candidate), ('RPMS_REF', rpms_candidate)):
-        if candidate:
+        if candidate and (name != 'KERNEL_RPMS_REF' or require_kernel):
             pins[name] = immutable_candidate(candidate)
     return pins
 
@@ -628,7 +630,7 @@ def build_environment(wpe, generation, revision, manifest, signer, cache,
         if reference:
             env[name] = immutable_candidate(reference)
     if pins is not None:
-        env.update({name: pins[name] for name in ('RPMS_REF', 'KERNEL_RPMS_REF')})
+        env.update({name: pins[name] for name in ('RPMS_REF', 'KERNEL_RPMS_REF') if name in pins})
     for name, value in cache.items():
         env['TILO_BUILD_ARGS'] += f' --build-arg {name}={value}'
     for filename in CACHE_CREDENTIALS.values():
@@ -765,7 +767,7 @@ def main(argv=None):
                          require_kernel=args.mode == 'full-build')
     references = pins | {'BUILDER_REF': args.builder_candidate}
     if args.mode == 'native-payload':
-        references.pop('KERNEL_RPMS_REF')  # This target never consumes kernel RPMs.
+        references.pop('KERNEL_RPMS_REF', None)  # This target never consumes kernel RPMs.
     references.update({'WPE_ADOPTED_REF': adopted['reference']} if adopted is not None
                       else {'WPE_BUILDROOT_REF': args.wpe})
     native_inputs = {name: verify_native_image(reference, args.architecture)
