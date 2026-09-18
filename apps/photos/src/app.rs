@@ -1508,6 +1508,66 @@ impl PhotosApp {
         self.finish_selection();
     }
 
+    /// Resolve a canonical timeline resource without treating a visual card as
+    /// the source of truth. The shared capture value is the only input: a
+    /// removed or changed boundary refuses instead of jumping to a nearby,
+    /// misleading date.
+    fn view_timeline(
+        &mut self,
+        doc: &AutoCommit,
+        anchor: Option<&crate::actions::TimelineAnchor>,
+    ) -> Result<(), String> {
+        self.show_library();
+        let Some(anchor) = anchor else {
+            return Ok(());
+        };
+        let mut photos: Vec<_> = PhotosDoc::library(doc)
+            .photos
+            .into_iter()
+            .map(|photo| {
+                let displayed_day = photo
+                    .captured_at
+                    .as_deref()
+                    .map(capture_day)
+                    .unwrap_or_else(|| "Undated".to_owned());
+                let canonical_day = photo
+                    .captured_at
+                    .as_deref()
+                    .and_then(crate::actions::timeline_day_from_capture);
+                (displayed_day, canonical_day, photo.id)
+            })
+            .collect();
+        photos.sort_by(|(left_day, _, left_id), (right_day, _, right_id)| {
+            let left_undated = left_day == "Undated";
+            let right_undated = right_day == "Undated";
+            left_undated
+                .cmp(&right_undated)
+                .then_with(|| right_day.cmp(left_day))
+                .then_with(|| left_id.cmp(right_id))
+        });
+        let index = photos
+            .iter()
+            .position(|(_, canonical_day, _)| match anchor {
+                crate::actions::TimelineAnchor::Month { month } => canonical_day
+                    .as_deref()
+                    .is_some_and(|day| day.starts_with(month)),
+                crate::actions::TimelineAnchor::Day { day: wanted } => {
+                    canonical_day.as_deref() == Some(wanted)
+                }
+            });
+        let Some(index) = index else {
+            return Err("that timeline boundary is no longer in the shared library".to_owned());
+        };
+        let columns = timeline_column_count(
+            self.canvas_rect.width(),
+            self.timeline_density,
+            self.large_text_toolbar,
+        )
+        .max(1);
+        self.timeline_scroll_row = index as f64 / columns as f64;
+        Ok(())
+    }
+
     /// Reveal the People collection without enabling recognition or changing
     /// any document metadata. This is used by the resource action and visual
     /// acceptance scenarios.
@@ -2537,6 +2597,9 @@ impl PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewTimeline { anchor } => {
+                self.view_timeline(doc, anchor.as_ref())?;
+            }
             crate::actions::PhotosOperation::ViewPeople => {
                 self.show_library();
                 self.people_mode = true;
@@ -7827,11 +7890,13 @@ impl PhotosApp {
         else {
             return;
         };
-        for photo in sources.into_iter().filter(|photo| {
-            !self.library_thumbnails.contains_key(&photo.id)
-                && !self.thumbnail_unavailable.contains(&photo.id)
-                && !self.thumbnail_queued.contains(&photo.id)
-        }) {
+        for photo in sources {
+            if self.library_thumbnails.contains_key(&photo.id)
+                || self.thumbnail_unavailable.contains(&photo.id)
+                || self.thumbnail_queued.contains(&photo.id)
+            {
+                continue;
+            }
             let id = photo.id.clone();
             let job = ThumbnailJob {
                 generation,
@@ -7876,6 +7941,9 @@ impl Widget for PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewTimeline { anchor } => {
+                self.view_timeline(doc, anchor.as_ref())?;
+            }
             crate::actions::PhotosOperation::ViewPeople => {
                 self.show_library();
                 self.people_mode = true;
@@ -9785,6 +9853,34 @@ mod tests {
         // anchor or create an accidental shared action.
         assert!(app.apply_timeline_index_intent(DateIndexIntent::PreviewChanged(None)));
         assert!((app.timeline_scroll_row - 45.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn canonical_timeline_day_operation_jumps_to_its_shared_capture_boundary() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut newer = LibraryPhoto::from_image(OpenImage::from_path("newer.png", 20, 10));
+        newer.captured_at = Some("2026-09-07 08:14".into());
+        let mut older = LibraryPhoto::from_image(OpenImage::from_path("older.png", 20, 10));
+        older.captured_at = Some("2026-08-01".into());
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![newer, older],
+                ..Default::default()
+            },
+        );
+        let mut app = PhotosApp::new();
+        app.view_timeline(
+            &doc,
+            Some(&crate::actions::TimelineAnchor::Day {
+                day: "2026-08-01".into(),
+            }),
+        )
+        .expect("a published day anchor jumps to its timeline boundary");
+        assert!(app.library_mode);
+        assert_eq!(app.library_destination, LibraryDestination::Timeline);
+        assert!(app.timeline_scroll_row > 0.0);
     }
 
     #[test]
