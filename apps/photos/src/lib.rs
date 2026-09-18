@@ -167,6 +167,8 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "people-detail",
     "places",
     "analysis",
+    "import-progress",
+    "import-errors",
     "selection",
     "selection-many-albums",
     "album-manage",
@@ -351,6 +353,8 @@ pub fn seed_scenario(
         | "people-detail"
         | "places"
         | "analysis"
+        | "import-progress"
+        | "import-errors"
         | "selection"
         | "selection-many-albums"
         | "album-manage"
@@ -465,6 +469,10 @@ pub fn seed_scenario(
                 app.show_places_for_shot();
             } else if scenario == "analysis" {
                 app.show_library_analysis();
+            } else if scenario == "import-progress" {
+                app.show_directory_import_progress_for_shot();
+            } else if scenario == "import-errors" {
+                app.show_directory_import_errors_for_shot();
             } else {
                 app.show_library();
             }
