@@ -524,6 +524,39 @@ exit {BUILD_INTERCEPTED}
         self.assertEqual(probe_log.read_bytes().decode().split("\0")[:-1], ["image", "exists", base])
         self.assertFalse(disk_log.exists(), "the intercepted build continued into disk imaging")
 
+    def test_installer_reuses_base_binary_and_stops_before_disk_or_signing(self):
+        self.script = self.write("os/dev/build-custom-installer.sh",
+                                 (REPO / "os/dev/build-custom-installer.sh").read_text())
+        for path in ("os/dev/uki-cmdline.py", "os/etc/greetd/config.toml",
+                     "os/etc/greetd/config.installer.toml"):
+            self.write(path, "fixture only\n")
+        # Both stale binary sources must be ignored in image reuse mode.
+        self.write("os/tilo-installer", "stale host binary\n")
+        self.write("os/usr/bin/tilo-installer", "stale overlay binary\n")
+        self.write("os/usr/share/tilo/preserved", "overlay fixture\n")
+        self.write("os/dev/disk-image.sh", "#!/bin/sh\nexit 97\n", executable=True)
+        self.write("bin/podman", """\
+#!/bin/bash
+if [ "$1" = image ] && [ "$2" = exists ]; then exit 0; fi
+[ "$1" = build ] || exit 72
+printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
+context="${@: -1}"
+[ ! -e "$context/rootfs/usr/bin/tilo-installer" ] || exit 74
+[ -f "$context/rootfs/usr/share/tilo/preserved" ] || exit 75
+exit 0
+""", executable=True)
+        base = "registry.invalid/tilo/lenovo@sha256:" + "a" * 64
+        result = self.run_builder("--reuse-image-installer", "--image-only", TILO_IMAGE=base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = self.log.read_bytes().decode().split("\0")[:-1]
+        self.assertIn("TILO_BASE_IMAGE=" + base, arguments)
+        self.assertIn("require sealing and signing", result.stderr)
+        self.assertFalse((self.os_dir / "output/installer/qcow2").exists())
+        for alternative in ("--stub-ui", "--no-cargo"):
+            result = self.run_builder("--reuse-image-installer", alternative, "--image-only")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("choose only one installer binary source", result.stderr)
+
     def test_installer_containerfile_binds_from_to_the_base_argument(self):
         instructions = [line.strip() for line in (REPO / "os/Containerfile.installer").read_text().splitlines()
                         if line.strip() and not line.lstrip().startswith("#")]
