@@ -103,23 +103,15 @@ unavailable there — which costs nothing for boot capture, given the row above.
 
 ## Recording a boot as video
 
-`vm.sh shot` gives stills, so a boot could only ever be shown as a
-before-and-after pair. `record-boot.py` films it:
+Record a boot with:
 
 ```bash
 ./os/dev/record-boot.py --login --after-login 8 --out boot.mp4
 ```
 
-It dumps the framebuffer on a timer, keeps each frame's wall-clock timestamp,
-and encodes at the rate the frames were really captured — so the clip runs at
-the speed the machine actually booted. `--login` types the credentials when
-greetd reports itself up rather than at a guessed offset.
-
-The table above is the constraint here too, and the script does not pretend
-otherwise: it reports how many frames came back empty, and warns with the
-window they span, because under `--mode gl` every dump before the compositor
-starts answers "no surface". A gap in that report is the honest shape of the
-capture.
+The recording preserves capture timestamps. `--login` enters credentials when
+greetd is ready. Under `--mode gl`, framebuffer capture is unavailable until
+the compositor starts; the script reports the missing frames and time range.
 
 ## Testing the boot chain (TPM, encryption, Secure Boot)
 

@@ -62,6 +62,15 @@ pub enum ComputeEnvelope {
     Result {
         result: ComputeResultUpdate,
     },
+    Delivery {
+        workspace_id: u64,
+        sequence: u64,
+        message: Box<ComputeEnvelope>,
+    },
+    Ack {
+        workspace_id: u64,
+        sequence: u64,
+    },
     Ping,
     Pong,
 }
@@ -73,7 +82,9 @@ impl ComputeEnvelope {
             Self::Attach { workspace_id }
             | Self::Ready { workspace_id, .. }
             | Self::NotAuthorised { workspace_id, .. }
-            | Self::Advertise { workspace_id, .. } => Some(*workspace_id),
+            | Self::Advertise { workspace_id, .. }
+            | Self::Delivery { workspace_id, .. }
+            | Self::Ack { workspace_id, .. } => Some(*workspace_id),
             Self::Request { spec } => Some(spec.workspace_id),
             Self::Cancel { binding } => Some(binding.workspace_id),
             Self::Status { update } => Some(update.binding.workspace_id),
@@ -218,7 +229,12 @@ pub enum ComputeTransportError {
 #[derive(Default)]
 pub struct ComputeTransportState {
     workers: HashMap<DeviceKey, ComputeWorkerAdvertisement>,
-    sessions: HashMap<DeviceKey, mpsc::Sender<ComputeEnvelope>>,
+    sessions: HashMap<DeviceKey, ComputeSubscriber>,
+}
+
+struct ComputeSubscriber {
+    sender: mpsc::Sender<ComputeEnvelope>,
+    disconnect: mpsc::Sender<()>,
 }
 
 impl ComputeTransportState {
@@ -241,8 +257,14 @@ impl ComputeTransportState {
         self.workers.remove(worker);
     }
 
-    pub fn attach(&mut self, device: DeviceKey, sender: mpsc::Sender<ComputeEnvelope>) {
-        self.sessions.insert(device, sender);
+    pub fn attach(
+        &mut self,
+        device: DeviceKey,
+        sender: mpsc::Sender<ComputeEnvelope>,
+        disconnect: mpsc::Sender<()>,
+    ) {
+        self.sessions
+            .insert(device, ComputeSubscriber { sender, disconnect });
     }
 
     pub fn detach(&mut self, device: &DeviceKey) {
@@ -257,18 +279,24 @@ impl ComputeTransportState {
         store: &WorkspaceStore,
         sequence: u64,
     ) -> Result<(), ComputeTransportError> {
-        if let Some(sender) = self.sessions.get(&target) {
-            if sender.try_send(envelope.clone()).is_ok() {
-                return Ok(());
-            }
-            self.detach(&target);
-        }
-        let bytes = postcard::to_allocvec(envelope)
+        let delivery = ComputeEnvelope::Delivery {
+            workspace_id: store.workspace_id(),
+            sequence,
+            message: Box::new(envelope.clone()),
+        };
+        let bytes = postcard::to_allocvec(&delivery)
             .map_err(|error| StoreError::Json(format!("encode compute envelope: {error}")))?;
         if bytes.len() > MAX_COMPUTE_FRAME_BYTES {
             return Err(ComputeTransportError::MetadataTooLarge);
         }
         store.enqueue_compute_pending(&target, sequence, &bytes)?;
+        if let Some(subscriber) = self.sessions.get(&target) {
+            if subscriber.sender.try_send(delivery).is_ok() {
+                return Ok(());
+            }
+            let _ = subscriber.disconnect.try_send(());
+            self.detach(&target);
+        }
         Ok(())
     }
 
@@ -658,16 +686,20 @@ mod tests {
         state.route([2; 32], &envelope, &store, 1).unwrap();
         let pending = store.load_compute_pending(&[2; 32]).unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(
+        assert!(matches!(
             postcard::from_bytes::<ComputeEnvelope>(&pending[0].bytes).unwrap(),
-            envelope
-        );
+            ComputeEnvelope::Delivery { sequence: 1, message, .. } if *message == envelope
+        ));
 
         let (sender, mut receiver) = mpsc::channel(1);
-        state.attach([2; 32], sender);
-        let live = ComputeEnvelope::Ping;
+        let (disconnect, _disconnect_receiver) = mpsc::channel(1);
+        state.attach([2; 32], sender, disconnect);
+        let live = ComputeEnvelope::Cancel { binding: binding() };
         state.route([2; 32], &live, &store, 2).unwrap();
-        assert_eq!(receiver.try_recv().unwrap(), live);
-        assert_eq!(store.load_compute_pending(&[2; 32]).unwrap().len(), 1);
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            ComputeEnvelope::Delivery { sequence: 2, message, .. } if *message == live
+        ));
+        assert_eq!(store.load_compute_pending(&[2; 32]).unwrap().len(), 2);
     }
 }
