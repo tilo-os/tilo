@@ -70,12 +70,13 @@ optional_openssl_module="$(find /usr/lib /usr/lib64 \
   \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
      -o -path '*/gstreamer-1.0/libgstdtls.so' \
      -o -path '*/gstreamer-1.0/libgstcurl.so' \
-     -o -path '*/gstreamer-1.0/libgstshout2.so' \) \
+     -o -path '*/gstreamer-1.0/libgstshout2.so' \
+     -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
   \( -type f -o -type l \) -print -quit 2>/dev/null || true)"
 if [ -n "$optional_openssl_module" ]; then
   warn "optional OpenSSL provider/engine/media plugin remains: $optional_openssl_module"
 else
-  ok "optional OpenSSL provider, engines, and GStreamer network plugins absent"
+  ok "optional OpenSSL provider, engines, and network TLS plugins absent"
 fi
 case "$(readlink /etc/resolv.conf 2>/dev/null || true)" in
   ../run/NetworkManager/resolv.conf|/run/NetworkManager/resolv.conf)
