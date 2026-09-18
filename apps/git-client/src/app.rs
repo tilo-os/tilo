@@ -216,7 +216,7 @@ impl Default for GitClientApp {
 
 impl GitClientApp {
     /// Build the app, loading the repository discovered from the current
-    /// directory (or `GIT_CLIENT_REPO`). Falls back to the bundled sample
+    /// directory (or `GIT_CLIENT_REPO`). Opens the empty repository picker
     /// when no repository is reachable.
     ///
     /// Setting `GIT_CLIENT_SAMPLE=1` forces the bundled fixture regardless
@@ -526,6 +526,16 @@ impl GitClientApp {
             return SplitLayout::Docked;
         }
         SplitLayout::from_width(self.rect.width(), NARROW_BREAKPOINT)
+    }
+
+    fn appbar_height(&self) -> f64 {
+        if self.rect.width() >= NARROW_BREAKPOINT {
+            APPBAR_H
+        } else if self.rect.width() >= 420.0 {
+            APPBAR_H * 2.0
+        } else {
+            APPBAR_H * 3.0
+        }
     }
 
     /// Whether the primary list column is currently a revealed/open overlay.
@@ -857,7 +867,7 @@ impl GitClientApp {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + APPBAR_H,
+            self.rect.y0 + self.appbar_height(),
         );
         draw::fill_rect(scene, t, bar, c.surfaces.raised);
         draw::hline(scene, t, bar.y1, bar.x0, bar.x1, c.border_standard);
@@ -883,29 +893,53 @@ impl GitClientApp {
         // shipped shot, which made a presentation preference look like a
         // truncated status label.
         let settings_w = 230.0;
-        let (widths, total) = Self::measure_appbar_tabs(tr);
-        let tx_start = bar.x1 - settings_w - total - 20.0;
+        let wrapped = bar.width() < NARROW_BREAKPOINT;
+        let separate_settings_row = bar.width() < 420.0;
+        let (widths, total) = Self::measure_appbar_tabs(tr, separate_settings_row);
+        let tx_start = if wrapped {
+            bar.x0 + (bar.width() - total) / 2.0
+        } else {
+            bar.x1 - settings_w - total - 20.0
+        };
         let tab_group_left = tx_start - 6.0;
 
         // Repo name + branch. Clamp the title so it ellipsises before the tab
         // group rather than colliding with it when the bar is tight.
         let title_x = bar.x0 + 20.0 + left_pad;
-        self.draw_appbar_title(scene, tr, t, theme, bar, title_x, tab_group_left);
+        let title_right = if separate_settings_row {
+            bar.x1 - 12.0
+        } else if wrapped {
+            bar.x1 - settings_w
+        } else {
+            tab_group_left
+        };
+        self.draw_appbar_title(scene, tr, t, theme, bar, title_x, title_right);
 
-        self.draw_appbar_tab_group(scene, tr, t, theme, bar, &widths, total, tx_start);
+        let tabs_bar = if wrapped {
+            Rect::new(bar.x0, bar.y0 + APPBAR_H, bar.x1, bar.y0 + APPBAR_H * 2.0)
+        } else {
+            bar
+        };
+        self.draw_appbar_tab_group(scene, tr, t, theme, tabs_bar, &widths, total, tx_start);
 
         // Settings cluster on the far right: diff layout toggle + flags.
-        self.draw_settings_cluster(scene, tr, t, theme, bar, settings_w);
+        let settings_bar = if separate_settings_row {
+            Rect::new(bar.x0, bar.y0 + APPBAR_H * 2.0, bar.x1, bar.y1)
+        } else {
+            bar
+        };
+        self.draw_settings_cluster(scene, tr, t, theme, settings_bar, settings_w);
     }
 
     /// Each tab's pixel width and their combined width (including the 6px
     /// gaps between them) — needed both to clamp the title and to lay out
     /// the tab group's pill background.
-    fn measure_appbar_tabs(tr: &mut TextRenderer) -> (Vec<f64>, f64) {
+    fn measure_appbar_tabs(tr: &mut TextRenderer, compact: bool) -> (Vec<f64>, f64) {
         let widths: Vec<f64> = TABS
             .iter()
             .map(|(_, label)| {
-                f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0) + 28.0
+                f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0)
+                    + if compact { 20.0 } else { 28.0 }
             })
             .collect();
         let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
@@ -949,7 +983,11 @@ impl GitClientApp {
         .min(f64::from(title_max));
         let pill_x = title_x + 8.0 + nw;
         // Only paint the branch pill if it still fits left of the tab group.
-        if pill_x + 40.0 < tab_group_left {
+        let pill_width = f64::from(
+            tr.measure_weighted(&self.model.head, 14.0, None, TextWeight::Medium)
+                .0,
+        ) + 12.0;
+        if pill_x + pill_width + 8.0 <= tab_group_left {
             draw::pill(
                 scene,
                 tr,
@@ -1835,7 +1873,7 @@ impl GitClientApp {
                 Screen::History => FLAP_W,
                 _ => CHANGES_COL_W,
             };
-            if pos.y < self.rect.y0 + APPBAR_H {
+            if pos.y < self.rect.y0 + self.appbar_height() {
                 return;
             }
             if pos.x > self.rect.x0 + col_w {
@@ -2050,7 +2088,7 @@ impl GitClientApp {
                     self.changes_scroll = (self.changes_scroll - dy).max(0.0);
                 } else {
                     let max = self.current_diff().map_or(0.0, DiffView::content_height)
-                        - (self.rect.height() - APPBAR_H - 36.0);
+                        - (self.rect.height() - self.appbar_height() - 36.0);
                     self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max.max(0.0));
                 }
             }
@@ -2062,8 +2100,8 @@ impl GitClientApp {
                 };
                 let over_list = pos.x < self.rect.x0 + list_w && self.flap_open();
                 if over_list {
-                    let max =
-                        HistoryView::content_height(&self.model) - (self.rect.height() - APPBAR_H);
+                    let max = HistoryView::content_height(&self.model)
+                        - (self.rect.height() - self.appbar_height());
                     self.history_scroll = (self.history_scroll - dy).clamp(0.0, max.max(0.0));
                 } else {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
@@ -2467,7 +2505,7 @@ impl Widget for GitClientApp {
 
         let body = Rect::new(
             self.rect.x0,
-            self.rect.y0 + APPBAR_H,
+            self.rect.y0 + self.appbar_height(),
             self.rect.x1,
             self.rect.y1,
         );
@@ -2616,7 +2654,7 @@ impl Widget for GitClientApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
 
@@ -2631,10 +2669,19 @@ impl Widget for GitClientApp {
                 self.set_focus(Some(field));
                 return true;
             }
-            return false;
+            let input = match field {
+                Field::Open => &mut self.open_input,
+                Field::Commit => &mut self.commit_input,
+                Field::Branch => &mut self.branch_input,
+            };
+            return input.perform_action(action, state, path);
         }
         if !matches!(action, Action::Activate | Action::ToggleCheck) {
             return false;
+        }
+        if target == "git.open-repository" && self.awaiting_repo {
+            self.open_repo_from_input();
+            return true;
         }
         let Some(rect) = self
             .accessibility_targets()
@@ -3381,6 +3428,83 @@ mod tests {
             dispatched, &palette_action,
             "the app-bar control and the Ctrl+K entry build one and the same action"
         );
+    }
+
+    #[test]
+    fn appbar_controls_stay_visible_and_separate_at_narrow_widths() {
+        let mut text = TextRenderer::new();
+        for width in [320.0, 460.0, 680.0, 1280.0] {
+            for screen in [Screen::Changes, Screen::History, Screen::Panels] {
+                let mut app = app_at(width, screen);
+                let mut scene = Scene::new();
+                app.draw_appbar(&mut scene, &mut text, Affine::IDENTITY, &Theme::dark());
+                let mut controls: Vec<Rect> = app.tab_rects.iter().map(|(_, rect)| *rect).collect();
+                controls.extend([app.settings_seg, app.settings_syn]);
+                if app.hamburger_rect.area() > 0.0 {
+                    controls.push(app.hamburger_rect);
+                }
+                for (index, rect) in controls.iter().enumerate() {
+                    assert!(
+                        rect.x0 >= 0.0
+                            && rect.x1 <= width
+                            && rect.y0 >= 0.0
+                            && rect.y1 <= app.appbar_height(),
+                        "control {index} is outside the {width}px window: {rect:?}"
+                    );
+                    for other in controls.iter().skip(index + 1) {
+                        assert!(
+                            !(rect.x0 < other.x1
+                                && rect.x1 > other.x0
+                                && rect.y0 < other.y1
+                                && rect.y1 > other.y0),
+                            "controls overlap at {width}px: {rect:?} and {other:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_open_repository_binds_the_entered_repository() {
+        let directory = tempfile::tempdir().unwrap();
+        let _repository = git2::Repository::init(directory.path()).unwrap();
+        let mut app = GitClientApp::open_empty();
+        app.open_input.set_text(directory.path().to_str().unwrap());
+        app.open_button_rect = Rect::new(20.0, 20.0, 180.0, 60.0);
+        let mut doc = automerge::AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "git.open-repository",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(!app.test_awaiting_repo());
+        assert_eq!(app.test_last_error(), None);
+    }
+
+    #[test]
+    fn semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs() {
+        let mut app = GitClientApp::open_empty();
+        let mut doc = automerge::AutoCommit::new();
+        for (target, text) in [
+            ("git.open-path", r"C:\Work\Grün 🌍"),
+            ("git.commit-message", "Keep Unicode: Grün 🌍"),
+            ("git.new-branch-name", "feature/grün"),
+        ] {
+            assert!(Widget::perform_semantic_action(
+                &mut app,
+                target,
+                &ui::a11y::Action::SetValue(text.into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+        }
+        assert_eq!(app.open_input.value(), r"C:\Work\Grün 🌍");
+        assert_eq!(app.commit_input.value(), "Keep Unicode: Grün 🌍");
+        assert_eq!(app.branch_input.value(), "feature/grün");
+        assert!(app.test_awaiting_repo(), "editing a path must not open it");
     }
 
     #[test]
