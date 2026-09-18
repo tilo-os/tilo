@@ -138,6 +138,7 @@ jobs:
         id: plan
         shell: bash
         run: |
+          set -euo pipefail
           base='${{ github.event.pull_request.base.sha }}'
           selection_args=()
           if [ '${{ github.event_name }}' = workflow_dispatch ]; then
@@ -241,14 +242,10 @@ jobs:
           bash tools/ci-sccache.sh prepare
 
       # Older/explicitly selected builders may predate the audio fixture.
-      # Excluding installed packages forbids changing their pinned versions.
+      # The helper replaces only the conflicting audio daemon; other installed
+      # packages retain their pinned versions.
       - name: Ensure isolated audio test dependency
-        run: |
-          if ! command -v pulseaudio >/dev/null; then
-            installed=$(rpm -qa --qf '%{NAME}\n' | sort -u | paste -sd, -)
-            dnf install -y --setopt=install_weak_deps=False --setopt=obsoletes=False --setopt=best=False \
-              --exclude="$installed" pulseaudio
-          fi
+        run: bash tools/ensure-headless-audio.sh
 
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
