@@ -2023,20 +2023,35 @@ impl PhotosApp {
         let pending = Rc::clone(&self.people_pending);
         let recognition_enabled = self.people_controller.privacy().recognition_enabled;
         let mut push = |intent: PeopleIntent, label: String, primary: bool, danger: bool| {
-            let queued = intent.clone();
-            let pending = Rc::clone(&pending);
             let visible_label = match &intent {
                 PeopleIntent::OpenApproved(_) => "View photos",
                 PeopleIntent::OpenSuggestion(_) => "Review",
                 _ => label.as_str(),
             };
-            let mut button = Button::new(
+            let button = Button::new(
                 &format!("photos-people-control-{}", self.people_controls.len()),
                 visible_label,
                 None,
             )
-            .with_accessible_name(&label)
-            .on_click(move || *pending.borrow_mut() = Some(queued.clone()))
+            .with_accessible_name(&label);
+            let mut button = if matches!(
+                &intent,
+                PeopleIntent::Back
+                    | PeopleIntent::OpenApproved(_)
+                    | PeopleIntent::OpenSuggestion(_)
+                    | PeopleIntent::BrowseApproved
+                    | PeopleIntent::BeginMerge
+                    | PeopleIntent::ToggleHidden
+                    | PeopleIntent::Page(_)
+            ) {
+                let queued = intent.clone();
+                let pending = Rc::clone(&pending);
+                button.on_view(move || *pending.borrow_mut() = Some(queued.clone()))
+            } else {
+                let queued = intent.clone();
+                let pending = Rc::clone(&pending);
+                button.on_effect(move || *pending.borrow_mut() = Some(queued.clone()))
+            }
             .fill_width(44.0);
             if primary || matches!(&intent, PeopleIntent::OpenSuggestion(_)) {
                 button = button.primary();
@@ -11238,16 +11253,19 @@ fn build_directory_import_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label, icon)| {
-        let slot = pending.clone();
-        (
-            hit,
-            Button::new(id, label, None)
-                .with_icon(icon)
-                .with_size(104.0, 40.0)
-                .tooltip(label)
-                .with_accessible_name(label)
-                .on_click(move || slot.set(Some(hit))),
-        )
+        let button = Button::new(id, label, None)
+            .with_icon(icon)
+            .with_size(104.0, 40.0)
+            .tooltip(label)
+            .with_accessible_name(label);
+        let button = if hit == DirectoryStatusHit::Details {
+            let slot = pending.clone();
+            button.on_view(move || slot.set(Some(hit)))
+        } else {
+            let slot = pending.clone();
+            button.on_effect(move || slot.set(Some(hit)))
+        };
+        (hit, button)
     })
     .collect()
 }
