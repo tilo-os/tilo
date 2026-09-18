@@ -17,7 +17,7 @@
 //! the edits change. That check is what keeps a rotate from re-decoding the
 //! file, and what keeps the decoded buffer from being rebuilt on every frame.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexedScrollbar,
-    EmptyState, ImageViewer, ScrollMetrics, SearchField, TextInput, Widget,
+    EmptyState, ImageViewer, ScrollMetrics, SearchField, TextInput, TextInputKind, Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -563,6 +563,42 @@ enum CollectionPageHit {
     PlacesNext,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PeopleSelection {
+    Approved(String),
+    Suggestion(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PeopleIntent {
+    Back,
+    ToggleRecognition,
+    Scan,
+    CancelScan,
+    OpenApproved(String),
+    OpenSuggestion(String),
+    BrowseApproved,
+    SaveName,
+    BeginMerge,
+    MergeApprovedInto(String),
+    ApproveSuggestion,
+    RejectSuggestion,
+    HideSuggestion,
+    RestoreSuggestion,
+    MergeSuggestionWith(String),
+    ToggleHidden,
+    Page(bool),
+    DeleteLocalData,
+    ConfirmDeleteLocalData,
+}
+
+struct PeopleControl {
+    intent: PeopleIntent,
+    label: String,
+    bounds: Rect,
+    button: Button,
+}
+
 /// One chooser page always fits: six chips in a desktop row or a 3×2 compact
 /// grid. The complete album collection remains available through paging.
 const SELECTION_ALBUMS_PER_PAGE: usize = 6;
@@ -869,6 +905,17 @@ pub struct PhotosApp {
     /// A distinct People collection surface. Its private suggestion state is
     /// visually and semantically separated from shared approved labels.
     people_mode: bool,
+    people_selection: Option<PeopleSelection>,
+    people_merge_mode: bool,
+    people_show_hidden: bool,
+    people_review_page: usize,
+    people_approved: Vec<crate::people::SharedPerson>,
+    people_delete_confirm: bool,
+    people_name_input: TextInput,
+    people_name_bounds: Rect,
+    people_controls: Vec<PeopleControl>,
+    people_control_signature: String,
+    people_pending: Rc<RefCell<Option<PeopleIntent>>>,
     canvas_state: CanvasState,
     search_provider: crate::search::PhotosSearchProvider,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
@@ -1217,6 +1264,7 @@ impl PhotosApp {
         let album_page_pending: Rc<Cell<Option<AlbumEditorHit>>> = Rc::new(Cell::new(None));
         let timeline_density_pending: Rc<Cell<Option<TimelineHit>>> = Rc::new(Cell::new(None));
         let collection_page_pending: Rc<Cell<Option<CollectionPageHit>>> = Rc::new(Cell::new(None));
+        let people_pending = Rc::new(RefCell::new(None));
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
@@ -1259,6 +1307,21 @@ impl PhotosApp {
             people_controller: crate::people::PeopleController::new(),
             people_scan_progress: PeopleScanProgress::load(),
             people_mode: false,
+            people_selection: None,
+            people_merge_mode: false,
+            people_show_hidden: false,
+            people_review_page: 0,
+            people_approved: Vec::new(),
+            people_delete_confirm: false,
+            people_name_input: TextInput::local()
+                .with_id("photos-people-name")
+                .with_kind(TextInputKind::Name)
+                .with_enter_submits(true)
+                .with_placeholder("Name this person"),
+            people_name_bounds: Rect::ZERO,
+            people_controls: Vec::new(),
+            people_control_signature: String::new(),
+            people_pending,
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
             search_heads: Vec::new(),
@@ -1535,6 +1598,16 @@ impl PhotosApp {
         &self.people_controller
     }
 
+    /// Runtime constructor for the device-local People review queue. Tests
+    /// use [`Self::new`] so they never read or mutate the signed-in user's
+    /// private recognition state.
+    #[must_use]
+    pub fn new_persistent() -> Self {
+        let mut app = Self::new();
+        app.people_controller = crate::people::PeopleController::persistent();
+        app
+    }
+
     /// Mutable local People controller. Callers use this for explicit opt-in,
     /// review, hiding, splitting, and deletion of private clusters.
     pub fn people_controller_mut(&mut self) -> &mut crate::people::PeopleController {
@@ -1556,6 +1629,479 @@ impl PhotosApp {
         self.notice =
             Some("Approved person labels were added to the shared photo library".to_owned());
         true
+    }
+
+    fn refresh_people_controls(&mut self) {
+        let clusters: Vec<_> = self
+            .people_controller
+            .all_clusters()
+            .map(|cluster| {
+                (
+                    cluster.id.clone(),
+                    cluster.display_name.clone(),
+                    cluster.photos.len(),
+                    cluster.hidden,
+                    cluster.rejected,
+                )
+            })
+            .collect();
+        let signature = format!(
+            "{:?}|{}|{}|{}|{}|{:?}|{:?}",
+            self.people_selection,
+            self.people_merge_mode,
+            self.people_show_hidden,
+            self.people_review_page,
+            self.people_controller.privacy().recognition_enabled,
+            self.people_approved
+                .iter()
+                .map(|person| (&person.label, person.count()))
+                .collect::<Vec<_>>(),
+            clusters
+        );
+        if signature == self.people_control_signature {
+            return;
+        }
+        self.people_control_signature = signature;
+        self.people_controls.clear();
+        let pending = Rc::clone(&self.people_pending);
+        let recognition_enabled = self.people_controller.privacy().recognition_enabled;
+        let mut push = |intent: PeopleIntent, label: String, primary: bool, danger: bool| {
+            let queued = intent.clone();
+            let pending = Rc::clone(&pending);
+            let visible_label = match &intent {
+                PeopleIntent::OpenApproved(_) => "View photos",
+                PeopleIntent::OpenSuggestion(_) => "Review",
+                _ => label.as_str(),
+            };
+            let mut button = Button::new(
+                &format!("photos-people-control-{}", self.people_controls.len()),
+                visible_label,
+                None,
+            )
+            .with_accessible_name(&label)
+            .on_click(move || *pending.borrow_mut() = Some(queued.clone()))
+            .fill_width(44.0);
+            if primary || matches!(&intent, PeopleIntent::OpenSuggestion(_)) {
+                button = button.primary();
+            } else if danger {
+                button = button.danger();
+            } else if matches!(
+                &intent,
+                PeopleIntent::Back | PeopleIntent::ToggleHidden | PeopleIntent::DeleteLocalData
+            ) {
+                button = button.ghost();
+            }
+            if matches!(intent, PeopleIntent::Scan) && !recognition_enabled {
+                button = button.with_enabled(false);
+            }
+            self.people_controls.push(PeopleControl {
+                intent,
+                label,
+                bounds: Rect::ZERO,
+                button,
+            });
+        };
+
+        push(
+            PeopleIntent::Back,
+            if self.people_selection.is_some() {
+                "Back to People"
+            } else {
+                "Back to Library"
+            }
+            .to_owned(),
+            false,
+            false,
+        );
+        if self.people_selection.is_none() {
+            let recognition_on = self.people_controller.privacy().recognition_enabled;
+            push(
+                PeopleIntent::ToggleRecognition,
+                if recognition_on {
+                    "Turn recognition off"
+                } else {
+                    "Turn recognition on"
+                }
+                .to_owned(),
+                false,
+                false,
+            );
+            if self.active_people_scans.is_empty() {
+                push(
+                    PeopleIntent::Scan,
+                    "Scan next local batch".to_owned(),
+                    true,
+                    false,
+                );
+            } else {
+                push(
+                    PeopleIntent::CancelScan,
+                    "Pause scanning".to_owned(),
+                    false,
+                    false,
+                );
+            }
+            let page_size = if self.canvas_rect.width() < 760.0 {
+                5
+            } else {
+                8
+            };
+            let start = self.people_review_page.saturating_mul(page_size);
+            for person in self.people_approved.iter().skip(start).take(page_size) {
+                push(
+                    PeopleIntent::OpenApproved(person.label.clone()),
+                    format!(
+                        "{}  ·  {} photo{}",
+                        person.label,
+                        person.count(),
+                        if person.count() == 1 { "" } else { "s" }
+                    ),
+                    false,
+                    false,
+                );
+            }
+            let visible_clusters: Vec<_> = self
+                .people_controller
+                .all_clusters()
+                .filter(|cluster| self.people_show_hidden || (!cluster.hidden && !cluster.rejected))
+                .skip(start)
+                .take(page_size)
+                .map(|cluster| {
+                    (
+                        cluster.id.clone(),
+                        cluster.display_name.clone(),
+                        cluster.photos.len(),
+                        cluster.hidden || cluster.rejected,
+                    )
+                })
+                .collect();
+            for (id, name, count, hidden) in visible_clusters {
+                let state = if hidden { "hidden" } else { "review" };
+                push(
+                    PeopleIntent::OpenSuggestion(id),
+                    format!(
+                        "{}  ·  {count} photo{}  ·  {state}",
+                        name.unwrap_or_else(|| "Unnamed suggestion".to_owned()),
+                        if count == 1 { "" } else { "s" }
+                    ),
+                    false,
+                    false,
+                );
+            }
+            push(
+                PeopleIntent::ToggleHidden,
+                if self.people_show_hidden {
+                    "Hide dismissed suggestions"
+                } else {
+                    "Review hidden suggestions"
+                }
+                .to_owned(),
+                false,
+                false,
+            );
+            if self.people_review_page > 0 {
+                push(
+                    PeopleIntent::Page(false),
+                    "Previous".to_owned(),
+                    false,
+                    false,
+                );
+            }
+            let total = self
+                .people_approved
+                .len()
+                .max(self.people_controller.all_clusters().count());
+            if start.saturating_add(page_size) < total {
+                push(PeopleIntent::Page(true), "Next".to_owned(), false, false);
+            }
+            push(
+                if self.people_delete_confirm {
+                    PeopleIntent::ConfirmDeleteLocalData
+                } else {
+                    PeopleIntent::DeleteLocalData
+                },
+                if self.people_delete_confirm {
+                    "Confirm deleting local face data"
+                } else {
+                    "Delete local face data"
+                }
+                .to_owned(),
+                false,
+                self.people_delete_confirm,
+            );
+        } else {
+            match self.people_selection.clone() {
+                Some(PeopleSelection::Approved(name)) => {
+                    if self.people_merge_mode {
+                        for person in &self.people_approved {
+                            if person.label != name {
+                                push(
+                                    PeopleIntent::MergeApprovedInto(person.label.clone()),
+                                    format!("Merge into {}", person.label),
+                                    false,
+                                    false,
+                                );
+                            }
+                        }
+                    } else {
+                        push(
+                            PeopleIntent::BrowseApproved,
+                            "Browse photographs".to_owned(),
+                            true,
+                            false,
+                        );
+                        push(PeopleIntent::SaveName, "Save name".to_owned(), false, false);
+                        push(
+                            PeopleIntent::BeginMerge,
+                            "Merge person…".to_owned(),
+                            false,
+                            false,
+                        );
+                    }
+                }
+                Some(PeopleSelection::Suggestion(id)) => {
+                    let hidden = self
+                        .people_controller
+                        .cluster(&id)
+                        .is_some_and(|cluster| cluster.hidden || cluster.rejected);
+                    if self.people_merge_mode {
+                        let candidates: Vec<_> = self
+                            .people_controller
+                            .all_clusters()
+                            .filter(|cluster| cluster.id != id && !cluster.rejected)
+                            .map(|cluster| {
+                                (
+                                    cluster.id.clone(),
+                                    cluster
+                                        .display_name
+                                        .clone()
+                                        .unwrap_or_else(|| "Unnamed suggestion".to_owned()),
+                                )
+                            })
+                            .collect();
+                        for (candidate, name) in candidates {
+                            push(
+                                PeopleIntent::MergeSuggestionWith(candidate),
+                                format!("Combine with {name}"),
+                                false,
+                                false,
+                            );
+                        }
+                    } else if hidden {
+                        push(
+                            PeopleIntent::RestoreSuggestion,
+                            "Return to review".to_owned(),
+                            true,
+                            false,
+                        );
+                    } else {
+                        push(
+                            PeopleIntent::ApproveSuggestion,
+                            "Approve and add to People".to_owned(),
+                            true,
+                            false,
+                        );
+                        push(
+                            PeopleIntent::HideSuggestion,
+                            "Decide later".to_owned(),
+                            false,
+                            false,
+                        );
+                        push(
+                            PeopleIntent::RejectSuggestion,
+                            "Not the same person".to_owned(),
+                            false,
+                            false,
+                        );
+                        push(
+                            PeopleIntent::BeginMerge,
+                            "Combine…".to_owned(),
+                            false,
+                            false,
+                        );
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn select_people_item(&mut self, selection: PeopleSelection) {
+        let initial = match &selection {
+            PeopleSelection::Approved(name) => name.clone(),
+            PeopleSelection::Suggestion(id) => self
+                .people_controller
+                .cluster(id)
+                .and_then(|cluster| cluster.display_name.clone())
+                .unwrap_or_default(),
+        };
+        self.people_selection = Some(selection);
+        self.people_merge_mode = false;
+        self.people_delete_confirm = false;
+        self.people_name_input.set_text(&initial);
+        self.people_name_input.set_focus(false);
+        self.people_control_signature.clear();
+    }
+
+    fn handle_people_intent(&mut self, intent: PeopleIntent, doc: &mut AutoCommit) {
+        match intent {
+            PeopleIntent::Back => {
+                if self.people_selection.is_some() {
+                    self.people_selection = None;
+                    self.people_merge_mode = false;
+                } else {
+                    self.library_destination = LibraryDestination::Timeline;
+                    self.people_mode = false;
+                }
+            }
+            PeopleIntent::ToggleRecognition => {
+                let enabled = !self.people_controller.privacy().recognition_enabled;
+                self.people_controller.set_recognition_enabled(enabled);
+                if enabled {
+                    self.people_controller
+                        .discover_face_capability(&agent_provider_config::ProviderConfig::load());
+                }
+                self.notice = Some(self.people_controller.capability().summary().to_owned());
+            }
+            PeopleIntent::Scan => {
+                let invocation = tilo_actions::InvocationId::new();
+                let payload =
+                    serde_json::to_vec(&crate::actions::PhotosOperation::AnalyzePeopleLibrary)
+                        .unwrap_or_default();
+                if let Err(error) = self.start_resource_operation_with_document(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::PHOTOS_OPERATION_TYPE,
+                    &payload,
+                    doc,
+                    &automerge::ROOT,
+                ) {
+                    self.notice = Some(error);
+                } else {
+                    self.notice = Some("Scanning the next local batch…".to_owned());
+                }
+            }
+            PeopleIntent::CancelScan => {
+                for invocation in self.active_people_scans.drain() {
+                    self.active_analysis.remove(&invocation);
+                    self.cancelled_analysis.insert(invocation);
+                }
+                self.people_scan_progress.status = "cancelled".to_owned();
+                self.people_scan_progress.save();
+                self.notice = Some("People scan paused".to_owned());
+            }
+            PeopleIntent::OpenApproved(name) => {
+                self.select_people_item(PeopleSelection::Approved(name));
+            }
+            PeopleIntent::OpenSuggestion(id) => {
+                self.select_people_item(PeopleSelection::Suggestion(id));
+            }
+            PeopleIntent::BrowseApproved => {
+                if let Some(PeopleSelection::Approved(name)) = &self.people_selection {
+                    self.active_person = Some(name.clone());
+                    self.library_destination = LibraryDestination::Timeline;
+                    self.people_mode = false;
+                    self.timeline_scroll_row = 0.0;
+                }
+            }
+            PeopleIntent::SaveName => {
+                if let Some(PeopleSelection::Approved(from)) = self.people_selection.clone() {
+                    let to = self.people_name_input.value().trim().to_owned();
+                    if to.is_empty() {
+                        self.notice = Some("Enter a name first".to_owned());
+                    } else {
+                        self.commit_library_action(
+                            doc,
+                            &crate::actions::PhotosAction::RenamePerson {
+                                from: from.clone(),
+                                to: to.clone(),
+                            },
+                        );
+                        self.people_selection = Some(PeopleSelection::Approved(to));
+                        self.notice = Some("Person renamed in the shared library".to_owned());
+                    }
+                }
+            }
+            PeopleIntent::BeginMerge => self.people_merge_mode = true,
+            PeopleIntent::MergeApprovedInto(to) => {
+                if let Some(PeopleSelection::Approved(from)) = self.people_selection.clone() {
+                    self.commit_library_action(
+                        doc,
+                        &crate::actions::PhotosAction::RenamePerson { from, to },
+                    );
+                    self.people_selection = None;
+                    self.people_merge_mode = false;
+                    self.notice = Some("People and their photographs were merged".to_owned());
+                }
+            }
+            PeopleIntent::ApproveSuggestion => {
+                if let Some(PeopleSelection::Suggestion(id)) = self.people_selection.clone() {
+                    let name = self.people_name_input.value().trim().to_owned();
+                    if matches!(
+                        self.people_controller.confirm_suggestion(&id, &name),
+                        crate::people::PeopleChange::Unchanged
+                    ) || !self.approve_people_cluster(doc, &id)
+                    {
+                        self.notice = Some("Enter a short name before approving".to_owned());
+                    } else {
+                        let _ = self.people_controller.set_hidden(&id, true);
+                        self.people_selection = None;
+                    }
+                }
+            }
+            PeopleIntent::RejectSuggestion => {
+                if let Some(PeopleSelection::Suggestion(id)) = self.people_selection.clone() {
+                    let _ = self.people_controller.reject_suggestion(&id);
+                    self.people_selection = None;
+                    self.notice = Some("Suggestion dismissed on this device".to_owned());
+                }
+            }
+            PeopleIntent::HideSuggestion => {
+                if let Some(PeopleSelection::Suggestion(id)) = self.people_selection.clone() {
+                    let _ = self.people_controller.set_hidden(&id, true);
+                    self.people_selection = None;
+                    self.notice = Some("Suggestion hidden; you can restore it later".to_owned());
+                }
+            }
+            PeopleIntent::RestoreSuggestion => {
+                if let Some(PeopleSelection::Suggestion(id)) = self.people_selection.clone() {
+                    let _ = self.people_controller.restore_suggestion(&id);
+                    self.people_selection = None;
+                    self.notice = Some("Suggestion returned to review".to_owned());
+                }
+            }
+            PeopleIntent::MergeSuggestionWith(source) => {
+                if let Some(PeopleSelection::Suggestion(destination)) =
+                    self.people_selection.clone()
+                {
+                    let _ = self.people_controller.merge_clusters(&destination, &source);
+                    self.people_merge_mode = false;
+                    self.notice = Some("Local suggestions combined for review".to_owned());
+                }
+            }
+            PeopleIntent::ToggleHidden => self.people_show_hidden = !self.people_show_hidden,
+            PeopleIntent::Page(forward) => {
+                self.people_review_page = if forward {
+                    self.people_review_page.saturating_add(1)
+                } else {
+                    self.people_review_page.saturating_sub(1)
+                };
+            }
+            PeopleIntent::DeleteLocalData => {
+                self.people_delete_confirm = true;
+                self.notice = Some(
+                    "Activate again to delete local face suggestions and model identity".to_owned(),
+                );
+            }
+            PeopleIntent::ConfirmDeleteLocalData => {
+                self.people_controller.delete_all_local_biometric_data();
+                self.people_delete_confirm = false;
+                self.people_selection = None;
+                self.notice =
+                    Some("Local face data deleted; approved shared names were kept".to_owned());
+            }
+        }
+        self.people_control_signature.clear();
     }
 
     /// Reveal the bounded library grid.  Kept public for the deterministic
@@ -1643,6 +2189,16 @@ impl PhotosApp {
         self.show_library();
         self.people_mode = true;
         self.library_destination = LibraryDestination::People;
+    }
+
+    /// Pose one real local suggestion for the deterministic visual gallery.
+    /// The named cluster must already exist; this never invents recognition
+    /// output or runs on a live launch.
+    pub fn show_people_suggestion_for_shot(&mut self, cluster_id: &str) {
+        self.show_people();
+        if self.people_controller.cluster(cluster_id).is_some() {
+            self.select_people_item(PeopleSelection::Suggestion(cluster_id.to_owned()));
+        }
     }
 
     fn begin_selection(&mut self) {
@@ -3173,7 +3729,46 @@ impl PhotosApp {
         };
         let canvas = if self.library_mode {
             let mut cards = Vec::new();
-            if self.library_destination == LibraryDestination::Places {
+            if self.library_destination == LibraryDestination::People || self.people_mode {
+                if self.people_selection.is_some() && !self.people_merge_mode {
+                    cards.push(
+                        AccessNode::new(Role::TextInput)
+                            .with_name("Person name")
+                            .with_value(self.people_name_input.value())
+                            .with_bounds(self.people_name_input.get_rect())
+                            .with_state(AccessState {
+                                focusable: true,
+                                focused: self.people_name_input.is_focused(),
+                                ..Default::default()
+                            })
+                            .with_hashed_key("photos:people:name")
+                            .with_action_target("photos:people:name"),
+                    );
+                }
+                cards.extend(
+                    self.people_controls
+                        .iter()
+                        .enumerate()
+                        .map(|(index, control)| {
+                            AccessNode::new(Role::Button)
+                                .with_name(control.label.clone())
+                                .with_bounds(control.button.get_rect())
+                                .with_state(AccessState {
+                                    focusable: control.button.is_focusable(),
+                                    focused: control.button.is_focused(),
+                                    disabled: !control.button.is_enabled(),
+                                    ..Default::default()
+                                })
+                                .with_action_target(format!("photos:people:control:{index}"))
+                        }),
+                );
+                AccessNode::new(Role::Group)
+                    .with_name("People")
+                    .with_description("Approved shared names and private suggestions awaiting review on this device")
+                    .with_bounds(self.canvas_rect)
+                    .with_hashed_key("photos:people")
+                    .with_children(cards)
+            } else if self.library_destination == LibraryDestination::Places {
                 cards.extend(self.places_hits.iter().map(|(hit, bounds)| {
                     let (name, target) = match hit {
                         PlacesHit::Timeline => ("Timeline", "photos:places:timeline".to_owned()),
@@ -3825,6 +4420,44 @@ impl PhotosApp {
                 self.page_collection(hit);
             }
             return true;
+        }
+        if target == "photos:people:name" {
+            return match action {
+                AccessAction::Focus => {
+                    self.people_name_input.set_focus(true);
+                    true
+                }
+                AccessAction::SetValue(value) => {
+                    self.people_name_input.set_text(value);
+                    true
+                }
+                _ => false,
+            };
+        }
+        if let Some(index) = target
+            .strip_prefix("photos:people:control:")
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            let Some(control) = self.people_controls.get(index) else {
+                return false;
+            };
+            return match action {
+                AccessAction::Focus => {
+                    for item in &mut self.people_controls {
+                        item.button.set_focus(false);
+                    }
+                    if let Some(control) = self.people_controls.get_mut(index) {
+                        control.button.set_focus(true);
+                    }
+                    true
+                }
+                AccessAction::Activate if control.button.is_enabled() => {
+                    let intent = control.intent.clone();
+                    self.handle_people_intent(intent, doc);
+                    true
+                }
+                _ => false,
+            };
         }
         if target.starts_with("photos:timeline-index:") {
             if matches!(action, AccessAction::Focus) {
@@ -4718,6 +5351,205 @@ impl PhotosApp {
             .unwrap()
     }
 
+    fn layout_people_controls(&mut self) {
+        let bounds = self.canvas_rect;
+        let pad = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
+        let content = Rect::new(
+            bounds.x0 + pad,
+            bounds.y0 + 18.0,
+            bounds.x1 - pad,
+            bounds.y1 - 18.0,
+        );
+        let wide = content.width() >= 760.0;
+        let overview = self.people_selection.is_none();
+        let body_y = content.y0
+            + if overview {
+                if wide { 132.0 } else { 168.0 }
+            } else if wide {
+                112.0
+            } else {
+                90.0
+            };
+        let mut action_row = 0usize;
+        let approved_count = self
+            .people_controls
+            .iter()
+            .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
+            .count();
+        let columns = if content.width() >= 1_100.0 {
+            4
+        } else if wide {
+            3
+        } else {
+            1
+        };
+        let gap = 12.0;
+        let card_width = if wide {
+            (content.width() - gap * (columns - 1) as f64) / columns as f64
+        } else {
+            content.width()
+        };
+        self.people_name_bounds = Rect::ZERO;
+        if self.people_selection.is_some() && !self.people_merge_mode {
+            let form_x = if wide {
+                content.x0 + content.width() * 0.48
+            } else {
+                content.x0
+            };
+            self.people_name_bounds = Rect::new(
+                form_x,
+                body_y + if wide { 84.0 } else { 142.0 },
+                content.x1,
+                body_y + if wide { 128.0 } else { 186.0 },
+            );
+        }
+        let mut approved_index = 0usize;
+        let mut suggestion_index = 0usize;
+        for control in &mut self.people_controls {
+            control.bounds = match &control.intent {
+                PeopleIntent::Back => Rect::new(
+                    content.x1 - 152.0_f64.min(content.width()),
+                    content.y0,
+                    content.x1,
+                    content.y0 + 44.0,
+                ),
+                PeopleIntent::ToggleRecognition if !wide => Rect::new(
+                    content.x0,
+                    content.y0 + 76.0,
+                    content.x0 + (content.width() - 8.0) * 0.5,
+                    content.y0 + 120.0,
+                ),
+                PeopleIntent::ToggleRecognition => Rect::new(
+                    content.x1 - 356.0,
+                    content.y0 + 70.0,
+                    content.x1 - 182.0,
+                    content.y0 + 114.0,
+                ),
+                PeopleIntent::Scan | PeopleIntent::CancelScan if !wide => Rect::new(
+                    content.x0 + (content.width() + 8.0) * 0.5,
+                    content.y0 + 76.0,
+                    content.x1,
+                    content.y0 + 120.0,
+                ),
+                PeopleIntent::Scan | PeopleIntent::CancelScan => Rect::new(
+                    content.x1 - 170.0,
+                    content.y0 + 70.0,
+                    content.x1,
+                    content.y0 + 114.0,
+                ),
+                PeopleIntent::OpenApproved(_) => {
+                    let index = approved_index;
+                    approved_index += 1;
+                    if wide {
+                        let row = index / columns;
+                        let column = index % columns;
+                        let x = content.x0 + column as f64 * (card_width + gap);
+                        let y = body_y + 30.0 + row as f64 * 150.0;
+                        Rect::new(x + 10.0, y + 94.0, x + card_width - 10.0, y + 138.0)
+                    } else {
+                        let y = body_y + 30.0 + index as f64 * 64.0;
+                        Rect::new(content.x1 - 120.0, y + 14.0, content.x1 - 10.0, y + 58.0)
+                    }
+                }
+                PeopleIntent::OpenSuggestion(_) => {
+                    let index = suggestion_index;
+                    suggestion_index += 1;
+                    let approved_rows = approved_count.div_ceil(columns);
+                    let section_y = if wide {
+                        body_y + 48.0 + approved_rows as f64 * 150.0
+                    } else {
+                        body_y + 48.0 + approved_count as f64 * 64.0
+                    };
+                    if wide {
+                        let row = index / columns;
+                        let column = index % columns;
+                        let x = content.x0 + column as f64 * (card_width + gap);
+                        let y = section_y + 30.0 + row as f64 * 150.0;
+                        Rect::new(x + 10.0, y + 94.0, x + card_width - 10.0, y + 138.0)
+                    } else {
+                        let y = section_y + 30.0 + index as f64 * 64.0;
+                        Rect::new(content.x1 - 120.0, y + 14.0, content.x1 - 10.0, y + 58.0)
+                    }
+                }
+                PeopleIntent::BrowseApproved
+                | PeopleIntent::SaveName
+                | PeopleIntent::BeginMerge
+                | PeopleIntent::ApproveSuggestion
+                | PeopleIntent::RejectSuggestion
+                | PeopleIntent::HideSuggestion
+                | PeopleIntent::RestoreSuggestion => {
+                    let row = action_row;
+                    action_row += 1;
+                    let x = if wide {
+                        content.x0 + content.width() * 0.48
+                    } else {
+                        content.x0
+                    };
+                    Rect::new(
+                        x,
+                        body_y + if wide { 142.0 } else { 200.0 } + row as f64 * 52.0,
+                        content.x1,
+                        body_y + if wide { 186.0 } else { 244.0 } + row as f64 * 52.0,
+                    )
+                }
+                PeopleIntent::MergeApprovedInto(_) | PeopleIntent::MergeSuggestionWith(_) => {
+                    let row = action_row;
+                    action_row += 1;
+                    Rect::new(
+                        content.x0 + if wide { content.width() * 0.48 } else { 0.0 },
+                        body_y + 80.0 + row as f64 * 52.0,
+                        content.x1,
+                        body_y + 124.0 + row as f64 * 52.0,
+                    )
+                }
+                PeopleIntent::ToggleHidden if !wide => Rect::new(
+                    content.x0,
+                    content.y1 - 96.0,
+                    content.x0 + (content.width() - 8.0) * 0.5,
+                    content.y1 - 52.0,
+                ),
+                PeopleIntent::DeleteLocalData | PeopleIntent::ConfirmDeleteLocalData if !wide => {
+                    Rect::new(
+                        content.x0 + (content.width() + 8.0) * 0.5,
+                        content.y1 - 96.0,
+                        content.x1,
+                        content.y1 - 52.0,
+                    )
+                }
+                PeopleIntent::Page(forward) if !wide => {
+                    let half = (content.width() - 8.0) * 0.5;
+                    let x = if *forward {
+                        content.x0 + half + 8.0
+                    } else {
+                        content.x0
+                    };
+                    Rect::new(x, content.y1 - 44.0, x + half, content.y1)
+                }
+                PeopleIntent::ToggleHidden => Rect::new(
+                    content.x0,
+                    content.y1 - 44.0,
+                    content.x0 + 210.0,
+                    content.y1,
+                ),
+                PeopleIntent::Page(forward) => {
+                    let half = 96.0;
+                    let x = if *forward {
+                        content.x0 + 316.0
+                    } else {
+                        content.x0 + 216.0
+                    };
+                    Rect::new(x, content.y1 - 96.0, x + half, content.y1 - 52.0)
+                }
+                PeopleIntent::DeleteLocalData | PeopleIntent::ConfirmDeleteLocalData => Rect::new(
+                    content.x1 - 210.0,
+                    content.y1 - 44.0,
+                    content.x1,
+                    content.y1,
+                ),
+            };
+        }
+    }
+
     /// Lay out the canvas: the `ImageViewer` if a photograph is open, else a
     /// placeholder leaf sized to soak the remaining height. `flex_basis: 0`
     /// with `min_size: 0` is what stops a large image's intrinsic size from
@@ -4735,18 +5567,91 @@ impl PhotosApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let canvas = match self.viewer.as_mut() {
-            Some(v) => v.build_layout(taffy, theme, node_map),
-            None => taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
+        let people_surface = self.library_mode
+            && (self.library_destination == LibraryDestination::People || self.people_mode);
+        let canvas = if people_surface {
+            self.layout_people_controls();
+            let mut children = Vec::new();
+            let show_name = self.people_selection.is_some() && !self.people_merge_mode;
+            if show_name {
+                let field = self.people_name_input.build_layout(taffy, theme, node_map);
+                let rect = self.people_name_bounds;
+                let _ = taffy.set_style(
+                    field,
+                    Style {
+                        position: Position::Absolute,
+                        inset: taffy::Rect {
+                            left: LengthPercentageAuto::length(
+                                (rect.x0 - self.canvas_rect.x0) as f32,
+                            ),
+                            top: LengthPercentageAuto::length(
+                                (rect.y0 - self.canvas_rect.y0) as f32,
+                            ),
+                            right: LengthPercentageAuto::auto(),
+                            bottom: LengthPercentageAuto::auto(),
+                        },
+                        size: Size {
+                            width: Dimension::length(rect.width() as f32),
+                            height: Dimension::length(rect.height() as f32),
+                        },
+                        ..Default::default()
                     },
-                    flex_grow: 1.0,
-                    ..Default::default()
-                })
-                .unwrap(),
+                );
+                children.push(field);
+            }
+            for control in &mut self.people_controls {
+                let node = control.button.build_layout(taffy, theme, node_map);
+                let rect = control.bounds;
+                let _ = taffy.set_style(
+                    node,
+                    Style {
+                        position: Position::Absolute,
+                        inset: taffy::Rect {
+                            left: LengthPercentageAuto::length(
+                                (rect.x0 - self.canvas_rect.x0) as f32,
+                            ),
+                            top: LengthPercentageAuto::length(
+                                (rect.y0 - self.canvas_rect.y0) as f32,
+                            ),
+                            right: LengthPercentageAuto::auto(),
+                            bottom: LengthPercentageAuto::auto(),
+                        },
+                        size: Size {
+                            width: Dimension::length(rect.width() as f32),
+                            height: Dimension::length(rect.height() as f32),
+                        },
+                        ..Default::default()
+                    },
+                );
+                children.push(node);
+            }
+            taffy
+                .new_with_children(
+                    Style {
+                        position: Position::Relative,
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::percent(1.0),
+                        },
+                        ..Default::default()
+                    },
+                    &children,
+                )
+                .unwrap()
+        } else {
+            match self.viewer.as_mut() {
+                Some(v) => v.build_layout(taffy, theme, node_map),
+                None => taffy
+                    .new_leaf(Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
+                        flex_grow: 1.0,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+            }
         };
         taffy
             .set_style(
@@ -5021,6 +5926,480 @@ impl PhotosApp {
     }
 
     fn draw_people(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        use vello::peniko::Fill;
+        self.library_cards.clear();
+        self.library_details_cards.clear();
+        self.metadata_filter_cards.clear();
+        let bounds = self.canvas_rect;
+        let pad = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
+        let content = Rect::new(
+            bounds.x0 + pad,
+            bounds.y0 + 18.0,
+            bounds.x1 - pad,
+            bounds.y1 - 18.0,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "People",
+            28.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, content.y0)),
+            Some(content.width() as f32),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Find photographs by person and review private, on-device suggestions.",
+            14.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, content.y0 + 36.0)),
+            Some(content.width() as f32),
+            TextWeight::Regular,
+        );
+
+        let wide = content.width() >= 760.0;
+        let body_y = content.y0
+            + if self.people_selection.is_some() {
+                if wide { 112.0 } else { 90.0 }
+            } else if wide {
+                132.0
+            } else {
+                168.0
+            };
+        let list_w = if wide {
+            ((content.width() - 28.0) * 0.42).clamp(280.0, 390.0)
+        } else {
+            content.width()
+        };
+        let detail_x = if self.people_selection.is_some() {
+            content.x0
+        } else if wide {
+            content.x0 + list_w + 28.0
+        } else {
+            content.x0
+        };
+        let detail_w = if self.people_selection.is_some() {
+            content.width()
+        } else if wide {
+            content.x1 - detail_x
+        } else {
+            content.width()
+        };
+
+        if let Some(selection) = self.people_selection.clone() {
+            let (title, subtitle, photo_ids, hidden) = match &selection {
+                PeopleSelection::Approved(name) => {
+                    let ids = self
+                        .people_approved
+                        .iter()
+                        .find(|person| &person.label == name)
+                        .map_or_else(Vec::new, |person| person.photo_ids.clone());
+                    (
+                        name.clone(),
+                        format!(
+                            "{} shared photograph{}",
+                            ids.len(),
+                            if ids.len() == 1 { "" } else { "s" }
+                        ),
+                        ids,
+                        false,
+                    )
+                }
+                PeopleSelection::Suggestion(id) => self.people_controller.cluster(id).map_or_else(
+                    || {
+                        (
+                            "Suggestion unavailable".to_owned(),
+                            "It may have been reviewed or removed on this device.".to_owned(),
+                            Vec::new(),
+                            true,
+                        )
+                    },
+                    |cluster| {
+                        (
+                            cluster
+                                .display_name
+                                .clone()
+                                .unwrap_or_else(|| "Who is this?".to_owned()),
+                            format!(
+                                "{} · {} photograph{} · private to this device",
+                                cluster.origin.label(),
+                                cluster.photos.len(),
+                                if cluster.photos.len() == 1 { "" } else { "s" }
+                            ),
+                            cluster.visible_photo_ids(),
+                            cluster.hidden || cluster.rejected,
+                        )
+                    },
+                ),
+            };
+            let panel = Rect::new(detail_x, body_y, detail_x + detail_w, content.y1);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.window_card,
+                None,
+                &RoundedRect::from_rect(panel, theme.radius_standard),
+            );
+            let copy_x = if wide {
+                panel.x0 + panel.width() * 0.48
+            } else {
+                panel.x0 + 20.0
+            };
+            text_renderer.draw_text_weighted(
+                scene,
+                if self.people_merge_mode {
+                    "Combine people"
+                } else {
+                    &title
+                },
+                22.0,
+                theme.text_primary,
+                transform * Affine::translate((copy_x, panel.y0 + 18.0)),
+                Some((panel.x1 - copy_x - 20.0) as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                if self.people_merge_mode {
+                    "Choose the person whose photographs belong with this one."
+                } else if hidden {
+                    "This suggestion is hidden. Restore it to review it again."
+                } else {
+                    &subtitle
+                },
+                13.0,
+                theme.text_dim,
+                transform * Affine::translate((copy_x, panel.y0 + 48.0)),
+                Some((panel.x1 - copy_x - 20.0) as f32),
+                TextWeight::Regular,
+            );
+            if !self.people_merge_mode {
+                let preview_y = panel.y0 + if wide { 20.0 } else { 92.0 };
+                let preview_gap = 6.0;
+                let slots = photo_ids.len().clamp(1, 4);
+                let preview_area_w = if wide {
+                    panel.width() * 0.43
+                } else {
+                    panel.width() - 40.0
+                };
+                let preview_w = ((preview_area_w - preview_gap * slots.saturating_sub(1) as f64)
+                    / slots as f64)
+                    .max(54.0);
+                for (index, id) in photo_ids.iter().take(4).enumerate() {
+                    let preview = Rect::new(
+                        panel.x0 + 20.0 + index as f64 * (preview_w + preview_gap),
+                        preview_y,
+                        panel.x0 + 20.0 + index as f64 * (preview_w + preview_gap) + preview_w,
+                        preview_y + if wide { 220.0 } else { 32.0 },
+                    );
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.surfaces.raised,
+                        None,
+                        &RoundedRect::from_rect(preview, theme.radius_standard),
+                    );
+                    if let Some(image) = self.library_thumbnails.get(id) {
+                        let scale = (preview.width() / f64::from(image.width))
+                            .min(preview.height() / f64::from(image.height));
+                        scene.draw_image(
+                            image,
+                            transform
+                                * Affine::translate((
+                                    preview.x0
+                                        + (preview.width() - f64::from(image.width) * scale) * 0.5,
+                                    preview.y0
+                                        + (preview.height() - f64::from(image.height) * scale)
+                                            * 0.5,
+                                ))
+                                * Affine::scale(scale),
+                        );
+                    } else {
+                        draw_icon(
+                            scene,
+                            transform,
+                            preview.inflate(-24.0, -24.0),
+                            Icon::Image,
+                            theme.text_dim,
+                            1.5,
+                        );
+                    }
+                }
+                text_renderer.draw_text_weighted(
+                    scene,
+                    match selection {
+                        PeopleSelection::Approved(_) => "Name",
+                        PeopleSelection::Suggestion(_) => "Name this person",
+                    },
+                    12.0,
+                    theme.text_dim,
+                    transform
+                        * Affine::translate((copy_x, panel.y0 + if wide { 68.0 } else { 128.0 })),
+                    Some((panel.x1 - copy_x - 20.0) as f32),
+                    TextWeight::Medium,
+                );
+            }
+            return;
+        }
+
+        let recognition_card = Rect::new(
+            content.x0,
+            content.y0 + if wide { 58.0 } else { 68.0 },
+            content.x1,
+            content.y0 + if wide { 122.0 } else { 150.0 },
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.window_card,
+            None,
+            &RoundedRect::from_rect(recognition_card, theme.radius_standard),
+        );
+        if wide {
+            text_renderer.draw_text_weighted(
+                scene,
+                "On-device recognition",
+                14.0,
+                theme.text_primary,
+                transform
+                    * Affine::translate((recognition_card.x0 + 16.0, recognition_card.y0 + 10.0)),
+                Some(300.0),
+                TextWeight::Semibold,
+            );
+        }
+        text_renderer.draw_text_weighted(
+            scene,
+            "People you’ve named",
+            17.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, body_y)),
+            Some(content.width() as f32),
+            TextWeight::Semibold,
+        );
+        if self.people_approved.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Approved names will appear here with all of their photographs.",
+                13.0,
+                theme.text_dim,
+                transform * Affine::translate((content.x0, body_y + 32.0)),
+                Some(content.width() as f32),
+                TextWeight::Regular,
+            );
+        }
+        let approved_count = self
+            .people_controls
+            .iter()
+            .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
+            .count();
+        let columns = if content.width() >= 1_100.0 {
+            4
+        } else if wide {
+            3
+        } else {
+            1
+        };
+        let suggestion_y = if wide {
+            body_y + 48.0 + approved_count.div_ceil(columns) as f64 * 150.0
+        } else {
+            body_y + 48.0 + approved_count as f64 * 64.0
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            "Suggestions to review",
+            17.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, suggestion_y)),
+            Some(content.width() as f32),
+            TextWeight::Semibold,
+        );
+
+        let mut cards = Vec::new();
+        for control in &self.people_controls {
+            let (title, subtitle, photo_ids, suggestion) = match &control.intent {
+                PeopleIntent::OpenApproved(name) => {
+                    let person = self
+                        .people_approved
+                        .iter()
+                        .find(|person| &person.label == name);
+                    let count = person.map_or(0, crate::people::SharedPerson::count);
+                    (
+                        name.clone(),
+                        format!("{count} photograph{}", if count == 1 { "" } else { "s" }),
+                        person.map_or_else(Vec::new, |person| person.photo_ids.clone()),
+                        false,
+                    )
+                }
+                PeopleIntent::OpenSuggestion(id) => {
+                    let Some(cluster) = self.people_controller.cluster(id) else {
+                        continue;
+                    };
+                    (
+                        cluster
+                            .display_name
+                            .clone()
+                            .unwrap_or_else(|| "Suggested person".to_owned()),
+                        format!(
+                            "{} photos · {} · private",
+                            cluster.photos.len(),
+                            cluster.origin.label()
+                        ),
+                        cluster.visible_photo_ids(),
+                        true,
+                    )
+                }
+                _ => continue,
+            };
+            let button = control.bounds;
+            let card = if wide {
+                Rect::new(
+                    button.x0 - 10.0,
+                    button.y0 - 94.0,
+                    button.x1 + 10.0,
+                    button.y1 + 4.0,
+                )
+            } else {
+                Rect::new(content.x0, button.y0 - 14.0, content.x1, button.y1 + 14.0)
+            };
+            cards.push((card, title, subtitle, photo_ids, suggestion));
+        }
+        for (card, title, subtitle, photo_ids, _suggestion) in cards {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(card, theme.radius_standard),
+            );
+            let thumb = if wide {
+                Rect::new(
+                    card.x0 + 12.0,
+                    card.y0 + 10.0,
+                    card.x0 + 76.0,
+                    card.y0 + 76.0,
+                )
+            } else {
+                Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x0 + 64.0, card.y1 - 8.0)
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(thumb, theme.radius_standard),
+            );
+            if let Some(image) = photo_ids
+                .iter()
+                .find_map(|photo_id| self.library_thumbnails.get(photo_id))
+            {
+                let scale = (thumb.width() / f64::from(image.width))
+                    .min(thumb.height() / f64::from(image.height));
+                scene.draw_image(
+                    image,
+                    transform
+                        * Affine::translate((
+                            thumb.x0 + (thumb.width() - f64::from(image.width) * scale) * 0.5,
+                            thumb.y0 + (thumb.height() - f64::from(image.height) * scale) * 0.5,
+                        ))
+                        * Affine::scale(scale),
+                );
+            } else {
+                draw_icon(
+                    scene,
+                    transform,
+                    thumb.inflate(-16.0, -16.0),
+                    Icon::Users,
+                    theme.text_dim,
+                    1.5,
+                );
+            }
+            let copy_x = card.x0 + if wide { 86.0 } else { 74.0 };
+            text_renderer.draw_text_weighted(
+                scene,
+                &title,
+                if wide { 16.0 } else { 14.0 },
+                theme.text_primary,
+                transform * Affine::translate((copy_x, card.y0 + 14.0)),
+                Some((card.x1 - copy_x - if wide { 12.0 } else { 126.0 }) as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &subtitle,
+                12.0,
+                theme.text_dim,
+                transform * Affine::translate((copy_x, card.y0 + 39.0)),
+                Some((card.x1 - copy_x - if wide { 12.0 } else { 126.0 }) as f32),
+                TextWeight::Regular,
+            );
+        }
+        let visible_suggestions = self
+            .people_controller
+            .all_clusters()
+            .filter(|cluster| self.people_show_hidden || (!cluster.hidden && !cluster.rejected))
+            .count();
+        if visible_suggestions == 0 {
+            text_renderer.draw_text_weighted(
+                scene,
+                match self.people_controller.capability() {
+                    crate::people::FaceCapability::DisabledByOwner => {
+                        "Turn on recognition when you want private suggestions from this device."
+                    }
+                    crate::people::FaceCapability::NoVerifiedFaceModel => {
+                        "Recognition is enabled, but no verified local face model is ready."
+                    }
+                    crate::people::FaceCapability::Ready { .. } => {
+                        "No suggestions are waiting. Scan another local batch when you’re ready."
+                    }
+                },
+                13.0,
+                theme.text_dim,
+                transform * Affine::translate((content.x0, suggestion_y + 32.0)),
+                Some(content.width() as f32),
+                TextWeight::Regular,
+            );
+        }
+        let scan_state = match self.people_scan_progress.status.as_str() {
+            "running" => "Scanning locally… Suggestions appear here when this batch finishes.",
+            "error" => self
+                .people_scan_progress
+                .last_error
+                .as_deref()
+                .unwrap_or("The last local scan could not finish."),
+            "cancelled" => "Scanning is paused. Starting again resumes with the next batch.",
+            _ => self.people_controller.capability().summary(),
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            scan_state,
+            12.0,
+            theme.text_dim,
+            transform
+                * Affine::translate(if wide {
+                    (recognition_card.x0 + 16.0, recognition_card.y0 + 34.0)
+                } else {
+                    (content.x0 + 12.0, content.y0 + 128.0)
+                }),
+            Some(if wide {
+                (content.width() - 530.0).max(180.0) as f32
+            } else {
+                content.width() as f32
+            }),
+            TextWeight::Regular,
+        );
+    }
+
+    #[allow(
+        dead_code,
+        reason = "kept temporarily as a geometry reference while the retained People surface settles"
+    )]
+    fn draw_people_legacy(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -9264,6 +10643,7 @@ impl Widget for PhotosApp {
                 *tags.entry(tag.clone()).or_default() += 1;
             }
         }
+        self.people_approved = crate::people::approved_people(&library);
         self.library_folders = folders.into_iter().take(6).collect();
         self.library_people = people.into_iter().collect();
         self.albums_page = self
@@ -9289,6 +10669,22 @@ impl Widget for PhotosApp {
             {
                 self.library_person_covers
                     .insert(person.clone(), photo.id.clone());
+            }
+        }
+        // The dedicated People management surface may show approved people
+        // outside the current browse-shelf page, so add their bounded covers
+        // without changing collection-page navigation.
+        for person in &self.people_approved {
+            if self.library_person_covers.contains_key(&person.label) {
+                continue;
+            }
+            if let Some(photo) = library
+                .photos
+                .iter()
+                .find(|photo| photo.people.iter().any(|label| label == &person.label))
+            {
+                self.library_person_covers
+                    .insert(person.label.clone(), photo.id.clone());
             }
         }
         self.library_tags = tags.into_iter().take(6).collect();
@@ -9318,8 +10714,21 @@ impl Widget for PhotosApp {
             }
             thumbnail_sources.truncate(24);
         }
+        if self.library_destination == LibraryDestination::People {
+            for cluster in self.people_controller.all_clusters() {
+                for photo_id in cluster.visible_photo_ids().into_iter().take(4) {
+                    if thumbnail_sources.iter().all(|photo| photo.id != photo_id)
+                        && let Some(photo) = library.photo(&photo_id).cloned()
+                    {
+                        thumbnail_sources.push(photo);
+                    }
+                }
+            }
+            thumbnail_sources.truncate(40);
+        }
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
+        self.refresh_people_controls();
     }
 
     #[allow(
@@ -9422,13 +10831,34 @@ impl Widget for PhotosApp {
         }
         if let Some(&canvas) = children.get(2) {
             let cl = taffy.layout(canvas).unwrap();
+            let canvas_origin =
+                Point::new(x + f64::from(cl.location.x), y + f64::from(cl.location.y));
             self.canvas_rect = Rect::new(
-                x + f64::from(cl.location.x),
-                y + f64::from(cl.location.y),
-                x + f64::from(cl.location.x) + f64::from(cl.size.width),
-                y + f64::from(cl.location.y) + f64::from(cl.size.height),
+                canvas_origin.x,
+                canvas_origin.y,
+                canvas_origin.x + f64::from(cl.size.width),
+                canvas_origin.y + f64::from(cl.size.height),
             );
-            if let Some(v) = self.viewer.as_mut() {
+            let people_surface = self.library_mode
+                && (self.library_destination == LibraryDestination::People || self.people_mode);
+            if people_surface {
+                let canvas_children = taffy.children(canvas).unwrap_or_default();
+                let show_name = self.people_selection.is_some() && !self.people_merge_mode;
+                let mut index = 0usize;
+                if show_name {
+                    if let Some(&field) = canvas_children.get(index) {
+                        self.people_name_input
+                            .apply_layout(taffy, field, canvas_origin);
+                    }
+                    index += 1;
+                }
+                for control in &mut self.people_controls {
+                    if let Some(&button) = canvas_children.get(index) {
+                        control.button.apply_layout(taffy, button, canvas_origin);
+                    }
+                    index += 1;
+                }
+            } else if let Some(v) = self.viewer.as_mut() {
                 v.apply_layout(taffy, canvas, here);
             }
         }
@@ -9526,6 +10956,15 @@ impl Widget for PhotosApp {
                 .draw(scene, transform, text_renderer, theme, presence);
             if self.library_destination == LibraryDestination::People || self.people_mode {
                 self.draw_people(scene, transform, text_renderer, theme);
+                if self.people_selection.is_some() && !self.people_merge_mode {
+                    self.people_name_input
+                        .draw(scene, transform, text_renderer, theme, presence);
+                }
+                for control in &mut self.people_controls {
+                    control
+                        .button
+                        .draw(scene, transform, text_renderer, theme, presence);
+                }
             } else if self.library_destination == LibraryDestination::Places {
                 self.draw_places(scene, transform, text_renderer, theme, presence);
             } else {
@@ -9586,6 +11025,75 @@ impl Widget for PhotosApp {
                 );
             }
             self.pointer = next;
+        }
+        let people_surface = self.library_mode
+            && (self.library_destination == LibraryDestination::People || self.people_mode);
+        if people_surface {
+            if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+                && key.state == winit::event::ElementState::Pressed
+                && matches!(key.logical_key, Key::Named(NamedKey::Escape))
+            {
+                self.handle_people_intent(PeopleIntent::Back, doc);
+                *handled = true;
+                return;
+            }
+            let root_children = taffy.children(node_id).unwrap_or_default();
+            if let Some(&canvas) = root_children.get(2) {
+                let canvas_children = taffy.children(canvas).unwrap_or_default();
+                let show_name = self.people_selection.is_some() && !self.people_merge_mode;
+                let mut index = 0usize;
+                if show_name {
+                    if let Some(&field) = canvas_children.get(index) {
+                        self.people_name_input.handle_event(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            doc,
+                            path,
+                            handled,
+                            focus_target,
+                            field,
+                            taffy,
+                        );
+                    }
+                    index += 1;
+                    if self.people_name_input.take_submit() {
+                        let intent = match self.people_selection {
+                            Some(PeopleSelection::Approved(_)) => PeopleIntent::SaveName,
+                            Some(PeopleSelection::Suggestion(_)) => PeopleIntent::ApproveSuggestion,
+                            None => PeopleIntent::Back,
+                        };
+                        self.handle_people_intent(intent, doc);
+                        *handled = true;
+                        return;
+                    }
+                }
+                for control in &mut self.people_controls {
+                    if let Some(&button) = canvas_children.get(index) {
+                        control.button.handle_event(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            doc,
+                            path,
+                            handled,
+                            focus_target,
+                            button,
+                            taffy,
+                        );
+                    }
+                    index += 1;
+                }
+            }
+            let pending = self.people_pending.borrow_mut().take();
+            if let Some(intent) = pending {
+                self.handle_people_intent(intent, doc);
+                *handled = true;
+                return;
+            }
+            if *handled {
+                return;
+            }
         }
         if self.library_mode
             && self.library_destination == LibraryDestination::Places
@@ -10894,6 +12402,109 @@ mod tests {
                 .origin,
             crate::people::ProposalOrigin::ImportedOrManual
         );
+    }
+
+    #[test]
+    fn people_surface_completes_review_browse_rename_and_merge_through_canonical_actions() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = LibraryPhoto::from_image(
+            OpenImage::from_path("/photos/first.png", 20, 10)
+                .with_content(qdoc::blobstore::hash_bytes(b"first-person")),
+        );
+        let first_id = first.id.clone();
+        let mut second = LibraryPhoto::from_image(
+            OpenImage::from_path("/photos/second.png", 20, 10)
+                .with_content(qdoc::blobstore::hash_bytes(b"second-person")),
+        );
+        second.people = vec!["Alex".to_owned()];
+        crate::actions::PhotosAction::ImportPhoto { photo: first }
+            .apply(&mut doc)
+            .unwrap();
+        crate::actions::PhotosAction::ImportPhoto { photo: second }
+            .apply(&mut doc)
+            .unwrap();
+        assert!(app.people_controller_mut().add_cluster(
+            "review-me",
+            [first_id.clone()],
+            crate::people::ProposalOrigin::ImportedOrManual,
+        ));
+
+        app.select_people_item(PeopleSelection::Suggestion("review-me".to_owned()));
+        app.people_name_input.set_text("Sam");
+        app.handle_people_intent(PeopleIntent::ApproveSuggestion, &mut doc);
+        assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Sam"]);
+        assert!(
+            app.people_controller().cluster("review-me").unwrap().hidden,
+            "an approved local proposal leaves the active review queue"
+        );
+
+        app.select_people_item(PeopleSelection::Approved("Sam".to_owned()));
+        app.people_name_input.set_text("Samuel");
+        app.handle_people_intent(PeopleIntent::SaveName, &mut doc);
+        assert_eq!(
+            PhotosDoc::photo(&doc, &first_id).unwrap().people,
+            ["Samuel"]
+        );
+        app.handle_people_intent(PeopleIntent::MergeApprovedInto("Alex".to_owned()), &mut doc);
+        assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Alex"]);
+
+        app.select_people_item(PeopleSelection::Approved("Alex".to_owned()));
+        app.handle_people_intent(PeopleIntent::BrowseApproved, &mut doc);
+        assert_eq!(app.active_person.as_deref(), Some("Alex"));
+        assert_eq!(app.library_destination, LibraryDestination::Timeline);
+        assert!(!app.people_mode);
+    }
+
+    #[test]
+    fn people_rejection_is_reversible_and_accessibility_activates_the_same_control() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        assert!(
+            app.people_controller_mut().add_cluster(
+                "dismiss-me",
+                [
+                    "photos.photo:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_owned()
+                ],
+                crate::people::ProposalOrigin::ImportedOrManual,
+            )
+        );
+        app.library_mode = true;
+        app.people_mode = true;
+        app.library_destination = LibraryDestination::People;
+        app.select_people_item(PeopleSelection::Suggestion("dismiss-me".to_owned()));
+        app.refresh_people_controls();
+
+        let reject = app
+            .people_controls
+            .iter()
+            .position(|control| matches!(control.intent, PeopleIntent::RejectSuggestion))
+            .unwrap();
+        assert!(app.perform_library_semantic_action(
+            &format!("photos:people:control:{reject}"),
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        let cluster = app.people_controller().cluster("dismiss-me").unwrap();
+        assert!(cluster.hidden && cluster.rejected);
+
+        app.select_people_item(PeopleSelection::Suggestion("dismiss-me".to_owned()));
+        app.refresh_people_controls();
+        let restore = app
+            .people_controls
+            .iter()
+            .position(|control| matches!(control.intent, PeopleIntent::RestoreSuggestion))
+            .unwrap();
+        assert!(app.perform_library_semantic_action(
+            &format!("photos:people:control:{restore}"),
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        let cluster = app.people_controller().cluster("dismiss-me").unwrap();
+        assert!(!cluster.hidden && !cluster.rejected);
     }
 
     #[test]
