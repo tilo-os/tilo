@@ -55,7 +55,25 @@ pub struct InternalBundle {
     manifest: Manifest,
 }
 
+/// Immutable validated metadata; this view grants no authentication or file authority.
+#[derive(Clone, Copy, Debug)]
+pub struct ComponentView<'a> {
+    pub role: &'a str,
+    pub filename: &'a str,
+    pub byte_size: u64,
+    pub sha256: &'a str,
+}
+
 impl InternalBundle {
+    pub fn component(&self, index: usize) -> Option<ComponentView<'_>> {
+        self.manifest.components.get(index).map(|c| ComponentView {
+            role: &c.role,
+            filename: &c.filename,
+            byte_size: c.byte_size,
+            sha256: &c.sha256,
+        })
+    }
+
     pub fn release_id(&self) -> &str {
         &self.manifest.release_id
     }
