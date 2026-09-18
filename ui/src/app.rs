@@ -7814,15 +7814,19 @@ fn create_window_render_prepared(
     // `Result`, so guard it like the worker's reconfigures do
     // (`render_thread::configure_surface_checked`) — an already-lost
     // surface would otherwise hit wgpu's panicking default handler.
+    tilo_startup_metrics::mark("window-surface-validation-scope-start");
     let configure_scope = device_handle
         .device
         .push_error_scope(vello::wgpu::ErrorFilter::Validation);
+    tilo_startup_metrics::mark("window-surface-checked-configure-start");
     surface
         .surface
         .configure(&device_handle.device, &surface.config);
+    tilo_startup_metrics::mark("window-surface-checked-configure-done");
     if let Some(err) = pollster::block_on(configure_scope.pop()) {
         return Err(format!("could not configure the drawing surface: {err}"));
     }
+    tilo_startup_metrics::mark("window-surface-validation-scope-done");
     // create_surface checks presentation support and selects another device
     // if necessary. Never use pipelines built for a different device.
     let renderer = match prepared_renderer {
@@ -7830,7 +7834,9 @@ fn create_window_render_prepared(
         _ => create_native_renderer(device_handle)?,
     };
     // After this, every GPU call happens on its render worker.
-    spawn_render_thread(render_cx, surface, renderer)
+    let render = spawn_render_thread(render_cx, surface, renderer)?;
+    tilo_startup_metrics::mark("window-render-context-done");
+    Ok(render)
 }
 
 fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Renderer, String> {

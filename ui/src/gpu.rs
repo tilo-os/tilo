@@ -292,24 +292,30 @@ impl RenderContext {
         height: u32,
         present_mode: wgpu::PresentMode,
     ) -> Result<RenderSurface<'w>, CreateSurfaceError> {
+        tilo_startup_metrics::mark("surface-native-create-start");
         let surface = self
             .instance
             .create_surface(window.into())
             .map_err(|_| CreateSurfaceError::Surface)?;
+        tilo_startup_metrics::mark("surface-native-create-done");
+        tilo_startup_metrics::mark("surface-device-select-start");
         let dev_id = self
             .device(Some(&surface))
             .await
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
+        tilo_startup_metrics::mark("surface-device-select-done");
         let handle = self
             .devices
             .get(dev_id)
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
+        tilo_startup_metrics::mark("surface-capabilities-start");
         let capabilities = surface.get_capabilities(&handle.adapter);
         let format = capabilities
             .formats
             .into_iter()
             .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
             .ok_or(CreateSurfaceError::UnsupportedSurfaceFormat)?;
+        tilo_startup_metrics::mark("surface-capabilities-done");
 
         let config = SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -321,7 +327,12 @@ impl RenderContext {
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
         };
+        tilo_startup_metrics::mark("surface-targets-create-start");
         let (target_texture, target_view) = create_targets(width, height, &handle.device);
+        tilo_startup_metrics::mark("surface-targets-create-done");
+        tilo_startup_metrics::mark("surface-blitter-create-start");
+        let blitter = TextureBlitter::new(&handle.device, format);
+        tilo_startup_metrics::mark("surface-blitter-create-done");
         let surface = RenderSurface {
             surface,
             config,
@@ -329,9 +340,11 @@ impl RenderContext {
             format,
             target_texture,
             target_view,
-            blitter: TextureBlitter::new(&handle.device, format),
+            blitter,
         };
+        tilo_startup_metrics::mark("surface-initial-configure-start");
         self.configure_surface(&surface);
+        tilo_startup_metrics::mark("surface-initial-configure-done");
         Ok(surface)
     }
 
