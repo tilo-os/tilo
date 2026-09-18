@@ -8689,6 +8689,26 @@ impl ShellOverlayHost {
         self.quick_settings_rect()
     }
 
+    pub fn quick_settings_semantic_rects(&self) -> Vec<(String, Rect)> {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Vec::new();
+        };
+        let state = chrome.borrow();
+        if !state.overlays.quick_settings
+            || !matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            )
+        {
+            return Vec::new();
+        }
+        self.qs_root.semantic_rects(&state.quick_settings)
+    }
+
+    pub fn power_menu_semantic_rects(&self) -> Vec<(&'static str, Rect)> {
+        self.power_menu.action_rects(self.rect)
+    }
+
     /// May the local user invite into the room they're looking at? Asked
     /// through the same policy the palette's `peer.invite` row is filtered
     /// on, not re-decided here — a second opinion is a second security
@@ -14621,6 +14641,9 @@ impl Widget for ShellOverlayHost {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name("Tilo workspace");
+        if let Some(power_menu) = self.power_menu.accessibility_snapshot() {
+            root.children.push(power_menu);
+        }
         for overlay in self.accessible_overlay_order() {
             match overlay {
                 AccessibleOverlay::CommandPalette => {
