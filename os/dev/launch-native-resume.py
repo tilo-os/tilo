@@ -54,6 +54,41 @@ def stage_tools_context(source, build, cosign):
         recipe.write('\nRUN chmod 0755 /var/lib && /usr/local/bin/cosign version\n')
 
 
+EXTRA_PARTIALS = {'CHECKPOINT_RELEASE': ('checkpoint-release.json', '279f3b208500a67d6bceb38ead1fa33a5916417517a6ca6a74710d80588f88fd'),
+                  'CHECKPOINT_WINDOWS': ('checkpoint-windows.json', '63673aa2e9d4764698bc8235e7dec24cd4ec9f7a9e77b8b926594ee52adc3403')}
+ADMISSION = 'RECONSTRUCTED_PARTIAL_ADMISSION'
+
+
+def prepare_extra_partials(environment, unique):
+    labels = (*EXTRA_PARTIALS, ADMISSION)
+    fields = [label + suffix for label in labels for suffix in ('', '_SHA256')]
+    if not any(environment.get(key) for key in fields):
+        return {}
+    require(all(environment.get(key) for key in fields), 'all reconstructed partials and admission hashes required')
+    receipts, documents = {}, {}
+    for label in labels:
+        raw = environment[label].encode()
+        require(0 < len(raw) <= 65536 and re.fullmatch('[0-9a-f]{64}', environment[label+'_SHA256'])
+                and hashlib.sha256(raw).hexdigest() == environment[label+'_SHA256'], 'reconstructed public input hash differs')
+        value = json.loads(raw, object_pairs_hook=unique)
+        require(isinstance(value, dict), 'reconstructed public input object required')
+        receipts[label], documents[label] = raw, value
+        if label in EXTRA_PARTIALS:
+            require(value.get('purpose') == 'tilo-development-reconstructed-partial-native-checkpoint'
+                and value.get('source_revision') == SOURCE and value.get('helper_revision') == '9d7a6b259c9b75b6c5031472bfed05b6461c1893'
+                and value.get('run_id') == 21554 and value.get('run_number') == 8166
+                and all(value.get(k) is False for k in ('installable','complete_native_builder','build_success','resume_admitted')),
+                'reviewed incomplete reconstructed producer required')
+            require(value.get('reference') == 'code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:'+EXTRA_PARTIALS[label][1],
+                    'reviewed reconstructed reference required')
+    admission = documents[ADMISSION]
+    require(admission.get('purpose') == 'tilo-reconstructed-partial-admission'
+        and set(admission.get('receipts', {})) == {environment[k+'_SHA256'] for k in EXTRA_PARTIALS}, 'admission receipt set differs')
+    for label in EXTRA_PARTIALS:
+        require(admission['receipts'][environment[label+'_SHA256']]['inventory'] == documents[label]['inventory'], 'admitted inventory differs')
+    return receipts
+
+
 def prepare_receipts(environment):
     def unique(pairs):
         result = {}
@@ -88,6 +123,7 @@ def prepare_receipts(environment):
         require(value.get('purpose') == 'tilo-incomplete-thin-cache-admission' and value.get('source_revision') == SOURCE,
                 'thin cache approval identity differs')
         receipts['THIN_CACHE_APPROVAL'] = raw
+    receipts.update(prepare_extra_partials(environment, unique))
     return receipts
 
 
@@ -103,6 +139,10 @@ def driver_argv(helper_revision, hashes):
             '--resume-checkpoint', '/work/checkpoint-delta.json', hashes['CHECKPOINT_DELTA_SHA256']]
     if hashes.get('THIN_CACHE_APPROVAL_SHA256'):
         result += ['--resume-thin-cache-approval', '/work/thin-cache-approval.json', hashes['THIN_CACHE_APPROVAL_SHA256']]
+    if hashes.get(ADMISSION+'_SHA256'):
+        for label, (filename, _) in EXTRA_PARTIALS.items():
+            result += ['--resume-checkpoint', '/work/'+filename, hashes[label+'_SHA256']]
+        result += ['--resume-reconstructed-partial-admission', '/work/reconstructed-partial-admission.json', hashes[ADMISSION+'_SHA256']]
     return result
 
 
@@ -212,8 +252,11 @@ def main():
             # source/controller checks. They contain no registry/cache credentials.
             run('docker', 'cp', str(args.source) + '/.', container + ':/work/repo')
             run('docker', 'cp', str(args.helpers), container + ':/work/controller')
-            for key, filename in (('CHECKPOINT_INITIAL', 'checkpoint-initial.json'), ('CHECKPOINT_DELTA', 'checkpoint-delta.json'),
-                                  ('WPE_ADOPTION', 'wpe-adoption.json')):
+            public_files = [('CHECKPOINT_INITIAL', 'checkpoint-initial.json'), ('CHECKPOINT_DELTA', 'checkpoint-delta.json'), ('WPE_ADOPTION', 'wpe-adoption.json')]
+            if ADMISSION in receipts:
+                public_files += [(key, value[0]) for key, value in EXTRA_PARTIALS.items()]
+                public_files += [(ADMISSION, 'reconstructed-partial-admission.json')]
+            for key, filename in public_files:
                 path = temporary / filename
                 path.write_bytes(receipts[key])
                 run('docker', 'cp', str(path), container + ':/work/' + filename)
@@ -231,6 +274,9 @@ def main():
                         'tools_config_digest': image['Id'], 'docker_container_id': container,
                         'cpu_limit': 4, 'memory_limit_bytes': 9 * 1024**3,
                         'checkpoint_receipt_sha256': [os.environ['CHECKPOINT_INITIAL_SHA256'], os.environ['CHECKPOINT_DELTA_SHA256']]}
+            if ADMISSION in receipts:
+                identity['checkpoint_receipt_sha256'] += [os.environ[key+'_SHA256'] for key in EXTRA_PARTIALS]
+                identity['reconstructed_partial_admission_sha256'] = os.environ[ADMISSION+'_SHA256']
             (args.evidence / 'worker.json').write_text(json.dumps(identity) + '\n')
             attach_and_observe(container, args.evidence)
         finally:

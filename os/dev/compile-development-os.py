@@ -241,6 +241,8 @@ def resume_selected_native(args, inputs, environment):
         command += ['--checkpoint', str(receipt), digest]
     if args.resume_thin_cache_approval:
         command += ['--thin-cache-approval', *args.resume_thin_cache_approval]
+    if args.resume_reconstructed_partial_admission:
+        command += ['--reconstructed-partial-admission', *args.resume_reconstructed_partial_admission]
     run(*command, capture=False)
 
 
@@ -702,6 +704,7 @@ def main(argv=None):
     parser.add_argument('--reconstructed-native-receipt', type=Path)
     parser.add_argument('--reconstructed-native-sha256', default='')
     parser.add_argument('--approved-reconstruction-sha256', default='')
+    parser.add_argument('--resume-reconstructed-partial-admission', nargs=2, metavar=('JSON','SHA256'))
     parser.add_argument('--resume-checkpoint', nargs=2, action='append', metavar=('RECEIPT', 'SHA256'))
     parser.add_argument('--resume-thin-cache-approval', nargs=2, metavar=('APPROVAL', 'SHA256'))
     parser.add_argument('--source-dir', type=Path)
@@ -727,6 +730,9 @@ def main(argv=None):
     if args.resume_thin_cache_approval and (not args.resume_checkpoint or
             not re.fullmatch('[0-9a-f]{64}', args.resume_thin_cache_approval[1])):
         raise ValueError('thin cache approval requires explicit native resume and exact SHA256')
+    if args.resume_reconstructed_partial_admission and (not args.resume_checkpoint
+            or not re.fullmatch(r'[0-9a-f]{64}', args.resume_reconstructed_partial_admission[1])):
+        raise ValueError('reconstructed partial admission requires pinned partial resume')
     os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
     controller_source = select_source(args.source_dir, args.revision, args.controller_revision)
     validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate,
