@@ -41,7 +41,7 @@ jobs:
           '${{ github.event.pull_request.base.sha }}'
           '${{ github.event.before }}'
 
-      - name: Require reasons for new Rust lint exceptions
+      - name: Require reasons for Rust lint exceptions in changed files
         run: >-
           python3 tools/check_changed_rust_allows.py
           '${{ github.event.pull_request.base.sha }}'
