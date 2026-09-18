@@ -98,7 +98,6 @@ use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 use suballocation::Allocator;
 use windows::{
-    core::{Free as _, Interface},
     Win32::{
         Foundation,
         Graphics::{
@@ -108,6 +107,7 @@ use windows::{
         },
         System::Threading,
     },
+    core::{Free as _, Interface},
 };
 
 use self::dcomp::DCompLib;
@@ -647,7 +647,10 @@ impl Surface {
 #[derive(Debug, Clone, Copy)]
 enum MemoryArchitecture {
     Unified {
-        #[allow(unused)]
+        #[allow(
+            unused,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
         cache_coherent: bool,
     },
     NonUnified,
@@ -657,7 +660,10 @@ enum MemoryArchitecture {
 struct PrivateCapabilities {
     instance_flags: wgt::InstanceFlags,
     workarounds: Workarounds,
-    #[allow(unused)]
+    #[allow(
+        unused,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     heterogeneous_resource_heaps: bool,
     memory_architecture: MemoryArchitecture,
     heap_create_not_zeroed: bool,

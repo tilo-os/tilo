@@ -100,7 +100,10 @@ impl Drop for Sha256 {
     }
 }
 
-#[allow(clippy::large_stack_arrays)]
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "The fixed 64 KiB streaming hash buffer bounds memory without a heap allocation"
+)]
 pub(super) fn digest(mut reader: impl Read) -> io::Result<[u8; 32]> {
     let mut hash = Sha256::new()?;
     let mut buffer = [0; 64 * 1024];
