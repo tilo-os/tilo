@@ -239,6 +239,8 @@ def resume_selected_native(args, inputs, environment):
         '--run-id', os.environ['GITHUB_RUN_ID'], '--attempt', os.environ.get('GITHUB_RUN_ATTEMPT', '1')]
     for receipt, digest in args.resume_checkpoint:
         command += ['--checkpoint', str(receipt), digest]
+    if args.resume_thin_cache_approval:
+        command += ['--thin-cache-approval', *args.resume_thin_cache_approval]
     run(*command, capture=False)
 
 
@@ -701,6 +703,7 @@ def main(argv=None):
     parser.add_argument('--reconstructed-native-sha256', default='')
     parser.add_argument('--approved-reconstruction-sha256', default='')
     parser.add_argument('--resume-checkpoint', nargs=2, action='append', metavar=('RECEIPT', 'SHA256'))
+    parser.add_argument('--resume-thin-cache-approval', nargs=2, metavar=('APPROVAL', 'SHA256'))
     parser.add_argument('--source-dir', type=Path)
     parser.add_argument('--controller-revision', default='')
     parser.add_argument('--wpe-stage-receipt', type=Path)
@@ -721,6 +724,9 @@ def main(argv=None):
     for name in ('revision', 'branch'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(argv)
+    if args.resume_thin_cache_approval and (not args.resume_checkpoint or
+            not re.fullmatch('[0-9a-f]{64}', args.resume_thin_cache_approval[1])):
+        raise ValueError('thin cache approval requires explicit native resume and exact SHA256')
     os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
     controller_source = select_source(args.source_dir, args.revision, args.controller_revision)
     validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate,
