@@ -273,6 +273,9 @@ enum Action {
     /// it was opened from.
     Back,
     Shutter,
+    /// Hand off browsing to Photos. Camera never renders or mutates a
+    /// collection browser itself.
+    OpenPhotos,
     OpenRecentCapture,
     SetMode(CaptureMode),
     CycleFacing,
@@ -431,6 +434,10 @@ pub struct CameraApp {
     /// application-open boundary. Camera never imports Photos or serializes a
     /// side-channel payload; Photos receives only a verified portable hash.
     photos_handoff: Option<ActionEmitter<String>>,
+    /// The unconditional Photos destination for browsing the user's library.
+    /// Unlike `photos_handoff`, it carries no capture bytes because Photos
+    /// owns its own collection and entry point.
+    photos_browse: Option<ActionEmitter<()>>,
     video_handoff: Option<ActionEmitter<String>>,
 }
 
@@ -539,6 +546,7 @@ impl CameraApp {
             actions: ui::ActionHost::new(),
             search_provider: crate::search::CameraSearchProvider::new(),
             photos_handoff: Self::media_handoff_emitter("dev.tilo.photos", "Photos"),
+            photos_browse: Self::photos_browse_emitter(),
             video_handoff: Self::media_handoff_emitter("dev.tilo.video-player", "Video Player"),
         }
     }
@@ -592,6 +600,20 @@ impl CameraApp {
         })
         .ok()
         .map(ActionEmitter::new)
+    }
+
+    fn photos_browse_emitter() -> Option<ActionEmitter<()>> {
+        use tilo_actions::ActionBinding;
+
+        // Bind to Camera's exported capture root, which owns the routing
+        // affordance. The action payload itself delegates to Photos, but the
+        // host can still re-resolve this address against the current Camera
+        // resource surface before permitting the launch.
+        let resource = tilo_actions::Resource::new("camera.capture", "camera.capture", "Capture")
+            .with_action(crate::actions::open_photos_action());
+        ActionBinding::unit_for(&resource, "open-photos")
+            .ok()
+            .map(ActionEmitter::new)
     }
 
     /// Hand a freshly captured RGBA frame to the app (live-capture worker or
@@ -857,6 +879,7 @@ impl CameraApp {
             Action::CloseNavigation => "camera.close-navigation".into(),
             Action::Back => "camera.back".into(),
             Action::Shutter => "camera.shutter".into(),
+            Action::OpenPhotos => "camera.open-photos".into(),
             Action::OpenRecentCapture => "camera.open-recent-capture".into(),
             Action::SetMode(mode) => format!("camera.mode:{}", mode.as_str()),
             Action::CycleFacing => "camera.facing".into(),
@@ -938,6 +961,11 @@ impl CameraApp {
                     "Take photo"
                 }
                 .into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenPhotos => (
+                Role::Button,
+                "Open Photos to browse your library".into(),
                 AccessState::new().focusable(true),
             ),
             Action::OpenRecentCapture => (
@@ -1330,6 +1358,7 @@ impl CameraApp {
             Action::CloseNavigation => self.navigation.close(),
             Action::Back => self.apply_back(doc, root),
             Action::Shutter => self.apply_shutter(doc, root),
+            Action::OpenPhotos => self.open_photos(),
             Action::OpenRecentCapture => self.open_recent_capture(),
             Action::SetMode(m) => self.apply_set_mode(m, doc, root),
             Action::CycleFacing => self.apply_cycle_facing(doc, root),
@@ -1948,6 +1977,20 @@ impl CameraApp {
         }
     }
 
+    /// Open Photos' own library entry point. This intentionally accepts no
+    /// Camera-owned media id: browsing is Photos' concern, whereas the recent
+    /// tile above is the explicit verified-capture handoff.
+    fn open_photos(&mut self) {
+        let Some(handoff) = self.photos_browse.as_mut() else {
+            self.toast = Some("Photos is unavailable in this Camera session".into());
+            return;
+        };
+        match handoff.emit(()) {
+            Ok(()) => self.toast = Some("Opening Photos…".into()),
+            Err(error) => self.toast = Some(format!("Couldn't open Photos: {error}")),
+        }
+    }
+
     fn apply_set_mode(&mut self, m: CaptureMode, doc: &mut AutoCommit, _root: &ObjId) {
         // Switching mode mid-record would strand the clip; ignore.
         if !self.is_recording() && !self.is_counting_down() {
@@ -2530,9 +2573,10 @@ impl Widget for CameraApp {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.photos_handoff
+        self.photos_browse
             .as_mut()
             .and_then(ActionEmitter::take)
+            .or_else(|| self.photos_handoff.as_mut().and_then(ActionEmitter::take))
             .or_else(|| self.video_handoff.as_mut().and_then(ActionEmitter::take))
     }
 
@@ -2557,6 +2601,13 @@ impl Widget for CameraApp {
         {
             *binding = handoff.metadata("camera.open-recent-capture");
         }
+        if let Some(handoff) = self.photos_browse.as_ref()
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "camera.open-photos")
+        {
+            *binding = handoff.metadata("camera.open-photos");
+        }
         bindings
     }
 
@@ -2565,6 +2616,9 @@ impl Widget for CameraApp {
         allowed: &HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(handoff) = self.photos_handoff.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
+        if let Some(handoff) = self.photos_browse.as_mut() {
             handoff.refresh_availability(allowed);
         }
         if let Some(handoff) = self.video_handoff.as_mut() {
@@ -3373,6 +3427,7 @@ impl Widget for CameraApp {
                         "2" => Some(Action::Nav(Screen::Scanner)),
                         "3" | "d" | "D" => Some(Action::Nav(Screen::Document)),
                         "4" => Some(Action::Nav(Screen::Settings)),
+                        "p" | "P" => Some(Action::OpenPhotos),
                         "g" | "G" => Some(Action::ToggleGrid),
                         "f" | "F" => Some(Action::CycleFacing),
                         "r" | "R"
@@ -3684,6 +3739,48 @@ impl CameraApp {
             y += 46.0;
         }
 
+        // This is a cross-app handoff, not a fifth Camera screen or a local
+        // gallery. Keeping it beside the capture destinations makes the
+        // ownership boundary discoverable even before the first shutter press.
+        let photos_row = Rect::new(rail.x0 + 10.0, y + 8.0, rail.x1 - 10.0, y + 50.0);
+        if photos_row.y1 <= rail.y1 - 82.0 {
+            p::fill_round(
+                scene,
+                t,
+                photos_row,
+                11.0,
+                if photos_row.contains(self.last_mouse) {
+                    p::alpha(theme.accent_primary, 0.14)
+                } else {
+                    c.surfaces.base
+                },
+            );
+            p::stroke_round(scene, t, photos_row, 11.0, c.border_standard, 1.0);
+            p::icon(
+                scene,
+                t,
+                "image",
+                Rect::new(
+                    photos_row.x0 + 12.0,
+                    photos_row.center().y - 9.0,
+                    photos_row.x0 + 30.0,
+                    photos_row.center().y + 9.0,
+                ),
+                theme.accent_primary,
+                1.7,
+            );
+            p::text(
+                scene,
+                tr,
+                photos_row.x0 + 42.0,
+                photos_row.center().y - 8.0,
+                "Browse Photos",
+                13.0,
+                c.text_primary,
+            );
+            self.push_region(photos_row, Action::OpenPhotos);
+        }
+
         let device = if self.feed_active() {
             "Viewfinder ready"
         } else if self.camera_issue == Some(CameraIssue::PermissionDenied) {
@@ -3725,9 +3822,9 @@ impl CameraApp {
             status.x0 + 14.0,
             status.y0 + 31.0,
             if large_type {
-                "Saved locally"
+                "Photos owns library"
             } else {
-                "Saved locally · share when you choose"
+                "Photos owns browsing & edits"
             },
             10.0,
             c.text_dim,
@@ -7638,7 +7735,33 @@ mod tests {
                 && node.role == Role::Button
                 && node.action_target.as_deref() == Some("camera.open-recent-capture")
         }));
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Open Photos to browse your library")
+                && node.role == Role::Button
+                && node.action_target.as_deref() == Some("camera.open-photos")
+        }));
         assert!(tree.children.iter().all(|node| node.bounds.is_some()));
+    }
+
+    #[test]
+    fn browse_photos_uses_the_typed_owner_handoff_without_a_gallery() {
+        let (mut app, mut doc, root) = sample_app();
+        render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+        assert!(app.perform_semantic_action(
+            "camera.open-photos",
+            &A11yAction::Activate,
+            &mut doc,
+            &root,
+        ));
+        let invocation = Widget::take_control_invocation(&mut app)
+            .expect("Photos browse emits a typed external invocation");
+        assert_eq!(invocation.address.resource, "camera.capture");
+        assert_eq!(invocation.address.action, "open-photos");
+        assert!(invocation.arguments.is_empty());
+        assert!(
+            app.captures.len() <= 1,
+            "Camera still owns no gallery cache"
+        );
     }
 
     #[test]
