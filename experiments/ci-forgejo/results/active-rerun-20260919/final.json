@@ -1,0 +1,44 @@
+{
+  "jobs": [
+    {
+      "id": 83702,
+      "run_id": 22787,
+      "attempt": 1,
+      "handle": "e8e51a5c-60c9-4844-a6e2-01ea6d2c0d4e",
+      "repo_id": 59,
+      "owner_id": 11,
+      "name": "steady",
+      "needs": null,
+      "runs_on": [
+        "runner-quality"
+      ],
+      "task_id": 75136,
+      "status": "success"
+    },
+    {
+      "id": 83703,
+      "run_id": 22787,
+      "attempt": 4,
+      "handle": "e1a90dd4-5786-4e1d-84d1-fbd96c8dc140",
+      "repo_id": 59,
+      "owner_id": 11,
+      "name": "switch",
+      "needs": [
+        "steady"
+      ],
+      "runs_on": [
+        "runner-quality"
+      ],
+      "task_id": 75193,
+      "status": "success"
+    }
+  ],
+  "run": {
+    "id": 22787,
+    "index_in_repo": 15,
+    "status": "success",
+    "commit_sha": "f2806833e594ae657ba25a91b7411ba37f1512df",
+    "started": "2026-09-18T23:32:11Z",
+    "stopped": "2026-09-18T23:32:56Z"
+  }
+}

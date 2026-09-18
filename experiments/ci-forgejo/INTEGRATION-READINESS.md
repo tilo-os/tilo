@@ -109,3 +109,20 @@ protection edits/product access, and main push/merge restrictions for the author
 The service credential remains pilot-only. Ordinary-author credential separation
 and production qualification remain necessary. Never enable blocking
 protection first and leave existing agents without a usable landing path.
+
+## Recovering a failed worker without restarting siblings
+
+[Selected-job recovery evidence](results/active-rerun-20260919/README.md) shows
+that the UI-backed rerun command rejects a currently running job with HTTP 400.
+Wait for native Forgejo lost-task reconciliation to make the exact latest attempt
+terminal; do not cancel the parent run merely to make that job eligible. Then
+request one selected-job rerun using its UI run number and exact job name,
+re-reading job/head/attempt identity before and after. There is no atomic
+expected-task parameter, so this is not a race-free multi-writer API.
+
+Partial reruns may reset blocked dependent aggregate/report jobs as well as the
+selected job. Independent jobs preserved their attempts in the observed recovery.
+Refresh the full required-job evidence after recovery and never reuse a prior
+aggregate receipt. A changed handle after uncertain transport means reconcile,
+not blindly request another rerun. No custom reaper or product recovery controller
+is implemented by this read-only audit.

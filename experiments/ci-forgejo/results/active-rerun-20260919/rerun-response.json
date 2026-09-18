@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "stdout": "",
+  "stderr": "Error: failed to rerun job: rerun job: POST /qos/ci-workflow-pilot-20260918-9245-repeat/actions/runs/15/jobs/1/rerun returned 400: {\"errorMessage\":\"The job cannot be rerun.\",\"renderFormat\":\"html\"}\n\nUsage:\n  fgj actions run rerun <run-number> [flags]\n\nFlags:\n  -h, --help          help for rerun\n  -j, --job string    Rerun only this job (0-based index or exact name)\n  -R, --repo string   Repository in owner/name format (auto-detected from git if not specified)\n\nGlobal Flags:\n      --config string     config file (default is $HOME/.config/fgj/config.yaml)\n      --hostname string   Forgejo instance hostname\n\nfailed to rerun job: rerun job: POST /qos/ci-workflow-pilot-20260918-9245-repeat/actions/runs/15/jobs/1/rerun returned 400: {\"errorMessage\":\"The job cannot be rerun.\",\"renderFormat\":\"html\"}\n\n"
+}

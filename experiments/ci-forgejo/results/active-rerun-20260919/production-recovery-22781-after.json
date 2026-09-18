@@ -1,0 +1,55 @@
+{
+  "jobs": [
+    {
+      "id": 83672,
+      "attempt": 1,
+      "handle": "c888ce2b-0730-496d-9c9e-90ebe903aa8c",
+      "task_id": 75118,
+      "status": "success"
+    },
+    {
+      "id": 83673,
+      "attempt": 1,
+      "handle": "8d9dade7-433d-43f0-95bb-0be00118bf8f",
+      "task_id": 75127,
+      "status": "success"
+    },
+    {
+      "id": 83674,
+      "attempt": 2,
+      "handle": "8c933f25-08b9-4002-bd24-bdef2248c842",
+      "task_id": 0,
+      "status": "waiting"
+    },
+    {
+      "id": 83676,
+      "attempt": 2,
+      "handle": "a7a4260e-81c2-4519-be08-24c3c954e4e3",
+      "task_id": 0,
+      "status": "blocked"
+    },
+    {
+      "id": 83677,
+      "attempt": 2,
+      "handle": "dad1ad2f-c4e4-4ef4-bded-48ec1a5edfde",
+      "task_id": 0,
+      "status": "blocked"
+    },
+    {
+      "id": 83698,
+      "attempt": 1,
+      "handle": "a3df6a76-7d9e-4f2e-8f0c-7a762ac11468",
+      "task_id": 0,
+      "status": "waiting"
+    },
+    {
+      "id": 83699,
+      "attempt": 1,
+      "handle": "a2a273a8-e734-4a85-9e19-a0b2064e314f",
+      "task_id": 75164,
+      "status": "success"
+    }
+  ],
+  "command_exit": 0,
+  "run_id": 22781
+}
