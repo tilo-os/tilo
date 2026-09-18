@@ -724,7 +724,7 @@ impl PreviewPane {
             scene,
             text,
             font,
-            Color::from_rgba8(20, 18, 10, 255),
+            c.on_surface(c.semantic.warning).ink,
             transform * Affine::translate((x0 + pad_x, ty)),
             Some((w - pad_x * 2.0) as f32),
         );
@@ -760,11 +760,11 @@ impl PreviewPane {
             scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shadow);
             // Paper.
             image.paint_at(scene, transform, page_rect);
-            // Border.
+            // Border: derived against the pane the page floats on.
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                c.border_standard,
+                ui::surface::edge_on(c.neutral[1]),
                 None,
                 &page_rect,
             );
@@ -845,7 +845,7 @@ impl PreviewPane {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &vello::kurbo::Line::new(
                 Point::new(strip.x1, strip.y0),
@@ -877,7 +877,13 @@ impl PreviewPane {
                 );
             }
             image.paint_at(scene, transform, r);
-            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &r);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                ui::surface::edge_on(c.surfaces.raised),
+                None,
+                &r,
+            );
 
             let label = format!("{}", i + 1);
             tr.draw_text(

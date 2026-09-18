@@ -479,7 +479,7 @@ impl Graph3dScreen {
         // background + surfaces
         draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
         self.draw_surfaces(scene, t, theme, model);
-        draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
+        draw::stroke_rrect(scene, t, self.canvas, 0.0, ui::surface::edge_on(c.neutral[0]), 1.0);
 
         // Collapsed overlay: only a floating toggle over the plot.
         if self.panel == Rect::ZERO {
@@ -494,7 +494,7 @@ impl Graph3dScreen {
                 scene,
                 t,
                 self.scrim_rect,
-                draw::with_alpha(Color::BLACK, 110),
+                draw::with_alpha(theme.tokens.colors.surfaces.scrim, 110),
             );
         }
 
@@ -529,8 +529,8 @@ impl Graph3dScreen {
             t,
             Point::new(self.panel.x1, self.panel.y0),
             Point::new(self.panel.x1, self.panel.y1),
-            c.border_standard,
-            if self.overlay { 1.5 } else { 1.0 },
+            ui::surface::edge_on(panel_bg),
+            1.0,
         );
         // Title and subtitle stack on their measured line boxes (24 + 20 px at
         // 1×); `layout` starts the first card below the same band.
@@ -608,7 +608,7 @@ impl Graph3dScreen {
                 );
                 draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
-                draw::fill_rrect(scene, t, r, 8.0, c.surfaces.raised);
+                ui::surface::card(scene, t, r, 8.0, c.surfaces.raised);
             }
             // colour swatch (this surface's series colour)
             let sw = Rect::new(
@@ -668,7 +668,7 @@ impl Graph3dScreen {
                 let fld_col = if f.visible { txt_col } else { c.text_dim };
                 field.draw(scene, t, tr, theme, fld_col, active);
             }
-            draw::fill_rrect(scene, t, dr, 5.0, c.neutral[2]);
+            ui::surface::card(scene, t, dr, 5.0, c.neutral[2]);
             draw::text_in(
                 scene,
                 tr,
@@ -693,8 +693,7 @@ impl Graph3dScreen {
     /// The "+ Add surface" button below the row list.
     fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        draw::fill_rrect(scene, t, self.add_rect, 8.0, c.surfaces.raised);
-        draw::stroke_rrect(scene, t, self.add_rect, 8.0, c.border_standard, 1.0);
+        ui::surface::card(scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::text_in(
             scene,
             tr,
@@ -729,7 +728,7 @@ impl Graph3dScreen {
             self.panel.x1 - 16.0,
             info_y + 3.0 * line_h + 20.0,
         );
-        draw::fill_rrect(scene, t, info, 8.0, c.neutral[1]);
+        ui::surface::card(scene, t, info, 8.0, c.neutral[1]);
         let l1 = Rect::new(
             info.x0 + 12.0,
             info.y0 + 6.0,
@@ -786,7 +785,7 @@ impl Graph3dScreen {
         let c = &theme.tokens.colors;
         let r = self.toggle_rect;
         if self.panel_open {
-            draw::fill_rrect(scene, t, r, 8.0, c.neutral[2]);
+            ui::surface::card(scene, t, r, 8.0, c.neutral[2]);
             draw::text_in(
                 scene,
                 tr,

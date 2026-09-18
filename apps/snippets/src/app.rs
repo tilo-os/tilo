@@ -967,7 +967,7 @@ impl ui::widget::Widget for SnippetsApp {
                 scene,
                 t,
                 Rect::new(rail.x1 - 0.5, rail.y0, rail.x1 + 0.5, rail.y1),
-                c.border_standard,
+                ui::surface::edge_on(c.surfaces.base),
             );
         }
 
@@ -1238,7 +1238,7 @@ impl SnippetsApp {
             scene,
             t,
             Rect::new(list.x1 - 0.5, band.y0, list.x1 + 0.5, band.y1),
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.base),
         );
     }
 
@@ -1285,8 +1285,7 @@ impl SnippetsApp {
     ) {
         let c = &theme.tokens.colors;
         let btn = self.toggle_rect(band);
-        draw::fill_round(scene, t, btn, theme.radii_md(), c.surfaces.raised);
-        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
+        ui::surface::card(scene, t, btn, theme.radii_md(), c.surfaces.raised);
 
         let cx = btn.center().x;
         let cy = btn.center().y;
@@ -1877,13 +1876,10 @@ impl SnippetsApp {
         );
         self.search_rect = search_rect;
         let focused = self.search_input.is_focused();
-        let border = if focused {
-            c.border_focus
-        } else {
-            c.border_standard
-        };
-        draw::fill_round(scene, t, search_rect, theme.radii_md(), c.surfaces.base);
-        draw::stroke_round(scene, t, search_rect, theme.radii_md(), 1.5, border);
+        ui::surface::card(scene, t, search_rect, theme.radii_md(), c.surfaces.base);
+        if focused {
+            draw::stroke_round(scene, t, search_rect, theme.radii_md(), 1.5, c.border_focus);
+        }
         let empty = self.search_input.value().is_empty();
         // Keep Snippets' compact rectangular chrome and grammar hint while
         // delegating text editing, selection, clipboard and IME to the shared
@@ -2022,21 +2018,7 @@ impl SnippetsApp {
         // A soft rounded tile carrying a glyph — a real, composed anchor.
         let tile = 56.0;
         let tile_rect = Rect::new(cx - tile / 2.0, top, cx + tile / 2.0, top + tile);
-        draw::fill_round(
-            scene,
-            t,
-            tile_rect,
-            theme.radii_md() + 4.0,
-            c.surfaces.raised,
-        );
-        draw::stroke_round(
-            scene,
-            t,
-            tile_rect,
-            theme.radii_md() + 4.0,
-            1.0,
-            c.border_standard,
-        );
+        ui::surface::card(scene, t, tile_rect, theme.radii_md() + 4.0, c.surfaces.raised);
         let glyph = "{ }";
         let (gw, gh) = tr.measure(glyph, 22.0, None);
         let gw = f64::from(gw);
@@ -2181,7 +2163,7 @@ impl SnippetsApp {
         let bh = 34.0 + draw::line_growth(tr, 13.0);
         let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + bh);
         let hovered = btn.contains(self.last_mouse);
-        draw::fill_round(
+        ui::surface::card(
             scene,
             t,
             btn,
@@ -2192,7 +2174,6 @@ impl SnippetsApp {
                 c.neutral[2]
             },
         );
-        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
         draw::text(
             scene,
             tr,
@@ -2362,8 +2343,6 @@ impl SnippetsApp {
         // Code card with syntax-highlighted body.
         let pad = 28.0;
         let card = Rect::new(area.x0 + pad, y, area.x1 - pad, area.y1 - 20.0);
-        draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
-        draw::stroke_round(scene, t, card, theme.radii_md(), 1.0, c.border_standard);
         Self::draw_code(scene, t, tr, theme, card, &snippet, self.m.body_line);
     }
 
@@ -2641,6 +2620,10 @@ impl SnippetsApp {
         let pad = 16.0;
         let gutter_w = 36.0;
         let x0 = card.x0 + pad;
+        // The code card owns its whole surface: body fill, gutter band, then
+        // the derived edge on top so the gutter cannot paint over it (the
+        // history preview calls this with a bare rect and gets the same card).
+        draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
         // Gutter background.
         let gutter = Rect::new(card.x0, card.y0, card.x0 + gutter_w + pad, card.y1);
         draw::fill_round(scene, t, gutter, theme.radii_md(), c.neutral[1]);
@@ -2651,6 +2634,7 @@ impl SnippetsApp {
             Rect::new(card.x0 + 10.0, card.y0, card.x0 + gutter_w + pad, card.y1),
             c.neutral[1],
         );
+        draw::stroke_edge(scene, t, card, theme.radii_md(), ui::surface::edge_on(c.neutral[0]));
 
         let mut y = card.y0 + pad;
         let code_x = x0 + gutter_w;
