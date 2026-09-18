@@ -1,10 +1,12 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 
+mod fs_authority;
 mod shared_surfaces;
+#[cfg(test)]
+use fs_authority::wait_for_fs_authority_publication_idle;
+use fs_authority::{permission_profile_document_key, schedule_fs_authority_publication};
 pub use shared_surfaces::SharedSurfaces;
 
 fn now_unix_nanos() -> u64 {
@@ -22,159 +24,6 @@ pub use collab_types::caps::{
 };
 pub use collab_types::role::Role as CapRole;
 pub use collab_types::{PermissionProfile, PermissionProfileError};
-
-const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
-const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
-const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
-
-fn permission_profile_document_key(name: &str) -> String {
-    blake3::hash(name.trim().to_lowercase().as_bytes())
-        .to_hex()
-        .to_string()
-}
-
-#[derive(Clone, Debug)]
-struct FsAuthorityPublication {
-    acl: PathBuf,
-    cache_dir: PathBuf,
-    publisher: PathBuf,
-}
-
-#[derive(Default)]
-struct FsAuthorityPublicationQueue {
-    pending: Option<FsAuthorityPublication>,
-    running: bool,
-}
-
-fn fs_authority_publication_queue() -> &'static Mutex<FsAuthorityPublicationQueue> {
-    static QUEUE: OnceLock<Mutex<FsAuthorityPublicationQueue>> = OnceLock::new();
-    QUEUE.get_or_init(|| Mutex::new(FsAuthorityPublicationQueue::default()))
-}
-
-fn fs_authority_publisher() -> PathBuf {
-    std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || PathBuf::from(DEFAULT_FS_AUTHORITY_PUBLISHER),
-            PathBuf::from,
-        )
-}
-
-fn fs_authority_cache_dir() -> PathBuf {
-    std::env::var_os("TILO_FS_AUTHORITY_CACHE_DIR")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || PathBuf::from(DEFAULT_FS_AUTHORITY_CACHE_DIR),
-            PathBuf::from,
-        )
-}
-
-/// Coalesce exports and submit them outside the compositor's mutation path.
-/// The filesystem authority socket may be unavailable while its service is
-/// starting; capped-backoff retries cover that normal boot ordering and a
-/// later capability mutation always replaces the queued projection.
-fn schedule_fs_authority_publication(acl: PathBuf) {
-    // Unit tests exercise this only with an explicit harmless publisher;
-    // never let an isolated tree submit a fixture ACL to a real service.
-    if cfg!(test) && std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER").is_none() {
-        return;
-    }
-    let publication = FsAuthorityPublication {
-        acl,
-        cache_dir: fs_authority_cache_dir(),
-        publisher: fs_authority_publisher(),
-    };
-    let Ok(mut queue) = fs_authority_publication_queue().lock() else {
-        tracing::warn!("filesystem authority publication queue is unavailable");
-        return;
-    };
-    queue.pending = Some(publication);
-    if queue.running {
-        return;
-    }
-    queue.running = true;
-    let spawned = std::thread::Builder::new()
-        .name("tilo-fs-authority-publish".to_string())
-        .spawn(run_fs_authority_publication_queue);
-    if let Err(error) = spawned {
-        queue.running = false;
-        tracing::warn!(%error, "could not start filesystem authority publisher");
-    }
-}
-
-fn run_fs_authority_publication_queue() {
-    loop {
-        let publication = match fs_authority_publication_queue().lock() {
-            Ok(mut queue) => queue.pending.take(),
-            Err(error) => {
-                tracing::warn!(%error, "filesystem authority publication queue is poisoned");
-                return;
-            }
-        };
-        let Some(mut publication) = publication else {
-            if let Ok(mut queue) = fs_authority_publication_queue().lock() {
-                queue.running = false;
-            }
-            return;
-        };
-        let mut retry_delay = std::time::Duration::from_millis(100);
-        loop {
-            let result = std::process::Command::new(&publication.publisher)
-                .arg("publish-authority")
-                .arg("--cache-dir")
-                .arg(&publication.cache_dir)
-                .arg("--acl")
-                .arg(&publication.acl)
-                .status();
-            match result {
-                Ok(status) if status.success() => break,
-                Ok(status) => tracing::warn!(
-                    ?status,
-                    acl = %publication.acl.display(),
-                    "filesystem authority publication failed; will retry"
-                ),
-                Err(error) => tracing::warn!(
-                    %error,
-                    publisher = %publication.publisher.display(),
-                    "filesystem authority publisher could not start; will retry"
-                ),
-            }
-            // A new mutation supersedes the failed projection immediately;
-            // otherwise retain this exact latest ACL until the daemon is
-            // ready. The delay is bounded, while the background worker is
-            // deliberately persistent rather than silently losing a grant.
-            std::thread::sleep(retry_delay);
-            retry_delay = retry_delay
-                .saturating_mul(2)
-                .min(MAX_FS_AUTHORITY_RETRY_DELAY);
-            if let Ok(mut queue) = fs_authority_publication_queue().lock()
-                && let Some(newer) = queue.pending.take()
-            {
-                publication = newer;
-                retry_delay = std::time::Duration::from_millis(100);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> bool {
-    let Some(deadline) = std::time::Instant::now().checked_add(timeout) else {
-        return false;
-    };
-    loop {
-        if fs_authority_publication_queue()
-            .lock()
-            .is_ok_and(|queue| !queue.running && queue.pending.is_none())
-        {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
 
 /// Monotonic workspace identifier, newtype-wrapped over `u64`.
 #[derive(
@@ -202,14 +51,16 @@ mod identity_fs_tests {
     #[serial_test::serial(process_env)]
     fn capability_export_publishes_to_authority_in_the_background() {
         use std::os::unix::fs::PermissionsExt;
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
 
         let temp = tempfile::tempdir().expect("temp");
         let publisher = temp.path().join("publisher.sh");
         let log = temp.path().join("authority-arguments");
+        let started = temp.path().join("publisher-started");
+        let release = temp.path().join("publisher-release");
         std::fs::write(
             &publisher,
-            "#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
+            "#!/bin/sh\nprintf ready > \"$TILO_FS_AUTHORITY_TEST_STARTED\"\nwhile [ ! -f \"$TILO_FS_AUTHORITY_TEST_RELEASE\" ]; do sleep 0.01; done\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
         )
         .expect("publisher script");
         let mut permissions = std::fs::metadata(&publisher)
@@ -222,23 +73,34 @@ mod identity_fs_tests {
         let old_publisher = std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER");
         let old_cache = std::env::var_os("TILO_FS_AUTHORITY_CACHE_DIR");
         let old_log = std::env::var_os("TILO_FS_AUTHORITY_TEST_LOG");
+        let old_started = std::env::var_os("TILO_FS_AUTHORITY_TEST_STARTED");
+        let old_release = std::env::var_os("TILO_FS_AUTHORITY_TEST_RELEASE");
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
             std::env::set_var("TILO_FS_AUTHORITY_CACHE_DIR", &cache);
             std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", &log);
+            std::env::set_var("TILO_FS_AUTHORITY_TEST_STARTED", &started);
+            std::env::set_var("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
         }
 
         let tree = WorkspaceTree {
             fs_acl_path: Some(acl.clone()),
             ..WorkspaceTree::default()
         };
-        let started = Instant::now();
         tree.export_fs_capabilities();
+        for _ in 0..100 {
+            if started.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(started.exists(), "the publisher worker must start");
         assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "a slow authority socket must not block the compositor mutation path"
+            !log.exists(),
+            "publication returned while the deliberately blocked publisher was unfinished"
         );
+        std::fs::write(&release, b"release").expect("release publisher");
         for _ in 0..100 {
             if log.exists() {
                 break;
@@ -267,6 +129,14 @@ mod identity_fs_tests {
             match old_log {
                 Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", value),
                 None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_LOG"),
+            }
+            match old_started {
+                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_STARTED", value),
+                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_STARTED"),
+            }
+            match old_release {
+                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_RELEASE", value),
+                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_RELEASE"),
             }
         }
     }
