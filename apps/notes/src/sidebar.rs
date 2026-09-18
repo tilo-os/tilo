@@ -14,6 +14,8 @@
 //!   - F2 to rename the selected page,
 //!   - ↑ / ↓ to move the selection between rows,
 //!   - Alt-↑ / Alt-↓ to reorder the selected page among its siblings,
+//!   - ← / → to collapse / expand branches (or move to parent / first child),
+//!   - Tab / Shift-Tab to indent / outdent the selected page,
 //!   - while renaming: Enter to commit, Escape to cancel.
 //!
 //! Creating a child of the selection (Cmd-N / Ctrl-N) is handled one
@@ -31,6 +33,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::Widget;
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -72,6 +75,10 @@ const DOUBLE_CLICK_INTERVAL_MS: u128 = 400;
 const DOUBLE_CLICK_RADIUS_PX: f64 = 4.0;
 /// Default text size for tree row labels.
 const ROW_TEXT_SIZE: f32 = 14.0;
+/// Deliberate dwell before a collapsed branch springs open during a drag.
+/// Long enough to cross a row without disruption, short enough to browse a
+/// deep destination without dropping and restarting the gesture.
+const DRAG_EXPAND_DWELL: std::time::Duration = std::time::Duration::from_millis(450);
 
 /// Outbound commands from the sidebar to the parent `NotesApp`. The
 /// parent owns the workspace model and storage — the sidebar can only
@@ -115,6 +122,17 @@ enum RowAction {
     Duplicate,
     NewChild,
     Rename,
+    CopyLink,
+    ExportMarkdown,
+    InsertImage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarTransfer {
+    ImportMarkdown,
+    CopyLink(PageId),
+    ExportMarkdown(PageId),
+    InsertImage(PageId),
 }
 
 /// The resolved outcome of the current drag position — what a drop here
@@ -174,6 +192,7 @@ pub struct NoteTreeView {
     rename: Option<RenameState>,
     /// Outbound commands the parent should drain via [`take_events`].
     pending_events: Vec<OutEvent>,
+    pending_transfer: Option<SidebarTransfer>,
     /// Set when the visible-row set needs rebuilding but no [`OutEvent`]
     /// was produced — e.g. after an expand/collapse toggle, which
     /// changes `expanded` locally but can't re-flatten the tree without
@@ -188,6 +207,7 @@ pub struct NoteTreeView {
     /// floating ghost, the live reflow gap, and the insertion index; the
     /// model is only mutated on drop (or not at all on cancel).
     drag: DragController<PageId>,
+    drag_hover: Option<(PageId, std::time::Instant)>,
     /// Right-click context menu on a page row.
     menu: ContextMenu,
     /// The page the open context menu targets. Its rows map back to
@@ -208,6 +228,9 @@ pub struct NoteTreeView {
     /// scale to glyphs, so every hit row must grow in lockstep to prevent the
     /// large-text preference from making labels collide.
     text_scale: f64,
+    /// Vertical viewport offset for large page trees.
+    scroll_y: f64,
+    max_scroll_y: f64,
 }
 
 struct RowEntry {
@@ -233,6 +256,29 @@ impl NoteTreeView {
         ROW_HEIGHT * self.text_scale
     }
 
+    fn scroll_by(&mut self, delta: f64) -> bool {
+        let before = self.scroll_y;
+        self.scroll_y = (self.scroll_y + delta).clamp(0.0, self.max_scroll_y);
+        let changed = (self.scroll_y - before).abs() > f64::EPSILON;
+        if changed {
+            self.dirty = true;
+        }
+        changed
+    }
+
+    fn reveal_row(&mut self, index: usize) {
+        let viewport_height = (self.rect.height() - self.header_height()).max(self.row_height());
+        let top = num::f64_of_usize(index) * self.row_height();
+        let bottom = top + self.row_height();
+        if top < self.scroll_y {
+            self.scroll_y = top.clamp(0.0, self.max_scroll_y);
+            self.dirty = true;
+        } else if bottom > self.scroll_y + viewport_height {
+            self.scroll_y = (bottom - viewport_height).clamp(0.0, self.max_scroll_y);
+            self.dirty = true;
+        }
+    }
+
     fn header_height(&self) -> f64 {
         HEADER_HEIGHT * self.text_scale
     }
@@ -252,15 +298,19 @@ impl NoteTreeView {
             last_click: None,
             rename: None,
             pending_events: Vec::new(),
+            pending_transfer: None,
             rows_dirty: false,
             dirty: true,
             drag: DragController::vertical(),
+            drag_hover: None,
             menu: ContextMenu::new(),
             menu_target: None,
             empty_menu: false,
             did_initial_expand: false,
             last_selection: None,
             text_scale: 1.0,
+            scroll_y: 0.0,
+            max_scroll_y: 0.0,
         }
     }
 
@@ -268,6 +318,10 @@ impl NoteTreeView {
     /// Called by `NotesApp` once per tick after `handle_event`.
     pub fn take_events(&mut self) -> Vec<OutEvent> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    pub fn take_transfer(&mut self) -> Option<SidebarTransfer> {
+        self.pending_transfer.take()
     }
 
     /// Drain the "visible rows need rebuilding" flag. The parent calls
@@ -410,7 +464,7 @@ impl NoteTreeView {
     /// (`ROW_HEIGHT` pitch, no gap) starting just below the header.
     fn list_metrics(&self) -> ListMetrics {
         ListMetrics::uniform(
-            self.rect.y0 + self.header_height(),
+            self.rect.y0 + self.header_height() - self.scroll_y,
             self.row_height(),
             0.0,
             self.flat_rows.len(),
@@ -428,7 +482,10 @@ impl NoteTreeView {
         }
         let n = self.flat_rows.len();
         let list_top = self.rect.y0 + self.header_height();
-        let rel = pt.y - list_top;
+        if pt.y < list_top || pt.y > self.rect.y1 {
+            return None;
+        }
+        let rel = pt.y - list_top + self.scroll_y;
         if rel < 0.0 {
             return None;
         }
@@ -524,7 +581,7 @@ impl NoteTreeView {
             return DropPlan::Cancel;
         }
         let list_top = self.rect.y0 + self.header_height();
-        let list_bottom = list_top + num::f64_of_usize(n) * self.row_height();
+        let list_bottom = self.rect.y1;
         if pt.y < list_top - self.row_height() || pt.y > list_bottom + self.row_height() {
             return DropPlan::Cancel;
         }
@@ -555,11 +612,22 @@ impl NoteTreeView {
         self.menu_target = Some(page);
         self.empty_menu = false;
         let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("New child", || {}));
-        menu.push(MenuItem::action("Rename", || {}));
-        menu.push(MenuItem::action("Duplicate", || {}));
+        menu.push(MenuItem::icon_action(Icon::FilePlus, "New child", || {}));
+        menu.push(MenuItem::icon_action(Icon::Pencil, "Rename", || {}));
+        menu.push(MenuItem::icon_action(Icon::Copy, "Duplicate", || {}));
+        menu.push(MenuItem::icon_action(
+            Icon::ExternalLink,
+            "Copy note link",
+            || {},
+        ));
+        menu.push(MenuItem::icon_action(
+            Icon::Download,
+            "Export Markdown",
+            || {},
+        ));
+        menu.push(MenuItem::icon_action(Icon::Image, "Insert image", || {}));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Delete", || {}));
+        menu.push(MenuItem::icon_action(Icon::Trash2, "Delete", || {}));
         // The separator sits between "Duplicate" and "Delete"; keep the
         // action list aligned to the *action* rows only (see the index
         // remap in `apply_menu_selection`).
@@ -574,7 +642,12 @@ impl NoteTreeView {
         self.menu_target = None;
         self.empty_menu = true;
         let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("New note", || {}));
+        menu.push(MenuItem::icon_action(Icon::FilePlus, "New note", || {}));
+        menu.push(MenuItem::icon_action(
+            Icon::CloudDownload,
+            "Import Markdown",
+            || {},
+        ));
         menu.open_at([num::f32_of_f64(at.x), num::f32_of_f64(at.y)]);
         self.menu = menu;
         self.dirty = true;
@@ -585,22 +658,28 @@ impl NoteTreeView {
     fn apply_menu_selection(&mut self, item_index: usize) {
         if self.empty_menu {
             self.empty_menu = false;
-            // The empty-area menu has a single "New note" action at index 0.
-            if item_index == 0 {
-                self.pending_events
-                    .push(OutEvent::CreateChild { parent: None });
-                self.rows_dirty = true;
+            match item_index {
+                0 => {
+                    self.pending_events
+                        .push(OutEvent::CreateChild { parent: None });
+                    self.rows_dirty = true;
+                }
+                1 => self.pending_transfer = Some(SidebarTransfer::ImportMarkdown),
+                _ => {}
             }
             return;
         }
         let Some(page) = self.menu_target else { return };
-        // Menu rows: 0 New child, 1 Rename, 2 Duplicate, 3 Separator,
-        // 4 Delete. The separator (index 3) maps to no action.
+        // Menu rows: 0 New child, 1 Rename, 2 Duplicate, 3 Copy link,
+        // 4 Export, 5 Insert image, 6 Separator, 7 Delete.
         let action = match item_index {
             0 => Some(RowAction::NewChild),
             1 => Some(RowAction::Rename),
             2 => Some(RowAction::Duplicate),
-            4 => Some(RowAction::Delete),
+            3 => Some(RowAction::CopyLink),
+            4 => Some(RowAction::ExportMarkdown),
+            5 => Some(RowAction::InsertImage),
+            7 => Some(RowAction::Delete),
             _ => None,
         };
         let Some(action) = action else { return };
@@ -626,6 +705,15 @@ impl NoteTreeView {
             RowAction::Delete => {
                 self.pending_events.push(OutEvent::Delete(page));
             }
+            RowAction::CopyLink => {
+                self.pending_transfer = Some(SidebarTransfer::CopyLink(page));
+            }
+            RowAction::ExportMarkdown => {
+                self.pending_transfer = Some(SidebarTransfer::ExportMarkdown(page));
+            }
+            RowAction::InsertImage => {
+                self.pending_transfer = Some(SidebarTransfer::InsertImage(page));
+            }
         }
         self.menu_target = None;
         self.dirty = true;
@@ -648,8 +736,6 @@ impl Widget for NoteTreeView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
-        let rows = self.flat_rows.len().max(1);
-        let height = self.header_height() + (rows as f64) * self.row_height() + 8.0;
         // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
         // returns a bare `NodeId` across every implementor, so surfacing a
         // theoretical error here would mean threading a `Result` through the
@@ -663,7 +749,9 @@ impl Widget for NoteTreeView {
                 },
                 min_size: Size {
                     width: Dimension::length(160.0),
-                    height: Dimension::length(num::f32_of_f64(height)),
+                    height: Dimension::length(num::f32_of_f64(
+                        self.header_height() + self.row_height(),
+                    )),
                 },
                 ..Default::default()
             })
@@ -687,6 +775,10 @@ impl Widget for NoteTreeView {
         let resized = (new_rect.width() - self.rect.width()).abs() > f64::EPSILON
             || (new_rect.height() - self.rect.height()).abs() > f64::EPSILON;
         self.rect = new_rect;
+        let list_height = (self.rect.height() - self.header_height()).max(0.0);
+        let content_height = num::f64_of_usize(self.flat_rows.len()) * self.row_height();
+        self.max_scroll_y = (content_height - list_height).max(0.0);
+        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y);
         // Header "+" new-page button — square, pinned to the top-right
         // of the header strip.
         self.new_page_btn_rect = Rect::new(
@@ -698,7 +790,8 @@ impl Widget for NoteTreeView {
         // Position each row, offset below the header strip.
         self.row_rects.clear();
         for i in 0..self.flat_rows.len() {
-            let y0 = self.rect.y0 + self.header_height() + (i as f64) * self.row_height();
+            let y0 = self.rect.y0 + self.header_height() + (i as f64) * self.row_height()
+                - self.scroll_y;
             let y1 = y0 + self.row_height();
             self.row_rects
                 .push(Rect::new(self.rect.x0, y0, self.rect.x1, y1));
@@ -762,6 +855,19 @@ impl Widget for NoteTreeView {
         };
         let seam_mode = matches!(plan, Some(DropPlan::Seam { .. }));
 
+        let list_clip = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + self.header_height(),
+            self.rect.x1,
+            self.rect.y1,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &list_clip,
+        );
         self.draw_rows(
             scene,
             transform,
@@ -790,6 +896,34 @@ impl Widget for NoteTreeView {
             drag_active,
             from_idx,
         );
+        scene.pop_layer();
+
+        if self.max_scroll_y > 0.0 {
+            let track_top = self.rect.y0 + self.header_height() + self.scaled(4.0);
+            let track_bottom = self.rect.y1 - self.scaled(4.0);
+            let track_height = (track_bottom - track_top).max(1.0);
+            let content_height = num::f64_of_usize(self.flat_rows.len()) * self.row_height();
+            let viewport_height = (self.rect.height() - self.header_height()).max(1.0);
+            let thumb_height = (track_height * viewport_height / content_height)
+                .clamp(self.scaled(24.0), track_height);
+            let travel = (track_height - thumb_height).max(0.0);
+            let fraction = (self.scroll_y / self.max_scroll_y).clamp(0.0, 1.0);
+            let y0 = track_top + travel * fraction;
+            let thumb = RoundedRect::new(
+                self.rect.x1 - self.scaled(5.0),
+                y0,
+                self.rect.x1 - self.scaled(2.0),
+                y0 + thumb_height,
+                self.scaled(1.5),
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.text_dim.with_alpha_factor(0.65),
+                None,
+                &thumb,
+            );
+        }
 
         // A single hairline down the sidebar's inner edge separates the
         // page tree from the editor. This replaces the old full-rectangle
@@ -876,6 +1010,21 @@ impl Widget for NoteTreeView {
                 ..
             } => {
                 self.handle_left_click(focus_target, node_id, handled);
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self
+                    .last_cursor
+                    .is_some_and(|point| self.rect.contains(point)) =>
+            {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                        -f64::from(*y) * self.row_height() * 2.0
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(position) => -position.y,
+                };
+                if self.scroll_by(dy) {
+                    *handled = true;
+                }
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1422,6 +1571,7 @@ impl NoteTreeView {
             } = event
         {
             self.drag.cancel();
+            self.drag_hover = None;
             self.dirty = true;
             *handled = true;
             return true;
@@ -1536,9 +1686,50 @@ impl NoteTreeView {
         // cursor. Redraw every move while a drag is latched so the
         // floating ghost tracks the pointer.
         if self.drag.is_pending() {
+            // Keep distant drop targets reachable without ending the gesture.
+            // Speed ramps smoothly inside the top/bottom edge bands.
+            let list_top = self.rect.y0 + self.header_height();
+            let edge = self.scaled(36.0).max(1.0);
+            let delta = if pt.y < list_top + edge {
+                -((list_top + edge - pt.y) / edge).clamp(0.0, 1.0) * self.row_height() * 0.7
+            } else if pt.y > self.rect.y1 - edge {
+                ((pt.y - (self.rect.y1 - edge)) / edge).clamp(0.0, 1.0) * self.row_height() * 0.7
+            } else {
+                0.0
+            };
+            if delta != 0.0 {
+                self.scroll_by(delta);
+            }
             let metrics = self.list_metrics();
             self.drag.pointer_moved(pt, &metrics);
+            self.update_drag_hover(pt, std::time::Instant::now());
             self.dirty = true;
+        }
+    }
+
+    fn update_drag_hover(&mut self, pt: Point, now: std::time::Instant) {
+        let target = self
+            .drag
+            .is_active()
+            .then(|| self.onto_target(pt))
+            .flatten()
+            .and_then(|row| self.flat_rows.get(row))
+            .filter(|row| row.has_children && !self.expanded.contains(&row.id))
+            .map(|row| row.id);
+        let Some(target) = target else {
+            self.drag_hover = None;
+            return;
+        };
+        match self.drag_hover {
+            Some((hovered, since)) if hovered == target => {
+                if now.duration_since(since) >= DRAG_EXPAND_DWELL {
+                    self.expanded.insert(target);
+                    self.drag_hover = None;
+                    self.rows_dirty = true;
+                    self.dirty = true;
+                }
+            }
+            _ => self.drag_hover = Some((target, now)),
         }
     }
 
@@ -1558,6 +1749,7 @@ impl NoteTreeView {
         // through the event we enqueue below, so a cancel is a
         // no-op by construction.
         self.drag.cancel();
+        self.drag_hover = None;
         if let (true, Some(id)) = (active, dragged) {
             match plan {
                 DropPlan::Onto { page, .. } => {
@@ -1710,8 +1902,32 @@ impl NoteTreeView {
         *focus_target = Some(node_id);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive keyboard dispatcher keeps tree focus, hierarchy, reorder, rename, and delete precedence auditable in a single place"
+    )]
     fn handle_key_press(&mut self, logical_key: &Key, mods: ModifiersState, handled: &mut bool) {
         if !self.is_focused {
+            return;
+        }
+        // Keyboard context-menu parity: the hardware Menu key and the
+        // conventional Shift+F10 chord open exactly the same menu as a
+        // right-click, anchored to the selected row rather than the pointer.
+        if matches!(logical_key, Key::Named(NamedKey::ContextMenu))
+            || (mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::F10)))
+        {
+            if let Some(page) = self.selected
+                && let Some(index) = self.row_index_of(page)
+                && let Some(rect) = self.row_rects.get(index).copied()
+            {
+                self.open_context_menu(page, Point::new(rect.x0 + self.scaled(28.0), rect.y1));
+            } else {
+                self.open_empty_area_menu(Point::new(
+                    self.rect.x0 + self.scaled(16.0),
+                    self.new_page_btn_rect.y1 + self.scaled(4.0),
+                ));
+            }
+            *handled = true;
             return;
         }
         // Alt-↑ / Alt-↓ — reorder the selected page among its
@@ -1736,7 +1952,81 @@ impl NoteTreeView {
                 _ => {}
             }
         }
+        let selection_before = self.selected;
         match logical_key {
+            // Outliner structure editing. Indent beneath the previous sibling;
+            // outdent immediately after the current parent. Both become the
+            // same canonical reparent action used by drag and drop.
+            Key::Named(NamedKey::Tab) => {
+                if let Some(sel) = self.selected {
+                    let event = if mods.shift_key() {
+                        self.outdent_event(sel)
+                    } else {
+                        self.indent_event(sel)
+                    };
+                    if let Some(event) = event {
+                        if let OutEvent::Reparent {
+                            new_parent: Some(parent),
+                            ..
+                        } = &event
+                        {
+                            // The target may have been a leaf until this
+                            // action. Reveal the newly nested page instead of
+                            // letting a successful Tab make it disappear.
+                            self.expanded.insert(*parent);
+                            self.rows_dirty = true;
+                            self.dirty = true;
+                        }
+                        self.pending_events.push(event);
+                        *handled = true;
+                    }
+                }
+            }
+            // Conventional tree navigation: Left first closes an open branch,
+            // then moves upward; Right first opens a branch, then enters it.
+            Key::Named(NamedKey::ArrowLeft) => {
+                if let Some(sel) = self.selected {
+                    if self.expanded.remove(&sel) {
+                        self.rows_dirty = true;
+                        self.dirty = true;
+                        *handled = true;
+                    } else if let Some(parent) = self
+                        .flat_rows
+                        .iter()
+                        .find(|row| row.id == sel)
+                        .and_then(|row| row.parent)
+                    {
+                        self.selected = Some(parent);
+                        self.pending_events.push(OutEvent::Select(parent));
+                        self.dirty = true;
+                        *handled = true;
+                    }
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if let Some(sel) = self.selected
+                    && let Some(idx) = self.row_index_of(sel)
+                {
+                    let Some(row) = self.flat_rows.get(idx) else {
+                        return;
+                    };
+                    if row.has_children && !self.expanded.contains(&sel) {
+                        self.expanded.insert(sel);
+                        self.rows_dirty = true;
+                        self.dirty = true;
+                        *handled = true;
+                    } else if row.has_children
+                        && let Some(child) = self.flat_rows.get(idx + 1)
+                        && child.parent == Some(sel)
+                    {
+                        let child = child.id;
+                        self.selected = Some(child);
+                        self.pending_events.push(OutEvent::Select(child));
+                        self.dirty = true;
+                        *handled = true;
+                    }
+                }
+            }
             // Delete removes the selected page. Backspace is
             // deliberately NOT bound here: the editor and the page
             // tree can both hold focus at once (selecting a page
@@ -1793,10 +2083,56 @@ impl NoteTreeView {
             }
             _ => {}
         }
+        if self.selected != selection_before
+            && let Some(index) = self.selected.and_then(|page| self.row_index_of(page))
+        {
+            self.reveal_row(index);
+        }
     }
 }
 
 impl NoteTreeView {
+    /// Build the canonical action for indenting a page beneath its previous
+    /// sibling. A first sibling cannot be indented: there is no unambiguous
+    /// parent target.
+    fn indent_event(&self, id: PageId) -> Option<OutEvent> {
+        let idx = self.row_index_of(id)?;
+        let row = self.flat_rows.get(idx)?;
+        let previous = self
+            .flat_rows
+            .get(..idx)?
+            .iter()
+            .rev()
+            .find(|candidate| candidate.parent == row.parent)?;
+        Some(OutEvent::Reparent {
+            id,
+            new_parent: Some(previous.id),
+            before: None,
+        })
+    }
+
+    /// Build the canonical action for lifting a page one level. Position it
+    /// directly after its former parent (before the parent's next sibling),
+    /// which preserves the visual reading order expected by outliners.
+    fn outdent_event(&self, id: PageId) -> Option<OutEvent> {
+        let idx = self.row_index_of(id)?;
+        let row = self.flat_rows.get(idx)?;
+        let parent_id = row.parent?;
+        let parent = self.flat_rows.iter().find(|row| row.id == parent_id)?;
+        let before = self
+            .flat_rows
+            .iter()
+            .skip_while(|candidate| candidate.id != parent_id)
+            .skip(1)
+            .find(|candidate| candidate.parent == parent.parent)
+            .map(|candidate| candidate.id);
+        Some(OutEvent::Reparent {
+            id,
+            new_parent: parent.parent,
+            before,
+        })
+    }
+
     fn row_index_of(&self, id: PageId) -> Option<usize> {
         self.flat_rows.iter().position(|r| r.id == id)
     }
@@ -1916,6 +2252,31 @@ mod tests {
     }
 
     #[test]
+    fn dragging_over_collapsed_branch_springs_it_open_after_dwell() {
+        let mut ws = Workspace::new();
+        let target = ws.create_page(None);
+        let _child = ws.create_page(Some(target));
+        let dragged = ws.create_page(None);
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&ws);
+        tree.expanded.remove(&target);
+        tree.sync_from_workspace(&ws);
+        tree.rect = Rect::new(0.0, 0.0, 220.0, 300.0);
+
+        let start = Point::new(100.0, tree.header_height() + tree.row_height() * 1.5);
+        tree.drag.begin(dragged, 1, tree.row_height() / 2.0, start);
+        let over_target = Point::new(100.0, tree.header_height() + tree.row_height() / 2.0);
+        tree.drag.pointer_moved(over_target, &tree.list_metrics());
+        let now = std::time::Instant::now();
+        tree.update_drag_hover(over_target, now);
+        assert!(!tree.expanded.contains(&target));
+
+        tree.update_drag_hover(over_target, now + DRAG_EXPAND_DWELL);
+        assert!(tree.expanded.contains(&target));
+        assert!(tree.take_rows_dirty());
+    }
+
+    #[test]
     fn begin_and_commit_rename_emits_event() {
         let mut ws = Workspace::new();
         let id = ws.create_page(None);
@@ -1944,6 +2305,17 @@ mod tests {
         tree.begin_rename(id, "Untitled");
         tree.cancel_rename();
         assert!(tree.take_events().is_empty());
+    }
+
+    #[test]
+    fn page_menu_copy_link_uses_the_selected_page_identity() {
+        let mut workspace = Workspace::new();
+        let page = workspace.create_page(None);
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&workspace);
+        tree.menu_target = Some(page);
+        tree.apply_menu_selection(3);
+        assert_eq!(tree.take_transfer(), Some(SidebarTransfer::CopyLink(page)));
     }
 
     #[test]
@@ -1993,5 +2365,55 @@ mod tests {
         assert!(tree.header_height() <= first.y0);
         assert!(first.y1 <= second.y0, "adjacent rows must not overlap");
         assert!(label_x < first.x1 - tree.scaled(4.0));
+    }
+
+    #[test]
+    fn large_tree_scroll_is_clamped_and_moves_drag_geometry() {
+        let mut tree = NoteTreeView::new();
+        tree.rect = Rect::new(0.0, 0.0, 240.0, 300.0);
+        tree.max_scroll_y = 600.0;
+        assert!(tree.scroll_by(90.0));
+        assert!((tree.scroll_y - 90.0).abs() < f64::EPSILON);
+        assert!(
+            (tree.list_metrics().slot_lead(0) - (tree.rect.y0 + tree.header_height() - 90.0)).abs()
+                < f64::EPSILON
+        );
+        assert!(tree.scroll_by(1_000.0));
+        assert!((tree.scroll_y - 600.0).abs() < f64::EPSILON);
+        assert!(!tree.scroll_by(1.0), "scrolling past the end is a no-op");
+        assert!(tree.scroll_by(-1_000.0));
+        assert!(tree.scroll_y.abs() < f64::EPSILON);
+
+        tree.max_scroll_y = 600.0;
+        tree.reveal_row(15);
+        assert!(
+            tree.scroll_y > 0.0,
+            "keyboard navigation reveals a selected row below the viewport"
+        );
+        tree.reveal_row(0);
+        assert!(tree.scroll_y.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn dragging_in_bottom_edge_band_autoscrolls_toward_hidden_targets() {
+        let mut workspace = Workspace::new();
+        for _ in 0..30 {
+            workspace.create_page(None);
+        }
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&workspace);
+        tree.rect = Rect::new(0.0, 0.0, 240.0, 300.0);
+        tree.max_scroll_y = 700.0;
+        let dragged = tree.flat_rows[0].id;
+        let start = Point::new(100.0, tree.header_height() + tree.row_height() / 2.0);
+        tree.drag.begin(dragged, 0, tree.row_height() / 2.0, start);
+
+        tree.handle_cursor_moved(Point::new(100.0, tree.rect.y1 - 1.0));
+
+        assert!(tree.drag.is_active());
+        assert!(
+            tree.scroll_y > 0.0,
+            "edge dragging reveals lower drop targets without ending the gesture"
+        );
     }
 }
