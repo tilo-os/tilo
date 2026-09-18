@@ -14630,6 +14630,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "postcard",
  "regex",
  "serde",
  "serde_json",
