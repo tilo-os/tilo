@@ -175,6 +175,27 @@ class SelectorTests(unittest.TestCase):
 
         self.assertEqual(ci_select.changed_files(self.root, base, head), ["base.rs", "head.rs"])
 
+    def test_move_between_packages_selects_both_owners_and_dependants(self) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        # Identical content encourages Git's normal rename detection. Unicode
+        # also exercises its default quoted-path output rather than ASCII only.
+        old = "base/src/café.rs"
+        new = "leaf/src/café.rs"
+        (self.root / old).parent.mkdir(parents=True)
+        (self.root / new).parent.mkdir(parents=True)
+        (self.root / old).write_text("pub fn moved() {}\n")
+        subprocess.run(["git", "add", old], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "before move"], cwd=self.root, check=True)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        subprocess.run(["git", "mv", old, new], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "move between packages"], cwd=self.root, check=True)
+        changes = ci_select.changed_files(self.root, base, "HEAD")
+        self.assertEqual(set(changes), {old, new})
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertTrue({"base", "middle", "leaf"}.issubset(plan["selected"]))
+
 
 if __name__ == "__main__":
     unittest.main()
