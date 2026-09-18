@@ -786,7 +786,7 @@ for unit_path in $procsubset_units; do
   done < <(sed -n 's/^Exec\(Start\|Stop\|Reload\)=[-+!:]*\([^ ]*\).*/\2/p' "$unit_path")
 done
 if grep -REn '/proc/(cmdline|sys/|cpuinfo|meminfo|modules|filesystems|crypto|version|uptime)' \
-    "$repo/crates/system/windows-vm/src" >/dev/null; then
+    "$repo/crates/windows/windows-vm/src" >/dev/null; then
   bad 'ProcSubset=pid Windows VM controller reads a hidden non-process /proc path'
 fi
 # tilo-rollback-harden sources this library but must not reach its cmdline helper.

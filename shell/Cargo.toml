@@ -321,4 +321,4 @@ greeter = { path = "../crates/session/greeter" }
 # Session-owned Windows compatibility broker. The shell supplies the trusted
 # launcher registry and fresh workspace capability authority.
 compat-service = { path = "../crates/windows/compat-service" }
-windows-vm = { path = "../crates/system/windows-vm" }
+windows-vm = { path = "../crates/windows/windows-vm" }
