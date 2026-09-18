@@ -46,6 +46,7 @@ base64.workspace = true
 qdoc = { path = "../../crates/doc/qdoc" }
 
 [dev-dependencies]
+tempfile.workspace = true
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner
 # (selecting text sets the primary selection, which a middle-click paste test
