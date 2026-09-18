@@ -947,7 +947,9 @@ impl Widget for DesktopRoot {
         changed || updated
     }
     fn needs_redraw(&self) -> bool {
-        self.dirty || (self.activity.is_some() && !self.handle.history_available.get()) || self.handle.inbox.borrow().is_some() || self.activity.as_ref().is_some_and(Widget::needs_redraw) || self.surface.needs_redraw()
+        // Composition consumes structural dirtiness before a queued navigation
+        // request reaches the next update. Keep that deferred work scheduled.
+        self.pending_view_request.is_some() || self.dirty || (self.activity.is_some() && !self.handle.history_available.get()) || self.handle.inbox.borrow().is_some() || self.activity.as_ref().is_some_and(Widget::needs_redraw) || self.surface.needs_redraw()
     }
     fn build_layout(
         &mut self,
@@ -1562,6 +1564,32 @@ mod tests {
         assert!(root.activity.is_none());
         assert_eq!(handle.tree.borrow().active, WorkspaceId(2));
         assert!(handle.session_requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn workspace_navigation_idle_accepted_request_wakes_queued_transition() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            tree.workspaces[0].strips.clear();
+        });
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), Box::new(root), (1000, 600), ui::Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        assert_external_frame_idle(&mut frame, "empty workspace before navigation");
+        *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::WorkspaceActivity {
+            generation: handle.generation.clone(), workspace: "1".into(),
+            view: activity::ActivityView::Replay,
+        });
+        // Match desktop_navigate: one synchronous acceptance/layout pass, then
+        // only the ordinary host frame clock. No input or second relayout.
+        frame.relayout();
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        assert!(handle.navigation.borrow()["workspaceActivity"].is_null(), "acceptance must leave replacement queued");
+        assert!(frame.poll_frame().unwrap(), "accepted queued transition must request a frame while the desktop is idle");
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"]["view"], "replay");
+        assert!(frame.inspection_json().unwrap().contains("Workspace activity"));
+        assert!(handle.session_requests.borrow().is_empty());
+        assert_external_frame_idle(&mut frame, "paused replay after queued transition");
     }
 
     #[test]
