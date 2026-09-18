@@ -82,6 +82,22 @@ fn fixture_worker(
 ) -> Worker {
     fixture_worker_hook(root, transport, consumer, |_| {})
 }
+impl Worker {
+    pub(in crate::setup) fn fixture_for_test(
+        root: &Path,
+        transport: InternalTransport,
+        consumer: impl FnMut(
+            &SelectedManifest,
+            &Cancellation<'_>,
+            &mut dyn HeldReadSeek,
+            &mut dyn HeldReadSeek,
+        ) -> Result<(), String>
+        + Send
+        + 'static,
+    ) -> Self {
+        fixture_worker(root, transport, consumer)
+    }
+}
 fn fixture_worker_hook(
     root: &Path,
     transport: InternalTransport,
