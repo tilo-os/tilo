@@ -43,7 +43,133 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// contains no application payload.
 const PEER_DEPARTURE_HISTORY_CAPACITY: usize = 64;
 const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
+/// Leave room for consent, cancellation, revocation, and teardown while a
+/// producer is faster than the runtime can consume media frames.
+const PERSONAL_FABRIC_DATA_QUEUE_CAPACITY: usize = 192;
 const PERSONAL_DISPLAY_QUEUE_CAPACITY: usize = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersonalFabricQueueOutcome {
+    Queued,
+    Coalesced,
+    Saturated,
+}
+
+fn is_personal_fabric_bulk_data(
+    action: &crate::shell::device_fabric::PersonalFabricAction,
+) -> bool {
+    matches!(
+        action,
+        crate::shell::device_fabric::PersonalFabricAction::RemoteAudioFrame { .. }
+            | crate::shell::device_fabric::PersonalFabricAction::RemoteCaptureChunk { .. }
+    )
+}
+
+fn is_duplicate_personal_fabric_data(
+    queued: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    incoming: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+) -> bool {
+    use crate::shell::device_fabric::PersonalFabricAction;
+
+    if queued.source != incoming.source || queued.target != incoming.target {
+        return false;
+    }
+    match (&queued.action, &incoming.action) {
+        (
+            PersonalFabricAction::RemoteAudioFrame {
+                session_id,
+                sequence,
+                ..
+            },
+            PersonalFabricAction::RemoteAudioFrame {
+                session_id: incoming_session,
+                sequence: incoming_sequence,
+                ..
+            },
+        ) => session_id == incoming_session && sequence == incoming_sequence,
+        (
+            PersonalFabricAction::RemoteCaptureChunk { chunk },
+            PersonalFabricAction::RemoteCaptureChunk {
+                chunk: incoming_chunk,
+            },
+        ) => {
+            chunk.session_id == incoming_chunk.session_id
+                && chunk.sequence == incoming_chunk.sequence
+        }
+        _ => false,
+    }
+}
+
+fn personal_fabric_terminal_matches_data(
+    terminal: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    queued: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+) -> bool {
+    use crate::shell::device_fabric::PersonalFabricAction;
+    use crate::shell::remote_capture_device::RemoteCaptureSignal;
+
+    if terminal.source != queued.source || terminal.target != queued.target {
+        return false;
+    }
+    match (&terminal.action, &queued.action) {
+        (
+            PersonalFabricAction::RemoteAudioStop { session_id, .. }
+            | PersonalFabricAction::RemoteAudioCancel { session_id },
+            PersonalFabricAction::RemoteAudioFrame {
+                session_id: queued_session,
+                ..
+            },
+        ) => session_id == queued_session,
+        (
+            PersonalFabricAction::RemoteCaptureSignal {
+                signal: RemoteCaptureSignal::Stop { session_id, .. },
+            },
+            PersonalFabricAction::RemoteCaptureChunk { chunk },
+        ) => session_id == &chunk.session_id,
+        _ => false,
+    }
+}
+
+/// Apply backpressure without allowing untrusted bulk producers to evict
+/// queued authority decisions. Distinct media sequences are never collapsed:
+/// dropping an intermediate sequence lets the runtime's existing sequence
+/// checks fail closed instead of presenting corrupted media as contiguous.
+fn queue_personal_fabric_action(
+    queue: &mut VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>,
+    envelope: crate::shell::device_fabric::PersonalFabricActionEnvelope,
+) -> PersonalFabricQueueOutcome {
+    if is_personal_fabric_bulk_data(&envelope.action) {
+        if queue
+            .iter()
+            .any(|queued| is_duplicate_personal_fabric_data(queued, &envelope))
+        {
+            return PersonalFabricQueueOutcome::Coalesced;
+        }
+        let data_count = queue
+            .iter()
+            .filter(|queued| is_personal_fabric_bulk_data(&queued.action))
+            .count();
+        if queue.len() >= PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY
+            || data_count >= PERSONAL_FABRIC_DATA_QUEUE_CAPACITY
+        {
+            return PersonalFabricQueueOutcome::Saturated;
+        }
+        queue.push_back(envelope);
+        return PersonalFabricQueueOutcome::Queued;
+    }
+
+    queue.retain(|queued| !personal_fabric_terminal_matches_data(&envelope, queued));
+    if queue.len() >= PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY {
+        let Some(oldest_data) = queue
+            .iter()
+            .position(|queued| is_personal_fabric_bulk_data(&queued.action))
+        else {
+            return PersonalFabricQueueOutcome::Saturated;
+        };
+        queue.remove(oldest_data);
+    }
+    queue.push_back(envelope);
+    PersonalFabricQueueOutcome::Queued
+}
 
 fn queue_personal_display_message(
     queue: &mut VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>,
@@ -4016,10 +4142,14 @@ impl ShellNetwork {
         let Ok(mut actions) = self.personal_fabric_actions.lock() else {
             return;
         };
-        if actions.len() >= PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY {
-            actions.pop_front();
+        if queue_personal_fabric_action(&mut actions, envelope)
+            == PersonalFabricQueueOutcome::Saturated
+        {
+            tracing::warn!(
+                peer = %peer,
+                "personal fabric action queue saturated; rejecting action without evicting control"
+            );
         }
-        actions.push_back(envelope);
     }
 
     /// Capture departure evidence before identity and roster cleanup. Every
@@ -5138,6 +5268,26 @@ mod tests {
             .expect("valid test device")
     }
 
+    fn fabric_envelope(
+        request_byte: u8,
+        source: &crate::shell::personal_continuity::DeviceId,
+        target: &crate::shell::personal_continuity::DeviceId,
+        action: crate::shell::device_fabric::PersonalFabricAction,
+    ) -> crate::shell::device_fabric::PersonalFabricActionEnvelope {
+        crate::shell::device_fabric::PersonalFabricActionEnvelope {
+            request_id: [request_byte; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 1,
+            action,
+        }
+    }
+
+    fn test_capture_grant(byte: u8) -> crate::shell::remote_capture_device::RemoteCaptureGrant {
+        postcard::from_bytes(&postcard::to_allocvec(&[byte; 32]).expect("serialize capture grant"))
+            .expect("deserialize capture grant")
+    }
+
     #[test]
     fn personal_display_frames_are_latest_wins_without_evicting_lifecycle() {
         use crate::shell::device_fabric::PersonalDisplayMessage;
@@ -5899,6 +6049,310 @@ mod tests {
             PersonalFabricPayload::Action(postcard::to_allocvec(&misaddressed).unwrap()),
         );
         assert!(net.take_personal_fabric_actions().is_empty());
+    }
+
+    #[test]
+    fn personal_fabric_action_queue_reserves_control_during_media_saturation() {
+        use crate::shell::device_fabric::PersonalFabricAction;
+        use crate::shell::personal_tethering::{TETHERING_PROTOCOL_VERSION, TetheringSignal};
+        use crate::shell::remote_capture_device::{RemoteCaptureChunk, RemoteCaptureSignal};
+
+        let source = test_device(1);
+        let target = test_device(2);
+        let audio_session = [3; 16];
+        let capture_session = [4; 16];
+        let capture_grant = test_capture_grant(5);
+        let mut queue = VecDeque::new();
+
+        for sequence in 0..PERSONAL_FABRIC_DATA_QUEUE_CAPACITY as u64 {
+            let action = if sequence % 2 == 0 {
+                PersonalFabricAction::RemoteAudioFrame {
+                    session_id: audio_session,
+                    authorization: [6; 16],
+                    sequence,
+                    pcm_s16le: vec![0, 0],
+                }
+            } else {
+                PersonalFabricAction::RemoteCaptureChunk {
+                    chunk: RemoteCaptureChunk {
+                        session_id: capture_session,
+                        grant: capture_grant,
+                        sequence,
+                        offset: 0,
+                        total_bytes: 1,
+                        page_index: None,
+                        end_of_unit: false,
+                        payload: vec![0],
+                    },
+                }
+            };
+            assert_eq!(
+                queue_personal_fabric_action(
+                    &mut queue,
+                    fabric_envelope(sequence as u8, &source, &target, action),
+                ),
+                PersonalFabricQueueOutcome::Queued
+            );
+        }
+        assert_eq!(queue.len(), PERSONAL_FABRIC_DATA_QUEUE_CAPACITY);
+
+        let duplicate = fabric_envelope(
+            200,
+            &source,
+            &target,
+            PersonalFabricAction::RemoteAudioFrame {
+                session_id: audio_session,
+                authorization: [6; 16],
+                sequence: 0,
+                pcm_s16le: vec![9, 9],
+            },
+        );
+        assert_eq!(
+            queue_personal_fabric_action(&mut queue, duplicate),
+            PersonalFabricQueueOutcome::Coalesced
+        );
+        let excess_data = fabric_envelope(
+            201,
+            &source,
+            &target,
+            PersonalFabricAction::RemoteAudioFrame {
+                session_id: audio_session,
+                authorization: [6; 16],
+                sequence: 1_000,
+                pcm_s16le: vec![0, 0],
+            },
+        );
+        assert_eq!(
+            queue_personal_fabric_action(&mut queue, excess_data),
+            PersonalFabricQueueOutcome::Saturated
+        );
+
+        let controls = [
+            PersonalFabricAction::RemoteAudioDecision {
+                session_id: audio_session,
+                accepted: false,
+                authorization: None,
+            },
+            PersonalFabricAction::RemoteCaptureSignal {
+                signal: RemoteCaptureSignal::Decision {
+                    request_id: [7; 16],
+                    accepted: false,
+                    session_id: None,
+                    grant: None,
+                    profile: None,
+                },
+            },
+            PersonalFabricAction::Tethering {
+                signal: TetheringSignal::Stop {
+                    protocol_version: TETHERING_PROTOCOL_VERSION,
+                    request_id: [8; 16],
+                    requester: source.clone(),
+                    provider: target.clone(),
+                    grant_nonce: [9; 16],
+                },
+            },
+            PersonalFabricAction::BluetoothHandoffFinished {
+                request_id: [10; 16],
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                connected: false,
+            },
+            PersonalFabricAction::BluetoothHandoffCancel {
+                request_id: [11; 16],
+                address: "AA:BB:CC:DD:EE:FF".into(),
+            },
+            PersonalFabricAction::InputLeaseRevoked { nonce: [12; 16] },
+            PersonalFabricAction::RemoteAudioStop {
+                session_id: audio_session,
+                authorization: [6; 16],
+            },
+            PersonalFabricAction::RemoteAudioCancel {
+                session_id: audio_session,
+            },
+            PersonalFabricAction::RemoteCaptureSignal {
+                signal: RemoteCaptureSignal::Stop {
+                    session_id: capture_session,
+                    grant: capture_grant,
+                },
+            },
+        ];
+        for (index, action) in controls.into_iter().enumerate() {
+            assert_eq!(
+                queue_personal_fabric_action(
+                    &mut queue,
+                    fabric_envelope(210 + index as u8, &source, &target, action),
+                ),
+                PersonalFabricQueueOutcome::Queued
+            );
+        }
+
+        assert!(queue.len() <= PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY);
+        assert_eq!(
+            queue
+                .iter()
+                .filter(|queued| is_personal_fabric_bulk_data(&queued.action))
+                .count(),
+            0,
+            "terminal controls should supersede queued data for their exact stream"
+        );
+        assert!(queue.iter().any(|queued| matches!(
+            queued.action,
+            PersonalFabricAction::Tethering {
+                signal: TetheringSignal::Stop { .. }
+            }
+        )));
+        assert!(queue.iter().any(|queued| matches!(
+            queued.action,
+            PersonalFabricAction::BluetoothHandoffFinished { .. }
+        )));
+        assert!(queue.iter().any(|queued| matches!(
+            queued.action,
+            PersonalFabricAction::BluetoothHandoffCancel { .. }
+        )));
+        assert!(queue.iter().any(|queued| matches!(
+            queued.action,
+            PersonalFabricAction::InputLeaseRevoked { .. }
+        )));
+    }
+
+    #[test]
+    fn personal_fabric_terminal_purges_only_the_exact_peer_stream() {
+        use crate::shell::device_fabric::PersonalFabricAction;
+        use crate::shell::remote_capture_device::{RemoteCaptureChunk, RemoteCaptureSignal};
+
+        let source = test_device(21);
+        let other_source = test_device(22);
+        let target = test_device(23);
+        let session_id = [24; 16];
+        let capture_grant = test_capture_grant(25);
+        let mut queue = VecDeque::new();
+        for (index, owner) in [&source, &other_source].into_iter().enumerate() {
+            let audio = PersonalFabricAction::RemoteAudioFrame {
+                session_id,
+                authorization: [26; 16],
+                sequence: index as u64,
+                pcm_s16le: vec![0, 0],
+            };
+            let capture = PersonalFabricAction::RemoteCaptureChunk {
+                chunk: RemoteCaptureChunk {
+                    session_id,
+                    grant: capture_grant,
+                    sequence: index as u64,
+                    offset: 0,
+                    total_bytes: 1,
+                    page_index: None,
+                    end_of_unit: false,
+                    payload: vec![0],
+                },
+            };
+            assert_eq!(
+                queue_personal_fabric_action(
+                    &mut queue,
+                    fabric_envelope(30 + index as u8, owner, &target, audio),
+                ),
+                PersonalFabricQueueOutcome::Queued
+            );
+            assert_eq!(
+                queue_personal_fabric_action(
+                    &mut queue,
+                    fabric_envelope(40 + index as u8, owner, &target, capture),
+                ),
+                PersonalFabricQueueOutcome::Queued
+            );
+        }
+
+        assert_eq!(
+            queue_personal_fabric_action(
+                &mut queue,
+                fabric_envelope(
+                    50,
+                    &source,
+                    &target,
+                    PersonalFabricAction::RemoteAudioStop {
+                        session_id,
+                        authorization: [26; 16],
+                    },
+                ),
+            ),
+            PersonalFabricQueueOutcome::Queued
+        );
+        assert_eq!(
+            queue_personal_fabric_action(
+                &mut queue,
+                fabric_envelope(
+                    51,
+                    &source,
+                    &target,
+                    PersonalFabricAction::RemoteCaptureSignal {
+                        signal: RemoteCaptureSignal::Stop {
+                            session_id,
+                            grant: capture_grant,
+                        },
+                    },
+                ),
+            ),
+            PersonalFabricQueueOutcome::Queued
+        );
+
+        assert!(!queue.iter().any(|queued| {
+            queued.source == source && is_personal_fabric_bulk_data(&queued.action)
+        }));
+        assert_eq!(
+            queue
+                .iter()
+                .filter(|queued| {
+                    queued.source == other_source && is_personal_fabric_bulk_data(&queued.action)
+                })
+                .count(),
+            2,
+            "a same-session terminal from another exact peer must not purge its data"
+        );
+    }
+
+    #[test]
+    fn personal_fabric_all_control_saturation_fails_closed() {
+        use crate::shell::device_fabric::PersonalFabricAction;
+
+        let source = test_device(31);
+        let target = test_device(32);
+        let mut queue = VecDeque::new();
+        for index in 0..PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY {
+            let mut nonce = [0; 16];
+            nonce[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            assert_eq!(
+                queue_personal_fabric_action(
+                    &mut queue,
+                    fabric_envelope(
+                        index as u8,
+                        &source,
+                        &target,
+                        PersonalFabricAction::InputLeaseRevoked { nonce },
+                    ),
+                ),
+                PersonalFabricQueueOutcome::Queued
+            );
+        }
+        let first = queue.front().cloned().unwrap();
+        assert_eq!(
+            queue_personal_fabric_action(
+                &mut queue,
+                fabric_envelope(
+                    99,
+                    &source,
+                    &target,
+                    PersonalFabricAction::BluetoothHandoffCancel {
+                        request_id: [33; 16],
+                        address: "11:22:33:44:55:66".into(),
+                    },
+                ),
+            ),
+            PersonalFabricQueueOutcome::Saturated
+        );
+        assert_eq!(queue.len(), PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY);
+        assert_eq!(queue.front(), Some(&first));
+        assert!(!queue.iter().any(|queued| matches!(
+            queued.action,
+            PersonalFabricAction::BluetoothHandoffCancel { .. }
+        )));
     }
 
     #[test]
