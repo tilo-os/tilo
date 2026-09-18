@@ -1772,13 +1772,14 @@ impl EditorView {
             .max(self.rect.y0);
         let popup = Rect::new(px, py, px + width, py + height);
         let shape = RoundedRect::from_rect(popup, 6.0);
+        // A floating popup is a Panel: the shell's derived panel border.
         scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &shape,
+            &ui::surface::edge_outline(popup, 6.0),
         );
 
         for row in 0..shown {
@@ -1908,9 +1909,9 @@ impl EditorView {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &shape,
+            &ui::surface::edge_outline(box_rect, 6.0),
         );
         for (i, line) in first.lines().enumerate() {
             text_renderer.draw_text(
@@ -2339,13 +2340,8 @@ impl EditorView {
             (code_x0 + 122.0).min(self.rect.x1 - 4.0),
             self.rect.y1 - 5.0,
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(rect, 5.0),
-        );
+        // The status chip is a raised card with its derived rest edge.
+        ui::surface::card(scene, transform, rect, 5.0, theme.tokens.colors.surfaces.raised);
         text_renderer.draw_text_styled(
             scene,
             "← Line start (Home)",
@@ -2477,7 +2473,8 @@ impl Widget for EditorView {
         );
         self.draw_horizontal_scroll_recovery(scene, transform, text_renderer, theme, code_x0);
 
-        // Right border separating from any side panel.
+        // Border separating the editor from the raised side panel: derived
+        // against that panel, which is the surface the rule sits on.
         let border = Line::new(
             Point::new(self.rect.x0, self.rect.y0),
             Point::new(self.rect.x0, self.rect.y1),
@@ -2485,7 +2482,7 @@ impl Widget for EditorView {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &border,
         );
