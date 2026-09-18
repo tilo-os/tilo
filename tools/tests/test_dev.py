@@ -69,6 +69,34 @@ class DevCheckTests(unittest.TestCase):
             self.assertEqual(len(selection["steps"]), 3)
             self.assertTrue(all((dev.ROOT / s["test_source"]).is_file() for s in selection["steps"]))
 
+    def test_selected_contract_receipt_identifies_omitted_coverage(self):
+        selection = dev.plan("installer", steps=["target-modes"])
+        self.assertEqual(selection["scope"], "contract-test-subset")
+        self.assertEqual(selection["omitted_steps"], ["target-artifacts", "installer-overlay"])
+        self.assertEqual([s["name"] for s in selection["steps"]], ["target-modes"])
+        self.assertNotIn("unshare", selection["requirements"])
+        # Exercise actual runner/receipt with the selected production contract.
+        self.assertTrue(sys.platform.startswith("linux"), "run the production contract test in Linux/WSL")
+        self.assertEqual(dev.run_plan(selection, self.out), 0)
+        self.assertEqual(self.receipt()["omitted_steps"], selection["omitted_steps"])
+        self.assertEqual(self.receipt()["scope"], "contract-test-subset")
+        self.assertEqual([s["name"] for s in self.receipt()["steps"]], ["target-modes"])
+
+    def test_subset_selection_rejects_unknown_and_empty_requests(self):
+        for steps in (["typo"], ["target-modes", "typo"], []):
+            with self.subTest(steps=steps), self.assertRaisesRegex(ValueError, "invalid steps"):
+                dev.plan("installer", steps=steps)
+
+    def test_repeated_steps_run_once_in_declared_order(self):
+        selection = dev.plan("installer", steps=["installer-overlay", "target-modes", "target-modes"])
+        self.assertEqual([s["name"] for s in selection["steps"]], ["target-modes", "installer-overlay"])
+        self.assertEqual(selection["omitted_steps"], ["target-artifacts"])
+
+    def test_explicit_all_steps_has_full_contract_scope(self):
+        selection = dev.plan("installer", steps=[name for name, _ in dev.SUITES["installer"]])
+        self.assertEqual(selection["scope"], "contract-tests")
+        self.assertEqual(selection["omitted_steps"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

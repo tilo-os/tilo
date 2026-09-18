@@ -40,18 +40,26 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def plan(suite: str, root: Path = ROOT) -> dict:
-    selection = {"schema": 1, "suite": suite, "scope": "contract-tests", "platform": "linux",
+def plan(suite: str, root: Path = ROOT, *, steps: list[str] | None = None) -> dict:
+    available = {name for name, _ in SUITES[suite]}
+    requested = available if steps is None else set(steps)
+    if not requested or not requested <= available:
+        raise ValueError(f"invalid steps for {suite}: {', '.join(sorted(requested - available)) or '(empty selection)'}; "
+                         f"choose from {', '.join(sorted(available))}")
+    selected = [(name, path) for name, path in SUITES[suite] if name in requested]
+    selection = {"schema": 1, "suite": suite,
+            "scope": "contract-tests" if requested == available else "contract-test-subset", "platform": "linux",
+            "omitted_steps": [name for name, _ in SUITES[suite] if name not in requested],
             "qualification": {"vm": False, "hardware": False, "release": False},
             "requirements": list(REQUIREMENTS[suite]),
             "steps": [{"name": name, "argv": [sys.executable, str(root / path)],
                        "test_source": path,
                        "test_source_sha256": hashlib.sha256((root / path).read_bytes()).hexdigest()}
-                      for name, path in SUITES[suite]]}
+                      for name, path in selected]}
     # Materialization checks exercise the production root-ownership boundary.
     # A private user namespace gives fixtures UID 0 without host root, sudo,
     # modifying the verifier or pretending a failed ownership check passed.
-    if suite == "installer" and getattr(os, "geteuid", lambda: -1)() != 0:
+    if suite == "installer" and "target-artifacts" in requested and getattr(os, "geteuid", lambda: -1)() != 0:
         selection["requirements"].append("unshare")
         for step in selection["steps"]:
             if step["name"] == "target-artifacts":
@@ -140,9 +148,10 @@ def main() -> int:
     check.add_argument("--plan", action="store_true", help="print the commands and requirements without running")
     check.add_argument("--out", type=Path, help="new receipt directory (default: target/dev-runs/<unique-id>)")
     check.add_argument("--keep-going", action="store_true", help="run independent remaining checks after failure")
+    check.add_argument("--step", action="append", help="run only this named contract (repeatable; use --plan to list steps)")
     args = parser.parse_args()
     try:
-        selection = plan(args.suite)
+        selection = plan(args.suite, steps=args.step)
         if args.plan:
             print(json.dumps(selection, indent=2))
             return 0
