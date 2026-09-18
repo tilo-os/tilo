@@ -36,17 +36,26 @@ def build(context, builder, platform, tag):
                       (context / 'cosign').read_bytes(), platform)
     cache = REPOSITORY + ':' + key
     arguments = []
-    if optional(['docker', 'pull', cache]) is not None:
-        inspected = optional(['docker', 'image', 'inspect', '--format', '{{json .RepoDigests}}', cache], capture=True)
-        if inspected is not None:
-            try:
-                digests = json.loads(inspected.stdout)
-                matches = [ref for ref in digests if isinstance(ref, str) and
-                           re.fullmatch(re.escape(REPOSITORY) + r'@sha256:[0-9a-f]{64}', ref)]
-                if len(matches) == 1:
-                    arguments = ['--cache-from', matches[0]]
-            except (ValueError, TypeError):
-                pass
+    # Resolve metadata only. Eager `docker pull` extracts every large layer
+    # before BuildKit can use the inline cache and may time out needlessly.
+    inspected = optional(['docker', 'buildx', 'imagetools', 'inspect', '--format', '{{json .Manifest}}', cache],
+                         capture=True, timeout=30)
+    if inspected is not None and 0 < len(inspected.stdout) <= 1024 * 1024:
+        try:
+            manifest = json.loads(inspected.stdout)
+            if (isinstance(manifest, dict) and isinstance(manifest.get('digest'), str)
+                    and re.fullmatch(r'sha256:[0-9a-f]{64}', manifest['digest'])
+                    and type(manifest.get('size')) is int and 0 < manifest['size'] <= 1024 * 1024
+                    and manifest.get('mediaType') in (
+                        'application/vnd.docker.distribution.manifest.v2+json',
+                        'application/vnd.oci.image.manifest.v1+json',
+                        'application/vnd.docker.distribution.manifest.list.v2+json',
+                        'application/vnd.oci.image.index.v1+json')):
+                # The CLI may render manifest bytes; only the registry's
+                # descriptor digest is the immutable image identity.
+                arguments = ['--cache-from', REPOSITORY + '@' + manifest['digest']]
+        except (ValueError, TypeError):
+            pass
     # Docker/BuildKit still evaluates the exact recipe and context. The cache
     # key is a lookup hint, never an instruction to bypass the build.
     subprocess.run(['docker', 'build', '--file', str(context / 'Containerfile'),
