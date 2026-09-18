@@ -4,11 +4,16 @@ repo=$(cd "$(dirname "$0")/../../../.." && pwd)
 out=${1:?usage: build.sh /absolute/output-directory}
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-"$repo/target/browser"}
 cd "$repo"
+if [[ "${QOS_USE_ZIG:-0}" == 1 ]]; then
+  export CC_wasm32_unknown_unknown="$repo/crates/hosting/qos-relay/scripts/wasm-cc.sh"
+  export AR_wasm32_unknown_unknown="$repo/crates/hosting/qos-relay/scripts/wasm-ar.sh"
+fi
 cargo build --locked -j2 -p qos-browser-runtime --target wasm32-unknown-unknown
 mkdir -p "$out/pkg" "$out/fonts"
 "${WASM_BINDGEN:-wasm-bindgen}" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/qos_browser_runtime.wasm" --target web --out-dir "$out/pkg"
 cp crates/browser/qos-browser-runtime/web/*.mjs crates/browser/qos-browser-runtime/web/*.d.ts "$out/"
 cp crates/browser/qos-browser-runtime/web/proof.html "$out/index.html"
+cp crates/browser/qos-browser-runtime/web/peer-proof.html "$out/peer-proof.html"
 python3 - "$repo" "$out" <<'PY'
 import sys,pathlib,re,shutil,json
 repo,out=map(pathlib.Path,sys.argv[1:])

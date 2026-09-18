@@ -1956,46 +1956,7 @@ impl Workspace {
     /// on their membership capability, so "in the room" and "allowed
     /// to do something" can't drift apart. `None` means not a member.
     pub fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        if self.owner.as_deref() == Some(user.as_str()) {
-            return Some(CapRole::Owner);
-        }
-        let subject_is_user = |c: &CapOverride| match &c.subject {
-            Subject::Principal(Principal::Person(p)) => p == user,
-            _ => false,
-        };
-        let now = Some(now_unix());
-        let mut best: Option<Verb> = None;
-        let mut blocked = false;
-        for c in &self.capabilities {
-            if !subject_is_user(c) || !c.is_live_at(now) {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            match c.effect {
-                Effect::Grant => {
-                    best = Some(match best {
-                        Some(prev) if prev.implies(c.verb) => prev,
-                        _ => c.verb,
-                    });
-                }
-                // A room-wide Restrict below Read is how a member is
-                // blocked without being erased from history.
-                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
-                Effect::Restrict => {}
-            }
-        }
-        if blocked {
-            return Some(CapRole::Denied);
-        }
-        best.map(|v| match v {
-            Verb::Admin => CapRole::Owner,
-            Verb::Write => CapRole::Editor,
-            Verb::Comment => CapRole::Commenter,
-            Verb::Read | Verb::Invite => CapRole::Viewer,
-        })
+        qos_peer_state::room::role_of(self.owner.as_deref(), &self.capabilities, user, now_unix())
     }
 
     /// Build the [`Actor`] for a person acting in this room.
@@ -2446,12 +2407,7 @@ impl WorkspaceTree {
 
 /// Owner, capability blobs, and peer-name claims read from a room
 /// document's governance keys. See [`WorkspaceTree::governance_of`].
-type RoomGovernance = (
-    Option<String>,
-    std::collections::BTreeMap<String, Vec<u8>>,
-    std::collections::BTreeMap<String, String>,
-    std::collections::BTreeMap<String, Vec<u8>>,
-);
+type RoomGovernance = qos_peer_state::room::RoomGovernance;
 
 impl WorkspaceTree {
     /// Set the process-wide peer salt [`next_id`] stamps into the high
@@ -4191,62 +4147,7 @@ impl WorkspaceTree {
     /// policy. The room's **name** is deliberately not governed. The
     /// **id** is stricter still: a mismatched payload is refused outright.
     fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let Some(doc) = doc else {
-            return (
-                None,
-                std::collections::BTreeMap::new(),
-                std::collections::BTreeMap::new(),
-                std::collections::BTreeMap::new(),
-            );
-        };
-        let owner = match doc.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let mut caps = std::collections::BTreeMap::new();
-        if let Some((_, caps_id)) = doc.get(&ROOT, "capabilities").ok().flatten() {
-            let keys: Vec<String> = doc.keys(&caps_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = doc.get(&caps_id, &key).ok().flatten()
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                {
-                    caps.insert(key, blob.clone());
-                }
-            }
-        }
-        // Peer names fold in beside the capability list, the same kind
-        // of claim — left out, it'd be the one governance key a guest
-        // could write, and an impostor's first target.
-        let mut peers = std::collections::BTreeMap::new();
-        if let Some((_, peers_id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
-            let keys: Vec<String> = doc.keys(&peers_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = doc.get(&peers_id, &key).ok().flatten()
-                    && let ScalarValue::Str(v) = s.as_ref()
-                {
-                    peers.insert(key, v.to_string());
-                }
-            }
-        }
-        let mut identities = std::collections::BTreeMap::new();
-        if let Some((_, object)) = doc
-            .get(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY)
-            .ok()
-            .flatten()
-        {
-            for key in doc.keys(&object) {
-                if let Some((Value::Scalar(value), _)) = doc.get(&object, &key).ok().flatten()
-                    && let ScalarValue::Bytes(bytes) = value.as_ref()
-                {
-                    identities.insert(key, bytes.clone());
-                }
-            }
-        }
-        (owner, caps, peers, identities)
+        qos_peer_state::room::governance_of(doc)
     }
 
     /// Current heads of `room`'s replication document — the baseline a
@@ -4281,26 +4182,7 @@ impl WorkspaceTree {
     /// True (and logs a warning) if the payload's own `room` field
     /// disagrees with the room it was sent to answer.
     fn declared_room_mismatches(candidate: &AutoCommit, room: RoomId) -> bool {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let declared = match candidate.get(&ROOT, "room").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => RoomId::parse(v.as_str()),
-                _ => None,
-            },
-            _ => None,
-        };
-        if declared.is_some_and(|d| d != room) {
-            tracing::warn!(
-                target: "shell::state",
-                asked = %room,
-                got = %declared.map(|d| d.to_string()).unwrap_or_default(),
-                "room sync refused: the payload names a different room than \
-                 the one it answers",
-            );
-            true
-        } else {
-            false
-        }
+        qos_peer_state::room::declared_room_mismatches(candidate, uuid::Uuid::parse_str(&room.to_string()).expect("RoomId is a UUID"))
     }
 
     /// True (and logs a warning, or pins an unpinned authority) if
@@ -4412,34 +4294,7 @@ impl WorkspaceTree {
     fn extract_governed_fields(
         candidate: &AutoCommit,
     ) -> (Option<String>, Option<String>, Vec<CapOverride>) {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let name = match candidate.get(&ROOT, "name").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let owner = match candidate.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let mut caps: Vec<CapOverride> = Vec::new();
-        if let Some((_, caps_id)) = candidate.get(&ROOT, "capabilities").ok().flatten() {
-            let keys: Vec<String> = candidate.keys(&caps_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = candidate.get(&caps_id, &key).ok().flatten()
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                    && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
-                {
-                    caps.push(cap);
-                }
-            }
-        }
-        (name, owner, caps)
+        qos_peer_state::room::extract_governed_fields(candidate)
     }
 
     /// Diffs `candidate`'s room-record index against what's already held
@@ -4494,23 +4349,7 @@ impl WorkspaceTree {
         if self.workspace_in_room(room).is_none() {
             return Ok(false);
         }
-        let parsed: Result<Vec<automerge::Change>, _> = changes
-            .iter()
-            .map(|b| automerge::Change::try_from(b.as_slice()))
-            .collect();
-        let parsed = parsed?;
-
-        // Applied to a copy first: a check that runs after the merge has
-        // already happened is not a check.
-        let mut candidate = self
-            .room_docs
-            .get(&room)
-            .cloned()
-            .unwrap_or_else(AutoCommit::new);
-        // See `sync_room_doc`: a patch log carried into `apply_changes`
-        // is what turns a peer's first delta into a panic.
-        candidate.reset_diff_cursor();
-        candidate.apply_changes(parsed)?;
+        let candidate = qos_peer_state::room::candidate(self.room_docs.get(&room), changes)?;
 
         if Self::declared_room_mismatches(&candidate, room) {
             return Ok(false);
@@ -4518,6 +4357,7 @@ impl WorkspaceTree {
         if self.governance_write_refused(room, &candidate, from) {
             return Ok(false);
         }
+        if qos_peer_state::coverage::monotonic(self.room_docs.get(&room), &candidate).is_err() { return Ok(false); }
         if self.owned_contents_conflict(room, &candidate, from) {
             return Ok(false);
         }

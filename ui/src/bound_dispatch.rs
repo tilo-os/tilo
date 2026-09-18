@@ -2411,6 +2411,12 @@ mod owned_restore_tests;
 
 /// Remote delivery is not a local action. A physical or logical edit must be
 /// finished by its existing owner; the network queue never commits it.
+pub(crate) fn can_merge_remote_owned_document(store:&RecordStore,checkout:&RecordCheckout)->Result<bool,crate::history_mode::routes::RemoteApplyError>{
+    use crate::history_mode::routes::RemoteApplyError;
+    store.open_existing_record_checked(checkout).map_err(|error|RemoteApplyError::Unavailable(error.to_string()))?;
+    store.with_action_state(&checkout.id,|doc,_,state|doc.pending_ops()==0 && !state.pending.as_ref().is_some_and(|pending| !crate::state::owned_restore::same_frontier(&pending.before,&doc.base_heads())) && state.generation.and_then(|value|value.checked_add(1)).is_some()).map_err(|error|RemoteApplyError::Unavailable(error.to_string()))
+}
+
 pub(crate) fn merge_remote_owned_document(
     store: &RecordStore, checkout: &RecordCheckout, mutation: &collab_types::DocumentMutation,
 ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {

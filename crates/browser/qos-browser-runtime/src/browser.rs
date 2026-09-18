@@ -41,12 +41,14 @@ struct Config {
     author: String,
     instance: u64,
     record: Option<String>,
+    peer: Option<u32>,
     #[serde(default)]
     mac: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-enum DiskKey {
+pub(crate) enum DiskKey {
+    Admission { workspace: String },
     Record {
         package: String,
         workspace: String,
@@ -64,6 +66,7 @@ enum DiskKey {
 impl From<&StorageKey> for DiskKey {
     fn from(k: &StorageKey) -> Self {
         match k {
+            StorageKey::Admission { workspace } => Self::Admission { workspace:workspace.clone() },
             StorageKey::Record {
                 package,
                 workspace,
@@ -90,6 +93,7 @@ impl From<&StorageKey> for DiskKey {
 impl From<DiskKey> for StorageKey {
     fn from(k: DiskKey) -> Self {
         match k {
+            DiskKey::Admission { workspace } => Self::Admission { workspace },
             DiskKey::Record {
                 package,
                 workspace,
@@ -124,6 +128,8 @@ struct Gpu {
     failure: Arc<Mutex<Option<String>>>,
 }
 struct Mount {
+    peer:Option<u32>,
+    app_id:String,
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
@@ -196,6 +202,7 @@ pub fn close(id: u64) -> Result<String, JsValue> {
     REQUESTS.with_borrow_mut(|r| r.remove(&id));
     MOUNTS.with_borrow_mut(|m| {
         let Some(mut mount)=m.remove(&id) else {return Ok("[]".into());};
+        mount.publish(id);
         mount.frame.close_components();
         let reports=mount.frame.take_component_close_reports();
         let _=mount.records.try_flush();
@@ -360,36 +367,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         "chat" => chat::definition(),
         _ => return Err(error("unsupported application")),
     };
-    let storage = CACHES.with_borrow_mut(|c| {
-        let key = (config.profile.clone(), config.device.clone());
-        if let Some(cache) = c.get(&key) {
-            return Ok(cache.clone());
-        }
-        let cache = PortableStorage::new(&config.profile, &config.device).map_err(error)?;
-        c.insert(key, cache.clone());
-        Ok::<_, JsValue>(cache)
-    })?;
-    for entry in js_sys::Array::from(&hydrated).iter() {
-        let key: DiskKey = serde_json::from_str(
-            &Reflect::get(&entry, &"key".into())?
-                .as_string()
-                .ok_or_else(|| error("missing storage key"))?,
-        )
-        .map_err(error)?;
-        let key = StorageKey::from(key);
-        if storage.get(&key).is_none() {
-            let bytes = Uint8Array::new(&Reflect::get(&entry, &"bytes".into())?).to_vec();
-            let actor = Reflect::get(&entry, &"actor".into())?;
-            storage
-                .hydrate(
-                    key,
-                    bytes,
-                    (!actor.is_null() && !actor.is_undefined())
-                        .then(|| Uint8Array::new(&actor).to_vec()),
-                )
-                .map_err(error)?;
-        }
-    }
+    let storage=load_cache(&config.profile,&config.device,&hydrated)?;
     let records = RecordOwners::portable(storage.clone())
         .open(definition.app_id, &config.room)
         .map_err(error)?;
@@ -400,7 +378,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 checkout,
                 reveal: None,
             },
-            Err(ui::record::RecordOpenError::MissingRecord) => LaunchTarget::PrimaryNew,
+            Err(ui::record::RecordOpenError::MissingRecord) if config.peer.is_none() => LaunchTarget::PrimaryNew,
             Err(e) => return Err(error(e)),
         }
     } else if let Some(record) = &config.record {
@@ -419,10 +397,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .load(config.instance)
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
-    let permissions = Rc::new(RefCell::new(PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Owner), &config.author),
-        vec![],
-    )));
+    let permissions = Rc::new(RefCell::new(if let Some(peer)=config.peer {
+        crate::peer::permissions(peer).map_err(error)?
+    }else{PermissionContext::from_capabilities(Actor::person(Some(Role::Owner), &config.author),vec![])}));
     let context = HostContext::prepare(
         definition,
         records.clone(),
@@ -491,6 +468,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         ui::platform::Platform::Linux
     }));
     let mount = Mount {
+        peer:config.peer,
+        app_id:definition.app_id.into(),
         window: window.clone(),
         canvas,
         frame,
@@ -666,6 +645,11 @@ impl Mount {
         Ok(())
     }
     fn publish(&self, id: u64) {
+        if let Some(peer)=self.peer {
+            let captured=crate::admitted_records::capture(&self.records,&self.checkout.id);
+            let record=if self.checkout.id.is_package_primary(){""}else{self.checkout.id.as_str()};
+            if let Err(error)=captured.and_then(|bytes|crate::peer::local_document(peer,&self.app_id,record,bytes)){crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
+        }
         let f = self.frame.frame_output();
         let heads = self
             .records
@@ -687,7 +671,7 @@ impl Mount {
         let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
         emit(
             &self.status,
-            serde_json::json!({"phase":if self.error.is_some(){"failed"}else{"presented"},"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.checkout.id.as_str(),"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
+            serde_json::json!({"phase":if self.error.is_some(){"failed"}else{"presented"},"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.checkout.id.as_str(),"actorId":self.records.read(&self.checkout.id,|doc|doc.get_actor().to_hex_string()),"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
         );
     }
 }
@@ -739,7 +723,7 @@ pub fn semantic(
         Ok(true)
     })
 }
-fn write_json(w: &PendingWrite) -> serde_json::Value {
+pub(crate) fn write_json(w: &PendingWrite) -> serde_json::Value {
     serde_json::json!({"key":serde_json::to_string(&DiskKey::from(&w.key)).unwrap_or_default(),"bytes":w.value.bytes,"actor":w.value.actor,"revision":w.revision})
 }
 #[wasm_bindgen]
@@ -1044,4 +1028,58 @@ pub fn finish_close(id: u64) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn component_close_count() -> usize {
     CLOSED.with_borrow(|closed| closed.len())
+}
+
+pub(crate) fn load_cache(profile:&str,device:&str,hydrated:&JsValue)->Result<PortableStorage,JsValue>{
+    let storage = CACHES.with_borrow_mut(|c| {
+        let key = (profile.to_owned(), device.to_owned());
+        if let Some(cache) = c.get(&key) {
+            return Ok(cache.clone());
+        }
+        let cache = PortableStorage::new(&profile, &device).map_err(error)?;
+        c.insert(key, cache.clone());
+        Ok::<_, JsValue>(cache)
+    })?;
+    for entry in js_sys::Array::from(hydrated).iter() {
+        let key: DiskKey = serde_json::from_str(
+            &Reflect::get(&entry, &"key".into())?
+                .as_string()
+                .ok_or_else(|| error("missing storage key"))?,
+        )
+        .map_err(error)?;
+        let key = StorageKey::from(key);
+        if storage.get(&key).is_none() {
+            let bytes = Uint8Array::new(&Reflect::get(&entry, &"bytes".into())?).to_vec();
+            let actor = Reflect::get(&entry, &"actor".into())?;
+            storage
+                .hydrate(
+                    key,
+                    bytes,
+                    (!actor.is_null() && !actor.is_undefined())
+                        .then(|| Uint8Array::new(&actor).to_vec()),
+                )
+                .map_err(error)?;
+        }
+    }
+    Ok(storage)
+}
+
+pub(crate) fn refresh_peer_mounts(peer:u32){
+ MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(peer)){
+  mount.frame.relayout();mount.pending=true;mount.window.request_redraw();
+ });
+}
+
+#[wasm_bindgen]
+pub fn rebind_peer(old:u32,new:u32){MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(old)){mount.peer=Some(new);});}
+
+pub(crate) fn prepare_peer_remote(peer:u32)->Result<(),String>{
+ MOUNTS.with_borrow(|mounts|{
+  for mount in mounts.values().filter(|mount|mount.peer==Some(peer)){
+   let bytes=crate::admitted_records::prepare_remote(&mount.records,&mount.checkout.id)?;
+   let record=if mount.checkout.id.is_package_primary(){""}else{mount.checkout.id.as_str()};
+   crate::peer::local_document(peer,&mount.app_id,record,bytes)?;
+  }
+  Ok(())
+ })
 }

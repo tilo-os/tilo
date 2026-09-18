@@ -51,6 +51,7 @@ mpris = ["dep:zbus", "zbus/tokio"]
 portal = ["dep:ashpd"]
 
 [dependencies]
+qos-peer-state = { path = "../crates/collab/qos-peer-state" }
 qos-ui-graph = { path = "../crates/dev/ui-graph" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }

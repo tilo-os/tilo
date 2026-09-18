@@ -53,6 +53,7 @@ pub enum ProfileNamespace {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StorageKey {
+    Admission { workspace: String },
     Primary { package: String, workspace: String },
     Record {
         package: String,
@@ -67,6 +68,7 @@ pub enum StorageKey {
 impl StorageKey {
     fn validate(&self) -> Result<(), String> {
         let ids = match self {
+            Self::Admission { workspace } => vec![workspace],
             Self::Primary { package, workspace } => vec![package, workspace],
             Self::Record {
                 package,
@@ -191,7 +193,7 @@ impl PortableStorage {
         );
         Ok(())
     }
-    pub(crate) fn put(
+    pub fn put(
         &self,
         key: StorageKey,
         bytes: Vec<u8>,

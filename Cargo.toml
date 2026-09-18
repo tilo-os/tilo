@@ -31,6 +31,7 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/collab/qos-peer-state",
     "crates/browser/qos-browser-runtime",
     "crates/session/qos-ntfs-helper",
     "crates/session/qos-ntfs-protocol",

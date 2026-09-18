@@ -1822,6 +1822,16 @@ impl RecordStore {
     }
 
     /// Read a record's document.
+    /// Merge an already admitted remote mutation into the one record owner.
+    /// Preserves unfinished local work and rebases shared undo only after merge.
+    pub fn can_merge_admitted(&self,checkout:&RecordCheckout)->Result<bool,String>{
+        crate::bound_dispatch::can_merge_remote_owned_document(self,checkout).map_err(|error|error.to_string())
+    }
+    pub fn merge_admitted(&self,checkout:&RecordCheckout,mutation:&collab_types::DocumentMutation)->Result<Option<bool>,String>{
+        let changed=crate::bound_dispatch::merge_remote_owned_document(self,checkout,mutation).map_err(|e|e.to_string())?;
+        if changed==Some(true){let _=self.try_flush();}
+        Ok(changed)
+    }
     pub fn read<R>(&self, id: &RecordId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
         self.read_checked(id, f).ok()
     }

@@ -11296,18 +11296,27 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chat",
+ "ed25519-dalek 2.2.0",
  "futures",
+ "iroh",
+ "iroh-base",
  "js-sys",
+ "postcard",
  "qdoc",
  "qos-actions",
+ "qos-peer-state",
+ "qos-relay",
+ "qos-user-identity",
  "serde",
  "serde_json",
  "tempfile",
  "ui",
+ "uuid",
  "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "wgpu",
  "winit",
  "word-processor",
@@ -11424,6 +11433,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-peer-state"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "blake3",
+ "collab-types",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "postcard",
+ "qos-user-identity",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "qos-power"
 version = "0.1.0"
 dependencies = [
@@ -11494,6 +11521,8 @@ dependencies = [
  "libc",
  "n0-future",
  "postcard",
+ "qos-browser-runtime",
+ "qos-peer-state",
  "qos-user-identity",
  "rand 0.8.8",
  "runtime-identity",
@@ -11509,6 +11538,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "web-time",
  "x25519-dalek 2.0.1",
 ]
 
@@ -13595,6 +13625,7 @@ dependencies = [
  "qos-bluez",
  "qos-callstream",
  "qos-desktop-entry",
+ "qos-peer-state",
  "qos-power-mgmt",
  "qos-projector",
  "qos-relay",
@@ -15968,6 +15999,7 @@ dependencies = [
  "qdoc",
  "qos-actions",
  "qos-headless-schema",
+ "qos-peer-state",
  "qos-startup-metrics",
  "qos-ui-graph",
  "qrcode",

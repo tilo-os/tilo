@@ -117,6 +117,9 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+qos-peer-state = { path = "../../collab/qos-peer-state" }
+qos-browser-runtime = { path = "../../browser/qos-browser-runtime" }
+web-time = { version = "1", features = ["serde"] }
 iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 

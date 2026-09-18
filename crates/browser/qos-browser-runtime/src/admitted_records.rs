@@ -1,0 +1,266 @@
+//! Project admitted canonical documents into the existing checked record owners.
+use qos_peer_state::StatePeer;
+use ui::{
+    portable_storage::{PortableStorage, StorageKey},
+    record::{RecordCheckout, RecordId, RecordOwners},
+};
+fn key(room: &str, app: &str, record: &str) -> StorageKey {
+    if record.is_empty() {
+        StorageKey::Primary {
+            package: app.into(),
+            workspace: room.into(),
+        }
+    } else {
+        StorageKey::Record {
+            package: app.into(),
+            workspace: room.into(),
+            record: record.into(),
+        }
+    }
+}
+pub(crate) fn install(
+    cache: &PortableStorage,
+    state: &StatePeer,
+    actor: [u8; 32],
+) -> Result<(), String> {
+    let mut plans = vec![];
+    // Use the same schema/identity/room validator before touching any live owner.
+    let validation = PortableStorage::new("admission-validation", state.room())?;
+    let mut validator = RecordOwners::portable(validation.clone());
+    let mut owners = RecordOwners::portable(cache.clone());
+    for row in state.rows() {
+        let definition = match row.app_id.as_str() {
+            "dev.qos.word-processor" => word_processor::definition(),
+            "dev.qos.chat" => chat::definition(),
+            _ => return Err("unsupported canonical application in admitted workspace".into()),
+        };
+        let checkout = if row.app_id == "dev.qos.chat" && row.record_id.is_empty() {
+            RecordCheckout::package_primary(definition.record_kind.clone())
+        } else {
+            RecordCheckout::new(
+                RecordId::parse(&row.record_id).ok_or("invalid ordinary record")?,
+                definition.record_kind.clone(),
+            )
+        };
+        if row.app_id == "dev.qos.chat" && !checkout.id.is_package_primary() {
+            return Err("Chat requires its package-primary route".into());
+        }
+        let bytes = state
+            .document(&row.app_id, &row.record_id)
+            .ok_or("missing admitted bytes")?;
+        let key = key(state.room(), &row.app_id, &row.record_id);
+        validation.put(key.clone(), bytes.clone(), Some(actor.to_vec()))?;
+        let checked = validator
+            .open(&row.app_id, state.room())
+            .map_err(|e| e.to_string())?;
+        checked
+            .try_open_record(&checkout)
+            .map_err(|e| e.to_string())?;
+        let owner = if cache.get(&key).is_some() {
+            let owner = owners
+                .open(&row.app_id, state.room())
+                .map_err(|e| e.to_string())?;
+            if !owner.can_merge_admitted(&checkout)? {
+                return Err("finish pending local mutation before admitting remote state".into());
+            }
+            Some(owner)
+        } else {
+            None
+        };
+        plans.push((key, checkout, bytes, owner));
+    }
+    for (key, checkout, bytes, owner) in plans {
+        if let Some(owner) = owner {
+            if owner
+                .merge_admitted(
+                    &checkout,
+                    &qos_peer_state::DocumentMutation::Snapshot(bytes),
+                )?
+                .is_none()
+            {
+                return Err("record owner changed during synchronous admission".into());
+            }
+        } else {
+            cache.put(key, bytes, Some(actor.to_vec()))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::transaction::Transactable;
+    use ed25519_dalek::SigningKey;
+    use qos_actions::Action;
+    use qos_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+    fn state() -> (StatePeer, SigningKey, web_time::SystemTime) {
+        let root = SigningKey::from_bytes(&[41; 32]);
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "native fixture".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let now = web_time::SystemTime::now();
+        let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let seed = crate::fixture_seed(room, &cert, &[cert.clone()]).unwrap();
+        let mut state =
+            StatePeer::new(room, cert.clone(), vec![cert], RevocationList::new(), now).unwrap();
+        state.install_seed(seed, &key, now).unwrap();
+        (state, key, now)
+    }
+    #[test]
+    fn concurrent_writer_snapshots_preserve_distinct_local_actor_custody() {
+        let (state, _, _) = state();
+        let a = PortableStorage::new("test", "a").unwrap();
+        let b = PortableStorage::new("test", "b").unwrap();
+        install(&a, &state, [11; 32]).unwrap();
+        install(&b, &state, [12; 32]).unwrap();
+        let app = word_processor::definition();
+        let checkout = RecordCheckout::new(RecordId::for_tab(1), app.record_kind.clone());
+        let a = RecordOwners::portable(a)
+            .open(app.app_id, state.room())
+            .unwrap();
+        let b = RecordOwners::portable(b)
+            .open(app.app_id, state.room())
+            .unwrap();
+        a.try_open_record(&checkout).unwrap();
+        b.try_open_record(&checkout).unwrap();
+        let mutate = |store: &ui::record::RecordStore, text: &str| {
+            let mut doc = store.read(&checkout.id, Clone::clone).unwrap();
+            let containers = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
+            let block = qdoc::model::blocks_in_order(&doc, &containers)[0].clone();
+            word_processor::actions::WordProcessorAction::SpliceText {
+                region: word_processor::actions::RegionKind::Body,
+                block,
+                at: 0,
+                del: 0,
+                ins: text.into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            doc.commit();
+            doc.save()
+        };
+        let delta_a = mutate(&a, "A");
+        let delta_b = mutate(&b, "B");
+        for store in [&a, &b] {
+            for bytes in [&delta_a, &delta_b] {
+                assert!(
+                    store
+                        .merge_admitted(
+                            &checkout,
+                            &qos_peer_state::DocumentMutation::Snapshot(bytes.clone())
+                        )
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
+        assert_eq!(
+            a.read(&checkout.id, |doc| doc.get_actor().to_bytes().to_vec())
+                .unwrap(),
+            vec![11; 32]
+        );
+        assert_eq!(
+            b.read(&checkout.id, |doc| doc.get_actor().to_bytes().to_vec())
+                .unwrap(),
+            vec![12; 32]
+        );
+        assert_eq!(
+            a.read(&checkout.id, |doc| doc.base_heads()),
+            b.read(&checkout.id, |doc| doc.base_heads())
+        );
+        assert_eq!(
+            a.read(&checkout.id, |doc| serde_json::to_string(
+                &automerge::AutoSerde::from(doc)
+            )
+            .unwrap()),
+            b.read(&checkout.id, |doc| serde_json::to_string(
+                &automerge::AutoSerde::from(doc)
+            )
+            .unwrap())
+        );
+    }
+    #[test]
+    fn invalid_later_app_cannot_partially_stage_earlier_admitted_record() {
+        let (mut state, key, now) = state();
+        let record = RecordId::for_tab(1);
+        let mut writer = automerge::AutoCommit::load(
+            &state
+                .document("dev.qos.word-processor", record.as_str())
+                .unwrap(),
+        )
+        .unwrap();
+        use automerge::ReadDoc;
+        let (_, metadata) = writer.get(automerge::ROOT, "qos:record").unwrap().unwrap();
+        writer.put(metadata, "room", "wrong-room").unwrap();
+        writer.commit();
+        state
+            .publish_document(
+                "dev.qos.word-processor",
+                record.as_str(),
+                writer.save(),
+                &key,
+                now,
+            )
+            .unwrap();
+        let cache = PortableStorage::new("test", "invalid").unwrap();
+        assert!(install(&cache, &state, [13; 32]).is_err());
+        assert!(cache.pending_writes().is_empty());
+    }
+}
+
+/// Capture through the canonical owner; a renderer must never commit a clone
+/// of an unfinished typing transaction under the same Automerge actor.
+pub(crate) fn capture(records:&ui::record::RecordStore,id:&RecordId)->Result<Vec<u8>,String>{
+ use automerge::transaction::Transactable;
+ // try_flush stamps the real owned transaction before queuing persistence.
+ // Its expected "not yet durable" error does not undo that canonical commit.
+ let _=records.try_flush();
+ records.read(id,|doc|if doc.pending_ops()==0{Ok(doc.clone().save())}else{Err("record mutation is still unfinished".into())}).ok_or("record unavailable")?
+}
+#[cfg(test)]
+mod capture_tests {
+ use super::*;
+ use std::{cell::RefCell,rc::Rc};
+ use ui::{application::{HostContext,LaunchTarget,RestoreInput,ComponentRunnerInputs},application_view::InstanceViewStore,permissions::{PermissionContext,Actor,Role,UserId}};
+ #[test]
+ fn actual_chat_typing_capture_matches_the_real_owned_commit(){
+  let cache=PortableStorage::new("chat-capture","actor").unwrap();let definition=chat::definition();
+  let records=RecordOwners::portable(cache.clone()).open(definition.app_id,"room").unwrap();
+  let views=Rc::new(InstanceViewStore::portable(cache,"room").unwrap());
+  let permissions=Rc::new(RefCell::new(PermissionContext::from_capabilities(Actor::person(Some(Role::Owner),"author"),vec![])));
+  let context=HostContext::prepare(definition,records.clone(),views,"actor".into(),1,permissions,UserId("author".into()),qos_actions::ActionContext::default(),&LaunchTarget::PrimaryNew).unwrap();
+  let component=definition.instantiate(context,LaunchTarget::PrimaryNew,RestoreInput::None).unwrap();let record=component.record().id.clone();
+  let mut frame=ui::headless::FrameHarness::from_component(component,(900,640),ComponentRunnerInputs{theme:ui::Theme::dark(),text_renderer:ui::TextRenderer::new()}).unwrap();
+  frame.click_at(450.0,580.0);frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("S".into())));
+  assert_eq!(records.read(&record,|doc|chat::doc::ChatDoc::draft_text(doc,"c_general")).unwrap(),"S");
+  let captured=capture(&records,&record).unwrap();let mut sent=automerge::AutoCommit::load(&captured).unwrap();
+  let _=records.try_flush();let actual=records.read(&record,|doc|doc.clone().save()).unwrap();let mut actual=automerge::AutoCommit::load(&actual).unwrap();
+  assert_eq!(sent.get_heads(),actual.get_heads(),"captured bytes must carry the owner's stamped transaction, not a separately committed clone");
+  sent.merge(&mut actual).unwrap();
+  let checkout=RecordCheckout::package_primary(definition.record_kind.clone());
+  let prepared=prepare_remote(&records,&record).unwrap();
+  assert!(records.can_merge_admitted(&checkout).unwrap(),"external checkpoint must close the actual owned typing boundary before merge");
+  let mut remote=automerge::AutoCommit::load(&prepared).unwrap();remote.set_actor(automerge::ActorId::from(vec![88;32]));
+  use automerge::transaction::Transactable;
+  remote.put(automerge::ROOT,"remote-checkpoint-probe",true).unwrap();remote.commit();
+  assert_eq!(records.merge_admitted(&checkout,&qos_peer_state::DocumentMutation::Snapshot(remote.save())).unwrap(),Some(true));
+  frame.relayout();frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("T".into())));
+  let _=capture(&records,&record).unwrap();assert_eq!(records.read(&record,|doc|chat::doc::ChatDoc::draft_text(doc,"c_general")).unwrap(),"ST");
+ }
+}
+
+pub(crate) fn prepare_remote(records:&ui::record::RecordStore,id:&RecordId)->Result<Vec<u8>,String>{
+ // An incoming canonical merge is an explicit external history boundary.
+ // The existing checked mutable loan stamps and closes the logical local burst.
+ records.with(id,|_|{}).ok_or("record owner unavailable at remote boundary")?;
+ capture(records,id)
+}
