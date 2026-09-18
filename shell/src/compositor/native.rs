@@ -2209,7 +2209,13 @@ fn write_snapshot_png(
         eprintln!("tilo compositor: test_control snapshot: viewport is {w}x{h}, nothing to write");
         return;
     }
-    let mut scene = fb.paint();
+    // A test-control snapshot may be the first paint after an input event.
+    // Retained overlays retarget their interruptible transitions during
+    // drawing, so a wall-clock sleep alone cannot settle them: without this
+    // hook the capture itself starts a close transition and records the stale
+    // open panel. This is capture-only; live rendering retains its animation.
+    fb.host_mut().force_palette_settled();
+    let mut scene = fb.paint_settled();
     if let Some((cursor, label)) = drag {
         let theme = fb.theme().clone();
         drag_feedback::draw(
