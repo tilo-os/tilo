@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::shell::personal_continuity::DeviceId;
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 1;
+pub const FABRIC_SCHEMA_VERSION: u16 = 2;
 pub const MAX_DEVICES: usize = 64;
 pub const MAX_MEDIA_SESSIONS: usize = 64;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
@@ -450,6 +450,13 @@ pub enum PersonalFabricAction {
     Tethering {
         signal: crate::shell::personal_tethering::TetheringSignal,
     },
+    /// Abort one exact authenticated Bluetooth transaction. Both peers roll
+    /// back only the accessory bound to this request; no inventory or bond
+    /// material is disclosed.
+    BluetoothHandoffCancel {
+        request_id: [u8; 16],
+        address: String,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -830,6 +837,10 @@ impl PersonalFabricActionEnvelope {
                 ..
             }
             | PersonalFabricAction::BluetoothHandoffAccepted {
+                request_id,
+                address,
+            }
+            | PersonalFabricAction::BluetoothHandoffCancel {
                 request_id,
                 address,
             } => {
