@@ -1866,7 +1866,7 @@ fn approve(
         _ => bail!("expected device and service IDs must be supplied together"),
     };
     let paths = IdentityPaths::under(&identity_root);
-    let root = tilo_user_identity::persist::read_signing_key(&paths.user_privkey)
+    let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("this device does not hold the identity root needed to approve enrollment")?;
     let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
     let user_public_key = root.verifying_key().to_bytes();
