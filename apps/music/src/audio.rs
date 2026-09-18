@@ -313,6 +313,17 @@ impl AudioEngine {
             .is_some_and(AudioBackend::is_playing_real)
     }
 
+    /// A settled PLAYING state, excluding a pipeline merely transitioning there.
+    pub(crate) fn is_playing_confirmed(&self) -> bool {
+        self.want_play
+            && self.current_uri.is_some()
+            && self.pending_seek.is_none()
+            && self
+                .backend
+                .as_ref()
+                .is_some_and(AudioBackend::is_playing_confirmed)
+    }
+
     pub fn pump(&mut self) -> bool {
         if self.current_uri.is_none() {
             return false;
@@ -905,6 +916,25 @@ impl AudioBackend {
             }
             let (_, current, pending) = self.inner.playbin.state(gstreamer::ClockTime::ZERO);
             current == gstreamer::State::Playing || pending == gstreamer::State::Playing
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            false
+        }
+    }
+
+    fn is_playing_confirmed(&self) -> bool {
+        #[cfg(feature = "audio")]
+        {
+            use gstreamer::prelude::*;
+            self.current_uri.is_some()
+                && !self.reached_eos()
+                && !self
+                    .inner
+                    .errored
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                && self.inner.playbin.state(gstreamer::ClockTime::ZERO).1
+                    == gstreamer::State::Playing
         }
         #[cfg(not(feature = "audio"))]
         {
