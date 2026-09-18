@@ -12,13 +12,27 @@ use vello::peniko::Color;
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::spacing::Spacing;
 use ui::widget::{Button, ButtonFace, TooltipHost};
 
 use crate::draw;
 
 pub(super) const SIZE: f64 = 40.0;
-const MARGIN: f64 = 16.0;
-const GAP: f64 = 10.0;
+/// Inset of the control column from the map's edge — the theme's `s4`, the
+/// same margin every other floating map surface keeps.
+const MARGIN: f64 = Spacing::BASE.s4 as f64;
+/// The zoom pair reads as one group: its two buttons sit an `s2` apart
+/// (HIG §7b "related rows"), never sharing an edge — nothing touches.
+const PAIR_GAP: f64 = Spacing::BASE.s2 as f64;
+/// Locate and Traffic are siblings of the zoom group: `s3` between them.
+const GROUP_GAP: f64 = Spacing::BASE.s3 as f64;
+
+/// Height of the whole control column below its top margin: four controls,
+/// the zoom pair gap and two sibling gaps. The app lays the navigation card
+/// and the ⋯ overflow button out around this.
+pub(super) const fn column_height() -> f64 {
+    4.0 * SIZE + PAIR_GAP + 2.0 * GROUP_GAP
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MapControlAction {
@@ -41,18 +55,23 @@ impl Layout {
         let x1 = viewport.x1 - MARGIN;
         let y0 = viewport.y0 + MARGIN;
         let zoom_in = Rect::new(x1 - SIZE, y0, x1, y0 + SIZE);
-        let zoom_out = Rect::new(zoom_in.x0, zoom_in.y1, zoom_in.x1, zoom_in.y1 + SIZE);
+        let zoom_out = Rect::new(
+            zoom_in.x0,
+            zoom_in.y1 + PAIR_GAP,
+            zoom_in.x1,
+            zoom_in.y1 + PAIR_GAP + SIZE,
+        );
         let locate = Rect::new(
             zoom_out.x0,
-            zoom_out.y1 + GAP,
+            zoom_out.y1 + GROUP_GAP,
             zoom_out.x1,
-            zoom_out.y1 + GAP + SIZE,
+            zoom_out.y1 + GROUP_GAP + SIZE,
         );
         let traffic = Rect::new(
             locate.x0,
-            locate.y1 + GAP,
+            locate.y1 + GROUP_GAP,
             locate.x1,
-            locate.y1 + GAP + SIZE,
+            locate.y1 + GROUP_GAP + SIZE,
         );
         Self {
             zoom_in,
@@ -188,19 +207,19 @@ impl MapControls {
         }
 
         let colors = &theme.tokens.colors;
+        // Locate and Traffic are the same Neutral button face as the zoom
+        // pair (one rest edge, one hover, one radius for the whole column);
+        // their pictograms paint on top of the face.
         let locate = layout.locate;
-        let locate_bg = if self.hovered == Some(MapControlAction::Locate) {
-            theme.bg_hover
-        } else {
-            colors.surfaces.raised
-        };
-        draw::card(
+        Button::paint(
             scene,
             transform,
-            locate,
-            10.0,
-            locate_bg,
-            colors.border_standard,
+            text,
+            theme,
+            &ButtonFace::new(locate, "")
+                .radius(10.0)
+                .hovered(self.hovered == Some(MapControlAction::Locate))
+                .accessible_name("My location"),
         );
         let center = locate.center();
         draw::stroke_circle(scene, transform, center, 6.0, 2.0, theme.accent_primary);
@@ -217,17 +236,25 @@ impl MapControls {
         }
 
         let traffic = layout.traffic;
-        let traffic_bg = if self.hovered == Some(MapControlAction::ToggleTraffic) {
-            theme.bg_hover
-        } else {
-            colors.surfaces.raised
-        };
-        let border = if self.traffic_enabled {
-            theme.accent_primary
-        } else {
-            colors.border_standard
-        };
-        draw::card(scene, transform, traffic, 10.0, traffic_bg, border);
+        let traffic_hovered = self.hovered == Some(MapControlAction::ToggleTraffic);
+        Button::paint(
+            scene,
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(traffic, "")
+                .radius(10.0)
+                .hovered(traffic_hovered)
+                .accessible_name("Traffic"),
+        );
+        let (traffic_bg, _, _) = ButtonFace::new(traffic, "")
+            .hovered(traffic_hovered)
+            .colors(theme);
+        if self.traffic_enabled {
+            // The overlay is *live* while enabled — accent is the right
+            // vocabulary for that (HIG §9.4), as a ring over the rest face.
+            draw::stroke_rrect(scene, transform, traffic, 10.0, 1.0, theme.accent_primary);
+        }
         let center = traffic.center();
         let dot = |color: Color| {
             if self.traffic_enabled {
@@ -319,6 +346,33 @@ mod tests {
         assert_eq!(controls.tooltip.visible(), Some(("Zoom in", zoom)));
         assert!(controls.on_pointer(zoom.center(), true, [], t0));
         assert_eq!(controls.hovered, None);
+    }
+
+    /// HIG §7 "nothing touches": the zoom pair sits an `s2` apart, the
+    /// groups an `s3`, and the column the app lays out around is exactly
+    /// the four faces plus those gaps — no control shares an edge.
+    #[test]
+    fn controls_keep_token_gaps_and_never_touch() {
+        let controls = controls();
+        let sp = Spacing::BASE;
+        let zoom_in = controls.rect(MapControlAction::ZoomIn);
+        let zoom_out = controls.rect(MapControlAction::ZoomOut);
+        let locate = controls.rect(MapControlAction::Locate);
+        let traffic = controls.rect(MapControlAction::ToggleTraffic);
+        assert_eq!(zoom_out.y0 - zoom_in.y1, f64::from(sp.s2));
+        assert_eq!(locate.y0 - zoom_out.y1, f64::from(sp.s3));
+        assert_eq!(traffic.y0 - locate.y1, f64::from(sp.s3));
+        assert_eq!(zoom_in.y0, f64::from(sp.s4));
+        assert_eq!(traffic.y1 - zoom_in.y0, column_height());
+        let rects = [zoom_in, zoom_out, locate, traffic];
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                assert!(
+                    b.y0 - a.y1 >= f64::from(sp.s1),
+                    "{a:?} and {b:?} touch or overlap"
+                );
+            }
+        }
     }
 
     #[test]
