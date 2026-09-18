@@ -215,10 +215,10 @@ fn render_scenario(
             | "album-manage"
             | "metadata-edit"
     ) {
-        // The live view fills a four-item bounded queue per sync. A small
-        // deterministic settle budget exercises hydration without making
-        // offscreen acceptance render dozens of complete frames per shelf.
-        8
+        // The live view fills a four-item bounded queue per sync. Two frames
+        // exercise the real hydration path without turning a still-image
+        // acceptance render into an expensive background indexing loop.
+        2
     } else {
         2
     };

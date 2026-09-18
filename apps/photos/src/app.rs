@@ -4707,14 +4707,15 @@ impl PhotosApp {
             ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
                 / columns as f64)
                 .max(1.0);
-        let album_h = if self.library_albums.is_empty() {
-            0.0
-        } else if large_text {
-            54.0
-        } else {
-            38.0
-        };
         let desktop_library = !large_text && bounds.width() >= LIBRARY_TWO_COLUMN_MAX_W;
+        // Compact library navigation is photo-first. Collections remain
+        // canonical/searchable, while their dense chip rail moves out of the
+        // small viewport instead of pushing the first date below the fold.
+        let album_h = if desktop_library && !self.library_albums.is_empty() {
+            38.0
+        } else {
+            0.0
+        };
         let compact_header = compact_library_header_geometry(bounds, large_text, album_h > 0.0);
         let masthead = Rect::new(
             bounds.x0 + f64::from(PAD),
@@ -4749,7 +4750,7 @@ impl PhotosApp {
         // First-class destinations use the same stable local navigation
         // target rather than turning People/Places into a search suggestion.
         if desktop_library {
-            let mut tab_x = masthead.x1 - 272.0;
+            let mut tab_x = masthead.x0 + 224.0;
             for (hit, label, selected) in [
                 (
                     PlacesHit::Timeline,
@@ -4877,7 +4878,7 @@ impl PhotosApp {
                 self.timeline_density_hits.push((hit, rect));
             }
         }
-        if !self.library_albums.is_empty() {
+        if desktop_library && !self.library_albums.is_empty() {
             let mut x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
             let y = if desktop_library {
                 masthead.y1 + 13.0
@@ -5029,7 +5030,7 @@ impl PhotosApp {
             // On desktop, collections live in the album rail and the date
             // rhythm does the browsing work.  This avoids a second dashboard
             // row of metadata chips above every photograph.
-            if desktop_library || large_text {
+            if desktop_library || large_text || compact_filters {
                 break;
             }
             let width = if large_text {
@@ -5221,11 +5222,10 @@ impl PhotosApp {
         // narrow or enlarged-text window it becomes two comfortable rows
         // instead of compressing five actions into an unreadable strip.
         let selection_h = if self.selection_mode {
-            if large_text || bounds.width() < 620.0 {
-                if large_text { 144.0 } else { 100.0 }
-            } else {
-                52.0
-            }
+            // Selection is a compact contextual task bar, not a second
+            // dashboard. Narrow and 200% layouts keep the count, one safe
+            // contextual action, and Done in the same 44px-target row.
+            52.0
         } else {
             0.0
         };
@@ -5362,7 +5362,9 @@ impl PhotosApp {
                 let group_top = timeline_y;
                 // Do not leave an orphan date label at the bottom of a
                 // viewport; every heading earns room for its first photo.
-                if group_top + 34.0 + default_card_h > bounds.y1 - f64::from(PAD) {
+                if painted_items > 0
+                    && group_top + 34.0 + default_card_h > bounds.y1 - f64::from(PAD)
+                {
                     break;
                 }
                 timeline_y = group_top;
@@ -5401,7 +5403,11 @@ impl PhotosApp {
             let card_w = item_layout.width;
             let item_preview_h = item_layout.height;
             let item_card_h = item_preview_h;
-            if timeline_y + item_card_h > bounds.y1 - f64::from(PAD) {
+            // A 200% or phone canvas may have room for the beginning of only
+            // one tall portrait. Paint that first card (the clip protects the
+            // masthead) so a chronological view never degenerates into an
+            // empty canvas plus a misleading continuation card.
+            if painted_items > 0 && timeline_y + item_card_h > bounds.y1 - f64::from(PAD) {
                 break;
             }
             let x = timeline_x;
@@ -5623,11 +5629,12 @@ impl PhotosApp {
         // record and bounded materialisation window — no inferred memories,
         // locations, or dates are fabricated here.
         let remaining = self.library_items.len().saturating_sub(painted_items);
-        let can_summarise = remaining > 0
-            || (self.timeline_index_markers.len() == 1
-                && self.library_items.len() == self.library_total
-                && self.library_items.len() < visible
-                && (timeline_x - timeline_left).abs() < f64::EPSILON);
+        let can_summarise = painted_items > 0
+            && (remaining > 0
+                || (self.timeline_index_markers.len() == 1
+                    && self.library_items.len() == self.library_total
+                    && self.library_items.len() < visible
+                    && (timeline_x - timeline_left).abs() < f64::EPSILON));
         if can_summarise {
             let summary_y = timeline_y + 2.0;
             let summary_bottom = (summary_y + 122.0).min(bounds.y1 - f64::from(PAD));
@@ -6149,7 +6156,7 @@ impl PhotosApp {
                 || "Choose album".to_owned(),
                 |name| format!("Add to {}", compact_label(name, 12)),
             );
-        let wide = selection_h <= 52.0;
+        let wide = desktop_library && selection_h <= 52.0;
         let x = bounds.x0 + f64::from(PAD);
         let max_x = bounds.x1 - f64::from(PAD);
         scene.fill(
@@ -6231,40 +6238,17 @@ impl PhotosApp {
                 &label,
                 12.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 10.0, selection_y + 9.0)),
-                Some(96.0),
+                transform * Affine::translate((x + 10.0, selection_y + 15.0)),
+                Some(92.0),
                 TextWeight::Medium,
             );
-            let first_y = selection_y + 4.0;
-            let second_y = selection_y + 50.0;
+            let row_y = selection_y + 4.0;
             for (hit, label, rect, enabled) in [
-                (
-                    SelectionHit::SelectAll,
-                    "All",
-                    Rect::new(x + 104.0, first_y, x + 168.0, first_y + 40.0),
-                    !self.library_cards.is_empty(),
-                ),
-                (
-                    SelectionHit::Clear,
-                    "Clear",
-                    Rect::new(x + 174.0, first_y, x + 246.0, first_y + 40.0),
-                    selected > 0,
-                ),
                 (
                     SelectionHit::Done,
                     "Done",
-                    Rect::new(max_x - 78.0, first_y, max_x, first_y + 40.0),
+                    Rect::new(max_x - 78.0, row_y, max_x, row_y + 40.0),
                     true,
-                ),
-                (
-                    SelectionHit::Favorite,
-                    if self.selection_all_favorite {
-                        "Unfavorite"
-                    } else {
-                        "Favorite"
-                    },
-                    Rect::new(x, second_y, x + 108.0, second_y + 40.0),
-                    selected > 0,
                 ),
                 (
                     if self.selection_destination_album.is_some() {
@@ -6273,7 +6257,7 @@ impl PhotosApp {
                         SelectionHit::ChooseAlbum
                     },
                     destination_label.as_str(),
-                    Rect::new(x + 114.0, second_y, x + 248.0, second_y + 40.0),
+                    Rect::new(x + 106.0, row_y, max_x - 84.0, row_y + 40.0),
                     selected > 0 && !self.library_albums.is_empty(),
                 ),
             ] {
@@ -6565,6 +6549,13 @@ impl PhotosApp {
     ) {
         self.album_editor_hits.clear();
         if !self.library_mode || self.metadata_editor {
+            return;
+        }
+        // On phone and 200% the library opens with chronology above the fold.
+        // Album editing remains available through its canonical resource
+        // action; it does not occupy a permanent New/Edit row in front of
+        // every first photo.
+        if !self.album_editor && (theme.text_scale > 1.25 || self.canvas_rect.width() < 620.0) {
             return;
         }
         if self.album_editor && theme.text_scale > 1.25 {
