@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 
 use automerge::{AutoCommit, ObjId};
@@ -91,6 +92,9 @@ const CANVAS_INSET: f32 = 10.0;
 const THUMBNAIL_MAX_W: u32 = 320;
 const THUMBNAIL_MAX_H: u32 = 180;
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
+const DIRECTORY_IMPORT_QUEUE: usize = 16;
+const DIRECTORY_IMPORT_PER_FRAME: usize = 2;
+const DIRECTORY_IMPORT_MAX_FILES: usize = 10_000;
 const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// One bounded materialized library page. This is intentionally independent
 /// of the number of cards that happen to fit in a particular window.
@@ -655,6 +659,8 @@ pub struct PhotosApp {
     compact_more_hits: Vec<(Hit, Rect)>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
+    directory_picker: Option<ui::portal::PortalChannel>,
+    directory_import: Option<DirectoryImport>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     pending_resource_open: Option<(tilo_actions::InvocationId, String)>,
@@ -824,6 +830,21 @@ pub struct PhotosApp {
     library_mode: bool,
 }
 
+struct DirectoryImport {
+    receiver: Receiver<DirectoryImportEvent>,
+    cancel: Arc<AtomicBool>,
+    invocation: Option<tilo_actions::InvocationId>,
+    discovered: usize,
+    imported: usize,
+    skipped: usize,
+    done: bool,
+}
+
+enum DirectoryImportEvent {
+    Candidate(std::path::PathBuf),
+    Finished,
+}
+
 impl Default for PhotosApp {
     fn default() -> Self {
         Self::new()
@@ -951,6 +972,8 @@ impl PhotosApp {
             compact_more_focus: 0,
             compact_more_hits: Vec::new(),
             picker: None,
+            directory_picker: None,
+            directory_import: None,
             resource_invocation: None,
             resource_result: None,
             pending_resource_open: None,
@@ -2223,6 +2246,16 @@ impl PhotosApp {
                         .send(),
                 );
             }
+            crate::actions::PhotosOperation::ImportDirectory { path: None } => {
+                self.directory_picker = Some(
+                    ui::portal::PickRequest::directory("Import photo folder", "Import folder")
+                        .thread_name("photos-portal-directory-import")
+                        .send(),
+                );
+            }
+            crate::actions::PhotosOperation::ImportDirectory { path: Some(path) } => {
+                self.begin_directory_import(std::path::PathBuf::from(path), None);
+            }
             crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } => {
                 return Err(format!(
                     "Camera import requires document dispatch: {media_id} ({name})"
@@ -3411,8 +3444,144 @@ impl PhotosApp {
         true
     }
 
+    fn begin_directory_import(
+        &mut self,
+        path: std::path::PathBuf,
+        invocation: Option<tilo_actions::InvocationId>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(DIRECTORY_IMPORT_QUEUE);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let _ = std::thread::Builder::new()
+            .name("photos-directory-import".into())
+            .spawn(move || {
+                let mut pending = vec![path];
+                let mut seen = 0usize;
+                while let Some(directory) = pending.pop() {
+                    if worker_cancel.load(Ordering::Relaxed) || seen >= DIRECTORY_IMPORT_MAX_FILES {
+                        break;
+                    }
+                    let Ok(entries) = std::fs::read_dir(directory) else {
+                        continue;
+                    };
+                    for entry in entries.flatten() {
+                        if worker_cancel.load(Ordering::Relaxed)
+                            || seen >= DIRECTORY_IMPORT_MAX_FILES
+                        {
+                            break;
+                        }
+                        let path = entry.path();
+                        if path.is_dir() {
+                            pending.push(path);
+                            continue;
+                        }
+                        if !path.is_file() || !is_importable_photo(&path) {
+                            continue;
+                        }
+                        seen = seen.saturating_add(1);
+                        if sender.send(DirectoryImportEvent::Candidate(path)).is_err() {
+                            return;
+                        }
+                    }
+                }
+                let _ = sender.send(DirectoryImportEvent::Finished);
+            });
+        self.directory_import = Some(DirectoryImport {
+            receiver,
+            cancel,
+            invocation,
+            discovered: 0,
+            imported: 0,
+            skipped: 0,
+            done: false,
+        });
+        self.notice = Some("Preparing folder import…".into());
+    }
+
+    fn drain_directory_import(&mut self, doc: &mut AutoCommit) {
+        let Some(import) = self.directory_import.as_mut() else {
+            return;
+        };
+        for _ in 0..DIRECTORY_IMPORT_PER_FRAME {
+            match import.receiver.try_recv() {
+                Ok(DirectoryImportEvent::Candidate(path)) => {
+                    import.discovered = import.discovered.saturating_add(1);
+                    let before = PhotosDoc::library(doc).photos.len();
+                    self.open_path(doc, &path.to_string_lossy());
+                    if PhotosDoc::library(doc).photos.len() > before {
+                        import.imported = import.imported.saturating_add(1);
+                    } else {
+                        import.skipped = import.skipped.saturating_add(1);
+                    }
+                }
+                Ok(DirectoryImportEvent::Finished) => import.done = true,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => import.done = true,
+            }
+        }
+        let Some(import) = self.directory_import.as_ref() else {
+            return;
+        };
+        if import.done {
+            let message = format!(
+                "Folder import finished: {} imported, {} skipped",
+                import.imported, import.skipped
+            );
+            let invocation = import.invocation;
+            self.notice = Some(message.clone());
+            self.directory_import = None;
+            if let Some(invocation) = invocation {
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                });
+            }
+        } else {
+            self.notice = Some(format!(
+                "Importing folder: {} found · {} imported · {} skipped",
+                import.discovered, import.imported, import.skipped
+            ));
+        }
+    }
+
     /// Collect a chosen file from the portal, if one has arrived.
     fn drain_picker(&mut self, doc: &mut AutoCommit) {
+        if let Some(rx) = self.directory_picker.as_ref() {
+            match rx.try_recv() {
+                Ok(ui::portal::PortalOutcome::Opened(path)) => {
+                    self.directory_picker = None;
+                    self.begin_directory_import(path, self.resource_invocation.take());
+                }
+                Ok(ui::portal::PortalOutcome::Cancelled) => {
+                    self.directory_picker = None;
+                    if let Some(invocation) = self.resource_invocation.take() {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
+                            invocation,
+                            message: Some("folder selection was cancelled".into()),
+                        });
+                    }
+                }
+                Ok(ui::portal::PortalOutcome::Failed(message)) => {
+                    self.directory_picker = None;
+                    self.notice = Some(format!("Folder selection failed: {message}"));
+                    if let Some(invocation) = self.resource_invocation.take() {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "photos.directory_portal_failed".into(),
+                                message,
+                                details: None,
+                                retryable: true,
+                            },
+                        });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.directory_picker = None;
+                }
+            }
+        }
         let Some(rx) = self.picker.as_ref() else {
             return;
         };
@@ -6666,6 +6835,17 @@ fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
     pixels::read_bounded(std::fs::File::open(path).ok()?, pixels::MAX_ENCODED_BYTES)
 }
 
+fn is_importable_photo(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp"
+            )
+        })
+}
+
 impl PhotosApp {
     /// Take completed thumbnail work without blocking the UI thread.
     fn drain_thumbnail_results(&mut self) {
@@ -6847,8 +7027,14 @@ impl Widget for PhotosApp {
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
-        if self.picker.is_some() {
+        if self.picker.is_some()
+            || self.directory_picker.is_some()
+            || self.directory_import.is_some()
+        {
             self.resource_invocation = Some(invocation);
+            if let Some(import) = self.directory_import.as_mut() {
+                import.invocation = Some(invocation);
+            }
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
@@ -6986,6 +7172,10 @@ impl Widget for PhotosApp {
             // a late worker response can no longer open a file after the
             // caller has cancelled the action.
             self.picker = None;
+            self.directory_picker = None;
+            if let Some(import) = self.directory_import.take() {
+                import.cancel.store(true, Ordering::Relaxed);
+            }
             self.resource_invocation = None;
             return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
@@ -7030,6 +7220,7 @@ impl Widget for PhotosApp {
             });
         }
         self.drain_picker(doc);
+        self.drain_directory_import(doc);
         self.refresh(doc);
         self.library_search.sync(doc, path);
         if let Some(query) = self.library_search.take_dirty() {
