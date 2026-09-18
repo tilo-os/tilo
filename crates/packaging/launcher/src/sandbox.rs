@@ -16,11 +16,13 @@ pub fn payload_mount_for(package_id: &str) -> PathBuf {
 
 /// In-sandbox mount root for the runtime (tilo-runtime/<version>/).
 pub fn runtime_mount_for(version: &str) -> PathBuf {
-    PathBuf::from("/usr/lib/tilo-runtime").join(version)
+    PathBuf::from("/run/tilo-runtime").join(version)
 }
 
-/// Canonical absolute loader/libc paths re-exposed from the runtime
-/// bundle (safe across archs — only existing paths get re-bound).
+/// Canonical absolute ELF interpreter paths re-exposed from the runtime
+/// bundle. Ordinary shared libraries are found through the bundle's
+/// `LD_LIBRARY_PATH`; rebinding them here can target host symlinks (for
+/// example `/lib64/libgcc_s.so.1`), which bubblewrap deliberately refuses.
 pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib64/ld-linux-x86-64.so.2",
     "/lib/ld-linux-x86-64.so.2",
@@ -31,34 +33,6 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib64/ld-linux-aarch64.so.1",
     "/usr/lib64/ld-linux-aarch64.so.1",
     "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
-    "/lib64/libc.so.6",
-    "/lib64/libgcc_s.so.1",
-    "/lib64/libm.so.6",
-    "/lib64/libdl.so.2",
-    "/lib64/libpthread.so.0",
-    "/lib64/librt.so.1",
-    "/lib64/libutil.so.1",
-    "/usr/lib64/libc.so.6",
-    "/usr/lib64/libgcc_s.so.1",
-    "/usr/lib64/libm.so.6",
-    "/usr/lib64/libdl.so.2",
-    "/usr/lib64/libpthread.so.0",
-    "/usr/lib64/librt.so.1",
-    "/usr/lib64/libutil.so.1",
-    "/lib/x86_64-linux-gnu/libc.so.6",
-    "/lib/x86_64-linux-gnu/libgcc_s.so.1",
-    "/lib/x86_64-linux-gnu/libm.so.6",
-    "/lib/x86_64-linux-gnu/libdl.so.2",
-    "/lib/x86_64-linux-gnu/libpthread.so.0",
-    "/lib/x86_64-linux-gnu/librt.so.1",
-    "/lib/x86_64-linux-gnu/libutil.so.1",
-    "/lib/aarch64-linux-gnu/libc.so.6",
-    "/lib/aarch64-linux-gnu/libgcc_s.so.1",
-    "/lib/aarch64-linux-gnu/libm.so.6",
-    "/lib/aarch64-linux-gnu/libdl.so.2",
-    "/lib/aarch64-linux-gnu/libpthread.so.0",
-    "/lib/aarch64-linux-gnu/librt.so.1",
-    "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
 /// Plan for exposing a filtered D-Bus proxy into the sandbox. The production
@@ -474,11 +448,6 @@ pub fn build_bwrap_argv_for_entry(
         &crate::hardening::for_package(&manifest.package_id),
     );
 
-    // Runtime bind + LD_LIBRARY_PATH, plus re-binding loader/libc at their
-    // canonical absolute paths: ELFs hard-code `INTERP` and the kernel
-    // refuses to exec if unreachable, even with LD_LIBRARY_PATH set.
-    push_runtime_bundle(&mut argv, runtime);
-
     // Standard mounts, before the system profile so its device entries
     // land on top of the `--dev` tmpfs instead of under it.
     argv.push("--tmpfs".to_string());
@@ -494,6 +463,14 @@ pub fn build_bwrap_argv_for_entry(
         &mut argv,
         egress_decision(manifest, capabilities).shares_host_network(),
     );
+
+    // Keep the runtime outside the broad host `/usr` and `/usr/lib` profile.
+    // A nested mount there is either hidden when the parent is mounted later,
+    // or cannot be created after the read-only parent mount. `/run` is private
+    // to this sandbox, so the selected bundle remains visible regardless of
+    // system-profile ordering. Canonical loader/libc paths are still re-bound
+    // because ELFs hard-code `INTERP` and ignore LD_LIBRARY_PATH for it.
+    push_runtime_bundle(&mut argv, runtime);
 
     // User-granted capabilities after the system profile (read-write wins
     // over read-only). `-try` variants throughout: a stale grant (deleted
@@ -1234,16 +1211,25 @@ mod tests {
         let rt_pos = argv
             .windows(3)
             .position(|w| {
-                w[0] == "--ro-bind" && w[1] == "/host/runtime" && w[2] == "/usr/lib/tilo-runtime/1"
+                w[0] == "--ro-bind" && w[1] == "/host/runtime" && w[2] == "/run/tilo-runtime/1"
             })
             .expect("runtime ro-bind");
-        let _ = rt_pos;
+        let usr_lib_pos = argv
+            .windows(3)
+            .position(|w| w[0] == "--ro-bind-try" && w[1] == "/usr/lib" && w[2] == "/usr/lib")
+            .expect("system /usr/lib profile bind");
+        assert!(
+            rt_pos > usr_lib_pos,
+            "the selected runtime must be mounted after /usr/lib so the host profile cannot cover it: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|arg| arg.ends_with("/libgcc_s.so.1")),
+            "ordinary shared libraries must resolve through LD_LIBRARY_PATH, not symlink-hostile file rebinds: {argv:?}"
+        );
         let ld_pos = argv
             .windows(3)
             .position(|w| {
-                w[0] == "--setenv"
-                    && w[1] == "LD_LIBRARY_PATH"
-                    && w[2] == "/usr/lib/tilo-runtime/1/lib"
+                w[0] == "--setenv" && w[1] == "LD_LIBRARY_PATH" && w[2] == "/run/tilo-runtime/1/lib"
             })
             .expect("LD_LIBRARY_PATH setenv");
         let _ = ld_pos;
