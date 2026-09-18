@@ -1038,9 +1038,15 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
         });
         ak.set_live_atomic();
     }
+    // AccessKit derives native Label names from their value, not their label.
+    // Our static-text widgets conventionally supply that text through `name`.
+    let value = match access.role {
+        Role::Label | Role::StaticText => access.value.as_ref().or(access.name.as_ref()),
+        _ => access.value.as_ref(),
+    };
     // Never expose a protected (password) value, even if the widget mistakenly populated one.
     if !access.state.protected
-        && let Some(value) = &access.value
+        && let Some(value) = value
     {
         ak.set_value(value.clone());
     }
@@ -1775,6 +1781,26 @@ mod tests {
             None,
             "protected value must not leak to the AT"
         );
+    }
+
+    #[test]
+    fn static_labels_export_the_value_read_by_native_accessibility() {
+        for role in [Role::Label, Role::StaticText] {
+            let text = "SQLite · Grün 🌍 · 1 rows";
+            let mut root = TestWidget::new(Some(AccessNode::new(role).with_name(text)));
+            let (_taffy, node_map, _) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, label) = update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == AkRole::Label)
+                .unwrap();
+            assert_eq!(
+                label.value(),
+                Some(text),
+                "AccessKit native label names come from their value"
+            );
+        }
     }
 
     #[test]
