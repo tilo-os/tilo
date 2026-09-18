@@ -97,11 +97,23 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
     qpkg="$out/qpkg/$name-$version-$(uname -m).qpkg"
-    "$release_dir/tilo-pkg" pack \
+    binary_bytes=$(stat -c %s "$built")
+    printf 'packing app=%s binary=%s binary_bytes=%s output=%s\n' \
+        "$name" "$built" "$binary_bytes" "$qpkg"
+    if "$release_dir/tilo-pkg" pack \
         --manifest "$staged_manifest" --payload "$payload" \
-        --identity "$identity" --output "$qpkg"
-    "$release_dir/tilo-pkg" verify --trusted-key "$pubkey" "$qpkg"
+        --identity "$identity" --output "$qpkg"; then
+        :
+    else
+        pack_status=$?
+        printf 'pack failed: app=%s output=%s exit_status=%s binary_bytes=%s limit=%s\n' \
+            "$name" "$qpkg" "$pack_status" "$binary_bytes" "$max_qpkg_bytes" >&2
+        exit "$pack_status"
+    fi
     qpkg_bytes=$(stat -c %s "$qpkg")
+    printf 'packed app=%s output=%s qpkg_bytes=%s limit=%s\n' \
+        "$name" "$qpkg" "$qpkg_bytes" "$max_qpkg_bytes"
+    "$release_dir/tilo-pkg" verify --trusted-key "$pubkey" "$qpkg"
     (( qpkg_bytes <= max_qpkg_bytes )) || {
         printf '%s is %s bytes (limit %s); shared-runtime packaging regressed\n' \
             "$qpkg" "$qpkg_bytes" "$max_qpkg_bytes" >&2
