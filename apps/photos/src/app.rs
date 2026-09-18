@@ -39,7 +39,8 @@ use ui::theme::Theme;
 use ui::widget::{
     Button, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexedScrollbar,
     EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec,
-    ProgressBar, ScrollMetrics, SearchField, TextInput, TextInputKind, Widget,
+    ProgressBar, ScrollMetrics, SearchField, SegmentedFace, TextInput, TextInputKind, ToggleGroup,
+    Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -631,6 +632,7 @@ enum TimelineHit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryDestination {
     Timeline,
+    Albums,
     People,
     Places,
     Analysis,
@@ -644,6 +646,7 @@ struct PlaceItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PlacesHit {
     Timeline,
+    Albums,
     People,
     Places,
     Analysis,
@@ -1084,6 +1087,8 @@ pub struct PhotosApp {
     library_favorite_count: usize,
     library_offset: usize,
     library_albums: Vec<(String, String, usize)>,
+    /// At most four stable member ids per album for the bounded cover mosaic.
+    library_album_covers: HashMap<String, Vec<String>>,
     albums_page: usize,
     active_album: Option<String>,
     /// Metadata browse filters originate from canonical folder/person
@@ -1140,6 +1145,7 @@ pub struct PhotosApp {
     timeline_index_metrics: ScrollMetrics,
     library_details_cards: Vec<(String, Rect)>,
     album_cards: Vec<(Option<String>, Rect)>,
+    album_edit_cards: Vec<(String, Rect)>,
     album_editor: bool,
     album_editor_id: Option<String>,
     album_editor_creating: bool,
@@ -1808,6 +1814,7 @@ impl PhotosApp {
             library_favorite_count: 0,
             library_offset: 0,
             library_albums: Vec::new(),
+            library_album_covers: HashMap::new(),
             albums_page: 0,
             active_album: None,
             active_folder: None,
@@ -1836,6 +1843,7 @@ impl PhotosApp {
             timeline_index_metrics: ScrollMetrics::new(0.0, 0.0, 0.0),
             library_details_cards: Vec::new(),
             album_cards: Vec::new(),
+            album_edit_cards: Vec::new(),
             album_editor: false,
             album_editor_id: None,
             album_editor_creating: false,
@@ -2684,6 +2692,20 @@ impl PhotosApp {
         self.show_library();
         self.people_mode = true;
         self.library_destination = LibraryDestination::People;
+    }
+
+    /// Reveal albums as a first-class collection. Opening the collection is
+    /// presentation-only; opening a specific album still resolves its stable
+    /// resource id and then enters the chronological photo view.
+    pub fn show_albums(&mut self) {
+        self.show_library();
+        self.people_mode = false;
+        self.library_destination = LibraryDestination::Albums;
+    }
+
+    /// Pose the album overview for deterministic offscreen visual coverage.
+    pub fn show_albums_for_shot(&mut self) {
+        self.show_albums();
     }
 
     /// Pose one real local suggestion for the deterministic visual gallery.
@@ -3657,6 +3679,16 @@ impl PhotosApp {
     }
 
     fn page_collection(&mut self, hit: CollectionPageHit) -> bool {
+        let page_size = if matches!(
+            hit,
+            CollectionPageHit::AlbumsPrevious | CollectionPageHit::AlbumsNext
+        ) && self.library_destination == LibraryDestination::Albums
+            && self.canvas_rect.width() >= 700.0
+        {
+            8
+        } else {
+            COLLECTION_PAGE_SIZE
+        };
         let (page, total, forward) = match hit {
             CollectionPageHit::AlbumsPrevious => {
                 (&mut self.albums_page, self.library_albums.len(), false)
@@ -3675,7 +3707,7 @@ impl PhotosApp {
             }
             CollectionPageHit::PlacesNext => (&mut self.places_page, self.places_items.len(), true),
         };
-        let pages = total.max(1).div_ceil(COLLECTION_PAGE_SIZE);
+        let pages = total.max(1).div_ceil(page_size);
         let next = if forward {
             page.saturating_add(1).min(pages.saturating_sub(1))
         } else {
@@ -4156,6 +4188,7 @@ impl PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewAlbums => self.show_albums(),
             crate::actions::PhotosOperation::ViewTimeline { anchor } => {
                 self.view_timeline(doc, anchor.as_ref())?;
             }
@@ -4578,6 +4611,47 @@ impl PhotosApp {
         };
         let canvas = if self.library_mode {
             let mut cards = Vec::new();
+            cards.extend(self.places_hits.iter().filter_map(|(hit, bounds)| {
+                let (name, target) = match hit {
+                    PlacesHit::Timeline => ("Timeline", "photos:library:timeline"),
+                    PlacesHit::Albums => ("Albums", "photos:library:albums"),
+                    PlacesHit::People => ("People", "photos:library:people"),
+                    PlacesHit::Places => ("Places", "photos:library:places"),
+                    PlacesHit::Analysis => ("Photo analysis", "photos:library:analysis"),
+                    PlacesHit::ToggleList
+                    | PlacesHit::ZoomIn
+                    | PlacesHit::ZoomOut
+                    | PlacesHit::Marker(_) => return None,
+                };
+                Some(
+                    AccessNode::new(Role::RadioButton)
+                        .with_name(name)
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            checked: Some(match hit {
+                                PlacesHit::Timeline => {
+                                    self.library_destination == LibraryDestination::Timeline
+                                }
+                                PlacesHit::Albums => {
+                                    self.library_destination == LibraryDestination::Albums
+                                }
+                                PlacesHit::People => {
+                                    self.library_destination == LibraryDestination::People
+                                }
+                                PlacesHit::Places => {
+                                    self.library_destination == LibraryDestination::Places
+                                }
+                                PlacesHit::Analysis => {
+                                    self.library_destination == LibraryDestination::Analysis
+                                }
+                                _ => false,
+                            }),
+                            ..Default::default()
+                        })
+                        .with_action_target(target),
+                )
+            }));
             if self.library_destination == LibraryDestination::Analysis {
                 cards.extend(
                     self.library_analysis_buttons
@@ -4649,6 +4723,46 @@ impl PhotosApp {
                     .with_hashed_key("photos:library-analysis")
                     .with_live(Politeness::Polite)
                     .with_children(cards)
+            } else if self.library_destination == LibraryDestination::Albums {
+                cards.extend(self.album_cards.iter().filter_map(|(id, bounds)| {
+                    let id = id.as_ref()?;
+                    let (_, name, count) = self
+                        .library_albums
+                        .iter()
+                        .find(|(album_id, _, _)| album_id == id)?;
+                    Some(
+                        AccessNode::new(Role::ListItem)
+                            .with_name(format!(
+                                "{name}, {count} photo{}",
+                                if *count == 1 { "" } else { "s" }
+                            ))
+                            .with_description("Open this shared album")
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_hashed_key(format!("photos:album-card:{id}"))
+                            .with_action_target(format!("photos:library-album:{id}")),
+                    )
+                }));
+                cards.extend(self.album_edit_cards.iter().map(|(id, bounds)| {
+                    AccessNode::new(Role::Button)
+                        .with_name("Edit album")
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        })
+                        .with_hashed_key(format!("photos:album-edit:{id}"))
+                        .with_action_target(format!("photos:album-edit:{id}"))
+                }));
+                AccessNode::new(Role::List)
+                    .with_name("Albums")
+                    .with_description("Shared photo collections")
+                    .with_bounds(self.canvas_rect)
+                    .with_hashed_key("photos:albums")
+                    .with_children(cards)
             } else if self.library_destination == LibraryDestination::People || self.people_mode {
                 if self.people_selection.is_some() && !self.people_merge_mode {
                     cards.push(
@@ -4689,14 +4803,13 @@ impl PhotosApp {
                     .with_hashed_key("photos:people")
                     .with_children(cards)
             } else if self.library_destination == LibraryDestination::Places {
-                cards.extend(self.places_hits.iter().map(|(hit, bounds)| {
+                cards.extend(self.places_hits.iter().filter_map(|(hit, bounds)| {
                     let (name, target) = match hit {
-                        PlacesHit::Timeline => ("Timeline", "photos:places:timeline".to_owned()),
-                        PlacesHit::People => ("People", "photos:places:people".to_owned()),
-                        PlacesHit::Places => ("Places", "photos:places:places".to_owned()),
-                        PlacesHit::Analysis => {
-                            ("Photo analysis", "photos:library-analysis".to_owned())
-                        }
+                        PlacesHit::Timeline
+                        | PlacesHit::Albums
+                        | PlacesHit::People
+                        | PlacesHit::Places
+                        | PlacesHit::Analysis => return None,
                         PlacesHit::ToggleList => (
                             if self.places_list_mode {
                                 "Show map"
@@ -4712,14 +4825,16 @@ impl PhotosApp {
                             format!("photos:places:photo:{id}"),
                         ),
                     };
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
-                        .with_action_target(target)
+                    Some(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_action_target(target),
+                    )
                 }));
                 cards.extend(
                     self.collection_page_hits
@@ -5551,6 +5666,41 @@ impl PhotosApp {
         action: &AccessAction,
         doc: &mut AutoCommit,
     ) -> bool {
+        if let Some(destination) = target.strip_prefix("photos:library:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            if matches!(action, AccessAction::Activate) {
+                match destination {
+                    "timeline" => {
+                        self.people_mode = false;
+                        self.library_destination = LibraryDestination::Timeline;
+                    }
+                    "albums" => self.show_albums(),
+                    "people" => self.show_people(),
+                    "places" => {
+                        self.people_mode = false;
+                        self.library_destination = LibraryDestination::Places;
+                    }
+                    "analysis" => self.show_library_analysis(),
+                    _ => return false,
+                }
+            }
+            return true;
+        }
+        if let Some(album_id) = target.strip_prefix("photos:album-edit:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            if matches!(action, AccessAction::Activate) {
+                if PhotosDoc::album(doc, album_id).is_none() {
+                    return false;
+                }
+                self.active_album = Some(album_id.to_owned());
+                self.begin_edit_album(doc);
+            }
+            return true;
+        }
         if let Some(command) = target.strip_prefix("photos:collection-page:") {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
                 return false;
@@ -5765,6 +5915,7 @@ impl PhotosApp {
                 return true;
             }
             self.active_album = (album_id != "all").then(|| album_id.to_owned());
+            self.library_destination = LibraryDestination::Timeline;
             self.active_folder = None;
             self.active_person = None;
             self.active_tag = None;
@@ -6421,6 +6572,9 @@ impl PhotosApp {
         if self.library_mode {
             let mut s = match self.library_destination {
                 LibraryDestination::Timeline => format!("{} photographs", self.library_total),
+                LibraryDestination::Albums => {
+                    format!("Albums  ·  {} collections", self.library_albums.len())
+                }
                 LibraryDestination::People => {
                     format!("People  ·  {} photographs", self.library_total)
                 }
@@ -7079,7 +7233,15 @@ impl PhotosApp {
         next: CollectionPageHit,
     ) {
         self.collection_page_hits.clear();
-        let pages = total.max(1).div_ceil(COLLECTION_PAGE_SIZE);
+        let page_size = if matches!(previous, CollectionPageHit::AlbumsPrevious)
+            && self.library_destination == LibraryDestination::Albums
+            && self.canvas_rect.width() >= 700.0
+        {
+            8
+        } else {
+            COLLECTION_PAGE_SIZE
+        };
+        let pages = total.max(1).div_ceil(page_size);
         if pages <= 1 {
             return;
         }
@@ -7438,6 +7600,395 @@ impl PhotosApp {
         self.directory_import_details_layout = Some(layout);
     }
 
+    /// Paint the shared library destination control over a canvas-owned
+    /// header. `ToggleGroup::paint` keeps the interaction language identical
+    /// to retained segmented controls while this app preserves its bounded
+    /// custom timeline/map hit testing.
+    fn draw_library_navigation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+    ) {
+        let labels = ["Timeline", "Albums", "People", "Places", "Analyze"];
+        let intents = [
+            PlacesHit::Timeline,
+            PlacesHit::Albums,
+            PlacesHit::People,
+            PlacesHit::Places,
+            PlacesHit::Analysis,
+        ];
+        let selected = match self.library_destination {
+            LibraryDestination::Timeline => 0,
+            LibraryDestination::Albums => 1,
+            LibraryDestination::People => 2,
+            LibraryDestination::Places => 3,
+            LibraryDestination::Analysis => 4,
+        };
+        let segment_width = bounds.width() / labels.len() as f64;
+        let segments: Vec<_> = (0..labels.len())
+            .map(|index| {
+                Rect::new(
+                    bounds.x0 + segment_width * index as f64,
+                    bounds.y0,
+                    if index + 1 == labels.len() {
+                        bounds.x1
+                    } else {
+                        bounds.x0 + segment_width * (index + 1) as f64
+                    },
+                    bounds.y1,
+                )
+            })
+            .collect();
+        ToggleGroup::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &SegmentedFace::new(&segments, &labels, selected)
+                .pill()
+                .radius(8.0)
+                .text_size(12.0),
+        );
+        self.places_hits.extend(intents.into_iter().zip(segments));
+    }
+
+    /// First-class album overview. Album cards are a bounded projection over
+    /// canonical album resources; their covers reuse the asynchronous
+    /// thumbnail cache and never decode originals during paint.
+    fn draw_albums(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use vello::peniko::Fill;
+
+        self.library_cards.clear();
+        self.library_details_cards.clear();
+        self.metadata_filter_cards.clear();
+        self.places_hits.clear();
+        self.album_cards.clear();
+        self.album_edit_cards.clear();
+        self.album_editor_hits.clear();
+        self.collection_page_hits.clear();
+
+        let bounds = self.canvas_rect;
+        let compact = bounds.width() < 700.0 || theme.text_scale > 1.25;
+        let inset = if compact { 16.0 } else { 28.0 };
+        let content = Rect::new(
+            bounds.x0 + inset,
+            bounds.y0 + 16.0,
+            bounds.x1 - inset,
+            bounds.y1 - 16.0,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Albums",
+            if compact { 23.0 } else { 28.0 },
+            theme.text_primary,
+            transform * Affine::translate((content.x0, content.y0)),
+            Some(180.0),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!(
+                "{} album{} · shared and available on every device",
+                self.library_albums.len(),
+                if self.library_albums.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            13.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, content.y0 + 35.0)),
+            Some((content.width() - 220.0).max(120.0) as f32),
+            TextWeight::Regular,
+        );
+
+        let nav_y = if compact {
+            content.y0 + 64.0
+        } else {
+            content.y0
+        };
+        let nav_w = if compact {
+            content.width()
+        } else {
+            content.width().min(450.0)
+        };
+        let nav_x = if compact {
+            content.x0
+        } else {
+            content.x1 - nav_w
+        };
+        self.draw_library_navigation(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(nav_x, nav_y, nav_x + nav_w, nav_y + 40.0),
+        );
+
+        let actions_y = nav_y + if compact { 54.0 } else { 58.0 };
+        for (hit, rect, enabled) in [
+            (
+                AlbumEditorHit::New,
+                Rect::new(content.x0, actions_y, content.x0 + 118.0, actions_y + 44.0),
+                true,
+            ),
+            (
+                AlbumEditorHit::Edit,
+                Rect::new(
+                    content.x0 + 126.0,
+                    actions_y,
+                    content.x0 + 252.0,
+                    actions_y + 44.0,
+                ),
+                self.active_album.is_some(),
+            ),
+        ] {
+            if hit == AlbumEditorHit::Edit && !enabled {
+                continue;
+            }
+            if let Some((_, button)) = self
+                .library_album_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_enabled(enabled);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, presence);
+            }
+            if enabled {
+                self.album_editor_hits.push((hit, rect));
+            }
+        }
+
+        let grid_y = actions_y + 62.0;
+        if self.library_albums.is_empty() {
+            let empty = Rect::new(content.x0, grid_y, content.x1, content.y1);
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    empty.center().x - 28.0,
+                    empty.y0 + 44.0,
+                    empty.center().x + 28.0,
+                    empty.y0 + 100.0,
+                ),
+                Icon::Image,
+                theme.text_dim,
+                1.5,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                "Bring related moments together",
+                20.0,
+                theme.text_primary,
+                transform * Affine::translate((empty.x0, empty.y0 + 118.0)),
+                Some(empty.width() as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                "Create an album, then select photographs to add them. Albums preserve shared membership and history.",
+                14.0,
+                theme.text_dim,
+                transform * Affine::translate((empty.x0, empty.y0 + 151.0)),
+                Some(empty.width() as f32),
+                TextWeight::Regular,
+            );
+            self.draw_album_editor(scene, transform, text_renderer, theme, presence);
+            return;
+        }
+
+        let columns = if content.width() >= 1080.0 {
+            4
+        } else if content.width() >= 720.0 {
+            3
+        } else if content.width() >= 430.0 {
+            2
+        } else {
+            1
+        };
+        let gap = if compact { 12.0 } else { 18.0 };
+        let card_w = (content.width() - gap * (columns - 1) as f64) / columns as f64;
+        let card_h = if columns == 1 { 188.0 } else { 220.0 };
+        let album_page_size = if compact { COLLECTION_PAGE_SIZE } else { 8 };
+        let start = self.albums_page * album_page_size;
+        for (index, (id, name, count)) in self
+            .library_albums
+            .iter()
+            .skip(start)
+            .take(album_page_size)
+            .enumerate()
+        {
+            let row = index / columns;
+            let column = index % columns;
+            let card = Rect::new(
+                content.x0 + column as f64 * (card_w + gap),
+                grid_y + row as f64 * (card_h + gap),
+                content.x0 + column as f64 * (card_w + gap) + card_w,
+                grid_y + row as f64 * (card_h + gap) + card_h,
+            );
+            if card.y0 >= content.y1 {
+                break;
+            }
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if card.contains(self.pointer) {
+                    theme.bg_hover
+                } else {
+                    theme.tokens.colors.surfaces.window_card
+                },
+                None,
+                &RoundedRect::from_rect(card, 12.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &RoundedRect::from_rect(card, 12.0),
+            );
+            let preview = Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x1 - 8.0, card.y1 - 60.0);
+            let covers = self
+                .library_album_covers
+                .get(id)
+                .cloned()
+                .unwrap_or_default();
+            if covers.is_empty() {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(preview, 8.0),
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    preview.inflate(-preview.width() * 0.35, -preview.height() * 0.28),
+                    Icon::Image,
+                    theme.text_dim,
+                    1.5,
+                );
+            } else {
+                let mosaic_columns = if covers.len() == 1 { 1 } else { 2 };
+                let mosaic_rows = covers.len().div_ceil(mosaic_columns);
+                for (cover_index, cover_id) in covers.iter().enumerate() {
+                    let col = cover_index % mosaic_columns;
+                    let row = cover_index / mosaic_columns;
+                    let tile = Rect::new(
+                        preview.x0 + preview.width() * col as f64 / mosaic_columns as f64,
+                        preview.y0 + preview.height() * row as f64 / mosaic_rows as f64,
+                        preview.x0 + preview.width() * (col + 1) as f64 / mosaic_columns as f64,
+                        preview.y0 + preview.height() * (row + 1) as f64 / mosaic_rows as f64,
+                    );
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.neutral[2],
+                        None,
+                        &tile,
+                    );
+                    if let Some(image) = self.library_thumbnails.get(cover_id) {
+                        let scale = (tile.width() / f64::from(image.width))
+                            .max(tile.height() / f64::from(image.height));
+                        let drawn_w = f64::from(image.width) * scale;
+                        let drawn_h = f64::from(image.height) * scale;
+                        scene.push_layer(
+                            Fill::NonZero,
+                            vello::peniko::BlendMode::default(),
+                            1.0,
+                            transform,
+                            &tile,
+                        );
+                        scene.draw_image(
+                            image,
+                            transform
+                                * Affine::translate((
+                                    tile.center().x - drawn_w * 0.5,
+                                    tile.center().y - drawn_h * 0.5,
+                                ))
+                                * Affine::scale(scale),
+                        );
+                        scene.pop_layer();
+                    } else {
+                        let icon_size = tile.width().min(tile.height()).min(36.0);
+                        draw_icon(
+                            scene,
+                            transform,
+                            Rect::new(
+                                tile.center().x - icon_size * 0.5,
+                                tile.center().y - icon_size * 0.5,
+                                tile.center().x + icon_size * 0.5,
+                                tile.center().y + icon_size * 0.5,
+                            ),
+                            Icon::Image,
+                            theme.text_dim,
+                            1.25,
+                        );
+                    }
+                }
+            }
+            text_renderer.draw_text_weighted(
+                scene,
+                name,
+                15.0,
+                theme.text_primary,
+                transform * Affine::translate((card.x0 + 14.0, card.y1 - 45.0)),
+                Some((card.width() - 78.0) as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &format!("{count} photo{}", if *count == 1 { "" } else { "s" }),
+                12.0,
+                theme.text_dim,
+                transform * Affine::translate((card.x0 + 14.0, card.y1 - 23.0)),
+                Some((card.width() - 78.0) as f32),
+                TextWeight::Regular,
+            );
+            let edit = Rect::new(
+                card.x1 - 54.0,
+                card.y1 - 50.0,
+                card.x1 - 10.0,
+                card.y1 - 6.0,
+            );
+            draw_icon(
+                scene,
+                transform,
+                edit.inflate(-13.0, -13.0),
+                Icon::Pencil,
+                theme.text_dim,
+                1.5,
+            );
+            self.album_edit_cards.push((id.clone(), edit));
+            self.album_cards.push((Some(id.clone()), card));
+        }
+        self.draw_collection_pager(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(content.x1 - 292.0, actions_y, content.x1, actions_y + 44.0),
+            self.albums_page,
+            self.library_albums.len(),
+            CollectionPageHit::AlbumsPrevious,
+            CollectionPageHit::AlbumsNext,
+        );
+        self.draw_album_editor(scene, transform, text_renderer, theme, presence);
+    }
+
     fn draw_people(
         &mut self,
         scene: &mut Scene,
@@ -7474,6 +8025,19 @@ impl PhotosApp {
             transform * Affine::translate((content.x0, content.y0 + 36.0)),
             Some(content.width() as f32),
             TextWeight::Regular,
+        );
+
+        self.draw_library_navigation(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(
+                content.x0,
+                content.y0 + 66.0,
+                content.x1.min(content.x0 + 450.0),
+                content.y0 + 106.0,
+            ),
         );
 
         let wide = content.width() >= 760.0;
@@ -8230,7 +8794,20 @@ impl PhotosApp {
             TextWeight::Regular,
         );
 
-        let card_y = content.y0 + 68.0;
+        self.draw_library_navigation(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(
+                content.x0,
+                content.y0 + 66.0,
+                content.x1.min(content.x0 + 450.0),
+                content.y0 + 106.0,
+            ),
+        );
+
+        let card_y = content.y0 + 122.0;
         let card_h = if compact { 174.0 } else { 142.0 };
         let status_card = RoundedRect::from_rect(
             Rect::new(content.x0, card_y, content.x1, card_y + card_h),
@@ -8616,56 +9193,18 @@ impl PhotosApp {
         // First-class destinations use the same stable local navigation
         // target rather than turning People/Places into a search suggestion.
         if desktop_library {
-            let mut tab_x = masthead.x0 + 224.0;
-            for (hit, label, selected) in [
-                (
-                    PlacesHit::Timeline,
-                    "Timeline",
-                    self.library_destination == LibraryDestination::Timeline,
+            self.draw_library_navigation(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    masthead.x0 + 224.0,
+                    masthead.y0 + 12.0,
+                    masthead.x1 - 224.0,
+                    masthead.y0 + 48.0,
                 ),
-                (
-                    PlacesHit::People,
-                    "People",
-                    self.library_destination == LibraryDestination::People,
-                ),
-                (PlacesHit::Places, "Places", false),
-                (
-                    PlacesHit::Analysis,
-                    "Analyze",
-                    self.library_destination == LibraryDestination::Analysis,
-                ),
-            ] {
-                let tab = Rect::new(tab_x, masthead.y0 + 13.0, tab_x + 78.0, masthead.y0 + 47.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if selected {
-                        theme.tokens.colors.accent[6]
-                    } else {
-                        theme.tokens.colors.surfaces.window_card
-                    },
-                    None,
-                    &tab,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &tab,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    11.0,
-                    theme.text_primary,
-                    transform * Affine::translate((tab.x0 + 9.0, tab.y0 + 10.0)),
-                    Some(60.0),
-                    TextWeight::Medium,
-                );
-                self.places_hits.push((hit, tab));
-                tab_x += 84.0;
-            }
+            );
         }
         let count = if desktop_library {
             format!("{} photographs · shared library", self.library_total)
@@ -9714,45 +10253,18 @@ impl PhotosApp {
             Some((heading.width() - 310.0).max(80.0) as f32),
             TextWeight::Regular,
         );
-        let mut x = heading.x1 - 300.0;
-        for (hit, label) in [
-            (PlacesHit::Timeline, "Timeline"),
-            (PlacesHit::People, "People"),
-            (PlacesHit::Places, "Places"),
-            (PlacesHit::Analysis, "Analyze"),
-        ] {
-            let active = matches!(hit, PlacesHit::Places);
-            let rect = Rect::new(x, heading.y0 + 10.0, x + 78.0, heading.y0 + 46.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if active {
-                    theme.tokens.colors.accent[6]
-                } else {
-                    theme.tokens.colors.surfaces.window_card
-                },
-                None,
-                &rect,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                11.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 9.0, rect.y0 + 11.0)),
-                Some(60.0),
-                TextWeight::Medium,
-            );
-            self.places_hits.push((hit, rect));
-            x += 84.0;
-        }
+        self.draw_library_navigation(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(
+                (heading.x1 - 450.0).max(heading.x0 + 240.0),
+                heading.y0 + 9.0,
+                heading.x1 - 8.0,
+                heading.y0 + 49.0,
+            ),
+        );
         if self.places_items.is_empty() {
             self.draw_empty_state(scene, transform, text_renderer, theme, "No places yet", "Import photos with GPS metadata or add an explicit shared location in photo details. Photos does not guess or upload locations.");
             return;
@@ -10631,10 +11143,16 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.album_editor_hits.clear();
         if !self.library_mode || self.metadata_editor {
             return;
         }
+        // The Albums overview owns its visible New/Edit controls. Keep those
+        // retained hit targets intact unless an editor sheet is actually
+        // replacing them.
+        if !self.album_editor && self.library_destination == LibraryDestination::Albums {
+            return;
+        }
+        self.album_editor_hits.clear();
         // On phone and 200% the library opens with chronology above the fold.
         // Album editing remains available through its canonical resource
         // action; it does not occupy a permanent New/Edit row in front of
@@ -11749,33 +12267,21 @@ fn build_collection_page_buttons(
         (
             CollectionPageHit::AlbumsPrevious,
             "photos-albums-previous",
-            "Previous albums",
+            "Previous",
         ),
-        (
-            CollectionPageHit::AlbumsNext,
-            "photos-albums-next",
-            "More albums",
-        ),
+        (CollectionPageHit::AlbumsNext, "photos-albums-next", "Next"),
         (
             CollectionPageHit::PeoplePrevious,
             "photos-people-previous",
-            "Previous people",
+            "Previous",
         ),
-        (
-            CollectionPageHit::PeopleNext,
-            "photos-people-next",
-            "More people",
-        ),
+        (CollectionPageHit::PeopleNext, "photos-people-next", "Next"),
         (
             CollectionPageHit::PlacesPrevious,
             "photos-places-previous",
-            "Previous places",
+            "Previous",
         ),
-        (
-            CollectionPageHit::PlacesNext,
-            "photos-places-next",
-            "More places",
-        ),
+        (CollectionPageHit::PlacesNext, "photos-places-next", "Next"),
     ]
     .into_iter()
     .map(|(hit, id, label)| {
@@ -12275,6 +12781,7 @@ impl Widget for PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewAlbums => self.show_albums(),
             crate::actions::PhotosOperation::ViewTimeline { anchor } => {
                 self.view_timeline(doc, anchor.as_ref())?;
             }
@@ -12907,6 +13414,20 @@ impl Widget for PhotosApp {
             .iter()
             .map(|album| (album.id.clone(), album.name.clone(), album.photo_ids.len()))
             .collect();
+        self.library_album_covers = library
+            .albums
+            .iter()
+            .map(|album| {
+                let covers = album
+                    .photo_ids
+                    .iter()
+                    .filter(|id| library.photo(id).is_some())
+                    .take(4)
+                    .cloned()
+                    .collect();
+                (album.id.clone(), covers)
+            })
+            .collect();
         let mut folders = std::collections::BTreeMap::<String, usize>::new();
         let mut people = std::collections::BTreeMap::<String, usize>::new();
         let mut tags = std::collections::BTreeMap::<String, usize>::new();
@@ -12924,9 +13445,16 @@ impl Widget for PhotosApp {
         self.people_approved = crate::people::approved_people(&library);
         self.library_folders = folders.into_iter().take(6).collect();
         self.library_people = people.into_iter().collect();
+        let album_page_size = if self.library_destination == LibraryDestination::Albums
+            && self.canvas_rect.width() >= 700.0
+        {
+            8
+        } else {
+            COLLECTION_PAGE_SIZE
+        };
         self.albums_page = self
             .albums_page
-            .min(self.library_albums.len().saturating_sub(1) / COLLECTION_PAGE_SIZE);
+            .min(self.library_albums.len().saturating_sub(1) / album_page_size);
         self.people_page = self
             .people_page
             .min(self.library_people.len().saturating_sub(1) / COLLECTION_PAGE_SIZE);
@@ -12981,6 +13509,16 @@ impl Widget for PhotosApp {
                 .iter()
                 .take(24)
                 .map(|item| item.photo.clone())
+                .collect();
+        } else if self.library_destination == LibraryDestination::Albums {
+            thumbnail_sources = self
+                .library_albums
+                .iter()
+                .skip(self.albums_page * album_page_size)
+                .take(album_page_size)
+                .flat_map(|(id, _, _)| self.library_album_covers.get(id).into_iter().flatten())
+                .filter_map(|photo_id| library.photo(photo_id).cloned())
+                .take(24)
                 .collect();
         } else {
             for cover in self.library_person_covers.values() {
@@ -13232,7 +13770,9 @@ impl Widget for PhotosApp {
         if self.library_mode {
             self.library_search
                 .draw(scene, transform, text_renderer, theme, presence);
-            if self.library_destination == LibraryDestination::People || self.people_mode {
+            if self.library_destination == LibraryDestination::Albums {
+                self.draw_albums(scene, transform, text_renderer, theme, presence);
+            } else if self.library_destination == LibraryDestination::People || self.people_mode {
                 self.draw_people(scene, transform, text_renderer, theme);
                 if self.people_selection.is_some() && !self.people_merge_mode {
                     self.people_name_input
@@ -13586,6 +14126,7 @@ impl Widget for PhotosApp {
                     self.people_mode = false;
                     self.library_destination = LibraryDestination::Timeline;
                 }
+                PlacesHit::Albums => self.show_albums(),
                 PlacesHit::People => {
                     self.people_mode = true;
                     self.library_destination = LibraryDestination::People;
@@ -13972,6 +14513,27 @@ impl Widget for PhotosApp {
                     ..
                 }
             )
+            && let Some((album_id, _)) = self
+                .album_edit_cards
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .cloned()
+        {
+            self.active_album = Some(album_id);
+            self.begin_edit_album(doc);
+            *handled = true;
+            return;
+        }
+
+        if self.library_mode
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
             && let Some((forward, enabled, _)) = self
                 .library_page_hits
                 .iter()
@@ -14082,6 +14644,7 @@ impl Widget for PhotosApp {
                 .cloned()
         {
             self.active_album = album_id;
+            self.library_destination = LibraryDestination::Timeline;
             self.active_folder = None;
             self.active_person = None;
             self.active_tag = None;

@@ -18,7 +18,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         self,
         source: str,
         *,
-        dependencies: str = 'ui={package="tilo-app",path="../../crates/app/tilo-app"}\n',
+        dependencies: str = 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
         app_name: str = "sample",
     ) -> Path:
         temporary = tempfile.TemporaryDirectory()
@@ -228,7 +228,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
             "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
             dependencies=(
-                'ui={package="tilo-app",path="../../crates/app/tilo-app"}\n'
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
                 'ui_core={package="ui",path="../../ui"}\n'
             ),
             app_name="agent",
@@ -241,7 +241,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
             "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
             dependencies=(
-                'ui={package="tilo-app",path="../../crates/app/tilo-app"}\n'
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
                 'rendering={path="../../ui"}\n'
             ),
             app_name="agent",
@@ -260,7 +260,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         manifest.write_text(
             manifest.read_text(encoding="utf-8")
             + "\n[target.'cfg(unix)'.dependencies]\n"
-            + 'ui={package="tilo-app",path="../../crates/app/tilo-app"}\n',
+            + 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
             encoding="utf-8",
         )
         violations, _ = contract.audit(root)

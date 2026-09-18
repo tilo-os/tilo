@@ -63,9 +63,9 @@ pub struct ImportProgress {
     pub current: Option<PathBuf>,
 }
 
-/// Actual metadata read from a photo container. `orientation` is exposed even
-/// when the current renderer does not transform pixels yet, so import clients
-/// can draw the correct rotation without reparsing source bytes.
+/// Actual metadata read from a photo container. `orientation` records the
+/// source container faithfully; the shared pixel decoder independently
+/// normalises it so every thumbnail, analysis and export sees upright pixels.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExifMetadata {
     pub captured_at: Option<String>,
@@ -392,6 +392,46 @@ pub fn cancellation_token() -> Arc<AtomicBool> {
 mod tests {
     use super::*;
 
+    fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
+        use image::ImageEncoder as _;
+
+        let rgb = vec![
+            255, 0, 0, 0, 255, 0, 0, 0, 255, // first row
+            255, 255, 0, 0, 255, 255, 255, 0, 255, // second row
+        ];
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95)
+            .write_image(&rgb, 3, 2, image::ExtendedColorType::Rgb8)
+            .expect("encode test JPEG");
+        let mut payload = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0".to_vec();
+        payload.extend_from_slice(&[
+            0x12,
+            0x01,
+            0x03,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            orientation as u8,
+            (orientation >> 8) as u8,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ]);
+        let segment_length = u16::try_from(payload.len() + 2).expect("small APP1 segment");
+        let mut tagged = Vec::with_capacity(jpeg.len() + payload.len() + 4);
+        tagged.extend_from_slice(&jpeg[..2]);
+        tagged.extend_from_slice(&[0xff, 0xe1]);
+        tagged.extend_from_slice(&segment_length.to_be_bytes());
+        tagged.extend_from_slice(&payload);
+        tagged.extend_from_slice(&jpeg[2..]);
+        tagged
+    }
+
     fn png(path: &Path) {
         let file = fs::File::create(path).unwrap();
         let mut encoder = png::Encoder::new(file, 2, 1);
@@ -484,6 +524,33 @@ mod tests {
         let path = directory.path().join("plain.png");
         png(&path);
         assert!(read_exif(&path).is_none());
+    }
+
+    #[test]
+    fn import_keeps_addressed_source_bytes_but_records_upright_dimensions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("portrait.jpg");
+        let source = jpeg_with_orientation(6);
+        fs::write(&path, &source).unwrap();
+
+        let indexed = index_file(&path, ImportOptions::default(), &AtomicBool::new(false))
+            .expect("index oriented JPEG");
+
+        assert_eq!(indexed.exif.orientation, Some(6));
+        assert_eq!(
+            (indexed.photo.image.width, indexed.photo.image.height),
+            (2, 3)
+        );
+        let hash = indexed
+            .photo
+            .image
+            .content
+            .as_deref()
+            .expect("portable content address");
+        assert_eq!(
+            qdoc::blobstore::get(hash).as_deref(),
+            Some(source.as_slice())
+        );
     }
 
     #[cfg(unix)]
