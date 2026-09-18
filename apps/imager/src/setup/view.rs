@@ -2228,6 +2228,83 @@ mod tests {
         assert!(server.requests().is_empty());
     }
 
+    // Catches two routed Start commands replacing the active internal download before recompose.
+    #[test]
+    fn duplicate_full_os_start_command_is_rejected_without_an_extra_request() {
+        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
+        let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+        let mut request = 0;
+        let server = Server::on_request(
+            vec![
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+            ],
+            move || {
+                request += 1;
+                if request == 2 {
+                    blocked_tx.send(()).unwrap();
+                    continue_rx.recv().unwrap();
+                }
+            },
+        );
+        let root = tempfile::tempdir().unwrap();
+        let preference = tempfile::tempdir().unwrap();
+        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+            Err("Protected staging is unavailable.".into())
+        });
+        let mut app = supported_fixture();
+        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+            app.capabilities.platform,
+            preference.path().join("selection.json"),
+            worker,
+            vec![
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+            ],
+            "x86_64",
+        ));
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+        app.apply_command(SetupCommand::Next);
+
+        app.apply_command(SetupCommand::StartInternalDownload);
+        blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let requests = server.requests().len();
+        app.apply_command(SetupCommand::StartInternalDownload);
+        let duplicate_status = app.status.clone();
+        let duplicate_is_error = app.status_is_error;
+        let requests_after = server.requests().len();
+        continue_tx.send(()).unwrap();
+
+        assert!(duplicate_is_error);
+        assert_eq!(
+            duplicate_status,
+            "A Full qOS download cannot start in its current state."
+        );
+        assert_eq!(requests_after, requests);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if app
+                .internal_download_flow
+                .as_ref()
+                .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Ready))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "internal download timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(server.requests().len(), 3);
+    }
+
     // Catches treating the setup plan's suggested qOS path as a mounted target
     // before Full qOS installation and target-side volume resolution exist.
     #[test]

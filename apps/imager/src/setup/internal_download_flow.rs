@@ -375,8 +375,8 @@ impl InternalDownloadFlow {
     }
 
     pub(super) fn start_selected(&mut self, key: SelectionKey) -> Result<(), String> {
-        if self.pending.is_some() {
-            return Err("Another download action is still finishing.".into());
+        if !self.can_start() {
+            return Err("A Full qOS download cannot start in its current state.".into());
         }
         let release = self.resolve(&key)?;
         self.preference.save(&key)?;
@@ -597,7 +597,7 @@ fn presentation_from_facts(
         ),
         WorkerPhase::Paused => (
             "Download paused",
-            "Your unfinished download data and completed components are retained for a fresh checked resume.",
+            "The download is paused. Resume will recheck any retained download data before continuing.",
         ),
         WorkerPhase::Cancelled => (
             "Download cancelled",
@@ -895,6 +895,132 @@ mod tests {
         assert!(!flow.has_pending_operation());
     }
 
+    // Catches a duplicate Start replacing an active token or repeating selection side effects.
+    #[test]
+    fn duplicate_start_during_active_download_preserves_token_preference_catalog_and_requests() {
+        use std::os::unix::fs::MetadataExt;
+
+        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
+        let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+        let mut request = 0;
+        let server = Server::on_request(
+            vec![
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+            ],
+            move || {
+                request += 1;
+                if request == 2 {
+                    blocked_tx.send(()).unwrap();
+                    continue_rx.recv().unwrap();
+                }
+            },
+        );
+        let root = tempfile::tempdir().unwrap();
+        let preference_root = tempfile::tempdir().unwrap();
+        let preference_path = preference_root.path().join("selection.json");
+        let key = SelectionKey::from_release(&server.release(&bytes));
+        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+            Err("Protected staging is unavailable.".into())
+        });
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            SelectionPreference::at(preference_path.clone()),
+            worker,
+            vec![
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+            ],
+            "x86_64",
+        );
+        flow.start_selected(key.clone()).unwrap();
+        blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let token = flow.token.clone().unwrap();
+        let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
+        let catalogs = flow.catalogs.len();
+        let requests = server.requests().len();
+
+        let duplicate = flow.start_selected(key);
+        let token_after = flow.token.clone().unwrap();
+        let preference_inode_after = std::fs::metadata(&preference_path).unwrap().ino();
+        let catalogs_after = flow.catalogs.len();
+        let requests_after = server.requests().len();
+        continue_tx.send(()).unwrap();
+
+        assert_eq!(
+            duplicate.unwrap_err(),
+            "A Full qOS download cannot start in its current state."
+        );
+        assert_eq!(token_after, token);
+        assert_eq!(preference_inode_after, preference_inode);
+        assert_eq!(catalogs_after, catalogs);
+        assert_eq!(requests_after, requests);
+        wait_for(&mut flow, Phase::Ready);
+        assert_eq!(server.requests().len(), 3);
+    }
+
+    // Catches a stale Start replacing the token and leases held at verified Ready.
+    #[test]
+    fn stale_start_at_held_ready_preserves_token_and_request_count() {
+        use std::os::unix::fs::MetadataExt;
+
+        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let server = Server::new(vec![
+            response(200, "", &bytes),
+            response(200, "", &vec![b'E'; 4096]),
+            response(200, "", &vec![b'R'; 8192]),
+            response(200, "", &bytes),
+            response(200, "", &vec![b'E'; 4096]),
+            response(200, "", &vec![b'R'; 8192]),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let preference_root = tempfile::tempdir().unwrap();
+        let preference_path = preference_root.path().join("selection.json");
+        let key = SelectionKey::from_release(&server.release(&bytes));
+        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+            Err("Protected staging is unavailable.".into())
+        });
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            SelectionPreference::at(preference_path.clone()),
+            worker,
+            vec![
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+            ],
+            "x86_64",
+        );
+        flow.start_selected(key.clone()).unwrap();
+        wait_for(&mut flow, Phase::Ready);
+        let token = flow.token.clone().unwrap();
+        let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
+        let catalogs = flow.catalogs.len();
+        let requests = server.requests().len();
+
+        assert_eq!(
+            flow.start_selected(key).unwrap_err(),
+            "A Full qOS download cannot start in its current state."
+        );
+        assert_eq!(flow.token.as_ref(), Some(&token));
+        assert_eq!(
+            std::fs::metadata(&preference_path).unwrap().ino(),
+            preference_inode
+        );
+        assert_eq!(flow.catalogs.len(), catalogs);
+        assert_eq!(server.requests().len(), requests);
+
+        flow.release().unwrap();
+        wait_for(&mut flow, Phase::Released);
+        assert_eq!(server.requests().len(), 3);
+    }
+
     // Catches retaining a token/handle across restart or starting network work implicitly.
     #[test]
     fn pause_close_and_reconstruct_resume_with_a_new_token() {
@@ -1058,7 +1184,6 @@ mod tests {
             Worker::fixture_for_test(root.path(), reopened_server.transport(), |_, _, _, _| {
                 Err("Protected staging is unavailable.".into())
             });
-        let key = SelectionKey::from_release(&reopened_server.release(&bytes));
         let mut reopened = InternalDownloadFlow::fixture(
             supported(),
             SelectionPreference::at(preference_root.path().join("selection.json")),
@@ -1069,7 +1194,8 @@ mod tests {
             ],
             "x86_64",
         );
-        reopened.start_selected(key).unwrap();
+        assert!(reopened.can_resume());
+        reopened.resume().unwrap();
         assert_ne!(first_token, reopened.token.clone().unwrap());
         wait_for(&mut reopened, Phase::Ready);
         assert_eq!(reopened_server.requests().len(), 1);
@@ -1222,5 +1348,47 @@ mod tests {
         assert!(!presentation.details.contains("no download data"));
         assert!(!presentation.details.contains("cache cleared"));
         assert!(presentation.details.contains("may remain"));
+    }
+
+    // Catches a pause with no established retained facts claiming data or completed components.
+    #[test]
+    fn paused_zero_fact_presentation_is_neutral_about_retained_data() {
+        let presentation = presentation_from_facts(
+            Phase::Paused,
+            [0, 0],
+            None,
+            [false, false],
+            false,
+            false,
+            None,
+        );
+        assert_eq!(presentation.title, "Download paused");
+        assert_eq!(
+            presentation.details,
+            "The download is paused. Resume will recheck any retained download data before continuing."
+        );
+    }
+
+    // Catches neutral pause copy dropping facts the worker did establish.
+    #[test]
+    fn paused_presentation_retains_known_bytes_components_residue_uncertainty_and_error() {
+        let presentation = presentation_from_facts(
+            Phase::Paused,
+            [512, 0],
+            None,
+            [true, false],
+            true,
+            true,
+            Some("pause boundary changed"),
+        );
+        assert!(presentation.details.contains("component 1 has 512 bytes"));
+        assert!(
+            presentation
+                .details
+                .contains("1 completed and verified component")
+        );
+        assert!(presentation.details.contains("Some download data remains"));
+        assert!(presentation.details.contains("may have changed"));
+        assert!(presentation.details.contains("pause boundary changed"));
     }
 }
