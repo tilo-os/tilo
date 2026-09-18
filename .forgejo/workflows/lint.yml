@@ -19,10 +19,10 @@ concurrency:
 
 jobs:
   quality:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: code.podesta.ai/qos/tilo-builder:latest
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -33,6 +33,15 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
           fetch-tags: false
+
+      - name: Verify native fast-quality toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          cargo --version
+          rustc --version
+          rustfmt --version
+          cargo deny --version
+          cargo machete --version
 
       - name: Check formatting of changed Rust files
         shell: bash
