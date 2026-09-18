@@ -46,8 +46,8 @@ use ui::tilo_actions::{
     RetryPolicy, RiskLevel,
 };
 use ui::widget::{
-    Banner, CardGrid, Column, Container, Dropdown, EmptyState, ProgressBar, Row, ScrollAxis,
-    Scrollable, Spacer, Text, TextInput, Widget,
+    Badge, BadgeTone, Banner, CardGrid, Column, Container, Dropdown, EmptyState, ProgressBar, Row,
+    ScrollAxis, Scrollable, Spacer, Text, TextInput, Widget,
 };
 use ui::{
     Theme,
@@ -1653,6 +1653,10 @@ impl StoreApp {
             crate::StoreTrust::Flathub => "Distributed by Flathub",
         };
         let action = item.action_kind(self.flatpak_available);
+        let operation_active = self
+            .active_operation
+            .as_ref()
+            .is_some_and(|(id, active_action)| id == &item.id && *active_action == action);
         let mut primary = ui::widget::Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
             action.label(),
@@ -1691,14 +1695,24 @@ impl StoreApp {
             device_actions = device_actions.push(Box::new(button));
         }
         let installed = device_state_label(item);
-        let package = item.versions.first().map_or_else(
-            || "No version metadata published".to_string(),
+        let package_lines = item.versions.first().map_or_else(
+            || vec!["No version metadata was published by this source.".to_string()],
             |version| {
-                format!(
-                    "Version {} · {}",
-                    version.version,
-                    format_size(version.size_bytes)
-                )
+                let mut lines = vec![format!("Latest release · {}", version.version)];
+                if version.size_bytes > 0 {
+                    lines.push(format!(
+                        "Download size · {}",
+                        format_size(version.size_bytes)
+                    ));
+                }
+                if let Some(hash) = version.root_hash_hex.as_deref() {
+                    let prefix = hash.chars().take(16).collect::<String>();
+                    lines.push(format!("Package digest · BLAKE3:{prefix}…"));
+                }
+                if version.download_url.is_some() {
+                    lines.push("Package download record published".to_string());
+                }
+                lines
             },
         );
         let mut back = ui::widget::Button::new("store.detail.back", "Back to apps", None)
@@ -1740,11 +1754,22 @@ impl StoreApp {
         ) {
             moderation = moderation.on_action(binding);
         }
+        let availability = if operation_active {
+            Badge::semantic_pill("Working", BadgeTone::Accent)
+        } else if item.installed.update_available() {
+            Badge::semantic_pill("Update available", BadgeTone::Warning)
+        } else if item.installed.is_installed() {
+            Badge::semantic_pill("On this device", BadgeTone::Success)
+        } else if matches!(item.source, StoreSource::Tilo { .. }) {
+            Badge::semantic_pill("On demand", BadgeTone::Accent)
+        } else {
+            Badge::semantic_pill("Not installed", BadgeTone::Neutral)
+        };
         let hero = bounded_detail_card(
             Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_height(112.0)
+                    .with_height(154.0)
                     .with_child(Box::new(
                         Row::new()
                             .no_wrap()
@@ -1752,10 +1777,12 @@ impl StoreApp {
                                 self.images.clone(),
                                 item.icon_url.as_deref(),
                                 &item.name,
-                                88.0,
-                                88.0,
+                                104.0,
+                                104.0,
                             )))
-                            .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
+                            .push(Box::new(
+                                Container::new().with_no_padding().with_width(14.0),
+                            ))
                             .push(Box::new(
                                 Container::new()
                                     .with_no_padding()
@@ -1777,13 +1804,18 @@ impl StoreApp {
                                                     .with_color(theme.text_dim),
                                             ))
                                             .push(Box::new(
-                                                Text::new(&item.description).with_scaled_size(17.0),
+                                                Row::new().no_wrap().push(Box::new(availability)),
+                                            ))
+                                            .push(Box::new(
+                                                Text::new(&item.description)
+                                                    .with_scaled_size(16.0)
+                                                    .with_color(theme.text_dim),
                                             )),
                                     )),
                             ))
                             .push(Box::new(
                                 Container::new()
-                                    .with_width(220.0)
+                                    .with_width(212.0)
                                     .with_no_padding()
                                     .with_child(Box::new(device_actions)),
                             )),
@@ -1792,26 +1824,25 @@ impl StoreApp {
             false,
             true,
         );
-        let mut facts = Column::new()
+        let mut publisher_facts = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(9.0)
+            .with_gap(8.0)
             .push(Box::new(
-                Text::new("App details")
-                    .with_scaled_size(20.0)
+                Text::new("Source & publisher")
+                    .with_scaled_size(18.0)
                     .with_weight(TextWeight::Semibold)
                     .with_heading_level(2),
             ))
-            .push(Box::new(Text::new(&package).with_scaled_size(14.0)))
             .push(Box::new(
-                Text::new(&format!("Categories · {}", item.categories.join(", ")))
+                Text::new(&source)
                     .with_scaled_size(13.0)
                     .with_color(theme.text_dim),
             ))
             .push(Box::new(
-                Text::new(&format!("App ID · {}", item.id))
-                    .with_scaled_size(12.0)
-                    .with_color(theme.text_tertiary),
+                Text::new(trust_label)
+                    .with_scaled_size(13.0)
+                    .with_weight(TextWeight::Semibold),
             ));
         if let Some(key) = item.publisher_pubkey_hex.as_deref() {
             let full_key = format!("ed25519:{key}");
@@ -1831,56 +1862,99 @@ impl StoreApp {
                         .set_text(ui::clipboard::ClipboardTarget::Clipboard, &clipboard_key);
                 }
             });
-            facts = facts.push(Box::new(key_button));
+            publisher_facts = publisher_facts.push(Box::new(key_button));
         } else {
-            facts = facts.push(Box::new(
+            publisher_facts = publisher_facts.push(Box::new(
                 Text::new(&format!("Publisher · {}", full_publisher(item)))
                     .with_scaled_size(13.0)
                     .with_color(theme.text_dim),
             ));
         }
-        if item.homepage_url.is_some() || item.source_url.is_some() {
-            facts = facts.push(Box::new(
-                Text::new("Project links are available through the app resource.")
-                    .with_scaled_size(12.0)
-                    .with_color(theme.text_dim),
-            ));
-        }
-        let facts = bounded_detail_card(Box::new(facts), false, true);
-        let assurance = bounded_detail_card(
-            Box::new(
-                Column::new()
+        let fact_surface = |child: Box<dyn Widget>| {
+            bounded_detail_card(
+                Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_height(188.0)
+                        .with_child(child),
+                ),
+                false,
+                true,
+            )
+        };
+        let package_facts = fact_surface(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(
+                    Text::new("Package")
+                        .with_scaled_size(18.0)
+                        .with_weight(TextWeight::Semibold)
+                        .with_heading_level(2),
+                ))
+                .push(Box::new(
+                    Text::new(&format!("App ID · {}", item.id))
+                        .with_scaled_size(12.0)
+                        .with_color(theme.text_tertiary),
+                ))
+                .push(Box::new(
+                    Text::new(&format!("Categories · {}", item.categories.join(", ")))
+                        .with_scaled_size(13.0)
+                        .with_color(theme.text_dim),
+                ))
+                .push(Box::new(
+                    Text::new(&package_lines.join("\n"))
+                        .with_scaled_size(13.0)
+                        .with_color(theme.text_dim),
+                )),
+        ));
+        let publisher_facts = fact_surface(Box::new(publisher_facts));
+        let device_facts = fact_surface(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(
+                    Text::new("On this device")
+                        .with_scaled_size(18.0)
+                        .with_weight(TextWeight::Semibold)
+                        .with_heading_level(2),
+                ))
+                .push(Box::new(Text::new(&installed).with_scaled_size(14.0)))
+                .push(Box::new(
+                    Text::new(trust_explanation)
+                        .with_scaled_size(13.0)
+                        .with_color(theme.text_dim),
+                ))
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(Box::new(report))
+                        .push(Box::new(moderation)),
+                )),
+        ));
+        let facts = Row::new()
+            .no_wrap()
+            .push(Box::new(
+                Container::new()
+                    .with_width(364.0)
                     .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(9.0)
-                    .push(Box::new(
-                        Text::new("Device & trust")
-                            .with_scaled_size(20.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_heading_level(2),
-                    ))
-                    .push(Box::new(Text::new(&installed).with_scaled_size(14.0)))
-                    .push(Box::new(
-                        Text::new(trust_label)
-                            .with_scaled_size(13.0)
-                            .with_weight(TextWeight::Semibold),
-                    ))
-                    .push(Box::new(
-                        Text::new(trust_explanation)
-                            .with_scaled_size(13.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .push(Box::new(report))
-                            .push(Box::new(moderation)),
-                    )),
-            ),
-            false,
-            true,
-        );
-        let page = Column::new()
+                    .with_child(package_facts),
+            ))
+            .push(Box::new(
+                Container::new()
+                    .with_width(364.0)
+                    .with_no_padding()
+                    .with_child(publisher_facts),
+            ))
+            .push(Box::new(
+                Container::new()
+                    .with_width(364.0)
+                    .with_no_padding()
+                    .with_child(device_facts),
+            ));
+        let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(16.0)
@@ -1892,24 +1966,11 @@ impl StoreApp {
                     .no_wrap()
                     .push(Box::new(back))
                     .push(Box::new(Spacer::new())),
-            ))
-            .push(hero)
-            .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(
-                        Container::new()
-                            .with_width(552.0)
-                            .with_no_padding()
-                            .with_child(facts),
-                    ))
-                    .push(Box::new(
-                        Container::new()
-                            .with_width(552.0)
-                            .with_no_padding()
-                            .with_child(assurance),
-                    )),
             ));
+        if let Some(notice) = self.operation_notice() {
+            page = page.push(notice);
+        }
+        let page = page.push(hero).push(Box::new(facts));
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
