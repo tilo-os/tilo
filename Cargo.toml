@@ -193,7 +193,6 @@ members = [
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
-    "crates/system/windows-vm",
 
     # Text
     "crates/text/spellcheck",
@@ -201,6 +200,7 @@ members = [
     # Windows
     "crates/windows/compat-catalogue",
     "crates/windows/compat-service",
+    "crates/windows/windows-vm",
 ]
 resolver = "2"
 
