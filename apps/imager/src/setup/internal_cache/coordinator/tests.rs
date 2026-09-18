@@ -331,9 +331,17 @@ pub(in crate::setup::internal_cache::coordinator) mod fixture {
                 self.file.rewind().unwrap();
                 consume(&mut self.file)
             })();
-            self.file.seek(SeekFrom::Start(pos)).unwrap();
-            check(cancel)?;
-            result
+            let restored = self
+                .file
+                .seek(SeekFrom::Start(pos))
+                .map_err(|e| e.to_string())
+                .and_then(|position| setup_event(self.index, "reader-restored").map(|_| position));
+            let held = setup_event(self.index, "reader-held");
+            let root = setup_event(self.index, "reader-root");
+            let stopped = check(cancel);
+            // This is the same result composer called by both native readers;
+            // these injected guard results are not native guard execution.
+            super::super::super::finish_held_read(result, restored, held, root, stopped)
         }
     }
 }
@@ -1044,7 +1052,13 @@ fn cancel_during_scoped_consumer_wins_over_its_success_or_error() {
         worker.cancel(&t).unwrap();
         *released.0.lock().unwrap() = true;
         released.1.notify_all();
-        wait(&worker, Phase::Cancelled);
+        let cancelled = wait(&worker, Phase::Cancelled);
+        assert!(cancelled.uncertain);
+        assert_eq!(cancelled.committed, [4096, 8192]);
+        assert_eq!(cancelled.finals, [true, true]);
+        if error {
+            assert!(cancelled.error.as_ref().unwrap().contains("consumer error"));
+        }
         worker.shutdown();
     }
 }
@@ -1235,4 +1249,251 @@ fn paused_ready_releases_scope_and_new_operation_reuses_both_finals() {
     wait(&worker, Phase::Consumed);
     worker.shutdown();
     assert_eq!(server.requests().len(), 4);
+}
+
+fn preparation_mutation_failure(cancel: bool) {
+    for (index, first_final) in [(0, false), (1, false), (1, true)] {
+        let bytes = manifest();
+        let release = InternalRelease::transport_fixture(
+            &bytes,
+            "https://code.podesta.ai/releases/manifest.json",
+        );
+        let selected = SelectedManifest::from_bytes(&release, bytes.clone()).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        // Real zero/prefix records. Lost acknowledgement leaves three valid
+        // survivors, then append a real uncommitted tail for preparation to trim.
+        for i in 0..2 {
+            let dir = root.path().join(i.to_string());
+            fs::create_dir(&dir).unwrap();
+            if i == 0 && first_final {
+                fs::write(dir.join("final"), vec![b'E'; 4096]).unwrap();
+                continue;
+            }
+            let (mut provider, mut file) = FreshDisk::create(&dir, &selected, i);
+            initialize_fresh(&selected, i, &mut &mut provider, &mut file).unwrap();
+            let mut session = Session::new(&selected, i, 999, &mut provider).unwrap();
+            let mut prepared = session
+                .prepare(&selected, &mut file, &AtomicBool::new(false))
+                .unwrap();
+            let byte = if i == 0 { b'E' } else { b'R' };
+            super::super::tests::start_prefix(&mut prepared, &vec![byte; 512]);
+            if i == index {
+                fail(Some("lost-ack"));
+                assert!(super::super::tests::prefix(&mut prepared, &vec![byte; 512]).is_err());
+                fail(None);
+            }
+            drop(prepared);
+            drop(session);
+            if i == index {
+                file.seek(SeekFrom::End(0)).unwrap();
+                file.write_all(b"uncommitted tail").unwrap();
+                file.sync_all().unwrap();
+            }
+        }
+        drop(selected);
+        let dir = root.path().join(index.to_string());
+        let leaf = dir.join(".qos-part-0123456789abcdef0123456789abcdef");
+        assert_eq!(fs::metadata(&leaf).unwrap().len(), 1040);
+        let record2 = fs::read(dir.join("journal/record-2")).unwrap();
+        let record3 = fs::read(dir.join("journal/record-3")).unwrap();
+        assert!(dir.join("journal/record-1").exists());
+        let server = Server::new(vec![response(200, "", &bytes)]);
+        let transport = server.transport();
+        let path = root.path().to_owned();
+        let mut worker = Worker::spawn_runner(move |shared| {
+            ROOT.with(|r| *r.borrow_mut() = path);
+            let control = shared.clone();
+            super::super::tests::with_preparation_hook(
+                Box::new(move |i| {
+                    if i == index {
+                        if cancel {
+                            active_flags(&control).cancel.store(true, Ordering::Release);
+                        }
+                        return Err("injected refusal after preparation mutations".into());
+                    }
+                    Ok(())
+                }),
+                || worker_loop(shared, transport, noop),
+            );
+        })
+        .unwrap();
+        worker.start(server.release(&bytes)).unwrap();
+        let flags = active_flags(&worker.shared);
+        let status = wait(
+            &worker,
+            if cancel {
+                Phase::Cancelled
+            } else {
+                Phase::Failed
+            },
+        );
+        assert_eq!(flags.cancel.load(Ordering::Acquire), cancel);
+        worker.shutdown();
+        // Prove mutation happened before the refusal, and exact good survivors
+        // remain. No HTTP payload was requested after preparation failed.
+        assert_eq!(
+            fs::read(&leaf).unwrap(),
+            vec![if index == 0 { b'E' } else { b'R' }; 1024]
+        );
+        assert!(!dir.join("journal/record-1").exists());
+        assert_eq!(fs::read(dir.join("journal/record-2")).unwrap(), record2);
+        assert_eq!(fs::read(dir.join("journal/record-3")).unwrap(), record3);
+        assert_eq!(fs::read_dir(dir.join("journal")).unwrap().count(), 2);
+        assert_eq!(server.requests().len(), 1);
+        assert!(
+            status
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("after preparation mutations")
+        );
+        if first_final {
+            assert_eq!(status.finals, [true, false]);
+            assert_eq!(
+                fs::read(root.path().join("0/final")).unwrap(),
+                vec![b'E'; 4096]
+            );
+        } else if index == 1 {
+            assert_eq!(status.committed[0], 512);
+        }
+        assert!(
+            status.uncertain,
+            "mutating preparation refusal must remain uncertain: {status:?}"
+        );
+    }
+}
+
+#[test]
+fn preparation_mutation_failure_retains_uncertainty_and_other_component_facts() {
+    preparation_mutation_failure(false);
+}
+
+#[test]
+fn cancelled_preparation_mutation_retains_uncertainty_and_error_facts() {
+    preparation_mutation_failure(true);
+}
+
+#[test]
+fn held_reader_composition_keeps_all_observed_errors_despite_cancellation() {
+    let result: Result<(), String> = super::super::finish_held_read(
+        Err("verification digest failure".into()),
+        Err("restoration failure".into()),
+        Err("held identity failure".into()),
+        Err("root security failure".into()),
+        Err("cancelled".into()),
+    );
+    let error = result.unwrap_err();
+    for fact in [
+        "verification digest failure",
+        "restoration failure",
+        "held identity failure",
+        "root security failure",
+        "cancelled",
+    ] {
+        assert!(error.contains(fact), "missing {fact}: {error}");
+    }
+    assert_eq!(
+        super::super::finish_held_read(Ok(42), Ok(17), Ok(()), Ok(()), Ok(())).unwrap(),
+        42
+    );
+}
+
+fn cancelled_reader_failure(verification: bool) {
+    for boundary in ["reader-restored", "reader-held", "reader-root"] {
+        let bytes = manifest();
+        let server = Server::new(vec![
+            response(200, "", &bytes),
+            response(200, "", &vec![b'E'; 4096]),
+            response(200, "", &vec![b'R'; 8192]),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let c = called.clone();
+        let checks = Arc::new(Mutex::new(Vec::new()));
+        let observed = checks.clone();
+        let mut worker = fixture_worker_hook(
+            root.path(),
+            server.transport(),
+            move |_, _, _, _| {
+                c.store(true, Ordering::Release);
+                Ok(())
+            },
+            move |shared| {
+                SETUP_HOOK.with(|h| {
+                    *h.borrow_mut() = Some(Box::new(move |i, stage| {
+                        if stage.starts_with("reader-") {
+                            observed.lock().unwrap().push((i, stage.to_owned()));
+                        }
+                        if i == 1 && stage == boundary {
+                            active_flags(&shared).cancel.store(true, Ordering::Release);
+                            if !verification {
+                                return Err(format!("injected {boundary} failure"));
+                            }
+                        }
+                        Ok(())
+                    }))
+                });
+            },
+        );
+        let token = worker.start(server.release(&bytes)).unwrap();
+        wait(&worker, Phase::Ready);
+        if verification {
+            // Preserve the inode and length, but corrupt bytes before fresh
+            // consumer verification. Cancellation comes only in later checks.
+            let mut file = File::options()
+                .write(true)
+                .open(root.path().join("1/final"))
+                .unwrap();
+            file.write_all(&vec![b'X'; 8192]).unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+        }
+        let flags = active_flags(&worker.shared);
+        worker.consume(&token).unwrap();
+        let status = wait(&worker, Phase::Cancelled);
+        assert!(flags.cancel.load(Ordering::Acquire));
+        worker.shutdown();
+        assert_eq!(called.load(Ordering::Acquire), !verification);
+        assert_eq!(status.finals, [true, true]);
+        assert_eq!(
+            fs::read(root.path().join("1/final")).unwrap(),
+            vec![if verification { b'X' } else { b'R' }; 8192]
+        );
+        // Every postcheck runs on both held wrappers, including after a failed
+        // inner verification, restoration or identity/root boundary.
+        assert_eq!(
+            *checks.lock().unwrap(),
+            vec![
+                (1, "reader-restored".into()),
+                (1, "reader-held".into()),
+                (1, "reader-root".into()),
+                (0, "reader-restored".into()),
+                (0, "reader-held".into()),
+                (0, "reader-root".into())
+            ]
+        );
+        let fact = if verification {
+            "fixture final digest mismatch".into()
+        } else {
+            format!("injected {boundary} failure")
+        };
+        assert!(
+            status.error.as_ref().unwrap().contains(&fact),
+            "lost observed reader error: {status:?}"
+        );
+        assert!(
+            status.uncertain,
+            "failed reader boundary must preserve uncertainty: {status:?}"
+        );
+    }
+}
+
+#[test]
+fn cancelled_reader_boundary_after_success_keeps_error_and_uncertainty() {
+    cancelled_reader_failure(false);
+}
+
+#[test]
+fn cancelled_reader_verification_failure_keeps_error_and_uncertainty() {
+    cancelled_reader_failure(true);
 }

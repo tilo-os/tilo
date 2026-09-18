@@ -1182,11 +1182,7 @@ mod native {
             let held = self.held.check(Some(&self.lease.payload.file));
             let root = self.lease.check();
             let stopped = stop(cancel);
-            stopped?;
-            restored?;
-            held?;
-            root?;
-            result
+            super::super::finish_held_read(result, restored, held, root, stopped)
         }
 
         pub(in crate::setup) fn verify(&mut self, cancel: &AtomicBool) -> Result<()> {
