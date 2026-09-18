@@ -27,6 +27,18 @@ for package in aws-lc-rs aws-lc-sys; do
   fi
 done
 
+manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
+    \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) -print0 \
+  | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \
+  | grep -Ev '(^|:)[0-9]+:[[:space:]]*#|rpm -q|microdnf remove|dnf remove|libssl|libcrypto' \
+  || true)"
+if [ -n "$manifest_hits" ]; then
+  printf '%s\n' "$manifest_hits" >&2
+  bad 'a build manifest or workflow actively installs OpenSSL/sbsigntools'
+else
+  ok 'all build manifests and workflows avoid OpenSSL/sbsigntools installs'
+fi
+
 crypto_source="$repo/crates/system/tilo-crypto/src/lib.rs"
 development_signer="$repo/os/dev/development-signer.py"
 development_signer_setup="$repo/os/dev/setup-development-signer.py"
