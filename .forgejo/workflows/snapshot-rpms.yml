@@ -59,6 +59,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           resolved="$RUNNER_TEMP/rpm-snapshot-signing-authority.pub"
           cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
           cmp --silent keys/cosign.pub "$resolved" || {
@@ -178,6 +179,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           cosign sign --yes --key "$COSIGN_KEY_REF" "code.sandbox.example/qos/rpms@${CHILD_DIGEST}"
           mkdir -p native-child
           python3 - <<'PY'
@@ -236,6 +238,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           python3 os/dev/promote-native-index.py \
             --repository code.sandbox.example/qos/rpms --tag "$GITHUB_SHA" \
             --revision "$GITHUB_SHA" --descriptors native-children \
@@ -264,6 +267,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           source os/base-snapshot.env
           python3 os/dev/derive-rpm-package-set.py --arch x86_64 | sort -u > package-roots-amd64.txt
           python3 os/dev/derive-rpm-package-set.py --arch aarch64 | sort -u > package-roots-arm64.txt
