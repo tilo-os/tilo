@@ -115,7 +115,7 @@ fn personal_fabric_terminal_matches_data(
     queued: &impl PersonalFabricEnvelopeRef,
 ) -> bool {
     use crate::shell::device_fabric::PersonalFabricAction;
-    use crate::shell::remote_capture_device::RemoteCaptureSignal;
+    use crate::shell::remote_capture::device::RemoteCaptureSignal;
 
     let terminal = terminal.envelope();
     let queued = queued.envelope();
@@ -5724,7 +5724,7 @@ mod tests {
         }
     }
 
-    fn test_capture_grant(byte: u8) -> crate::shell::remote_capture_device::RemoteCaptureGrant {
+    fn test_capture_grant(byte: u8) -> crate::shell::remote_capture::device::RemoteCaptureGrant {
         postcard::from_bytes(&postcard::to_allocvec(&[byte; 32]).expect("serialize capture grant"))
             .expect("deserialize capture grant")
     }
@@ -6952,7 +6952,7 @@ mod tests {
     fn personal_fabric_action_queue_reserves_control_during_media_saturation() {
         use crate::shell::device_fabric::PersonalFabricAction;
         use crate::shell::personal_tethering::{TETHERING_PROTOCOL_VERSION, TetheringSignal};
-        use crate::shell::remote_capture_device::{RemoteCaptureChunk, RemoteCaptureSignal};
+        use crate::shell::remote_capture::device::{RemoteCaptureChunk, RemoteCaptureSignal};
 
         let source = test_device(1);
         let target = test_device(2);
@@ -7114,7 +7114,7 @@ mod tests {
     #[test]
     fn personal_fabric_terminal_purges_only_the_exact_peer_stream() {
         use crate::shell::device_fabric::PersonalFabricAction;
-        use crate::shell::remote_capture_device::{RemoteCaptureChunk, RemoteCaptureSignal};
+        use crate::shell::remote_capture::device::{RemoteCaptureChunk, RemoteCaptureSignal};
 
         let source = test_device(21);
         let other_source = test_device(22);

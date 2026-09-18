@@ -15,16 +15,16 @@ use crate::portal::CaptureBroker;
 use crate::shell::device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::realtime_session::VerifiedAppRegistration;
-use crate::shell::remote_capture_adapter::{
+use crate::shell::remote_capture::adapter::{
     ProductionRemoteCaptureAdapter, RemoteCaptureAdapter, RemoteCaptureAdapterError,
     RemoteCaptureAvailability, RemoteCaptureEndpoint, RemoteCaptureTargetBridge,
 };
-use crate::shell::remote_capture_device::{
+use crate::shell::remote_capture::device::{
     MAX_REMOTE_CAPTURE_SESSIONS, REMOTE_CAPTURE_GRANT_TTL, REMOTE_CAPTURE_PROTOCOL_VERSION,
     RemoteCaptureChunk, RemoteCaptureGrant, RemoteCaptureKind, RemoteCapturePhase,
     RemoteCaptureProfile, RemoteCaptureRegistry, RemoteCaptureRequest, RemoteCaptureSignal,
 };
-use crate::shell::remote_capture_source::{
+use crate::shell::remote_capture::source::{
     CapturedRemoteChunk, ProductionRemoteCaptureSource, RemoteCaptureSource,
 };
 
@@ -802,7 +802,7 @@ impl RemoteCaptureFabricRuntime {
             return;
         }
         match session.request.profile.kind() {
-            crate::shell::remote_capture_device::RemoteCaptureKind::DocumentScanner => {
+            crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => {
                 let _ = self.bridge.append_scanner_chunk(
                     &session.app,
                     &session.source,
@@ -810,8 +810,8 @@ impl RemoteCaptureFabricRuntime {
                     chunk,
                 );
             }
-            crate::shell::remote_capture_device::RemoteCaptureKind::Camera
-            | crate::shell::remote_capture_device::RemoteCaptureKind::Microphone => {
+            crate::shell::remote_capture::device::RemoteCaptureKind::Camera
+            | crate::shell::remote_capture::device::RemoteCaptureKind::Microphone => {
                 if let Ok(mut adapter) = self.adapter.try_lock() {
                     let _ = self.bridge.append_media_chunk(
                         &session.app,
@@ -1132,19 +1132,19 @@ fn stop_action(session_id: [u8; 16], grant: RemoteCaptureGrant) -> PersonalFabri
 fn standard_profile(kind: RemoteCaptureKind) -> RemoteCaptureProfile {
     match kind {
         RemoteCaptureKind::Camera => RemoteCaptureProfile::Camera {
-            format: crate::shell::remote_capture_device::RemoteVideoFormat::Nv12,
+            format: crate::shell::remote_capture::device::RemoteVideoFormat::Nv12,
             width: 160,
             height: 120,
             frames_per_second: 15,
         },
         RemoteCaptureKind::Microphone => RemoteCaptureProfile::Microphone {
-            format: crate::shell::remote_capture_device::RemoteAudioFormat::PcmS16Le,
+            format: crate::shell::remote_capture::device::RemoteAudioFormat::PcmS16Le,
             sample_rate: 48_000,
             channels: 2,
             frame_millis: 20,
         },
         RemoteCaptureKind::DocumentScanner => RemoteCaptureProfile::DocumentScanner {
-            format: crate::shell::remote_capture_device::RemoteDocumentFormat::Png,
+            format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
             max_pages: 1,
             max_document_bytes: 16_777_216,
         },
@@ -1172,9 +1172,9 @@ fn random_id(mut exists: impl FnMut(&[u8; 16]) -> bool) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::remote_capture_adapter::{RemoteCaptureAdapterError, RemoteCaptureEndpoint};
-    use crate::shell::remote_capture_device::{RemoteCaptureKind, RemoteVideoFormat};
-    use crate::shell::remote_capture_source::RemoteCaptureSource;
+    use crate::shell::remote_capture::adapter::{RemoteCaptureAdapterError, RemoteCaptureEndpoint};
+    use crate::shell::remote_capture::device::{RemoteCaptureKind, RemoteVideoFormat};
+    use crate::shell::remote_capture::source::RemoteCaptureSource;
 
     #[derive(Default)]
     struct FakeAdapter {
@@ -1184,8 +1184,8 @@ mod tests {
     }
 
     impl RemoteCaptureAdapter for FakeAdapter {
-        fn availability(&self) -> crate::shell::remote_capture_adapter::RemoteCaptureAvailability {
-            crate::shell::remote_capture_adapter::RemoteCaptureAvailability {
+        fn availability(&self) -> crate::shell::remote_capture::adapter::RemoteCaptureAvailability {
+            crate::shell::remote_capture::adapter::RemoteCaptureAvailability {
                 camera: true,
                 microphone: true,
                 scanner: true,
@@ -1235,8 +1235,8 @@ mod tests {
     }
 
     impl RemoteCaptureSource for FakeSource {
-        fn availability(&self) -> crate::shell::remote_capture_adapter::RemoteCaptureAvailability {
-            crate::shell::remote_capture_adapter::RemoteCaptureAvailability {
+        fn availability(&self) -> crate::shell::remote_capture::adapter::RemoteCaptureAvailability {
+            crate::shell::remote_capture::adapter::RemoteCaptureAvailability {
                 camera: true,
                 microphone: true,
                 scanner: true,
@@ -1376,7 +1376,7 @@ mod tests {
         target_runtime.handle_action(&envelope(&phone, &laptop, action.clone()), now);
         assert_eq!(
             target_runtime.registry.phase(session_id),
-            Some(crate::shell::remote_capture_device::RemoteCapturePhase::Granted)
+            Some(crate::shell::remote_capture::device::RemoteCapturePhase::Granted)
         );
         target_runtime.approve_target(session_id, now).unwrap();
         target_runtime.handle_action(
@@ -1385,12 +1385,12 @@ mod tests {
         );
         assert_eq!(
             target_runtime.registry.phase(session_id),
-            Some(crate::shell::remote_capture_device::RemoteCapturePhase::Granted)
+            Some(crate::shell::remote_capture::device::RemoteCapturePhase::Granted)
         );
         target_runtime.handle_action(&envelope(&phone, &laptop, action), now);
         assert_eq!(
             target_runtime.registry.phase(session_id),
-            Some(crate::shell::remote_capture_device::RemoteCapturePhase::Streaming)
+            Some(crate::shell::remote_capture::device::RemoteCapturePhase::Streaming)
         );
     }
 
