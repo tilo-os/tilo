@@ -119,3 +119,20 @@ Tests use newly generated fixture keys and exercise actual EFI/RSA signing,
 replay rejection, context/input mismatch, symlink/oversize refusal, substituted
 responses, and an actual read-only signer-home mount in a private namespace.
 They do not claim that the real OS has been finalized or booted.
+## Native signer test prerequisite
+
+On newer main the real signer invokes `/usr/local/bin/tilo-crypto`; older
+coherent release tooling uses OpenSSL/sbsigntools. The fixture suite tests the
+actual checked-in backend, never substitutes the other implementation. It
+fails clearly before creating fixture keys if a required tool, protected
+`/var/lib`, or mount namespace capability is missing.
+
+Use the prepared native tools container with the authenticated native crypto
+binary copied root-owned at its canonical path. Fedora's base `/var/lib` mode
+may be0775; the tools recipe must set0755 for the existing trusted-parent
+contract. This is a container metadata change, not a global host change.
+Run with network disabled, SYS_ADMIN only for the isolated read-only-home
+mount test, source mounted read-only, and no persistent key mount. The
+container writes only newly generated fixture keys in its private writable
+layer and is removed afterward. Require all nine tests to pass; a prerequisite
+error is not a skipped or successful test.

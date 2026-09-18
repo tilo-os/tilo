@@ -23,6 +23,37 @@ SPEC.loader.exec_module(authorize)
 class SigningSpoolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Test the actual signer implementation; do not replace its backend.
+        # Run in the prepared native tool container, never install test tools
+        # globally or substitute the older OpenSSL signer on newer main.
+        required = ['/usr/bin/openssl', '/usr/bin/sbverify', '/usr/bin/unshare', '/usr/bin/mount']
+        if '/usr/local/bin/tilo-crypto' in spool.signer.sign.__code__.co_consts:
+            required.append('/usr/local/bin/tilo-crypto')
+        else:
+            required.append('/usr/bin/sbsign')
+        try:
+            if os.getuid() != 0:
+                raise ValueError('already-root native Linux required')
+            spool.signer.trusted(Path('/var/lib'), directory=True)
+            for tool in required:
+                # Distribution /usr/bin aliases are allowed for independent
+                # fixture verifiers. Production crypto is strictly canonical.
+                path = Path(tool) if tool == '/usr/local/bin/tilo-crypto' else Path(tool).resolve()
+                if tool == '/usr/local/bin/tilo-crypto':
+                    spool.signer.trusted(path)
+                elif not path.is_file() or path.stat().st_uid != 0 or path.stat().st_mode & 0o022:
+                    raise ValueError('fixture tool is not root-owned and protected')
+                if not os.access(path, os.X_OK):
+                    raise ValueError('required tool is not executable')
+        except (OSError, ValueError) as error:
+            raise RuntimeError('signing-spool prerequisite missing: prepared native tools, root-owned '
+                               '/usr/local/bin/tilo-crypto when required by signer, and non-group-writable '
+                               '/var/lib; run in the isolated tools container described in REMOTE-SIGNING.md') from error
+        probe = subprocess.run(['/usr/bin/unshare', '--mount', '--propagation', 'private', '/usr/bin/true'],
+                               capture_output=True, timeout=10)
+        if probe.returncode:
+            raise RuntimeError('signing-spool prerequisite missing: isolated mount namespace capability '
+                               '(SYS_ADMIN in the disposable tools container)')
         cls.tmp = tempfile.TemporaryDirectory(prefix='tilo-spool-test-', dir='/var/lib')
         cls.root = Path(cls.tmp.name)
         cls.home = cls.root / 'fixture-signer'
