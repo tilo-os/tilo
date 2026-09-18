@@ -79,6 +79,38 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual({item["bits"] for item in result["traditional_loaders"]}, {32, 64})
         self.assertGreater(len(result["native_elfs"]), 3)
 
+    def test_distinct_bin_wrappers_and_unix_loaders_are_valid(self):
+        for name, bits, machine in (
+            ("usr/lib/wine/i386-unix/wine", 32, 3),
+            ("usr/lib64/wine/x86_64-unix/wine", 64, 62),
+        ):
+            self.guest.write(name, elf(bits, machine) + b"unix-loader").chmod(0o755)
+            self.assertNotEqual(PROVIDER.file_hash(self.guest.root / name),
+                                PROVIDER.file_hash(self.guest.root / f"usr/bin/wine{bits}"))
+        self.refresh()
+        for record in self.validate()["traditional_loaders"]:
+            self.assertEqual(record["resolved_path"], record["canonical_path"])
+            self.assertEqual(record["sha256"],
+                             PROVIDER.file_hash(self.guest.root / record["canonical_path"]))
+
+    def test_identical_bytes_at_wrong_alternate_target_are_rejected(self):
+        canonical = self.guest.root / "usr/lib/wine/i386-unix/wine"
+        self.guest.write("usr/lib/wine/other-unix/wine", canonical.read_bytes()).chmod(0o755)
+        alternate = self.guest.root / "usr/lib64/wine/i386-unix"
+        alternate.unlink()
+        alternate.symlink_to("/usr/lib/wine/other-unix")
+        with self.assertRaisesRegex(ValueError, "canonical Unix loader"):
+            PROVIDER.traditional_wine(self.guest.root, GUEST,
+                                     json.loads((DEV / "wine-source.json").read_text()))
+
+    def test_alternate_loader_requires_matching_width_machine_and_executable(self):
+        for bits, machine, mode in ((64, 62, 0o755), (32, 62, 0o755), (32, 3, 0o644)):
+            with self.subTest(bits=bits, machine=machine, mode=mode):
+                self.guest.write("usr/lib/wine/i386-unix/wine", elf(bits, machine)).chmod(mode)
+                with self.assertRaises(ValueError):
+                    PROVIDER.traditional_wine(self.guest.root, GUEST,
+                                             json.loads((DEV / "wine-source.json").read_text()))
+
     def test_new_wow64_layout_is_rejected(self):
         (self.guest.root / "usr/lib64/wine/i386-unix").unlink()
         with self.assertRaises(ValueError):
@@ -130,12 +162,6 @@ class ProviderTests(unittest.TestCase):
     def test_dxvk_license_is_preserved_and_verified(self):
         self.guest.write("usr/share/licenses/tilo-dxvk/LICENSE", b"changed")
         with self.assertRaisesRegex(ValueError, "license"):
-            self.validate()
-
-    def test_alternate_loader_must_match_public_entrypoint(self):
-        path = self.guest.root / "usr/lib/wine/i386-unix/wine"
-        path.write_bytes(path.read_bytes() + b"another loader")
-        with self.assertRaisesRegex(ValueError, "differs"):
             self.validate()
 
     def test_rpm_roots_select_actual_architecture(self):
