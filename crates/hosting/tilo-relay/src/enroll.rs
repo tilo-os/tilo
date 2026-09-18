@@ -1893,7 +1893,8 @@ fn approve(
             if selected_nearby.is_none() {
                 let mut nonce = [0_u8; 16];
                 rand::rngs::OsRng.fill_bytes(&mut nonce);
-                let expires_at_ns = now_ns()?.saturating_add(5 * 60 * 1_000_000_000);
+                let issued_at_ns = now_ns()?;
+                let expires_at_ns = issued_at_ns.saturating_add(5 * 60 * 1_000_000_000);
                 let capabilities = match kind {
                     EnrollmentKind::HomePeer => DeviceCapabilities::host(),
                     EnrollmentKind::PersonalDevice => DeviceCapabilities::member(),
@@ -1901,6 +1902,7 @@ fn approve(
                 let token = mint_enrollment_token(
                     user_public_key,
                     capabilities,
+                    issued_at_ns,
                     expires_at_ns,
                     nonce,
                     &device,

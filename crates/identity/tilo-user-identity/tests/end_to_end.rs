@@ -55,6 +55,7 @@ fn full_enrollment_and_directory_sync_flow() {
     let token = mint_enrollment_token(
         user.public_key,
         DeviceCapabilities::member(),
+        1_300_000,
         1_800_000, // expires in the future
         [0xAA; 16],
         &primary_sk,

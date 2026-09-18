@@ -47,8 +47,10 @@ use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes, si
 use crate::cert::DeviceCapabilities;
 
 /// Signing-domain tag for `EnrollmentToken`. Frozen wire ABI:
-/// `qos-enrollment-v1` + NUL.
-pub const ENROLLMENT_PREIMAGE_TAG: &[u8] = b"qos-enrollment-v1\0";
+/// `tilo-enrollment-v2` + NUL.
+pub const ENROLLMENT_PREIMAGE_TAG: &[u8] = b"tilo-enrollment-v2\0";
+/// Enrollment intent is deliberately short-lived, even when correctly signed.
+pub const MAX_ENROLLMENT_TOKEN_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// A signed enrollment intent minted by a trusted device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +61,8 @@ pub struct EnrollmentToken {
     /// Fresh 16-byte nonce. Unique per token; used to correlate the
     /// hand-off from user-visible OOB channel back to the issuer.
     pub nonce: [u8; 16],
+    /// Nanoseconds since epoch when the trusted device minted this token.
+    pub issued_at_ns: u64,
     /// Nanoseconds since epoch after which the token is invalid.
     /// Practical presets: 5 minutes for QR pairing, 24 hours for
     /// an "invite" URL.
@@ -77,6 +81,7 @@ pub struct EnrollmentToken {
 struct TokenView<'a> {
     user_public_key: &'a [u8; 32],
     nonce: &'a [u8; 16],
+    issued_at_ns: u64,
     expires_at_ns: u64,
     capabilities: &'a DeviceCapabilities,
     issuer_device_public_key: &'a [u8; 32],
@@ -87,6 +92,7 @@ impl EnrollmentToken {
         TokenView {
             user_public_key: &self.user_public_key,
             nonce: &self.nonce,
+            issued_at_ns: self.issued_at_ns,
             expires_at_ns: self.expires_at_ns,
             capabilities: &self.capabilities,
             issuer_device_public_key: &self.issuer_device_public_key,
@@ -111,6 +117,12 @@ pub enum EnrollmentError {
     /// Token expiry has passed.
     #[error("enrollment token has expired")]
     Expired,
+    /// Issuance and expiry do not form a bounded forward interval.
+    #[error("enrollment token validity must be positive and at most 24 hours")]
+    InvalidValidity,
+    /// The token claims to have been minted in the future.
+    #[error("enrollment token is not yet valid")]
+    NotYetValid,
     /// Base32 decoding of the wire form failed.
     #[error("enrollment token is malformed base32")]
     MalformedBase32,
@@ -128,19 +140,27 @@ pub enum EnrollmentError {
 ///
 /// # Errors
 ///
-/// Returns [`EnrollmentError::Payload`] if the token cannot be
-/// canonically encoded for signing (effectively unreachable).
+/// Returns [`EnrollmentError::InvalidValidity`] unless expiry is after
+/// issuance and no more than 24 hours later. Returns
+/// [`EnrollmentError::Payload`] if the token cannot be canonically encoded
+/// for signing (effectively unreachable).
 pub fn mint_enrollment_token(
     user_public_key: [u8; 32],
     capabilities: DeviceCapabilities,
+    issued_at_ns: u64,
     expires_at_ns: u64,
     nonce: [u8; 16],
     issuer_signing_key: &ed25519_dalek::SigningKey,
 ) -> Result<EnrollmentToken, EnrollmentError> {
+    expires_at_ns
+        .checked_sub(issued_at_ns)
+        .filter(|lifetime| *lifetime > 0 && *lifetime <= MAX_ENROLLMENT_TOKEN_LIFETIME_NS)
+        .ok_or(EnrollmentError::InvalidValidity)?;
     let issuer_device_public_key = issuer_signing_key.verifying_key().to_bytes();
     let mut token = EnrollmentToken {
         user_public_key,
         nonce,
+        issued_at_ns,
         expires_at_ns,
         capabilities,
         issuer_device_public_key,
@@ -161,14 +181,23 @@ pub fn mint_enrollment_token(
 ///
 /// # Errors
 ///
-/// Returns [`EnrollmentError::Expired`] if `now_ns` is at or past the
-/// token's expiry, [`EnrollmentError::InvalidIssuerPublicKey`] if
-/// `token.issuer_device_public_key` is not a valid Ed25519 point, or
-/// [`EnrollmentError::BadSignature`] if the signature does not verify.
+/// Returns [`EnrollmentError::InvalidValidity`] for an empty, backwards, or
+/// overlong validity interval, [`EnrollmentError::NotYetValid`] before the
+/// issuance time, [`EnrollmentError::Expired`] at or past expiry,
+/// [`EnrollmentError::InvalidIssuerPublicKey`] for an invalid Ed25519 issuer,
+/// or [`EnrollmentError::BadSignature`] if verification fails.
 pub fn verify_enrollment_token(
     token: &EnrollmentToken,
     now_ns: u64,
 ) -> Result<(), EnrollmentError> {
+    token
+        .expires_at_ns
+        .checked_sub(token.issued_at_ns)
+        .filter(|lifetime| *lifetime > 0 && *lifetime <= MAX_ENROLLMENT_TOKEN_LIFETIME_NS)
+        .ok_or(EnrollmentError::InvalidValidity)?;
+    if now_ns < token.issued_at_ns {
+        return Err(EnrollmentError::NotYetValid);
+    }
     if token.is_expired_at(now_ns) {
         return Err(EnrollmentError::Expired);
     }
@@ -185,7 +214,7 @@ pub fn verify_enrollment_token(
 ///
 /// Crockford variant is chosen for out-of-band readability: it drops
 /// ambiguous characters (`0`/`O`, `1`/`I`/`l`) and is
-/// case-insensitive. A v1 token encodes to roughly 250-260 chars —
+/// case-insensitive. A v2 token encodes to roughly 250-260 chars —
 /// fits inside a printable QR code with plenty of headroom.
 ///
 /// # Errors
@@ -254,6 +283,7 @@ mod tests {
         let token = mint_enrollment_token(
             user.public_key,
             DeviceCapabilities::member(),
+            5_000,
             10_000,
             [7u8; 16],
             &issuer_sk,
@@ -269,6 +299,7 @@ mod tests {
         let token = mint_enrollment_token(
             user.public_key,
             DeviceCapabilities::member(),
+            5_000,
             10_000,
             [7u8; 16],
             &issuer_sk,
@@ -285,12 +316,54 @@ mod tests {
     }
 
     #[test]
+    fn issuance_and_maximum_lifetime_are_enforced() {
+        let (_root, user) = UserIdentity::generate("Alice", 1);
+        let issuer_sk = issuer(user.public_key);
+        assert_eq!(
+            mint_enrollment_token(
+                user.public_key,
+                DeviceCapabilities::member(),
+                10,
+                10 + MAX_ENROLLMENT_TOKEN_LIFETIME_NS + 1,
+                [8; 16],
+                &issuer_sk,
+            ),
+            Err(EnrollmentError::InvalidValidity)
+        );
+        let token = mint_enrollment_token(
+            user.public_key,
+            DeviceCapabilities::member(),
+            10,
+            20,
+            [9; 16],
+            &issuer_sk,
+        )
+        .unwrap();
+        assert_eq!(
+            verify_enrollment_token(&token, 9),
+            Err(EnrollmentError::NotYetValid)
+        );
+
+        // Verification independently rejects an overlong token even when its
+        // contents carry a valid issuer signature.
+        let mut overlong = token;
+        overlong.expires_at_ns = overlong.issued_at_ns + MAX_ENROLLMENT_TOKEN_LIFETIME_NS + 1;
+        let digest = signing_digest(ENROLLMENT_PREIMAGE_TAG, &overlong.view()).unwrap();
+        overlong.signature = issuer_sk.sign(&digest).to_bytes();
+        assert_eq!(
+            verify_enrollment_token(&overlong, overlong.issued_at_ns),
+            Err(EnrollmentError::InvalidValidity)
+        );
+    }
+
+    #[test]
     fn tampered_capabilities_fails() {
         let (_root, user) = UserIdentity::generate("Alice", 1);
         let issuer_sk = issuer(user.public_key);
         let mut token = mint_enrollment_token(
             user.public_key,
             DeviceCapabilities::member(),
+            5_000,
             10_000,
             [7u8; 16],
             &issuer_sk,
@@ -310,6 +383,7 @@ mod tests {
         let token = mint_enrollment_token(
             user.public_key,
             DeviceCapabilities::host(),
+            5_000,
             10_000,
             [42u8; 16],
             &issuer_sk,
@@ -356,6 +430,7 @@ mod tests {
         let mut token = mint_enrollment_token(
             user.public_key,
             DeviceCapabilities::member(),
+            5_000,
             10_000,
             [7u8; 16],
             &issuer_sk,
