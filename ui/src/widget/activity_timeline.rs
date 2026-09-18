@@ -67,6 +67,32 @@ const AUTO_EXPAND_BUDGET: usize = 14;
 /// Past this many top-level bands, nothing auto-expands regardless of budget.
 const DENSE_GROUP_COUNT: usize = 6;
 
+/// The pane paints on `surfaces.raised` (its own card, or the host's), where
+/// `Colors::lift` (base → raised) has nowhere left to go, so every tier
+/// inside it — hovered row, band backdrop, selected row — is **one ordered
+/// ramp** of translucent steps against that fill, polarity chosen the way
+/// `hairline_on` chooses it (HIG §9.3 caveat, §9.5). Ascending: hover /
+/// band rest, band hover, selected.
+const WASH_HOVER: u8 = 26;
+const WASH_BAND_HOVER: u8 = 40;
+const WASH_SELECTED: u8 = 56;
+
+/// Sibling filter chips keep one `s2` (HIG §7b: siblings of equal weight
+/// in a compact strip); the 6 px they kept before was off the scale.
+const CHIP_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+
+/// A lifted entry row (hover, selection) is inset this much top and bottom,
+/// so two lifted neighbours keep one `s1` between them — the same clearance
+/// a band's backdrop keeps from the rows around it — instead of fusing into
+/// one block (HIG §7 "nothing touches").
+const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
+
+/// One step of the pane's own ramp: `alpha` of white or black, whichever
+/// moves `surface` further.
+fn wash(surface: Color, alpha: u8) -> Color {
+    crate::tokens::colors::Colors::hairline_on(surface, alpha)
+}
+
 /// A nesting depth, row count or dot count, widened for pixel-space layout
 /// math. Lossless in practice — none of these ever approach `u32::MAX` — but
 /// `usize -> f64` cannot express that to the compiler, so this goes through
@@ -1622,37 +1648,38 @@ fn draw_chip(
     if rect.width() <= 2.0 || rect.height() <= 2.0 {
         return;
     }
-    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        if accent {
-            theme.tokens.colors.accent[5]
-        } else {
-            theme.tokens.colors.surface_white_10
-        },
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        if accent {
-            theme.tokens.colors.border_focus
-        } else {
-            theme.tokens.colors.border_white_20
-        },
-        None,
-        &shape,
-    );
+    let radius = f64::from(theme.tokens.radii.sm);
+    let shape = RoundedRect::from_rect(rect, radius);
+    let colors = &theme.tokens.colors;
+    // Accent chip: the face is its own contrast step, no edge (HIG §9.5
+    // "selected accent, no edge"). Quiet chip: the raised rest fill under an
+    // edge derived from it — a Button Neutral in miniature.
+    if accent {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.accent[5],
+            None,
+            &shape,
+        );
+    } else {
+        crate::surface::card(scene, transform, rect, radius, colors.surfaces.raised);
+    }
     let size = renderer_type_size(tr, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
     let shown = fit_text(tr, label, size, rect.width() - 8.0);
     let (lw, lh) = tr.measure(&shown, size, None);
+    // Ink chosen against the face it sits on: `text_primary` is near-black
+    // on the light preset and vanished on its blue accent.
+    let ink = if accent {
+        colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+    } else {
+        colors.text_primary
+    };
     tr.draw_text(
         scene,
         &shown,
         size,
-        theme.tokens.colors.text_primary,
+        ink,
         translated(
             transform,
             (
@@ -1797,12 +1824,13 @@ impl ActivityTimeline {
     ) {
         // The rail: a hairline per nesting level, so rows read as belonging
         // to the bands above them rather than just starting further right.
+        let surface = theme.tokens.colors.surfaces.raised;
         for level in 1..=depth {
             let x = full_row.x0 + (px(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                theme.tokens.colors.border_standard,
+                crate::surface::edge_on(surface),
                 None,
                 &Line::new(Point::new(x, full_row.y0), Point::new(x, full_row.y1)),
             );
@@ -1811,13 +1839,24 @@ impl ActivityTimeline {
         if is_selected {
             // A neutral raise plus an accent edge, not an accent *fill*: the
             // pale end of the accent ramp behind primary text is unreadable.
-            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
+            // The raise is the top step of the pane's own ramp under a
+            // derived edge, so it reads on a light pane as well as a dark one.
+            let radius = f64::from(theme.tokens.radii.sm);
+            let lift = row.inflate(0.0, -ROW_LIFT_INSET);
+            let shape = RoundedRect::from_rect(lift, radius);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.surface_white_20,
+                wash(surface, WASH_SELECTED),
                 None,
                 &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::surface::edge_on(surface),
+                None,
+                &crate::surface::edge_outline(lift, radius),
             );
             let edge = RoundedRect::from_rect(
                 Rect::new(row.x0, row.y0 + 2.0, row.x0 + 2.5, row.y1 - 2.0),
@@ -1831,11 +1870,14 @@ impl ActivityTimeline {
                 &edge,
             );
         } else if is_hovered {
-            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
+            let shape = RoundedRect::from_rect(
+                row.inflate(0.0, -ROW_LIFT_INSET),
+                f64::from(theme.tokens.radii.sm),
+            );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.neutral[3],
+                wash(surface, WASH_HOVER),
                 None,
                 &shape,
             );
@@ -2148,28 +2190,36 @@ impl ActivityTimeline {
         is_focused: bool,
     ) {
         let colors = &theme.tokens.colors;
+        let surface = colors.surfaces.raised;
         for level in 1..=rg.depth {
             let x = full_row.x0 + (px(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                crate::surface::edge_on(surface),
                 None,
                 &Line::new(Point::new(x, full_row.y0), Point::new(x, full_row.y1)),
             );
         }
 
-        let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
+        // The band's backdrop is a step of the pane's own ramp under an edge
+        // derived from the pane, so a band reads as a band on a light pane
+        // too — the white veneers it replaces were one colour per theme.
+        let radius = f64::from(theme.tokens.radii.sm);
+        let shape = RoundedRect::from_rect(row, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            if is_hovered {
-                colors.surface_white_10
-            } else {
-                colors.surface_white_5
-            },
+            wash(surface, if is_hovered { WASH_BAND_HOVER } else { WASH_HOVER }),
             None,
             &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(surface),
+            None,
+            &crate::surface::edge_outline(row, radius),
         );
         if is_focused {
             scene.stroke(
@@ -2401,9 +2451,15 @@ impl ActivityTimeline {
         let strip = self.filter_strip_rect();
         let chip_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
 
-        let active_fill = theme.tokens.colors.accent[5];
-        let idle_fill = theme.tokens.colors.surface_white_5;
-        let active_text = theme.tokens.colors.text_primary;
+        // Chip quiet (HIG §9.5): raised rest fill under a derived edge (added
+        // where the chip is painted); selected: solid accent with ink chosen
+        // against it, no edge.
+        let (active_fill, _) = crate::surface::chip_colors(theme, true);
+        let (idle_fill, _) = crate::surface::chip_colors(theme, false);
+        let active_text = theme
+            .tokens
+            .colors
+            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
         let idle_text = theme.tokens.colors.text_dim;
 
         // Rebuild the chip-rect cache every frame so click hit-testing lines up
@@ -2437,7 +2493,7 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total += f64::from(tr.measure(l, chip_text_size, None).0) + 16.0 + 6.0;
+                total += f64::from(tr.measure(l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
             }
             total
         };
@@ -2505,8 +2561,8 @@ impl ActivityTimeline {
             let active = self.active_chip == chip;
             let body = if active { active_fill } else { idle_fill };
             let text_color = if active { active_text } else { idle_text };
-            let shape = RoundedRect::from_rect(chip_rect, chip_h / 2.0);
-            scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
+            let edge = (!active).then(|| crate::surface::edge_on(body));
+            crate::surface::pill(scene, transform, chip_rect, body, edge, None);
             let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
             text_renderer.draw_text(
                 scene,
@@ -2522,7 +2578,7 @@ impl ActivityTimeline {
                 ),
                 None,
             );
-            x += chip_w + 6.0;
+            x += chip_w + CHIP_GAP;
         }
     }
 
@@ -2561,8 +2617,11 @@ impl ActivityTimeline {
         } else {
             active_text
         };
-        let shape = RoundedRect::from_rect(chip_rect, chip_h / 2.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
+        let edge = self
+            .author_query
+            .is_empty()
+            .then(|| crate::surface::edge_on(body));
+        crate::surface::pill(scene, transform, chip_rect, body, edge, None);
         let (lw, lh) = text_renderer.measure(&drawn_author, chip_text_size, None);
         text_renderer.draw_text(
             scene,
@@ -2597,20 +2656,15 @@ impl ActivityTimeline {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // Overlay bar under an edge derived from it: the bar announces a
+        // selection through its copy and actions, not by wearing the focus
+        // ring — `border_focus` means keyboard focus (HIG §9.4/§9.5).
+        crate::surface::card(
+            scene,
             transform,
+            bar,
+            f64::from(theme.tokens.radii.sm),
             colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_focus,
-            None,
-            &shape,
         );
 
         let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
@@ -3026,20 +3080,15 @@ impl ActivityTimeline {
     /// The pane's own rounded backdrop, painted only when no host has
     /// already put a surface behind it.
     fn draw_surface_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // Raised card under an edge derived from it: the declared
+        // `border_standard` this replaces is three shades from the dark
+        // preset's raised surface and vanished there (HIG §9.5).
+        crate::surface::card(
+            scene,
             transform,
+            self.rect,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
         );
     }
 
@@ -3556,6 +3605,157 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
     use winit::event::Modifiers;
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) =
+            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// Eight changes by two authors — enough for a band and loose rows —
+    /// with two rows selected so the selection bar and its chips paint.
+    fn ux1x_fixture() -> ActivityTimeline {
+        let entries: Vec<HistoryEntry> = (0..8u8)
+            .map(|i| {
+                let who = if i < 5 { "Alice" } else { "Bob" };
+                entry(OpClass::Splice, who, 1_000 + u64::from(i) * 30, i)
+            })
+            .collect();
+        let mut t = ActivityTimeline::with_entries(entries);
+        t.set_now_for_test(
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(2_000))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        );
+        t.set_all_expanded(true);
+        t.set_selection(Some((5, 6)));
+        t
+    }
+
+    /// The pane, its quiet chips, the band backdrops and the selected rows
+    /// keep a **visible derived edge** at 1× on both presets (HIG §9.5).
+    /// Before, the pane wore `border_standard` (three shades from the dark
+    /// raised surface), chips and bands literal white veneers, hover
+    /// `neutral[3]`, and the selection bar the focus ring.
+    ///
+    /// Writes `$UX1X_F4_OUT/<theme>/activity_timeline.png` plus the harness
+    /// inspection when that variable is set; asserts regardless.
+    #[test]
+    fn ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        let margin = 16.0;
+        let (pw, ph) = (520.0, 520.0);
+        // Evidence first, for both presets, so a failing assertion on one
+        // preset still leaves the other's PNG and inspection on disk.
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            if let Some(png) = ux1x_out(&theme, "activity_timeline.png") {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a small test viewport"
+                )]
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(ux1x_fixture()),
+                    (pw as u32, ph as u32),
+                    theme.clone(),
+                );
+                harness.render_window_png(&png);
+                if let Ok(json) = harness.inspection_json() {
+                    std::fs::write(png.with_extension("inspection.json"), json)
+                        .expect("write inspection");
+                }
+            }
+        }
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut t = ux1x_fixture();
+            let pane = Rect::new(margin, margin, margin + pw, margin + ph);
+            t.set_rect(pane);
+            let (w, h) = (pane.x1 + margin, pane.y1 + margin);
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            t.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Pane edge against its own fill, on the pane's centre line (clear
+            // of the corner arcs; rows start one `PADDING` in, so the columns
+            // beside the edge are bare fill).
+            let y = pane.center().y;
+            let edge = lum(pane.x0, y);
+            let fill = lum(pane.x0 + 3.0, y);
+            assert!(
+                (edge - fill).abs() >= EDGE_MIN,
+                "{}: pane edge {edge:.4} vs fill {fill:.4} did not register",
+                theme.name
+            );
+
+            // Quiet chip (the second filter chip, not the active first one):
+            // its top edge — the straight run of the capsule, where the 1 px
+            // stroke covers the whole pixel row — against its own fill just
+            // under it, above the label's line box. `chip_rects` holds the
+            // pointer target, so recover the painted capsule from the strip.
+            let (_, hit) = t.chip_rects.get(1).copied().expect("a second filter chip");
+            let strip = t.filter_strip_rect();
+            let chip_h = (strip.height() - 8.0).max(20.0);
+            let chip_top = strip.center().y - chip_h / 2.0;
+            let cx = hit.center().x;
+            let cedge = lum(cx, chip_top);
+            let cfill = lum(cx, chip_top + 3.0);
+            assert!(
+                (cedge - cfill).abs() >= EDGE_MIN,
+                "{}: chip edge {cedge:.4} vs fill {cfill:.4} did not register",
+                theme.name
+            );
+
+            // Band backdrop against the pane beside its inset.
+            let band_row = (0..t.row_count())
+                .find(|i| t.group_at_row(*i).is_some())
+                .expect("two authors' runs produce a band");
+            let band = t.row_rect(band_row).expect("the band row is laid out");
+            let inner = Rect::new(band.x0, band.y0 + 2.0, band.x1, band.y1 - 2.0);
+            let bfill = lum(inner.x1 - 3.0, inner.center().y);
+            let pane_fill = lum(pane.x1 - PADDING / 2.0, inner.center().y);
+            assert!(
+                (bfill - pane_fill).abs() >= EDGE_MIN,
+                "{}: band {bfill:.4} vs pane {pane_fill:.4} did not register",
+                theme.name
+            );
+        }
+    }
 
     fn entry(op: OpClass, author: &str, ts: u64, id: u8) -> HistoryEntry {
         let mut id_bytes = [0u8; 16];
