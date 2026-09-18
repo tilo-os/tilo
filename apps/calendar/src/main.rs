@@ -12,6 +12,7 @@
 //!       * `--screen S` calendar | detail (which pane to show).
 //!       * `--flap` open the overlay sidebar (narrow only).
 //!       * `--collapse` collapse the persistent sidebar (wide only).
+//!       * `--schedule-conflict` stage a local overlap in the demo editor.
 //!       * `--resize-from WxH` lay the SAME instance out at this size first,
 //!         then render at `--viewport`. Proves the layout reflows on a live
 //!         resize (rather than caching the first frame's breakpoint).
@@ -97,6 +98,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let empty = args.iter().any(|a| a == "--empty");
         let sync_state = parse_flag_value(&args, "--sync-state")
             .and_then(|value| value.to_str().map(ToOwned::to_owned));
+        let schedule_conflict = args.iter().any(|arg| arg == "--schedule-conflict");
         // Event-form screenshots: `--new-event` opens the New-Event edit form;
         // `--date-popover` / `--calendar-popover` additionally float the date
         // grid / calendar selector over it.
@@ -138,6 +140,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(state) = &sync_state {
                 app.shots_set_sync_state(state);
+            }
+            if schedule_conflict {
+                app.shots_show_schedule_conflict();
             }
             if screen.as_deref() == Some("calendar") {
                 app.shots_show_calendar();
