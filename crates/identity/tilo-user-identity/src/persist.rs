@@ -63,7 +63,7 @@ fn protect_secret_process() -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn open_secret_file(path: &Path) -> io::Result<fs::File> {
+fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
     const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
     const RESOLVE_NO_SYMLINKS: u64 = 0x04;
 
@@ -108,7 +108,7 @@ fn open_secret_file(path: &Path) -> io::Result<fs::File> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn open_secret_file(path: &Path) -> io::Result<fs::File> {
+fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -259,14 +259,7 @@ pub fn read_public_key(path: &Path) -> Result<[u8; 32], PersistError> {
 /// accepting a blocking device/FIFO. The byte after `limit` is consumed only
 /// to distinguish an exact-size artifact from an oversized one.
 fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistError> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
+    let file = open_regular_without_symlinks(path)?;
     if !file.metadata()?.is_file() {
         return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -347,7 +340,7 @@ fn signing_key_from_file(
     // Inspect and read the same opened inode while rejecting symlinks in every
     // component. A leaf-only O_NOFOLLOW check still permits an exchanged
     // parent directory to redirect an otherwise trusted key path.
-    let file = open_secret_file(path)?;
+    let file = open_regular_without_symlinks(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(PersistError::Io(io::Error::new(
@@ -797,6 +790,12 @@ mod tests {
         fs::write(&real, [7_u8; 32]).unwrap();
         symlink(&real, &link).unwrap();
         assert!(matches!(read_public_key(&link), Err(PersistError::Io(_))));
+        let linked_parent = tmp.path().join("linked-parent");
+        symlink(tmp.path(), &linked_parent).unwrap();
+        assert!(matches!(
+            read_public_key(&linked_parent.join("pubkey.bin")),
+            Err(PersistError::Io(_))
+        ));
 
         write_public_key(&link, &[8_u8; 32]).unwrap();
         assert_eq!(fs::read(&real).unwrap(), [7_u8; 32]);
