@@ -7,6 +7,7 @@ import pathlib
 import ssl
 import subprocess
 import sys
+import time
 import urllib.parse
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -48,6 +49,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def serve_git(self):
         self.connection.settimeout(10)
+        if (root / "block").exists():
+            (root / "request-started").touch()
+            deadline = time.monotonic() + 10
+            while not (root / "release").exists():
+                if time.monotonic() >= deadline:
+                    self.reply(503)
+                    return
+                time.sleep(0.01)
         if self.headers.get("Authorization") != "Basic dGVzdDp0ZXN0":
             self.server.denials += 1
             # Bound even a broken client that retries the same rejected credentials.
