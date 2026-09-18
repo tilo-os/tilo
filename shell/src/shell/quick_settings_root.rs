@@ -149,6 +149,76 @@ impl QuickSettingsRoot {
         // that same Tab skip to Settings.
         self.keyboard_focus = None;
     }
+
+    /// Named geometry for every visible root affordance. Quick Settings is
+    /// retained chrome rather than a child-widget tree, so this projection is
+    /// the semantic equivalent of `Widget::test_rects()`.
+    pub fn semantic_rects(&self, state: &QuickSettingsState) -> Vec<(String, Rect)> {
+        if self.edit_mode {
+            let active = self.active_edit_controls(state);
+            let available = self.available_edit_controls(state);
+            let mut rects = active
+                .iter()
+                .enumerate()
+                .map(|(index, control)| {
+                    (
+                        format!(
+                            "quick_settings_edit_{}",
+                            Self::semantic_control_name(*control)
+                        ),
+                        self.card(self.panel, index, true),
+                    )
+                })
+                .collect::<Vec<_>>();
+            rects.extend(available.iter().enumerate().map(|(index, control)| {
+                (
+                    format!(
+                        "quick_settings_add_{}",
+                        Self::semantic_control_name(*control)
+                    ),
+                    self.available_edit_chip(state, index),
+                )
+            }));
+            rects.push(("quick_settings_reset".into(), self.edit_reset(state)));
+            rects.push(("quick_settings_done".into(), self.edit_done(state)));
+            return rects;
+        }
+
+        let mut rects = vec![
+            ("quick_settings_edit".into(), self.edit_rect()),
+            ("quick_settings_settings".into(), self.action(0)),
+            ("quick_settings_privacy".into(), self.action(1)),
+            ("quick_settings_history".into(), self.action(2)),
+            ("quick_settings_power".into(), self.action(3)),
+        ];
+        for (index, name) in ["brightness", "volume"].into_iter().enumerate() {
+            let (bar, _) = self.slider_geometry_for(self.panel, index);
+            rects.push((format!("quick_settings_{name}"), bar.inflate(6.0, 10.0)));
+        }
+        let controls = self.visible_controls(state);
+        rects.extend(controls.iter().enumerate().map(|(index, control)| {
+            (
+                format!("quick_settings_{}", Self::semantic_control_name(*control)),
+                self.control_card(self.panel, index, controls.len()),
+            )
+        }));
+        rects.push((
+            "quick_settings_power_profile".into(),
+            self.power_geometry(self.panel, state),
+        ));
+        rects
+    }
+
+    const fn semantic_control_name(control: QuickSettingsControl) -> &'static str {
+        match control {
+            QuickSettingsControl::Wifi => "network",
+            QuickSettingsControl::Bluetooth => "bluetooth",
+            QuickSettingsControl::Vpn => "vpn",
+            QuickSettingsControl::NightLight => "night_light",
+            QuickSettingsControl::AirplaneMode => "airplane_mode",
+            QuickSettingsControl::MobileData => "mobile_data",
+        }
+    }
     pub fn set_layout_text_scale(&mut self, scale: f32) {
         // Text itself follows the user's full scale.  The surrounding shell
         // geometry deliberately stops growing at 120%: scaling every pad,
@@ -380,6 +450,26 @@ impl QuickSettingsRoot {
         self.edit_grid_top(self.panel)
             + n(active) * self.scaled(Self::EDIT_ROW + 6.0)
             + self.scaled(10.0)
+    }
+
+    fn available_edit_chip(&self, state: &QuickSettingsState, index: usize) -> Rect {
+        let available = self.available_edit_controls(state);
+        let count = available.len();
+        if count == 0 || index >= count {
+            return Rect::ZERO;
+        }
+        let gap = self.scaled(6.0);
+        let x0 = self.panel.x0 + self.scaled(Self::PAD);
+        let width =
+            (self.panel.width() - self.scaled(Self::PAD * 2.0) - gap * n(count.saturating_sub(1)))
+                / n(count);
+        let x = x0 + n(index) * (width + gap);
+        Rect::new(
+            x,
+            self.available_edit_top(state) + self.scaled(26.0),
+            x + width,
+            self.available_edit_top(state) + self.scaled(60.0),
+        )
     }
     fn card(&self, panel: Rect, i: usize, edit: bool) -> Rect {
         let top = self.grid_top(panel);
@@ -911,20 +1001,8 @@ impl QuickSettingsRoot {
         }
         let available = self.available_edit_controls(state);
         if !available.is_empty() {
-            let gap = self.scaled(6.0);
-            let x0 = self.panel.x0 + self.scaled(Self::PAD);
-            let width = (self.panel.width()
-                - self.scaled(Self::PAD * 2.0)
-                - gap * n(available.len().saturating_sub(1)))
-                / n(available.len());
             for (i, control) in available.into_iter().enumerate() {
-                let x = x0 + n(i) * (width + gap);
-                let chip = Rect::new(
-                    x,
-                    self.available_edit_top(state) + self.scaled(26.0),
-                    x + width,
-                    self.available_edit_top(state) + self.scaled(60.0),
-                );
+                let chip = self.available_edit_chip(state, i);
                 if chip.contains(point) {
                     self.config.controls.push(control);
                     self.save_config();
@@ -1436,6 +1514,20 @@ impl QuickSettingsRoot {
         let colors = &theme.tokens.colors;
         text.draw_text(
             scene,
+            "Drag to reorder · Ctrl+↑/↓ with keyboard",
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate(
+                (
+                    self.panel.x0 + self.scaled(Self::PAD),
+                    self.panel.y0 + self.scaled(Self::PAD + Self::HEADER - 7.0),
+                )
+                    .into(),
+            ),
+            None,
+        );
+        text.draw_text(
+            scene,
             "ACTIVE CONTROLS",
             theme.tokens.typography.scale.xs,
             colors.text_dim,
@@ -1529,7 +1621,7 @@ impl QuickSettingsRoot {
                 })
                 .text_size(theme.tokens.typography.scale.xs);
             let action_face = if c.required() {
-                action_face.ghost()
+                action_face.icon(ui::icons::Icon::Shield).ghost()
             } else {
                 action_face.icon(ui::icons::Icon::X)
             };
@@ -1703,20 +1795,8 @@ impl QuickSettingsRoot {
                 ),
                 None,
             );
-            let gap = self.scaled(6.0);
-            let x0 = self.panel.x0 + self.scaled(Self::PAD);
-            let width = (self.panel.width()
-                - self.scaled(Self::PAD * 2.0)
-                - gap * n(available.len().saturating_sub(1)))
-                / n(available.len());
             for (i, control) in available.iter().copied().enumerate() {
-                let x = x0 + n(i) * (width + gap);
-                let chip = Rect::new(
-                    x,
-                    top + self.scaled(26.0),
-                    x + width,
-                    top + self.scaled(60.0),
-                );
+                let chip = self.available_edit_chip(state, i);
                 Button::paint(
                     scene,
                     transform,
@@ -1860,6 +1940,55 @@ impl QuickSettingsRoot {
 mod tests {
     use super::*;
     const PANEL: Rect = Rect::new(100., 48., 500., 560.);
+
+    #[test]
+    fn semantic_targets_cover_every_visible_root_control_and_edit_action() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        root.panel = PANEL;
+
+        let targets = root.semantic_rects(&state);
+        for required in [
+            "quick_settings_edit",
+            "quick_settings_settings",
+            "quick_settings_privacy",
+            "quick_settings_history",
+            "quick_settings_power",
+            "quick_settings_brightness",
+            "quick_settings_volume",
+            "quick_settings_network",
+            "quick_settings_bluetooth",
+            "quick_settings_night_light",
+            "quick_settings_power_profile",
+        ] {
+            assert!(
+                targets
+                    .iter()
+                    .any(|(name, rect)| name == required && rect.area() > 0.0),
+                "missing semantic target {required}"
+            );
+        }
+
+        root.edit_mode = true;
+        let edit_targets = root.semantic_rects(&state);
+        assert!(
+            edit_targets
+                .iter()
+                .any(|(name, _)| name == "quick_settings_reset")
+        );
+        assert!(
+            edit_targets
+                .iter()
+                .any(|(name, _)| name == "quick_settings_done")
+        );
+        assert!(
+            edit_targets
+                .iter()
+                .any(|(name, _)| name == "quick_settings_edit_network")
+        );
+    }
     #[test]
     fn default_omits_airplane_and_dead_radios() {
         let root = QuickSettingsRoot::default();

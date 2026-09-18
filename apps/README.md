@@ -159,6 +159,7 @@ actions and records their mutations in shared history.
 | `logs` | systemd-journal viewer: `journalctl -o json`, unit/boot/priority filters, live tail. |
 | `firewall` | firewalld/nftables front-end: zone rail, per-zone rules table, services; applies via `firewall-cmd`. |
 | `vpn` | WireGuard / OpenVPN client: saved connection fleet, live detail pane with animated throughput chart. |
+| `speed-test` | Responsive internet speed test: latency, jitter, download and upload measurement with region selection and result history. |
 | `totp` | 2FA authenticator ("Authenticator"): RFC 6238 TOTP on RustCrypto HMAC/SHA, QR import (rqrr), XChaCha20-Poly1305 encrypted-at-rest vault. |
 | `osk` | On-screen keyboard: data-driven layouts, responsive sizing, SHARK²/FUTO swipe-typing (`swipe` crate, ExecuTorch FFI), text injection via `virtual-keyboard-v1`. Foundation for the Tilo phone keyboard. |
 

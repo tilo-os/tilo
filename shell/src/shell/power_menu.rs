@@ -44,6 +44,46 @@ impl PowerMenu {
         self.open
     }
 
+    /// Semantic hit targets for the visible session actions.  The menu is
+    /// painted directly by the overlay host rather than as child widgets, so
+    /// external interaction/accessibility tests need the same geometry the
+    /// click handler uses instead of guessing screen coordinates.
+    pub(crate) fn action_rects(&self, viewport: Rect) -> Vec<(&'static str, Rect)> {
+        if !self.open {
+            return Vec::new();
+        }
+        ACTIONS
+            .iter()
+            .enumerate()
+            .map(|(index, (action, _, _, _))| {
+                (action.semantic_name(), action_rect(viewport, index))
+            })
+            .collect()
+    }
+
+    pub(crate) fn accessibility_snapshot(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        self.open.then(|| {
+            AccessNode::new(Role::Dialog)
+                .with_name("Session")
+                .with_description(
+                    "Lock, leave, switch user, suspend, restart, or shut down this computer",
+                )
+                .with_state(AccessState::new().modal(true))
+                .with_children(
+                    ACTIONS
+                        .iter()
+                        .map(|(_, label, detail, _)| {
+                            AccessNode::new(Role::Button)
+                                .with_name(*label)
+                                .with_description(*detail)
+                                .with_state(AccessState::new().focusable(true))
+                        })
+                        .collect(),
+                )
+        })
+    }
+
     pub(crate) fn open(&mut self) {
         self.open = true;
         self.selected = 0;
@@ -253,7 +293,12 @@ impl PowerMenu {
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(row.x0 + 12.0, row.y0 + 13.0, row.x0 + 30.0, row.y0 + 31.0),
+                Rect::new(
+                    row.x0 + 12.0,
+                    row.y0 + (row.height() - 18.0) * 0.5,
+                    row.x0 + 30.0,
+                    row.y0 + (row.height() - 18.0) * 0.5 + 18.0,
+                ),
                 *icon,
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
@@ -263,7 +308,7 @@ impl PowerMenu {
                 label,
                 theme.tokens.typography.scale.sm,
                 colors.text_primary,
-                at(transform, (row.x0 + 42.0, row.y0 + 7.0)),
+                at(transform, (row.x0 + 42.0, row.y0 + 8.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -272,7 +317,7 @@ impl PowerMenu {
                 detail,
                 theme.tokens.typography.scale.xs,
                 colors.text_dim,
-                at(transform, (row.x0 + 42.0, row.y0 + 25.0)),
+                at(transform, (row.x0 + 42.0, row.y0 + 27.0)),
                 None,
             );
         }
@@ -283,6 +328,19 @@ impl PowerMenu {
 enum PowerMenuAction {
     Lock,
     External(os_actions::SessionAction),
+}
+
+impl PowerMenuAction {
+    const fn semantic_name(self) -> &'static str {
+        match self {
+            Self::Lock | Self::External(os_actions::SessionAction::Lock) => "power_lock",
+            Self::External(os_actions::SessionAction::Logout) => "power_logout",
+            Self::External(os_actions::SessionAction::SwitchUser) => "power_switch_user",
+            Self::External(os_actions::SessionAction::Suspend) => "power_suspend",
+            Self::External(os_actions::SessionAction::Restart) => "power_restart",
+            Self::External(os_actions::SessionAction::ShutDown) => "power_shut_down",
+        }
+    }
 }
 
 const ACTIONS: [(PowerMenuAction, &str, &str, ui::icons::Icon); 6] = [
@@ -328,22 +386,56 @@ fn panel_rect(viewport: Rect) -> Rect {
     // This is a system-menu flyout, not a confirmation dialog. It shares the
     // Quick Settings top-right anchor so choosing Power does not send the
     // pointer across the display or open an oversized detached sheet.
-    let width = 336.0_f64.min((viewport.width() - 32.0).max(1.0));
-    let height = 350.0_f64.min((viewport.height() - 64.0).max(1.0));
-    let right = viewport.x1 - 16.0;
+    // Two columns keep the six session actions scannable on the 800px and
+    // 1280px review surfaces. Narrow windows fall back to the original single
+    // column while retaining the same semantic hit targets.
+    let columns = action_columns(viewport);
+    let preferred_width: f64 = if columns == 2 { 424.0 } else { 336.0 };
+    let width = preferred_width.min((viewport.width() - 16.0).max(1.0));
+    let height = menu_height(columns).min((viewport.height() - 64.0).max(1.0));
+    // Leave only a 4px edge inset: the underlying app's scrollbar otherwise
+    // peeks through a 16px gap beside this opaque flyout and reads as a second
+    // power-menu affordance in screenshots.
+    let right = viewport.x1 - 4.0;
     let top = viewport.y0 + 48.0;
     Rect::new(
         right - width,
         top,
         right,
-        (top + height).min(viewport.y1 - 24.0),
+        (top + height).min(viewport.y1 - 8.0),
     )
 }
 
 fn action_rect(viewport: Rect, index: usize) -> Rect {
     let panel = panel_rect(viewport);
-    let y0 = panel.y0 + 52.0 + small_count_to_f64(index) * 48.0;
-    Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 44.0)
+    let columns = action_columns(viewport);
+    let gap = action_gap(columns);
+    let width = (panel.width() - 24.0 - small_count_to_f64(columns.saturating_sub(1)) * gap)
+        / small_count_to_f64(columns);
+    let column = index % columns;
+    let row = index / columns;
+    let x0 = panel.x0 + 12.0 + small_count_to_f64(column) * (width + gap);
+    let y0 = panel.y0 + 52.0 + small_count_to_f64(row) * (action_height(columns) + gap);
+    Rect::new(x0, y0, x0 + width, y0 + action_height(columns))
+}
+
+fn action_columns(viewport: Rect) -> usize {
+    usize::from(viewport.width() >= 640.0) + 1
+}
+
+fn action_height(columns: usize) -> f64 {
+    if columns == 2 { 56.0 } else { 44.0 }
+}
+
+fn action_gap(columns: usize) -> f64 {
+    if columns == 2 { 8.0 } else { 4.0 }
+}
+
+fn menu_height(columns: usize) -> f64 {
+    let rows = ACTIONS.len().div_ceil(columns);
+    52.0 + small_count_to_f64(rows) * action_height(columns)
+        + small_count_to_f64(rows.saturating_sub(1)) * action_gap(columns)
+        + 12.0
 }
 
 /// Widens a row index to `f64` for draw-time row-position math. Every
@@ -380,6 +472,33 @@ mod tests {
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
+    #[test]
+    fn open_menu_exports_the_same_six_semantic_rows_it_paints() {
+        let mut menu = PowerMenu::default();
+        assert!(menu.action_rects(VIEWPORT).is_empty());
+        assert!(menu.accessibility_snapshot().is_none());
+        menu.open();
+        let targets = menu.action_rects(VIEWPORT);
+        assert_eq!(
+            targets.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            [
+                "power_lock",
+                "power_logout",
+                "power_switch_user",
+                "power_suspend",
+                "power_restart",
+                "power_shut_down",
+            ]
+        );
+        assert!(targets.iter().all(|(_, rect)| rect.area() > 0.0));
+        assert_eq!(
+            menu.accessibility_snapshot()
+                .expect("open session menu")
+                .children
+                .len(),
+            ACTIONS.len()
+        );
+    }
     #[test]
     fn lock_switch_user_and_suspend_execute_on_first_click() {
         let mut menu = PowerMenu::default();
@@ -433,9 +552,9 @@ mod tests {
     fn menu_is_anchored_below_the_top_right_status_area() {
         for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 960.0, 540.0)] {
             let panel = panel_rect(viewport);
-            assert_eq!(panel.x1, viewport.x1 - 16.0);
+            assert_eq!(panel.x1, viewport.x1 - 4.0);
             assert_eq!(panel.y0, viewport.y0 + 48.0);
-            assert!(panel.y1 <= viewport.y1 - 16.0);
+            assert!(panel.y1 <= viewport.y1 - 8.0);
             for index in 0..ACTIONS.len() {
                 assert!(
                     panel.contains(action_rect(viewport, index).center()),
@@ -448,9 +567,49 @@ mod tests {
     #[test]
     fn compact_flyout_is_materially_smaller_than_the_old_modal_sheet() {
         let panel = panel_rect(Rect::new(0.0, 0.0, 960.0, 540.0));
-        assert_eq!(panel.width(), 336.0);
-        assert_eq!(panel.height(), 350.0);
+        assert_eq!(panel.width(), 424.0);
+        assert_eq!(panel.height(), 248.0);
         assert!(panel.area() < 420.0 * 446.0 * 0.65);
+    }
+
+    #[test]
+    fn two_column_layout_fits_both_visual_audit_viewports() {
+        for viewport in [
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        ] {
+            let panel = panel_rect(viewport);
+            assert_eq!(action_columns(viewport), 2);
+            assert_eq!(panel.height(), 248.0);
+            assert!(panel.x1 >= viewport.x1 - 4.0);
+            let rows = (0..ACTIONS.len())
+                .map(|index| action_rect(viewport, index))
+                .collect::<Vec<_>>();
+            assert!(rows.iter().all(|row| panel.contains(row.center())));
+            assert!(rows.iter().all(|row| row.width() >= 180.0));
+            for (index, row) in rows.iter().enumerate() {
+                for earlier in &rows[..index] {
+                    let overlap = row.intersect(*earlier);
+                    assert!(
+                        overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                        "action {index} overlaps an earlier action at {viewport:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_layout_falls_back_to_one_column_without_clipping_actions() {
+        let viewport = Rect::new(0.0, 0.0, 480.0, 600.0);
+        let panel = panel_rect(viewport);
+        assert_eq!(action_columns(viewport), 1);
+        assert_eq!(panel.height(), 348.0);
+        for index in 0..ACTIONS.len() {
+            let row = action_rect(viewport, index);
+            assert!(panel.contains(row.center()));
+            assert!(row.width() >= 44.0 && row.height() >= 44.0);
+        }
     }
 
     #[test]
