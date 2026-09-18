@@ -17,11 +17,6 @@ use std::path::Path;
 use crate::shell::state::{
     AppKind, GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
 };
-use crate::shell::tile::{
-    Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
-    WindowGroup as RuntimeGroup, WorkspaceTree as RuntimeTree,
-};
-use ui::widget::AppKind as UiAppKind;
 
 /// `is_folder` collapses the concept's `'folder' | 'file'` drag data
 /// to a bool, since the shell only branches on that one bit.
@@ -166,71 +161,10 @@ pub fn apply_workspace_drop_at_from_path(
     apply_workspace_drop_at(tree, item, strip_id, group_id)
 }
 
-/// Folds `"Editor"` (and every other `Other` kind) onto
-/// `UiAppKind::Settings` as a temporary parking spot until an `Editor`
-/// variant lands on the UI enum.
-fn state_kind_to_ui(kind: &AppKind) -> UiAppKind {
-    match kind {
-        AppKind::Terminal => UiAppKind::Terminal,
-        AppKind::FileExplorer => UiAppKind::Files,
-        AppKind::Browser => UiAppKind::Browser,
-        AppKind::Settings | AppKind::Other(_) => UiAppKind::Settings,
-    }
-}
-
-/// Appends a Stub tile, not a live `Box<dyn AppWidget>` — materialising
-/// one synchronously could spawn subprocesses; content hydrates on focus.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "public API called across the shell/compositor boundary; changing the signature \
-              would require editing call sites outside this file's scope"
-)]
-pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -> Option<u64> {
-    let kind = decide_app_for_drop(&item);
-    let label = tab_label_for(&item, &kind);
-    let ui_kind = state_kind_to_ui(&kind);
-    let tab = RuntimeTab::new(
-        &label,
-        RuntimeTile::Stub {
-            kind: ui_kind,
-            label: label.clone(),
-        },
-    );
-    let tab_id = tab.id;
-
-    let ws = tree.workspaces.iter_mut().find(|w| w.id == tree.active)?;
-    let strip = ws.strips.first_mut()?;
-    if let Some(group) = strip.window_groups.first_mut() {
-        group.tabs.push(tab);
-        group.active_tab = tab_id;
-    } else {
-        let group = RuntimeGroup::with_tabs(vec![tab], WindowWidth::Normal);
-        strip.window_groups.push(group);
-        let Some(group) = strip.window_groups.last_mut() else {
-            // Unreachable — the line above just pushed one — but a
-            // dropped tab that silently doesn't focus is a far better
-            // failure than panicking this panic=abort process.
-            return Some(tab_id);
-        };
-        group.active_tab = tab_id;
-    }
-    Some(tab_id)
-}
-
-pub fn apply_runtime_workspace_drop_from_path(tree: &mut RuntimeTree, path: &Path) -> Option<u64> {
-    let item = DraggedItem::from_path(path)?;
-    apply_runtime_workspace_drop(tree, item)
-}
-
 pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
     apply_workspace_drop(tree, item)
 }
-
-/// Silence the unused-import warning when `RuntimeStrip` is only used
-/// in doctests / docs (above). Keeps the symbol available so future
-/// reworks of the module don't have to re-add the import.
-fn _use_runtime_strip(_s: &RuntimeStrip) {}
 
 /// Pick a tab label for a dropped item: folders get "Files — <name>",
 /// code files keep their filename, others get "Files — <name>" too.
@@ -354,72 +288,6 @@ mod tests {
         apply_workspace_drop(&mut tree, DraggedItem::file("main.tsx")).unwrap();
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.tabs.last().unwrap().title, "main.tsx");
-    }
-
-    fn runtime_tree_with_empty_workspace() -> RuntimeTree {
-        let group = RuntimeGroup::with_tabs(vec![], WindowWidth::Normal);
-        let strip = RuntimeStrip::new("Main", vec![group]);
-        let ws = crate::shell::tile::Workspace::new("Home", vec![strip]);
-        RuntimeTree::new(vec![ws])
-    }
-
-    #[test]
-    fn runtime_drop_appends_stub_tab_to_active_workspace() {
-        let mut tree = runtime_tree_with_empty_workspace();
-        let tab_id =
-            apply_runtime_workspace_drop(&mut tree, DraggedItem::file("main.ts")).expect("tab_id");
-        let ws = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == tree.active)
-            .unwrap();
-        let group = &ws.strips[0].window_groups[0];
-        assert_eq!(group.tabs.len(), 1);
-        assert_eq!(group.tabs[0].id, tab_id);
-        assert_eq!(group.tabs[0].title, "main.ts");
-        // Editor-routed drops map onto UiAppKind::Settings today (see
-        // `state_kind_to_ui`'s doc-comment for the rationale).
-        match &group.tabs[0].tile {
-            RuntimeTile::Stub { kind, .. } => {
-                assert_eq!(*kind, UiAppKind::Settings);
-            }
-            RuntimeTile::App(_) => panic!("expected Stub tile"),
-        }
-    }
-
-    #[test]
-    fn runtime_drop_from_path_routes_through_the_same_logic() {
-        let mut tree = runtime_tree_with_empty_workspace();
-        // Use a nonexistent path — is_dir() → false, so it's classified
-        // as a file. Extension .md routes to Editor.
-        let path = std::path::PathBuf::from("/no/such/file.md");
-        let tab_id = apply_runtime_workspace_drop_from_path(&mut tree, &path).expect("tab_id");
-        let ws = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == tree.active)
-            .unwrap();
-        let group = &ws.strips[0].window_groups[0];
-        assert_eq!(group.active_tab, tab_id);
-        assert_eq!(group.tabs[0].title, "file.md");
-    }
-
-    #[test]
-    fn runtime_drop_creates_group_when_strip_is_empty() {
-        let strip = RuntimeStrip::new("Main", vec![]);
-        let ws = crate::shell::tile::Workspace::new("Home", vec![strip]);
-        let mut tree = RuntimeTree::new(vec![ws]);
-        let tab_id =
-            apply_runtime_workspace_drop(&mut tree, DraggedItem::folder("src")).expect("tab_id");
-        let ws = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == tree.active)
-            .unwrap();
-        let strip = &ws.strips[0];
-        assert_eq!(strip.window_groups.len(), 1);
-        assert_eq!(strip.window_groups[0].active_tab, tab_id);
-        assert_eq!(strip.window_groups[0].tabs[0].title, "Files — src");
     }
 
     #[test]
