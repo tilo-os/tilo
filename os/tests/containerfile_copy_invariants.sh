@@ -20,6 +20,7 @@ containerfile="$repo/os/Containerfile"
 # root-owned device-key initializer, the off-critical-path TPM hardening timer,
 # the authenticated Chrony policy used by the image-trust freshness floor, the
 # zero-delay NetworkManager timer that keeps networking off the login chain, and
+# the packaged-app external AT-SPI client and installed-app accessibility gate,
 # the build-only residual OpenSSL ABI package gate (removed after it runs).
 # Rustls now compiles the fixed CA-bundle path
 # into its loader, so the former systemd environment override is absent. Sorting
@@ -28,7 +29,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=de30ab529a501ab525c6bb80cf4c15caa9222546a27d61f7da664cc654e62533
+expected_contract=1bc28394faf141ebe72ed58b8cbd31545301f59f34bf791e4a3ef5c6e4ed31d7
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -53,10 +54,11 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 ')"
 # The existing image used 123; provider selection adds ARG, COPY and its
 # native dynamic-linker validation RUN. Public trust adds four ARGs, two
-# additional COPYs and a validation RUN before initramfs generation.
-# Keep the current 134-instruction bound exact and reviewed.
-[ "$instructions" -le 134 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 134)" >&2
+# additional COPYs and a validation RUN before initramfs generation. External
+# AT-SPI validation adds two narrowly scoped COPY instructions.
+# Keep the current 136-instruction bound exact and reviewed.
+[ "$instructions" -le 136 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 136)" >&2
   exit 1
 }
 
