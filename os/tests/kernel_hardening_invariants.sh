@@ -433,6 +433,8 @@ done
 # facility. It remains mandatory in the x86 fragment only.
 grep -Fqx 'CONFIG_SCHED_MC_PRIO=y' "$x86_kernel_config" \
   || bad 'x86 preferred-core scheduler support is not pinned'
+grep -Fqx 'CONFIG_INTEL_HFI_THERMAL=y' "$x86_kernel_config" \
+  || bad 'Intel hybrid-core hardware feedback is not pinned'
 for removed in CONFIG_PARPORT=n CONFIG_BLK_DEV_FD=n CONFIG_PCCARD=n; do
   grep -Fqx "$removed" "$x86_kernel_config" \
     || bad "obsolete x86 hardware surface is not disabled: $removed"
