@@ -60,8 +60,10 @@ else
   fail=1
 fi
 
-if grep -Fq 'group: snapshot-rpms-${{ github.ref }}' "$rpm_snapshot_workflow" \
-   && grep -Fq 'cancel-in-progress: false' "$rpm_snapshot_workflow" \
+if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.ref }}" "$rpm_snapshot_workflow" \
+   && grep -Fq "cancel-in-progress: \${{ github.event_name != 'workflow_dispatch' }}" "$rpm_snapshot_workflow" \
+   && grep -Fq 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' \
+     "$rpm_snapshot_workflow" \
    && grep -Fq 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
      "$rpm_snapshot_workflow" \
    && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow"; then
