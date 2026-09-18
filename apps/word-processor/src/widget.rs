@@ -162,9 +162,15 @@ struct ChromeColors {
     bar: Color,
     /// A slightly recessed surface for input fields / value boxes. `surfaces.base`.
     field: Color,
-    /// A raised "chip" tone for inactive buttons/chips. Between base and raised.
+    /// The face of an inactive button / chip. `surfaces.raised` — the same
+    /// tone as the bar it sits on; what makes it read as a control is the
+    /// derived rest edge `ui::surface::card` paints from it (HIG §9.5), not
+    /// a ramp slot (`neutral[2]` sat within a shade of the dark bar and every
+    /// chip vanished at 1×).
     chip: Color,
-    /// Hairline separators, borders, panel edges, the scrollbar track tone.
+    /// Hairline separators, bar rules and panel edges: derived against the
+    /// bar (`edge_on(bar)`), never the declared `border_standard`, which on
+    /// the dark preset is three shades from `raised` and invisible.
     border: Color,
     /// Primary chrome ink (button labels, panel headings).
     text: Color,
@@ -200,18 +206,29 @@ impl ChromeColors {
         } else {
             PAPER_DEFAULT
         };
+        let bar = c.surfaces.raised;
         Self {
             canvas: c.surfaces.base,
-            bar: c.surfaces.raised,
+            bar,
             field: c.surfaces.base,
-            chip: c.neutral[2],
-            border: c.border_standard,
+            chip: bar,
+            border: ui::surface::edge_on(bar),
             text: c.text_primary,
             text_dim: c.text_dim,
             accent: theme.accent_primary,
             accent_faint: with_alpha(theme.accent_primary, 0x70),
-            on_accent: Color::WHITE,
-            scrollbar: c.neutral[4],
+            // Measured against the accent rather than assumed white, so a
+            // bright OS accent still carries a legible label.
+            on_accent: c.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST),
+            // The thumb is a draggable control on the canvas: the dim ink,
+            // stepped until it clears the non-text contrast floor on the
+            // desk (a ramp slot did not track the palette; a hairline tone
+            // fell short of 3:1 on paper).
+            scrollbar: c.ink_on(
+                c.surfaces.base,
+                c.text_dim,
+                ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            ),
             paper,
             paper_elevation: theme.tokens.elevation.e3,
         }
@@ -284,6 +301,7 @@ struct ChromeTokens {
     s1: f64,
     s2: f64,
     s3: f64,
+    radius_sm: f64,
     radius_md: f64,
 }
 
@@ -295,10 +313,17 @@ impl ChromeTokens {
             s1: f64::from(sp.s1),
             s2: f64::from(sp.s2),
             s3: f64::from(sp.s3),
+            radius_sm: f64::from(radii.sm),
             radius_md: f64::from(radii.md),
         }
     }
 }
+
+/// Chrome type roles of the comment-thread panel (unscaled; the renderer
+/// applies the accessibility scale once).
+const THREAD_TITLE_FONT: f32 = 14.0;
+const THREAD_ROOT_FONT: f32 = 12.0;
+const THREAD_REPLY_FONT: f32 = 11.0;
 
 impl Default for ChromeTokens {
     fn default() -> Self {
@@ -313,8 +338,9 @@ const PANEL_CAPTION_FONT: f32 = 10.5;
 const PANEL_HINT_FONT: f32 = 11.0;
 const PANEL_NAME_FONT: f32 = 18.0;
 const PANEL_DIMS_FONT: f32 = 15.0;
-/// Inset of the styles panel's content column from its edges.
-const PANEL_PAD: f64 = 14.0;
+/// Inset of the styles panel's content column from its edges: the Panel
+/// section padding (HIG §7b `s4`), not an off-scale 14 px.
+const PANEL_PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
 /// Classic 1× panel geometry, kept as the floors of [`PanelMetrics`]: a 1×
 /// panel keeps this rhythm, a larger text scale grows every row from its
 /// measured line box instead of painting captions under the control below.
@@ -338,8 +364,11 @@ const PANEL_IMAGE_BUTTON_MIN_W: f64 = 48.0;
 const PANEL_IMAGE_BUTTON_MAX_W: f64 = 92.0;
 /// Deliberately off-scale seams: the 6 px between panel rows / chips and
 /// the 2 px between a stepper and its value box.
-const PANEL_ROW_SEAM: f64 = 6.0;
-const PANEL_STEP_SEAM: f64 = 2.0;
+/// Seams on the base grid (HIG §7b): control rows and the buttons in one
+/// row are siblings (`s2`); the cells of a stepper (`−` · value · `+`) read
+/// as one group but still keep a token step (`s1`), never a 2 px touch.
+const PANEL_ROW_SEAM: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+const PANEL_STEP_SEAM: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 
 /// Measured line boxes of the styles panel's type roles plus the theme
 /// tokens; every row, chip and label slot in the panel derives from these,
@@ -4132,15 +4161,8 @@ impl WordProcessorWidget {
             let chip_h = layout_chip_h(f64::from(label_height), tk);
             let r = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
             let active = self.layout_mode == mode;
-            let bg = if active { cc.accent } else { cc.chip };
             let fg = if active { cc.on_accent } else { cc.text_dim };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bg,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, tk.radius_md),
-            );
+            chip_face(scene, transform, &cc, r, tk.radius_md, active);
             tr.draw_text(
                 scene,
                 &label,
@@ -4685,10 +4707,13 @@ impl WordProcessorWidget {
                     &vello::kurbo::RoundedRect::from_rect(r, 4.0),
                 );
                 if *c == st.color {
+                    // The selection ring is the chrome ink: it contrasts the
+                    // bar on both palettes, where a literal white ring
+                    // vanished against a white panel.
                     ctx.scene.stroke(
                         &vello::kurbo::Stroke::new(2.0),
                         ctx.transform,
-                        Color::WHITE,
+                        ctx.cc.text,
                         None,
                         &vello::kurbo::RoundedRect::from_rect(r, 4.0),
                     );
@@ -4701,20 +4726,9 @@ impl WordProcessorWidget {
             // above it, not under the label column.
             let chip = Rect::new(sx0, y, sx0 + sh, y + sh);
             let cur = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                cur,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(chip, 4.0),
-            );
-            ctx.scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                ctx.transform,
-                ctx.cc.border,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(chip, 4.0),
-            );
+            // An authored colour gets an edge measured against itself, so a
+            // swatch matching the bar still reads as a chip.
+            ui::surface::card(ctx.scene, ctx.transform, chip, 4.0, cur);
             let btn = Rect::new(chip.x1 + pm.tk.s2, y, right, y + sh);
             draw_btn(
                 ctx.scene,
@@ -5029,25 +5043,18 @@ impl WordProcessorWidget {
         // Value box.
         let editing = self.editing_field == Some(field);
         let scrubbing = self.scrub.is_some_and(|s| s.field == field);
-        let border = if editing || scrubbing {
-            cc.accent
-        } else {
-            cc.border
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.field,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(vb, 5.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(if editing || scrubbing { 1.5 } else { 1.0 }),
-            transform,
-            border,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(vb, 5.0),
-        );
+        // A field at rest has its derived edge; an edit / scrub in flight
+        // takes the accent ring instead (state, not a second edge).
+        ui::surface::card(scene, transform, vb, 5.0, cc.field);
+        if editing || scrubbing {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                cc.accent,
+                None,
+                &ui::surface::edge_outline(vb, 5.0),
+            );
+        }
         let text = if editing {
             format!("{}_", self.edit_buf)
         } else {
@@ -5197,7 +5204,9 @@ impl WordProcessorWidget {
     }
 }
 
-/// A horizontal 1px divider line inside the panel.
+/// A horizontal 1px divider line inside the panel: the bar's derived edge
+/// (`ui::surface::separator`) on the pixel row at `y`. The callers already
+/// inset it by the panel padding, so it never runs into the panel edge.
 fn panel_divider(
     scene: &mut Scene,
     transform: Affine,
@@ -5206,13 +5215,46 @@ fn panel_divider(
     x1: f64,
     y: f64,
 ) {
+    ui::surface::separator(scene, transform, x0, x1, y + 0.5, 0.0, cc.bar);
+}
+
+/// A floating panel (HIG §9.1 Panel role: the comment thread, the colour
+/// picker and swatch popovers): elevation, the panel ground and the panel
+/// border, all derived from the theme. One recipe for the crate — the
+/// toolkit exposes the three parts but not yet the composition.
+pub(crate) fn paint_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, radius: f64) {
+    ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
     scene.fill(
         Fill::NonZero,
         transform,
-        cc.border,
+        ui::chrome::panel_ground(theme),
         None,
-        &Rect::new(x0, y, x1, y + 1.0),
+        &vello::kurbo::RoundedRect::from_rect(rect, radius),
     );
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        ui::chrome::panel_border(theme),
+        None,
+        &ui::surface::edge_outline(rect, radius),
+    );
+}
+
+/// The face of a chrome chip / button (HIG §9.5 "Button Neutral"): at rest
+/// the chip tone with its derived edge (`ui::surface::card`), active the
+/// accent fill with no edge — selected accent never carries a hairline.
+fn chip_face(scene: &mut Scene, transform: Affine, cc: &ChromeColors, r: Rect, radius: f64, active: bool) {
+    if active {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            cc.accent,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(r, radius),
+        );
+    } else {
+        ui::surface::card(scene, transform, r, radius, cc.chip);
+    }
 }
 
 /// A panel chip / button: rounded rect + label. `center` centers the label
@@ -5228,15 +5270,8 @@ fn draw_btn(
     active: bool,
     center: bool,
 ) {
-    let bg = if active { cc.accent } else { cc.chip };
     let fg = if active { cc.on_accent } else { cc.text };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        bg,
-        None,
-        &vello::kurbo::RoundedRect::from_rect(r, 6.0),
-    );
+    chip_face(scene, transform, cc, r, 6.0, active);
     // Centre on the measured label box, not a per-glyph estimate: a scaled
     // or localised label lands on the button's centre line either way.
     let (label_w, label_h) = tr.measure(label, PANEL_LABEL_FONT, None);
@@ -6007,6 +6042,7 @@ impl WordProcessorWidget {
                 scene,
                 transform,
                 text_renderer,
+                theme,
                 RecoveryPalette {
                     border: cc.border,
                     chip: cc.chip,
@@ -9901,7 +9937,6 @@ impl Widget for WordProcessorWidget {
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         self.draw_comment_thread(scene, transform, text_renderer, theme, presence);
-        let cc = self.chrome;
         self.color_picker.draw(
             crate::style_color_picker::DrawArgs {
                 scene,
@@ -9912,8 +9947,6 @@ impl Widget for WordProcessorWidget {
             },
             self.rect,
             self.panel_rect,
-            cc.bar,
-            cc.border,
         );
         self.unsaved_changes
             .draw(scene, transform, text_renderer, theme, self.rect);
@@ -10237,32 +10270,35 @@ impl WordProcessorWidget {
             return;
         };
         let cc = self.chrome;
+        let tk = self.tokens;
+        let pm = self.panel_metrics;
+        // One rhythm: `s3` panel padding and between sibling blocks, `s2`
+        // between related rows (title → root, bubble → bubble), `s1` inside
+        // a bubble. The panel floats `s3` off the window edge and `s2` above
+        // the layout bar, so it never sits on either.
+        let pad = tk.s3;
         let width = self.rect.width().clamp(260.0, 372.0);
         let height = (self.rect.height() * 0.48).clamp(238.0, 360.0);
+        let bottom = self.rect.y1 - self.layout_bar_height - tk.s2;
         let panel = Rect::new(
-            self.rect.x1 - width - 12.0,
-            self.rect.y1 - height - 38.0,
-            self.rect.x1 - 12.0,
-            self.rect.y1 - 38.0,
+            self.rect.x1 - width - tk.s3,
+            bottom - height,
+            self.rect.x1 - tk.s3,
+            bottom,
         );
         self.thread_panel = panel;
-        let rounded = vello::kurbo::RoundedRect::from_rect(panel, 8.0);
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &rounded);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            cc.border,
-            None,
-            &rounded,
-        );
+        paint_panel(scene, transform, theme, panel, tk.radius_md);
+        let title = t("review-thread");
+        let (_, title_h) = tr.measure(&title, THREAD_TITLE_FONT, None);
         tr.draw_text(
             scene,
-            &t("review-thread"),
-            14.0,
+            &title,
+            THREAD_TITLE_FONT,
             cc.text,
-            transform * Affine::translate((panel.x0 + 12.0, panel.y0 + 12.0)),
+            transform * Affine::translate((panel.x0 + pad, panel.y0 + pad)),
             None,
         );
+        let root_top = panel.y0 + pad + f64::from(title_h) + tk.s2;
         let root = comment
             .blocks
             .iter()
@@ -10273,8 +10309,8 @@ impl WordProcessorWidget {
             &mut tr.font_system,
             &[RichSpan::new(format!("{}  {}", comment.author, root))],
             false,
-            12.0,
-            num::f32_of_f64(width - 24.0),
+            THREAD_ROOT_FONT,
+            num::f32_of_f64(width - 2.0 * pad),
             TextAlign::Left,
             FontFamily::Sans,
             vec![],
@@ -10284,10 +10320,17 @@ impl WordProcessorWidget {
         tr.draw_rich(
             scene,
             &root_layout,
-            transform * Affine::translate((panel.x0 + 12.0, panel.y0 + 39.0)),
+            transform * Affine::translate((panel.x0 + pad, root_top)),
             cc.text,
         );
-        let mut y = panel.y0 + 48.0 + f64::from(root_layout.height());
+        // Footer: the reply field `s3` above the action row, both `pad` in
+        // from the panel; replies stop `s3` above the field.
+        let btn_h = pm.wide_control_h();
+        let field_h = pm.wide_control_h() + tk.s1;
+        let btn_top = panel.y1 - pad - btn_h;
+        let field_top = btn_top - tk.s3 - field_h;
+        let replies_bottom = field_top - tk.s3;
+        let mut y = root_top + f64::from(root_layout.height()) + tk.s3;
         for reply in comment.replies.iter().take(3) {
             let text = reply
                 .blocks
@@ -10295,43 +10338,41 @@ impl WordProcessorWidget {
                 .map(|block| block.text.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
+            // A reply bubble is indented `s2` under the root and pads its
+            // text `s2` horizontally, `s1` vertically.
+            let bubble_x0 = panel.x0 + pad + tk.s2;
+            let bubble_x1 = panel.x1 - pad;
             let layout = RichTextLayout::shape(
                 &mut tr.font_system,
                 &[RichSpan::new(format!("{}  {}", reply.author, text))],
                 false,
-                11.0,
-                num::f32_of_f64(width - 36.0),
+                THREAD_REPLY_FONT,
+                num::f32_of_f64(bubble_x1 - bubble_x0 - 2.0 * tk.s2),
                 TextAlign::Left,
                 FontFamily::Sans,
                 vec![],
                 vec![],
                 1.0,
             );
-            let h = f64::from(layout.height()) + 8.0;
-            if y + h > panel.y1 - 96.0 {
+            let h = f64::from(layout.height()) + 2.0 * tk.s1;
+            if y + h > replies_bottom {
                 break;
             }
-            let bubble = Rect::new(panel.x0 + 18.0, y, panel.x1 - 12.0, y + h);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                cc.chip,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(bubble, 5.0),
-            );
+            let bubble = Rect::new(bubble_x0, y, bubble_x1, y + h);
+            ui::surface::card(scene, transform, bubble, tk.radius_sm, cc.chip);
             tr.draw_rich(
                 scene,
                 &layout,
-                transform * Affine::translate((bubble.x0 + 7.0, bubble.y0 + 4.0)),
+                transform * Affine::translate((bubble.x0 + tk.s2, bubble.y0 + tk.s1)),
                 cc.text,
             );
-            y += h + 5.0;
+            y += h + tk.s2;
         }
         let field = Rect::new(
-            panel.x0 + 12.0,
-            panel.y1 - 82.0,
-            panel.x1 - 12.0,
-            panel.y1 - 52.0,
+            panel.x0 + pad,
+            field_top,
+            panel.x1 - pad,
+            field_top + field_h,
         );
         self.thread_reply
             .set_placeholder(&t("review-reply-placeholder"));
@@ -10344,25 +10385,26 @@ impl WordProcessorWidget {
             theme,
             presence,
         );
-        self.thread_cancel = Rect::new(
-            panel.x1 - 210.0,
-            panel.y1 - 40.0,
-            panel.x1 - 118.0,
-            panel.y1 - 12.0,
-        );
-        self.thread_submit = Rect::new(
-            panel.x1 - 110.0,
-            panel.y1 - 40.0,
-            panel.x1 - 12.0,
-            panel.y1 - 12.0,
-        );
+        // Action row: each button is its measured label plus `s3` each side,
+        // trailing-aligned, `s2` apart (siblings of one action group).
+        let cancel_label = t("review-cancel-reply");
+        let submit_label = t("review-send-reply");
+        let btn_w = |tr: &mut TextRenderer, label: &str| {
+            f64::from(tr.measure(label, PANEL_LABEL_FONT, None).0) + 2.0 * tk.s3
+        };
+        let submit_w = btn_w(tr, &submit_label);
+        let cancel_w = btn_w(tr, &cancel_label);
+        let submit_x1 = panel.x1 - pad;
+        self.thread_submit = Rect::new(submit_x1 - submit_w, btn_top, submit_x1, btn_top + btn_h);
+        let cancel_x1 = self.thread_submit.x0 - tk.s2;
+        self.thread_cancel = Rect::new(cancel_x1 - cancel_w, btn_top, cancel_x1, btn_top + btn_h);
         draw_btn(
             scene,
             transform,
             tr,
             &cc,
             self.thread_cancel,
-            &t("review-cancel-reply"),
+            &cancel_label,
             false,
             true,
         );
@@ -10372,7 +10414,7 @@ impl WordProcessorWidget {
             tr,
             &cc,
             self.thread_submit,
-            &t("review-send-reply"),
+            &submit_label,
             true,
             true,
         );
@@ -12344,18 +12386,12 @@ impl WordProcessorWidget {
 
         // Neutral / default swatch: surface-toned square with an "A", clears colour.
         let nr = Rect::new(x, y0, x + sw, y0 + sw);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            self.chrome.chip,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(nr, 4.0),
-        );
+        ui::surface::card(scene, transform, nr, 4.0, self.chrome.chip);
         if cur.is_none() {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
-                Color::WHITE,
+                self.chrome.text,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(nr, 4.0),
             );
@@ -12385,7 +12421,7 @@ impl WordProcessorWidget {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
                     transform,
-                    Color::WHITE,
+                    self.chrome.text,
                     None,
                     &vello::kurbo::RoundedRect::from_rect(r, 4.0),
                 );
@@ -12425,18 +12461,12 @@ impl WordProcessorWidget {
 
         // Neutral / "no highlight" swatch: surface-toned square with a "▱" hint.
         let nr = Rect::new(x, y0, x + sw, y0 + sw);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            self.chrome.chip,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(nr, 4.0),
-        );
+        ui::surface::card(scene, transform, nr, 4.0, self.chrome.chip);
         if cur.is_none() {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
-                Color::WHITE,
+                self.chrome.text,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(nr, 4.0),
             );
@@ -12466,7 +12496,7 @@ impl WordProcessorWidget {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
                     transform,
-                    Color::WHITE,
+                    self.chrome.text,
                     None,
                     &vello::kurbo::RoundedRect::from_rect(r, 4.0),
                 );
@@ -12825,7 +12855,34 @@ mod tests {
             let c = &theme.tokens.colors;
             assert_eq!(cc.canvas, c.surfaces.base, "canvas = surfaces.base");
             assert_eq!(cc.bar, c.surfaces.raised, "bar = surfaces.raised");
-            assert_eq!(cc.border, c.border_standard, "border = border_standard");
+            // Edges are derived against the bar they sit on (HIG §9.5), so
+            // they register on every preset — the declared `border_standard`
+            // is three shades from the dark `raised` and vanished there.
+            assert_eq!(
+                cc.border,
+                ui::surface::edge_on(c.surfaces.raised),
+                "border = edge_on(bar)"
+            );
+            assert_eq!(cc.chip, c.surfaces.raised, "chip face = surfaces.raised");
+            for (name, edge, ground) in [
+                ("border", cc.border, cc.bar),
+                ("chip edge", ui::surface::edge_on(cc.chip), cc.chip),
+            ] {
+                let moved = ui::surface::edge_delta(edge, ground);
+                assert!(
+                    moved >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{name} on {} moved luminance only {moved:.4}",
+                    theme.name
+                );
+            }
+            // The scrollbar thumb is a control, not a hairline: it clears the
+            // non-text contrast floor against the desk on every preset.
+            let thumb_contrast = ui::a11y::contrast_ratio(cc.scrollbar, cc.canvas);
+            assert!(
+                thumb_contrast >= ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "scrollbar thumb on {} measures {thumb_contrast:.2}:1",
+                theme.name
+            );
             assert_eq!(cc.text, c.text_primary, "text = text_primary");
             assert_eq!(cc.text_dim, c.text_dim, "text_dim = text_dim");
             assert_eq!(cc.accent, theme.accent_primary, "accent = accent_primary");

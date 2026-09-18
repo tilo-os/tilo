@@ -2,14 +2,12 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 
 use ui::icons::Icon;
 use ui::theme::Theme;
 
 use crate::app::{ButtonKind, Hit, UiButton};
 use crate::chrome;
-use crate::render;
 use crate::strings::tr;
 
 /// Gap between insert pills and the overflow menu's panel padding (the `s2`
@@ -170,24 +168,9 @@ impl ToolbarTools {
         mut draw_button: impl FnMut(&mut Scene, &UiButton),
     ) {
         let Some(bg) = layout.menu_bg else { return };
-        let colors = &theme.tokens.colors;
-        let shadow = bg + vello::kurbo::Vec2::new(0.0, 4.0);
-        chrome::fill_rrect(
-            scene,
-            transform,
-            shadow.inflate(2.0, 2.0),
-            12.0,
-            render::with_alpha(Color::BLACK, 90),
-        );
-        chrome::fill_rrect(scene, transform, bg, 10.0, colors.surfaces.raised);
-        chrome::stroke_rrect(
-            scene,
-            transform,
-            bg,
-            10.0,
-            render::with_alpha(colors.text_primary, 48),
-            1.0,
-        );
+        // The overflow menu is a floating panel (HIG §9.1): panel ground,
+        // panel border, elevation.
+        chrome::panel(scene, transform, theme, bg, f64::from(theme.tokens.radii.md));
         for button in &layout.menu_buttons {
             draw_button(scene, button);
         }
