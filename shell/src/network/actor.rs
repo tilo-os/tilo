@@ -246,6 +246,11 @@ pub enum NetCmd {
         total_bytes: u64,
         file: std::fs::File,
     },
+    /// Stop only the active stream with this exact transport peer/id binding.
+    CancelPersonalMedia {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+    },
     PublishNearbyTransfer {
         ws: WorkspaceId,
         user_public_key: [u8; 32],
@@ -345,6 +350,7 @@ pub enum PersonalMediaTransferStatus {
     Progress,
     Completed,
     Failed,
+    Cancelled,
 }
 
 /// Why the transport stopped treating a peer as live on a workspace topic.
@@ -398,6 +404,19 @@ enum InternalEvent {
     PersonalFabricClosed {
         peer: EndpointId,
         connection_incarnation: u64,
+    },
+    PersonalMediaProgress {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        generation: u64,
+        sent_bytes: u64,
+    },
+    PersonalMediaFinished {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        generation: u64,
+        outcome: PersonalMediaStreamOutcome,
+        sent_bytes: u64,
     },
     Closed {
         ws: WorkspaceId,
@@ -613,6 +632,35 @@ struct ActorState {
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
+    active_personal_media: HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
+    next_personal_media_generation: u64,
+}
+
+struct ActivePersonalMediaTransfer {
+    generation: u64,
+    workspace: WorkspaceId,
+    total_bytes: u64,
+    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersonalMediaStreamOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+fn take_personal_media_generation(
+    active: &mut HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
+    key: (EndpointId, [u8; 16]),
+    generation: u64,
+) -> Option<ActivePersonalMediaTransfer> {
+    active
+        .get(&key)
+        .is_some_and(|entry| entry.generation == generation)
+        .then(|| active.remove(&key))
+        .flatten()
 }
 
 #[derive(Clone, Copy)]
@@ -697,6 +745,7 @@ impl ActorState {
             return false;
         }
         self.peers_seen.remove(&(ws, peer));
+        self.cancel_personal_media_route(ws, peer);
         revoke_personal_fabric_ingress(&mut self.personal_fabric_ingress, ws, epoch);
         if let Some(connection) = self.personal_fabric_connections.remove(&peer) {
             connection.close(0_u32.into(), b"membership departed");
@@ -822,6 +871,12 @@ impl ActorState {
                     total_bytes,
                     file,
                 );
+            }
+            Some(NetCmd::CancelPersonalMedia {
+                target,
+                transfer_id,
+            }) => {
+                self.cancel_personal_media((target, transfer_id));
             }
             Some(NetCmd::PublishNearbyTransfer {
                 ws,
@@ -1085,7 +1140,7 @@ impl ActorState {
         reason = "the arguments are the complete authenticated transfer manifest plus its local-only file handle"
     )]
     fn publish_personal_media(
-        &self,
+        &mut self,
         ws: WorkspaceId,
         user_public_key: [u8; 32],
         target: EndpointId,
@@ -1121,11 +1176,30 @@ impl ActorState {
             report(PersonalMediaTransferStatus::Failed, 0);
             return;
         };
+        let key = (target, transfer_id);
+        if self.active_personal_media.contains_key(&key) {
+            tracing::warn!(peer = %target, "refusing duplicate active personal media transfer");
+            return;
+        }
+        self.next_personal_media_generation = self.next_personal_media_generation.wrapping_add(1);
+        let generation = self.next_personal_media_generation;
+        let sent_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (cancel, cancel_rx) = tokio::sync::watch::channel(false);
+        self.active_personal_media.insert(
+            key,
+            ActivePersonalMediaTransfer {
+                generation,
+                workspace: ws,
+                total_bytes,
+                sent_bytes: std::sync::Arc::clone(&sent_bytes),
+                cancel,
+            },
+        );
         let endpoint = self.endpoint.clone();
+        let internal = self.internal_tx.clone();
         report(PersonalMediaTransferStatus::Started, 0);
         tokio::spawn(async move {
-            let sent_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let result = stream_personal_media(
+            let outcome = stream_personal_media(
                 endpoint,
                 addr,
                 ws,
@@ -1134,29 +1208,72 @@ impl ActorState {
                 file_name,
                 total_bytes,
                 file,
-                progress.clone(),
+                internal.clone(),
                 target,
                 std::sync::Arc::clone(&sent_bytes),
+                generation,
+                cancel_rx,
             )
             .await;
-            let status = if result.is_ok() {
-                PersonalMediaTransferStatus::Completed
-            } else {
-                tracing::warn!(peer = %target, "personal media transfer did not complete");
-                PersonalMediaTransferStatus::Failed
-            };
-            if let Some(progress) = progress {
-                let _ = progress
-                    .send(NetEvent::PersonalMediaTransfer {
-                        target,
-                        transfer_id,
-                        sent_bytes: sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
-                        total_bytes,
-                        status,
-                    })
-                    .await;
-            }
+            let _ = internal
+                .send(InternalEvent::PersonalMediaFinished {
+                    target,
+                    transfer_id,
+                    generation,
+                    outcome,
+                    sent_bytes: sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                })
+                .await;
         });
+    }
+
+    fn report_personal_media(
+        &self,
+        workspace: WorkspaceId,
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        sent_bytes: u64,
+        total_bytes: u64,
+        status: PersonalMediaTransferStatus,
+    ) {
+        if let Some(progress) = self.subscribers.get(&workspace) {
+            let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
+                target,
+                transfer_id,
+                sent_bytes: sent_bytes.min(total_bytes),
+                total_bytes,
+                status,
+            });
+        }
+    }
+
+    fn cancel_personal_media(&mut self, key: (EndpointId, [u8; 16])) -> bool {
+        let Some(active) = self.active_personal_media.remove(&key) else {
+            return false;
+        };
+        let _ = active.cancel.send(true);
+        self.report_personal_media(
+            active.workspace,
+            key.0,
+            key.1,
+            active.sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
+            active.total_bytes,
+            PersonalMediaTransferStatus::Cancelled,
+        );
+        true
+    }
+
+    fn cancel_personal_media_route(&mut self, workspace: WorkspaceId, target: EndpointId) {
+        let keys = self
+            .active_personal_media
+            .iter()
+            .filter_map(|(key, active)| {
+                (key.0 == target && active.workspace == workspace).then_some(*key)
+            })
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.cancel_personal_media(key);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1468,6 +1585,58 @@ impl ActorState {
             }) => {
                 self.personal_fabric_ingress
                     .remove(&(peer, connection_incarnation));
+            }
+            Some(InternalEvent::PersonalMediaProgress {
+                target,
+                transfer_id,
+                generation,
+                sent_bytes,
+            }) => {
+                let key = (target, transfer_id);
+                if let Some(active) = self
+                    .active_personal_media
+                    .get(&key)
+                    .filter(|active| active.generation == generation)
+                {
+                    self.report_personal_media(
+                        active.workspace,
+                        target,
+                        transfer_id,
+                        sent_bytes,
+                        active.total_bytes,
+                        PersonalMediaTransferStatus::Progress,
+                    );
+                }
+            }
+            Some(InternalEvent::PersonalMediaFinished {
+                target,
+                transfer_id,
+                generation,
+                outcome,
+                sent_bytes,
+            }) => {
+                let key = (target, transfer_id);
+                if let Some(active) =
+                    take_personal_media_generation(&mut self.active_personal_media, key, generation)
+                {
+                    let status = match outcome {
+                        PersonalMediaStreamOutcome::Completed => {
+                            PersonalMediaTransferStatus::Completed
+                        }
+                        PersonalMediaStreamOutcome::Failed => PersonalMediaTransferStatus::Failed,
+                        PersonalMediaStreamOutcome::Cancelled => {
+                            PersonalMediaTransferStatus::Cancelled
+                        }
+                    };
+                    self.report_personal_media(
+                        active.workspace,
+                        target,
+                        transfer_id,
+                        sent_bytes,
+                        active.total_bytes,
+                        status,
+                    );
+                }
             }
             None => return false,
         }
@@ -1925,20 +2094,26 @@ async fn stream_personal_media(
     file_name: String,
     total_bytes: u64,
     file: std::fs::File,
-    progress: Option<mpsc::Sender<NetEvent>>,
+    internal: mpsc::Sender<InternalEvent>,
     target: EndpointId,
     sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
-) -> Result<(), ()> {
+    generation: u64,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> PersonalMediaStreamOutcome {
     use tokio::io::AsyncReadExt as _;
 
-    let connection = tokio::time::timeout(
+    let connect = tokio::time::timeout(
         Duration::from_secs(10),
         endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
-    )
-    .await
-    .map_err(|_| ())?
-    .map_err(|_| ())?;
-    send_personal_media_frame(
+    );
+    let connection = tokio::select! {
+        result = connect => match result {
+            Ok(Ok(connection)) => connection,
+            _ => return PersonalMediaStreamOutcome::Failed,
+        },
+        _ = personal_media_cancelled(&mut cancel) => return PersonalMediaStreamOutcome::Cancelled,
+    };
+    let start = send_personal_media_frame(
         &connection,
         workspace,
         user_public_key,
@@ -1947,27 +2122,54 @@ async fn stream_personal_media(
             file_name,
             total_bytes,
         },
-    )
-    .await?;
+    );
+    let start_outcome = tokio::select! {
+        result = start => result.map_or(PersonalMediaStreamOutcome::Failed, |_| PersonalMediaStreamOutcome::Completed),
+        _ = personal_media_cancelled(&mut cancel) => PersonalMediaStreamOutcome::Cancelled,
+    };
+    if start_outcome != PersonalMediaStreamOutcome::Completed {
+        if start_outcome == PersonalMediaStreamOutcome::Cancelled {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                send_personal_media_frame(
+                    &connection,
+                    workspace,
+                    user_public_key,
+                    PersonalMediaTransferFrame::Abort { transfer_id },
+                ),
+            )
+            .await;
+            return PersonalMediaStreamOutcome::Cancelled;
+        }
+        return PersonalMediaStreamOutcome::Failed;
+    }
 
     let mut file = tokio::fs::File::from_std(file);
     let mut offset = 0_u64;
     let mut last_reported = 0_u64;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
-    let transfer = async {
+    let transfer: Result<(), PersonalMediaStreamOutcome> = async {
         while offset < total_bytes {
             let remaining = total_bytes.saturating_sub(offset);
             let want = usize::try_from(remaining.min(PERSONAL_MEDIA_CHUNK_BYTES as u64))
-                .map_err(|_| ())?;
-            let window = buffer.get_mut(..want).ok_or(())?;
-            let read = file.read(window).await.map_err(|_| ())?;
+                .map_err(|_| PersonalMediaStreamOutcome::Failed)?;
+            let window = buffer
+                .get_mut(..want)
+                .ok_or(PersonalMediaStreamOutcome::Failed)?;
+            let read = tokio::select! {
+                result = file.read(window) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+                _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+            };
             if read == 0 {
-                return Err(());
+                return Err(PersonalMediaStreamOutcome::Failed);
             }
-            let bytes = buffer.get(..read).ok_or(())?.to_vec();
+            let bytes = buffer
+                .get(..read)
+                .ok_or(PersonalMediaStreamOutcome::Failed)?
+                .to_vec();
             hasher.update(&bytes);
-            send_personal_media_frame(
+            let send = send_personal_media_frame(
                 &connection,
                 workspace,
                 user_public_key,
@@ -1976,28 +2178,34 @@ async fn stream_personal_media(
                     offset,
                     bytes,
                 },
-            )
-            .await?;
-            offset = offset.saturating_add(u64::try_from(read).map_err(|_| ())?);
+            );
+            tokio::select! {
+                result = send => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+                _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+            }
+            offset = offset.saturating_add(
+                u64::try_from(read).map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+            );
             sent_bytes.store(offset, std::sync::atomic::Ordering::Relaxed);
             if offset == total_bytes || offset.saturating_sub(last_reported) >= 8 * 1024 * 1024 {
-                if let Some(progress) = progress.as_ref() {
-                    let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
-                        target,
-                        transfer_id,
-                        sent_bytes: offset,
-                        total_bytes,
-                        status: PersonalMediaTransferStatus::Progress,
-                    });
-                }
+                let _ = internal.try_send(InternalEvent::PersonalMediaProgress {
+                    target,
+                    transfer_id,
+                    generation,
+                    sent_bytes: offset,
+                });
                 last_reported = offset;
             }
         }
         let mut trailing = [0_u8; 1];
-        if file.read(&mut trailing).await.map_err(|_| ())? != 0 {
-            return Err(());
+        let trailing_read = tokio::select! {
+            result = file.read(&mut trailing) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+            _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+        };
+        if trailing_read != 0 {
+            return Err(PersonalMediaStreamOutcome::Failed);
         }
-        send_personal_media_frame(
+        let finish = send_personal_media_frame(
             &connection,
             workspace,
             user_public_key,
@@ -2005,20 +2213,38 @@ async fn stream_personal_media(
                 transfer_id,
                 content_hash: *hasher.finalize().as_bytes(),
             },
-        )
-        .await
+        );
+        tokio::select! {
+            result = finish => result.map_err(|_| PersonalMediaStreamOutcome::Failed),
+            _ = personal_media_cancelled(&mut cancel) => Err(PersonalMediaStreamOutcome::Cancelled),
+        }
     }
     .await;
-    if transfer.is_err() {
-        let _ = send_personal_media_frame(
-            &connection,
-            workspace,
-            user_public_key,
-            PersonalMediaTransferFrame::Abort { transfer_id },
-        )
-        .await;
+    match transfer {
+        Ok(()) => PersonalMediaStreamOutcome::Completed,
+        Err(outcome) => {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                send_personal_media_frame(
+                    &connection,
+                    workspace,
+                    user_public_key,
+                    PersonalMediaTransferFrame::Abort { transfer_id },
+                ),
+            )
+            .await;
+            outcome
+        }
     }
-    transfer
+}
+
+async fn personal_media_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+    if *cancel.borrow() {
+        return;
+    }
+    if cancel.changed().await.is_err() {
+        return;
+    }
 }
 
 async fn run(
@@ -2069,6 +2295,8 @@ async fn run(
         recent_order: VecDeque::new(),
         surface_connections: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
+        active_personal_media: HashMap::new(),
+        next_personal_media_generation: 0,
     };
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
@@ -2579,6 +2807,42 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
+        let (cancel, _receiver) = tokio::sync::watch::channel(false);
+        ActivePersonalMediaTransfer {
+            generation,
+            workspace: 7,
+            total_bytes: 8,
+            sent_bytes: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            cancel,
+        }
+    }
+
+    #[test]
+    fn personal_media_generation_is_exact_and_stale_completion_cannot_remove_replacement() {
+        let first = iroh::SecretKey::from_bytes(&[0xB1; 32]).public();
+        let sibling = iroh::SecretKey::from_bytes(&[0xB2; 32]).public();
+        let transfer_id = [0xB3; 16];
+        let key = (first, transfer_id);
+        let sibling_key = (sibling, transfer_id);
+        let mut active = HashMap::from([
+            (key, active_personal_media(12)),
+            (sibling_key, active_personal_media(4)),
+        ]);
+
+        assert!(take_personal_media_generation(&mut active, key, 11).is_none());
+        assert!(
+            active.contains_key(&key),
+            "old worker cannot remove replacement"
+        );
+        assert!(
+            take_personal_media_generation(&mut active, sibling_key, 12).is_none(),
+            "same id on another target is isolated"
+        );
+        assert!(take_personal_media_generation(&mut active, key, 12).is_some());
+        assert!(active.contains_key(&sibling_key));
+    }
 
     #[test]
     fn departed_personal_connection_cannot_rebind_after_membership_reconnect() {
