@@ -315,7 +315,14 @@ impl SetupApp {
         }
     }
 
+    fn folder_selection_settled(&self) -> bool {
+        self.picker_rx.is_none() && self.pending_scans == 0
+    }
+
     fn start_desktop_install(&mut self) {
+        if !self.folder_selection_settled() {
+            return;
+        }
         match super::desktop_continuation::persist_review(self.controller.borrow().folders())
             .and_then(|()| self.desktop_flow.start_install())
         {
@@ -328,6 +335,12 @@ impl SetupApp {
     }
 
     fn apply_command(&mut self, command: SetupCommand) {
+        if matches!(&command, SetupCommand::Next)
+            && self.controller().page() == SetupPage::Folders
+            && !self.folder_selection_settled()
+        {
+            return;
+        }
         self.status_is_error = false;
         match command {
             SetupCommand::ChooseExperience(experience) => {
@@ -666,7 +679,13 @@ impl SetupApp {
             self.apply_worker_message(message);
             changed = true;
         }
-        let picker = self.picker_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        let picker = self.picker_rx.as_ref().and_then(|rx| match rx.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(error @ mpsc::TryRecvError::Disconnected) => {
+                Some(ui::PortalOutcome::Failed(error.to_string()))
+            }
+        });
         if let Some(outcome) = picker {
             self.picker_rx = None;
             changed = true;
@@ -1469,7 +1488,7 @@ impl SetupApp {
                         "setup.install",
                         "Install Tilo Desktop",
                         SetupCommand::InstallDesktop,
-                        true,
+                        self.folder_selection_settled(),
                     ),
                     DesktopFlowState::Downloading(_) => (
                         "setup.cancel-download",
@@ -1503,10 +1522,13 @@ impl SetupApp {
                     .with_enabled(enabled),
             ));
         } else {
-            let next_enabled = page != SetupPage::Experience
-                || self
+            let next_enabled = match page {
+                SetupPage::Experience => self
                     .chosen_experience
-                    .is_some_and(|choice| self.capabilities.platform.supports(choice));
+                    .is_some_and(|choice| self.capabilities.platform.supports(choice)),
+                SetupPage::Folders => self.folder_selection_settled(),
+                SetupPage::Review => true,
+            };
             nav = nav.push(Box::new(
                 self.button("setup.next", "Continue", SetupCommand::Next)
                     .primary()
@@ -1998,6 +2020,72 @@ mod tests {
         })
     }
 
+    fn accepted_without_completion_worker(_: &str, _: WorkerTask) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn retained_widget_disabled(root: &dyn Widget, id: &str) -> bool {
+        fn visit(widget: &dyn Widget, id: &str, matches: &mut Vec<bool>) {
+            if widget.test_id() == Some(id) {
+                let node = widget
+                    .accessibility()
+                    .unwrap_or_else(|| panic!("{id} has no accessibility node"));
+                matches.push(node.state.disabled);
+            }
+            for child in widget.children() {
+                visit(child, id, matches);
+            }
+        }
+
+        let mut matches = Vec::new();
+        visit(root, id, &mut matches);
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one retained {id} widget"
+        );
+        matches[0]
+    }
+
+    #[derive(Clone, Copy)]
+    enum PendingFolderSelection {
+        Scan,
+        Picker,
+    }
+
+    fn stale_ready_desktop_review(
+        pending: PendingFolderSelection,
+    ) -> (SetupApp, Option<mpsc::Sender<ui::PortalOutcome>>) {
+        let mut app = SetupApp::with_worker_launcher(
+            supported_fixture().capabilities,
+            accepted_without_completion_worker,
+        );
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        let picker_tx = match pending {
+            PendingFolderSelection::Scan => {
+                app.start_scan(PathBuf::from(TEST_SOURCE_ROOT).join("Documents"));
+                None
+            }
+            PendingFolderSelection::Picker => {
+                let (tx, rx) = mpsc::channel();
+                app.picker_rx = Some(rx);
+                Some(tx)
+            }
+        };
+        app.controller.borrow_mut().next().unwrap();
+        assert!(app.controller().folders().is_empty());
+        app.desktop_flow = DesktopFlow::with_runtime_and_state(
+            super::super::desktop_flow::DesktopRuntime {
+                launch_probe: disconnected_desktop_probe,
+                launch_download: disconnected_desktop_download,
+                launch_install: disconnected_desktop_install,
+            },
+            DesktopFlowState::Ready(fixture_desktop_selection(false)),
+        );
+        (app, picker_tx)
+    }
+
     fn scan(name: &str, bytes: u64) -> FolderScan {
         FolderScan {
             source: PathBuf::from(TEST_SOURCE_ROOT).join(name),
@@ -2025,6 +2113,147 @@ mod tests {
                     reason: SkipReason::SymbolicLink,
                 },
             ],
+        }
+    }
+
+    #[test]
+    fn folder_selection_held_scans_block_both_experiences_until_every_terminal_result() {
+        for experience in [Experience::Desktop, Experience::FullOs] {
+            let mut app = SetupApp::with_worker_launcher(
+                supported_fixture().capabilities,
+                accepted_without_completion_worker,
+            );
+            app.apply_command(SetupCommand::ChooseExperience(experience));
+            app.apply_command(SetupCommand::Next);
+            assert_eq!(app.controller().page(), SetupPage::Folders);
+
+            app.start_scan(PathBuf::from(TEST_SOURCE_ROOT).join("Documents"));
+            app.start_scan(PathBuf::from(TEST_SOURCE_ROOT).join("Pictures"));
+            assert_eq!(app.pending_scans, 2);
+            assert!(app.picker_rx.is_none());
+            let composition = app.build_composition();
+            assert!(retained_widget_disabled(composition.as_ref(), "setup.next"));
+
+            let scanning_status = app.status.clone();
+            app.apply_command(SetupCommand::Next);
+            assert_eq!(app.controller().page(), SetupPage::Folders);
+            assert!(app.controller().folders().is_empty());
+            assert_eq!(app.status, scanning_status);
+
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: None,
+                result: Err("test scan failed".into()),
+            });
+            assert_eq!(app.pending_scans, 1);
+            let failed_status = app.status.clone();
+            app.apply_command(SetupCommand::Next);
+            assert_eq!(app.controller().page(), SetupPage::Folders);
+            assert_eq!(app.status, failed_status);
+            assert!(app.status_is_error);
+
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: None,
+                result: Ok(scan("Pictures", 12)),
+            });
+            assert_eq!(app.pending_scans, 0);
+            assert_eq!(app.controller().folders().len(), 1);
+            let composition = app.build_composition();
+            assert!(!retained_widget_disabled(
+                composition.as_ref(),
+                "setup.next"
+            ));
+
+            app.apply_command(SetupCommand::Next);
+            assert_eq!(app.controller().page(), SetupPage::Review);
+        }
+    }
+
+    #[test]
+    fn folder_selection_pending_picker_blocks_next_until_cancelled() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        let (picker_tx, picker_rx) = mpsc::channel();
+        app.picker_rx = Some(picker_rx);
+
+        let composition = app.build_composition();
+        assert!(retained_widget_disabled(composition.as_ref(), "setup.next"));
+        app.apply_command(SetupCommand::Next);
+        assert_eq!(app.controller().page(), SetupPage::Folders);
+
+        picker_tx.send(ui::PortalOutcome::Cancelled).unwrap();
+        assert!(app.poll_background());
+        assert!(app.picker_rx.is_none());
+        let composition = app.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.next"
+        ));
+        app.apply_command(SetupCommand::Next);
+        assert_eq!(app.controller().page(), SetupPage::Review);
+    }
+
+    #[test]
+    fn folder_selection_disconnected_picker_recovers_with_existing_failure_path() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        let (picker_tx, picker_rx) = mpsc::channel::<ui::PortalOutcome>();
+        drop(picker_tx);
+        app.picker_rx = Some(picker_rx);
+
+        app.apply_command(SetupCommand::Next);
+        assert_eq!(app.controller().page(), SetupPage::Folders);
+        assert!(app.poll_background());
+        assert!(app.picker_rx.is_none());
+        assert!(app.status.starts_with("The folder dialog could not open:"));
+        assert!(app.status_is_error);
+        assert!(app.controller().folders().is_empty());
+
+        app.apply_command(SetupCommand::Next);
+        assert_eq!(app.controller().page(), SetupPage::Review);
+    }
+
+    #[test]
+    fn folder_selection_stale_desktop_install_is_disabled_and_rejected_until_settled() {
+        for pending in [PendingFolderSelection::Scan, PendingFolderSelection::Picker] {
+            let (render_app, _render_picker_tx) = stale_ready_desktop_review(pending);
+            let composition = render_app.build_composition();
+            assert!(retained_widget_disabled(
+                composition.as_ref(),
+                "setup.install"
+            ));
+
+            let (mut command_app, picker_tx) = stale_ready_desktop_review(pending);
+            command_app.apply_command(SetupCommand::InstallDesktop);
+            assert!(matches!(
+                command_app.desktop_flow.state(),
+                DesktopFlowState::Ready(_)
+            ));
+            assert!(!command_app.desktop_flow.has_pending_operation());
+
+            match pending {
+                PendingFolderSelection::Scan => {
+                    command_app.apply_worker_message(WorkerMessage::ScanFinished {
+                        destination: None,
+                        result: Err("test scan failed".into()),
+                    });
+                }
+                PendingFolderSelection::Picker => {
+                    picker_tx
+                        .unwrap()
+                        .send(ui::PortalOutcome::Cancelled)
+                        .unwrap();
+                    assert!(command_app.poll_background());
+                }
+            }
+            assert!(command_app.controller().folders().is_empty());
+            command_app.apply_command(SetupCommand::InstallDesktop);
+            assert!(matches!(
+                command_app.desktop_flow.state(),
+                DesktopFlowState::Checking
+            ));
+            assert!(command_app.desktop_flow.has_pending_operation());
         }
     }
 
@@ -2465,6 +2694,7 @@ mod tests {
         scan_app.start_scan(PathBuf::from(TEST_SOURCE_ROOT).join("Documents"));
 
         assert_eq!(scan_app.pending_scans, 0);
+        assert!(scan_app.folder_selection_settled());
         assert!(!scan_app.needs_idle_sync());
         assert!(scan_app.status.contains("could not start"));
 
