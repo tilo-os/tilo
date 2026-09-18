@@ -432,3 +432,83 @@ fn large_text_scales_the_shell_breakpoint_with_the_type() {
         "800 px is below the 200 % breakpoint, so the shell shows one screen"
     );
 }
+
+/// One rhythm per pane (HIG §7b): every card sits exactly one `s6` — the
+/// "before the next group" step, the value [`settings::widgets::CARD_GAP`]
+/// now names — below the card above it, on every pane and in both layout
+/// classes, and no two cards ever touch. The heading block sits `s4` above
+/// the first card. The earlier 20 px card gap belonged to no relationship on
+/// the scale; a pane that mixes an off-scale gap with `s4`/`s6` reads as two
+/// rhythms.
+#[test]
+fn pane_cards_stack_on_the_s6_step_and_never_touch() {
+    let sp = spacing();
+    assert_eq!(
+        settings::widgets::CARD_GAP,
+        sp.s6,
+        "the card gap is the s6 step, not an authored pixel value"
+    );
+    for (category, viewport) in [
+        (Category::About, WIDE),
+        (Category::Network, WIDE),
+        (Category::Users, WIDE),
+        (Category::RegionFormats, NARROW),
+    ] {
+        let mut app = SettingsApp::with_selected(category)
+            .with_width_hint(viewport.0)
+            .with_deterministic_hardware_for_shot();
+        if viewport == NARROW {
+            app = app.with_narrow_content_shot();
+        }
+        lay_out(&mut app, viewport);
+        // Top-level cards only: a card nested inside another card (a hero row
+        // inside a section) is that section's own content, not a sibling.
+        let mut cards: Vec<Rect> = by_widget_name(&app, "Card")
+            .into_iter()
+            .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+            .collect();
+        cards.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        let outer: Vec<Rect> = cards
+            .iter()
+            .copied()
+            .filter(|c| {
+                !cards
+                    .iter()
+                    .any(|o| o != c && o.contains(c.center()) && o.area() > c.area())
+            })
+            .collect();
+        assert!(
+            outer.len() >= 2,
+            "{category:?} at {viewport:?}: need at least two cards to measure a rhythm, found {}",
+            outer.len()
+        );
+        for pair in outer.windows(2) {
+            let gap = pair[1].y0 - pair[0].y1;
+            assert!(
+                gap >= f64::from(sp.s1),
+                "{category:?} at {viewport:?}: cards touch (gap {gap})"
+            );
+            // The column places card slots exactly `s6` apart. A `Card`
+            // reports its inner surface's rect, and taffy rounds each node's
+            // text-driven height and position to whole pixels on its own, so
+            // the surface can stand one pixel off its slot either way; the
+            // gap the eye sees is `s6` ± 1 px, never another step.
+            let step = f64::from(sp.s6);
+            assert!(
+                (gap - step).abs() <= 1.0,
+                "{category:?} at {viewport:?}: card to card: expected {step} (± 1 px of \
+                 text-height rounding), got {gap}"
+            );
+        }
+        // The subtitle is the heading block's last line, so its bottom is the
+        // block's bottom; the same whole-pixel rounding of a text line box
+        // applies to it.
+        let subtitle = first_named(&app, category.subtitle());
+        let heading_gap = outer[0].y0 - subtitle.y1;
+        assert!(
+            (heading_gap - f64::from(sp.s4)).abs() <= 1.0,
+            "{category:?} at {viewport:?}: heading block to first card: expected {} (± 1 px), got {heading_gap}",
+            sp.s4
+        );
+    }
+}
