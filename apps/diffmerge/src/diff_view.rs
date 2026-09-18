@@ -272,7 +272,7 @@ impl DiffView {
         let add = with_alpha(c.semantic.success, 38);
         let del = with_alpha(c.semantic.danger, 38);
         let modi = with_alpha(c.semantic.warning, 30);
-        let phantom = with_alpha(c.neutral[2], 90);
+        let phantom = with_alpha(c.lift(1.0), 90);
         match kind {
             RowKind::Equal => None,
             RowKind::Insert => {
@@ -831,7 +831,7 @@ impl DiffView {
         scene.fill(
             Fill::NonZero,
             transform,
-            with_alpha(c.neutral[1], 200),
+            with_alpha(c.surfaces.raised, 200),
             None,
             &track,
         );
@@ -875,10 +875,11 @@ fn draw_header(
     let c = &theme.tokens.colors;
     let bar = Rect::new(col.x0, col.y0, col.x1, col.y0 + header_h);
     scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &bar);
+    // The header band closes with its own derived edge against the body.
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        c.border_standard,
+        ui::surface::edge_on(c.surfaces.raised),
         None,
         &Line::new(
             Point::new(col.x0, col.y0 + header_h),
@@ -919,7 +920,7 @@ fn draw_gutter_number(
     scene.fill(
         Fill::NonZero,
         transform,
-        with_alpha(c.neutral[1], 120),
+        with_alpha(c.surfaces.raised, 120),
         None,
         &g,
     );

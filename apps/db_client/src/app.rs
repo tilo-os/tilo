@@ -41,8 +41,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    CodeEditor, ContextMenu, EmptyState, FlapState, Language, MenuItem, SplitLayout, TaffyTreeExt,
-    Widget,
+    Button, ButtonFace, CodeEditor, ContextMenu, EmptyState, FlapState, Language, MenuItem,
+    SplitLayout, TaffyTreeExt, Widget,
 };
 
 use crate::connect_modal::ConnectModal;
@@ -1229,6 +1229,18 @@ impl DbClientApp {
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
         self.status_bubble.poke(Instant::now());
+    }
+
+    /// `--shots --connect`: open the "New connection" sheet so the modal can
+    /// be reviewed from a single headless frame.
+    pub fn open_connect_modal_for_shots(&mut self) {
+        self.modal.open_new();
+    }
+
+    /// `--shots --confirm`: arm the destructive-statement confirmation with
+    /// a representative statement so the dialog can be reviewed headlessly.
+    pub fn arm_query_confirmation_for_shots(&mut self) {
+        self.pending_query_confirmation = Some("DROP TABLE albums;".to_string());
     }
 
     /// Recompute every region rect from the root rect, honouring the flap's
@@ -2433,7 +2445,7 @@ impl DbClientApp {
         scene.fill(
             Fill::NonZero,
             t,
-            Color::from_rgba8(0, 0, 0, 155),
+            theme.tokens.colors.surfaces.scrim,
             None,
             &self.rect,
         );
@@ -2447,16 +2459,16 @@ impl DbClientApp {
         scene.fill(
             Fill::NonZero,
             t,
-            theme.bg_primary,
+            ui::chrome::panel_ground(theme),
             None,
             &panel.to_rounded_rect(10.0),
         );
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &panel.to_rounded_rect(10.0),
+            &ui::surface::edge_outline(panel, 10.0),
         );
         tr.draw_text(
             scene,
@@ -2524,45 +2536,29 @@ impl DbClientApp {
             panel.x1 - 20.0,
             panel.y1 - 16.0,
         );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.bg_app,
-            None,
-            &self.confirm_cancel_btn.to_rounded_rect(6.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.tokens.colors.semantic.danger,
-            None,
-            &self.confirm_run_btn.to_rounded_rect(6.0),
-        );
-        tr.draw_text(
+        // Both actions paint through the shared face: the neutral one gets
+        // its rest edge, the destructive one the danger palette, and the
+        // labels centre on their measured line instead of a fixed offset.
+        Button::paint(
             scene,
-            "Cancel",
-            12.0,
-            theme.text_primary,
-            t * Affine::translate((
-                self.confirm_cancel_btn.x0 + 20.0,
-                self.confirm_cancel_btn.y0 + 8.0,
-            )),
-            None,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(self.confirm_cancel_btn, "Cancel")
+                .radius(6.0)
+                .text_size(12.0)
+                .hovered(self.confirm_cancel_btn.contains(self.cursor)),
         );
-        tr.draw_text(
+        Button::paint(
             scene,
-            "Run",
-            12.0,
-            theme
-                .tokens
-                .colors
-                .on_surface(theme.tokens.colors.semantic.danger)
-                .ink,
-            t * Affine::translate((
-                self.confirm_run_btn.x0 + 21.0,
-                self.confirm_run_btn.y0 + 8.0,
-            )),
-            None,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(self.confirm_run_btn, "Run")
+                .danger()
+                .radius(6.0)
+                .text_size(12.0)
+                .hovered(self.confirm_run_btn.contains(self.cursor)),
         );
     }
 
@@ -2987,7 +2983,7 @@ impl DbClientApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::surface::edge_on(p.sidebar_bg),
             None,
             &Line::new(Point::new(r.x1, r.y0), Point::new(r.x1, r.y1)),
         );
@@ -3256,7 +3252,7 @@ impl DbClientApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::surface::edge_on(p.header_bg),
             None,
             &Line::new(Point::new(bar.x0, bar.y1), Point::new(bar.x1, bar.y1)),
         );
@@ -3363,14 +3359,7 @@ impl DbClientApp {
         } else {
             p.header_bg
         };
-        scene.fill(Fill::NonZero, t, bg, None, &btn.to_rounded_rect(6.0));
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            theme.border_standard,
-            None,
-            &btn.to_rounded_rect(6.0),
-        );
+        ui::surface::card(scene, t, btn, 6.0, bg);
 
         let cx = btn.x0 + size / 2.0;
         let cy = btn.y0 + size / 2.0;
@@ -3462,7 +3451,7 @@ impl DbClientApp {
             scene,
             run_hint,
             12.0,
-            Color::from_rgba8(255, 255, 255, 190),
+            theme.tokens.colors.on_surface(run_color).ink_dim,
             t * Affine::translate((
                 run.x1 - 14.0 - f64::from(hint_w),
                 run.y0 + (run.height() - f64::from(hint_h)) / 2.0,
@@ -3486,20 +3475,7 @@ impl DbClientApp {
         } else {
             theme.bg_primary
         };
-        scene.fill(
-            Fill::NonZero,
-            t,
-            snip_color,
-            None,
-            &snip.to_rounded_rect(6.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            theme.border_standard,
-            None,
-            &snip.to_rounded_rect(6.0),
-        );
+        ui::surface::card(scene, t, snip, 6.0, snip_color);
         tr.draw_text(
             scene,
             snip_label,
@@ -3572,19 +3548,20 @@ impl DbClientApp {
             self.snippet_btn.x0 + 240.0,
             self.snippet_btn.y1 + 2.0 + items.len() as f64 * 28.0,
         );
+        // The snippets menu is a Panel: panel ground plus its derived border.
         scene.fill(
             Fill::NonZero,
             t,
-            theme.bg_primary,
+            ui::chrome::panel_ground(theme),
             None,
             &menu.to_rounded_rect(8.0),
         );
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &menu.to_rounded_rect(8.0),
+            &ui::surface::edge_outline(menu, 8.0),
         );
         let mut y = menu.y0;
         for (name, _) in items {

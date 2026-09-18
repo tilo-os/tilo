@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 
 use crate::model::RelationKind;
 use crate::session::Session;
@@ -450,7 +450,7 @@ impl SchemaTree {
             scene,
             icon,
             10.0,
-            Color::from_rgb8(20, 20, 20),
+            theme.tokens.colors.on_surface(icon_color).ink,
             t * Affine::translate((
                 chip_x0 + (chip_side - f64::from(iw)) / 2.0,
                 chip_y0 + (chip_side - f64::from(ih)) / 2.0,

@@ -23,7 +23,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, TextInput, TextInputKind, Widget};
+use ui::widget::{ButtonFace, FlapState, SplitLayout, TextInput, TextInputKind, Widget};
 
 use crate::changes::{ChangesColumn, ChangesHit};
 use crate::diffview::{self, DiffView};
@@ -359,6 +359,31 @@ impl GitClientApp {
         let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
         app.awaiting_repo = true;
         app
+    }
+
+    /// `--shots --scenario`: open a screen directly so each one can be
+    /// reviewed from a single offscreen frame.
+    pub fn shot_screen(&mut self, screen: Screen) {
+        self.switch_screen(screen);
+    }
+
+    /// `--shots --scenario split`: the side-by-side diff layout, pinned so
+    /// the document sync does not fold it back to the stored preference.
+    pub fn shot_split_diff(&mut self) {
+        self.settings.diff_layout = DiffLayout::SideBySide;
+        self.settings_forced = true;
+    }
+
+    /// `--shots --scenario commit`: a typed commit summary so the commit box
+    /// and its primary action render in their enabled state.
+    pub fn shot_commit_message(&mut self, message: &str) {
+        self.commit_input.set_text(message);
+    }
+
+    /// `--shots --scenario discard`: the two-click discard confirmation
+    /// armed on the selected file, so the danger state is capturable.
+    pub fn shot_arm_discard(&mut self) {
+        self.armed_discard = Some(DiscardTarget::File);
     }
 
     /// Construct from an explicit model — used by the sample path and tests.
@@ -977,7 +1002,7 @@ impl GitClientApp {
             self.rect.y0 + self.appbar_h,
         );
         draw::fill_rect(scene, t, bar, c.surfaces.raised);
-        draw::hline(scene, t, bar.y1, bar.x0, bar.x1, c.border_standard);
+        draw::hline(scene, t, bar.y1, bar.x0, bar.x1, draw::edge(c.surfaces.raised));
         let row1 = Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + m.row_h);
 
         // Hamburger toggle: shown only when the primary list column has
@@ -1099,7 +1124,7 @@ impl GitClientApp {
                 &self.model.head,
                 Color::WHITE,
                 theme.accent_primary,
-                None,
+                draw::PillEdge::Bare,
             );
             right = pill_x + pill_w;
         }
@@ -1161,7 +1186,9 @@ impl GitClientApp {
         let c = &theme.tokens.colors;
         let tab_y = bar.y0 + (bar.height() - tab_h) / 2.0;
         let group_bg = Rect::new(tx_start - 6.0, tab_y, tx_start + total + 6.0, tab_y + tab_h);
-        draw::fill_round(scene, t, group_bg, 9.0, c.surfaces.base);
+        // The tab group is a base-toned track on the raised bar; its derived
+        // edge is what separates the two surfaces on the dark preset.
+        draw::card(scene, t, group_bg, 9.0, c.surfaces.base);
         let mut tx = tx_start;
         for (i, (screen, label)) in TABS.iter().enumerate() {
             let Some(&w) = widths.get(i) else {
@@ -1212,7 +1239,7 @@ impl GitClientApp {
         let y = bar.y0 + (bar.height() - control_h) / 2.0;
         // Diff-layout segmented control.
         let seg = Rect::new(x, y, x + seg_w, y + control_h);
-        draw::fill_round(scene, t, seg, 9.0, c.surfaces.base);
+        draw::card(scene, t, seg, 9.0, c.surfaces.base);
         let half = seg_w / 2.0;
         let unified_active = self.settings.diff_layout == DiffLayout::Unified;
         let active_rect = if unified_active {
@@ -1251,17 +1278,11 @@ impl GitClientApp {
         let hx = seg.x1 + APPBAR_CLUSTER_GAP;
         let hl = Rect::new(hx, y, hx + syn_w, y + control_h);
         let on = self.settings.syntax_highlight;
-        draw::fill_round(
-            scene,
-            t,
-            hl,
-            9.0,
-            if on {
-                theme.accent_primary
-            } else {
-                c.surfaces.base
-            },
-        );
+        if on {
+            draw::fill_round(scene, t, hl, 9.0, theme.accent_primary);
+        } else {
+            draw::card(scene, t, hl, 9.0, c.surfaces.base);
+        }
         let hlfg = if on { Color::WHITE } else { c.text_dim };
         let label = "Syntax";
         let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
@@ -1305,17 +1326,11 @@ impl GitClientApp {
         let c = &theme.tokens.colors;
         let size = btn.height();
         let open = self.flap_open();
-        draw::fill_round(
-            scene,
-            t,
-            btn,
-            8.0,
-            if open {
-                theme.accent_primary
-            } else {
-                c.surfaces.base
-            },
-        );
+        if open {
+            draw::fill_round(scene, t, btn, 8.0, theme.accent_primary);
+        } else {
+            draw::card(scene, t, btn, 8.0, c.surfaces.base);
+        }
         let fg = if open { Color::WHITE } else { c.text_dim };
         // Three 2px bars at a 6px pitch, centred as a block in the button.
         let inset = 8.0;
@@ -1438,7 +1453,7 @@ impl GitClientApp {
         let header = Rect::new(pane.x0, pane.y0, pane.x1, pane.y0 + self.diff_header_h);
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, header, c.surfaces.raised);
-        draw::hline(scene, t, header.y1, header.x0, header.x1, c.border_standard);
+        draw::hline(scene, t, header.y1, header.x0, header.x1, draw::edge(c.surfaces.raised));
 
         let key = self.current_diff_key();
         // Pull the header facts out as owned values so the `self.diffs` borrow
@@ -1576,7 +1591,6 @@ impl GitClientApp {
         header: Rect,
         summary_w: f64,
     ) -> f32 {
-        let c = &theme.tokens.colors;
         let armed = self.armed_discard == Some(DiscardTarget::File);
         let label = if armed {
             "Discard file?"
@@ -1590,37 +1604,17 @@ impl GitClientApp {
         let bw = lw + 20.0;
         let bx = header.x1 - summary_w - 16.0 - 12.0 - bw;
         let brect = Rect::new(bx, header.y0 + 6.0, bx + bw, header.y1 - 6.0);
-        let bg = if armed {
-            c.semantic.danger
+        // Destructive outline at rest, filled danger once armed — the shared
+        // face keeps the danger ink legible on every ground it sits on.
+        let face = ButtonFace::new(brect, label)
+            .radius(6.0)
+            .text_size(DIFF_DISCARD_FONT);
+        let face = if armed {
+            face.danger()
         } else {
-            c.lift(0.72)
+            face.danger_outline()
         };
-        let fg = if armed {
-            Color::WHITE
-        } else {
-            c.semantic.danger
-        };
-        draw::fill_round(scene, t, brect, 6.0, bg);
-        let ly = draw::centered_top(
-            tr,
-            label,
-            DIFF_DISCARD_FONT,
-            TextWeight::Medium,
-            brect.y0,
-            brect.height(),
-        );
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
-            label,
-            DIFF_DISCARD_FONT,
-            fg,
-            bx + 10.0,
-            ly,
-            None,
-            TextWeight::Medium,
-        );
+        draw::button(scene, tr, t, theme, &face);
         self.discard_file_rect = brect;
         (bx - header.x0 - 24.0).max(40.0) as f32
     }
@@ -1800,7 +1794,6 @@ impl GitClientApp {
         presence: &PresenceCtx,
         body: Rect,
     ) {
-        let c = &theme.tokens.colors;
         let tb = Rect::new(body.x0, body.y0, body.x1, body.y0 + 56.0);
         // Reserve room for the 3 action buttons (84*3 + gaps + margins ≈ 300).
         let actions_w = 300.0;
@@ -1830,33 +1823,16 @@ impl GitClientApp {
         // Create button.
         let brect = Rect::new(bx, y, bx + btn_w, y + h);
         let enabled = !self.branch_input.value().trim().is_empty();
-        draw::fill_round(
-            scene,
-            t,
-            brect,
-            6.0,
-            if enabled {
-                theme.accent_primary
-            } else {
-                c.lift(0.72)
-            },
-        );
-        let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        let lw = f64::from(
-            tr.measure_weighted("Branch", 12.0, None, TextWeight::Medium)
-                .0,
-        );
-        draw::text_weighted(
+        draw::button(
             scene,
             tr,
             t,
-            "Branch",
-            12.0,
-            fg,
-            bx + (btn_w - lw) / 2.0,
-            y + 6.0,
-            None,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(brect, "Branch")
+                .primary()
+                .radius(6.0)
+                .text_size(12.0)
+                .disabled(!enabled),
         );
         self.new_branch_button = brect;
     }
@@ -1988,33 +1964,17 @@ impl GitClientApp {
         self.open_input_rect = field;
         let brect = Rect::new(field.x1 + gap, y, cx + cw, y + field_h);
         let enabled = !self.open_input.value().trim().is_empty();
-        draw::fill_round(
-            scene,
-            t,
-            brect,
-            8.0,
-            if enabled {
-                theme.accent_primary
-            } else {
-                c.lift(0.72)
-            },
-        );
-        let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        let ow = f64::from(
-            tr.measure_weighted("Open", 14.0, None, TextWeight::Semibold)
-                .0,
-        );
-        draw::text_weighted(
+        draw::button(
             scene,
             tr,
             t,
-            "Open",
-            14.0,
-            fg,
-            brect.x0 + (brect.width() - ow) / 2.0,
-            brect.y0 + 11.0,
-            None,
-            TextWeight::Semibold,
+            theme,
+            &ButtonFace::new(brect, "Open")
+                .primary()
+                .radius(8.0)
+                .text_size(14.0)
+                .weight(TextWeight::Semibold)
+                .disabled(!enabled),
         );
         self.open_button_rect = brect;
 

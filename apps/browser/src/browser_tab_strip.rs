@@ -390,13 +390,9 @@ impl BrowserTabStrip {
             (left, self.has_hidden_before(), false),
             (right, self.has_hidden_after(), true),
         ] {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &rect.to_rounded_rect(6.0),
-            );
+            // The overflow paddles are raised faces with their derived rest
+            // edge, not bare fills that dissolve into the strip on dark.
+            ui::surface::card(scene, transform, rect, 6.0, theme.tokens.colors.surfaces.raised);
             let center = rect.center();
             let mut arrow = BezPath::new();
             if forward {

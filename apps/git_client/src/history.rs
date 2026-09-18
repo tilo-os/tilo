@@ -39,8 +39,10 @@ const META_DIM_FONT: f32 = 11.5;
 /// it did.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
-    /// Row pitch.
+    /// Row height; the list pitch is [`Metrics::pitch`] (row plus gap).
     pub row_h: f64,
+    /// Gap between neighbouring rows (`s1`): HIG §7 — nothing touches.
+    row_gap: f64,
     /// Ref pill height (`draw::pill_height` at the 12 px ref label).
     pill_h: f64,
     /// Measured summary and meta line heights.
@@ -60,6 +62,7 @@ impl Default for Metrics {
     fn default() -> Self {
         Self {
             row_h: ROW_H,
+            row_gap: 4.0,
             pill_h: 18.0,
             summary_h: 16.25,
             meta_h: 15.0,
@@ -73,6 +76,13 @@ impl Default for Metrics {
 }
 
 impl Metrics {
+    /// Vertical distance between the tops of two neighbouring rows: the row
+    /// plus the `s1` gap that keeps rows from touching.
+    #[must_use]
+    pub fn pitch(&self) -> f64 {
+        self.row_h + self.row_gap
+    }
+
     pub fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
         let rhythm = Self::default();
         let pill_h = draw::pill_height(tr, 12.0);
@@ -94,6 +104,7 @@ impl Metrics {
             .max(ROW_H);
         Self {
             row_h,
+            row_gap: f64::from(theme.tokens.spacing.s1),
             pill_h,
             summary_h,
             meta_h,
@@ -124,7 +135,7 @@ pub struct HistoryView;
 impl HistoryView {
     /// Total list height at the row pitch of the last draw.
     pub fn content_height(model: &RepoModel, metrics: &Metrics) -> f64 {
-        model.commits.len() as f64 * metrics.row_h + 8.0
+        model.commits.len() as f64 * metrics.pitch() + 8.0
     }
 
     /// Draw the commit list with graph. Returns the row rects so the app
@@ -161,7 +172,7 @@ impl HistoryView {
         let mut rows: Vec<Rect> = Vec::new();
 
         for (row, commit) in model.commits.iter().enumerate() {
-            let y = area.y0 - scroll + row as f64 * m.row_h;
+            let y = area.y0 - scroll + row as f64 * m.pitch();
             let rrect = Rect::new(area.x0, y, area.x1, y + m.row_h);
             rows.push(rrect);
             if y + m.row_h < area.y0 || y > area.y1 {
@@ -188,9 +199,10 @@ impl HistoryView {
         m: &Metrics,
     ) {
         let row_h = m.row_h;
+        let pitch = m.pitch();
         let graph_x = area.x0 + GRAPH_PAD;
         let lane_x = |lane: usize| graph_x + lane as f64 * LANE_W + LANE_W / 2.0;
-        let row_center_y = |row: usize| area.y0 - scroll + row as f64 * row_h + row_h / 2.0;
+        let row_center_y = |row: usize| area.y0 - scroll + row as f64 * pitch + row_h / 2.0;
         for edge in &layout.edges {
             let y0 = row_center_y(edge.from_row);
             let y1 = row_center_y(edge.to_row);
@@ -301,7 +313,18 @@ impl HistoryView {
                 let label_room = (room - draw::pill_width(tr, "", 12.0)).max(0.0) as f32;
                 tr.elide_to_width_weighted(&r.name, 12.0, label_room, TextWeight::Medium)
             };
-            px += draw::pill(scene, tr, t, px, pill_y, 12.0, &name, fg, bg, None);
+            px += draw::pill(
+                scene,
+                tr,
+                t,
+                px,
+                pill_y,
+                12.0,
+                &name,
+                fg,
+                bg,
+                draw::PillEdge::Bare,
+            );
             painted_any = true;
         }
 
@@ -378,10 +401,11 @@ impl HistoryView {
             y + m.no_refs_top,
         );
 
+        // The row rule sits in the middle of the inter-row gap.
         draw::hline(
             scene,
             t,
-            y + m.row_h,
+            y + m.row_h + m.row_gap / 2.0,
             area.x0 + 8.0,
             area.x1 - 8.0,
             c.lift(0.35),
@@ -445,7 +469,7 @@ impl HistoryView {
     ) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.raised);
-        draw::vline(scene, t, area.x0, area.y0, area.y1, c.border_standard);
+        draw::vline(scene, t, area.x0, area.y0, area.y1, draw::edge(c.surfaces.raised));
 
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -465,7 +489,7 @@ impl HistoryView {
         y = Self::draw_detail_meta_grid(scene, tr, t, theme, commit, x, y, w);
 
         y += 8.0;
-        draw::hline(scene, t, y, x, area.x1 - pad, c.border_standard);
+        draw::hline(scene, t, y, x, area.x1 - pad, draw::edge(c.surfaces.raised));
         y += 14.0;
 
         y = Self::draw_detail_body(scene, tr, t, theme, commit, x, y, w);
@@ -799,5 +823,22 @@ mod tests {
             "the meta line ({meta_bottom}) must end inside the {} px row",
             two.row_h
         );
+    }
+
+    /// HIG §7 "nothing touches": the list pitch is the row plus an `s1`
+    /// gap, so the graph dot centre, the row rect and the separator all
+    /// agree and neighbouring commit rows never share pixels.
+    #[test]
+    fn commit_rows_keep_a_token_gap_on_every_preset() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut tr = TextRenderer::new();
+            let m = Metrics::measure(&mut tr, &theme);
+            let s1 = f64::from(theme.tokens.spacing.s1);
+            assert!(m.row_gap >= s1 && s1 >= 4.0, "{}: row gap {}", theme.name, m.row_gap);
+            assert!((m.pitch() - (m.row_h + m.row_gap)).abs() < 0.01);
+            let model = crate::sample::model().0;
+            let expected = model.commits.len() as f64 * m.pitch() + 8.0;
+            assert!((HistoryView::content_height(&model, &m) - expected).abs() < 0.01);
+        }
     }
 }

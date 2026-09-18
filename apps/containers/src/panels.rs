@@ -84,19 +84,13 @@ impl ContainersApp {
         // narrowed to an icon strip while collapsed.
         let expanded = !compact && self.rail_expanded();
         draw::fill_round(scene, rail, 0.0, c.surfaces.raised);
-        draw::divider(
-            scene,
-            rail.x1 - 0.5,
-            rail.x1 - 0.5,
-            rail.y1,
-            c.border_standard,
-        );
-        // re-draw the right border as a vertical line.
+        // The rail's right edge: a hairline derived against the raised rail
+        // (a declared `border_standard` vanished on the dark preset).
         let border = Rect::new(rail.x1 - 1.0, rail.y0, rail.x1, rail.y1);
         scene.fill(
             Fill::NonZero,
-            Affine::IDENTITY,
-            c.border_standard,
+            draw::base(),
+            draw::edge(c.surfaces.raised),
             None,
             &border,
         );
@@ -270,7 +264,9 @@ impl ContainersApp {
                 );
             }
             self.push_hit(item, Hit::Section(section));
-            y += 46.0;
+            // Rail items are related rows: an `s2` gap between the 40 px
+            // items (HIG §7b), not an off-grid 6 px.
+            y += 40.0 + f64::from(theme.tokens.spacing.s2);
         }
     }
 
@@ -295,12 +291,12 @@ impl ContainersApp {
         let dot = vello::kurbo::Circle::new(Point::new(rail.x0 + PAD + 4.0, foot_y + 4.0), 4.0);
         scene.fill(Fill::NonZero, Affine::IDENTITY, dot_color, None, &dot);
         if expanded {
-            draw::divider(
+            draw::separator(
                 scene,
                 rail.x0 + PAD,
                 rail.x1 - PAD,
                 foot_y - 12.0,
-                c.border_standard,
+                c.surfaces.raised,
             );
             draw::text(
                 scene,
@@ -1193,8 +1189,8 @@ impl ContainersApp {
         let border = Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1);
         scene.fill(
             Fill::NonZero,
-            Affine::IDENTITY,
-            c.border_standard,
+            draw::base(),
+            draw::edge(c.surfaces.raised),
             None,
             &border,
         );
@@ -1205,7 +1201,7 @@ impl ContainersApp {
         // Action toolbar.
         let toolbar = Rect::new(panel.x0, strip.y1, panel.x1, strip.y1 + 48.0);
         self.draw_detail_toolbar(scene, tr, theme, toolbar, container);
-        draw::divider(scene, toolbar.x0, toolbar.x1, toolbar.y1, c.border_standard);
+        draw::separator(scene, toolbar.x0, toolbar.x1, toolbar.y1, c.surfaces.raised);
 
         // Tab body.
         let body = Rect::new(panel.x0, toolbar.y1, panel.x1, panel.y1);
@@ -1369,7 +1365,7 @@ impl ContainersApp {
             }
             self.push_hit(trect, Hit::DetailTab(*tab));
         }
-        draw::divider(scene, strip.x0, strip.x1, strip.y1, c.border_standard);
+        draw::separator(scene, strip.x0, strip.x1, strip.y1, c.surfaces.raised);
         strip
     }
 
@@ -1492,9 +1488,11 @@ impl ContainersApp {
         container: &Container,
     ) {
         let c = &theme.tokens.colors;
-        let term_bg = c.neutral[0];
+        // The log console sits one surface step below the raised detail pane
+        // (base inside raised) and closes with its derived edge.
+        let term_bg = c.surfaces.base;
         let inner = Rect::new(body.x0 + 8.0, body.y0 + 8.0, body.x1 - 8.0, body.y1 - 8.0);
-        draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), term_bg);
+        draw::card(scene, inner, f64::from(theme.tokens.radii.md), term_bg);
         if container.logs.is_empty() {
             Self::draw_empty(scene, tr, theme, inner, "No log output yet.");
             return;
@@ -1602,19 +1600,7 @@ impl ContainersApp {
         spec: &GaugeCard,
     ) {
         let c = &theme.tokens.colors;
-        draw::fill_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.md),
-            c.surfaces.base,
-        );
-        draw::stroke_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.md),
-            1.0,
-            c.border_standard,
-        );
+        draw::card(scene, card, f64::from(theme.tokens.radii.md), c.surfaces.base);
         draw::text(
             scene,
             tr,
@@ -1666,19 +1652,7 @@ impl ContainersApp {
             body.x0 + PAD + card_w,
             y + rows.len() as f64 * 30.0 + 12.0,
         );
-        draw::fill_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.md),
-            c.surfaces.base,
-        );
-        draw::stroke_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.md),
-            1.0,
-            c.border_standard,
-        );
+        draw::card(scene, card, f64::from(theme.tokens.radii.md), c.surfaces.base);
         let mut ry = card.y0 + 8.0;
         for (i, (k, v)) in rows.iter().enumerate() {
             draw::text(
@@ -1706,13 +1680,7 @@ impl ContainersApp {
                 TextWeight::Semibold,
             );
             if i + 1 < rows.len() {
-                draw::divider(
-                    scene,
-                    card.x0 + 14.0,
-                    card.x1 - 14.0,
-                    ry + 28.0,
-                    draw::with_alpha(c.border_standard, 120),
-                );
+                draw::separator(scene, card.x0 + 14.0, card.x1 - 14.0, ry + 28.0, c.surfaces.base);
             }
             ry += 30.0;
         }
@@ -1833,7 +1801,7 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         let inner = Rect::new(body.x0 + 8.0, body.y0 + 8.0, body.x1 - 8.0, body.y1 - 8.0);
-        draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), c.neutral[0]);
+        draw::card(scene, inner, f64::from(theme.tokens.radii.md), c.surfaces.base);
         let mono = theme.tokens.typography.scale.sm;
         let mut y = inner.y0 + 14.0;
         let prompt_lines = [
@@ -1978,12 +1946,7 @@ impl ContainersApp {
     ) -> Rect {
         let c = &theme.tokens.colors;
         let banner = Rect::new(list.x0 + PAD, list.y0 + 8.0, list.x1 - PAD, list.y0 + 44.0);
-        draw::fill_round(
-            scene,
-            banner,
-            f64::from(theme.tokens.radii.md),
-            c.surfaces.raised,
-        );
+        draw::card(scene, banner, f64::from(theme.tokens.radii.md), c.surfaces.raised);
         let disk = format!(
             "{} images · {} on disk",
             self.engine.images.len(),
@@ -2086,13 +2049,7 @@ impl ContainersApp {
         // Action cluster on the far right (pull again / tag / inspect / remove).
         let acts_right = self.draw_image_actions(scene, theme, &image.reference(), row);
         Self::draw_image_row_meta(scene, tr, theme, row, inner, acts_right, image);
-        draw::divider(
-            scene,
-            inner.x0,
-            inner.x1,
-            row.y1,
-            draw::with_alpha(c.border_standard, 90),
-        );
+        draw::separator(scene, inner.x0, inner.x1, row.y1, c.surfaces.base);
     }
 
     /// The right-hand metadata cluster on an image row: size, created,
@@ -2270,12 +2227,7 @@ impl ContainersApp {
     ) -> Rect {
         let c = &theme.tokens.colors;
         let banner = Rect::new(list.x0 + PAD, list.y0 + 8.0, list.x1 - PAD, list.y0 + 44.0);
-        draw::fill_round(
-            scene,
-            banner,
-            f64::from(theme.tokens.radii.md),
-            c.surfaces.raised,
-        );
+        draw::card(scene, banner, f64::from(theme.tokens.radii.md), c.surfaces.raised);
         let in_use = self
             .engine
             .volumes
@@ -2403,13 +2355,7 @@ impl ContainersApp {
             );
         }
         self.draw_volume_row_remove_button(scene, theme, row, inner, v);
-        draw::divider(
-            scene,
-            inner.x0,
-            inner.x1,
-            row.y1,
-            draw::with_alpha(c.border_standard, 90),
-        );
+        draw::separator(scene, inner.x0, inner.x1, row.y1, c.surfaces.base);
     }
 
     /// The remove button on the far right of a volume row.
@@ -2536,23 +2482,16 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         let hov = self.hovered(card);
-        draw::fill_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        draw::stroke_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            1.0,
-            if hov {
-                c.border_focus
-            } else {
-                c.border_standard
-            },
-        );
+        draw::card(scene, card, f64::from(theme.tokens.radii.lg), c.surfaces.raised);
+        if hov {
+            draw::stroke_round(
+                scene,
+                card,
+                f64::from(theme.tokens.radii.lg),
+                1.0,
+                c.border_focus,
+            );
+        }
         draw::icon(
             scene,
             Icon::Terminal,
@@ -2672,18 +2611,19 @@ impl ContainersApp {
         let mw = 520.0_f64.min(full.width() - 48.0);
         let mh = 540.0_f64.min(full.height() - 32.0);
         let modal = Rect::from_center_size(full.center(), (mw, mh));
+        // A floating panel: the shell's Panel ground and its derived border.
         draw::fill_round(
             scene,
             modal,
             f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
+            ui::chrome::panel_ground(theme),
         );
         draw::stroke_round(
             scene,
-            modal,
-            f64::from(theme.tokens.radii.lg),
+            modal.inset(-0.5),
+            f64::from(theme.tokens.radii.lg) - 0.5,
             1.0,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
         );
 
         draw::text(
@@ -2747,23 +2687,23 @@ impl ContainersApp {
                 TextWeight::Medium,
             );
             let input = Rect::new(modal.x0 + 24.0, y + 14.0, modal.x1 - 24.0, y + 42.0);
-            draw::fill_round(
-                scene,
-                input,
-                f64::from(theme.tokens.radii.md),
-                c.surfaces.base,
-            );
-            draw::stroke_round(
-                scene,
-                input,
-                f64::from(theme.tokens.radii.md),
-                if focused { 2.0 } else { 1.0 },
-                if focused {
-                    c.border_focus
-                } else {
-                    c.border_standard
-                },
-            );
+            if focused {
+                draw::fill_round(
+                    scene,
+                    input,
+                    f64::from(theme.tokens.radii.md),
+                    c.surfaces.base,
+                );
+                draw::stroke_round(
+                    scene,
+                    input,
+                    f64::from(theme.tokens.radii.md),
+                    2.0,
+                    c.border_focus,
+                );
+            } else {
+                draw::card(scene, input, f64::from(theme.tokens.radii.md), c.surfaces.base);
+            }
             let is_image = *field == CreateField::Image;
             let text_right = if is_image {
                 input.x1 - 38.0
@@ -2882,13 +2822,18 @@ impl ContainersApp {
         };
         let panel = Rect::new(input.x0, input.y1 + 4.0, input.x1, input.y1 + 4.0 + panel_h);
         // An opaque popover surface so the suggestions sit above the fields.
-        draw::fill_round(scene, panel, f64::from(theme.tokens.radii.md), c.neutral[2]);
-        draw::stroke_round(
+        draw::fill_round(
             scene,
             panel,
             f64::from(theme.tokens.radii.md),
+            ui::chrome::panel_ground(theme),
+        );
+        draw::stroke_round(
+            scene,
+            panel.inset(-0.5),
+            f64::from(theme.tokens.radii.md) - 0.5,
             1.0,
-            c.border_focus,
+            ui::chrome::panel_border(theme),
         );
 
         if filtered.is_empty() {
@@ -2967,18 +2912,19 @@ impl ContainersApp {
         let mw = 560.0_f64.min(full.width() - 48.0);
         let mh = 360.0_f64.min(full.height() - 48.0);
         let modal = Rect::from_center_size(full.center(), (mw, mh));
+        // A floating panel: the shell's Panel ground and its derived border.
         draw::fill_round(
             scene,
             modal,
             f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
+            ui::chrome::panel_ground(theme),
         );
         draw::stroke_round(
             scene,
-            modal,
-            f64::from(theme.tokens.radii.lg),
+            modal.inset(-0.5),
+            f64::from(theme.tokens.radii.lg) - 0.5,
             1.0,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
         );
 
         Self::draw_pull_overlay_header(scene, tr, theme, modal, pull);
@@ -3049,7 +2995,7 @@ impl ContainersApp {
             modal.x1 - 16.0,
             modal.y1 - 60.0,
         );
-        draw::fill_round(scene, body, f64::from(theme.tokens.radii.md), c.neutral[0]);
+        draw::card(scene, body, f64::from(theme.tokens.radii.md), c.surfaces.base);
         let mono = theme.tokens.typography.scale.xs;
         let line_h = f64::from(mono * 1.5);
         let visible = ((body.height() - 16.0) / line_h).floor() as usize;

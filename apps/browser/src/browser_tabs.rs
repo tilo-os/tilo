@@ -150,6 +150,9 @@ impl BrowserTabs {
     fn make_fullscreen_hint() -> Box<dyn Widget> {
         use ui::a11y::Politeness;
         use ui::widget::{Container, Text};
+        // Theme-driven: the hint pill takes the theme's own surface and body
+        // ink instead of a fixed near-black fill with white text, so it reads
+        // on the light palette as well (HIG §7 theme-driven, pixel-clean).
         Box::new(
             Container::new()
                 .with_no_padding()
@@ -157,12 +160,11 @@ impl BrowserTabs {
                 .with_child(Box::new(
                     Container::new()
                         .with_centered_max_width(240.0)
-                        .with_fill(vello::peniko::Color::from_rgba8(16, 16, 20, 242))
+                        .with_background()
                         .with_child(Box::new(
                             Text::new("Esc to exit full screen")
                                 .with_id("browser.fullscreen-hint")
                                 .with_live(Politeness::Polite)
-                                .with_color(vello::peniko::Color::WHITE)
                                 .with_size(14.0),
                         )),
                 )),

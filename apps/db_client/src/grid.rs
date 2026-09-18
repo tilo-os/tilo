@@ -340,11 +340,11 @@ impl GridView {
             );
             x += w;
         }
-        // Header underline.
+        // Header underline, derived against the header band it closes.
         scene.stroke(
             &Stroke::new(1.5),
             transform,
-            theme.border_standard,
+            ui::surface::edge_on(p.header_bg),
             None,
             &Line::new(
                 Point::new(r.x0, r.y0 + header_h),
