@@ -393,6 +393,7 @@ pub struct FeedsApp {
 
     last_mouse: Point,
     modal: Option<FeedsModal>,
+    modal_structure_dirty: bool,
     toast: Option<(String, Instant)>,
 
     // --- OPML import (XDG portal) ---------------------------------------
@@ -524,6 +525,7 @@ impl FeedsApp {
             reader_open_rect: None,
             last_mouse: Point::ZERO,
             modal: None,
+            modal_structure_dirty: false,
             toast: None,
             import_rx: None,
             feed_menu: ContextMenu::new(),
@@ -878,6 +880,7 @@ impl FeedsApp {
         };
         self.show_reader_settings = false;
         self.modal = Some(FeedsModal::edit_tags(article.id, &article.tags));
+        self.modal_structure_dirty = true;
     }
 
     fn mark_all_read(&mut self, doc: &mut AutoCommit) {
@@ -1399,6 +1402,7 @@ impl FeedsApp {
                     .map(|f| f.title.clone())
                     .unwrap_or_default();
                 self.modal = Some(FeedsModal::rename(feed_id, &title));
+                self.modal_structure_dirty = true;
             }
             // Unsubscribe is destructive, so confirm it through the shared modal
             // rather than removing the feed on the spot.
@@ -1409,6 +1413,7 @@ impl FeedsApp {
     /// Open the "Add subscription" dialog (real modal + real URL field).
     fn open_add_subscription(&mut self) {
         self.modal = Some(FeedsModal::add_subscription());
+        self.modal_structure_dirty = true;
     }
 
     /// Open the unsubscribe confirmation for `feed_id`.
@@ -1419,6 +1424,7 @@ impl FeedsApp {
             .map(|f| f.title.clone())
             .unwrap_or_default();
         self.modal = Some(FeedsModal::unsubscribe(feed_id, &title));
+        self.modal_structure_dirty = true;
     }
 
     // --- modal lifecycle (drive the shared ModalDialog) ------------------
@@ -1457,19 +1463,27 @@ impl FeedsApp {
             *handled = true;
             return;
         }
-        let (submit, cancel) = {
+        {
             let Some(m) = self.modal.as_mut() else { return };
             *handled = m
                 .dialog
                 .handle_detached(event, scale_factor, modifiers, state, path);
-            (m.submit.replace(false), m.cancel.replace(false))
+        }
+        self.drain_modal_actions(state);
+        *handled = true;
+    }
+
+    fn drain_modal_actions(&mut self, state: &mut AutoCommit) {
+        let Some(modal) = self.modal.as_ref() else {
+            return;
         };
+        let (submit, cancel) = (modal.submit.replace(false), modal.cancel.replace(false));
         if submit {
             self.submit_modal(state);
         } else if cancel {
             self.modal = None;
+            self.modal_structure_dirty = true;
         }
-        *handled = true;
     }
 
     /// Apply the open dialog's primary action against the real store +
@@ -1484,6 +1498,7 @@ impl FeedsApp {
             return;
         }
         self.modal = None;
+        self.modal_structure_dirty = true;
         match intent {
             ModalIntent::AddSubscription => self.subscribe(&value, doc),
             ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, &value, doc),
@@ -2129,6 +2144,11 @@ impl FeedsApp {
             &self.filter_title(),
             self.store.count_for(self.filter),
             list_inset,
+            self.toolbar_buttons
+                .iter()
+                .filter(|button| button.rect.intersect(self.list_rect).area() > 0.0)
+                .map(|button| button.rect.x0 - 10.0)
+                .fold(self.list_rect.x1 - 18.0, f64::min),
             &self.refresh,
         );
         // The reader shifts right to clear the top-left Back button whenever it
@@ -2775,9 +2795,23 @@ impl FeedsApp {
     }
 
     fn open_url(&mut self, url: &str) {
-        // Best-effort hand-off to the desktop; never block or panic.
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-        self.set_toast(format!("Opening {url}"));
+        let Some(url) = reqwest::Url::parse(url.trim())
+            .ok()
+            .filter(|url| match url.scheme() {
+                "http" | "https" | "gemini" => url.host_str().is_some(),
+                "mailto" => !url.path().is_empty(),
+                _ => false,
+            })
+        else {
+            self.set_toast(ui::i18n!("feeds-open-link-invalid"));
+            return;
+        };
+        match ui::widget::try_open_external_url(url.as_str()) {
+            Ok(()) => self.set_toast(ui::i18n!("feeds-open-link-started")),
+            Err(error) => {
+                self.set_toast(format!("{}: {error}", ui::i18n!("feeds-open-link-failed")));
+            }
+        }
     }
 }
 
@@ -3097,34 +3131,50 @@ fn draw_list(
     title: &str,
     count: usize,
     header_inset: f64,
+    header_text_end: f64,
     refresh: &RefreshState,
 ) {
     let c = &theme.tokens.colors;
     // Header. `header_inset` shifts the title right of the hamburger toggle
     // when the list is the narrow master pane.
     let title_x = rect.x0 + 18.0 + header_inset;
-    tr.draw_text_weighted(
-        scene,
-        title,
-        17.0,
-        c.text_primary,
-        t * Affine::translate((title_x, rect.y0 + 16.0)),
-        None,
-        TextWeight::Bold,
-    );
-    let count_label = format!("{count}");
-    let title_w0 = measure_w(tr, title, 17.0);
-    tr.draw_text(
-        scene,
-        &count_label,
-        13.0,
-        c.text_dim,
-        // `measure_w` can be a little tighter than the painted glyph bounds
-        // at high text contrast / fallback-font settings. Keep a generous,
-        // stable gap so “All Articles” and its count never read as one word.
-        t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
-        None,
-    );
+    // At phone widths the action buttons occupy the header. The selected
+    // filter remains available in the subscriptions pane; do not paint its
+    // redundant title underneath those controls.
+    let header_width = header_text_end - title_x;
+    if header_width >= 64.0 {
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &Rect::new(title_x, rect.y0, header_text_end, rect.y0 + HEADER_H),
+        );
+        let visible_title = elide(tr, title, 17.0, (header_width - 8.0) as f32);
+        tr.draw_text_weighted(
+            scene,
+            &visible_title,
+            17.0,
+            c.text_primary,
+            t * Affine::translate((title_x, rect.y0 + 16.0)),
+            None,
+            TextWeight::Bold,
+        );
+        let count_label = format!("{count}");
+        let title_w0 = measure_w(tr, title, 17.0);
+        tr.draw_text(
+            scene,
+            &count_label,
+            13.0,
+            c.text_dim,
+            // `measure_w` can be a little tighter than the painted glyph bounds
+            // at high text contrast / fallback-font settings. Keep a generous,
+            // stable gap so “All Articles” and its count never read as one word.
+            t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
+            None,
+        );
+        scene.pop_layer();
+    }
     let header_bottom = rect.y0 + HEADER_H;
     hline(
         scene,
@@ -4052,6 +4102,7 @@ impl Widget for FeedsApp {
             self.synced = true;
             self.store_heads = state.get_heads();
         }
+        self.drain_modal_actions(state);
         // Persist anything the live (doc-less) drain queued, then drain again
         // here so an input-driven sync also picks up fresh results promptly.
         self.flush_doc_writes(state);
@@ -4229,17 +4280,26 @@ impl Widget for FeedsApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let children: Vec<_> = self
+            .modal
+            .as_mut()
+            .map(|modal| modal.dialog.build_layout(taffy, theme, node_map))
+            .into_iter()
+            .collect();
         let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            })
+                &children,
+            )
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
@@ -4383,6 +4443,26 @@ impl Widget for FeedsApp {
         "FeedsApp"
     }
 
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.modal
+            .as_ref()
+            .map(|modal| &modal.dialog as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.modal_structure_dirty)
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.modal
+            .as_mut()
+            .map(|modal| &mut modal.dialog as &mut dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -4419,8 +4499,8 @@ impl Widget for FeedsApp {
         reason = "one semantic mirror covers the custom-painted toolbar, subscription tree, article list and reader document"
     )]
     fn accessibility(&self) -> Option<AccessNode> {
-        if let Some(modal) = self.modal.as_ref() {
-            return modal.dialog.accessibility();
+        if self.modal.is_some() {
+            return None;
         }
         if self.feed_menu.is_open() {
             return self.feed_menu.accessibility();
@@ -6524,6 +6604,107 @@ mod tests {
                 .articles
                 .iter()
                 .any(|x| x.id == art.id && !x.blocks.is_empty())
+        );
+    }
+
+    #[test]
+    fn native_accessibility_dispatch_edits_the_modal_field() {
+        let mut reader = FeedsApp::new();
+        reader.open_add_subscription();
+        lay_out(&mut reader, 800.0, 600.0);
+        let mut app = ui::App::new(ui::State::new(), Box::new(reader));
+        app.init_layout();
+        let field = app
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Feed URL"))
+            .map(|(id, _)| *id)
+            .expect("native field must be exported");
+        assert!(
+            field.0 < (1_u64 << 48),
+            "field has no retained layout id: {field:?}"
+        );
+        app.dispatch_a11y_action(
+            field,
+            &A11yAction::SetValue("https://example.invalid/rss.xml".into()),
+        );
+        let after = app.build_a11y_tree_update(1.0);
+        let field = after
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Feed URL"))
+            .unwrap();
+        assert_eq!(field.1.value(), Some("https://example.invalid/rss.xml"));
+    }
+
+    #[test]
+    fn accessibility_modal_field_and_footer_submit_a_real_subscription() {
+        let mut reader = FeedsApp::new();
+        let mut doc = AutoCommit::new();
+        reader.sync(&mut doc, &automerge::ROOT);
+        let _sender = reader.install_test_worker();
+        reader.open_add_subscription();
+        assert!(
+            reader.take_structure_dirty(),
+            "opening must rebuild the native input tree"
+        );
+        assert!(
+            !reader.take_structure_dirty(),
+            "the unchanged tree must remain stable"
+        );
+        lay_out(&mut reader, 800.0, 600.0);
+        let url = "https://example.invalid/feeds.xml";
+        {
+            let mut dialogs = reader.children_mut();
+            let dialog = dialogs
+                .first_mut()
+                .expect("open dialog must be in the widget tree");
+            {
+                let mut bodies = dialog.children_mut();
+                let body = bodies.first_mut().unwrap();
+                let mut fields = body.children_mut();
+                let field = fields
+                    .first_mut()
+                    .expect("real TextInput must be reachable");
+                assert_eq!(
+                    field.accessibility().unwrap().name.as_deref(),
+                    Some("Feed URL")
+                );
+                assert!(field.perform_action(
+                    &A11yAction::SetValue(url.into()),
+                    &mut doc,
+                    &automerge::ROOT
+                ));
+            }
+            assert!(dialog.perform_semantic_action(
+                "modal.primary",
+                &A11yAction::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+        }
+        reader.sync(&mut doc, &automerge::ROOT);
+        assert!(reader.modal.is_none());
+        assert!(
+            reader.take_structure_dirty(),
+            "closing must remove stale input targets"
+        );
+        assert!(
+            FeedsDoc::load(&doc)
+                .feeds
+                .iter()
+                .any(|feed| feed.url == url)
+        );
+    }
+
+    #[test]
+    fn external_article_links_reject_local_files() {
+        let mut reader = FeedsApp::new();
+        reader.open_url("file:///does-not-exist-tilo-link-proof");
+        assert_eq!(
+            reader.toast.as_ref().map(|(text, _)| text.as_str()),
+            Some(ui::i18n!("feeds-open-link-invalid").as_str())
         );
     }
 

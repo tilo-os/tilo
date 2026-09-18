@@ -3,7 +3,7 @@
 //! Architecture (mirrors the notes app):
 //!   * [`model`]  — pure data + the in-memory [`model::Store`].
 //!   * [`doc`]    — Automerge mapping; converging state lives here.
-//!   * [`sample`] — bundled offline fixture used by `--shots` + first run.
+//!   * [`sample`] — bundled offline fixture used only by `--shots` and tests.
 //!   * [`fetch`]  — off-thread HTTP (reqwest + feed-rs) and gemini (TLS).
 //!   * [`html`] / [`gemtext`] — body → renderable [`model::ContentBlock`]s.
 //!   * [`opml`]   — subscription import/export.
