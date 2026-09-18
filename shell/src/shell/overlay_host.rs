@@ -24751,6 +24751,25 @@ mod overlay_event_absorb_tests {
     }
 
     #[test]
+    fn quick_settings_power_tile_opens_the_power_menu_on_the_first_click() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        h.host.force_quick_settings_settled();
+        paint(&mut h);
+        let power = h
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
+            .expect("the visible Power tile has semantic geometry");
+
+        let _ = pump(&mut h, &cursor_moved_at(power.center()));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(h.host.power_menu.is_open());
+        assert!(!h.chrome.borrow().overlays.quick_settings);
+    }
+
+    #[test]
     fn overlay_absorbs_keyboard_text_and_release_when_qs_open() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.quick_settings = true;
