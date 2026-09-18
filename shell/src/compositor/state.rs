@@ -189,11 +189,13 @@ fn load_display_scale() -> f64 {
 /// The protocol and compositor share **one** locked state: a client `lock`
 /// stashes the [`SessionLocker`] here and raises `lock_requested`; the run
 /// loop locks, paints the overlay, then confirms via [`SessionLocker::lock`]
-/// so `locked` fires only once content is hidden. `unlock_and_destroy` raises `unlock_requested`. Same-thread, so no `Arc`/lock.
+/// so `locked` fires only once content is hidden. Releasing the protocol
+/// object never unlocks Tilo: the compositor-owned password verifier is the
+/// sole authority that can clear the session lock. Same-thread, so no
+/// `Arc`/lock.
 #[derive(Default)]
 pub struct SessionLockHooks {
     lock_requested: bool,
-    unlock_requested: bool,
     pending_locker: Option<SessionLocker>,
 }
 
@@ -201,11 +203,6 @@ impl SessionLockHooks {
     /// Take the "a client asked to lock" edge (clears it; true at most once per protocol `lock` request).
     pub fn take_lock_requested(&mut self) -> bool {
         std::mem::take(&mut self.lock_requested)
-    }
-
-    /// Take the "a client asked to unlock" edge (clears it).
-    pub fn take_unlock_requested(&mut self) -> bool {
-        std::mem::take(&mut self.unlock_requested)
     }
 
     /// Take the stashed [`SessionLocker`] so the run loop can confirm the lock after the overlay is presented; `None` if nothing pending.
@@ -388,11 +385,13 @@ mod personal_fabric_input_holder_tests {
         let first = DeviceId::new("first").unwrap();
         let second = DeviceId::new("second").unwrap();
         let mut held = PersonalFabricInputHolders::default();
+        assert!(held.key_transition(&first, 30, true));
         assert!(held.key_transition(&first, 42, true));
         assert!(!held.key_transition(&second, 42, true));
         assert!(held.button_transition(&first, 0x110, true));
-        assert_eq!(held.release_controller(&first), (Vec::new(), vec![0x110]));
-        assert_eq!(held.release_controller(&second), (vec![42], Vec::new()));
+        assert!(held.button_transition(&second, 0x111, true));
+        assert_eq!(held.release_controller(&first), (vec![30], vec![0x110]));
+        assert_eq!(held.release_controller(&second), (vec![42], vec![0x111]));
     }
 }
 
@@ -1446,23 +1445,145 @@ impl State {
     /// announces the new stream before its first frame.
     pub fn register_share_session(&mut self, session: Arc<SharedFlatpakSession>) {
         let surface = session.surface_id;
-        if let Some(previous) = self.active_sessions.get(&surface)
-            && let Some(publish) = &self.legacy_stream_publisher
-        {
-            let _ = publish(previous.stream_end_msg());
+        if self.active_sessions.contains_key(&surface) {
+            self.unregister_share_session(surface);
         }
         if let Some(publish) = &self.legacy_stream_publisher {
             let _ = publish(session.stream_start_msg());
         }
+        self.sync_share_authority(&session);
         self.active_sessions.insert(surface, session);
+    }
+
+    /// Mirror the stream session's actual viewer permissions into the
+    /// compositor authority used by input gating and trusted disclosure.
+    /// This must happen when viewing starts—not lazily on a first input
+    /// packet—or a quiet read-only viewer would be invisible to the host.
+    fn sync_share_authority(&mut self, session: &SharedFlatpakSession) {
+        let surface = session.surface_id;
+        let lost_control = session
+            .viewer_ids()
+            .into_iter()
+            .filter(|peer| {
+                self.share_registry
+                    .get(*peer, surface)
+                    .is_some_and(|old| !old.read_only)
+                    && session.viewer_share(*peer).is_some_and(|new| new.read_only)
+            })
+            .collect::<Vec<_>>();
+        for peer in self.share_registry.peers_for(surface) {
+            self.share_registry.remove(peer, surface);
+        }
+        for peer in session.viewer_ids() {
+            if let Some(share) = session.viewer_share(peer) {
+                self.share_registry.insert(peer, surface, share);
+            }
+        }
+        for peer in lost_control {
+            self.release_remote_focus_for_surface(peer, surface);
+        }
     }
 
     /// Deregister a share session by surface id (no-op if unregistered) — called on share end or surface destroy.
     pub fn unregister_share_session(&mut self, surface: SurfaceId) {
-        if let Some(session) = self.active_sessions.remove(&surface)
-            && let Some(publish) = &self.legacy_stream_publisher
-        {
-            let _ = publish(session.stream_end_msg());
+        if let Some(session) = self.active_sessions.remove(&surface) {
+            let viewers = session.viewer_ids();
+            if let Some(publish) = &self.legacy_stream_publisher {
+                let _ = publish(session.stream_end_msg());
+            }
+            for peer in viewers {
+                self.share_registry.remove(peer, surface);
+                self.release_remote_focus_for_surface(peer, surface);
+            }
+        }
+    }
+
+    /// A revoked viewer must not leave the legacy app's one seat with a held
+    /// key or stale caret focus. Reference counting ensures releases still
+    /// held by another collaborator are suppressed.
+    fn release_remote_focus_for_surface(&mut self, peer: MsgPeerId, surface: SurfaceId) {
+        let (owns_focus, owns_pointer) =
+            self.remote_seats.seat(peer).map_or((false, false), |seat| {
+                (
+                    seat.focused_surface == Some(surface),
+                    seat.pointer_surface == Some(surface),
+                )
+            });
+        if !owns_focus && !owns_pointer {
+            return;
+        }
+        let seat = self.remote_seats.seat_mut(peer);
+        if owns_focus {
+            let _ = seat.leave();
+        }
+        if owns_pointer {
+            let _ = seat.pointer_leave();
+        }
+        self.release_remote_inputs_for_peer(peer);
+    }
+
+    /// Retire the keys attributed to one remote participant from the shared
+    /// app-facing seat. The participant's logical caret focus is deliberately
+    /// left alone: switching the host's active tab temporarily mutes that
+    /// collaborator, but returning to the shared tab should not require a new
+    /// pointer click.
+    fn release_remote_inputs_for_peer(&mut self, peer: MsgPeerId) {
+        let releases = self.remote_seats.release_peer_keys(peer);
+        let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+        for keycode in releases {
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                let serial = self.next_serial();
+                let _: Option<()> = keyboard.input(
+                    self,
+                    keycode.saturating_add(8).into(),
+                    KeyState::Released,
+                    serial,
+                    time,
+                    |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                );
+            }
+        }
+        self.release_remote_pointer_buttons_for_peer(peer);
+    }
+
+    fn release_remote_pointer_buttons_for_peer(&mut self, peer: MsgPeerId) {
+        let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+        for button in self.remote_seats.release_peer_buttons(peer) {
+            if let Some(pointer) = self.seat.get_pointer() {
+                let serial = self.next_serial();
+                pointer.button(
+                    self,
+                    &ButtonEvent {
+                        button,
+                        state: smithay::backend::input::ButtonState::Released,
+                        serial,
+                        time,
+                    },
+                );
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.frame(self);
+                }
+            }
+        }
+    }
+
+    /// Clear remote-held keys before the single legacy Wayland seat moves
+    /// away from `surface`. Otherwise Smithay includes those held keys in the
+    /// focus-enter sent to the next app, making another participant's late
+    /// release or modifier state spill across app boundaries.
+    pub(crate) fn release_remote_keys_for_surface(&mut self, surface: SurfaceId) {
+        let peers = self
+            .remote_seats
+            .peer_ids()
+            .into_iter()
+            .filter(|peer| {
+                self.remote_seats
+                    .seat(*peer)
+                    .is_some_and(|seat| seat.focused_surface == Some(surface))
+            })
+            .collect::<Vec<_>>();
+        for peer in peers {
+            self.release_remote_inputs_for_peer(peer);
         }
     }
 
@@ -1504,7 +1625,7 @@ impl State {
                 session.app_id == *app_id && session.dimensions() == (width, height)
             });
             if reusable {
-                if let Some(session) = self.active_sessions.get(&surface) {
+                if let Some(session) = self.active_sessions.get(&surface).cloned() {
                     let removed = session
                         .viewer_ids()
                         .into_iter()
@@ -1516,9 +1637,9 @@ impl State {
                         .filter(|peer| session.viewer_share(*peer).is_none())
                         .collect::<Vec<_>>();
                     if let Some(publish) = &self.legacy_stream_publisher {
-                        for peer in removed {
+                        for peer in &removed {
                             let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                                peer,
+                                peer: *peer,
                                 capability: format!("workspace-control:{surface}:revoked"),
                             });
                         }
@@ -1533,6 +1654,10 @@ impl State {
                         }
                     }
                     session.sync_viewers(&recipients);
+                    self.sync_share_authority(&session);
+                    for peer in removed {
+                        self.release_remote_focus_for_surface(peer, surface);
+                    }
                 }
                 continue;
             }
@@ -1736,14 +1861,28 @@ impl State {
         surface: SurfaceId,
         event: InputEvent,
     ) -> bool {
+        let previously_controlled = self
+            .share_registry
+            .get(peer, surface)
+            .is_some_and(|share| !share.read_only);
         let share = self
             .active_sessions
             .get(&surface)
             .and_then(|session| session.viewer_share(peer));
-        if let Some(share) = share {
-            self.share_registry.insert(peer, surface, share);
+        let still_controls = share.as_ref().is_some_and(|share| !share.read_only);
+        if let Some(current) = share {
+            self.share_registry.insert(peer, surface, current);
         } else {
             self.share_registry.remove(peer, surface);
+        }
+        // Permission reconciliation normally performs this transition once
+        // per compositor tick. The per-packet refresh above can observe a
+        // downgrade or removal first, though. Retire the peer's held keys,
+        // drag and caret focus before the newly read-only/not-shared gate
+        // refuses its release packet, or a legacy app can be left with a
+        // modifier/button held indefinitely.
+        if previously_controlled && !still_controls {
+            self.release_remote_focus_for_surface(peer, surface);
         }
         self.apply_remote_input(peer, surface, event)
     }
@@ -1770,9 +1909,22 @@ impl State {
     ) -> Result<(), Denial> {
         let now = std::time::Instant::now();
 
+        let retires_input = matches!(
+            event,
+            InputEvent::PointerButton { pressed: false, .. }
+                | InputEvent::PointerLeave { .. }
+                | InputEvent::KeyboardFocus { focused: false, .. }
+                | InputEvent::Key { pressed: false, .. }
+        );
+
         // The host's own machine wins, unconditionally, before even the per-peer budget — a flooding peer can't delay the panic key.
         if let Some(denial) = self.remote_input_firewall.host_override(now) {
-            return Err(self.refuse_remote_input(peer, surface, &event, denial));
+            // Physical priority blocks new remote actions, not key-up/button-up
+            // cleanup. Rejecting those edges can leave the host's currently
+            // focused legacy app with a stuck modifier or drag.
+            if denial != Denial::PhysicalPriority || !retires_input {
+                return Err(self.refuse_remote_input(peer, surface, &event, denial));
+            }
         }
 
         // Read-only, then ownership — `None` covers a peer inventing a surface id it was never shared.
@@ -1845,24 +1997,10 @@ impl State {
 
         let personal_controllers = self.release_all_personal_fabric_input();
 
-        // Release keys before dropping attribution. Otherwise a peer which
-        // vanished while holding a modifier could leave the app-facing seat
-        // stuck after the emergency stop.
-        let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+        // Release keys and pointer grabs before dropping attribution.
+        // Otherwise a vanished peer could leave the app-facing seat stuck.
         for peer in self.remote_seats.peer_ids() {
-            for keycode in self.remote_seats.release_peer_keys(peer) {
-                if let Some(keyboard) = self.seat.get_keyboard() {
-                    let serial = self.next_serial();
-                    let _: Option<()> = keyboard.input(
-                        self,
-                        keycode.saturating_add(8).into(),
-                        KeyState::Released,
-                        serial,
-                        time,
-                        |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
-                    );
-                }
-            }
+            self.release_remote_inputs_for_peer(peer);
             self.remote_seats.drop_peer(peer);
         }
 
@@ -2260,6 +2398,10 @@ impl RemoteInputSink for State {
         let serial = self.next_serial();
         match event {
             InputEvent::PointerMotion { x, y } => {
+                // Motion is sufficient pointer attribution even if an older
+                // or compact viewer omitted the explicit enter handshake.
+                // Revocation then knows which surface owns a held drag.
+                let _ = self.remote_seats.seat_mut(peer).pointer_enter(surface);
                 if let Some(pointer) = self.seat.get_pointer() {
                     // The firewall translated the point to output space. Give
                     // smithay the same surface + tile origin as local input so
@@ -2291,7 +2433,40 @@ impl RemoteInputSink for State {
                 }
             }
             InputEvent::PointerButton { button, pressed } => {
-                if let Some(pointer) = self.seat.get_pointer() {
+                // A legacy client sees one wl_pointer, while the firewall
+                // retains one cursor per participant. Another peer may have
+                // moved the shared seat since this peer's last motion, so
+                // restore this peer's accepted focus/location before its
+                // coordinate-less button edge is delivered.
+                if let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface)
+                    && let Some(pointer) = self.seat.get_pointer()
+                {
+                    let focus =
+                        self.surface_handles
+                            .get(&surface)
+                            .cloned()
+                            .and_then(|wl_surface| {
+                                self.remote_input_firewall
+                                    .view()
+                                    .rect(surface)
+                                    .map(|rect| (wl_surface, (rect.x0, rect.y0).into()))
+                            });
+                    pointer.motion(
+                        self,
+                        focus,
+                        &MotionEvent {
+                            location: (x, y).into(),
+                            serial,
+                            time,
+                        },
+                    );
+                    if let Some(pointer) = self.seat.get_pointer() {
+                        pointer.frame(self);
+                    }
+                }
+                if self.remote_seats.button_transition(peer, button, pressed)
+                    && let Some(pointer) = self.seat.get_pointer()
+                {
                     let state = if pressed {
                         smithay::backend::input::ButtonState::Pressed
                     } else {
@@ -2321,9 +2496,12 @@ impl RemoteInputSink for State {
             }
             InputEvent::PointerLeave { surface: _ } => {
                 // Leaving ends pointer attribution only. In particular, do
-                // not release keys or deactivate text-input-v3: apps
-                // keep their caret after the pointer moves elsewhere.
+                // not release keys or deactivate text-input-v3: real apps
+                // keep their caret after the pointer moves elsewhere. A
+                // pointer grab cannot survive without a valid coordinate,
+                // though, so retire this peer's held buttons.
                 let _ = self.remote_seats.seat_mut(peer).pointer_leave();
+                self.release_remote_pointer_buttons_for_peer(peer);
             }
             InputEvent::KeyboardFocus {
                 surface: target,
@@ -2334,20 +2512,7 @@ impl RemoteInputSink for State {
                     return;
                 }
                 let _ = self.remote_seats.seat_mut(peer).leave();
-                let releases = self.remote_seats.release_peer_keys(peer);
-                for keycode in releases {
-                    if let Some(keyboard) = self.seat.get_keyboard() {
-                        let release_serial = self.next_serial();
-                        let _: Option<()> = keyboard.input(
-                            self,
-                            keycode.saturating_add(8).into(),
-                            KeyState::Released,
-                            release_serial,
-                            time,
-                            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
-                        );
-                    }
-                }
+                self.release_remote_inputs_for_peer(peer);
             }
             InputEvent::Key {
                 keysym,
@@ -2389,12 +2554,19 @@ impl RemoteInputSink for State {
 impl State {
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
-        let captured_here = {
-            let tree = self.workspace_tree.read();
-            tab_binding::group_id_for_surface(&tree, surface_id).is_some()
-                || self.osk_surface == Some(surface_id)
-                || self.is_floating_toplevel(surface_id)
-        };
+        // `new_toplevel` registers the protocol surface before adopting it
+        // into the shared workspace tree.  A client is allowed to attach its
+        // first buffer immediately after acknowledging configure, and that
+        // pre-commit hook can therefore run in the narrow interval where the
+        // surface is live but its tab lookup has not become observable yet.
+        // Treat every registered toplevel as capture-eligible here.  Popup and
+        // subsurface objects are registered through different paths, so this
+        // does not turn arbitrary child commits into tiled windows.
+        let captured_here = self.client_input.is_known(surface_id)
+            || self.osk_surface == Some(surface_id)
+            || self.is_floating_toplevel(surface_id)
+            || self.is_output_presentation_surface(surface_id)
+            || self.is_transient_surface(surface_id);
         if !captured_here {
             return;
         }
@@ -3925,7 +4097,9 @@ delegate_ext_data_control!(State);
 // compositor hides all normal client surfaces + routes input only to the
 // lock surface (enforced by the native run loop, which owns the
 // authoritative lock + overlay). Tilo renders its own lock UI rather than a
-// client lock surface, so the handler bridges protocol lock/unlock into that one lock state via [`SessionLockHooks`].
+// client lock surface, so the handler bridges only protocol lock requests
+// into that state via [`SessionLockHooks`]. Protocol-object release is not an
+// authentication event.
 impl SessionLockHandler for State {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
         &mut self.session_lock_state
@@ -3938,8 +4112,9 @@ impl SessionLockHandler for State {
     }
 
     fn unlock(&mut self) {
-        // The client tore down its lock (having authenticated on its side).
-        self.session_lock.unlock_requested = true;
+        // Tilo paints and authenticates its own lock screen. A client may
+        // release the ext-session-lock protocol object, but that is not proof
+        // of authentication and must never clear the compositor's lock.
     }
 
     fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
@@ -4688,18 +4863,34 @@ mod tick_hook_tests {
     #[test]
     fn unregister_stops_the_tick_hook() {
         const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
         const SURFACE: SurfaceId = 77;
 
         let session = Arc::new(
             SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
         );
+        session.add_viewer(VIEWER, false);
         let mut state = make_state();
         state.register_share_session(session);
+        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+        assert!(state.remote_seats.key_transition(VIEWER, 42, true));
         state
             .surface_tracker
             .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
         assert!(state.tick_share_session_for_surface(SURFACE));
         state.unregister_share_session(SURFACE);
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.focused_surface),
+            None,
+            "ending the share clears the revoked viewer's caret focus"
+        );
+        assert!(
+            !state.remote_seats.key_transition(VIEWER, 42, false),
+            "ending the share already consumed the held modifier"
+        );
         // Post-unregister the tick is a no-op even with a staged frame.
         state
             .surface_tracker
@@ -4707,23 +4898,280 @@ mod tick_hook_tests {
         assert!(!state.tick_share_session_for_surface(SURFACE));
     }
 
-    /// The `ext_session_lock_v1` bridge reports each lock/unlock request as a one-shot edge: `true` once, then `false`, so the loop can't re-fire it.
     #[test]
-    fn session_lock_hooks_report_and_clear_edges() {
+    fn quiet_viewer_is_disclosed_for_the_entire_stream_lifecycle() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 79;
+
+        let session = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+        );
+        session.add_viewer(VIEWER, true);
+        let mut state = make_state();
+
+        state.register_share_session(session);
+        assert_eq!(
+            state.share_registry.disclosure(),
+            vec![(VIEWER, SURFACE, false)],
+            "view-only disclosure begins when the stream is registered, without waiting for input"
+        );
+
+        state.unregister_share_session(SURFACE);
+        assert!(
+            state.share_registry.disclosure().is_empty(),
+            "ending the stream removes its trusted disclosure immediately"
+        );
+    }
+
+    #[test]
+    fn replacing_a_stream_cannot_leave_its_old_viewer_disclosed() {
+        const HOST: PeerId = 0xAAAA;
+        const OLD: PeerId = 0xBBBB;
+        const NEW: PeerId = 0xCCCC;
+        const SURFACE: SurfaceId = 80;
+
+        let old = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("old"),
+        );
+        old.add_viewer(OLD, false);
+        let new = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("new"),
+        );
+        new.add_viewer(NEW, true);
+        let mut state = make_state();
+
+        state.register_share_session(old);
+        state.register_share_session(new);
+        assert_eq!(
+            state.share_registry.disclosure(),
+            vec![(NEW, SURFACE, false)]
+        );
+    }
+
+    #[test]
+    fn downgrading_live_viewer_to_view_only_retires_held_input() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 81;
+        const SHIFT: u32 = 42;
+
+        let session = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+        );
+        session.add_viewer(VIEWER, false);
+        let mut state = make_state();
+        state.register_share_session(Arc::clone(&session));
+        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+        assert!(state.remote_seats.key_transition(VIEWER, SHIFT, true));
+
+        session.set_read_only(VIEWER, true);
+        state.sync_share_authority(&session);
+
+        assert_eq!(
+            state.share_registry.disclosure(),
+            vec![(VIEWER, SURFACE, false)]
+        );
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.focused_surface),
+            None,
+            "view-only transition revokes the remote caret/input focus"
+        );
+        assert!(
+            !state.remote_seats.key_transition(VIEWER, SHIFT, false),
+            "permission downgrade already retired the held modifier"
+        );
+    }
+
+    #[test]
+    fn packet_fast_path_retires_input_when_it_observes_a_downgrade_first() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 83;
+        const SHIFT: u32 = 42;
+
+        let session = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+        );
+        session.add_viewer(VIEWER, false);
+        let mut state = make_state();
+        state.register_share_session(Arc::clone(&session));
+        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+        assert!(state.remote_seats.key_transition(VIEWER, SHIFT, true));
+
+        session.set_read_only(VIEWER, true);
+        assert!(
+            !state.apply_network_remote_input(
+                VIEWER,
+                SURFACE,
+                InputEvent::Key {
+                    keysym: SHIFT,
+                    pressed: false,
+                    modifiers: 0,
+                },
+            ),
+            "the downgraded release packet is refused after cleanup"
+        );
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.focused_surface),
+            None,
+            "the fast path retires the shared caret before refusing input"
+        );
+        assert!(
+            !state.remote_seats.key_transition(VIEWER, SHIFT, false),
+            "the held modifier was already released exactly once"
+        );
+    }
+
+    #[test]
+    fn packet_fast_path_retires_input_when_it_observes_viewer_removal_first() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 84;
+        const LEFT: u32 = 272;
+
+        let session = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+        );
+        session.add_viewer(VIEWER, false);
+        let mut state = make_state();
+        state.register_share_session(Arc::clone(&session));
+        let _ = state.remote_seats.seat_mut(VIEWER).pointer_enter(SURFACE);
+        assert!(state.remote_seats.button_transition(VIEWER, LEFT, true));
+
+        session.drop_viewer(VIEWER);
+        assert!(
+            !state.apply_network_remote_input(
+                VIEWER,
+                SURFACE,
+                InputEvent::PointerButton {
+                    button: LEFT,
+                    pressed: false,
+                },
+            ),
+            "a removed viewer's packet is refused after cleanup"
+        );
+        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.pointer_surface),
+            None
+        );
+        assert!(state.share_registry.get(VIEWER, SURFACE).is_none());
+    }
+
+    #[test]
+    fn downgrading_pointer_only_viewer_ends_drag_without_a_caret() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 82;
+        const LEFT: u32 = 272;
+
+        let session = Arc::new(
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+        );
+        session.add_viewer(VIEWER, false);
+        let mut state = make_state();
+        state.register_share_session(Arc::clone(&session));
+        let _ = state.remote_seats.seat_mut(VIEWER).pointer_enter(SURFACE);
+        assert!(state.remote_seats.button_transition(VIEWER, LEFT, true));
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.focused_surface),
+            None
+        );
+
+        session.set_read_only(VIEWER, true);
+        state.sync_share_authority(&session);
+
+        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.pointer_surface),
+            None
+        );
+    }
+
+    #[test]
+    fn revoking_one_viewer_releases_focus_without_clearing_another_modifier_hold() {
+        const SURFACE: SurfaceId = 78;
+        const FIRST: PeerId = 0xA1;
+        const SECOND: PeerId = 0xB2;
+        const LEFT_SHIFT: u32 = 42;
+
+        let mut state = make_state();
+        let _ = state.remote_seats.seat_mut(FIRST).enter(SURFACE);
+        let _ = state.remote_seats.seat_mut(SECOND).enter(SURFACE);
+        assert!(state.remote_seats.key_transition(FIRST, LEFT_SHIFT, true));
+        assert!(
+            !state.remote_seats.key_transition(SECOND, LEFT_SHIFT, true),
+            "the legacy app sees one shared modifier press"
+        );
+
+        state.release_remote_focus_for_surface(FIRST, SURFACE);
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(FIRST)
+                .and_then(|seat| seat.focused_surface),
+            None
+        );
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(SECOND)
+                .and_then(|seat| seat.focused_surface),
+            Some(SURFACE)
+        );
+        assert!(
+            state.remote_seats.key_transition(SECOND, LEFT_SHIFT, false),
+            "the remaining holder owns the eventual app-facing release"
+        );
+    }
+
+    /// The `ext_session_lock_v1` bridge reports a lock request as a one-shot
+    /// edge. Protocol-object release deliberately has no unlock edge.
+    #[test]
+    fn session_lock_hooks_report_and_clear_lock_edge_only() {
         let mut h = SessionLockHooks::default();
         assert!(!h.take_lock_requested());
-        assert!(!h.take_unlock_requested());
         assert!(!h.has_pending_locker());
 
         h.lock_requested = true;
-        h.unlock_requested = true;
         assert!(h.take_lock_requested());
         assert!(
             !h.take_lock_requested(),
             "lock edge is consumed exactly once"
         );
-        assert!(h.take_unlock_requested());
-        assert!(!h.take_unlock_requested(), "unlock edge is consumed once");
+    }
+
+    /// Releasing an ext-session-lock object cannot manufacture an unlock
+    /// request. The protocol callback itself is exercised here so a future
+    /// refactor cannot accidentally reconnect object lifetime to authentication.
+    #[test]
+    fn protocol_session_lock_release_is_not_unlock_authority() {
+        let mut state = make_state();
+        state.session_lock.lock_requested = true;
+
+        <State as SessionLockHandler>::unlock(&mut state);
+
+        assert!(
+            state.session_lock.take_lock_requested(),
+            "releasing the protocol object must not cancel the pending lock"
+        );
+        assert!(!state.session_lock.has_pending_locker());
     }
 
     /// A freshly constructed state advertises the session-lock global and starts with no client holding a lock.
@@ -4732,7 +5180,6 @@ mod tick_hook_tests {
         let mut state = make_state();
         // Constructing the state ran `SessionLockManagerState::new` (global advertised) without panic; no client holds a lock yet.
         assert!(!state.session_lock.take_lock_requested());
-        assert!(!state.session_lock.take_unlock_requested());
         assert!(!state.session_lock.has_pending_locker());
     }
 }

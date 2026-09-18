@@ -114,7 +114,20 @@ pub struct ModelDescriptor {
     pub label: String,
     /// Best known input-context size. `None` means unknown, not unlimited.
     pub context_window: Option<u32>,
+    /// Immutable release revision when this model comes from the signed local
+    /// model catalogue. Hosted providers often cannot supply one, so absence
+    /// means "not attested", never "latest".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// A declared capability, not an inference from a model's friendly name.
+    /// For locally managed models this value is copied from the signed
+    /// catalogue; hosted profiles remain an explicit user/provider claim.
     pub vision: bool,
+    /// Signed declaration that this exact local model exposes the bounded
+    /// Photos face-detection/embedding/clustering protocol. This is separate
+    /// from generic vision: image descriptions must never enable biometrics.
+    #[serde(default)]
+    pub face_recognition: bool,
     pub tool_calling: bool,
 }
 
@@ -124,7 +137,9 @@ impl Default for ModelDescriptor {
             id: String::new(),
             label: String::new(),
             context_window: None,
+            revision: None,
             vision: false,
+            face_recognition: false,
             tool_calling: true,
         }
     }

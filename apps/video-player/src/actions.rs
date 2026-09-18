@@ -87,6 +87,15 @@ pub enum PlayerOperation {
         id: String,
         seconds: f64,
     },
+    /// Navigate to a collaborative review marker that belongs to the media
+    /// currently open on this device. The durable annotation is checked again
+    /// against the document before seeking, so search results cannot send a
+    /// later video to a stale timestamp.
+    JumpToAnnotation {
+        id: String,
+        media_ref: String,
+        time_ms: u64,
+    },
     /// Set the shared transport speed in the bounded player range.
     SetPlaybackRate(f64),
     OpenPictureInPicture,
@@ -110,6 +119,7 @@ impl PlayerOperation {
                 | Self::SelectAudioTrack { .. }
                 | Self::SelectSubtitleTrack { .. }
                 | Self::JumpToChapter { .. }
+                | Self::JumpToAnnotation { .. }
                 | Self::SetPlaybackRate(_)
                 | Self::OpenPictureInPicture
         )
@@ -144,6 +154,10 @@ pub struct MediaAvailability {
     /// Exact identity of the currently-open source. Dynamic targets are never
     /// published without it, so an old action cannot act on a later file.
     pub source_id: Option<String>,
+    /// Stable opaque identity for the underlying source. Unlike `source_id`,
+    /// this intentionally survives closing and reopening the same local media
+    /// so collaborative bookmarks remain useful without publishing a path.
+    pub media_ref: Option<String>,
     /// Whether this peer may change shared transport state.
     pub can_control_transport: bool,
 }
@@ -962,7 +976,7 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
     ) {
         recent = recent.with_action(show_recent.with_contract(local_presentation_contract));
     }
-    let shared = shared_resources(doc, CONTEXTUAL_CHILD_LIMIT);
+    let shared = shared_resources(ctx, doc, CONTEXTUAL_CHILD_LIMIT);
     app = app
         .with_child(media)
         .with_child(queue)
@@ -982,7 +996,7 @@ fn encode_shared(action: &SharedAction) -> EncodedAction {
     clippy::too_many_lines,
     reason = "playlist and annotation action contracts stay adjacent to their resource hierarchy"
 )]
-fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
+fn shared_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, limit: usize) -> Resource {
     let state = crate::shared::read(doc);
     let mut playlists = Resource::new(
         "video-player.playlists.shared",
@@ -1228,6 +1242,45 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
         ) {
             resource.actions.push(show);
         }
+        let jump = ActionSpec::typed_operation(
+            "jump",
+            "Jump to timestamp",
+            "Seek to this review marker in the matching video on this device",
+            OperationKind::View,
+            OPERATION_TYPE,
+            Vec::new(),
+            {
+                let id = annotation.id.clone();
+                let media_ref = annotation.media_ref.clone();
+                let time_ms = annotation.time_ms;
+                move |_| {
+                    encode(&PlayerOperation::JumpToAnnotation {
+                        id: id.clone(),
+                        media_ref: media_ref.clone(),
+                        time_ms,
+                    })
+                }
+            },
+        )
+        .retry_policy(RetryPolicy::AtMostOnce);
+        resource.actions.push(if !ctx.media.has_media {
+            jump.unavailable(
+                "no_media",
+                "Open the matching video before jumping to this marker",
+            )
+        } else if ctx.media.media_ref.as_deref() != Some(annotation.media_ref.as_str()) {
+            jump.unavailable(
+                "different_media",
+                "This marker belongs to a different video on this device",
+            )
+        } else if !ctx.media.can_control_transport {
+            jump.unavailable(
+                "following_host",
+                "The collaborative host controls timeline navigation",
+            )
+        } else {
+            jump
+        });
         let id = annotation.id.clone();
         let before = annotation.text.clone();
         resource.actions.push(
@@ -1316,7 +1369,10 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, id: &str) -> Opti
     if let Some(found) = find(&resources(ctx, doc), id) {
         return Some(found);
     }
-    if let Some(found) = find(&[shared_resources(doc, crate::shared::MAX_SHARED_ROWS)], id) {
+    if let Some(found) = find(
+        &[shared_resources(ctx, doc, crate::shared::MAX_SHARED_ROWS)],
+        id,
+    ) {
         return Some(found);
     }
     let one_track = |audio: bool, tracks: &[TrackState]| -> Option<Resource> {
@@ -1335,6 +1391,7 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, id: &str) -> Opti
             media: MediaAvailability {
                 has_media: ctx.media.has_media,
                 source_id: ctx.media.source_id.clone(),
+                media_ref: ctx.media.media_ref.clone(),
                 can_control_transport: ctx.media.can_control_transport,
             },
             settings: PlaybackSettingsState {
@@ -1363,6 +1420,7 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, id: &str) -> Opti
                 media: MediaAvailability {
                     has_media: ctx.media.has_media,
                     source_id: ctx.media.source_id.clone(),
+                    media_ref: ctx.media.media_ref.clone(),
                     can_control_transport: ctx.media.can_control_transport,
                 },
                 settings: PlaybackSettingsState {
@@ -1405,6 +1463,7 @@ mod tests {
             media: MediaAvailability {
                 has_media,
                 source_id: has_media.then(|| "fixture://clip".to_string()),
+                media_ref: has_media.then(|| "fixture-media://clip".to_string()),
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -1581,6 +1640,36 @@ mod tests {
         assert_eq!(
             recent.children[0].id.0,
             recent_item_resource_id("local-queue-local-media-9f3c-open-0")
+        );
+    }
+
+    #[test]
+    fn matching_shared_marker_exposes_a_canonical_timeline_jump() {
+        let mut doc = AutoCommit::new();
+        SharedAction::CreateAnnotation {
+            id: "review-cut".into(),
+            media_ref: "fixture-media://clip".into(),
+            time_ms: 12_500,
+            text: "Check the edit".into(),
+        }
+        .apply(&mut doc)
+        .expect("fixture marker writes");
+        let resource = resource(&ctx(true), &doc, &annotation_resource_id("review-cut"))
+            .expect("annotation resource resolves");
+        let jump = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "jump")
+            .expect("matching marker can jump");
+        assert!(jump.contract.availability.is_available());
+        let encoded = jump.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(
+            decode(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PlayerOperation::JumpToAnnotation {
+                id: "review-cut".into(),
+                media_ref: "fixture-media://clip".into(),
+                time_ms: 12_500,
+            })
         );
     }
 

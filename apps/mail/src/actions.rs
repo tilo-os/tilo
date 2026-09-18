@@ -43,7 +43,7 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
-    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
@@ -99,6 +99,10 @@ fn bounded_ids(ids: &[String]) -> Vec<&str> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MailOperation {
+    /// Start a new local composition.  The body is intentionally not part of
+    /// this view operation: until it is saved as a draft or sent, a compose
+    /// buffer is private presentation state rather than shared mailbox data.
+    ComposeNew,
     RefreshCurrentFolder,
     /// Reveal a system folder without changing the collaborative document.
     RevealFolder {
@@ -126,6 +130,20 @@ pub enum MailOperation {
     /// Normal list activation and **Open message** still use [`Self::RevealMessage`]
     /// and therefore mark an unread message as read.
     InspectMessage {
+        id: String,
+    },
+    /// Start a reply to one loaded message.  This is a view operation because
+    /// it only opens a local, unsaved compose buffer; saving that buffer uses
+    /// the canonical `SaveDraft` document action.
+    Reply {
+        id: String,
+    },
+    /// Start a reply-all composition for one loaded message.
+    ReplyAll {
+        id: String,
+    },
+    /// Start a forward composition for one loaded message.
+    Forward {
         id: String,
     },
     RevealDraft,
@@ -294,10 +312,25 @@ impl Action for MailAction {
                 }
             }
             MailAction::Purge { ids } => {
-                for id in bounded_ids(ids) {
-                    if MailDoc::is_present_message(doc, id) {
-                        MailDoc::mark_message_purged(doc, id);
-                    }
+                let ids = bounded_ids(ids);
+                // Purge is all-or-nothing. A stale search result or a message
+                // concurrently moved out of Trash must refuse the whole batch,
+                // rather than permanently delete whatever happens to remain
+                // valid. This preserves the atomic contract agents and the
+                // selection toolbar publish.
+                if ids.is_empty()
+                    || ids.iter().any(|id| {
+                        !MailDoc::is_present_message(doc, id)
+                            || MailDoc::get_folder_for(doc, id) != Some(Folder::Trash)
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "every message must still be present in Trash before permanent deletion"
+                            .into(),
+                    ));
+                }
+                for id in ids {
+                    MailDoc::mark_message_purged(doc, id);
                 }
             }
             MailAction::AddLabel { ids, label } => {
@@ -565,6 +598,54 @@ fn immediate_spec(id: &str, label: &str, action: &MailAction) -> ActionSpec {
         .reversible()
 }
 
+/// A bounded, typed mailbox-level batch action.  This is deliberately a
+/// mailbox capability rather than an implementation detail of the visible
+/// list: search and agents can therefore submit the same one-action atomic
+/// triage operation with stable message ids.  The document action remains the
+/// final defensive boundary; these checks make the published contract honest
+/// before a payload is authored.
+fn bulk_spec(
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    reversible: bool,
+    build: impl Fn(Vec<String>) -> MailAction + Send + Sync + 'static,
+) -> ActionSpec {
+    let spec = ActionSpec::typed(
+        id,
+        label,
+        "message ids…",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("ids", ParamType::Array, description).with_schema(
+                serde_json::json!({
+                    "minItems": 1,
+                    "maxItems": MAX_MESSAGE_IDS_PER_ACTION,
+                    "items": {"type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_ID_CHARS}
+                }),
+            ),
+        ],
+        move |args: &ActionArgs| {
+            let ids = args
+                .array("ids")
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str())
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && id.chars().count() <= MAX_MESSAGE_ID_CHARS)
+                .fold(Vec::new(), |mut ids, id| {
+                    if ids.len() < MAX_MESSAGE_IDS_PER_ACTION && !ids.iter().any(|seen| seen == id)
+                    {
+                        ids.push(id.to_string());
+                    }
+                    ids
+                });
+            encode(&build(ids))
+        },
+    );
+    if reversible { spec.reversible() } else { spec }
+}
+
 #[allow(
     clippy::expect_used,
     reason = "MailOperation is a derived-Serialize enum; an unencodable operation is a programmer invariant violation"
@@ -623,6 +704,31 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
         "inspect",
         "Preview without marking read",
         &MailOperation::InspectMessage {
+            id: message.id.clone(),
+        },
+    ));
+    // Composition is a first-class resource capability, rather than an
+    // on-screen-only context-menu convenience.  Each operation opens exactly
+    // the same local composer boundary as the reader buttons and shortcuts;
+    // no unsaved recipient/body data enters the shared mailbox document.
+    resource = resource.with_action(view_spec(
+        "reply",
+        "Reply",
+        &MailOperation::Reply {
+            id: message.id.clone(),
+        },
+    ));
+    resource = resource.with_action(view_spec(
+        "reply-all",
+        "Reply all",
+        &MailOperation::ReplyAll {
+            id: message.id.clone(),
+        },
+    ));
+    resource = resource.with_action(view_spec(
+        "forward",
+        "Forward",
+        &MailOperation::Forward {
             id: message.id.clone(),
         },
     ));
@@ -726,8 +832,64 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
 /// same action the on-screen affordance dispatches.
 /// Stable mailbox root. Accounts, folders and messages are dynamic children
 /// served through Mail's retained provider rather than root browse pages.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the mailbox resource catalogue is intentionally kept together so its typed action surface can be audited as one unit"
+)]
 pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
     let mut root = Resource::new("mail.mailbox", "mail.mailbox", ctx.mailbox_label.clone());
+
+    root = root.with_action(view_spec(
+        "compose",
+        "Compose message",
+        &MailOperation::ComposeNew,
+    ));
+
+    // Search, history and agents need one *typed*, bounded operation for the
+    // same atomic batch work the selection toolbar performs.  These are kept
+    // as distinct operations (rather than a vague "delete" command with a
+    // hidden mode) so their risk and result are legible before execution.
+    root = root.with_action(bulk_spec(
+        "archive-messages",
+        "Archive messages",
+        "Stable ids of loaded messages to archive together",
+        true,
+        |ids| move_action(ids, Folder::Archive),
+    ));
+    root = root.with_action(bulk_spec(
+        "move-messages-to-trash",
+        "Move messages to Trash",
+        "Stable ids of loaded messages to move to Trash together",
+        true,
+        |ids| move_action(ids, Folder::Trash),
+    ));
+    root = root.with_action(bulk_spec(
+        "mark-messages-read",
+        "Mark messages read",
+        "Stable ids of loaded messages to mark read together",
+        true,
+        |ids| set_read_action(ids, true),
+    ));
+    root = root.with_action(bulk_spec(
+        "mark-messages-unread",
+        "Mark messages unread",
+        "Stable ids of loaded messages to mark unread together",
+        true,
+        |ids| set_read_action(ids, false),
+    ));
+    // Purge is intentionally not coupled to move-to-Trash.  It is a separate
+    // destructive, confirmed capability and the reducer below additionally
+    // refuses every id not currently in Trash.
+    root = root.with_action(
+        bulk_spec(
+            "purge-trashed-messages",
+            "Delete trashed messages permanently",
+            "Stable ids of messages already in Trash to delete permanently",
+            false,
+            purge_action,
+        )
+        .destructive(),
+    );
 
     if let Ok(refresh) = ActionSpec::operation(
         "refresh",
@@ -1098,6 +1260,12 @@ mod tests {
             .expect("explicit preview action");
         assert_eq!(open.label, "Open message");
         assert_eq!(preview.label, "Preview without marking read");
+        for id in ["reply", "reply-all", "forward"] {
+            assert!(
+                resource.actions.iter().any(|action| action.id == id),
+                "message resource exports {id} as a canonical compose action"
+            );
+        }
         let ActionInput::Immediate(open_payload) = &open.input else {
             panic!("open is an immediate view operation");
         };
@@ -1130,8 +1298,18 @@ mod tests {
         let mailbox = &resources[0];
         assert_eq!(mailbox.kind, "mail.mailbox");
         let mb_actions: Vec<&str> = mailbox.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(mb_actions.contains(&"compose"), "{mb_actions:?}");
         assert!(mb_actions.contains(&"new-folder"), "{mb_actions:?}");
         assert!(mb_actions.contains(&"refresh"), "{mb_actions:?}");
+        for id in [
+            "archive-messages",
+            "move-messages-to-trash",
+            "mark-messages-read",
+            "mark-messages-unread",
+            "purge-trashed-messages",
+        ] {
+            assert!(mb_actions.contains(&id), "mailbox exposes typed batch {id}");
+        }
         let refresh = mailbox.actions.iter().find(|a| a.id == "refresh").unwrap();
         assert_eq!(
             refresh.contract.execution,
@@ -1192,6 +1370,58 @@ mod tests {
             labels.iter().any(|l| l.contains("New folder")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn mailbox_batch_actions_bind_stable_ids_and_purge_is_confirmed() {
+        let (app, state) = seeded_app();
+        let resources = Widget::resources(&app, &state.doc);
+        let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
+        let address = tilo_actions::ActionAddress::new("mail.mailbox", "archive-messages");
+        let args = serde_json::json!({"ids": [id.clone(), id]});
+        let encoded = tilo_actions::door::encode_json(
+            &resources,
+            &address,
+            args.as_object().expect("object arguments"),
+        )
+        .expect("typed ids bind through the external resource door");
+        assert_eq!(
+            serde_json::from_slice::<MailAction>(&encoded.payload).expect("mail action decodes"),
+            move_action(vec![id], Folder::Archive),
+            "duplicate ids collapse before the canonical batch action is authored"
+        );
+
+        let purge = tilo_actions::door::survey(&resources)
+            .into_iter()
+            .find(|descriptor| descriptor.address.action == "purge-trashed-messages")
+            .expect("published purge descriptor");
+        assert_eq!(purge.params.len(), 1);
+        assert_eq!(purge.params[0].name, "ids");
+        assert_eq!(purge.params[0].ty, ParamType::Array);
+        assert!(matches!(
+            purge.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        ));
+        assert!(
+            !purge.contract.reversible,
+            "a server-side permanent deletion must not claim local undo can restore it"
+        );
+    }
+
+    #[test]
+    fn purge_action_refuses_mixed_or_stale_ids_without_deleting_a_valid_subset() {
+        let mut doc = AutoCommit::new();
+        MailDoc::set_folder_for(&mut doc, "inbox", Folder::Inbox);
+        MailDoc::set_folder_for(&mut doc, "trash", Folder::Trash);
+        let heads_before = doc.get_heads();
+        let error = purge_action(vec!["inbox".into(), "missing".into(), "trash".into()])
+            .apply(&mut doc)
+            .expect_err("mixed/stale purge refuses rather than deleting a valid subset");
+        assert!(matches!(error, ActionError::Refused(_)));
+        assert!(MailDoc::is_present_message(&doc, "inbox"));
+        assert!(MailDoc::is_present_message(&doc, "trash"));
+        assert_eq!(MailDoc::get_folder_for(&doc, "inbox"), Some(Folder::Inbox));
+        assert_eq!(doc.get_heads(), heads_before);
     }
 
     #[test]

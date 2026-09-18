@@ -84,6 +84,32 @@ impl PowerMenu {
         })
     }
 
+    pub(crate) fn accessibility_rect_for_path(
+        &self,
+        viewport: Rect,
+        path: &[usize],
+    ) -> Option<Rect> {
+        if !self.open {
+            return None;
+        }
+        match path {
+            [] => Some(panel_rect(viewport)),
+            [index] if *index < ACTIONS.len() => Some(action_rect(viewport, *index)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn focus_accessibility_path(&mut self, path: &[usize]) -> bool {
+        let [index] = path else {
+            return false;
+        };
+        if !self.open || *index >= ACTIONS.len() {
+            return false;
+        }
+        self.selected = *index;
+        true
+    }
+
     pub(crate) fn open(&mut self) {
         self.open = true;
         self.selected = 0;
@@ -123,6 +149,7 @@ impl PowerMenu {
         if !self.open {
             return PowerMenuClick::Ignored;
         }
+        let point = self.untransform_pointer(viewport, point, Instant::now());
         if !panel_rect(viewport).contains(point) {
             self.close();
             return PowerMenuClick::Consumed;
@@ -134,6 +161,23 @@ impl PowerMenu {
         };
         self.selected = index;
         self.activate(index)
+    }
+
+    /// Convert a pointer in painted viewport coordinates back into the
+    /// flyout's stable layout coordinates. During the 220ms open/close scale
+    /// animation the rows are painted through a centre transform; hit-testing
+    /// the untransformed rectangles made a visibly correct click activate an
+    /// adjacent action (most dangerously Lock instead of Log out).
+    fn untransform_pointer(&self, viewport: Rect, point: Point, now: Instant) -> Point {
+        let (_, dy, scale) = modal_transition_curve(&self.transition, now, 0.94);
+        if !scale.is_finite() || scale <= f64::EPSILON {
+            return point;
+        }
+        let centre = panel_rect(viewport).center();
+        Point::new(
+            centre.x + (point.x - centre.x) / scale,
+            centre.y + (point.y - centre.y - dy) / scale,
+        )
     }
 
     pub(crate) fn key(&mut self, key: &winit::keyboard::Key, shift: bool) -> PowerMenuClick {
@@ -392,7 +436,7 @@ fn panel_rect(viewport: Rect) -> Rect {
     let columns = action_columns(viewport);
     let preferred_width: f64 = if columns == 2 { 424.0 } else { 336.0 };
     let width = preferred_width.min((viewport.width() - 16.0).max(1.0));
-    let height = menu_height(columns).min((viewport.height() - 64.0).max(1.0));
+    let height = menu_height(viewport, columns).min((viewport.height() - 64.0).max(1.0));
     // Leave only a 4px edge inset: the underlying app's scrollbar otherwise
     // peeks through a 16px gap beside this opaque flyout and reads as a second
     // power-menu affordance in screenshots.
@@ -415,25 +459,38 @@ fn action_rect(viewport: Rect, index: usize) -> Rect {
     let column = index % columns;
     let row = index / columns;
     let x0 = panel.x0 + 12.0 + small_count_to_f64(column) * (width + gap);
-    let y0 = panel.y0 + 52.0 + small_count_to_f64(row) * (action_height(columns) + gap);
-    Rect::new(x0, y0, x0 + width, y0 + action_height(columns))
+    let row_height = action_height(viewport, columns);
+    let y0 = panel.y0 + 52.0 + small_count_to_f64(row) * (row_height + gap);
+    Rect::new(x0, y0, x0 + width, y0 + row_height)
 }
 
 fn action_columns(viewport: Rect) -> usize {
-    usize::from(viewport.width() >= 640.0) + 1
+    // At normal heights narrow windows retain the roomy single-column list.
+    // A short viewport needs the compact two-column arrangement so all six
+    // actions remain visible and clickable instead of being clipped below
+    // the panel's clamped bottom edge.
+    usize::from(
+        viewport.width() >= 640.0 || (viewport.width() >= 420.0 && viewport.height() < 400.0),
+    ) + 1
 }
 
-fn action_height(columns: usize) -> f64 {
-    if columns == 2 { 56.0 } else { 44.0 }
+fn action_height(viewport: Rect, columns: usize) -> f64 {
+    if columns == 2 && viewport.height() < 400.0 {
+        44.0
+    } else if columns == 2 {
+        56.0
+    } else {
+        44.0
+    }
 }
 
 fn action_gap(columns: usize) -> f64 {
     if columns == 2 { 8.0 } else { 4.0 }
 }
 
-fn menu_height(columns: usize) -> f64 {
+fn menu_height(viewport: Rect, columns: usize) -> f64 {
     let rows = ACTIONS.len().div_ceil(columns);
-    52.0 + small_count_to_f64(rows) * action_height(columns)
+    52.0 + small_count_to_f64(rows) * action_height(viewport, columns)
         + small_count_to_f64(rows.saturating_sub(1)) * action_gap(columns)
         + 12.0
 }
@@ -541,6 +598,30 @@ mod tests {
     }
 
     #[test]
+    fn opening_animation_hit_test_tracks_the_painted_logout_row() {
+        let mut menu = PowerMenu::default();
+        menu.open();
+        let now = Instant::now();
+        let panel = panel_rect(VIEWPORT);
+        let stable = action_rect(VIEWPORT, 1).center();
+        let (_, dy, scale) = modal_transition_curve(&menu.transition, now, 0.94);
+        let centre = panel.center();
+        let painted = Point::new(
+            centre.x + (stable.x - centre.x) * scale,
+            centre.y + dy + (stable.y - centre.y) * scale,
+        );
+        let logical = menu.untransform_pointer(VIEWPORT, painted, now);
+        assert!((logical.x - stable.x).abs() < 0.001);
+        assert!((logical.y - stable.y).abs() < 0.001);
+        // The production click samples a fresh instant. Freeze the transition
+        // at this same intermediate value so the regression remains exact.
+        assert_eq!(
+            (0..ACTIONS.len()).find(|&index| action_rect(VIEWPORT, index).contains(logical)),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn outside_click_closes_without_an_action() {
         let mut menu = PowerMenu::default();
         menu.open();
@@ -609,6 +690,53 @@ mod tests {
             let row = action_rect(viewport, index);
             assert!(panel.contains(row.center()));
             assert!(row.width() >= 44.0 && row.height() >= 44.0);
+        }
+    }
+
+    #[test]
+    fn tiny_viewport_uses_compact_two_columns_for_all_actions() {
+        let viewport = Rect::new(0.0, 0.0, 480.0, 300.0);
+        let panel = panel_rect(viewport);
+        assert_eq!(action_columns(viewport), 2);
+        assert!(panel.y1 <= viewport.y1 - 8.0);
+        for index in 0..ACTIONS.len() {
+            let row = action_rect(viewport, index);
+            assert!(
+                row.x0 >= panel.x0
+                    && row.y0 >= panel.y0
+                    && row.x1 <= panel.x1
+                    && row.y1 <= panel.y1,
+                "action {index} must be fully inside the compact panel: {row:?} / {panel:?}"
+            );
+            assert!(
+                row.x0 >= viewport.x0
+                    && row.y0 >= viewport.y0
+                    && row.x1 <= viewport.x1
+                    && row.y1 <= viewport.y1,
+                "action {index} must be fully inside the viewport: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tiny_viewport_all_six_actions_are_reachable_by_click() {
+        let viewport = Rect::new(0.0, 0.0, 480.0, 300.0);
+        let expected = [
+            PowerMenuClick::Lock,
+            PowerMenuClick::Execute(os_actions::SessionAction::Logout),
+            PowerMenuClick::Execute(os_actions::SessionAction::SwitchUser),
+            PowerMenuClick::Execute(os_actions::SessionAction::Suspend),
+            PowerMenuClick::Execute(os_actions::SessionAction::Restart),
+            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown),
+        ];
+        for (index, expected) in expected.into_iter().enumerate() {
+            let mut menu = PowerMenu::default();
+            menu.open();
+            assert_eq!(
+                menu.click(viewport, action_rect(viewport, index).center()),
+                expected
+            );
+            assert!(!menu.open);
         }
     }
 

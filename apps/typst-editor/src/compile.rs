@@ -127,6 +127,9 @@ impl WorldParts {
     /// Parse every font embedded by `typst-assets` and build the standard
     /// library + font book. Cheap to share afterwards (`Arc`).
     pub fn new() -> Arc<Self> {
+        #[cfg(feature = "thin")]
+        let fonts = runtime_dylib::typst_fonts();
+        #[cfg(not(feature = "thin"))]
         let fonts: Vec<Font> = typst_assets::fonts()
             .flat_map(|data| Font::iter(Bytes::new(data)))
             .collect();

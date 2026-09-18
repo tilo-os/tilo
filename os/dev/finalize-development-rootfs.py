@@ -19,6 +19,8 @@ import signal
 import subprocess
 import sys
 import time
+import tempfile
+import installer_overlay
 import signing_spool as spool
 
 STAGES = ('rebind', 'loader', 'provisional', 'composefs', 'reseal', 'prediction', 'verified', 'published')
@@ -30,8 +32,10 @@ FIELDS = {'schema', 'source_revision', 'source_dir', 'helpers_revision', 'receip
 
 
 def validate_request(request):
-    if set(request) != FIELDS or request['schema'] != 1:
+    if set(request) not in (FIELDS, FIELDS | {'boot_profile'}) or request['schema'] != 1:
         raise ValueError('finalization request fields differ from schema1')
+    if request.get('boot_profile', 'installed-target') not in ('installed-target', 'installer-media'):
+        raise ValueError('unsupported finalization boot profile')
     for name in ('source_revision', 'helpers_revision'):
         if not re.fullmatch(r'[0-9a-f]{40}', request[name]):
             raise ValueError('committed source and helper revisions required')
@@ -246,7 +250,19 @@ class Driver:
         def provisional():
             iid = self.evidence / '.provisional.iid'
             self.command(build_final_command(q, signed_id, iid))
-            return {'image_id': image_id(spool.snapshot(iid, 128).decode().strip()),
+            provisional_id = image_id(spool.snapshot(iid, 128).decode().strip())
+            overlay = None
+            if q.get('boot_profile') == 'installer-media':
+                with tempfile.TemporaryDirectory(prefix='tilo-installer-overlay-', dir='/var/lib') as temporary:
+                    context = Path(temporary) / 'context'
+                    files = installer_overlay.stage(q['source_dir'], self.helpers, context)
+                    media_iid = Path(temporary) / 'media.iid'
+                    self.command(installer_overlay.command(context, provisional_id, q['source_date_epoch'], media_iid))
+                    overlay = {'base_provisional_image_id': provisional_id, 'files_sha256': files,
+                               'helpers_revision': q['helpers_revision'], 'source_revision': q['source_revision'],
+                               'application_compilation': False}
+                    provisional_id = image_id(spool.snapshot(media_iid, 128).decode().strip())
+            return {'image_id': provisional_id, 'installer_overlay': overlay,
                     'source_recipe_sha256': spool.digest(spool.snapshot(Path(q['source_dir']) / 'os/Containerfile', 1024**2)),
                     'application_compilation': False}
         provisional_id = self.stage(3, provisional)['image_id']
@@ -284,6 +300,7 @@ class Driver:
                          '--public-bundle', q['new_public_bundle'], '--manifest-sha256', q['new_manifest_sha256'],
                          '--architecture', q['architecture'], '--generation', str(q['generation']),
                          '--composefs-digest', seal, '--systemd-version', q['systemd_version']]
+            arguments += ['--boot-profile', q.get('boot_profile', 'installed-target')]
             proof = json.loads(self.command(arguments), object_pairs_hook=spool.unique)
             return {'image_id': final_id, 'composefs_digest': seal, 'verification': proof,
                     'composefs': digest['evidence'], 'installable': False}
@@ -301,6 +318,8 @@ class Driver:
             verify_registry_bytes(manifest, configuration, manifest_digest, final_id, q['architecture'], q['source_revision'])
             return {'image_id': final_id, 'published_reference': reference, 'manifest_digest': manifest_digest,
                     'config_digest': final_id, 'staging_tag': tag, 'target_update_ref': q['new_target'],
+                    'boot_profile': q.get('boot_profile', 'installed-target'),
+                    'published_tag_updates_installed_origin': False,
                     'published': True, 'registry_signature_verified': False, 'cosign_signing_required': True, 'installable': False}
         published = self.stage(8, publish)
         result = {'schema': 1, 'request_sha256': self.binding, 'purpose': 'development-finalization-staged',

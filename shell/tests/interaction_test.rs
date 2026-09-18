@@ -8,6 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::compositor::remote_seat::RemoteSeats;
 use shell::network::wayland::{ClientState, WaylandEvent, WaylandInput, WaylandServer};
 use shell::security::container::Container;
 use smithay::reexports::calloop::generic::Generic;
@@ -137,11 +138,178 @@ fn wait_for_ready_surface(
     captured_surface_id
 }
 
+fn wait_for_any_surface(
+    rx: &mut mpsc::UnboundedReceiver<WaylandEvent>,
+    timeout: Duration,
+) -> Option<(u32, f32, f32, String)> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    while Instant::now() < deadline {
+        while let Ok(event) = rx.try_recv() {
+            if let WaylandEvent::NewWindow {
+                surface_id,
+                app_id,
+                suggested_width,
+                suggested_height,
+            } = event
+            {
+                return Some((
+                    surface_id,
+                    suggested_width.unwrap_or(1024) as f32,
+                    suggested_height.unwrap_or(768) as f32,
+                    app_id,
+                ));
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    None
+}
+
+fn send_key(
+    input: &mpsc::UnboundedSender<WaylandInput>,
+    key: u32,
+    state: smithay::backend::input::KeyState,
+) {
+    input.send(WaylandInput::Key { key, state }).unwrap();
+}
+
+fn send_peer_key(
+    seats: &mut RemoteSeats,
+    input: &mpsc::UnboundedSender<WaylandInput>,
+    peer: u64,
+    evdev_key: u32,
+    pressed: bool,
+) {
+    if seats.key_transition(peer, evdev_key, pressed) {
+        send_key(
+            input,
+            evdev_key.saturating_add(8),
+            if pressed {
+                smithay::backend::input::KeyState::Pressed
+            } else {
+                smithay::backend::input::KeyState::Released
+            },
+        );
+    }
+}
+
+#[test]
+fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
+    assert!(
+        std::path::Path::new("/usr/bin/gnome-text-editor").exists(),
+        "the OS integration image must include GNOME Text Editor for the real legacy-app check"
+    );
+    let document_dir = tempfile::tempdir().unwrap();
+    let document = document_dir.path().join("shared.txt");
+    fs::write(&document, "START").unwrap();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (input_tx, input_rx) = mpsc::unbounded_channel();
+    spawn_wayland_server(tx, started_tx, input_rx);
+    let socket = started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let container = Container::new(document_dir.path().to_str().unwrap());
+    let tab_id = Uuid::new_v4();
+    let mut child = ChildGuard(
+        container
+            .spawn("gnome-text-editor /project/shared.txt", &socket, tab_id)
+            .unwrap(),
+    );
+    let (surface, width, height, _app_id) = wait_for_any_surface(&mut rx, Duration::from_secs(12))
+        .unwrap_or_else(|| {
+            let log = fs::read_to_string(format!("/tmp/tilo-desktop-app-{tab_id}.log"))
+                .unwrap_or_default();
+            panic!("GNOME Text Editor did not create a Wayland window; log:\n{log}")
+        });
+    let x = f64::from(width) * 0.5;
+    let y = f64::from(height) * 0.5;
+    input_tx
+        .send(WaylandInput::Motion {
+            x,
+            y,
+            surface_id: Some(surface),
+            surface_width: width,
+            surface_height: height,
+        })
+        .unwrap();
+    input_tx
+        .send(WaylandInput::Button {
+            button: 0x110,
+            state: smithay::backend::input::ButtonState::Pressed,
+            surface_id: Some(surface),
+            surface_width: width,
+            surface_height: height,
+        })
+        .unwrap();
+    input_tx
+        .send(WaylandInput::Button {
+            button: 0x110,
+            state: smithay::backend::input::ButtonState::Released,
+            surface_id: Some(surface),
+            surface_width: width,
+            surface_height: height,
+        })
+        .unwrap();
+    thread::sleep(Duration::from_millis(300));
+
+    let mut remote_seats = RemoteSeats::new();
+    let _ = remote_seats.seat_mut(7).enter(u64::from(surface));
+    let _ = remote_seats.seat_mut(8).enter(u64::from(surface));
+
+    // Ctrl+End places the application's single caret at the end.
+    send_peer_key(&mut remote_seats, &input_tx, 7, 29, true);
+    send_peer_key(&mut remote_seats, &input_tx, 7, 107, true);
+    send_peer_key(&mut remote_seats, &input_tx, 7, 107, false);
+    send_peer_key(&mut remote_seats, &input_tx, 7, 29, false);
+    // Two peers overlap their KEY_A holds. A legacy client must receive two
+    // presses at its one caret, followed by the shared final release.
+    send_peer_key(&mut remote_seats, &input_tx, 7, 30, true);
+    let _ = remote_seats.seat_mut(7).pointer_leave();
+    input_tx
+        .send(WaylandInput::Motion {
+            x: width.into(),
+            y: height.into(),
+            surface_id: None,
+            surface_width: width,
+            surface_height: height,
+        })
+        .unwrap();
+    send_peer_key(&mut remote_seats, &input_tx, 8, 30, true);
+    send_peer_key(&mut remote_seats, &input_tx, 7, 30, false);
+    send_peer_key(&mut remote_seats, &input_tx, 8, 30, false);
+    // Both peers hold Shift; peer 7 letting go must not clear peer 8's
+    // modifier state. The following B therefore remains uppercase in the
+    // real GTK text widget.
+    send_peer_key(&mut remote_seats, &input_tx, 7, 42, true);
+    send_peer_key(&mut remote_seats, &input_tx, 8, 42, true);
+    send_peer_key(&mut remote_seats, &input_tx, 7, 42, false);
+    send_peer_key(&mut remote_seats, &input_tx, 8, 48, true);
+    send_peer_key(&mut remote_seats, &input_tx, 8, 48, false);
+    send_peer_key(&mut remote_seats, &input_tx, 8, 42, false);
+    // Save through the app itself, making its document authoritative.
+    send_peer_key(&mut remote_seats, &input_tx, 7, 29, true);
+    send_peer_key(&mut remote_seats, &input_tx, 7, 31, true);
+    send_peer_key(&mut remote_seats, &input_tx, 7, 31, false);
+    send_peer_key(&mut remote_seats, &input_tx, 7, 29, false);
+    thread::sleep(Duration::from_secs(2));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let saved = fs::read_to_string(document).unwrap();
+    assert!(
+        saved.contains("STARTaaB"),
+        "the GTK editor did not preserve two collaborator presses at one caret: {saved}"
+    );
+}
+
 #[test]
 fn test_click_interaction_in_sandbox() {
     // 1. Build
     let _ = std::process::Command::new("cargo")
         .arg("build")
+        .arg("--locked")
         .arg("--bin")
         .arg("click_test_client")
         .status();
@@ -219,6 +387,40 @@ fn test_click_interaction_in_sandbox() {
         })
         .unwrap();
 
+    // A legacy app sees every collaborator as the compositor's single
+    // Wayland seat. The remote-seat multiplexer emits both printable presses
+    // even when two peers' holds overlap, then only the final release. Move
+    // the first pointer away between those presses too: neither pointer leave
+    // nor the second peer may destroy the app's keyboard focus/caret.
+    // Smithay consumes XKB keycodes; evdev KEY_A (30) + 8.
+    input_tx
+        .send(WaylandInput::Key {
+            key: 38,
+            state: smithay::backend::input::KeyState::Pressed,
+        })
+        .unwrap();
+    input_tx
+        .send(WaylandInput::Motion {
+            x: 400.0,
+            y: 400.0,
+            surface_id: None,
+            surface_width: 256.0,
+            surface_height: 256.0,
+        })
+        .unwrap();
+    input_tx
+        .send(WaylandInput::Key {
+            key: 38,
+            state: smithay::backend::input::KeyState::Pressed,
+        })
+        .unwrap();
+    input_tx
+        .send(WaylandInput::Key {
+            key: 38,
+            state: smithay::backend::input::KeyState::Released,
+        })
+        .unwrap();
+
     thread::sleep(Duration::from_secs(2));
 
     // 6. Verify Log
@@ -235,5 +437,10 @@ fn test_click_interaction_in_sandbox() {
     assert!(
         log_content.contains(&expected_pattern),
         "Client did not log click at expected coordinates! Expected: {expected_pattern}"
+    );
+    assert_eq!(
+        log_content.matches("EVENT:KEY PRESS Some(\"a\")").count(),
+        2,
+        "the real Wayland client must retain one app-facing caret across collaborator pointer leave"
     );
 }

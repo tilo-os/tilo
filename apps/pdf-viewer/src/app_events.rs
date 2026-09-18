@@ -258,7 +258,16 @@ impl PdfApp {
             return true;
         };
         match hit {
-            SidebarHit::Tab(t) => self.sidebar_tab = t,
+            SidebarHit::Tab(t) => {
+                // Each review panel owns a distinct scroll range. Starting a
+                // newly opened panel at its beginning avoids carrying a long
+                // comment-thread offset into Contents (or vice versa).
+                if self.sidebar_tab != t {
+                    self.sidebar_scroll = 0.0;
+                    self.sidebar_reveal = None;
+                }
+                self.sidebar_tab = t;
+            }
             SidebarHit::Outline(page) => self.go_to_page(page),
             SidebarHit::Comment(id) => {
                 if let Some(c) = self.comments.iter().find(|c| c.id == id) {

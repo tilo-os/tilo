@@ -49,6 +49,14 @@ pub enum FileCommand {
     ContextSelect(Option<usize>),
     /// Activate entry `index` directly (keyboard Enter / grid double-click).
     Activate(usize),
+    /// Move the collection cursor to an already geometry-resolved item. The
+    /// view owns the directional-grid math; the app remains the one owner of
+    /// the durable selection model, so pointer, keyboard and accessibility
+    /// selection never drift apart.
+    MoveSelection {
+        index: usize,
+        extend: bool,
+    },
     /// A sortable list header at column `index` was clicked.
     SortColumn(usize),
     /// Switch the main view mode.
@@ -64,6 +72,10 @@ pub enum FileCommand {
     SetSort(SortBy),
     /// Flip ascending/descending.
     ToggleSortOrder,
+    /// Open the concise, in-app shortcut reference. This is a view operation:
+    /// it changes no file or preference and is also published through the
+    /// current-folder resource for keyboard, search and agent parity.
+    ShowKeyboardShortcuts,
     /// Set the sort direction explicitly (from the grid "Sort by" menu, which
     /// offers Ascending / Descending as labelled choices rather than a flip).
     SetSortOrder(SortOrder),
@@ -82,6 +94,9 @@ pub enum FileCommand {
     RenameCancel,
     /// Move the selection to the trash.
     Delete,
+    /// Restore the most recent, locally verified move-to-Trash. This is an
+    /// ephemeral filesystem affordance, never a replayable collaborative undo.
+    UndoLastTrash,
     /// Copy / cut the selection into the clipboard.
     Copy,
     Cut,

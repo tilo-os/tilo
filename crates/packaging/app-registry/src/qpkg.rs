@@ -25,9 +25,11 @@ use pkg::{Manifest, MemoryBlobStore, PackageId, Verification, verify};
 #[derive(Debug, Deserialize)]
 struct QpkgHeader {
     package_id: String,
-    #[allow(dead_code)]
     format: u32,
 }
+
+/// Current version of the `.qpkg` tar layout.
+pub const QPKG_FORMAT_VERSION: u32 = 1;
 
 /// The pieces of a `.qpkg` a caller commonly needs.
 pub struct QpkgMeta {
@@ -38,6 +40,29 @@ pub struct QpkgMeta {
     pub manifest: Manifest,
     /// Every in-band blob, ready to hand to [`pkg::verify`].
     pub store: MemoryBlobStore,
+}
+
+/// Enforce the application materialization and entry-count budgets without
+/// writing the payload to disk.
+///
+/// # Errors
+///
+/// Returns an error when the package root or payload collection is missing or
+/// malformed, the blob store cannot be read, or the decoded application
+/// exceeds the materialization limits enforced by [`pkg`].
+pub fn validate_payload_shape(meta: &QpkgMeta) -> Result<()> {
+    let signed_bytes = meta
+        .store
+        .get(&BlobHash(*meta.package_id.as_bytes()))?
+        .ok_or_else(|| anyhow!("signed-root blob missing"))?;
+    let signed = SignedRoot::decode(&signed_bytes)?;
+    let collection_bytes = meta
+        .store
+        .get(&signed.payload_root_hash)?
+        .ok_or_else(|| anyhow!("payload collection missing"))?;
+    let collection = pkg::Collection::decode(&collection_bytes)?;
+    pkg::validate_materialized_payload(&meta.manifest, &collection, &meta.store)?;
+    Ok(())
 }
 
 /// Parse a `.qpkg` tar into its blobs + manifest. Does NOT verify the
@@ -79,6 +104,13 @@ pub fn load(bytes: &[u8]) -> Result<QpkgMeta> {
     }
 
     let header = header.ok_or_else(|| anyhow!(".qpkg is missing qpkg.toml"))?;
+    if header.format != QPKG_FORMAT_VERSION {
+        bail!(
+            "unsupported qpkg format {}; expected {}",
+            header.format,
+            QPKG_FORMAT_VERSION
+        );
+    }
     let package_id: PackageId = header
         .package_id
         .parse()
@@ -116,7 +148,7 @@ pub fn write_bytes(id: PackageId, store: &MemoryBlobStore) -> Result<Vec<u8>> {
     {
         let mut tar = tar::Builder::new(&mut buf);
 
-        let header = format!("package_id = \"{id}\"\nformat = 1\n");
+        let header = format!("package_id = \"{id}\"\nformat = {QPKG_FORMAT_VERSION}\n");
         append(&mut tar, "qpkg.toml", header.as_bytes())?;
 
         let signed_bytes = store
@@ -261,6 +293,23 @@ mod tests {
         assert_eq!(meta.package_id, id);
         assert_eq!(meta.manifest.package.id, "dev.tilo.editor");
         assert_eq!(meta.manifest.package.version, "1.0.0");
+    }
+
+    #[test]
+    fn load_rejects_an_unsupported_archive_format() {
+        let identity = SigningIdentity::generate();
+        let (mut bytes, _) = signed_qpkg(&identity);
+        let marker = b"format = 1\n";
+        let offset = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("fixture contains the format header");
+        bytes[offset + marker.len() - 2] = b'2';
+
+        let error = load(&bytes)
+            .err()
+            .expect("future archive formats must fail closed");
+        assert!(error.to_string().contains("unsupported qpkg format 2"));
     }
 
     #[test]

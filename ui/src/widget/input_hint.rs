@@ -26,6 +26,10 @@ const CAP_GAP: f64 = 3.0;
 const CAP_PAD_X: f64 = 6.0;
 const MIN_CAP_WIDTH: f64 = 22.0;
 
+fn token_height(theme: &Theme) -> f64 {
+    HEIGHT.max(f64::from(theme.tokens.typography.scale.sm) + 8.0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HintShape {
     Keycap,
@@ -38,6 +42,7 @@ pub struct InputHint {
     platform: PlatformConventions,
     environment: InteractionEnvironment,
     rect: Rect,
+    layout_theme: Theme,
 }
 
 /// Shared vector controller/Joy-Con silhouette used in device pickers and
@@ -188,6 +193,7 @@ impl InputHint {
             platform: PlatformConventions::default(),
             environment: InteractionEnvironment::default(),
             rect: Rect::ZERO,
+            layout_theme: Theme::dark(),
         }
     }
 
@@ -354,7 +360,7 @@ impl InputHint {
                 text_renderer,
                 theme,
             );
-            first_rect = Rect::new(first_x, origin.y, x, origin.y + HEIGHT);
+            first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
             x += paint_separator(
                 scene,
                 transform,
@@ -372,7 +378,7 @@ impl InputHint {
                 text_renderer,
                 theme,
             );
-            second_rect = Rect::new(second_x, origin.y, x, origin.y + HEIGHT);
+            second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
         } else {
             let first_x = x;
             x += Self::paint_keycap_labels_at(
@@ -383,7 +389,7 @@ impl InputHint {
                 text_renderer,
                 theme,
             );
-            first_rect = Rect::new(first_x, origin.y, x, origin.y + HEIGHT);
+            first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
             x += paint_separator(
                 scene,
                 transform,
@@ -401,7 +407,7 @@ impl InputHint {
                 text_renderer,
                 theme,
             );
-            second_rect = Rect::new(second_x, origin.y, x, origin.y + HEIGHT);
+            second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
         }
         [first_rect, second_rect]
     }
@@ -532,7 +538,7 @@ fn paint_separator(
         translated(
             transform,
             origin.x,
-            origin.y + (HEIGHT - f64::from(height)) / 2.0,
+            origin.y + (token_height(theme) - f64::from(height)) / 2.0,
         ),
         None,
     );
@@ -574,18 +580,19 @@ fn token_rects(
     theme: &Theme,
 ) -> Vec<(HintShape, Rect)> {
     let mut x = origin.x;
+    let height = token_height(theme);
     tokens
         .iter()
         .map(|(label, shape)| {
             let size = token_text_size(label, theme);
             let (text_width, _) = text_renderer.measure(label, size, None);
             let width = match shape {
-                HintShape::RoundButton => (f64::from(text_width) + CAP_PAD_X).max(HEIGHT),
+                HintShape::RoundButton => (f64::from(text_width) + CAP_PAD_X).max(height),
                 HintShape::Keycap | HintShape::Gesture => {
                     (f64::from(text_width) + CAP_PAD_X * 2.0).max(MIN_CAP_WIDTH)
                 }
             };
-            let rect = Rect::new(x, origin.y, x + width, origin.y + HEIGHT);
+            let rect = Rect::new(x, origin.y, x + width, origin.y + height);
             x += width + CAP_GAP;
             (*shape, rect)
         })
@@ -672,12 +679,14 @@ impl Widget for InputHint {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
+        let height = token_height(theme);
         let approximate = self
             .tokens()
             .iter()
             .map(|(label, shape)| match shape {
                 HintShape::RoundButton => {
-                    (crate::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X).max(HEIGHT)
+                    (crate::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X).max(height)
                 }
                 HintShape::Keycap | HintShape::Gesture => {
                     (crate::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X * 2.0)
@@ -690,7 +699,7 @@ impl Widget for InputHint {
             size: Size {
                 width: Dimension::length(crate::num::f32_of_f64(approximate)),
                 height: Dimension::length(crate::num::f32_of_f64(
-                    f64::from(theme.tokens.spacing.s6).max(HEIGHT),
+                    f64::from(theme.tokens.spacing.s6).max(height),
                 )),
             },
             ..Default::default()
@@ -705,7 +714,6 @@ impl Widget for InputHint {
         _available: Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
-        let theme = Theme::dark();
         Size {
             width: crate::num::f32_of_f64(Self::measure_width(
                 &self.binding,
@@ -713,9 +721,9 @@ impl Widget for InputHint {
                 self.environment.keyboard_family,
                 self.controller_family(),
                 text_renderer,
-                &theme,
+                &self.layout_theme,
             )),
-            height: crate::num::f32_of_f64(HEIGHT),
+            height: crate::num::f32_of_f64(token_height(&self.layout_theme)),
         }
     }
 
@@ -740,7 +748,10 @@ impl Widget for InputHint {
         Self::paint_at(
             scene,
             transform,
-            Point::new(self.rect.x0, self.rect.center().y - HEIGHT / 2.0),
+            Point::new(
+                self.rect.x0,
+                self.rect.center().y - token_height(theme) / 2.0,
+            ),
             &self.binding,
             self.platform,
             self.environment.keyboard_family,
@@ -785,6 +796,27 @@ mod tests {
     use super::*;
     use crate::input::{ControllerBinding, ControllerButton, KeyLegend, KeyboardModifier};
     use crate::platform::Platform;
+    use taffy::prelude::TaffyMaxContent;
+
+    #[test]
+    fn retained_layout_grows_with_large_text() {
+        let mut hint = InputHint::keyboard(KeyboardBinding::new([], KeyLegend::Enter));
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let theme = Theme::dark().with_text_scale(2.0);
+        hint.build_layout(&mut taffy, &theme, &mut map);
+        let mut text = TextRenderer::new();
+        let measured = hint.measure(
+            Size {
+                width: None,
+                height: None,
+            },
+            Size::MAX_CONTENT,
+            &mut text,
+        );
+        assert!(measured.height > HEIGHT as f32);
+        assert_eq!(hint.layout_theme.text_scale, 2.0);
+    }
 
     #[test]
     fn hint_accessibility_uses_platform_and_controller_legends() {

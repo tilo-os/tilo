@@ -1071,6 +1071,7 @@ impl TubeApp {
             Route::Home => screens::home(m, theme, bus, imgs),
             Route::Trending => screens::trending(m, theme, bus, imgs),
             Route::Subscriptions => screens::subscriptions(m, theme, bus, imgs),
+            Route::Queue => screens::queue(m, theme, bus, imgs, self.content_width()),
             Route::History => screens::history(m, theme, bus, imgs),
             Route::Settings => {
                 #[cfg(feature = "grayjay-sync")]
@@ -1235,6 +1236,7 @@ impl TubeApp {
             Route::Home => "home".to_string(),
             Route::Trending => "trending".to_string(),
             Route::Subscriptions => "subs".to_string(),
+            Route::Queue => "queue".to_string(),
             Route::History => "history".to_string(),
             Route::Settings => "settings".to_string(),
             Route::Watch(id) => format!("watch:{id}"),
@@ -3021,6 +3023,7 @@ impl Widget for TubeApp {
             Route::Home => "Home".to_string(),
             Route::Trending => "Trending".to_string(),
             Route::Subscriptions => "Subscriptions".to_string(),
+            Route::Queue => "Shared watch queue".to_string(),
             Route::Watch(id) => self
                 .model
                 .video(id)

@@ -34,7 +34,7 @@ use ui::widget::page_palette::PageJumpPalette;
 
 use crate::actions::{self, NotesAction};
 use crate::doc::NotesDoc;
-use crate::main_panel::MainPanel;
+use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagAssignment, TagId, Workspace};
 use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
@@ -189,6 +189,10 @@ pub struct NotesApp {
     /// Search/resource snapshot keyed by each block's durable Automerge Text
     /// object id, refreshed from the collaborative document on every sync.
     search_blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    /// Local index of canonical incoming `[[Page]]` marks. It is rebuilt only
+    /// when the document heads advance, alongside the full-text catalogue;
+    /// drawing a selected note therefore never scans a large notebook.
+    backlink_index: HashMap<PageId, Vec<(PageId, u32)>>,
     /// Durable document heads used as the retained search catalogue revision.
     /// In the normal no-edit frame this avoids snapshotting every page/block
     /// just to rediscover the catalogue has not changed.
@@ -390,6 +394,7 @@ impl NotesApp {
             active_tag_filter: None,
             pending_block_reveal: None,
             search_blocks: HashMap::new(),
+            backlink_index: HashMap::new(),
             search_heads: None,
             search_provider,
             text_scale: 1.0,
@@ -398,18 +403,7 @@ impl NotesApp {
             pending_responsive_view: None,
         };
         app.refresh_link_pages();
-        let visible_tags = app
-            .workspace
-            .selected()
-            .map(|page| {
-                app.workspace
-                    .tags_for_page(page)
-                    .into_iter()
-                    .map(|tag| tag.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        app.main.set_tags(visible_tags);
+        app.main.set_tags(app.selected_tag_chips());
         app.refresh_status();
         app
     }
@@ -588,6 +582,55 @@ impl NotesApp {
             title: format!("# {}", tag.name),
         }));
         self.palette.set_items(palette_entries);
+    }
+
+    /// Metadata projection for the selected note header. The page/tag ids stay
+    /// attached to their labels so the header can invoke a stable canonical
+    /// tag resource even after a collaborator renames a tag.
+    fn selected_tag_chips(&self) -> Vec<TagChip> {
+        self.workspace
+            .selected()
+            .map(|page| {
+                self.workspace
+                    .tags_for_page(page)
+                    .into_iter()
+                    .map(|tag| TagChip {
+                        id: tag.id,
+                        name: tag.name.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Present only the selected page's incoming-link row. The complete index
+    /// is built from canonical native marks in `refresh_search_blocks`; this
+    /// projection is local presentation, while the page references and open
+    /// operation remain canonical resources/actions.
+    fn selected_backlink_chips(&self) -> Vec<BacklinkChip> {
+        let Some(page) = self.workspace.selected() else {
+            return Vec::new();
+        };
+        let mut chips = self
+            .backlink_index
+            .get(&page)
+            .into_iter()
+            .flatten()
+            .filter_map(|(source, references)| {
+                self.workspace.get(*source).map(|meta| BacklinkChip {
+                    page: *source,
+                    title: meta.title.clone(),
+                    references: *references,
+                })
+            })
+            .collect::<Vec<_>>();
+        chips.sort_by(|left, right| {
+            left.title
+                .to_lowercase()
+                .cmp(&right.title.to_lowercase())
+                .then(left.page.cmp(&right.page))
+        });
+        chips
     }
 
     /// Test accessor: the currently selected page id.
@@ -1200,6 +1243,41 @@ impl NotesApp {
                     .map(|(id, text)| crate::actions::NoteBlockResource { id, text })
                     .collect();
                 (page.id, blocks)
+            })
+            .collect();
+        let known_pages = self
+            .workspace
+            .pages()
+            .iter()
+            .map(|page| page.id)
+            .collect::<std::collections::HashSet<_>>();
+        let mut backlinks = HashMap::<PageId, HashMap<PageId, u32>>::new();
+        for source in self.workspace.pages().iter().map(|page| page.id) {
+            for (_, marks) in NotesDoc::page_block_marks(doc, source) {
+                for mark in marks {
+                    let actions::InlineMark::Link { page } = mark.mark else {
+                        continue;
+                    };
+                    let Ok(target) = page.parse::<PageId>() else {
+                        continue;
+                    };
+                    if target != source && known_pages.contains(&target) {
+                        let count = backlinks
+                            .entry(target)
+                            .or_default()
+                            .entry(source)
+                            .or_default();
+                        *count = count.saturating_add(1);
+                    }
+                }
+            }
+        }
+        self.backlink_index = backlinks
+            .into_iter()
+            .map(|(target, sources)| {
+                let mut sources = sources.into_iter().collect::<Vec<_>>();
+                sources.sort_by_key(|(source, _)| *source);
+                (target, sources)
             })
             .collect();
         self.search_provider
@@ -1831,6 +1909,39 @@ impl NotesApp {
         }
     }
 
+    /// Route a note-header tag activation through the durable resource
+    /// operation. It is intentionally a view operation (each collaborator may
+    /// browse a different tag) but still validates the keyed tag record in the
+    /// canonical document before selecting a collection.
+    fn drain_tag_open(&mut self, state: &AutoCommit) {
+        let Some(tag) = self.main.take_tag_open() else {
+            return;
+        };
+        if let Err(error) =
+            self.open_notes_operation(actions::NotesOperation::OpenTag { tag }, state)
+        {
+            tracing::warn!(%error, %tag, "notes: tag chip target went stale");
+        }
+    }
+
+    /// Resolve an incoming-link chip through the same canonical open-page
+    /// operation as global search and ordinary `[[Page]]` activation. The
+    /// relationship row itself remains a local, derived presentation.
+    fn drain_backlink_open(&mut self, state: &AutoCommit) {
+        let Some(page) = self.main.take_backlink_open() else {
+            return;
+        };
+        if let Err(error) = self.open_notes_operation(
+            actions::NotesOperation::OpenPage {
+                page,
+                block_id: None,
+            },
+            state,
+        ) {
+            tracing::warn!(%error, %page, "notes: backlink source went stale");
+        }
+    }
+
     /// Schedule a debounced save of the current workspace.
     fn persist(&self) {
         if let Some(legacy) = &self.legacy_fixture_storage {
@@ -2360,18 +2471,9 @@ impl Widget for NotesApp {
             self.drain_title_rename(state);
         }
         self.ensure_editor_bound(state);
-        let visible_tags = self
-            .workspace
-            .selected()
-            .map(|page| {
-                self.workspace
-                    .tags_for_page(page)
-                    .into_iter()
-                    .map(|tag| tag.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.main.set_tags(visible_tags);
+        self.drain_tag_open(state);
+        self.drain_backlink_open(state);
+        self.main.set_tags(self.selected_tag_chips());
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
         // Synthetic accessibility buttons do not pass through handle_event;
@@ -2383,6 +2485,7 @@ impl Widget for NotesApp {
             self.drain_inline_marks(state);
         }
         self.refresh_search_blocks(state);
+        self.main.set_backlinks(self.selected_backlink_chips());
         if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
             && self.bound_page == Some(*page)
             && let Some(index) = self
@@ -3680,6 +3783,56 @@ mod tests {
             .map(crate::actions::InlineMarkSpan::from_ui)
             .collect::<Vec<_>>();
         assert_eq!(restored, marks);
+    }
+
+    #[test]
+    fn native_link_marks_build_a_cached_backlink_and_open_its_canonical_source() {
+        let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
+
+        // Create the destination through the normal page action path, then
+        // attach a real native link mark to an existing source block. This is
+        // intentionally not a Markdown-parser test: incoming links must be
+        // derived from the same canonical mark data collaborators receive.
+        app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+        let target = app
+            .selected_for_test()
+            .expect("new page becomes the backlink destination");
+        assert_ne!(source, target);
+        let source_block = app.search_blocks[&source][0].id.clone();
+        let action = crate::actions::set_block_marks_action(
+            source,
+            source_block,
+            vec![crate::actions::InlineMarkSpan {
+                start: 0,
+                end: 4,
+                mark: crate::actions::InlineMark::Link {
+                    page: target.to_string(),
+                },
+            }],
+        );
+        app.perform_action(&mut state.doc, &action);
+
+        app.navigate_to(target);
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            app.selected_backlink_chips(),
+            vec![BacklinkChip {
+                page: source,
+                title: "Welcome".into(),
+                references: 1,
+            }],
+            "the selected page projects its incoming native link once"
+        );
+
+        app.open_notes_operation(
+            crate::actions::NotesOperation::OpenPage {
+                page: source,
+                block_id: None,
+            },
+            &state.doc,
+        )
+        .expect("backlink uses the exported canonical page operation");
+        assert_eq!(app.selected_for_test(), Some(source));
     }
 
     #[test]

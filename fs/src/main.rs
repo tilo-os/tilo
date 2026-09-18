@@ -1770,7 +1770,7 @@ fn initialize_owner_record_authority(
     actor: collab_types::FileActor,
     publisher: Arc<RecordPublisher>,
 ) -> Result<()> {
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let initialized = QuickFS::new(namespace, hydrator, heuristics)
         .with_history(history, actor)?
         .with_record_publisher(publisher)?;
@@ -2890,7 +2890,7 @@ async fn run_mount(
         std::fs::create_dir_all(&mount_point)?;
     }
 
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let predictive_policy_task =
         fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root).await;
     // Settings' socket receives these same durable services below; it must

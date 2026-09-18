@@ -32,6 +32,24 @@ fn download_timeout() -> Duration {
         )
 }
 
+fn safe_download_url(raw: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(raw).map_err(|error| format!("invalid package URL: {error}"))?;
+    let loopback_http =
+        url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if (url.scheme() != "https" && !loopback_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "package URL must be credential-free HTTPS (or loopback HTTP for development)"
+                .to_string(),
+        );
+    }
+    Ok(url)
+}
+
 /// Why an install did not happen; every variant renders to something a person can act on — reaches a notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
@@ -118,12 +136,13 @@ pub fn install_argv(
     ]
 }
 
-fn verify_download_metadata(app: &CatalogueApp, received: u64) -> Result<(), InstallError> {
-    if received != app.qpkg_size_bytes {
+fn validate_offer_metadata(app: &CatalogueApp) -> Result<(), InstallError> {
+    if app.qpkg_size_bytes == 0 || app.qpkg_size_bytes > pkg::MAX_APP_QPKG_BYTES {
         return Err(InstallError::Integrity {
             detail: format!(
-                "size mismatch (received {received} bytes, expected {})",
-                app.qpkg_size_bytes
+                "advertised size {} is outside the application qpkg limit (1..={} bytes)",
+                app.qpkg_size_bytes,
+                pkg::MAX_APP_QPKG_BYTES
             ),
         });
     }
@@ -142,6 +161,19 @@ fn verify_download_metadata(app: &CatalogueApp, received: u64) -> Result<(), Ins
     if publisher.len() != 32 {
         return Err(InstallError::Integrity {
             detail: "registry supplied a publisher key that is not 32 bytes".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn verify_download_metadata(app: &CatalogueApp, received: u64) -> Result<(), InstallError> {
+    validate_offer_metadata(app)?;
+    if received != app.qpkg_size_bytes {
+        return Err(InstallError::Integrity {
+            detail: format!(
+                "size mismatch (received {received} bytes, expected {})",
+                app.qpkg_size_bytes
+            ),
         });
     }
     Ok(())
@@ -184,17 +216,40 @@ pub fn download_reporting(
     dest: &Path,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<u64, String> {
+    download_reporting_limited(url, dest, u64::MAX, on_progress)
+}
+
+fn download_reporting_limited(
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<u64, String> {
+    let url = safe_download_url(url)?;
     let client = reqwest::blocking::Client::builder()
         .user_agent("tilo-catalogue/0.1")
         .timeout(download_timeout())
+        // The publisher-signed URL is the only endpoint authorized to serve
+        // these bytes. Following a redirect would silently widen that trust
+        // and can cross from a public origin into a private network.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("http client: {e}"))?;
-    let mut response = client
-        .get(url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|e| format!("{e}"))?;
+    let mut response = client.get(url).send().map_err(|e| format!("{e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "package endpoint returned HTTP {} (redirects are not followed)",
+            response.status()
+        ));
+    }
     let total = response.content_length();
+    if let Some(size) = total
+        && size > max_bytes
+    {
+        return Err(format!(
+            "server declared {size} bytes, above the {max_bytes}-byte limit"
+        ));
+    }
     on_progress(DownloadProgress { received: 0, total });
 
     if let Some(parent) = dest.parent() {
@@ -209,6 +264,9 @@ pub fn download_reporting(
         let n = response.read(&mut buf).map_err(|e| format!("{e}"))?;
         if n == 0 {
             break;
+        }
+        if received.saturating_add(n as u64) > max_bytes {
+            return Err(format!("download exceeded the {max_bytes}-byte limit"));
         }
         let chunk = buf.get(..n).ok_or_else(|| {
             "internal: read() reported more bytes than the buffer holds".to_string()
@@ -268,6 +326,7 @@ pub fn install_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
+    validate_offer_metadata(app)?;
     let staging = staging_dir().ok_or(InstallError::NoStagingDir)?;
     // The package id comes from a signed registry entry, but it still
     // becomes a filename here — refuse anything that could escape the
@@ -285,7 +344,12 @@ pub fn install_app_reporting(
         .collect();
     let dest = staging.join(format!("{safe_id}-{}.qpkg", app.version.replace('/', "_")));
 
-    let downloaded = match download_reporting(&app.download_url, &dest, on_progress) {
+    let downloaded = match download_reporting_limited(
+        &app.download_url,
+        &dest,
+        app.qpkg_size_bytes,
+        on_progress,
+    ) {
         Ok(bytes) => bytes,
         Err(detail) => {
             let _ = std::fs::remove_file(&dest);
@@ -421,6 +485,93 @@ mod tests {
             verify_download_metadata(&app, bytes.len() as u64 + 1),
             Err(InstallError::Integrity { detail }) if detail.contains("size mismatch")
         ));
+
+        let mut oversized = app.clone();
+        oversized.qpkg_size_bytes = pkg::MAX_APP_QPKG_BYTES + 1;
+        assert!(matches!(
+            validate_offer_metadata(&oversized),
+            Err(InstallError::Integrity { detail }) if detail.contains("outside")
+        ));
+    }
+
+    #[test]
+    fn streaming_download_stops_when_body_exceeds_the_offer_limit() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let address = listener.local_addr().expect("listener address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n12345678")
+                .expect("write response");
+        });
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("bounded.qpkg");
+
+        let error = download_reporting_limited(
+            &format!("http://{address}/app.qpkg"),
+            &destination,
+            4,
+            &mut |_| {},
+        )
+        .expect_err("an undeclared oversized body must stop mid-stream");
+        server.join().expect("server thread");
+        assert!(error.contains("exceeded"), "{error}");
+        assert_eq!(
+            std::fs::metadata(destination).expect("staging file").len(),
+            0,
+            "the over-limit chunk is rejected before it reaches disk"
+        );
+    }
+
+    #[test]
+    fn package_download_origin_is_explicit_and_credential_free() {
+        assert!(safe_download_url("https://packages.example/app.qpkg?token=signed").is_ok());
+        assert!(safe_download_url("http://127.0.0.1:8080/app.qpkg").is_ok());
+        for unsafe_url in [
+            "http://packages.example/app.qpkg",
+            "https://user:secret@packages.example/app.qpkg",
+            "file:///tmp/app.qpkg",
+            "https://packages.example/app.qpkg#alternate",
+        ] {
+            assert!(
+                safe_download_url(unsafe_url).is_err(),
+                "unsafe package origin was accepted: {unsafe_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn package_download_refuses_redirect_response() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let address = listener.local_addr().expect("listener address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write redirect");
+        });
+        let temp = tempfile::tempdir().expect("temp dir");
+        let error = download_reporting_limited(
+            &format!("http://{address}/app.qpkg"),
+            &temp.path().join("redirect.qpkg"),
+            64,
+            &mut |_| {},
+        )
+        .expect_err("redirect must not become a second authorized origin");
+        server.join().expect("server thread");
+        assert!(error.contains("redirects are not followed"), "{error}");
     }
 
     /// The one argv assertion that is a security property rather than

@@ -31,6 +31,7 @@ const CAPTURE_QUEUE: usize = 12;
 const PLAYBACK_QUEUE: usize = 12;
 const PIPE_BUFFER: usize = 16 * 1024;
 const SEND_BUDGET: usize = 8;
+const MAX_PENDING_PCM_BYTES: usize = MAX_REMOTE_AUDIO_FRAME_BYTES * SEND_BUDGET * 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LocalAudioSelection {
@@ -130,7 +131,7 @@ struct InboundRoute {
     authorization: [u8; 16],
     last_sequence: u64,
     created: Instant,
-    sink: PcmSink,
+    sink: Option<PcmSink>,
 }
 
 #[derive(Default)]
@@ -139,6 +140,183 @@ struct RemoteAudioState {
     pending: BTreeMap<[u8; 16], PendingInbound>,
     outbound: BTreeMap<[u8; 16], OutboundRoute>,
     inbound: BTreeMap<[u8; 16], InboundRoute>,
+}
+
+struct Egress {
+    target: DeviceId,
+    action: PersonalFabricAction,
+    /// The exact source-side route whose media send this message advances.
+    /// A transport failure terminates only this route, never another stream
+    /// that happens to use the same certified peer.
+    outbound_session: Option<[u8; 16]>,
+}
+
+fn queue_egress(
+    egress: &mut Vec<Egress>,
+    target: DeviceId,
+    action: PersonalFabricAction,
+    outbound_session: Option<[u8; 16]>,
+) {
+    egress.push(Egress {
+        target,
+        action,
+        outbound_session,
+    });
+}
+
+fn append_bounded_pcm(pending: &mut Vec<u8>, bytes: &[u8]) {
+    pending.extend_from_slice(bytes);
+    if pending.len() > MAX_PENDING_PCM_BYTES {
+        let excess = pending.len() - MAX_PENDING_PCM_BYTES;
+        // Stereo S16LE is four bytes per sample frame. Drop old audio at a
+        // sample boundary: live routing favours bounded latency over replaying
+        // a growing backlog after transport backpressure clears.
+        let discard = excess.saturating_add(3) / 4 * 4;
+        pending.drain(..discard.min(pending.len()));
+    }
+}
+
+fn reconcile_lifecycle(
+    state: &mut RemoteAudioState,
+    enabled: bool,
+    online: &BTreeSet<DeviceId>,
+    focus: Option<&PhysicalGamepadBinding>,
+    now: Instant,
+) -> Vec<Egress> {
+    let mut egress = Vec::new();
+    if !enabled {
+        for (session_id, pending) in std::mem::take(&mut state.pending) {
+            queue_egress(
+                &mut egress,
+                pending.source,
+                PersonalFabricAction::RemoteAudioDecision {
+                    session_id,
+                    accepted: false,
+                    authorization: None,
+                },
+                None,
+            );
+        }
+        for (session_id, route) in std::mem::take(&mut state.outbound) {
+            let action = route.authorization.map_or(
+                PersonalFabricAction::RemoteAudioCancel { session_id },
+                |authorization| PersonalFabricAction::RemoteAudioStop {
+                    session_id,
+                    authorization,
+                },
+            );
+            queue_egress(&mut egress, route.target, action, Some(session_id));
+        }
+        for (session_id, route) in std::mem::take(&mut state.inbound) {
+            queue_egress(
+                &mut egress,
+                route.source,
+                PersonalFabricAction::RemoteAudioStop {
+                    session_id,
+                    authorization: route.authorization,
+                },
+                None,
+            );
+        }
+        return egress;
+    }
+
+    let stale_pending = state
+        .pending
+        .iter()
+        .filter_map(|(session_id, pending)| {
+            (now.duration_since(pending.received) > PENDING_TTL
+                || !online.contains(&pending.source))
+            .then_some(*session_id)
+        })
+        .collect::<Vec<_>>();
+    for session_id in stale_pending {
+        if let Some(pending) = state.pending.remove(&session_id) {
+            queue_egress(
+                &mut egress,
+                pending.source,
+                PersonalFabricAction::RemoteAudioDecision {
+                    session_id,
+                    accepted: false,
+                    authorization: None,
+                },
+                None,
+            );
+        }
+    }
+
+    let stale_inbound = state
+        .inbound
+        .iter()
+        .filter_map(|(session_id, route)| {
+            (now.duration_since(route.created) > SESSION_TTL || !online.contains(&route.source))
+                .then_some(*session_id)
+        })
+        .collect::<Vec<_>>();
+    for session_id in stale_inbound {
+        if let Some(route) = state.inbound.remove(&session_id) {
+            queue_egress(
+                &mut egress,
+                route.source,
+                PersonalFabricAction::RemoteAudioStop {
+                    session_id,
+                    authorization: route.authorization,
+                },
+                None,
+            );
+        }
+    }
+
+    let stale_outbound = state
+        .outbound
+        .iter()
+        .filter_map(|(session_id, route)| {
+            (now.duration_since(route.created) > SESSION_TTL
+                || !online.contains(&route.target)
+                || !selection_focus_valid(&route.selection, focus))
+            .then_some(*session_id)
+        })
+        .collect::<Vec<_>>();
+    for session_id in stale_outbound {
+        if let Some(route) = state.outbound.remove(&session_id) {
+            let action = route.authorization.map_or(
+                PersonalFabricAction::RemoteAudioCancel { session_id },
+                |authorization| PersonalFabricAction::RemoteAudioStop {
+                    session_id,
+                    authorization,
+                },
+            );
+            queue_egress(&mut egress, route.target, action, Some(session_id));
+        }
+    }
+    egress
+}
+
+fn apply_send_failure(state: &mut RemoteAudioState, outbound_session: Option<[u8; 16]>) {
+    if let Some(session_id) = outbound_session {
+        state.outbound.remove(&session_id);
+    }
+}
+
+fn terminate_capture_failure(
+    state: &mut RemoteAudioState,
+    session_id: [u8; 16],
+    egress: &mut Vec<Egress>,
+) {
+    let Some(route) = state.outbound.remove(&session_id) else {
+        return;
+    };
+    if let Some(authorization) = route.authorization {
+        queue_egress(
+            egress,
+            route.target,
+            PersonalFabricAction::RemoteAudioStop {
+                session_id,
+                authorization,
+            },
+            Some(session_id),
+        );
+    }
 }
 
 fn state() -> &'static Mutex<RemoteAudioState> {
@@ -375,7 +553,7 @@ pub fn authorize(
                 authorization,
                 last_sequence: 0,
                 created: Instant::now(),
-                sink,
+                sink: Some(sink),
             },
         );
     }
@@ -516,7 +694,11 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
                         *sequence,
                     )
                 {
-                    if route.sink.try_write(pcm_s16le.clone()).is_ok() {
+                    if route
+                        .sink
+                        .as_mut()
+                        .is_some_and(|sink| sink.try_write(pcm_s16le.clone()).is_ok())
+                    {
                         route.last_sequence = *sequence;
                     } else {
                         failed = true;
@@ -592,81 +774,28 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
     let Ok(mut guard) = state().lock() else {
         return;
     };
+    egress.extend(reconcile_lifecycle(
+        &mut guard, enabled, &online, focus, now,
+    ));
     if !enabled {
-        for (session_id, pending) in &guard.pending {
-            egress.push((
-                pending.source.clone(),
-                PersonalFabricAction::RemoteAudioDecision {
-                    session_id: *session_id,
-                    accepted: false,
-                    authorization: None,
-                },
-            ));
-        }
-        for (session_id, route) in &guard.outbound {
-            let action = route.authorization.map_or(
-                PersonalFabricAction::RemoteAudioCancel {
-                    session_id: *session_id,
-                },
-                |authorization| PersonalFabricAction::RemoteAudioStop {
-                    session_id: *session_id,
-                    authorization,
-                },
-            );
-            egress.push((route.target.clone(), action));
-        }
-        for (session_id, route) in &guard.inbound {
-            egress.push((
-                route.source.clone(),
-                PersonalFabricAction::RemoteAudioStop {
-                    session_id: *session_id,
-                    authorization: route.authorization,
-                },
-            ));
-        }
-        guard.pending.clear();
-        guard.outbound.clear();
-        guard.inbound.clear();
         drop(guard);
-        for (target, action) in egress {
-            let _ = network.send_personal_fabric_action(&target, action);
+        for message in egress {
+            let _ = network.send_personal_fabric_action(&message.target, message.action);
         }
         return;
     }
-    guard.pending.retain(|_, pending| {
-        now.duration_since(pending.received) <= PENDING_TTL && online.contains(&pending.source)
-    });
-    guard.inbound.retain(|_, route| {
-        now.duration_since(route.created) <= SESSION_TTL && online.contains(&route.source)
-    });
     let sessions = guard.outbound.keys().copied().collect::<Vec<_>>();
     for session_id in sessions {
         let Some(route) = guard.outbound.get_mut(&session_id) else {
             continue;
         };
-        let focus_valid = selection_focus_valid(&route.selection, focus);
-        if now.duration_since(route.created) > SESSION_TTL
-            || !online.contains(&route.target)
-            || !focus_valid
-        {
-            let action = route.authorization.map_or(
-                PersonalFabricAction::RemoteAudioCancel { session_id },
-                |authorization| PersonalFabricAction::RemoteAudioStop {
-                    session_id,
-                    authorization,
-                },
-            );
-            egress.push((route.target.clone(), action));
-            guard.outbound.remove(&session_id);
-            continue;
-        }
         let Some(capture) = route.capture.as_mut() else {
             continue;
         };
         match capture.drain() {
-            Ok(bytes) => route.pending_pcm.extend_from_slice(&bytes),
+            Ok(bytes) => append_bounded_pcm(&mut route.pending_pcm, &bytes),
             Err(_) => {
-                guard.outbound.remove(&session_id);
+                terminate_capture_failure(&mut guard, session_id, &mut egress);
                 continue;
             }
         }
@@ -680,7 +809,8 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
             let Some(authorization) = route.authorization else {
                 break;
             };
-            egress.push((
+            queue_egress(
+                &mut egress,
                 route.target.clone(),
                 PersonalFabricAction::RemoteAudioFrame {
                     session_id,
@@ -688,17 +818,19 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
                     sequence: route.sequence,
                     pcm_s16le,
                 },
-            ));
+                Some(session_id),
+            );
         }
     }
     drop(guard);
-    for (target, action) in egress {
+    for message in egress {
+        let outbound_session = message.outbound_session;
         if network
-            .send_personal_fabric_action(&target, action)
+            .send_personal_fabric_action(&message.target, message.action)
             .is_err()
             && let Ok(mut state) = state().lock()
         {
-            state.outbound.retain(|_, route| route.target != target);
+            apply_send_failure(&mut state, outbound_session);
         }
     }
 }
@@ -905,6 +1037,32 @@ fn write_playback(mut stdin: impl Write, receiver: &Receiver<Vec<u8>>) {
 mod tests {
     use super::*;
 
+    fn binding(session: &str) -> PhysicalGamepadBinding {
+        PhysicalGamepadBinding {
+            app_id: "dev.tilo.music".into(),
+            workspace_id: "work".into(),
+            session_id: session.into(),
+        }
+    }
+
+    fn outbound(
+        target: &DeviceId,
+        selection: LocalAudioSelection,
+        authorization: Option<[u8; 16]>,
+        created: Instant,
+    ) -> OutboundRoute {
+        OutboundRoute {
+            target: target.clone(),
+            label: "Music".into(),
+            selection,
+            authorization,
+            sequence: 0,
+            created,
+            capture: None,
+            pending_pcm: Vec::new(),
+        }
+    }
+
     #[test]
     fn replay_and_foreign_capabilities_cannot_advance_an_inbound_route() {
         let source = DeviceId::new("source").unwrap();
@@ -954,11 +1112,7 @@ mod tests {
 
     #[test]
     fn application_routes_are_bound_to_the_locally_verified_focus() {
-        let focus = PhysicalGamepadBinding {
-            app_id: "dev.tilo.music".into(),
-            workspace_id: "work".into(),
-            session_id: "surface-1".into(),
-        };
+        let focus = binding("surface-1");
         let selection = LocalAudioSelection::Application {
             serial: 42,
             label: "Music".into(),
@@ -975,11 +1129,7 @@ mod tests {
 
     #[test]
     fn picker_tokens_survive_refresh_only_while_the_source_binding_exists() {
-        let focus = PhysicalGamepadBinding {
-            app_id: "dev.tilo.music".into(),
-            workspace_id: "work".into(),
-            session_id: "surface-1".into(),
-        };
+        let focus = binding("surface-1");
         let application = LocalAudioSelection::Application {
             serial: 42,
             label: "Music".into(),
@@ -1001,6 +1151,212 @@ mod tests {
                 .source_tokens
                 .values()
                 .any(|source| source == &application)
+        );
+    }
+
+    #[test]
+    fn pending_pcm_keeps_only_the_newest_bounded_audio() {
+        let mut pending = vec![1; MAX_PENDING_PCM_BYTES];
+        append_bounded_pcm(&mut pending, &vec![2; MAX_PENDING_PCM_BYTES]);
+        assert!(pending.len() <= MAX_PENDING_PCM_BYTES);
+        assert!(pending.iter().all(|byte| *byte == 2));
+        assert_eq!(pending.len() % 4, 0, "stereo S16LE stays sample-aligned");
+    }
+
+    #[test]
+    fn policy_disable_revokes_pending_and_outbound_routes() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        state.pending.insert(
+            [1; 16],
+            PendingInbound {
+                source: source.clone(),
+                target: target.clone(),
+                label: "Music".into(),
+                received: now,
+            },
+        );
+        state.outbound.insert(
+            [2; 16],
+            outbound(&target, LocalAudioSelection::System, Some([3; 16]), now),
+        );
+        state.inbound.insert(
+            [4; 16],
+            InboundRoute {
+                source: source.clone(),
+                target: target.clone(),
+                label: "Podcast".into(),
+                authorization: [5; 16],
+                last_sequence: 7,
+                created: now,
+                sink: None,
+            },
+        );
+
+        let egress = reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, now);
+        assert!(state.pending.is_empty());
+        assert!(state.outbound.is_empty());
+        assert!(state.inbound.is_empty());
+        assert_eq!(egress.len(), 3);
+        assert!(egress.iter().any(|message| {
+            message.target == source
+                && message.action
+                    == PersonalFabricAction::RemoteAudioDecision {
+                        session_id: [1; 16],
+                        accepted: false,
+                        authorization: None,
+                    }
+        }));
+        assert!(egress.iter().any(|message| {
+            message.target == target
+                && message.action
+                    == PersonalFabricAction::RemoteAudioStop {
+                        session_id: [2; 16],
+                        authorization: [3; 16],
+                    }
+        }));
+        assert!(egress.iter().any(|message| {
+            message.target == source
+                && message.action
+                    == PersonalFabricAction::RemoteAudioStop {
+                        session_id: [4; 16],
+                        authorization: [5; 16],
+                    }
+        }));
+    }
+
+    #[test]
+    fn peer_and_focus_loss_revoke_only_the_exact_routes() {
+        let gone = DeviceId::new("gone").unwrap();
+        let online_peer = DeviceId::new("online").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(&gone, LocalAudioSelection::System, Some([7; 16]), now),
+        );
+        state.outbound.insert(
+            [2; 16],
+            outbound(
+                &online_peer,
+                LocalAudioSelection::Application {
+                    serial: 42,
+                    label: "Music".into(),
+                    focus: binding("old-focus"),
+                },
+                None,
+                now,
+            ),
+        );
+        state.outbound.insert(
+            [3; 16],
+            outbound(&online_peer, LocalAudioSelection::System, None, now),
+        );
+        let online = BTreeSet::from([online_peer]);
+
+        let egress =
+            reconcile_lifecycle(&mut state, true, &online, Some(&binding("new-focus")), now);
+        assert_eq!(
+            state.outbound.keys().copied().collect::<Vec<_>>(),
+            vec![[3; 16]]
+        );
+        assert_eq!(egress.len(), 2);
+        assert!(
+            egress
+                .iter()
+                .any(|message| message.outbound_session == Some([1; 16]))
+        );
+        assert!(
+            egress
+                .iter()
+                .any(|message| message.outbound_session == Some([2; 16]))
+        );
+    }
+
+    #[test]
+    fn stale_consent_is_denied_and_fresh_consent_remains() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        for (id, received) in [
+            ([1; 16], now - PENDING_TTL - Duration::from_millis(1)),
+            ([2; 16], now),
+        ] {
+            state.pending.insert(
+                id,
+                PendingInbound {
+                    source: source.clone(),
+                    target: target.clone(),
+                    label: "Music".into(),
+                    received,
+                },
+            );
+        }
+        let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([source]), None, now);
+        assert_eq!(
+            state.pending.keys().copied().collect::<Vec<_>>(),
+            vec![[2; 16]]
+        );
+        assert_eq!(egress.len(), 1);
+        assert_eq!(
+            egress[0].action,
+            PersonalFabricAction::RemoteAudioDecision {
+                session_id: [1; 16],
+                accepted: false,
+                authorization: None,
+            }
+        );
+    }
+
+    #[test]
+    fn send_failure_is_terminal_for_only_its_exact_route() {
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(&target, LocalAudioSelection::System, Some([4; 16]), now),
+        );
+        state.outbound.insert(
+            [2; 16],
+            outbound(&target, LocalAudioSelection::System, Some([5; 16]), now),
+        );
+
+        apply_send_failure(&mut state, Some([1; 16]));
+        assert!(!state.outbound.contains_key(&[1; 16]));
+        assert!(state.outbound.contains_key(&[2; 16]));
+    }
+
+    #[test]
+    fn capture_failure_stops_the_exact_authorized_peer_route() {
+        let target = DeviceId::new("target").unwrap();
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(
+                &target,
+                LocalAudioSelection::System,
+                Some([9; 16]),
+                Instant::now(),
+            ),
+        );
+        let mut egress = Vec::new();
+
+        terminate_capture_failure(&mut state, [1; 16], &mut egress);
+
+        assert!(state.outbound.is_empty());
+        assert_eq!(egress.len(), 1);
+        assert_eq!(egress[0].target, target);
+        assert_eq!(egress[0].outbound_session, Some([1; 16]));
+        assert_eq!(
+            egress[0].action,
+            PersonalFabricAction::RemoteAudioStop {
+                session_id: [1; 16],
+                authorization: [9; 16],
+            }
         );
     }
 }

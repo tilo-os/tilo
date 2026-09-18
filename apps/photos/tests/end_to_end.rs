@@ -142,8 +142,9 @@ fn populated_large_text_library_passes_native_accessibility_certification() {
     let audit = driver.native_app_audit();
     assert!(
         audit.is_certified(),
-        "populated large-text library native audit: {:?}",
-        audit.issues
+        "populated large-text library native audit: native={:?}, accessibility={:?}",
+        audit.issues,
+        audit.accessibility.issues
     );
     assert!(driver.accessibility_audit().is_clean());
 }
@@ -980,7 +981,10 @@ fn desktop_library_uses_two_complete_rows_before_leaving_canvas_space() {
         5,
         "a five-photo desktop library should use the second row, not a large blank canvas"
     );
-    assert!(cards.iter().all(|(card, ..)| card.width() >= 420.0));
+    assert!(
+        cards.iter().all(|(card, ..)| card.width() >= 220.0),
+        "the image-forward desktop timeline should fill a useful row rather than retain the old sparse file-card measure: {cards:?}"
+    );
     assert!(
         cards.iter().all(|(card, ..)| card.y1 <= 900.0),
         "every rendered desktop card must remain fully pointer and AT reachable: {cards:?}"

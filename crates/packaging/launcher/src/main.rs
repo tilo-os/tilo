@@ -794,15 +794,11 @@ fn run_installed(
         return ExitCode::from(2);
     }
 
-    // TILO_LAUNCHER_DISABLE_LANDLOCK=1 is an explicit developer escape hatch,
-    // matching the knob threaded through `run` via
-    // `RunOptions.landlock_enforce`. Production app launches keep enforcement
-    // enabled and fail closed unless the in-namespace shim reports the full
-    // required policy.
-    let landlock_enforce = !matches!(
-        std::env::var("TILO_LAUNCHER_DISABLE_LANDLOCK").as_deref(),
-        Ok("1" | "true")
-    );
+    // Installed qpkg command shims are a production launch surface. Their
+    // inherited environment is app/user input, not trusted launcher policy,
+    // so it must never be able to turn off either confinement or runtime
+    // verification. Tests and developer harnesses that intentionally need a
+    // weaker policy call the library with an explicit `RunOptions` value.
     // CLI-flavour launches through the PATH shim default --minimal-libs
     // on: shim invocations have no place to pass launcher flags, and CLI
     // apps are dynamically-linked ELFs until tilo-runtime bundles land.
@@ -817,19 +813,13 @@ fn run_installed(
         bwrap_bin: None,
         sandbox_shim_bin: None,
         minimal_libs,
-        landlock_enforce,
+        landlock_enforce: true,
         mode: LaunchMode::Cli {
             command: command.to_string(),
             passthrough_argv: rest,
         },
         allow_missing_runtime: false,
-        // CLI-shim launches happen from a user shell without extra flags;
-        // honour the same env-escape-hatch as landlock so shim users can opt
-        // out for debugging.
-        allow_unsigned_runtime: matches!(
-            std::env::var("TILO_LAUNCHER_ALLOW_UNSIGNED_RUNTIME").as_deref(),
-            Ok("1" | "true")
-        ),
+        allow_unsigned_runtime: false,
         require_runtime_publisher: std::env::var("TILO_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
             .ok()
             .filter(|s| !s.is_empty()),

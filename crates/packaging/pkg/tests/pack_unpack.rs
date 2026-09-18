@@ -58,6 +58,98 @@ fn pack_unpack_roundtrip() {
     assert_eq!(splash_a, splash_b);
 }
 
+fn repoint_collection(
+    id: pkg::PackageId,
+    store: &mut MemoryBlobStore,
+    collection: &pkg::Collection,
+) -> pkg::PackageId {
+    use pkg::BlobStore;
+    let root_bytes = store.get(&pkg::BlobHash(*id.as_bytes())).unwrap().unwrap();
+    let mut root = pkg::SignedRoot::decode(&root_bytes).unwrap();
+    root.payload_root_hash = store.put(&collection.encode()).unwrap();
+    // `unpack` deliberately accepts unsigned build artifacts; the budget is
+    // structural and must hold independently of trust verification.
+    root.signature = None;
+    let root_bytes = root.encode();
+    store.put(&root_bytes).unwrap();
+    root.package_id()
+}
+
+#[test]
+fn deduplicated_blob_references_cannot_expand_an_app_past_the_materialized_limit() {
+    use pkg::BlobStore;
+    let (sk, pub_hex) = fresh_identity();
+    let manifest = manifest_with_key(&pub_hex);
+    let payload = tempfile::tempdir().unwrap();
+    fixtures::write_app_payload(payload.path()).unwrap();
+    let mut store = MemoryBlobStore::new();
+    let id = pack(
+        payload.path(),
+        &manifest,
+        &SigningIdentity::from_signing_key(sk),
+        &mut store,
+    )
+    .unwrap();
+    // More than 5 MiB when referenced 2,049 times, while remaining below the
+    // independent 4,096-entry ceiling so this specifically exercises the
+    // materialized-byte guard.
+    let repeated = store.put(&vec![0x5a; 3072]).unwrap();
+    let mut collection = pkg::Collection::default();
+    for index in 0..=2048 {
+        collection
+            .entries
+            .insert(format!("share/repeated-{index}"), repeated);
+    }
+    let expanded = repoint_collection(id, &mut store, &collection);
+    let destination = tempfile::tempdir().unwrap();
+    let output = destination.path().join("not-created");
+
+    assert!(matches!(
+        unpack(expanded, &store, &output),
+        Err(pkg::UnpackError::PayloadTooLarge { .. })
+    ));
+    assert!(
+        !output.exists(),
+        "budget rejection must happen before writes"
+    );
+}
+
+#[test]
+fn empty_files_cannot_expand_an_app_past_the_inode_budget() {
+    use pkg::BlobStore;
+    let (sk, pub_hex) = fresh_identity();
+    let manifest = manifest_with_key(&pub_hex);
+    let payload = tempfile::tempdir().unwrap();
+    fixtures::write_app_payload(payload.path()).unwrap();
+    let mut store = MemoryBlobStore::new();
+    let id = pack(
+        payload.path(),
+        &manifest,
+        &SigningIdentity::from_signing_key(sk),
+        &mut store,
+    )
+    .unwrap();
+    let empty = store.put(&[]).unwrap();
+    let mut collection = pkg::Collection::default();
+    for index in 0..=pkg::MAX_APP_PAYLOAD_ENTRIES {
+        collection
+            .entries
+            .insert(format!("share/empty-{index}"), empty);
+    }
+    let expanded = repoint_collection(id, &mut store, &collection);
+    let destination = tempfile::tempdir().unwrap();
+    let output = destination.path().join("not-created");
+
+    assert!(matches!(
+        unpack(expanded, &store, &output),
+        Err(pkg::UnpackError::TooManyPayloadEntries { .. })
+    ));
+    assert!(
+        !output.exists(),
+        "budget rejection must happen before writes"
+    );
+}
+
 #[test]
 fn sign_verify_symmetric() {
     let (sk_a, pub_hex_a) = fresh_identity();
