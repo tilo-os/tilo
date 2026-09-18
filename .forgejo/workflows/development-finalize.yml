@@ -32,22 +32,25 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
       - name: Validate pinned public inputs
+        id: validated
         env:
           FINALIZATION_REQUEST: ${{ inputs.request }}
           FINALIZATION_REQUEST_SHA256: ${{ inputs.request_sha256 }}
           HELPERS_REVISION: ${{ inputs.helpers_revision }}
         run: |
           python3 - <<'PY'
-          import importlib.util, os
+          import importlib.util, json, os
           spec = importlib.util.spec_from_file_location('worker', 'controller/os/dev/launch-finalization-worker.py')
           worker = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(worker)
-          worker.request_bytes(os.environ['FINALIZATION_REQUEST'], os.environ['FINALIZATION_REQUEST_SHA256'], os.environ['HELPERS_REVISION'])
+          data = worker.request_bytes(os.environ['FINALIZATION_REQUEST'], os.environ['FINALIZATION_REQUEST_SHA256'], os.environ['HELPERS_REVISION'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('source_revision=' + json.loads(data)['source_revision'] + '\n')
           PY
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: source
-          ref: 4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc
+          ref: ${{ steps.validated.outputs.source_revision }}
           token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
