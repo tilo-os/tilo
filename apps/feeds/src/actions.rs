@@ -562,6 +562,7 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         let refresh = refresh.with_contract(ActionContract {
             retry: RetryPolicy::Idempotent,
             execution: ExecutionMode::Background { cancellable: false },
+            result: tilo_actions::ResultSpec::Job,
             tags: vec!["network".into(), "refresh".into()],
             ..ActionContract::default()
         });
@@ -1018,6 +1019,13 @@ mod tests {
     fn ctrl_k_publishes_the_reader_tree() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
+        let handlers: std::collections::HashSet<String> = app
+            .local_resource_operation_handlers()
+            .iter()
+            .map(|handler| (*handler).to_string())
+            .collect();
+        let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
+        assert!(violations.is_empty(), "{violations:?}");
         assert_eq!(resources.len(), 1, "one reader root");
         let reader = &resources[0];
         assert_eq!(reader.kind, "feeds.reader");
@@ -1053,7 +1061,14 @@ mod tests {
             refresh.contract.execution,
             tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::None);
+        assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
+        assert!(
+            refresh
+                .contract
+                .result
+                .validate(&tilo_actions::ActionOutput::default())
+                .is_ok()
+        );
         assert_eq!(refresh.kind, OperationKind::Effect);
 
         let folder = reader
