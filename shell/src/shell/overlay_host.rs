@@ -10770,9 +10770,17 @@ impl ShellOverlayHost {
                     .chrome
                     .as_ref()
                     .and_then(|c| crate::shell::window_actions::focused_group(&c.borrow()));
-                if let (Some(chrome), Some(group)) = (self.chrome.clone(), group) {
+                if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
-                    st.open_target = crate::shell::chrome_state::OpenTarget::Here(group);
+                    // A first-boot workspace intentionally has no group. Keep
+                    // Super+T useful there by falling back to the ordinary
+                    // placement rule, which creates the first group when the
+                    // selected app is opened. With a focused group this stays
+                    // the tab-strip '+' equivalent.
+                    st.open_target = group.map_or(
+                        crate::shell::chrome_state::OpenTarget::Beside,
+                        crate::shell::chrome_state::OpenTarget::Here,
+                    );
                     st.search_scope = crate::shell::chrome_state::SearchScope::Workspace;
                     st.bump();
                     drop(st);
@@ -26327,6 +26335,32 @@ mod tests {
             h.host.active_kind_filter,
             vec![ResourceKind::Application, ResourceKind::HostApplication]
         );
+        assert!(h.host.palette_visible());
+    }
+
+    #[test]
+    fn super_t_from_a_fresh_empty_workspace_opens_a_new_group_picker() {
+        use crate::shell::chrome_state::{OpenTarget, SearchScope};
+
+        let tree = WorkspaceTree::bootstrap_default();
+        let chrome = ChromeState::new(tree);
+        let host = ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        let mut h = build_harness_with_host(host, chrome);
+        let super_key = Modifiers::from(ModifiersState::SUPER);
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("t".into())),
+            super_key
+        ));
+
+        let state = h.chrome.borrow();
+        assert_eq!(
+            state.open_target,
+            OpenTarget::Beside,
+            "with no focused group, the first app must be placed as a new group"
+        );
+        assert_eq!(state.search_scope, SearchScope::Workspace);
         assert!(h.host.palette_visible());
     }
 
