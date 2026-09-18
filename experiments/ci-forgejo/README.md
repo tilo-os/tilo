@@ -131,6 +131,35 @@ agent code-review quality, ordinary-user permission isolation, review races duri
 landing, or resistance to an owner changing the protection itself. No product
 review policy or account permissions were changed.
 
+## Misleading success versus underlying execution
+
+Branch `probe-misleading-status` in the repeat private pilot ran
+`misleading-status-probe.yml` at `168f7b957e1478dff8990518333930355fafdc0b`.
+Run **22588**, job **82967**, posted required context `pilot/ready=success`
+with its candidate job token (HTTP 201), then deliberately exited 42. The
+server-owned run and job records both report `failure`; the required context
+remains `success`. The combined status is correctly `failure` because it also
+includes the normal Actions context. No PR or merge was attempted in this probe.
+
+`audit-run.py` reads run/jobs directly and requires the explicit repository,
+commit, workflow path and exact job set, with every job and the run successful.
+It exits 2 on rejected execution evidence. It rejected this live failed run and
+accepted the earlier successful run 22563 as successful execution only. Retained
+observations and log excerpts are in `results/misleading-status-20260918/`.
+Seven tests exercise those real records and missing, duplicate, foreign, skipped,
+cancelled and mismatched evidence through the same checker.
+
+This is one part of a future trusted gate, **not merge authorization**. A workflow
+path is not a trusted workflow definition; a candidate can change commands and
+still produce a genuinely successful Actions job. Trusted policy must choose the
+expected jobs and verify the workflow plus its invoked scripts/actions, runner
+isolation, review and current base/head. The experiment does not establish that
+candidate credentials cannot mutate run/job records through another interface.
+Complete job enumeration and consistent run/attempt snapshots during retries
+also need qualification; these live fixtures each contain one job and one attempt.
+The audit therefore always records `merge_authorized=false`; there is no merge
+endpoint or credential in this tool.
+
 ## Decision and next evidence
 
 Keep native Forgejo primitives for immediate merging. There is now

@@ -1,0 +1,50 @@
+{
+  "collected_at": "2026-09-18T21:07:39.361185+00:00",
+  "hostname": "code.podesta.ai",
+  "expected": {
+    "repo": "qos/ci-workflow-pilot-20260918-9245-repeat",
+    "head": "168f7b957e1478dff8990518333930355fafdc0b",
+    "workflow": "misleading-status-probe.yml",
+    "jobs": [
+      "must-fail"
+    ]
+  },
+  "run": {
+    "id": 22588,
+    "workflow_id": "misleading-status-probe.yml",
+    "commit_sha": "168f7b957e1478dff8990518333930355fafdc0b",
+    "event": "push",
+    "status": "failure",
+    "started": "2026-09-18T21:06:30Z",
+    "stopped": "2026-09-18T21:07:06Z",
+    "html_url": "https://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat/actions/runs/3",
+    "repository": {
+      "id": 59,
+      "full_name": "qos/ci-workflow-pilot-20260918-9245-repeat"
+    }
+  },
+  "jobs": [
+    {
+      "id": 82967,
+      "run_id": 22588,
+      "attempt": 1,
+      "handle": "cca17b24-b45f-4f86-8d4d-3da7c8c22cc7",
+      "repo_id": 59,
+      "owner_id": 11,
+      "name": "must-fail",
+      "needs": null,
+      "runs_on": [
+        "runner"
+      ],
+      "task_id": 74774,
+      "status": "failure"
+    }
+  ],
+  "errors": [
+    "run is 'failure', not success",
+    "job 'must-fail' is 'failure', not success"
+  ],
+  "execution_passed": false,
+  "merge_authorized": false,
+  "scope": "Server run/job execution only; no workflow provenance, review or runner trust established."
+}

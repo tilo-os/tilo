@@ -1,0 +1,20 @@
+{
+  "sha": "168f7b957e1478dff8990518333930355fafdc0b",
+  "state": "failure",
+  "statuses": [
+    {
+      "context": "pilot/ready",
+      "status": "success",
+      "description": "Candidate-controlled fixture status; not trusted review",
+      "created_at": "2026-09-18T21:07:05Z",
+      "updated_at": "2026-09-18T21:07:05Z"
+    },
+    {
+      "context": "Isolated misleading green status probe / must-fail (push)",
+      "status": "failure",
+      "description": "Failing after 36s",
+      "created_at": "2026-09-18T21:07:07Z",
+      "updated_at": "2026-09-18T21:07:07Z"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+name: Isolated misleading green status probe
+on:
+  push:
+jobs:
+  must-fail:
+    runs-on: runner
+    timeout-minutes: 3
+    # Diagnostic fixture only: avoid the default runner-image pull. Record the
+    # resolved digest from logs before interpreting the observed result.
+    container:
+      image: docker.io/library/python:3.13-alpine
+    steps:
+      - name: Try publishing the required context with the candidate job token
+        env:
+          PROBE_TOKEN: ${{ github.token }}
+          PROBE_SHA: ${{ github.sha }}
+          PROBE_REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.request, urllib.error
+          repo = os.environ['PROBE_REPO']
+          assert repo == 'qos/ci-workflow-pilot-20260918-9245-repeat'
+          sha = os.environ['PROBE_SHA']
+          assert re.fullmatch('[0-9a-f]{40}', sha)
+          token = os.environ.get('PROBE_TOKEN', '')
+          if not token:
+              raise SystemExit('INCONCLUSIVE: candidate job token unavailable')
+          request = urllib.request.Request(
+              f'https://code.podesta.ai/api/v1/repos/{repo}/statuses/{sha}',
+              data=json.dumps({'context': 'pilot/ready', 'state': 'success',
+                               'description': 'Candidate-controlled fixture status; not trusted review'}).encode(),
+              headers={'Authorization': 'token ' + token, 'Content-Type': 'application/json'}, method='POST')
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  print('CANDIDATE_STATUS_HTTP=' + str(response.status))
+          except urllib.error.HTTPError as error:
+              print('CANDIDATE_STATUS_HTTP=' + str(error.code))
+              if error.code not in (401, 403):
+                  raise
+          PY
+
+      - name: Deliberately fail after publishing success
+        run: exit 42
+

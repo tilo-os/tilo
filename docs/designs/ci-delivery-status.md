@@ -48,6 +48,11 @@ Main and the ongoing hardware bring-up remain untouched.
   green checks; a fresh approval allowed exact-head landing. Both accounts have
   owner access, so non-admin isolation and actual independent-agent review remain
   distinct unqualified requirements. Only private pilot protection was changed.
+- A second issuer probe posted a green required status and then deliberately
+  failed (exit 42). Forgejo run/job records correctly retained failure. The new
+  read-only `experiments/ci-forgejo/audit-run.py` rejects that execution evidence;
+  its seven tests cover missing/mismatched/non-success records. This is not yet a
+  trusted readiness gate: workflow/script provenance and runner trust remain.
 
 ## Validation of this implementation
 

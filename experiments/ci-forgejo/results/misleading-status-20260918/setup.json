@@ -1,0 +1,7 @@
+{
+  "workflow": "misleading-status-probe.yml",
+  "repository_id": 59,
+  "branch": "probe-misleading-status",
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "head": "168f7b957e1478dff8990518333930355fafdc0b"
+}

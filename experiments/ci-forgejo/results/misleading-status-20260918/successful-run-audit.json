@@ -1,0 +1,47 @@
+{
+  "collected_at": "2026-09-18T21:07:42.339829+00:00",
+  "hostname": "code.podesta.ai",
+  "expected": {
+    "repo": "qos/ci-workflow-pilot-20260918-9245-repeat",
+    "head": "a26a2f4edeea5b50ccce44996fbe68f029306d91",
+    "workflow": "status-issuer-probe.yml",
+    "jobs": [
+      "issuer"
+    ]
+  },
+  "run": {
+    "id": 22563,
+    "workflow_id": "status-issuer-probe.yml",
+    "commit_sha": "a26a2f4edeea5b50ccce44996fbe68f029306d91",
+    "event": "push",
+    "status": "success",
+    "started": "2026-09-18T20:45:40Z",
+    "stopped": "2026-09-18T20:46:57Z",
+    "html_url": "https://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat/actions/runs/2",
+    "repository": {
+      "id": 59,
+      "full_name": "qos/ci-workflow-pilot-20260918-9245-repeat"
+    }
+  },
+  "jobs": [
+    {
+      "id": 82892,
+      "run_id": 22563,
+      "attempt": 1,
+      "handle": "5ebf3b0a-1449-4bde-b8cc-29f9b5b860cf",
+      "repo_id": 59,
+      "owner_id": 11,
+      "name": "issuer",
+      "needs": null,
+      "runs_on": [
+        "runner"
+      ],
+      "task_id": 74732,
+      "status": "success"
+    }
+  ],
+  "errors": [],
+  "execution_passed": true,
+  "merge_authorized": false,
+  "scope": "Server run/job execution only; no workflow provenance, review or runner trust established."
+}
