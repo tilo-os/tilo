@@ -355,6 +355,7 @@ impl RoutedOwners {
         state.doc.put(ROOT, "outer", "outer only").unwrap();
         state.commit_action(None, None);
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+        app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
         app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: crate::collaboration::RouteSpec::app(
                 "outer-shell",
@@ -555,6 +556,7 @@ fn native_owned_remote_delivery_preserves_pending_edits_until_normal_boundary() 
 fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
     use automerge::ReadDoc;
     let mut fixture = RoutedOwners::new();
+    fixture.app.collab_manager = CollaborationManager::disabled();
     fixture.app.bound_broker_route_for_test = None;
     fixture.app.refresh_document_routes();
     fixture
@@ -578,6 +580,7 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
         ),
         epoch: uuid::Uuid::new_v4(),
     });
+    fixture.app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
     fixture.app.publish_owned_documents();
     let (_, request) = fixture
         .app

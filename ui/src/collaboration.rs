@@ -2168,16 +2168,36 @@ impl CollaborationManager {
     /// lazily and retained, and its inbound streams feed this manager's normal
     /// [`Self::poll`] queue.
     pub fn send_to_route(&mut self, route: RouteSpec, req: CollabRequest) {
+        let _ = self.try_send_to_route(route, req);
+    }
+
+    /// Exact local enqueue outcome. The SDK's later RPC barrier still owns
+    /// durable acknowledgment; callers must not interpret this as commitment.
+    pub(crate) fn try_send_to_route(&mut self, route: RouteSpec, req: CollabRequest) -> bool {
         if matches!(req, CollabRequest::Hello { .. }) {
             tracing::warn!("collab: send_to_route ignores Hello; use join_route");
-            return;
+            return false;
         }
         if let Backend::Peer(peer) = &mut self.backend {
             let result = peer.send_to_route(route, req);
+            let queued = result.is_ok();
             self.peer_result(result);
+            queued
         } else if let Backend::Sdk(ch) = &mut self.backend {
-            let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::ToRoute(route, req), &ch.state);
+            enqueue_sdk_command(&ch.outbound_tx, SdkCommand::ToRoute(route, req), &ch.state)
+        } else {
+            false
         }
+    }
+
+    pub(crate) fn stop_after_publication_failure(&mut self) {
+        if let Backend::Sdk(channel) = &self.backend {
+            channel.state.fail_closed("pre-terminal document publication; outcome unknown");
+        }
+        // Drop the sender as well as withdrawing health, so an idle shovel
+        // wakes and closes its capability instead of awaiting another command.
+        self.backend = Backend::Disabled;
+        self.primary_route.accepted = None;
     }
 
     /// Drain every event pending on the current backend. Non-blocking.

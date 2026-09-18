@@ -501,6 +501,8 @@ pub struct App {
 
     // Collaboration
     collab_manager: CollaborationManager,
+    /// A failed pre-terminal handoff must not re-enter directed effects.
+    action_publication_failure: Option<String>,
     /// Every committed action is attributed to it and Ctrl+Z only reverts
     /// actions carrying it, so undo walks past collaborators' work rather
     /// than through it.
@@ -1240,6 +1242,7 @@ impl App {
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager: inputs.collab_manager,
+            action_publication_failure: None,
             local_author: inputs.local_author.resolve(),
             presence_ctx: inputs.presence_ctx.resolve(),
             permission_ctx: PermissionContext::permissive(),
@@ -3201,6 +3204,9 @@ impl App {
         actor: &str,
         ambient_context: Option<&qos_actions::ActionContext>,
     ) {
+        if self.action_publication_failure.is_some() {
+            return;
+        }
         let address = qos_actions::ActionAddress::new(resource, action);
         // Arrival on this directed stream means the broker already performed
         // permission and one-use confirmation-token checks.
@@ -3267,11 +3273,8 @@ impl App {
                 },
             },
         };
-        if update.is_terminal() {
-            // The SDK shovel awaits each signed document RPC in queue order.
-            // Its fail-closed barrier prevents a failed publication from being
-            // followed by this successful application lifecycle message.
-            self.publish_owned_documents();
+        if update.is_terminal() && !self.queue_documents_before_terminal() {
+            return;
         }
         self.collab_manager
             .send(CollabRequest::UpdateInvocation { id, update });
@@ -3979,6 +3982,9 @@ impl App {
             .collect::<Vec<_>>();
         let mut changed = false;
         for (invocation, pending) in invocations {
+            if self.action_publication_failure.is_some() {
+                break;
+            }
             let polled = if let Some(target) = self.bound_invocations.get(&invocation) {
                 crate::bound_dispatch::poll_resource_operation(
                     self.root_widget.as_mut(),
@@ -4017,12 +4023,15 @@ impl App {
                     },
                 };
             }
+            if update.is_terminal() && !self.queue_documents_before_terminal() {
+                // Keep admitted lifecycle state; do not poll the completed
+                // operation again or fabricate a no-effect refusal.
+                changed = true;
+                break;
+            }
             if update.is_terminal() {
                 self.bound_invocations.remove(&invocation);
                 self.directed_invocations.remove(&invocation);
-            }
-            if update.is_terminal() {
-                self.publish_owned_documents();
             }
             self.collab_manager.send(CollabRequest::UpdateInvocation {
                 id: pending.wire_id,
@@ -15173,7 +15182,9 @@ mod bound_component_tests {
                 doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
                 Some("child")
             );
-            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+            if !PUBLICATION_NORMAL_POLL.get() {
+                assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+            }
             Self::capture("mutable-cancel");
             Some(qos_actions::InvocationUpdate::Cancelled {
                 invocation,
@@ -15595,6 +15606,7 @@ mod bound_component_tests {
         }
         fn broker() -> Self {
             let mut fixture = Self::with_same_record(true);
+            fixture.app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
             fixture.app.bound_broker_route_for_test =
                 Some(crate::collaboration::PrimaryRouteWitness {
                     route: fixture.bindings[0].broker_route().unwrap(),
@@ -15615,6 +15627,7 @@ mod bound_component_tests {
     }
 
     include!("app/action_directory_snapshot_bound_tests.rs");
+    include!("app/owner_publication_tests.rs");
 
     #[test]
     fn task4_bound_publication_preserves_contracts_and_directed_owner() {
