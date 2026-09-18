@@ -34,7 +34,7 @@ class DevelopmentWineTrust(unittest.TestCase):
             path = self.pair / 'rpms' / name
             path.write_bytes(b'unsigned fixture ' + arch.encode())
             inventory[name] = {'sha256': wine.digest(path), 'size': path.stat().st_size,
-                'identity': ['wine-core', '11.0', self.pin['build_release'], arch, 'wine.src.rpm', 'LGPL']}
+                'identity': ['wine-core', '11.0', self.pin['build_release'], arch, f"wine-11.0-{self.pin['build_release']}.src.rpm", 'LGPL']}
         self.record = {'schema': 1, 'source': self.pin, 'execution_validated': False,
                        'input_refs': {'x86_64': REF, 'i686': REF}, 'rpms': inventory}
         (self.pair / 'paired-contract.json').write_text(json.dumps(self.record))
@@ -144,6 +144,17 @@ class DevelopmentWineTrust(unittest.TestCase):
         link.symlink_to(self.pair, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, 'symlink'):
             wine.pair_inventory(link, self.pin)
+
+    def test_pinned_wine_ntsync_subpackage_is_allowed(self):
+        identity = ['ntsync-autoload', '11.0', self.pin['build_release'], 'noarch',
+                    f"wine-11.0-{self.pin['build_release']}.src.rpm", 'LGPL']
+        wine.wine_identity(identity, self.pin)
+        for index, value in ((0, 'ntsync-unrelated'), (4, 'unrelated.src.rpm'),
+                             (2, 'unreviewed-release')):
+            changed = list(identity)
+            changed[index] = value
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, 'pinned traditional'):
+                wine.wine_identity(changed, self.pin)
 
     def test_non_wine_identity_is_never_signed(self):
         first = next(iter(self.record['rpms'].values()))
