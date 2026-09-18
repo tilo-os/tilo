@@ -1612,7 +1612,7 @@ impl NetworkPane {
                 dispatcher
                     .connect_wifi(&ssid, password.as_deref().map(String::as_str))
                     .map(|()| {
-                        let continuity_notice = password.as_ref().map(|password| {
+                        let continuity_notice = password.as_ref().and_then(|password| {
                             let mode = portable?;
                             match continuity.command(
                                 ui::collaboration::WifiContinuityCommand::Share {
@@ -1635,7 +1635,7 @@ impl NetworkPane {
                                     Some(format!("Password could not be shared: {error}"))
                                 }
                             }
-                        }).flatten();
+                        });
                         NetworkJobSuccess::Connected { continuity_notice }
                     })
             };
