@@ -805,7 +805,11 @@ fn live_view(
         body = body.push(issue).push(gap(14.0));
     }
     if let Some(job) = active.first() {
-        body = body.push(live_job_card(job, tx)).push(gap(18.0));
+        // The active-card footer can be taller than the card's title row on
+        // a large text scale. Reserve a complete touch-target-sized rhythm
+        // before the next section so its heading and Refresh control never
+        // intrude into a live document's Cancel affordance.
+        body = body.push(live_job_card(job, tx)).push(gap(230.0));
     }
     let cards = queues
         .iter()
@@ -3615,6 +3619,30 @@ mod tests {
             "a genuinely narrow screen should wrap without crushing either child: {phone_page:?} {phone_progress:?}"
         );
         assert!(phone_progress.x0 >= 0.0 && phone_progress.x1 <= 360.5);
+    }
+
+    #[test]
+    fn active_job_footer_is_disjoint_from_printer_section_refresh() {
+        fn rect_for(widget: &ui::headless::InspectionNode, id: &str) -> Option<Rect> {
+            if widget.test_id.as_deref() == Some(id) {
+                let [x, y, width, height] = widget.rect;
+                return Some(Rect::new(x, y, x + width, y + height));
+            }
+            widget.children.iter().find_map(|child| rect_for(child, id))
+        }
+
+        let centre = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(PrintCentre::demo(DemoScenario::Active)),
+            (1440, 900),
+        );
+        let root = &centre.inspection().root;
+        let cancel = rect_for(root, "print-centre.job.cancel").expect("active Cancel button");
+        let refresh = rect_for(root, "print-centre.refresh").expect("printer Refresh button");
+        assert!(
+            cancel.y1 + 18.0 <= refresh.y0,
+            "the printer section heading shares Refresh's row, so both must clear the active job footer: {cancel:?} {refresh:?}"
+        );
     }
 
     #[test]
