@@ -8,6 +8,148 @@ pub(in crate::setup::connection) fn namespace_nonce() -> std::io::Result<[u8; 16
     linux::random_id()
 }
 
+/// Dedicated selected private-version execution. Endpoint guards are retained
+/// for the observed proposal; the source bytes are owned by the store reader.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeRestore<'e> {
+    published: bool,
+    outcome: Option<Vec<u8>>,
+    relocated: Option<(linux::RelocatedObject, linux::StableFileGuard)>,
+    sealed: Option<SealedDisplacement>,
+    epoch: linux::NativeEpoch<'e>,
+    revision: u64,
+    reader: crate::setup::connection::store::VerifiedSelection<'e>,
+    source: linux::ParentGuard,
+    target: linux::ParentGuard,
+    source_guard: Option<linux::StableFileGuard>,
+    target_guard: Option<linux::StableFileGuard>,
+    private: Option<linux::PrivateNamespace>,
+    staged: Option<linux::SelectedStage>,
+}
+
+/// Owning current live-version capture; its snapshot is history, its guards are authority.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeConflictCapture<'e> {
+    epoch: linux::NativeEpoch<'e>,
+    revision: u64,
+    snapshot: descriptor::ConflictSnapshot,
+    parents: [linux::ParentGuard; 2],
+    guards: Vec<Option<linux::StableFileGuard>>,
+    namespaces: Vec<linux::CaptureNamespace>,
+}
+
+/// Default occupied restore accounts current versions without replacement.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeSelectedCollision<'e> {
+    capture: NativeConflictCapture<'e>,
+    selected: crate::setup::connection::store::VerifiedSelection<'e>,
+}
+
+/// Inspection of already reached selected work after the stop fence.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeSelectedBoundary<'e> {
+    proof: NativeRestore<'e>,
+}
+
+/// Untouched selected operation: current endpoint guards plus the paid pinned choice.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct SelectedNeverBegun<'e> {
+    native: NeverBegun<'e>,
+    selected: crate::setup::connection::store::VerifiedSelection<'e>,
+}
+
+/// Fresh proof that endpoint mutation has never begun. This also covers the
+/// narrowly checked ordinary Verified-equality boundary before baseline commit.
+/// Historical admission/Verified facts are only comparison targets; retained
+/// native guards and paid rereads remain the live authority.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NeverBegun<'e> {
+    epoch: linux::NativeEpoch<'e>,
+    revision: u64,
+    identity: descriptor::Admission,
+    source: linux::ParentGuard,
+    target: linux::ParentGuard,
+    source_guard: Option<linux::StableFileGuard>,
+    target_guard: Option<linux::StableFileGuard>,
+    reservations: Vec<crate::setup::connection::store::NativeNamespaceRecord>,
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) enum NativeSafeBoundary<'e> {
+    NeverBegun(NeverBegun<'e>),
+    StagedOnly(OwnedBoundary<'e>),
+    DisplacedAccounted(OwnedBoundary<'e>),
+    PublishedAccounted(OwnedBoundary<'e>),
+    Uncertain,
+}
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) enum OwnedBoundary<'e> {
+    Regular(RecoveredEvidence<'e>),
+    Deletion(RecoveredDeletion<'e>),
+}
+
+/// Fresh endpoint guards reconstructed from exact registered clues, never a receipt wrapper.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct RecoveredEvidence<'e> {
+    epoch: linux::NativeEpoch<'e>,
+    context_revision: u64,
+    source: linux::StableFileGuard,
+    target: linux::ParentGuard,
+    namespace: linux::PrivateNamespace,
+    staged: Option<linux::StagedFile>,
+    published: Option<linux::NativePublication>,
+    outcome: Option<Vec<u8>>,
+    target_guard: Option<linux::StableFileGuard>,
+    displaced: Option<(linux::RelocatedObject, linux::StableFileGuard)>,
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct RecoveredDeletion<'e> {
+    epoch: linux::NativeEpoch<'e>,
+    context_revision: u64,
+    source: linux::ParentGuard,
+    target: linux::ParentGuard,
+    namespace: linux::PrivateNamespace,
+    target_guard: Option<linux::StableFileGuard>,
+    displaced: Option<(linux::RelocatedObject, linux::StableFileGuard)>,
+    outcome: Option<Vec<u8>>,
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeEquality<'e> {
+    epoch: linux::NativeEpoch<'e>,
+    source: linux::ParentGuard,
+    target: linux::ParentGuard,
+    source_guard: Option<linux::StableFileGuard>,
+    target_guard: Option<linux::StableFileGuard>,
+}
+
+/// Consumed historical metadata capture; deliberately separate from live evidence.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeAdmission<'e> {
+    record: crate::setup::connection::store::ConnectionRecord,
+    intent: crate::setup::connection::store::OperationIntent,
+    lifetime: std::sync::Weak<()>,
+    endpoints: [&'e crate::setup::connection::endpoint::PinnedEndpoint; 2],
+    paths: [linux::AdmissionPath; 2],
+    snapshot: descriptor::Admission,
+    deadline: std::time::Instant,
+    cancel: &'e std::sync::atomic::AtomicBool,
+}
+
+/// Read-only quarantine drain. It deliberately owns no `StepAdmission` and cannot
+/// produce a publication seal; the enclosing boundary retains all native guards.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeDrainReader<'a, 'e> {
+    boundary: NativeDrainBoundary<'a, 'e>,
+    content: descriptor::Content,
+}
+#[cfg(target_os = "linux")]
+enum NativeDrainBoundary<'a, 'e> {
+    Ordinary(&'a mut NativeSafeBoundary<'e>),
+    Selected(&'a mut NativeSelectedBoundary<'e>),
+}
+
 // These live proofs have no public constructors, serialization or cloning.
 // Only the descendant Linux producer can fill their retained native evidence.
 #[cfg(target_os = "linux")]
@@ -18,6 +160,7 @@ pub(in crate::setup::connection) struct NativePrepared<'a, 'e> {
 }
 #[cfg(target_os = "linux")]
 pub(in crate::setup::connection) struct NativeRecoveryReader<'a, 'e> {
+    selected_reader: Option<&'a mut crate::setup::connection::store::VerifiedSelection<'e>>,
     epoch: &'a mut linux::NativeEpoch<'e>,
     namespace: &'a linux::PrivateNamespace,
     displaced: &'a linux::RelocatedObject,
@@ -32,6 +175,52 @@ pub(in crate::setup::connection) struct SealedDisplacement {
     recovery:
         crate::setup::connection::store::DurableAck<crate::setup::connection::store::BoundRecovery>,
     lifetime: std::sync::Weak<()>,
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeOutcome<'a, 'e> {
+    reconstructed: bool,
+    epoch: &'a mut linux::NativeEpoch<'e>,
+    source: &'a linux::StableFileGuard,
+    target: &'a linux::ParentGuard,
+    namespace: &'a linux::PrivateNamespace,
+    publication: linux::NativePublication,
+    displaced: Option<SealedDisplacement>,
+    descriptor: Vec<u8>,
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeDeletion<'a, 'e> {
+    reconstructed: bool,
+    epoch: &'a mut linux::NativeEpoch<'e>,
+    source: &'a linux::ParentGuard,
+    target: &'a linux::ParentGuard,
+    namespace: &'a linux::PrivateNamespace,
+    displaced: SealedDisplacement,
+    descriptor: Vec<u8>,
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct VerifiedComparison<'a> {
+    evidence: &'a mut dyn CompletionEvidence,
+    id: crate::setup::connection::store::OperationId,
+    revision: u64,
+    fence: u64,
+    lifetime: std::sync::Weak<()>,
+    value: Option<crate::setup::connection::model::EntryState>,
+}
+#[cfg(target_os = "linux")]
+trait CompletionEvidence {
+    fn fresh(
+        &mut self,
+        store: &crate::setup::connection::store::ConnectionStore,
+        live: &crate::setup::connection::store::LiveOperation,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<
+        Option<crate::setup::connection::model::EntryState>,
+        crate::setup::connection::store::StoreError,
+    >;
+    fn deadline(&self) -> std::time::Instant;
 }
 
 // Shared wire validation is deliberately std-only so its adversarial traces run
@@ -278,22 +467,41 @@ impl OperationReads {
         Self::reopened(0)
     }
     pub(in crate::setup::connection) fn reopened(sequence: u64) -> Self {
-        Self { credit: std::sync::Mutex::new(ReadCredit { sequence, available: 0 }) }
+        Self {
+            credit: std::sync::Mutex::new(ReadCredit {
+                sequence,
+                available: 0,
+            }),
+        }
     }
-    /// Only the serialized store owner grants credit after ReadReserve fsync.
+    /// Only the serialized store owner grants credit after `ReadReserve` fsync.
     pub(in crate::setup::connection) fn grant(&self, sequence: u64, bytes: u64) -> Result<(), ()> {
         let mut credit = self.credit.lock().map_err(|_| ())?;
         if sequence != credit.sequence.checked_add(1).ok_or(())? {
             return Err(());
         }
-        let available = credit.available.checked_add(bytes).filter(|n| *n <= 1_073_741_824).ok_or(())?;
+        let available = credit
+            .available
+            .checked_add(bytes)
+            .filter(|n| *n <= 1_073_741_824)
+            .ok_or(())?;
         credit.sequence = sequence;
         credit.available = available;
+        drop(credit);
+        Ok(())
+    }
+    pub(in crate::setup::connection) fn require_credit(&self, count: u64) -> Result<(), ()> {
+        let credit = self.credit.lock().map_err(|_| ())?;
+        if credit.available < count {
+            return Err(());
+        }
+        drop(credit);
         Ok(())
     }
     pub(in crate::setup::connection) fn charge(&self, count: u64) -> Result<(), ()> {
         let mut credit = self.credit.lock().map_err(|_| ())?;
         credit.available = credit.available.checked_sub(count).ok_or(())?;
+        drop(credit);
         Ok(())
     }
     #[cfg(test)]
@@ -338,7 +546,9 @@ mod budget_tests {
                 let count = &count;
                 scope.spawn(move || {
                     for _ in 0..4 {
-                        if reads.charge(unit).is_ok() { count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+                        if reads.charge(unit).is_ok() {
+                            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
                     }
                 });
             }
@@ -352,8 +562,10 @@ mod budget_tests {
     #[test]
     fn unreserved_native_reads_have_no_spendable_credit() {
         let reads = std::sync::Arc::new(OperationReads::new());
-        let budget = ReadBudget::for_operation(&reads,
-            std::time::Instant::now() + std::time::Duration::from_secs(30));
+        let budget = ReadBudget::for_operation(
+            &reads,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        );
         assert!(budget.charge(0).is_ok());
         assert!(budget.charge(1).is_err());
     }
@@ -378,10 +590,7 @@ mod budget_tests {
         assert!(second_reader.charge(1).is_ok());
         assert!(budget.charge(1).is_err());
         assert!(second_reader.charge(u64::MAX).is_err());
-        assert_eq!(
-            budget.reads.credit.lock().unwrap().available,
-            0
-        );
+        assert_eq!(budget.reads.credit.lock().unwrap().available, 0);
         let expired = ReadBudget {
             reads: std::sync::Arc::new(OperationReads::new()),
             deadline: std::time::Instant::now(),

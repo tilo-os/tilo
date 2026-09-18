@@ -196,6 +196,278 @@ pub(crate) struct Descriptor {
     pub digest: [u8; 32],
 }
 
+/// Bounded historical admission metadata. Content is the approved proposal;
+/// this DTO never proves a fresh read, lease, approval or write admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Admission {
+    pub connection: [u8; 16],
+    pub operation: u64,
+    pub revision: u64,
+    pub fence: u64,
+    pub baseline: Option<u64>,
+    pub endpoints: [[u8; 64]; 2],
+    pub direction: u8,
+    pub decision: u8,
+    pub path: RelativePath,
+    pub chains: [Vec<Object>; 2],
+    pub states: [State; 2],
+}
+impl Admission {
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let mut w = Writer(Vec::with_capacity(512));
+        w.put(b"QNA1");
+        w.u32(0);
+        w.put(self.connection);
+        w.u64(self.operation);
+        w.u64(self.revision);
+        w.u64(self.fence);
+        w.u8(u8::from(self.baseline.is_some()));
+        w.u64(self.baseline.unwrap_or(0));
+        w.put(self.endpoints[0]);
+        w.put(self.endpoints[1]);
+        w.u8(self.direction);
+        w.u8(self.decision);
+        w.path(&self.path)?;
+        for chain in &self.chains {
+            require(chain.len() == self.path.components().len() && chain.len() <= 64)?;
+            w.u8(u8::try_from(chain.len()).map_err(|_| Error::Invalid)?);
+            for object in chain {
+                w.object(object);
+            }
+        }
+        w.state(&self.states[0]);
+        w.state(&self.states[1]);
+        let length =
+            w.0.len()
+                .checked_add(CHECKSUM_BYTES)
+                .ok_or(Error::Invalid)?;
+        require(length <= MAX_BYTES)?;
+        w.0.get_mut(4..8).ok_or(Error::Invalid)?.copy_from_slice(
+            &u32::try_from(length)
+                .map_err(|_| Error::Invalid)?
+                .to_le_bytes(),
+        );
+        let digest: [u8; 32] = Sha256::digest(&w.0).into();
+        w.put(digest);
+        Self::decode(&w.0)?;
+        Ok(w.0)
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        require((CHECKSUM_BYTES..=MAX_BYTES).contains(&bytes.len()))?;
+        let (payload, checksum) = bytes.split_at(bytes.len() - CHECKSUM_BYTES);
+        require(checksum == <[u8; 32]>::from(Sha256::digest(payload)))?;
+        let mut c = Cursor {
+            bytes: payload,
+            at: 0,
+        };
+        require(c.array::<4>()? == *b"QNA1")?;
+        require(usize::try_from(c.u32()?).map_err(|_| Error::Invalid)? == bytes.len())?;
+        let connection = c.array()?;
+        let operation = c.u64()?;
+        let revision = c.u64()?;
+        let fence = c.u64()?;
+        let present = c.boolean()?;
+        let baseline = c.u64()?;
+        require(
+            operation != 0
+                && ((!present && baseline == 0)
+                    || (present && baseline > 0 && baseline <= revision)),
+        )?;
+        let endpoints = [c.array()?, c.array()?];
+        let direction = c.side()?;
+        let decision = c.u8()?;
+        require(matches!(decision, 0..=5 | 10..=14))?;
+        require(!matches!(decision, 1 | 4) || direction == 0)?;
+        require(!matches!(decision, 2 | 3) || direction == 1)?;
+        let path = c.path()?;
+        let chains = [
+            c.chain(path.components().len())?,
+            c.chain(path.components().len())?,
+        ];
+        require(
+            chains
+                .iter()
+                .flatten()
+                .all(|object| object.generation != [0; 32]),
+        )?;
+        let states = [c.state(false)?, c.state(false)?];
+        require(states.iter().all(
+            |state| !matches!(state, State::Regular { object, .. } if object.generation == [0; 32]),
+        ))?;
+        require(c.at == payload.len())?;
+        Ok(Self {
+            connection,
+            operation,
+            revision,
+            fence,
+            baseline: present.then_some(baseline),
+            endpoints,
+            direction,
+            decision,
+            path,
+            chains,
+            states,
+        })
+    }
+}
+
+/// Frozen actual versions for conflict accounting. These bytes are clues only;
+/// capture and completion retain fresh native guards outside this DTO.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CapturedVersion {
+    pub side: u8,
+    pub role: u8,
+    pub state: State,
+    pub displaced: Option<[u8; 32]>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConflictSnapshot {
+    pub connection: [u8; 16],
+    pub operation: u64,
+    pub admission: u64,
+    pub revision: u64,
+    pub fence: u64,
+    pub baseline: Option<u64>,
+    pub endpoints: [[u8; 64]; 2],
+    pub path: RelativePath,
+    pub chains: [Vec<Object>; 2],
+    pub versions: Vec<CapturedVersion>,
+}
+impl ConflictSnapshot {
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        require((2..=4).contains(&self.versions.len()))?;
+        let mut w = Writer(Vec::with_capacity(1024));
+        w.put(b"QNC1");
+        w.u32(0);
+        w.put(self.connection);
+        w.u64(self.operation);
+        w.u64(self.admission);
+        w.u64(self.revision);
+        w.u64(self.fence);
+        w.u8(u8::from(self.baseline.is_some()));
+        w.u64(self.baseline.unwrap_or(0));
+        w.put(self.endpoints[0]);
+        w.put(self.endpoints[1]);
+        w.path(&self.path)?;
+        for chain in &self.chains {
+            require(chain.len() == self.path.components().len() && chain.len() <= 64)?;
+            w.u8(u8::try_from(chain.len()).map_err(|_| Error::Invalid)?);
+            for object in chain {
+                w.object(object);
+            }
+        }
+        w.u8(u8::try_from(self.versions.len()).map_err(|_| Error::Invalid)?);
+        for version in &self.versions {
+            w.u8(version.side);
+            w.u8(version.role);
+            w.state(&version.state);
+            w.optional_digest(version.displaced.as_ref());
+        }
+        let length =
+            w.0.len()
+                .checked_add(CHECKSUM_BYTES)
+                .ok_or(Error::Invalid)?;
+        require(length <= MAX_BYTES)?;
+        w.0.get_mut(4..8).ok_or(Error::Invalid)?.copy_from_slice(
+            &u32::try_from(length)
+                .map_err(|_| Error::Invalid)?
+                .to_le_bytes(),
+        );
+        let digest: [u8; 32] = Sha256::digest(&w.0).into();
+        w.put(digest);
+        Self::decode(&w.0)?;
+        Ok(w.0)
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        require((CHECKSUM_BYTES..=MAX_BYTES).contains(&bytes.len()))?;
+        let (payload, checksum) = bytes.split_at(bytes.len() - CHECKSUM_BYTES);
+        require(checksum == <[u8; 32]>::from(Sha256::digest(payload)))?;
+        let mut c = Cursor {
+            bytes: payload,
+            at: 0,
+        };
+        require(c.array::<4>()? == *b"QNC1")?;
+        require(usize::try_from(c.u32()?).map_err(|_| Error::Invalid)? == bytes.len())?;
+        let connection = c.array()?;
+        let operation = c.u64()?;
+        let admission = c.u64()?;
+        let revision = c.u64()?;
+        let fence = c.u64()?;
+        let present = c.boolean()?;
+        let baseline = c.u64()?;
+        require(
+            operation != 0
+                && admission > 0
+                && revision >= admission
+                && ((!present && baseline == 0)
+                    || (present && baseline > 0 && baseline < admission)),
+        )?;
+        let endpoints = [c.array()?, c.array()?];
+        let path = c.path()?;
+        let chains = [
+            c.chain(path.components().len())?,
+            c.chain(path.components().len())?,
+        ];
+        require(
+            chains
+                .iter()
+                .flatten()
+                .all(|object| object.generation != [0; 32]),
+        )?;
+        let count = c.u8()?;
+        require((2..=4).contains(&count))?;
+        let mut versions = Vec::with_capacity(usize::from(count));
+        let mut previous = None;
+        let mut live_sides = [false; 2];
+        for _ in 0..count {
+            let side = c.side()?;
+            let role = c.u8()?;
+            let state = c.state(true)?;
+            let displaced = c.optional_digest()?;
+            require(role <= 2 && previous.is_none_or(|key| key < (side, role)))?;
+            require((role == 1) == displaced.is_some())?;
+            require(displaced.is_none_or(|value| value != [0; 32]))?;
+            match &state {
+                State::Absent => require(role == 0)?,
+                State::Regular { object, .. } | State::Unsupported { object, .. } => {
+                    require(object.generation != [0; 32])?;
+                }
+                State::Unknown => return Err(Error::Invalid),
+            }
+            if role == 2 {
+                require(matches!(state, State::Regular { .. }))?;
+            }
+            if role == 0 {
+                *live_sides
+                    .get_mut(usize::from(side))
+                    .ok_or(Error::Invalid)? = true;
+            }
+            previous = Some((side, role));
+            versions.push(CapturedVersion {
+                side,
+                role,
+                state,
+                displaced,
+            });
+        }
+        require(live_sides == [true, true] && c.at == payload.len())?;
+        Ok(Self {
+            connection,
+            operation,
+            admission,
+            revision,
+            fence,
+            baseline: present.then_some(baseline),
+            endpoints,
+            path,
+            chains,
+            versions,
+        })
+    }
+    pub fn binding_digest(&self) -> Result<[u8; 32]> {
+        Ok(Sha256::digest(self.encode()?).into())
+    }
+}
 struct Cursor<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -498,9 +770,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Descriptor> {
             let endpoints = [c.array()?, c.array()?];
             let direction = c.side()?;
             let decision = c.u8()?;
-            require(matches!(decision,0..=4|10..=14))?;
-            require(!matches!(decision, 1 | 4) || direction == 0)?;
-            require(!matches!(decision, 2 | 3) || direction == 1)?;
+            require(matches!(decision,0..=5|10..=14))?;
             let namespace = c.directory()?;
             let path = c.path()?;
             let chains = [
@@ -509,6 +779,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Descriptor> {
             ];
             let expected = [c.state(false)?, c.state(false)?];
             let selection = c.selection()?;
+            if matches!(selection, Selection::None) {
+                require(decision != 5)?;
+                require(!matches!(decision, 1 | 4) || direction == 0)?;
+                require(!matches!(decision, 2 | 3) || direction == 1)?;
+            }
             Body::Intent(Intent {
                 endpoints,
                 direction,
@@ -1056,11 +1331,25 @@ impl Descriptor {
                 if outcome.kind <= 2 {
                     require(outcome.barriers == 3)?;
                     if outcome.kind == 2 {
-                        require(
-                            outcome.states == [State::Absent, State::Absent]
-                                && stage.is_none()
-                                && displaced.is_some(),
-                        )?;
+                        if matches!(intent_body.selection, Selection::Tombstone { .. }) {
+                            require(
+                                stage.is_none()
+                                    && outcome.states.get(target) == Some(&State::Absent)
+                                    && outcome.states.get(usize::from(intent_body.direction))
+                                        == intent_body
+                                            .expected
+                                            .get(usize::from(intent_body.direction))
+                                    && (displaced.is_some()
+                                        || intent_body.expected.get(target)
+                                            == Some(&State::Absent)),
+                            )?;
+                        } else {
+                            require(
+                                outcome.states == [State::Absent, State::Absent]
+                                    && stage.is_none()
+                                    && displaced.is_some(),
+                            )?;
+                        }
                     } else {
                         let Some(Descriptor {
                             body: Body::Stage(stage_record),
@@ -1078,21 +1367,29 @@ impl Descriptor {
                         require(
                             object == &stage_record.object && content == &stage_record.content,
                         )?;
-                        let State::Regular {
-                            content: source, ..
-                        } = outcome
+                        let source = outcome
                             .states
                             .get(usize::from(intent_body.direction))
-                            .ok_or(Error::Invalid)?
-                        else {
-                            return Err(Error::Invalid);
-                        };
+                            .ok_or(Error::Invalid)?;
+                        if matches!(intent_body.selection, Selection::None) {
+                            let State::Regular {
+                                content: source, ..
+                            } = source
+                            else {
+                                return Err(Error::Invalid);
+                            };
+                            require(source == content)?;
+                        } else {
+                            require(
+                                Some(source)
+                                    == intent_body.expected.get(usize::from(intent_body.direction)),
+                            )?;
+                        }
                         require(
-                            source == content
-                                && ((outcome.kind == 0
-                                    && displaced.is_none()
-                                    && intent_body.expected.get(target) == Some(&State::Absent))
-                                    || (outcome.kind == 1 && displaced.is_some())),
+                            (outcome.kind == 0
+                                && displaced.is_none()
+                                && intent_body.expected.get(target) == Some(&State::Absent))
+                                || (outcome.kind == 1 && displaced.is_some()),
                         )?;
                     }
                 }
@@ -1231,6 +1528,361 @@ mod tests {
         bytes.extend([0; 154]);
         bytes.extend([0; 191]);
         seal(bytes)
+    }
+    #[test]
+    fn admission_metadata_is_bounded_lossless_and_distinct_from_native_authority() {
+        let lengths = [vec![255; 15], vec![160], vec![1; 48]].concat();
+        let mut path = Vec::new();
+        for length in lengths {
+            if !path.is_empty() {
+                path.push(92);
+            }
+            path.extend(vec![120; length]);
+        }
+        let descriptor = decode(&intent(&path, true, 64)).unwrap();
+        let Body::Intent(body) = descriptor.body else {
+            panic!("intent");
+        };
+        let fact = Admission {
+            connection: [8; 16],
+            operation: 42,
+            revision: 7,
+            fence: 0,
+            baseline: None,
+            endpoints: body.endpoints,
+            direction: body.direction,
+            decision: body.decision,
+            path: body.path,
+            chains: body.chains,
+            states: body.expected,
+        };
+        let encoded = fact.encode().unwrap();
+        assert!(encoded.len() <= MAX_BYTES);
+        assert_eq!(Admission::decode(&encoded).unwrap(), fact);
+        let mut selected_initial = fact.clone();
+        selected_initial.decision = 5;
+        assert_eq!(
+            Admission::decode(
+                &selected_initial
+                    .encode()
+                    .expect("selected initial-preview metadata must remain truthful")
+            )
+            .unwrap(),
+            selected_initial
+        );
+        assert!(
+            decode(&encoded).is_err(),
+            "historical admission cannot decode as a native namespace proof"
+        );
+        for prefix in 0..encoded.len() {
+            assert!(Admission::decode(&encoded[..prefix]).is_err());
+        }
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(Admission::decode(&trailing).is_err());
+        let mut too_deep = fact.clone();
+        too_deep.chains[0].push(too_deep.chains[1][0].clone());
+        assert!(too_deep.encode().is_err());
+        let mut unknown = fact;
+        unknown.states[0] = State::Unknown;
+        assert!(unknown.encode().is_err());
+    }
+    #[test]
+    fn conflict_snapshot_retains_distinct_same_side_versions_and_rejects_unknowns() {
+        let decoded = decode(&intent(&[120], false, 1)).unwrap();
+        let Body::Intent(body) = decoded.body else {
+            panic!("intent");
+        };
+        let mut fact = ConflictSnapshot {
+            connection: [8; 16],
+            operation: 42,
+            admission: 2,
+            revision: 7,
+            fence: 0,
+            baseline: None,
+            endpoints: body.endpoints,
+            path: body.path,
+            chains: body.chains,
+            versions: vec![
+                CapturedVersion {
+                    side: 0,
+                    role: 0,
+                    state: body.expected[0].clone(),
+                    displaced: None,
+                },
+                CapturedVersion {
+                    side: 1,
+                    role: 0,
+                    state: body.expected[0].clone(),
+                    displaced: None,
+                },
+                CapturedVersion {
+                    side: 1,
+                    role: 1,
+                    state: body.expected[0].clone(),
+                    displaced: Some([9; 32]),
+                },
+            ],
+        };
+        if let State::Regular { object, .. } = &mut fact.versions[2].state {
+            object.generation = [11; 32];
+        }
+        let encoded = fact
+            .encode()
+            .expect("bounded conflict snapshots must encode additional actual versions");
+        assert_eq!(ConflictSnapshot::decode(&encoded).unwrap(), fact);
+        assert!(Admission::decode(&encoded).is_err());
+        assert!(decode(&encoded).is_err());
+        for prefix in 0..encoded.len() {
+            assert!(ConflictSnapshot::decode(&encoded[..prefix]).is_err());
+        }
+        let mut bad = fact.clone();
+        bad.versions[0].state = State::Unknown;
+        assert!(bad.encode().is_err());
+        let mut bad = fact.clone();
+        bad.versions[2].role = 0;
+        assert!(bad.encode().is_err());
+        let mut bad = fact.clone();
+        bad.versions[2].displaced = None;
+        assert!(bad.encode().is_err());
+        let mut bad = fact;
+        bad.versions.push(bad.versions[2].clone());
+        bad.versions.push(bad.versions[2].clone());
+        assert!(bad.encode().is_err());
+    }
+    #[test]
+    fn selected_intent_preserves_observed_decision_and_joins_only_exact_private_source() {
+        let original = decode(&intent(&[120], false, 1)).unwrap();
+        let Body::Intent(mut body) = original.body.clone() else {
+            panic!("intent");
+        };
+        let State::Regular {
+            object, content, ..
+        } = body.expected[0].clone()
+        else {
+            panic!("regular");
+        };
+        let recovery = Recovery {
+            connection: original.header.connection,
+            operation: 7,
+            slot: 2,
+        };
+        let artifact = Artifact {
+            endpoint: [5; 64],
+            platform: 1,
+            identity: [9; 24],
+        };
+        body.selection = Selection::Restore {
+            recovery: recovery.clone(),
+            artifact: artifact.clone(),
+            content: content.clone(),
+        };
+        for decision in [0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 14] {
+            for direction in [0, 1] {
+                body.decision = decision;
+                body.direction = direction;
+                let bytes = encode(&original.header, &Body::Intent(body.clone()))
+                    .expect("selected target is independent of observed reconciliation direction");
+                let selected = decode(&bytes).unwrap();
+                assert_eq!(selected.body, Body::Intent(body.clone()));
+                let stage = Stage {
+                    intent: selected.digest,
+                    object: object.clone(),
+                    content: content.clone(),
+                    source: Source::Recovery {
+                        recovery: recovery.clone(),
+                        artifact: artifact.clone(),
+                        content: content.clone(),
+                    },
+                };
+                let staged =
+                    decode(&encode(&selected.header, &Body::Stage(stage.clone())).unwrap())
+                        .unwrap();
+                assert!(staged.joined(&selected, None, None).is_ok());
+                let mut wrong = stage;
+                let Source::Recovery { recovery, .. } = &mut wrong.source else {
+                    panic!("private source");
+                };
+                recovery.slot += 1;
+                let wrong =
+                    decode(&encode(&selected.header, &Body::Stage(wrong)).unwrap()).unwrap();
+                assert!(wrong.joined(&selected, None, None).is_err());
+            }
+        }
+        body.selection = Selection::None;
+        body.decision = 5;
+        assert!(
+            encode(&original.header, &Body::Intent(body.clone())).is_err(),
+            "initial preview cannot become ordinary execution"
+        );
+        body.decision = 1;
+        body.direction = 1;
+        assert!(
+            encode(&original.header, &Body::Intent(body)).is_err(),
+            "ordinary propagation still binds its direction"
+        );
+    }
+    #[test]
+    fn selected_outcome_records_target_success_without_claiming_both_sides_equal() {
+        let original = decode(&intent(&[120], false, 1)).unwrap();
+        let Body::Intent(mut body) = original.body.clone() else {
+            panic!("intent");
+        };
+        let State::Regular {
+            object,
+            stamp,
+            content,
+        } = body.expected[0].clone()
+        else {
+            panic!("regular");
+        };
+        let mut chosen = content;
+        chosen.digest = [17; 32];
+        let recovery = Recovery {
+            connection: original.header.connection,
+            operation: 7,
+            slot: 2,
+        };
+        let artifact = Artifact {
+            endpoint: [5; 64],
+            platform: 1,
+            identity: [9; 24],
+        };
+        body.selection = Selection::Restore {
+            recovery: recovery.clone(),
+            artifact: artifact.clone(),
+            content: chosen.clone(),
+        };
+        for source_absent in [false, true] {
+            if source_absent {
+                body.expected[0] = State::Absent;
+            }
+            let intent =
+                decode(&encode(&original.header, &Body::Intent(body.clone())).unwrap()).unwrap();
+            let staged = Stage {
+                intent: intent.digest,
+                object: object.clone(),
+                content: chosen.clone(),
+                source: Source::Recovery {
+                    recovery: recovery.clone(),
+                    artifact: artifact.clone(),
+                    content: chosen.clone(),
+                },
+            };
+            let stage = decode(&encode(&intent.header, &Body::Stage(staged)).unwrap()).unwrap();
+            let outcome = Outcome {
+                intent: intent.digest,
+                stage: Some(stage.digest),
+                displaced: None,
+                states: [
+                    body.expected[0].clone(),
+                    State::Regular {
+                        object: object.clone(),
+                        stamp: stamp.clone(),
+                        content: chosen.clone(),
+                    },
+                ],
+                kind: 0,
+                barriers: 3,
+                recovery: vec![],
+                sequence: 1,
+            };
+            let descriptor =
+                decode(&encode(&intent.header, &Body::Outcome(outcome.clone())).unwrap()).unwrap();
+            assert!(
+                descriptor.joined(&intent, Some(&stage), None).is_ok(),
+                "selected target success does not require matching the unchanged other endpoint"
+            );
+            let mut drift = outcome;
+            drift.states[0] = if source_absent {
+                original_regular(&original)
+            } else {
+                State::Absent
+            };
+            let changed = decode(&encode(&intent.header, &Body::Outcome(drift)).unwrap()).unwrap();
+            assert!(changed.joined(&intent, Some(&stage), None).is_err());
+        }
+    }
+    #[test]
+    fn selected_tombstone_outcome_preserves_other_endpoint_and_accounts_target() {
+        let original = decode(&intent(&[120], false, 1)).unwrap();
+        for target_present in [false, true] {
+            let Body::Intent(mut body) = original.body.clone() else {
+                panic!("intent");
+            };
+            let State::Regular { object, stamp, .. } = body.expected[0].clone() else {
+                panic!("regular");
+            };
+            body.selection = Selection::Tombstone {
+                conflict: (original.header.connection, 7),
+                revision: 2,
+            };
+            if target_present {
+                body.expected[1] = body.expected[0].clone();
+            }
+            let intent =
+                decode(&encode(&original.header, &Body::Intent(body.clone())).unwrap()).unwrap();
+            let displaced = target_present.then(|| {
+                decode(
+                    &encode(
+                        &intent.header,
+                        &Body::Displaced(Displaced {
+                            intent: intent.digest,
+                            stage: None,
+                            object,
+                            stamp,
+                            matches_expected: true,
+                            side: 1,
+                            parent: body.chains[1].last().unwrap().clone(),
+                            leaf: NativeName::Unix(vec![120]),
+                            barriers: 3,
+                        }),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            });
+            let outcome = Outcome {
+                intent: intent.digest,
+                stage: None,
+                displaced: displaced.as_ref().map(|value| value.digest),
+                states: [body.expected[0].clone(), State::Absent],
+                kind: 2,
+                barriers: 3,
+                recovery: vec![],
+                sequence: 1,
+            };
+            let value =
+                decode(&encode(&intent.header, &Body::Outcome(outcome.clone())).unwrap()).unwrap();
+            assert!(
+                value.joined(&intent, None, displaced.as_ref()).is_ok(),
+                "selected tombstone accounts only its target, retaining the other exact state"
+            );
+            let mut drift = outcome.clone();
+            drift.states[0] = State::Absent;
+            assert!(
+                decode(&encode(&intent.header, &Body::Outcome(drift)).unwrap())
+                    .unwrap()
+                    .joined(&intent, None, displaced.as_ref())
+                    .is_err()
+            );
+            if target_present {
+                let mut missing = outcome;
+                missing.displaced = None;
+                assert!(
+                    decode(&encode(&intent.header, &Body::Outcome(missing)).unwrap())
+                        .unwrap()
+                        .joined(&intent, None, None)
+                        .is_err()
+                );
+            }
+        }
+    }
+    fn original_regular(intent: &Descriptor) -> State {
+        let Body::Intent(body) = &intent.body else {
+            panic!("intent");
+        };
+        body.expected[0].clone()
     }
     #[test]
     fn descriptor_decodes_lossless_maximum_path_and_both_ancestor_chains() {

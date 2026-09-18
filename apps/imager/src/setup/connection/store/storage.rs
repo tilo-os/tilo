@@ -447,7 +447,86 @@ impl super::ConnectionStore {
     }
 }
 
+pub(super) const NATIVE_PAGE_REQUEST: usize = 4096;
+pub(super) const NATIVE_PAGE_CAP: u64 = format::MAX_BYTES as u64 + 1 + NATIVE_PAGE_REQUEST as u64;
+pub(super) fn read_metered(
+    reader: &mut impl Read,
+    max: u64,
+    before_read: &dyn Fn(usize) -> Result<(), StoreError>,
+) -> Result<Vec<u8>, StoreError> {
+    let mut bytes = Vec::new();
+    let mut requested = 0_u64;
+    let limit = max.checked_add(1).ok_or(StoreError::LimitExceeded)?;
+    let mut buffer = [0_u8; NATIVE_PAGE_REQUEST];
+    loop {
+        let remaining = limit
+            .checked_sub(u64::try_from(bytes.len()).map_err(|_| StoreError::LimitExceeded)?)
+            .ok_or(StoreError::LimitExceeded)?;
+        let count = usize::try_from(remaining.min(NATIVE_PAGE_REQUEST as u64))
+            .map_err(|_| StoreError::LimitExceeded)?;
+        if count == 0 {
+            return Err(StoreError::LimitExceeded);
+        }
+        requested = requested
+            .checked_add(count as u64)
+            .filter(|total| *total <= NATIVE_PAGE_CAP)
+            .ok_or(StoreError::LimitExceeded)?;
+        before_read(count)?;
+        let target = buffer.get_mut(..count).ok_or(StoreError::LimitExceeded)?;
+        match reader.read(target) {
+            Ok(0) => return Ok(bytes),
+            Ok(read) => {
+                bytes.extend_from_slice(target.get(..read).ok_or(StoreError::Corrupt)?);
+                if bytes.len() as u64 > max {
+                    return Err(StoreError::LimitExceeded);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 impl Storage {
+    pub fn page_metered(
+        &self,
+        hash: [u8; 32],
+        before_read: &dyn Fn(usize) -> Result<(), StoreError>,
+    ) -> Result<format::PageNode, StoreError> {
+        let bytes = self.read_bytes_metered(
+            &self.pages,
+            &format::hex(&hash),
+            format::MAX_BYTES as u64,
+            before_read,
+        )?;
+        if format::digest(&bytes) != hash {
+            return Err(StoreError::Corrupt);
+        }
+        let page: format::PageNode =
+            serde_json::from_slice(&bytes).map_err(|_| StoreError::Corrupt)?;
+        page.reference(hash)?;
+        Ok(page)
+    }
+    pub fn read_bytes_metered(
+        &self,
+        parent: &Arc<Directory>,
+        name: &str,
+        max: u64,
+        before_read: &dyn Fn(usize) -> Result<(), StoreError>,
+    ) -> Result<Vec<u8>, StoreError> {
+        self.validate()?;
+        let mut file = read_file(parent, name)?;
+        let before = regular(&file)?;
+        if before.len() > max {
+            return Err(StoreError::LimitExceeded);
+        }
+        let bytes = read_metered(&mut file, max, before_read)?;
+        validate_file(parent, name, &file, &before)?;
+        if !same_snapshot(&before, &regular(&file)?) {
+            return Err(StoreError::IdentityChanged);
+        }
+        Ok(bytes)
+    }
     pub fn page(&self, hash: [u8; 32]) -> Result<format::PageNode, StoreError> {
         let bytes = self.read_bytes(&self.pages, &format::hex(&hash), format::MAX_BYTES as u64)?;
         if format::digest(&bytes) != hash {
@@ -459,6 +538,13 @@ impl Storage {
         Ok(page)
     }
     pub fn save_page(&self, page: &format::PageNode) -> Result<format::Child, StoreError> {
+        self.save_page_with(page, None)
+    }
+    pub fn save_page_with(
+        &self,
+        page: &format::PageNode,
+        meter: Option<&dyn Fn(usize) -> Result<(), StoreError>>,
+    ) -> Result<format::Child, StoreError> {
         let bytes = format::encode(page)?;
         let hash = format::digest(&bytes);
         let name = format::hex(&hash);
@@ -468,7 +554,12 @@ impl Storage {
             Err(StoreError::Persistence(error))
                 if error.kind() == std::io::ErrorKind::AlreadyExists =>
             {
-                if self.read_bytes(&self.pages, &name, format::MAX_BYTES as u64)? != bytes {
+                let actual = if let Some(meter) = meter {
+                    self.read_bytes_metered(&self.pages, &name, format::MAX_BYTES as u64, meter)?
+                } else {
+                    self.read_bytes(&self.pages, &name, format::MAX_BYTES as u64)?
+                };
+                if actual != bytes {
                     return Err(StoreError::Corrupt);
                 }
                 #[cfg(not(windows))]
@@ -523,6 +614,8 @@ pub(super) struct TreeIter<'a> {
     rows: std::vec::IntoIter<format::Row>,
     failed: bool,
     visited: u64,
+    page_limit: u64,
+    meter: Option<&'a dyn Fn(usize) -> Result<(), StoreError>>,
 }
 impl<'a> TreeIter<'a> {
     pub fn new(storage: &'a Storage, root: Option<[u8; 32]>) -> Result<Self, StoreError> {
@@ -536,6 +629,41 @@ impl<'a> TreeIter<'a> {
             rows: Vec::new().into_iter(),
             failed: false,
             visited: 0,
+            page_limit: 2_097_152,
+            meter: None,
+        })
+    }
+    pub fn new_metered_baseline(
+        storage: &'a Storage,
+        root: Option<[u8; 32]>,
+        count: u32,
+        meter: &'a dyn Fn(usize) -> Result<(), StoreError>,
+    ) -> Result<Self, StoreError> {
+        if count > 4096 || (count == 0) != root.is_none() {
+            return Err(StoreError::LimitExceeded);
+        }
+        let mut stack = Vec::new();
+        let mut visited = 0;
+        if let Some(hash) = root {
+            let child = storage.page_metered(hash, meter)?.reference(hash)?;
+            if child.count != u64::from(count) {
+                return Err(StoreError::Corrupt);
+            }
+            stack.push(child);
+            visited = 1;
+        }
+        Ok(Self {
+            storage,
+            stack,
+            rows: Vec::new().into_iter(),
+            failed: false,
+            visited,
+            page_limit: if count == 0 {
+                0
+            } else {
+                u64::from(count) * 8 + 1
+            },
+            meter: Some(meter),
         })
     }
 }
@@ -552,10 +680,14 @@ impl Iterator for TreeIter<'_> {
             let child = self.stack.pop()?;
             self.visited = self.visited.saturating_add(1);
             let result = (|| {
-                if self.visited > 2_097_152 {
+                if self.visited > self.page_limit {
                     return Err(StoreError::LimitExceeded);
                 }
-                let page = self.storage.page(child.hash)?;
+                let page = if let Some(meter) = self.meter {
+                    self.storage.page_metered(child.hash, meter)?
+                } else {
+                    self.storage.page(child.hash)?
+                };
                 if page.reference(child.hash)? != child {
                     return Err(StoreError::Corrupt);
                 }
@@ -576,10 +708,18 @@ pub(super) fn build_pages(
     storage: &Storage,
     rows: impl Iterator<Item = Result<format::Row, StoreError>>,
 ) -> Result<Option<[u8; 32]>, StoreError> {
+    build_pages_with(storage, rows, None)
+}
+pub(super) fn build_pages_with(
+    storage: &Storage,
+    rows: impl Iterator<Item = Result<format::Row, StoreError>>,
+    meter: Option<&dyn Fn(usize) -> Result<(), StoreError>>,
+) -> Result<Option<[u8; 32]>, StoreError> {
     fn feed(
         storage: &Storage,
         levels: &mut [Vec<format::Child>],
         child: format::Child,
+        meter: Option<&dyn Fn(usize) -> Result<(), StoreError>>,
     ) -> Result<(), StoreError> {
         let index = usize::from(child.level);
         let level = levels.get_mut(index).ok_or(StoreError::LimitExceeded)?;
@@ -589,8 +729,8 @@ pub(super) fn build_pages(
                 schema: 1,
                 node: format::Node::Index(std::mem::take(level)),
             };
-            let parent = storage.save_page(&page)?;
-            feed(storage, levels, parent)?;
+            let parent = storage.save_page_with(&page, meter)?;
+            feed(storage, levels, parent, meter)?;
         }
         Ok(())
     }
@@ -615,7 +755,12 @@ pub(super) fn build_pages(
                 schema: 1,
                 node: format::Node::Leaf(std::mem::take(&mut leaf)),
             };
-            feed(storage, &mut levels, storage.save_page(&page)?)?;
+            feed(
+                storage,
+                &mut levels,
+                storage.save_page_with(&page, meter)?,
+                meter,
+            )?;
             leaf.push(last);
         }
     }
@@ -623,10 +768,14 @@ pub(super) fn build_pages(
         feed(
             storage,
             &mut levels,
-            storage.save_page(&format::PageNode {
-                schema: 1,
-                node: format::Node::Leaf(leaf),
-            })?,
+            storage.save_page_with(
+                &format::PageNode {
+                    schema: 1,
+                    node: format::Node::Leaf(leaf),
+                },
+                meter,
+            )?,
+            meter,
         )?;
     }
     for level in 0..8 {
@@ -640,10 +789,14 @@ pub(super) fn build_pages(
         feed(
             storage,
             &mut levels,
-            storage.save_page(&format::PageNode {
-                schema: 1,
-                node: format::Node::Index(children),
-            })?,
+            storage.save_page_with(
+                &format::PageNode {
+                    schema: 1,
+                    node: format::Node::Index(children),
+                },
+                meter,
+            )?,
+            meter,
         )?;
     }
     if levels.iter().all(Vec::is_empty) {

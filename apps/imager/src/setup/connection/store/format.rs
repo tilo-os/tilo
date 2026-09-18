@@ -270,19 +270,179 @@ pub(super) struct NativeBudget {
     pub sequence: u64,
 }
 impl NativeBudget {
-    pub fn initial() -> Self { Self { version: 1, reserved: 0, sequence: 0 } }
+    pub fn initial() -> Self {
+        Self {
+            version: 1,
+            reserved: 0,
+            sequence: 0,
+        }
+    }
     pub fn validate(&self) -> Result<(), StoreError> {
-        if self.version != 1 || self.reserved > READ_LIMIT
-            || self.reserved % READ_QUANTUM != 0 || self.sequence > 256
+        if self.version != 1
+            || self.reserved > READ_LIMIT
+            || self.reserved % READ_QUANTUM != 0
+            || self.sequence > 256
             || (self.sequence == 0) != (self.reserved == 0)
-            || self.sequence.checked_mul(READ_QUANTUM).is_none_or(|n| n > self.reserved)
-        { return Err(StoreError::Corrupt); }
+            || self
+                .sequence
+                .checked_mul(READ_QUANTUM)
+                .is_none_or(|n| n > self.reserved)
+        {
+            return Err(StoreError::Corrupt);
+        }
         Ok(())
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct InitialReviewFact {
+    pub preview: [u8; 32],
+    pub selection: [u8; 32],
+    pub revision: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BoundaryEvidence {
+    pub attempt: u32,
+    pub displaced: Option<Vec<u8>>,
+    pub outcome: Option<Vec<u8>>,
+}
+impl BoundaryEvidence {
+    fn validate(&self) -> Result<(), StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        if !(1..=8).contains(&self.attempt) {
+            return Err(StoreError::Corrupt);
+        }
+        if let Some(bytes) = &self.displaced {
+            if !matches!(
+                d::decode(bytes).map_err(|_| StoreError::Corrupt)?.body,
+                d::Body::Displaced(_)
+            ) {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        if let Some(bytes) = &self.outcome {
+            if !matches!(
+                d::decode(bytes).map_err(|_| StoreError::Corrupt)?.body,
+                d::Body::Outcome(_)
+            ) {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        Ok(())
+    }
+}
+/// Historical explicit selection, distinct from the observed reconciliation decision.
+/// Only the dedicated producer may turn a freshly verified selection into admission.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum SelectedVersion {
+    Tombstone {
+        operation: u64,
+        revision: u64,
+        side: u8,
+        snapshot: [u8; 32],
+    },
+    Recovery {
+        operation: u64,
+        slot: u32,
+        content: State,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SelectedConflict {
+    pub serial: u64,
+    pub revision: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum SelectedAction {
+    Restore {
+        version: u8,
+        target: u8,
+        replace: bool,
+        revision: u64,
+        fence: u64,
+        selected: SelectedVersion,
+        conflict: Option<SelectedConflict>,
+    },
+}
+impl SelectedAction {
+    fn validate(&self, operation: &Operation) -> Result<(), StoreError> {
+        let Self::Restore {
+            version,
+            target,
+            revision,
+            selected,
+            conflict,
+            ..
+        } = self;
+        if *version != 1
+            || *target > 1
+            || *revision != operation.expected
+            || operation.native_budget.is_none()
+            || conflict.as_ref().is_some_and(|value| {
+                value.serial == 0 || value.serial >= operation.serial || value.revision == 0
+            })
+        {
+            return Err(StoreError::Corrupt);
+        }
+        match selected {
+            SelectedVersion::Recovery {
+                operation: serial,
+                slot,
+                content,
+            } if *serial > 0
+                && *serial < operation.serial
+                && *slot < 128
+                && matches!(content, State::File { .. }) => {}
+            SelectedVersion::Tombstone {
+                operation: serial,
+                revision: origin_revision,
+                side,
+                snapshot,
+            } if *serial > 0
+                && *serial < operation.serial
+                && *side <= 1
+                && *origin_revision > 0
+                && *snapshot != [0; 32]
+                && conflict.as_ref().is_some_and(|value| {
+                    value.serial >= *serial
+                        && (value.serial != *serial || value.revision == *origin_revision)
+                }) => {}
+            _ => return Err(StoreError::Corrupt),
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SelectedAppliedFact {
+    pub revision: u64,
+    pub fence: u64,
+    pub outcome: [u8; 32],
+    pub attention: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Operation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_applied: Option<SelectedAppliedFact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_capture_displaced: Vec<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_capture: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<SelectedAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_boundary_evidence: Option<BoundaryEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_boundary: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_identity: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_review: Option<InitialReviewFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_budget: Option<NativeBudget>,
     pub connection: [u8; 16],
@@ -307,6 +467,7 @@ impl Operation {
     ) -> Result<Self, StoreError> {
         let decision = match intent.decision {
             Decision::VerifyEqual => 0,
+            Decision::InitialPreview => 5,
             Decision::Propagate { from: Side::Source } => 1,
             Decision::Propagate {
                 from: Side::Destination,
@@ -319,7 +480,15 @@ impl Operation {
             _ => return Err(StoreError::RecoveryRequired),
         };
         Ok(Self {
+            selected_applied: None,
+            native_capture_displaced: Vec::new(),
+            native_capture: None,
+            action: None,
             native_budget: None,
+            initial_review: None,
+            native_identity: None,
+            native_boundary: None,
+            native_boundary_evidence: None,
             connection: intent.connection.0,
             serial,
             revision: next(intent.expected_revision)?,
@@ -335,8 +504,160 @@ impl Operation {
             recovery: Vec::new(),
         })
     }
+    pub fn validate_capture(
+        &self,
+        capture: &super::super::transaction::native::descriptor::ConflictSnapshot,
+    ) -> Result<(), StoreError> {
+        let endpoint = |value: &storage::Identity| {
+            let mut bytes = [0; 64];
+            bytes[..32].copy_from_slice(&value.volume);
+            bytes[32..].copy_from_slice(&value.root);
+            bytes
+        };
+        if self.native_budget.is_none()
+            || capture.connection != self.connection
+            || capture.operation != self.serial
+            || capture.admission != next(self.expected)?
+            || capture.revision > self.revision
+            || capture.baseline != self.baseline
+            || capture.path != self.path.to_relative()?
+            || capture.endpoints
+                != [
+                    endpoint(&self.source_binding),
+                    endpoint(&self.destination_binding),
+                ]
+        {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
+    }
+    fn validate_native_identity(&self) -> Result<(), StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let Some(bytes) = &self.native_identity else {
+            return Ok(());
+        };
+        let fact = d::Admission::decode(bytes).map_err(|_| StoreError::Corrupt)?;
+        let endpoint = |identity: &storage::Identity| {
+            let mut value = [0; 64];
+            value[..32].copy_from_slice(&identity.volume);
+            value[32..].copy_from_slice(&identity.root);
+            value
+        };
+        let matches_state = |fact: &d::State, planned: &Option<State>| match (fact, planned) {
+            (d::State::Absent, None) => true,
+            (
+                d::State::Regular { content, .. },
+                Some(State::File {
+                    sha256,
+                    bytes,
+                    executable,
+                }),
+            ) => {
+                content.digest == *sha256
+                    && content.length == *bytes
+                    && content.executable == *executable
+            }
+            _ => false,
+        };
+        if self.native_budget.is_none()
+            || fact.connection != self.connection
+            || fact.operation != self.serial
+            || fact.revision != self.expected
+            || fact.baseline != self.baseline
+            || fact.decision != self.decision
+            || fact.direction != u8::from(matches!(self.decision, 2 | 3))
+            || fact.path != self.path.to_relative()?
+            || fact.endpoints
+                != [
+                    endpoint(&self.source_binding),
+                    endpoint(&self.destination_binding),
+                ]
+            || !matches_state(&fact.states[0], &self.source)
+            || !matches_state(&fact.states[1], &self.destination)
+        {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "Join distinct durable correlation fields to their canonical operation, endpoint or current proof; similarly named fields are not interchangeable."
+    )]
     pub fn decode(&self) -> Result<OperationReceipt, StoreError> {
-        if let Some(budget) = &self.native_budget { budget.validate()?; }
+        if let Some(bytes) = &self.native_capture {
+            let capture =
+                super::super::transaction::native::descriptor::ConflictSnapshot::decode(bytes)
+                    .map_err(|_| StoreError::Corrupt)?;
+            self.validate_capture(&capture)?;
+            use super::super::transaction::native::descriptor as d;
+            if let Some(SelectedAction::Restore {
+                target, replace, ..
+            }) = &self.action
+            {
+                if *replace
+                    || !matches!(self.stage, 0 | 1 | 10)
+                    || capture.versions.len() != 2
+                    || capture.versions.iter().any(|version| version.role != 0)
+                    || !capture.versions.iter().any(|version| {
+                        version.side == *target && matches!(version.state, d::State::Regular { .. })
+                    })
+                {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+            if self.native_capture_displaced.len()
+                != capture
+                    .versions
+                    .iter()
+                    .filter(|version| version.displaced.is_some())
+                    .count()
+            {
+                return Err(StoreError::Corrupt);
+            }
+            for bytes in &self.native_capture_displaced {
+                let clue = d::decode(bytes).map_err(|_| StoreError::Corrupt)?;
+                let d::Body::Displaced(body) = &clue.body else {
+                    return Err(StoreError::Corrupt);
+                };
+                if clue.header.connection != self.connection || clue.header.operation != self.serial || body.barriers != 3
+                    || !capture.versions.iter().any(|version| version.side == body.side && version.displaced == Some(clue.digest)
+                        && matches!(&version.state, d::State::Regular { object, .. } | d::State::Unsupported { object, .. } if object == &body.object)) {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+        } else if !self.native_capture_displaced.is_empty() {
+            return Err(StoreError::Corrupt);
+        }
+        if let Some(action) = &self.action {
+            action.validate(self)?;
+        }
+        self.validate_native_identity()?;
+        if self.native_boundary.is_some() && (self.stage != 7 || self.native_budget.is_none()) {
+            return Err(StoreError::Corrupt);
+        }
+        match (self.native_boundary, &self.native_boundary_evidence) {
+            (None, None) => {}
+            (Some(0), None) if self.native_identity.is_some() && self.recovery.is_empty() => {}
+            (Some(1..=3), Some(evidence)) => evidence.validate()?,
+            _ => return Err(StoreError::Corrupt),
+        }
+        if let Some(budget) = &self.native_budget {
+            budget.validate()?;
+        }
+        if let Some(review) = &self.initial_review {
+            if self.native_budget.is_none()
+                || self.baseline.is_some()
+                || review.preview == [0; 32]
+                || review.selection == [0; 32]
+                || review.revision != self.expected
+            {
+                return Err(StoreError::Corrupt);
+            }
+        }
         let decision = match self.decision {
             0 => Decision::VerifyEqual,
             1 => Decision::Propagate { from: Side::Source },
@@ -347,6 +668,7 @@ impl Operation {
             4 => Decision::RecoverDeletion {
                 at: Side::Destination,
             },
+            5 if self.action.is_some() => Decision::InitialPreview,
             10..=14 => Decision::Conflict(conflict_from(self.decision - 10)?),
             _ => return Err(StoreError::Corrupt),
         };
@@ -357,7 +679,41 @@ impl Operation {
             3 => ReceiptStage::Verified,
             4 => ReceiptStage::BaselineCommitted,
             5 => ReceiptStage::Aborted,
+            7 if self.native_boundary.is_some() => ReceiptStage::AccountedPending,
+            8 if self.native_capture.is_some() && self.action.is_none() => {
+                ReceiptStage::CapturedConflict
+            }
+            10 if self.action.is_some() && self.native_capture.is_some() => {
+                ReceiptStage::SelectedCollision
+            }
+            9 if self.action.is_some()
+                && self.native_capture.is_none()
+                && self.selected_applied.as_ref().is_some_and(|fact| {
+                    fact.revision <= self.revision
+                        && fact.revision > self.expected
+                        && fact.outcome != [0; 32]
+                        && self.action.as_ref().is_some_and(|action| {
+                            let SelectedAction::Restore { fence, .. } = action;
+                            *fence == fact.fence
+                        })
+                }) =>
+            {
+                ReceiptStage::SelectedApplied
+            }
             6 if self.recovery.is_empty()
+                && self.action.as_ref().is_some_and(|action| {
+                    let SelectedAction::Restore { target, .. } = action;
+                    if *target == 0 {
+                        self.source.is_none()
+                    } else {
+                        self.destination.is_none()
+                    }
+                }) =>
+            {
+                ReceiptStage::PreparedNoDisplacement
+            }
+            6 if self.action.is_none()
+                && self.recovery.is_empty()
                 && matches!(
                     (self.decision, &self.source, &self.destination),
                     (1, Some(State::File { .. }), None) | (2, None, Some(State::File { .. }))
@@ -367,7 +723,8 @@ impl Operation {
             }
             _ => return Err(StoreError::Corrupt),
         };
-        if self.serial == 0
+        if (self.selected_applied.is_some() && self.stage != 9)
+            || self.serial == 0
             || self.recovery.len() > 128
             || self
                 .recovery
@@ -382,6 +739,20 @@ impl Operation {
             serial: self.serial,
         };
         Ok(OperationReceipt {
+            action: match (&self.action, self.native_capture.is_some()) {
+                (Some(action), true) => {
+                    super::ExecutionAction::SelectedCollision(super::SelectedExecution {
+                        action: action.clone(),
+                    })
+                }
+                (Some(action), false) => {
+                    super::ExecutionAction::Selected(super::SelectedExecution {
+                        action: action.clone(),
+                    })
+                }
+                (None, true) => super::ExecutionAction::Captured,
+                (None, false) => super::ExecutionAction::Reconcile,
+            },
             id,
             revision: self.revision,
             stage,
@@ -441,6 +812,10 @@ pub(super) struct NativeRegistration {
     pub fence: u64,
     pub intent: Option<Vec<u8>>,
     pub stage: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_displaced: Option<Vec<u8>>,
 }
 impl NativeRegistration {
     pub fn key(&self) -> Vec<u8> {
@@ -480,7 +855,28 @@ impl NativeRegistration {
                     .joined(&decoded, None, None)
                     .map_err(|_| StoreError::Corrupt)?;
             }
-        } else if self.stage.is_some() {
+            let parse = |value: &Option<Vec<u8>>| {
+                value
+                    .as_ref()
+                    .map(|bytes| descriptor::decode(bytes).map_err(|_| StoreError::Corrupt))
+                    .transpose()
+            };
+            if let Some(outcome) = parse(&self.outcome)? {
+                if !matches!(outcome.body, Body::Outcome(_)) {
+                    return Err(StoreError::Corrupt);
+                }
+                outcome
+                    .joined(
+                        &decoded,
+                        parse(&self.stage)?.as_ref(),
+                        parse(&self.outcome_displaced)?.as_ref(),
+                    )
+                    .map_err(|_| StoreError::Corrupt)?;
+            } else if self.outcome_displaced.is_some() {
+                return Err(StoreError::Corrupt);
+            }
+        } else if self.stage.is_some() || self.outcome.is_some() || self.outcome_displaced.is_some()
+        {
             return Err(StoreError::Corrupt);
         }
         Ok(())
@@ -490,6 +886,8 @@ impl NativeRegistration {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct NativeRecoveryFact {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured: Option<Vec<u8>>,
     pub connection: [u8; 16],
     pub serial: u64,
     pub slot: u32,
@@ -503,9 +901,51 @@ impl NativeRecoveryFact {
         key.extend(self.slot.to_be_bytes());
         key
     }
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "Join distinct durable correlation fields to their canonical operation, endpoint or current proof; similarly named fields are not interchangeable."
+    )]
     pub fn validate(&self) -> Result<(), StoreError> {
         use super::super::transaction::native::descriptor as d;
         let fact = d::RecoveryFact::decode(&self.fact).map_err(|_| StoreError::Corrupt)?;
+        if let Some(bytes) = &self.captured {
+            let capture = d::ConflictSnapshot::decode(bytes).map_err(|_| StoreError::Corrupt)?;
+            if capture.connection != self.connection
+                || capture.operation != self.serial
+                || fact.recovery.connection != self.connection
+                || fact.recovery.operation != self.serial
+                || fact.recovery.slot != self.slot
+                || fact.intent != capture.binding_digest().map_err(|_| StoreError::Corrupt)?
+                || Some(&fact.endpoint) != capture.endpoints.get(usize::from(fact.side))
+            {
+                return Err(StoreError::Corrupt);
+            }
+            let version = capture
+                .versions
+                .iter()
+                .find(|version| {
+                    version.side == fact.side && version.role.checked_add(1) == Some(fact.role)
+                })
+                .ok_or(StoreError::Corrupt)?;
+            if !matches!(&version.state, d::State::Regular { object, content, .. } if object == &fact.object && content == &fact.content)
+            {
+                return Err(StoreError::Corrupt);
+            }
+            if let Some(digest) = version.displaced {
+                let displaced = d::decode(&self.displaced).map_err(|_| StoreError::Corrupt)?;
+                if displaced.digest != digest
+                    || displaced.header.connection != self.connection
+                    || displaced.header.operation != self.serial
+                    || displaced.header.attempt != u64::from(self.attempt)
+                    || !matches!(&displaced.body, d::Body::Displaced(body) if body.object == fact.object && body.side == fact.side && body.barriers == 3)
+                {
+                    return Err(StoreError::Corrupt);
+                }
+            } else if !self.displaced.is_empty() || self.attempt != 0 {
+                return Err(StoreError::Corrupt);
+            }
+            return Ok(());
+        }
         let displaced = d::decode(&self.displaced).map_err(|_| StoreError::Corrupt)?;
         if fact.recovery.connection != self.connection
             || fact.recovery.operation != self.serial
@@ -586,7 +1026,115 @@ pub(super) fn key(table: u8, connection: [u8; 16], serial: u64) -> Vec<u8> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
 pub(super) enum Change {
+    SelectedCaptureDrain {
+        entry: Recovery,
+        expected: u64,
+        operation_expected: u64,
+        fence: u64,
+        fact: Option<NativeRecoveryFact>,
+    },
+    SelectedUntouched {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        operation_expected: u64,
+        fence: u64,
+    },
+    SelectedApplied {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        fence: u64,
+        attempt: u32,
+        outcome: [u8; 32],
+    },
+    NativeCaptureDrain {
+        entry: Recovery,
+        expected: u64,
+        operation_expected: u64,
+        fence: u64,
+        fact: Option<NativeRecoveryFact>,
+    },
+    NativeConflictComplete {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        fence: u64,
+        conflict_expected: u64,
+        capture: [u8; 32],
+    },
+    NativeSelectedCollision {
+        snapshot: Vec<u8>,
+        expected: u64,
+    },
+    SelectedCollisionComplete {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        fence: u64,
+        conflict_expected: u64,
+        capture: [u8; 32],
+    },
+    NativeCapture {
+        snapshot: Vec<u8>,
+        displaced: Vec<Vec<u8>>,
+        expected: u64,
+        kind: u8,
+    },
+    NativeDrain {
+        entry: Recovery,
+        expected: u64,
+        operation_expected: u64,
+        fence: u64,
+        source: BoundaryEvidence,
+        fact: Option<NativeRecoveryFact>,
+    },
+    SelectedDrain {
+        entry: Recovery,
+        expected: u64,
+        operation_expected: u64,
+        fence: u64,
+        source: BoundaryEvidence,
+        fact: Option<NativeRecoveryFact>,
+    },
+    NativeBoundary {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        operation_expected: u64,
+        fence: u64,
+        kind: u8,
+        #[serde(default)]
+        evidence: Option<BoundaryEvidence>,
+    },
+    SelectedBoundary {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        operation_expected: u64,
+        fence: u64,
+        kind: u8,
+        evidence: BoundaryEvidence,
+    },
+    NativeOutcome {
+        registration: NativeRegistration,
+        expected: u64,
+        verified: bool,
+        #[serde(default)]
+        reconstructed: bool,
+    },
+    IncompleteRecovery {
+        connection: [u8; 16],
+        serial: u64,
+        slot: u32,
+        expected: u64,
+        fence: u64,
+    },
     ReadReserve {
+        #[serde(default)]
+        recovery_only: bool,
+        #[serde(default)]
+        operation_expected: Option<u64>,
         connection: [u8; 16],
         serial: u64,
         expected: u64,
@@ -847,7 +1395,15 @@ impl<'de> Deserialize<'de> for ObjectIdentity {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct CapturedSlot {
+    pub snapshot: Vec<u8>,
+    pub version: u8,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Recovery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured: Option<CapturedSlot>,
     pub connection: [u8; 16],
     pub serial: u64,
     pub slot: u32,
@@ -874,7 +1430,29 @@ impl Recovery {
         value.extend(self.slot.to_be_bytes());
         value
     }
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "Join distinct durable correlation fields to their canonical operation, endpoint or current proof; similarly named fields are not interchangeable."
+    )]
     pub fn decode(&self) -> Result<RecoveryEntry, StoreError> {
+        if let Some(origin) = &self.captured {
+            use super::super::transaction::native::descriptor as d;
+            let snapshot =
+                d::ConflictSnapshot::decode(&origin.snapshot).map_err(|_| StoreError::Corrupt)?;
+            let version = snapshot
+                .versions
+                .get(usize::from(origin.version))
+                .ok_or(StoreError::Corrupt)?;
+            if snapshot.connection != self.connection
+                || snapshot.operation != self.serial
+                || snapshot.path != self.path.to_relative()?
+                || version.side != self.side
+                || self.reason != 2
+                || !matches!(version.state, d::State::Regular { .. })
+            {
+                return Err(StoreError::Corrupt);
+            }
+        }
         if let Some(object) = &self.object {
             object.file_id.require_platform()?;
         }
@@ -898,14 +1476,15 @@ impl Recovery {
             2 => RecoveryState::Attached,
             3 => RecoveryState::PurgeIntent,
             4 => RecoveryState::Purged,
+            5 => RecoveryState::RetainedIncomplete,
             _ => return Err(StoreError::Corrupt),
         };
         if self.serial == 0
             || self.slot >= 128
-            || (self.state == 0 && (self.content.is_some() || self.object.is_some()))
-            || (self.state != 0
+            || (matches!(self.state, 0 | 5) && (self.content.is_some() || self.object.is_some()))
+            || (!matches!(self.state, 0 | 5)
                 && (!matches!(self.content, Some(State::File { .. })) || self.object.is_none()))
-            || (self.state < 2 && self.retained != 0)
+            || (matches!(self.state, 0 | 1 | 5) && self.retained != 0)
         {
             return Err(StoreError::Corrupt);
         }
@@ -933,6 +1512,8 @@ pub(super) struct BaselineEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ConflictData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_capture: Option<Vec<u8>>,
     pub connection: [u8; 16],
     pub serial: u64,
     pub revision: u64,
@@ -944,6 +1525,10 @@ pub(super) struct ConflictData {
     pub resolved: bool,
 }
 impl ConflictData {
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "Join distinct durable correlation fields to their canonical operation, endpoint or current proof; similarly named fields are not interchangeable."
+    )]
     pub fn decode(&self) -> Result<ConflictRecord, StoreError> {
         if self.serial == 0 || self.revision == 0 || self.preserved.len() > 128 {
             return Err(StoreError::Corrupt);
@@ -952,7 +1537,22 @@ impl ConflictData {
             connection: ConnectionId(self.connection),
             serial: self.serial,
         };
+        let captured = self
+            .native_capture
+            .as_deref()
+            .map(super::super::transaction::native::descriptor::ConflictSnapshot::decode)
+            .transpose()
+            .map_err(|_| StoreError::Corrupt)?;
+        if captured.as_ref().is_some_and(|value| {
+            value.connection != self.connection
+                || value.operation != self.serial
+                || Some(&value.path) != self.path.to_relative().ok().as_ref()
+                || value.revision >= self.revision
+        }) {
+            return Err(StoreError::Corrupt);
+        }
         Ok(ConflictRecord {
+            captured,
             id,
             revision: self.revision,
             kind: conflict_from(self.kind)?,
