@@ -30,6 +30,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::widget::code_editor::CodeEditor;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout, TextInput, Widget,
@@ -88,6 +89,9 @@ pub struct SnippetsApp {
     /// through [`SnippetsDoc`].
     search_input: TextInput,
     search_rect: Rect,
+    /// Editing cache only; every change is dispatched into `SnippetsDoc`.
+    body_editor: CodeEditor,
+    body_identity: Option<(SnippetId, Language)>,
     /// Currently open snippet in the detail pane.
     open: Option<SnippetId>,
     /// Ordered ids currently shown in the list pane (result of `query`).
@@ -293,6 +297,11 @@ impl SnippetsApp {
                 .with_font_size(14.0)
                 .with_plain_chrome(),
             search_rect: Rect::ZERO,
+            body_editor: CodeEditor::local()
+                .with_id("snippets.body")
+                .with_placeholder("snippets-body-placeholder")
+                .with_font_size(BODY_FONT),
+            body_identity: None,
             open: None,
             visible: Vec::new(),
             expand: None,
@@ -373,6 +382,119 @@ impl SnippetsApp {
         };
         self.search_provider.update(&self.library, &next);
         self.library = next;
+        self.sync_body_editor();
+    }
+
+    fn sync_body_editor(&mut self) {
+        let snippet = self.open.and_then(|id| self.library.get(id));
+        let identity = snippet.map(|s| (s.id, s.language));
+        if self.body_identity != identity {
+            self.body_editor
+                .set_highlighter(identity.map(|(_, language)| {
+                    Box::new(highlight::EditorHighlighter(language))
+                        as Box<dyn ui::widget::code_editor::Highlighter>
+                }));
+        }
+        let text = snippet.map_or("", |s| s.body.as_str());
+        if self.body_editor.value() != text {
+            self.body_editor.set_text(text);
+        }
+        if self.body_identity.map(|(id, _)| id) != identity.map(|(id, _)| id) {
+            self.body_editor.set_cursor_pos(0);
+            self.body_editor.set_focused(false);
+        }
+        self.body_identity = identity;
+        // Adopting document state is not an authored edit.
+        self.body_editor.take_dirty();
+    }
+
+    fn flush_body_edit(&mut self, doc: &mut AutoCommit) {
+        if let Some(text) = self.body_editor.take_dirty()
+            && let Some(id) = self.open
+            && self
+                .library
+                .get(id)
+                .is_some_and(|snippet| snippet.body != text)
+        {
+            self.perform_action(doc, &actions::set_body_action(id, &text));
+        }
+    }
+
+    fn body_available(&self) -> bool {
+        self.open.is_some()
+            && self.expand.is_none()
+            && !(self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_visible())
+            && (!self.is_push_layout() || self.push_pane == PushPane::Detail)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the shared Widget event context"
+    )]
+    fn route_body_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.body_available() {
+            self.body_editor.set_focused(false);
+            return false;
+        }
+        let inside = self.body_editor.rect().contains(self.last_mouse);
+        let captured = self.body_editor.wants_pointer_capture();
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) {
+            self.body_editor.set_focused(inside);
+            if inside {
+                self.search_input.set_focus(false);
+            }
+        }
+        let focused = self.body_editor.is_focused();
+        if let WindowEvent::KeyboardInput { event, .. } = event {
+            // Preserve app navigation shortcuts; other editing keys belong to
+            // TextInput, including selection copy and the shared undo path.
+            let global = matches!(&event.logical_key, Key::Named(NamedKey::Escape))
+                || ((modifiers.state().control_key() || modifiers.state().super_key())
+                    && matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("f") || key.eq_ignore_ascii_case("n")));
+            if global {
+                self.body_editor.set_focused(false);
+                return false;
+            }
+        }
+        let route = match event {
+            WindowEvent::CursorMoved { .. } | WindowEvent::Focused(false) => true,
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => inside || captured,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => focused,
+            _ => false,
+        };
+        if !route {
+            return false;
+        }
+        let mut handled = false;
+        self.body_editor.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            path,
+            &mut handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        self.flush_body_edit(state);
+        handled
     }
 
     /// The presentation context Ctrl+K needs to build the library-level "New
@@ -521,7 +643,10 @@ impl SnippetsApp {
             Action::ToggleFavorite(id) => self.toggle_favorite(id, doc),
             Action::Duplicate(id) => self.duplicate(id, doc),
             Action::Delete(id) => self.delete(id, doc),
-            Action::FocusSearch => self.search_input.set_focus(true),
+            Action::FocusSearch => {
+                self.body_editor.set_focused(false);
+                self.search_input.set_focus(true);
+            }
             Action::ClearSearch => {
                 self.search_input.set_text("");
                 self.recompute_visible();
@@ -802,13 +927,17 @@ impl ui::widget::Widget for SnippetsApp {
                 self.search_input.set_text("");
                 self.select(Selection::Tag(tag));
             }
-            actions::SnippetsOperation::FocusSearch => self.search_input.set_focus(true),
+            actions::SnippetsOperation::FocusSearch => {
+                self.body_editor.set_focused(false);
+                self.search_input.set_focus(true);
+            }
         }
         Ok(true)
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.sync_library(state);
+        self.sync_body_editor();
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -929,6 +1058,8 @@ impl ui::widget::Widget for SnippetsApp {
         _presence: &PresenceCtx,
     ) {
         self.hit.clear();
+        self.sync_body_editor();
+        self.body_editor.set_rect(Rect::ZERO);
         let c = &theme.tokens.colors;
         // Whole-window background.
         draw::fill_rect(scene, t, self.rect, c.surfaces.base);
@@ -937,6 +1068,10 @@ impl ui::widget::Widget for SnippetsApp {
         // or spans the full width when the sidebar is an overlay flap.
         let band = self.content_band();
         self.draw_content_band(scene, t, tr, theme, band);
+        if !self.body_available() {
+            self.body_editor.set_rect(Rect::ZERO);
+            self.body_editor.set_focused(false);
+        }
 
         // The primary sidebar: a docked rail beside the content, or — when
         // narrow — an overlay flap that slides in over the content behind a
@@ -1022,6 +1157,20 @@ impl ui::widget::Widget for SnippetsApp {
             return;
         }
 
+        if self.route_body_event(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            *handled = true;
+            return;
+        }
+
         if self.route_pointer_to_search(
             event,
             scale_factor,
@@ -1085,6 +1234,8 @@ impl ui::widget::Widget for SnippetsApp {
     fn ime_cursor_rect(&self) -> Option<Rect> {
         if let Some(modal) = &self.expand {
             modal.ime_cursor_rect()
+        } else if self.body_editor.is_focused() {
+            self.body_editor.ime_cursor_rect()
         } else {
             self.search_input.ime_cursor_rect()
         }
@@ -1093,6 +1244,8 @@ impl ui::widget::Widget for SnippetsApp {
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         if let Some(modal) = &self.expand {
             modal.ime_purpose()
+        } else if self.body_editor.is_focused() {
+            self.body_editor.ime_purpose()
         } else {
             self.search_input.ime_purpose()
         }
@@ -1101,19 +1254,21 @@ impl ui::widget::Widget for SnippetsApp {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if let Some(modal) = &self.expand {
             modal.cursor_shape(point)
+        } else if self.body_available() && self.body_editor.rect().contains(point) {
+            self.body_editor.cursor_shape(point)
         } else {
             self.search_input.cursor_shape(point)
         }
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
         if let Some(modal) = self.expand.as_ref().and_then(ExpandModal::accessibility) {
             return Some(modal);
         }
 
-        use ui::a11y::{AccessNode, AccessState, Role};
         let mut seen = std::collections::HashSet::new();
-        let children = self
+        let mut children: Vec<AccessNode> = self
             .hit
             .iter()
             .filter_map(|(bounds, action)| {
@@ -1145,6 +1300,12 @@ impl ui::widget::Widget for SnippetsApp {
                 })
             })
             .collect();
+        if self.body_available()
+            && self.body_editor.rect().area() > 0.0
+            && let Some(node) = self.body_editor.accessibility()
+        {
+            children.push(node.with_action_target("snippets.body"));
+        }
         Some(
             AccessNode::new(Role::Window)
                 .with_name("Snippets")
@@ -1176,8 +1337,27 @@ impl ui::widget::Widget for SnippetsApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
     ) -> bool {
+        if let Some(mut modal) = self.expand.take() {
+            let Some(outcome) = modal.perform_semantic_action(target, action, state, path) else {
+                self.expand = Some(modal);
+                return false;
+            };
+            self.finish_expand(modal, outcome, state);
+            return true;
+        }
+        if target == "snippets.body" && self.open.is_some() && self.expand.is_none() {
+            self.sync_body_editor();
+            self.search_input.set_focus(false);
+            if matches!(action, ui::a11y::Action::Focus) {
+                self.body_editor.set_focused(true);
+                return true;
+            }
+            let accepted = Widget::perform_action(&mut self.body_editor, action, state, path);
+            self.flush_body_edit(state);
+            return accepted;
+        }
         if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
             return false;
         }
@@ -1186,19 +1366,53 @@ impl ui::widget::Widget for SnippetsApp {
         }) else {
             return false;
         };
+        if matches!(action, ui::a11y::Action::Focus) && !matches!(hit_action, Action::FocusSearch) {
+            return true;
+        }
         self.apply(hit_action, state);
         true
     }
 
     fn needs_commit(&self) -> bool {
         self.search_input.needs_commit()
+            || self.body_editor.needs_commit()
             || self.expand.as_ref().is_some_and(ExpandModal::needs_commit)
     }
 
     fn on_commit(&mut self) {
         self.search_input.on_commit();
+        self.body_editor.on_commit();
         if let Some(modal) = &mut self.expand {
             modal.on_commit();
+        }
+    }
+
+    fn get_state(&self) -> Option<String> {
+        serde_json::to_string(&(self.open, self.body_editor.get_state())).ok()
+    }
+
+    fn set_state(&mut self, state: &str) {
+        if let Ok((id, Some(caret))) =
+            serde_json::from_str::<(Option<SnippetId>, Option<String>)>(state)
+            && id == self.open
+        {
+            self.body_editor.set_state(&caret);
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.body_available() && self.body_editor.wants_pointer_capture()
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        self.body_available() && self.body_editor.is_focused()
+    }
+
+    fn text_review(&self) -> Option<(usize, String)> {
+        if self.body_available() && self.body_editor.is_focused() {
+            self.body_editor.text_review()
+        } else {
+            self.search_input.text_review()
         }
     }
 
@@ -1213,6 +1427,8 @@ impl ui::widget::Widget for SnippetsApp {
         if let Some(modal) = &mut self.expand {
             modal.draw_overlay(scene, transform, tr, theme, presence);
         } else {
+            self.body_editor
+                .draw_overlay(scene, transform, tr, theme, presence);
             self.search_input
                 .draw_overlay(scene, transform, tr, theme, presence);
         }
@@ -1504,6 +1720,16 @@ impl SnippetsApp {
             node_id,
             taffy,
         );
+        self.finish_expand(modal, outcome, state);
+        true
+    }
+
+    fn finish_expand(
+        &mut self,
+        modal: ExpandModal,
+        outcome: ExpandOutcome,
+        state: &mut AutoCommit,
+    ) {
         match outcome {
             ExpandOutcome::Stay => {
                 self.expand = Some(modal);
@@ -1515,7 +1741,6 @@ impl SnippetsApp {
                 self.toast("Expanded and copied");
             }
         }
-        true
     }
 
     /// Feed pointer motion and clicks to the embedded search editor. The
@@ -2338,7 +2563,8 @@ impl SnippetsApp {
         let card = Rect::new(area.x0 + pad, y, area.x1 - pad, area.y1 - 20.0);
         draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
         draw::stroke_round(scene, t, card, theme.radii_md(), 1.0, c.border_standard);
-        Self::draw_code(scene, t, tr, theme, card, &snippet);
+        self.body_editor.set_rect(card);
+        self.body_editor.draw_embedded(scene, t, tr, theme);
     }
 
     /// The empty-detail placeholder shown when nothing is selected.
@@ -2625,66 +2851,6 @@ impl SnippetsApp {
         self.record(rect, action);
         rect.x1 + 8.0
     }
-
-    fn draw_code(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        s: &Snippet,
-    ) {
-        let c = &theme.tokens.colors;
-        let pad = 16.0;
-        let gutter_w = 36.0;
-        let x0 = card.x0 + pad;
-        // Gutter background.
-        let gutter = Rect::new(card.x0, card.y0, card.x0 + gutter_w + pad, card.y1);
-        draw::fill_round(scene, t, gutter, theme.radii_md(), c.neutral[1]);
-        // Re-cover the right side so only the left edge keeps the radius.
-        draw::fill_rect(
-            scene,
-            t,
-            Rect::new(card.x0 + 10.0, card.y0, card.x0 + gutter_w + pad, card.y1),
-            c.neutral[1],
-        );
-
-        let mut y = card.y0 + pad;
-        let line_h = BODY_LINE;
-        let code_x = x0 + gutter_w;
-        for (i, line) in s.body.lines().enumerate() {
-            if y > card.y1 - line_h {
-                break;
-            }
-            // Line number.
-            let num = (i + 1).to_string();
-            let nw = draw::mono_width(tr, &num, 11.0);
-            draw::mono(
-                scene,
-                tr,
-                t,
-                &num,
-                x0 + gutter_w - 10.0 - nw,
-                y,
-                11.0,
-                c.text_dim,
-                TextWeight::Regular,
-            );
-            // Highlighted spans.
-            let mut sx = code_x;
-            for span in highlight::highlight_line(line, s.language) {
-                let color = span.kind.color(theme);
-                let weight = if matches!(span.kind, highlight::TokenKind::Keyword) {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                };
-                draw::mono(scene, tr, t, &span.text, sx, y, BODY_FONT, color, weight);
-                sx += draw::mono_width(tr, &span.text, BODY_FONT);
-            }
-            y += line_h;
-        }
-    }
 }
 
 /// Cycle to the next language in the canonical order (wraps).
@@ -2903,6 +3069,36 @@ mod tests {
     }
 
     #[test]
+    fn focusing_new_snippet_does_not_activate_it() {
+        let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.record(Rect::new(0.0, 0.0, 100.0, 40.0), Action::NewSnippet);
+        let target = Action::NewSnippet.semantic_id();
+        let before = doc.get_heads();
+        Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &automerge::ROOT,
+        );
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "focusing a button must not author a snippet"
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(SnippetsDoc::list(&doc).len(), 1);
+    }
+
+    #[test]
     fn new_snippet_grows_library_and_opens_it() {
         let mut app = SnippetsApp::new();
         let mut doc = AutoCommit::new();
@@ -2915,9 +3111,200 @@ mod tests {
     }
 
     #[test]
+    fn new_snippet_body_can_be_edited_through_the_public_action_and_reloaded() {
+        let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        app.new_snippet_for_test(&mut doc);
+        app.sync(&mut doc, &root);
+        let id = app.open_id_for_test().unwrap();
+        let body = "fn main() {\n    println!(\"Grün ${name}\");\n}\n";
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "snippets.body",
+            &ui::a11y::Action::SetValue(body.into()),
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, body);
+
+        let resource = Widget::resource(&app, &doc, &actions::snippet_resource_id(id))
+            .expect("the edited snippet is an addressable resource");
+        let edit = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "edit-body")
+            .expect("body editing is available to automation and the palette");
+        let encoded = match &edit.input {
+            tilo_actions::ActionInput::Prompted { build, .. } => build(body),
+            tilo_actions::ActionInput::Immediate(_) => panic!("body editing accepts text"),
+        };
+        assert_eq!(app.last_dispatched_for_test().unwrap(), encoded);
+        let mut loaded = AutoCommit::load(&doc.save()).unwrap();
+        let mut reopened = SnippetsApp::new();
+        reopened.sync(&mut loaded, &root);
+        assert_eq!(SnippetsDoc::get(&loaded, id).unwrap().body, body);
+        assert_eq!(reopened.library_len_for_test(), 1);
+    }
+
+    #[test]
     fn next_language_wraps() {
         let last = *Language::ALL.last().unwrap();
         assert_eq!(next_language(last), Language::ALL[0]);
+    }
+
+    #[test]
+    fn variable_dialog_fields_and_cancel_are_semantically_addressable() {
+        let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.new_snippet_for_test(&mut doc);
+        let id = app.open_id_for_test().unwrap();
+        app.perform_semantic_action(
+            "snippets.body",
+            &ui::a11y::Action::SetValue("Hello ${name}".into()),
+            &mut doc,
+            &automerge::ROOT,
+        );
+        app.start_expand(id);
+        assert!(app.perform_semantic_action(
+            "snippets.expand.field.name",
+            &ui::a11y::Action::SetValue("Grün".into()),
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert_eq!(
+            app.expand.as_ref().unwrap().preview_for_test(),
+            "Hello Grün"
+        );
+        assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, "Hello ${name}");
+        assert!(!app.perform_semantic_action(
+            "snippets.body",
+            &ui::a11y::Action::SetValue("hidden edit".into()),
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(app.perform_semantic_action(
+            "snippets.expand.cancel",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(app.expand.is_none());
+    }
+
+    #[test]
+    fn body_ime_edit_uses_the_document_action_and_can_be_undone() {
+        let mut app = SnippetsApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.new_snippet_for_test(&mut state.doc);
+        let id = app.open_id_for_test().unwrap();
+        app.take_committed_action();
+        app.sync(&mut state.doc, &state.root);
+        app.layout_at_width_for_test(1280.0).unwrap();
+        assert!(app.perform_semantic_action(
+            "snippets.body",
+            &ui::a11y::Action::Focus,
+            &mut state.doc,
+            &state.root
+        ));
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        app.handle_event(
+            &WindowEvent::Ime(winit::event::Ime::Commit("Grün\n  ${name}\n".into())),
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut None,
+            node,
+            &taffy,
+        );
+        assert!(handled);
+        assert_eq!(
+            SnippetsDoc::get(&state.doc, id).unwrap().body,
+            "Grün\n  ${name}\n"
+        );
+        let key = Key::Character("z".into());
+        let undo_event = WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::KeyZ,
+                    ),
+                    state: ElementState::Pressed,
+                },
+                key.clone(),
+                None,
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                None,
+                key,
+            ),
+            is_synthetic: true,
+        };
+        handled = false;
+        app.handle_event(
+            &undo_event,
+            1.0,
+            &winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut None,
+            node,
+            &taffy,
+        );
+        assert!(
+            !handled,
+            "Ctrl+Z must reach the host's document undo dispatcher"
+        );
+        let author = ui::collaboration::local_user_id();
+        let root: *mut dyn Widget = &mut app;
+        assert!(ui::undo::record_dispatched_action(
+            &mut state,
+            root,
+            &HashMap::new(),
+            &author
+        ));
+        state.undo_as(Some(&author), None, None).unwrap();
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(SnippetsDoc::get(&state.doc, id).unwrap().body, "");
+        assert_eq!(app.body_editor.value(), "");
+    }
+
+    #[test]
+    fn body_editor_adopts_peer_changes_and_selection_without_authoring_edits() {
+        let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.new_snippet_for_test(&mut doc);
+        let first = app.open_id_for_test().unwrap();
+        app.perform_semantic_action(
+            "snippets.body",
+            &ui::a11y::Action::SetValue("first\n".into()),
+            &mut doc,
+            &automerge::ROOT,
+        );
+        app.new_snippet_for_test(&mut doc);
+        let second = app.open_id_for_test().unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.body_editor.value(), "");
+        tilo_actions::Action::apply(&actions::set_body_action(second, "remote 🌍\n"), &mut doc)
+            .unwrap();
+        let heads = doc.get_heads();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.body_editor.value(), "remote 🌍\n");
+        app.open_snippet(first);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.body_editor.value(), "first\n");
+        assert_eq!(doc.get_heads(), heads);
+        assert!(app.body_editor.take_dirty().is_none());
     }
 
     #[test]
