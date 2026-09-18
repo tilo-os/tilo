@@ -123,7 +123,7 @@ so an app opened in one room cannot read what it wrote in another, and
 there is no manifest field with which to opt out. A launch with no
 workspace (`tilo-launcher run` from a shell, the CLI shim, a test) gets
 the `personal` room, which is a room like any other and not a bypass.
-`plan/rooms.md` — "an app opened in a room starts empty" — is this
+`docs/architecture/rooms.md` — "an app opened in a room starts empty" — is this
 sentence, at the filesystem layer.
 
 `crates/packaging/launcher/tests/room_confinement.rs` proves it by
