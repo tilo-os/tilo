@@ -701,7 +701,10 @@ pub(crate) fn record_nearby_transfer_progress(
         state
             .progress
             .insert(transfer_id, (target, sent_bytes, total_bytes, status));
-        if status == PersonalMediaTransferStatus::Failed {
+        if matches!(
+            status,
+            PersonalMediaTransferStatus::Failed | PersonalMediaTransferStatus::Cancelled
+        ) {
             state.large_offers.remove(&transfer_id);
         }
     }
@@ -866,6 +869,13 @@ struct MediaHandoffStatus {
     phase: MediaHandoffPhase,
     updated: Instant,
     route: crate::shell::network::AuthenticatedPersonalRoute,
+    personal_transfer_id: Option<[u8; 16]>,
+}
+
+fn cancel_status_personal_transfer(network: &ShellNetwork, status: &MediaHandoffStatus) {
+    if let Some(transfer_id) = status.personal_transfer_id {
+        let _ = network.cancel_personal_media_transfer(&status.target, transfer_id);
+    }
 }
 
 fn media_handoff_statuses() -> &'static Mutex<BTreeMap<[u8; 16], MediaHandoffStatus>> {
@@ -1809,19 +1819,27 @@ impl DeviceFabricRuntime {
                     session_id,
                     failure,
                 } => {
-                    let expected_target =
-                        media_handoff_statuses().lock().ok().and_then(|statuses| {
-                            statuses.get(&request_id).map(|status| {
+                    let rejected = media_handoff_statuses().lock().ok().and_then(|statuses| {
+                        statuses
+                            .get(&request_id)
+                            .filter(|status| {
                                 status.target == envelope.source
                                     && status.route == route
+                                    && status.session_id == session_id
                                     && status.phase == MediaHandoffPhase::Pending
                             })
-                        });
-                    if expected_target == Some(true)
-                        && media::handoff::cancel_outbound_handoff(request_id, &session_id)
+                            .cloned()
+                    });
+                    if let Some(status) = rejected {
+                        cancel_status_personal_transfer(network, &status);
+                        if media::handoff::cancel_outbound_handoff(request_id, &session_id)
                             .is_some()
-                    {
-                        finish_media_handoff_status(request_id, MediaHandoffPhase::Failed(failure));
+                        {
+                            finish_media_handoff_status(
+                                request_id,
+                                MediaHandoffPhase::Failed(failure),
+                            );
+                        }
                     }
                 }
                 PersonalFabricAction::MediaCancelled {
@@ -2758,6 +2776,7 @@ impl DeviceFabricRuntime {
             }) {
                 let _ =
                     media::handoff::cancel_outbound_handoff(status.request_id, &status.session_id);
+                cancel_status_personal_transfer(network, status);
                 status.phase =
                     MediaHandoffPhase::Failed(MediaHandoffFailure::DestinationUnavailable);
                 status.updated = now;
@@ -4317,8 +4336,18 @@ pub fn request_media_handoff(
         .current_personal_route(target)
         .ok_or_else(|| "target has no current authenticated personal route".to_string())?;
     let request_id = network.send_personal_fabric_action_on_route(&route, action)?;
+    let personal_transfer_id = local_transfer.as_ref().map(|transfer| transfer.transfer_id);
     if let Some(transfer) = local_transfer {
-        network.start_personal_media_transfer(transfer)?;
+        if let Err(error) = network.start_personal_media_transfer(transfer) {
+            let _ = network.send_personal_fabric_action_on_route(
+                &route,
+                PersonalFabricAction::MediaCancelled {
+                    request_id,
+                    session_id: report.session.id.clone(),
+                },
+            );
+            return Err(error);
+        }
     }
     record_media_handoff_status(MediaHandoffStatus {
         request_id,
@@ -4328,6 +4357,7 @@ pub fn request_media_handoff(
         phase: MediaHandoffPhase::Pending,
         updated: Instant::now(),
         route,
+        personal_transfer_id,
     });
     media::handoff::remember_outbound_handoff(request_id, report);
     Ok(request_id)
@@ -4378,6 +4408,7 @@ fn pump_media_handoff_statuses(network: &ShellNetwork) {
                             status.request_id,
                             &status.session_id,
                         );
+                        cancel_status_personal_transfer(network, status);
                         status.phase = MediaHandoffPhase::Failed(MediaHandoffFailure::TimedOut);
                         status.updated = now;
                         (
@@ -4427,6 +4458,7 @@ fn tear_down_media_handoffs(network: &ShellNetwork) {
     );
     for status in pending {
         let _ = media::handoff::cancel_outbound_handoff(status.request_id, &status.session_id);
+        cancel_status_personal_transfer(network, &status);
         let _ = network.send_personal_fabric_action_on_route(
             &status.route,
             PersonalFabricAction::MediaCancelled {
@@ -4452,16 +4484,17 @@ pub(crate) fn cancel_media_handoff(
     if status.phase != MediaHandoffPhase::Pending {
         return Err("that media handoff is no longer pending".into());
     }
-    network.send_personal_fabric_action_on_route(
+    let delivery = network.send_personal_fabric_action_on_route(
         &status.route,
         PersonalFabricAction::MediaCancelled {
             request_id,
             session_id: status.session_id.clone(),
         },
-    )?;
+    );
+    cancel_status_personal_transfer(network, &status);
     let _ = media::handoff::cancel_outbound_handoff(request_id, &status.session_id);
     finish_media_handoff_status(request_id, MediaHandoffPhase::Cancelled);
-    Ok(())
+    delivery.map(|_| ())
 }
 
 /// Retry the logical session/target captured by a failed or timed-out row.
@@ -5084,7 +5117,8 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
                     PersonalMediaTransferStatus::Completed => {
                         runtime_collab::NearbyTransferPhase::Completed
                     }
-                    PersonalMediaTransferStatus::Failed => {
+                    PersonalMediaTransferStatus::Failed
+                    | PersonalMediaTransferStatus::Cancelled => {
                         runtime_collab::NearbyTransferPhase::Failed
                     }
                 };
@@ -5176,21 +5210,22 @@ fn fabric_transfer_views(
     use crate::network::actor::PersonalMediaTransferStatus;
     use crate::shell::overlay_host::{FabricTransferStatus, FabricTransferView};
 
-    let media = network
-        .outgoing_personal_media_transfers()
-        .into_iter()
-        .map(|transfer| FabricTransferView {
-            target: transfer.target,
-            sent_bytes: transfer.sent_bytes,
-            total_bytes: transfer.total_bytes,
-            status: match transfer.status {
-                PersonalMediaTransferStatus::Started | PersonalMediaTransferStatus::Progress => {
-                    FabricTransferStatus::Sending
-                }
-                PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
-                PersonalMediaTransferStatus::Failed => FabricTransferStatus::Failed,
-            },
-        });
+    let media =
+        network
+            .outgoing_personal_media_transfers()
+            .into_iter()
+            .map(|transfer| FabricTransferView {
+                target: transfer.target,
+                sent_bytes: transfer.sent_bytes,
+                total_bytes: transfer.total_bytes,
+                status: match transfer.status {
+                    PersonalMediaTransferStatus::Started
+                    | PersonalMediaTransferStatus::Progress => FabricTransferStatus::Sending,
+                    PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
+                    PersonalMediaTransferStatus::Failed
+                    | PersonalMediaTransferStatus::Cancelled => FabricTransferStatus::Failed,
+                },
+            });
     let nearby = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |state| {
@@ -5209,7 +5244,10 @@ fn fabric_transfer_views(
                                 FabricTransferStatus::Sending
                             }
                             PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
-                            PersonalMediaTransferStatus::Failed => FabricTransferStatus::Failed,
+                            PersonalMediaTransferStatus::Failed
+                            | PersonalMediaTransferStatus::Cancelled => {
+                                FabricTransferStatus::Failed
+                            }
                         },
                     },
                 )
