@@ -26,6 +26,12 @@ pub struct QuickSettingsWifiPane {
     hotspot_rect: Rect,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WifiPaneOutcome {
+    DrillIn(DrillInOutcome),
+    JoinOpen(String),
+}
+
 impl QuickSettingsWifiPane {
     pub fn handle_click(
         &mut self,
@@ -33,11 +39,11 @@ impl QuickSettingsWifiPane {
         panel: Rect,
         state: &mut QuickSettingsState,
         actions: &dyn QsActions,
-    ) -> DrillInOutcome {
+    ) -> WifiPaneOutcome {
         self.list
             .layout_from(panel, state.wifi_networks.len(), 116.0);
         if self.list.back_contains(point) {
-            return DrillInOutcome::Back;
+            return WifiPaneOutcome::DrillIn(DrillInOutcome::Back);
         }
         if self.hotspot_rect.contains(point) {
             state.radios.hotspot_active = !state.radios.hotspot_active;
@@ -45,21 +51,26 @@ impl QuickSettingsWifiPane {
                 "set_hotspot",
                 actions.set_hotspot(state.radios.hotspot_active),
             );
-            return DrillInOutcome::Changed;
+            return WifiPaneOutcome::DrillIn(DrillInOutcome::Changed);
         }
         let Some(index) = self.list.row_at(point) else {
-            return DrillInOutcome::None;
+            return WifiPaneOutcome::DrillIn(DrillInOutcome::None);
         };
         let Some(network) = state.wifi_networks.get(index) else {
-            return DrillInOutcome::None;
+            return WifiPaneOutcome::DrillIn(DrillInOutcome::None);
         };
         let ssid = network.ssid.clone();
+        if state.wifi_joining.as_deref() == Some(ssid.as_str()) {
+            return WifiPaneOutcome::DrillIn(DrillInOutcome::None);
+        }
         if network.secure && !network.connected {
             state.wifi_password = Some(WifiPasswordPrompt::new(ssid));
-            DrillInOutcome::Changed
+            WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)
         } else {
-            log_qs_result("connect_wifi", actions.connect_wifi(&ssid, None));
-            DrillInOutcome::None
+            // Joining can wait on NetworkManager for tens of seconds. Return
+            // intent to the host, which owns the asynchronous worker and the
+            // resulting visible progress/error state.
+            WifiPaneOutcome::JoinOpen(ssid)
         }
     }
 
@@ -179,6 +190,16 @@ impl QuickSettingsWifiPane {
                 cursor,
                 &network.ssid,
             );
+            if state.wifi_joining.as_deref() == Some(network.ssid.as_str()) {
+                text.draw_text(
+                    scene,
+                    "Connecting…",
+                    theme.tokens.typography.scale.xs,
+                    colors.accent[5],
+                    transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
+                    Some((row.width() - 120.0).max(1.0) as f32),
+                );
+            }
             ui::icons::draw_icon(
                 scene,
                 transform,
@@ -274,15 +295,18 @@ mod tests {
         pane.list.layout_from(panel, 2, 116.0);
         assert_eq!(
             pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
-            DrillInOutcome::Changed
+            WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)
         );
         assert_eq!(state.wifi_password.as_ref().unwrap().ssid, "Cafe");
         state.wifi_password = None;
         assert_eq!(
             pane.handle_click(pane.list.rows()[1].center(), panel, &mut state, &actions),
-            DrillInOutcome::None
+            WifiPaneOutcome::JoinOpen("Open".into())
         );
-        assert_eq!(actions.0.borrow().as_slice(), [("Open".into(), None)]);
+        assert!(
+            actions.0.borrow().is_empty(),
+            "the pane never blocks on a join"
+        );
     }
 
     #[test]
@@ -297,13 +321,31 @@ mod tests {
         pane.list.layout(panel, 1);
         assert_eq!(
             pane.handle_click(pane.list.back_center(), panel, &mut state, &actions),
-            DrillInOutcome::Back
+            WifiPaneOutcome::DrillIn(DrillInOutcome::Back)
         );
         assert_eq!(
             pane.handle_click(panel.center(), panel, &mut state, &actions),
-            DrillInOutcome::None
+            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
         );
         assert!(actions.0.borrow().is_empty());
         assert!(state.wifi_password.is_none());
+    }
+
+    #[test]
+    fn an_in_flight_open_network_join_is_not_dispatched_twice() {
+        let mut pane = QuickSettingsWifiPane::default();
+        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+        let mut state = QuickSettingsState {
+            wifi_networks: vec![network("Open", false)],
+            wifi_joining: Some("Open".into()),
+            ..Default::default()
+        };
+        let actions = RecordingActions::default();
+        pane.list.layout_from(panel, 1, 116.0);
+        assert_eq!(
+            pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
+            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
+        );
+        assert!(actions.0.borrow().is_empty());
     }
 }
