@@ -23,7 +23,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
+use crate::model::{Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLibrary};
 
 /// The bytes of the picture `open` names, from wherever this machine has them.
 ///
@@ -67,6 +67,8 @@ pub enum MetadataViewKind {
     Folder,
     Person,
     Tag,
+    Object,
+    Pet,
 }
 
 /// One exact metadata label resolved from the retained CRDT projection.
@@ -95,6 +97,8 @@ const EDITS_KEY: &str = "photos_edits";
 const METADATA_FOLDERS_KEY: &str = "metadata_folders";
 const METADATA_PEOPLE_KEY: &str = "metadata_people";
 const METADATA_TAGS_KEY: &str = "metadata_tags";
+const METADATA_OBJECTS_KEY: &str = "metadata_objects";
+const METADATA_PETS_KEY: &str = "metadata_pets";
 
 fn metadata_resource_id(prefix: &str, label: &str) -> String {
     format!("{prefix}{}", qdoc::blobstore::hash_bytes(label.as_bytes()))
@@ -294,6 +298,9 @@ impl PhotosDoc {
             if photo.captured_at.is_none() {
                 photo.captured_at = next.captured_at;
             }
+            if photo.analysis.is_none() {
+                photo.analysis = next.analysis;
+            }
         }
         Some(photo)
     }
@@ -349,6 +356,12 @@ impl PhotosDoc {
                 "photos.person:",
             ),
             (MetadataViewKind::Tag, METADATA_TAGS_KEY, "photos.tag:"),
+            (
+                MetadataViewKind::Object,
+                METADATA_OBJECTS_KEY,
+                "photos.object:",
+            ),
+            (MetadataViewKind::Pet, METADATA_PETS_KEY, "photos.pet:"),
         ];
         for root in Self::library_roots(doc) {
             for (kind, key, prefix) in kinds {
@@ -407,10 +420,15 @@ impl PhotosDoc {
             // create these maps below; old structured documents need the
             // compact index populated before a stateless exact resource
             // lookup can avoid the legacy whole-library fallback.
-            let metadata_index_missing =
-                [METADATA_FOLDERS_KEY, METADATA_PEOPLE_KEY, METADATA_TAGS_KEY]
-                    .into_iter()
-                    .any(|key| Self::map_at(doc, root, key).is_none());
+            let metadata_index_missing = [
+                METADATA_FOLDERS_KEY,
+                METADATA_PEOPLE_KEY,
+                METADATA_TAGS_KEY,
+                METADATA_OBJECTS_KEY,
+                METADATA_PETS_KEY,
+            ]
+            .into_iter()
+            .any(|key| Self::map_at(doc, root, key).is_none());
             if metadata_index_missing {
                 let library = Self::structured_library_at(doc, root).unwrap_or_default();
                 Self::sync_metadata_index(doc, root, &library);
@@ -439,12 +457,15 @@ impl PhotosDoc {
         let _ = Self::map_or_make(doc, &root, "photo_people");
         let _ = Self::map_or_make(doc, &root, "photo_tags");
         let _ = Self::map_or_make(doc, &root, "photo_captured_at");
+        let _ = Self::map_or_make(doc, &root, "photo_analysis");
         let _ = Self::map_or_make(doc, &root, "albums");
         let _ = Self::map_or_make(doc, &root, "removed_photos");
         let _ = Self::map_or_make(doc, &root, "removed_albums");
         let _ = Self::map_or_make(doc, &root, METADATA_FOLDERS_KEY);
         let _ = Self::map_or_make(doc, &root, METADATA_PEOPLE_KEY);
         let _ = Self::map_or_make(doc, &root, METADATA_TAGS_KEY);
+        let _ = Self::map_or_make(doc, &root, METADATA_OBJECTS_KEY);
+        let _ = Self::map_or_make(doc, &root, METADATA_PETS_KEY);
         let _ = Self::list_or_make(doc, &root, "photo_order");
         let _ = Self::list_or_make(doc, &root, "album_order");
         if !library.photos.is_empty() || !library.albums.is_empty() {
@@ -587,6 +608,9 @@ impl PhotosDoc {
                 if existing.captured_at.is_none() {
                     existing.captured_at = photo.captured_at;
                 }
+                if existing.analysis.is_none() {
+                    existing.analysis = photo.analysis;
+                }
             } else {
                 into.photos.push(photo);
             }
@@ -654,6 +678,9 @@ impl PhotosDoc {
             people: Self::string_list(doc, &row, "people"),
             tags: Self::string_list(doc, &row, "tags"),
             captured_at: Self::str_at(doc, &row, "captured_at"),
+            analysis: Self::conflicting_at::<ImageAnalysis>(doc, &row, "analysis")
+                .into_iter()
+                .next(),
         })
     }
 
@@ -702,6 +729,11 @@ impl PhotosDoc {
                     .into_iter()
                     .next()
                     .flatten()
+            }),
+            analysis: field("photo_analysis").and_then(|map| {
+                Self::conflicting_at::<ImageAnalysis>(doc, &map, id)
+                    .into_iter()
+                    .next()
             }),
         })
     }
@@ -796,6 +828,9 @@ impl PhotosDoc {
         let Some(photo_captured_at) = Self::map_or_make(doc, root, "photo_captured_at") else {
             return;
         };
+        let Some(photo_analysis) = Self::map_or_make(doc, root, "photo_analysis") else {
+            return;
+        };
         let Some(albums) = Self::map_or_make(doc, root, "albums") else {
             return;
         };
@@ -826,6 +861,7 @@ impl PhotosDoc {
                     &photo_people,
                     &photo_tags,
                     &photo_captured_at,
+                    &photo_analysis,
                     None,
                     photo,
                 );
@@ -860,6 +896,7 @@ impl PhotosDoc {
                 &photo_people,
                 &photo_tags,
                 &photo_captured_at,
+                &photo_analysis,
                 old,
                 photo,
             );
@@ -905,6 +942,8 @@ impl PhotosDoc {
         let mut folders = std::collections::BTreeMap::<String, usize>::new();
         let mut people = std::collections::BTreeMap::<String, usize>::new();
         let mut tags = std::collections::BTreeMap::<String, usize>::new();
+        let mut objects = std::collections::BTreeMap::<String, usize>::new();
+        let mut pets = std::collections::BTreeMap::<String, usize>::new();
         for photo in &library.photos {
             if let Some(folder) = &photo.folder {
                 *folders.entry(folder.clone()).or_default() += 1;
@@ -915,10 +954,20 @@ impl PhotosDoc {
             for tag in &photo.tags {
                 *tags.entry(tag.clone()).or_default() += 1;
             }
+            if let Some(analysis) = &photo.analysis {
+                for object in &analysis.objects {
+                    *objects.entry(object.clone()).or_default() += 1;
+                }
+                for pet in &analysis.pets {
+                    *pets.entry(pet.clone()).or_default() += 1;
+                }
+            }
         }
         Self::sync_metadata_kind(doc, root, METADATA_FOLDERS_KEY, "photos.folder:", folders);
         Self::sync_metadata_kind(doc, root, METADATA_PEOPLE_KEY, "photos.person:", people);
         Self::sync_metadata_kind(doc, root, METADATA_TAGS_KEY, "photos.tag:", tags);
+        Self::sync_metadata_kind(doc, root, METADATA_OBJECTS_KEY, "photos.object:", objects);
+        Self::sync_metadata_kind(doc, root, METADATA_PETS_KEY, "photos.pet:", pets);
     }
 
     fn sync_metadata_kind(
@@ -1010,6 +1059,7 @@ impl PhotosDoc {
         people: &ObjId,
         tags: &ObjId,
         captured: &ObjId,
+        analysis: &ObjId,
         old: Option<&LibraryPhoto>,
         photo: &LibraryPhoto,
     ) {
@@ -1034,6 +1084,9 @@ impl PhotosDoc {
             if photo.captured_at.is_some() {
                 Self::write_json_at(doc, captured, &photo.id, &photo.captured_at);
             }
+            if photo.analysis.is_some() {
+                Self::write_json_at(doc, analysis, &photo.id, &photo.analysis);
+            }
             return;
         }
         if old.is_none_or(|value| value.favorite != photo.favorite) {
@@ -1050,6 +1103,9 @@ impl PhotosDoc {
         }
         if old.and_then(|value| value.captured_at.as_ref()) != photo.captured_at.as_ref() {
             Self::write_json_at(doc, captured, &photo.id, &photo.captured_at);
+        }
+        if old.and_then(|value| value.analysis.as_ref()) != photo.analysis.as_ref() {
+            Self::write_json_at(doc, analysis, &photo.id, &photo.analysis);
         }
     }
 
