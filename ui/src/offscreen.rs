@@ -43,10 +43,11 @@ use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, Rendere
 static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
 
 /// A complex first frame can make Vello grow its bump reservation more than
-/// once before it produces pixels. Keep enough room for several growths and
-/// one final confirmation pass, while remaining strictly bounded for
-/// intentionally transparent scenes.
-const RESILIENT_RENDER_ATTEMPTS: usize = 8;
+/// once before it produces pixels. Two growths plus two clean submissions
+/// covers the observed atlas warm-up path. Keeping this bounded at four is
+/// important on software Vulkan: a full-size screenshot is otherwise able to
+/// monopolize a CPU core for minutes before it can publish anything.
+const RESILIENT_RENDER_ATTEMPTS: usize = 4;
 
 /// Decide whether a screenshot submission is safe to return. A non-empty
 /// scene must fit twice in succession: the first clean submission may still
@@ -2051,6 +2052,21 @@ impl OffscreenRenderer {
         self.render_resilient(scene, Color::TRANSPARENT)
     }
 
+    /// Encode a complete PNG before publishing it. Screenshot tools are often
+    /// interrupted by a new iteration or CI timeout; writing the final path
+    /// directly made those interruptions look like successful, corrupt PNGs.
+    fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("png header");
+            writer.write_image_data(rgba).expect("png write");
+        }
+        encoded
+    }
+
     /// Convenience: render `scene` and write the result to `path` as a
     /// PNG. Creates parent dirs if they don't exist.
     ///
@@ -2066,17 +2082,11 @@ impl OffscreenRenderer {
     )]
     pub fn render_png<P: AsRef<Path>>(&mut self, scene: &Scene, bg: Color, path: P) {
         let rgba = self.render_resilient(scene, bg);
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let file = std::fs::File::create(path).expect("create png file");
-        let mut w = std::io::BufWriter::new(file);
-        let mut encoder = png::Encoder::new(&mut w, self.width, self.height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("png header");
-        writer.write_image_data(&rgba).expect("png write");
+        atomic_file::write_creating_parent(
+            path.as_ref(),
+            &Self::encode_png(self.width, self.height, &rgba),
+        )
+        .expect("atomically publish png");
     }
 
     /// Sample the RGBA at `(x, y)` from a tight-packed buffer (4 *
@@ -2157,6 +2167,26 @@ mod tests {
 
         // Intentionally empty transparent scenes need no atlas warm-up.
         assert!(resilient_submission_accepted(true, false));
+    }
+
+    #[test]
+    fn png_publication_is_complete_and_decodable() {
+        let dir = tempfile::tempdir().expect("temporary screenshot directory");
+        let path = dir.path().join("frame.png");
+        let rgba = [0x12, 0x34, 0x56, 0xff];
+        atomic_file::write_creating_parent(&path, &OffscreenRenderer::encode_png(1, 1, &rgba))
+            .expect("publish png");
+
+        let file = std::fs::File::open(&path).expect("published png exists");
+        let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+            .read_info()
+            .expect("published png header is complete");
+        let mut decoded = vec![0; reader.output_buffer_size().expect("decoded output size")];
+        let info = reader
+            .next_frame(&mut decoded)
+            .expect("published png image is complete");
+        assert_eq!((info.width, info.height), (1, 1));
+        assert_eq!(&decoded[..info.buffer_size()], &rgba);
     }
 
     #[test]
