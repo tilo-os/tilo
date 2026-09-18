@@ -28,6 +28,7 @@ pub mod backdrop;
 pub mod chrome;
 pub mod composition;
 pub mod intents;
+pub mod session_commands;
 pub mod records;
 pub mod resolver;
 pub mod topbar;

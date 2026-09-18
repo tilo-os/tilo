@@ -3,7 +3,7 @@ use crate::desktop::{self, Admission};
 use automerge::{AutoCommit, ObjId};
 use qos_desktop::{
     composition::{DesktopSurface, ReconcileOutcome, SurfaceChrome},
-    intents::{DesktopIntent, LocalViewIntent, SessionIntent},
+    intents::{DesktopIntent, LocalViewIntent},
     resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest},
     *,
 };
@@ -43,7 +43,7 @@ pub(crate) struct DesktopHandle {
     pub records: Rc<RefCell<BTreeMap<(String, String), OwnedRecord>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     pub errors: Rc<RefCell<Vec<String>>>,
-    pub session_requests: Rc<RefCell<Vec<SessionIntent>>>,
+    pub session_requests: Rc<RefCell<Vec<(uuid::Uuid, qos_desktop::session_commands::BoundCommand)>>>,
     inbox: Rc<RefCell<Option<(Admission, ui::permissions::PermissionContext)>>>,
 }
 impl DesktopHandle {
@@ -191,6 +191,7 @@ impl LocalView {
     }
 }
 pub(crate) struct DesktopRoot {
+    source_heads: Vec<[u8; 32]>,
     surface: DesktopSurface,
     handle: DesktopHandle,
     resolver: ApplicationCatalogTileResolver<Contexts>,
@@ -281,6 +282,7 @@ impl DesktopRoot {
         });
         drop(tree);
         let mut root = Self {
+            source_heads: admission.source_heads,
             surface,
             handle: handle.clone(),
             resolver,
@@ -410,12 +412,19 @@ impl DesktopRoot {
         for intent in intents {
             match intent {
                 DesktopIntent::Local(intent) => Self::local(&mut tree, intent),
-                DesktopIntent::Session(intent) => {
-                    self.handle.session_requests.borrow_mut().push(intent)
-                }
+                DesktopIntent::Session(intent) => match qos_desktop::session_commands::bind_intent(&tree,
+                    qos_desktop::session_commands::CommandSource { room: self.resolver.host.room.clone(), heads: self.source_heads.clone() }, intent) {
+                    Ok(command) => {
+                        let mut queue = self.handle.session_requests.borrow_mut();
+                        if queue.len() < 32 { queue.push((uuid::Uuid::new_v4(), command)); }
+                        else { self.handle.errors.borrow_mut().push("desktop request queue is full".into()); }
+                    },
+                    Err(error) => self.handle.errors.borrow_mut().push(error),
+                },
             }
         }
         if let Some((admission, permissions)) = inbox {
+            self.source_heads = admission.source_heads;
             let local = LocalView::from_tree(&tree);
             *tree = admission.tree;
             local.apply(&mut tree);
@@ -464,6 +473,82 @@ impl DesktopRoot {
 }
 
 impl Widget for DesktopRoot {
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> { self.resources(doc) }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &["qos.desktop.request"] }
+    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        use qos_desktop::session_commands::*;
+        use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+        let tree = self.handle.tree.borrow();
+        let Some(workspace) = tree.active_workspace() else { return vec![]; };
+        let source = CommandSource { room: workspace.room.to_string(), heads: self.source_heads.clone() };
+        let mut actions = vec![];
+        let mut add = |id: String, label: String, command: DesktopCommand| {
+            if let Ok(action) = ActionSpec::operation(id, label, OperationKind::View, "qos.desktop.request", &BoundCommand { source: source.clone(), command }) { actions.push(action); }
+        };
+        let strip = tree.active_strip.get(&workspace.id).and_then(|id| workspace.strips.iter().find(|s| s.id == *id)).or_else(|| workspace.strips.first());
+        if let Some(strip) = strip {
+            let active_group = tree.active_group.get(&strip.id).and_then(|id| strip.window_groups.iter().find(|g| g.id == *id)).or_else(|| strip.window_groups.first());
+            for (app, label) in [("dev.qos.word-processor", "Writer"), ("dev.qos.notes", "Notes"), ("dev.qos.chat", "Chat"), ("dev.qos.calculator", "Calculator")] {
+                add(format!("open-{app}"), format!("Open {label}"), DesktopCommand::OpenTab { app: app.into(), placement: TabPlacement::NewGroup { strip: strip.id.0, after: active_group.map(|g| g.id) } });
+            }
+            if let Some(group) = active_group {
+                if let Some(tab) = group.tabs.iter().find(|t| t.id == group.active_tab) {
+                    let location = TabLocation { strip: strip.id.0, group: group.id, tab: tab.id };
+                    add("close-tab".into(), format!("Close {}", tab.title), DesktopCommand::CloseTab { location });
+                    let index = group.tabs.iter().position(|item| item.id == tab.id).unwrap();
+                    if index > 0 { add("tab-left".into(), format!("Move {} left", tab.title), DesktopCommand::ReorderTab { location, before: Some(group.tabs[index-1].id) }); }
+                    if index + 1 < group.tabs.len() { add("tab-right".into(), format!("Move {} right", tab.title), DesktopCommand::ReorderTab { location, before: group.tabs.get(index+2).map(|item| item.id) }); }
+                    let group_index = strip.window_groups.iter().position(|item| item.id == group.id).unwrap();
+                    if group_index > 0 { add("group-left".into(), "Move group left".into(), DesktopCommand::ReorderGroup { strip: strip.id.0, group: group.id, before: Some(strip.window_groups[group_index-1].id) }); }
+                    if group_index + 1 < strip.window_groups.len() { add("group-right".into(), "Move group right".into(), DesktopCommand::ReorderGroup { strip: strip.id.0, group: group.id, before: strip.window_groups.get(group_index+2).map(|item| item.id) }); }
+                    add("duplicate-tab".into(), format!("Duplicate {}", tab.title), DesktopCommand::DuplicateTab { location });
+                    if group.tabs.len() > 1 { add("split-tab".into(), format!("Split {} into a new group", tab.title), DesktopCommand::SplitTab { location, before: None }); }
+                    for destination in &workspace.strips {
+                        if destination.id != strip.id {
+                            add(format!("move-strip-{}", destination.id.0), format!("Move {} to strip {}", tab.title, destination.name), DesktopCommand::MoveTab { location, placement: TabPlacement::NewGroup { strip: destination.id.0, after: None } });
+                        }
+                        for (index, target) in destination.window_groups.iter().enumerate().filter(|(_, g)| g.id != group.id) {
+                            add(format!("move-group-{}", target.id), format!("Move {} to {} group {}", tab.title, destination.name, index + 1), DesktopCommand::MoveTab { location, placement: TabPlacement::InGroup { strip: destination.id.0, group: target.id, after: target.tabs.last().map(|t| t.id) } });
+                        }
+                    }
+                }
+            }
+        } else {
+            for (app, label) in [("dev.qos.word-processor", "Writer"), ("dev.qos.notes", "Notes"), ("dev.qos.chat", "Chat"), ("dev.qos.calculator", "Calculator")] {
+                add(format!("open-{app}"), format!("Open {label}"), DesktopCommand::OpenTab { app: app.into(), placement: TabPlacement::EmptyWorkspace });
+            }
+        }
+        for strip in &workspace.strips {
+            if strip.window_groups.is_empty() && workspace.strips.len() > 1 {
+                add(format!("remove-strip-{}", strip.id.0), format!("Remove empty strip {}", strip.name), DesktopCommand::RemoveStrip { strip: strip.id.0 });
+            }
+        }
+        drop(add);
+        for (id, label, strip) in std::iter::once(("new-strip".into(), "New strip".into(), None))
+            .chain(workspace.strips.iter().map(|strip| (format!("rename-strip-{}", strip.id.0), format!("Rename strip {}", strip.name), Some(strip.id.0)))) {
+            let source = source.clone();
+            actions.push(ActionSpec::typed_operation(id, label, "Name", OperationKind::View, "qos.desktop.request",
+                vec![ActionParam::required("name", ParamType::Text, "Name")], move |args| {
+                    let name = args.text("name").unwrap_or_default().to_string();
+                    EncodedAction::encode_operation("qos.desktop.request", &BoundCommand { source: source.clone(), command: strip.map_or_else(|| DesktopCommand::CreateStrip { name: name.clone() }, |strip| DesktopCommand::RenameStrip { strip, name: name.clone() }) }).expect("typed desktop command encodes")
+                }));
+        }
+        actions.push(ActionSpec::typed_operation("rename-workspace", "Rename workspace", "Name", OperationKind::View, "qos.desktop.request",
+            vec![ActionParam::required("name", ParamType::Text, "Workspace name")], move |args| EncodedAction::encode_operation("qos.desktop.request", &BoundCommand { source: source.clone(), command: DesktopCommand::RenameWorkspace { name: args.text("name").unwrap_or_default().into() } }).expect("typed desktop command encodes")));
+        let mut resource = Resource::new("desktop:requests", "desktop", "Desktop");
+        for action in actions { resource = resource.with_action(action); }
+        vec![resource]
+    }
+    fn invoke_resource_operation_v2(&mut self, kind: qos_actions::OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<Option<qos_actions::ActionOutput>, String> {
+        if kind != qos_actions::OperationKind::View || type_id != "qos.desktop.request" { return Ok(None); }
+        let command: qos_desktop::session_commands::BoundCommand = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let mut queue = self.handle.session_requests.borrow_mut();
+        if queue.len() >= 32 { self.handle.errors.borrow_mut().push("desktop request queue is full".into()); return Err("desktop request queue is full".into()); }
+        queue.push((uuid::Uuid::new_v4(), command));
+        self.dirty = true;
+        (self.notify)();
+        Ok(Some(Default::default()))
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -619,6 +704,7 @@ mod tests {
             vec![],
         );
         let admission = Admission {
+                source_heads: vec![[7; 32]],
             tree,
             routes,
             required: vec![],
@@ -643,6 +729,28 @@ mod tests {
             handle.errors.borrow()
         );
         (root, handle, cache)
+    }
+    #[test]
+    fn real_caller_palette_enqueues_bound_command_without_mutating_canonical_tree() {
+        let (root, handle, _) = fixture();
+        let before = serde_json::to_string(&*handle.tree.borrow()).unwrap();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(), Box::new(root), (1024, 768), ui::Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        frame.set_platform_conventions(ui::platform::PlatformConventions::new(ui::platform::Platform::Linux));
+        frame.set_modifiers(&["ctrl".into()]);
+        frame.key("k");
+        frame.set_modifiers(&[]);
+        frame.type_text("Open Notes");
+        frame.key("Enter");
+        let requests = handle.session_requests.borrow();
+        assert_eq!(requests.len(), 1, "actual palette must dispatch a desktop request");
+        assert!(!requests[0].0.is_nil());
+        assert_eq!(requests[0].1.source.heads, vec![[7; 32]]);
+        assert!(matches!(&requests[0].1.command, qos_desktop::session_commands::DesktopCommand::OpenTab { app, .. } if app == "dev.qos.notes"));
+        assert!(frame.take_caller_operation().is_none(), "local View queue owns the opaque command");
+        assert_eq!(serde_json::to_string(&*handle.tree.borrow()).unwrap(), before);
     }
     fn browser_semantic_route(frame: &ui::headless::FrameHarness, label: &str) -> (String, String) {
         fn find(node: &ui::headless::InspectionNode, label: &str) -> Option<(String, String)> {
@@ -677,6 +785,7 @@ mod tests {
         topology.active_group.insert(StripId(2), 3);
         *handle.inbox.borrow_mut() = Some((
             Admission {
+                source_heads: vec![[7; 32]],
                 tree: topology,
                 routes: root.resolver.host.routes.clone(),
                 required: vec![],
@@ -752,6 +861,7 @@ mod tests {
             topology.active_group.insert(StripId(2), 3);
             *handle.inbox.borrow_mut() = Some((
                 Admission {
+                source_heads: vec![[7; 32]],
                     tree: topology,
                     routes: root.resolver.host.routes.clone(),
                     required: vec![],
@@ -954,6 +1064,7 @@ mod tests {
         topology.active_group.insert(StripId(2), 4);
         *handle.inbox.borrow_mut() = Some((
             Admission {
+                source_heads: vec![[7; 32]],
                 tree: topology,
                 routes: root.resolver.host.routes.clone(),
                 required: vec![],
@@ -1145,6 +1256,7 @@ mod tests {
         });
         *handle.inbox.borrow_mut() = Some((
             Admission {
+                source_heads: vec![[7; 32]],
                 tree: refreshed,
                 routes: unsafe { (&*root_ptr).resolver.host.routes.clone() },
                 required: vec![],
@@ -1209,6 +1321,7 @@ mod tests {
         });
         *handle.inbox.borrow_mut() = Some((
             Admission {
+                source_heads: vec![[7; 32]],
                 tree: topology,
                 routes: root.resolver.host.routes.clone(),
                 required: vec![],
@@ -1439,6 +1552,28 @@ mod tests {
         }
     }
     #[test]
+    fn admitted_tab_close_retains_unflushed_component_owner_until_retry() {
+        let (root, handle, cache) = fixture();
+        let mut topology = handle.tree.borrow().clone();
+        let routes = root.resolver.host.routes.clone();
+        let mut frame = ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(root), (1280, 720));
+        frame.perform_named("word_processor", &ui::a11y::Action::Focus).unwrap();
+        frame.type_text("Unflushed close custody");
+        let writer = handle.records.borrow().values().find(|r|r.app == "dev.qos.word-processor").unwrap().clone();
+        topology.workspaces[0].strips[0].window_groups[0].tabs.remove(0);
+        topology.workspaces[0].strips[0].window_groups[0].active_tab = (5 << 48) | 11;
+        *handle.inbox.borrow_mut() = Some((Admission { source_heads: vec![[8;32]], tree: topology, routes, required: vec![], missing: vec![], unsupported: vec![], pending: 0 }, handle.permissions.borrow().clone()));
+        frame.poll_frame().unwrap();
+        let mut reports = frame.take_component_close_reports();
+        assert!(!reports.is_empty(), "admitted close transfers real component custody");
+        for write in cache.pending_writes() { cache.acknowledge(&write, Err("disk denied".into())).unwrap(); }
+        assert!(reports.iter_mut().any(|r|r.retry_record().is_err()), "failed durable flush remains retryable");
+        assert!(writer.store.read(&writer.checkout.id, |doc|serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()).unwrap().contains("Unflushed close custody"));
+        for write in cache.pending_writes() { cache.acknowledge(&write, Ok(())).unwrap(); }
+        for report in &mut reports { report.retry_record().unwrap(); }
+        assert!(reports.iter().all(|r|r.record_retry.is_none()));
+    }
+    #[test]
     fn admitted_same_workspace_refresh_keeps_pending_selection_and_checked_owner() {
         let (mut root, handle, _) = fixture();
         let before = match root.surface.row_mut(StripId(2)).unwrap().groups[0]
@@ -1456,6 +1591,7 @@ mod tests {
             window_groups: vec![],
         });
         let admission = Admission {
+                source_heads: vec![[7; 32]],
             tree: refreshed,
             routes: root.resolver.host.routes.clone(),
             required: vec![],

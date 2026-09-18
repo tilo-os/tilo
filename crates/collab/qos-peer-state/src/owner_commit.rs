@@ -23,11 +23,19 @@ pub enum CommitOperation {
         invocation: uuid::Uuid,
         redacted: Vec<u8>,
     },
+    /// Host-local semantic capability. The broker supplies the certificate and
+    /// invocation from its authenticated durable admission, never from arguments.
+    DesktopCommand {
+        invocation: uuid::Uuid,
+        caller: qos_user_identity::DeviceCert,
+        command: crate::desktop_command::BoundCommand,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitTarget {
     Document { app: String, record: String },
     EffectReceipt { invocation: uuid::Uuid },
+    DesktopCommand { invocation: uuid::Uuid },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {
@@ -53,6 +61,16 @@ impl OwnerCommitRequest {
             return Err("owner commit requires the exact canonical room UUID".into());
         }
         let (target, bytes) = match &self.operation {
+            CommitOperation::DesktopCommand { invocation, caller, command } => {
+                if invocation.is_nil() || command.source.room != self.room
+                    || command.source.heads.is_empty() || command.source.heads.len() > 128
+                    || caller.capabilities.can_act_as_host
+                {
+                    return Err("invalid desktop owner command binding".into());
+                }
+                (CommitTarget::DesktopCommand { invocation: *invocation },
+                 postcard::to_allocvec(&(invocation, caller, command)).map_err(|e| e.to_string())?)
+            }
             CommitOperation::Document {
                 app,
                 record,

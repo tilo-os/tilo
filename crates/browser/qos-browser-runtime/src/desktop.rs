@@ -21,6 +21,7 @@ pub(crate) struct Requirement {
     pub record_id: String,
 }
 pub(crate) struct Admission {
+    pub source_heads: Vec<[u8; 32]>,
     pub tree: WorkspaceTree,
     pub routes: BTreeMap<u64, String>,
     pub required: Vec<Requirement>,
@@ -114,6 +115,7 @@ pub(crate) fn admission(state: &StatePeer) -> Result<Admission, String> {
         }
     }
     Ok(Admission {
+        source_heads: doc.clone().get_heads().into_iter().map(|head| head.0).collect(),
         tree,
         routes,
         required,

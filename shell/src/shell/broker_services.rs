@@ -164,6 +164,7 @@ pub fn native_services(
     network: Option<Arc<super::network::ShellNetwork>>,
 ) -> HostServices {
     HostServices {
+        desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates)),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>

@@ -23,3 +23,4 @@ pub mod durability;
 pub mod topology;
 
 pub mod owner_commit;
+pub mod desktop_command;

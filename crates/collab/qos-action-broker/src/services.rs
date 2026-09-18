@@ -31,6 +31,14 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
+pub type DesktopCommandFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<qos_peer_state::owner_commit::OwnerCommitReceipt, qos_peer_state::desktop_command::DesktopCommandError>> + Send>>;
+/// An explicitly installed native semantic owner, never a compositor session.
+/// The broker constructs requests from authenticated durable invocations.
+pub trait DesktopCommands: Send + Sync {
+    fn room(&self) -> &str;
+    fn execute(&self, request: qos_peer_state::owner_commit::OwnerCommitRequest) -> DesktopCommandFuture;
+}
+
 #[derive(Clone)]
 pub struct LaunchableApplication {
     pub package_id: String,
@@ -63,6 +71,7 @@ pub trait WorkspaceControlServices: Send + Sync {
 }
 #[derive(Clone, Default)]
 pub struct HostServices {
+    pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,

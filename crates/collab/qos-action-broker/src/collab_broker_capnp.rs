@@ -524,6 +524,8 @@ impl PendingInvocation {
 
 #[path = "peer_action_broker.rs"]
 mod peer_action_broker;
+#[path = "desktop_commands.rs"]
+mod desktop_commands;
 
 impl CapnpBrokerState {
     pub(crate) fn invocation_host(&self) -> Result<uuid::Uuid, String> {
@@ -2807,6 +2809,9 @@ impl CapnpBrokerState {
         durable: Option<(&VerifiedActionCaller, &CallerInvocation)>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
+        if offered.0.app_id == qos_peer_state::desktop_command::APP_ID
+            && self.pending_invocations.lock().map_err(|_| "invocation registry unavailable")?.values().filter(|pending| pending.peer_id == peer_id).count() >= 32
+        { return Err("desktop invocation capacity exhausted".into()); }
         let sender = self
             .invocation_subscribers
             .lock()
@@ -5130,190 +5135,15 @@ impl channel_handle::Server for CapnpChannelHandle {
         reason = "the RPC validates the complete invocation lifecycle state machine"
     )]
     fn update_invocation(
-        self: Rc<Self>,
-        params: channel_handle::UpdateInvocationParams,
+        self: Rc<Self>, params: channel_handle::UpdateInvocationParams,
         _results: channel_handle::UpdateInvocationResults,
     ) -> Promise<(), capnp::Error> {
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        let identity = self.verified_identity.clone();
         Promise::from_future(async move {
-            let _owner_order = if state.durable_owner_required {
-                Some(state.owner_commit_order.lock().await)
-            } else {
-                None
-            };
-            if state.durable_owner_required {
-                state.revalidate_admission(&route, &identity)?;
-            }
             let request = params.get()?;
-            let id = request.get_id();
-            let json = request.get_update_json()?.to_str()?;
-            let update: qos_actions::InvocationUpdate =
-                serde_json::from_str(json).map_err(|error| {
-                    capnp::Error::failed(format!("invalid invocation update: {error}"))
-                })?;
-            let mut registry = state
-                .pending_invocations
-                .lock()
-                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
-            let pending = registry
-                .get_mut(&id)
-                .filter(|pending| pending.peer_id == peer_id)
-                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            if update.invocation() != pending.update.invocation() {
-                return Err(capnp::Error::failed(
-                    "invocation update identity mismatch".into(),
-                ));
-            }
-            let mut next_sequence = pending.last_sequence;
-            if matches!(&update, qos_actions::InvocationUpdate::Accepted { .. }) {
-                return Err(capnp::Error::failed(
-                    "invocation acceptance is owned by the broker".into(),
-                ));
-            }
-            if let qos_actions::InvocationUpdate::Progress {
-                sequence,
-                phase,
-                completed,
-                total,
-                ..
-            } = &update
-            {
-                if matches!(pending.execution, qos_actions::ExecutionMode::Immediate) {
-                    return Err(capnp::Error::failed(
-                        "immediate action reported background progress".into(),
-                    ));
-                }
-                if *sequence <= pending.last_sequence {
-                    return Err(capnp::Error::failed(
-                        "invocation progress must be monotonic".into(),
-                    ));
-                }
-                if phase.trim().is_empty() {
-                    return Err(capnp::Error::failed(
-                        "invocation progress phase must be non-empty".into(),
-                    ));
-                }
-                if completed
-                    .zip(*total)
-                    .is_some_and(|(completed, total)| completed > total)
-                {
-                    return Err(capnp::Error::failed(
-                        "invocation progress cannot exceed its total".into(),
-                    ));
-                }
-                next_sequence = *sequence;
-            }
-            if let qos_actions::InvocationUpdate::Item {
-                sequence, value, ..
-            } = &update
-            {
-                let qos_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution
-                else {
-                    return Err(capnp::Error::failed(
-                        "non-streaming action reported a streamed item".into(),
-                    ));
-                };
-                if *sequence <= pending.last_sequence {
-                    return Err(capnp::Error::failed(
-                        "invocation stream sequence must be monotonic".into(),
-                    ));
-                }
-                qos_actions::validate_json_schema(value, item_schema).map_err(|error| {
-                    capnp::Error::failed(format!(
-                        "streamed item violated its published contract: {error}"
-                    ))
-                })?;
-                next_sequence = *sequence;
-            }
-            if let qos_actions::InvocationUpdate::Succeeded { output, .. } = &update {
-                pending.result.validate(output).map_err(|error| {
-                    capnp::Error::failed(format!(
-                        "invocation result violated its published contract: {error}"
-                    ))
-                })?;
-            }
-            if let qos_actions::InvocationUpdate::Failed { error, .. } = &update {
-                if error.code.trim().is_empty() || error.message.trim().is_empty() {
-                    return Err(capnp::Error::failed(
-                        "invocation failure requires a code and message".into(),
-                    ));
-                }
-                if error.retryable && !pending.retryable_on_disconnect {
-                    return Err(capnp::Error::failed(
-                        "at-most-once action cannot advertise a retryable failure".into(),
-                    ));
-                }
-            }
-            if matches!(&update, qos_actions::InvocationUpdate::Cancelled { .. })
-                && !pending.cancellable
-            {
-                return Err(capnp::Error::failed(
-                    "non-cancellable action reported cancellation".into(),
-                ));
-            }
-            let staged = pending.clone();
-            drop(registry);
-            state
-                .commit_effect_before_terminal(&staged, &update)
-                .await?;
-            if state.durable_owner_required {
-                state.revalidate_admission(&route, &identity)?;
-            }
-            let mut registry = state
-                .pending_invocations
-                .lock()
-                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
-            let pending = registry
-                .get_mut(&id)
-                .filter(|pending| pending.peer_id == peer_id && pending.update == staged.update)
-                .ok_or_else(|| {
-                    capnp::Error::failed(
-                        "invocation changed while committing; outcome unknown".into(),
-                    )
-                })?;
-            state
-                .persist_invocation(pending, update.clone(), false)
-                .map_err(capnp::Error::failed)?;
-            pending.last_activity = std::time::Instant::now();
-            pending.last_sequence = next_sequence;
-            pending.update = update.clone();
-            if update.is_terminal() {
-                let completion = match &update {
-                    qos_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
-                        code: String::new(),
-                        message: String::new(),
-                    },
-                    qos_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
-                        code: error.code.clone(),
-                        message: error.message.clone(),
-                    },
-                    qos_actions::InvocationUpdate::Cancelled { message, .. } => {
-                        InvocationCompletion {
-                            code: "action_cancelled".into(),
-                            message: message.clone().unwrap_or_default(),
-                        }
-                    }
-                    _ => {
-                        return Err(capnp::Error::failed(
-                            "nonterminal invocation reached terminal handling".into(),
-                        ));
-                    }
-                };
-                let pending = registry
-                    .remove(&id)
-                    .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-                drop(registry);
-                state.record_completion(id, pending.completion_owner(), update.clone());
-                if let Ok(mut requests) = state.cancellation_requests.lock() {
-                    requests.remove(&id);
-                }
-                let _ = pending.tx.send(completion);
-                state.record_effect_receipt(&pending, &update);
-            }
-            Ok(())
+            let update = serde_json::from_str(request.get_update_json()?.to_str()?)
+                .map_err(|error| capnp::Error::failed(format!("invalid invocation update: {error}")))?;
+            self.state.apply_invocation_update(self.peer_id, request.get_id(), update,
+                Some((self.route(), self.verified_identity.clone()))).await
         })
     }
 
@@ -6921,6 +6751,10 @@ pub(super) fn spawn_configured(
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
                 let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+                if let Err(error) = state.start_desktop_commands() {
+                    if let Ok(mut failure) = state.owner_commit_failure.lock() { failure.get_or_insert(error); }
+                    return;
+                }
                 state.start_peer_action_bridge(Rc::clone(&directories));
                 let listener = match tokio::net::UnixListener::from_std(std_listener) {
                     Ok(l) => l,
@@ -9758,3 +9592,172 @@ pub mod tests {
 
 #[allow(unused_imports)]
 use crate::policy::WorkspacePolicy as _;
+
+impl CapnpBrokerState {
+    async fn apply_invocation_update(
+        self: &Arc<Self>, peer_id: u64, id: u64, update: qos_actions::InvocationUpdate,
+        identity: Option<(CrdtRoute, AdmittedJoinIdentity)>,
+    ) -> Result<(), capnp::Error> {
+        let state = self;
+        let _owner_order = if state.durable_owner_required { Some(state.owner_commit_order.lock().await) } else { None };
+        if state.durable_owner_required { if let Some((route, identity)) = &identity { state.revalidate_admission(route, identity)?; } }
+            let mut registry = state
+                .pending_invocations
+                .lock()
+                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+            let pending = registry
+                .get_mut(&id)
+                .filter(|pending| pending.peer_id == peer_id)
+                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+            if update.invocation() != pending.update.invocation() {
+                return Err(capnp::Error::failed(
+                    "invocation update identity mismatch".into(),
+                ));
+            }
+            let mut next_sequence = pending.last_sequence;
+            if matches!(&update, qos_actions::InvocationUpdate::Accepted { .. }) {
+                return Err(capnp::Error::failed(
+                    "invocation acceptance is owned by the broker".into(),
+                ));
+            }
+            if let qos_actions::InvocationUpdate::Progress {
+                sequence,
+                phase,
+                completed,
+                total,
+                ..
+            } = &update
+            {
+                if matches!(pending.execution, qos_actions::ExecutionMode::Immediate) {
+                    return Err(capnp::Error::failed(
+                        "immediate action reported background progress".into(),
+                    ));
+                }
+                if *sequence <= pending.last_sequence {
+                    return Err(capnp::Error::failed(
+                        "invocation progress must be monotonic".into(),
+                    ));
+                }
+                if phase.trim().is_empty() {
+                    return Err(capnp::Error::failed(
+                        "invocation progress phase must be non-empty".into(),
+                    ));
+                }
+                if completed
+                    .zip(*total)
+                    .is_some_and(|(completed, total)| completed > total)
+                {
+                    return Err(capnp::Error::failed(
+                        "invocation progress cannot exceed its total".into(),
+                    ));
+                }
+                next_sequence = *sequence;
+            }
+            if let qos_actions::InvocationUpdate::Item {
+                sequence, value, ..
+            } = &update
+            {
+                let qos_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution
+                else {
+                    return Err(capnp::Error::failed(
+                        "non-streaming action reported a streamed item".into(),
+                    ));
+                };
+                if *sequence <= pending.last_sequence {
+                    return Err(capnp::Error::failed(
+                        "invocation stream sequence must be monotonic".into(),
+                    ));
+                }
+                qos_actions::validate_json_schema(value, item_schema).map_err(|error| {
+                    capnp::Error::failed(format!(
+                        "streamed item violated its published contract: {error}"
+                    ))
+                })?;
+                next_sequence = *sequence;
+            }
+            if let qos_actions::InvocationUpdate::Succeeded { output, .. } = &update {
+                pending.result.validate(output).map_err(|error| {
+                    capnp::Error::failed(format!(
+                        "invocation result violated its published contract: {error}"
+                    ))
+                })?;
+            }
+            if let qos_actions::InvocationUpdate::Failed { error, .. } = &update {
+                if error.code.trim().is_empty() || error.message.trim().is_empty() {
+                    return Err(capnp::Error::failed(
+                        "invocation failure requires a code and message".into(),
+                    ));
+                }
+                if error.retryable && !pending.retryable_on_disconnect {
+                    return Err(capnp::Error::failed(
+                        "at-most-once action cannot advertise a retryable failure".into(),
+                    ));
+                }
+            }
+            if matches!(&update, qos_actions::InvocationUpdate::Cancelled { .. })
+                && !pending.cancellable
+            {
+                return Err(capnp::Error::failed(
+                    "non-cancellable action reported cancellation".into(),
+                ));
+            }
+            let staged = pending.clone();
+            drop(registry);
+            state
+                .commit_effect_before_terminal(&staged, &update)
+                .await?;
+            if state.durable_owner_required { if let Some((route, identity)) = &identity { state.revalidate_admission(route, identity)?; } }
+            let mut registry = state
+                .pending_invocations
+                .lock()
+                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+            let pending = registry
+                .get_mut(&id)
+                .filter(|pending| pending.peer_id == peer_id && pending.update == staged.update)
+                .ok_or_else(|| {
+                    capnp::Error::failed(
+                        "invocation changed while committing; outcome unknown".into(),
+                    )
+                })?;
+            state
+                .persist_invocation(pending, update.clone(), false)
+                .map_err(capnp::Error::failed)?;
+            pending.last_activity = std::time::Instant::now();
+            pending.last_sequence = next_sequence;
+            pending.update = update.clone();
+            if update.is_terminal() {
+                let completion = match &update {
+                    qos_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
+                        code: String::new(),
+                        message: String::new(),
+                    },
+                    qos_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
+                        code: error.code.clone(),
+                        message: error.message.clone(),
+                    },
+                    qos_actions::InvocationUpdate::Cancelled { message, .. } => {
+                        InvocationCompletion {
+                            code: "action_cancelled".into(),
+                            message: message.clone().unwrap_or_default(),
+                        }
+                    }
+                    _ => {
+                        return Err(capnp::Error::failed(
+                            "nonterminal invocation reached terminal handling".into(),
+                        ));
+                    }
+                };
+                let pending = registry
+                    .remove(&id)
+                    .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+                drop(registry);
+                state.record_completion(id, pending.completion_owner(), update.clone());
+                if let Ok(mut requests) = state.cancellation_requests.lock() {
+                    requests.remove(&id);
+                }
+                let _ = pending.tx.send(completion);
+                state.record_effect_receipt(&pending, &update);
+            }
+            Ok(())
+    }
+}

@@ -11,12 +11,20 @@ pub(super) struct CallerPalette {
 }
 
 impl FrameHarness {
+    fn caller_resources(&self) -> Vec<qos_actions::Resource> {
+        let mut resources = self.caller_palette.resources.clone();
+        resources.extend(self.root.caller_view_resources(&self.state.doc).into_iter().filter(|resource| {
+            resource.actions.iter().all(|action| action.kind == qos_actions::OperationKind::View)
+        }));
+        resources
+    }
     /// Replace the caller's currently authenticated action projection. Resource
     /// addresses must include immutable host/route/catalogue identity.
     pub fn set_caller_actions(&mut self, resources: Vec<qos_actions::Resource>) {
         self.caller_palette.resources = resources;
+        let resources = self.caller_resources();
         if let Some(palette) = &mut self.caller_palette.palette {
-            palette.refresh_visible_resources(&self.caller_palette.resources);
+            palette.refresh_visible_resources(&resources);
         }
         self.relayout();
     }
@@ -40,7 +48,7 @@ impl FrameHarness {
             {
                 let mut palette =
                     ActionPalette::with_host_text(self.text.font_system.locale().to_owned());
-                palette.load_open_resources(&self.caller_palette.resources);
+                palette.load_open_resources(&self.caller_resources());
                 palette.open();
                 self.caller_palette.palette = Some(palette);
                 self.relayout();
@@ -74,19 +82,29 @@ impl FrameHarness {
     }
 
     pub(super) fn finish_caller_palette(&mut self) {
+        let local = self.root.caller_view_resources(&self.state.doc);
+        let resources = self.caller_resources();
+        let mut local_pending = None;
         if let Some(palette) = &mut self.caller_palette.palette {
             if let Some(pending) = palette.take_operation() {
                 // Validate again after confirmation and before handing intent to
                 // the host. Revoked/replaced addresses never execute locally.
                 if pending.has_valid_input()
-                    && qos_actions::door::resolve(&self.caller_palette.resources, &pending.address)
+                    && qos_actions::door::resolve(&resources, &pending.address)
                         .is_some()
                 {
-                    self.caller_palette.pending = Some(pending);
+                    if pending.kind == qos_actions::OperationKind::View && qos_actions::door::resolve(&local, &pending.address).is_some() {
+                        local_pending = Some(pending);
+                    } else { self.caller_palette.pending = Some(pending); }
                 }
             }
             if !palette.is_open() {
                 self.caller_palette.palette = None;
+            }
+        }
+        if let Some(pending) = local_pending {
+            if let Err(error) = self.root.invoke_resource_operation_v2(pending.kind, &pending.encoded.type_id, &pending.encoded.payload, &self.state.doc, &self.state.root) {
+                tracing::warn!(%error, "caller local request refused");
             }
         }
     }

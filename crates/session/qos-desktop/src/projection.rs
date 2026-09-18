@@ -99,6 +99,16 @@ impl RoomProjection {
         local_salt: u16,
         share_floor: Option<u64>,
     ) {
+        Self::project_owned_contents_with_empty(doc, strips, local_salt, share_floor, false);
+    }
+
+    /// Explicit admitted strip lifecycle retains named empty destinations.
+    /// Ordinary native window projection keeps its existing empty-row policy.
+    pub fn project_owned_command_contents(doc: &mut AutoCommit, strips: &[Strip], local_salt: u16) {
+        Self::project_owned_contents_with_empty(doc, strips, local_salt, None, true);
+    }
+
+    fn project_owned_contents_with_empty(doc: &mut AutoCommit, strips: &[Strip], local_salt: u16, share_floor: Option<u64>, retain_empty: bool) {
         use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
         use std::collections::HashSet;
 
@@ -125,9 +135,13 @@ impl RoomProjection {
 
         let mut live_strips: HashSet<String> = HashSet::new();
         for (si, strip) in strips.iter().enumerate() {
-            // An empty strip holds no state; an empty row arriving on
-            // someone else's desktop is noise, not news.
-            if strip.window_groups.is_empty() {
+            // Unmarked empty native rows keep their historical local-only
+            // policy. An admitted explicit strip has durable lifecycle state:
+            // later ordinary projections preserve it until the strip is removed.
+            let retained = doc.get(&contents_id, Self::contents_key(strip.id.raw())).ok().flatten()
+                .and_then(|(_, entry)| doc.get(&entry, "retained_empty_v1").ok().flatten())
+                .and_then(|(value, _)| value.to_u64()) == Some(1);
+            if strip.window_groups.is_empty() && !retain_empty && !retained {
                 continue;
             }
             let owns_strip = mine(strip.id.raw());
@@ -154,6 +168,7 @@ impl RoomProjection {
             };
             if owns_strip {
                 live_strips.insert(skey.clone());
+                if retain_empty { put_uint_if_changed(doc, &strip_entry, "retained_empty_v1", 1); }
                 put_str_if_changed(doc, &strip_entry, "name", &strip.name);
                 put_uint_if_changed(doc, &strip_entry, "order", si as u64);
             }

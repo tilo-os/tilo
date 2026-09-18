@@ -7,6 +7,7 @@ export function bindActionPalette({actions,publish,report=()=>{}}){
     if(closed)return;
     const capability=snapshot.capability, rows=[], next=new Map();
     if(capability.state==='ready')for(const surface of capability.catalogue.surfaces){
+      if(surface.app_id==='dev.qos.desktop')continue; // Shared desktop widgets bind semantic arguments.
       if(surface.live===false||surface.cluster_id!==capability.binding.room)continue;
       for(const action of surface.actions??[]){
         const route={app_peer:String(surface.peer_id),app_id:surface.app_id,record_id:surface.record_id,resource:action.resource,action:action.action,revision:action.revision??null};

@@ -416,7 +416,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             // retained session can publish before any completion is exposed.
             pending = commits.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
-                let result = pending.apply(&mut owner);
+                let result = if pending.is_desktop() { pending.apply_desktop(&mut owner) } else { pending.apply(&mut owner).map(|_| ()) };
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
                 let published = session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("owner committed while disconnected; publication pending")).and_then(|s| publish(&owner, s));
                 if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }

@@ -1,4 +1,5 @@
 import {bindActionPalette} from './action-palette-bridge.mjs';
+import {bindDesktopCommands} from './desktop-command-bridge.mjs';
 import {commitPeerBatches} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
@@ -24,15 +25,21 @@ export async function mountDesktop(target,options={}) {
   const editor=document.createElement('textarea');editor.setAttribute('aria-label','qOS focused text editor');editor.tabIndex=-1;editor.autocomplete='off';editor.autocapitalize='off';editor.spellcheck=false;
   editor.style.cssText='position:absolute;opacity:0.01;width:2px;height:20px;padding:0;border:0;resize:none;pointer-events:none';
   const accessibility=document.createElement('div');accessibility.setAttribute('aria-label','qOS application');accessibility.style.cssText='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);';
-  surface.append(canvas,editor,accessibility);target.append(surface);
+  const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
+  commandStatus.style.cssText='display:none;position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
+  surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
   let id,storage,closed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
-  const report=data=>options.onStatus?.(data);
+  const report=data=>{
+    if(data.desktopCommand){const row=data.desktopCommand;commandStatus.style.display='block';commandStatus.textContent=row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`;}
+    if(data.desktopErrors?.length){commandStatus.style.display='block';commandStatus.textContent=`Desktop request unavailable: ${data.desktopErrors.at(-1)}`;}
+    options.onStatus?.(data);
+  };
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
   delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;
-  let semanticKeys,actionPalette;
+  let semanticKeys,actionPalette,desktopCommands;
   const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
     keydown:(...args)=>active()&&semanticKeys?.keydown(...args),
     keyup:(...args)=>active()&&semanticKeys?.keyup(...args),
@@ -42,6 +49,7 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
   function update(raw){
     if(closed||!registry.current(token))return;
+    if(desktopCommands)void desktopCommands.pump();
     if(actionPalette){
       const request=runtime.take_caller_action(id);
       if(request)void actionPalette.submit(JSON.parse(request)).catch(error=>{if(active())report({actionError:String(error)});});
@@ -111,7 +119,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      actionPalette?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      actionPalette?.close();desktopCommands?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
       surface.remove();
     },
@@ -187,6 +195,7 @@ export async function mountDesktop(target,options={}) {
     await presented;
     if(!active())throw Error('mount disposed');
     if(options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
+    if(options.actionsV1)desktopCommands=bindDesktopCommands({actions:options.actionsV1,peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report});
     return {retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,editor,semantics:accessibility,
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),

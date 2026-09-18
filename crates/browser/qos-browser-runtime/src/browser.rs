@@ -633,7 +633,7 @@ impl Mount {
         let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
         emit(
             &self.status,
-            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("pending-authorized-action-integration")}else{None},"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
+            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
         );
     }
 }
@@ -1087,5 +1087,33 @@ pub fn take_caller_action(id: u64) -> Result<Option<String>, JsValue> {
         mount.frame.take_caller_operation().map(|pending| {
             crate::action_palette::request(pending).map(|value| value.to_string()).map_err(error)
         }).transpose()
+    })
+}
+
+/// IDs stay inside an opaque JSON string until native Rust decodes the command.
+#[wasm_bindgen]
+pub fn pending_desktop_command(id: u64) -> Result<Option<String>, JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let mount = mounts.get(&id).ok_or_else(|| error("desktop disposed"))?;
+        if mount.peer_suspended { return Ok(None); }
+        mount.desktop.as_ref().and_then(|desktop| desktop.session_requests.borrow().first().cloned())
+            .map(|(invocation, command)| serde_json::to_string(&serde_json::json!({
+                "invocation": invocation, "command": serde_json::to_string(&command).map_err(error)?,
+            })).map_err(error)).transpose()
+    })
+}
+
+#[wasm_bindgen]
+pub fn acknowledge_desktop_command(id: u64, invocation: &str) -> Result<(), JsValue> {
+    let invocation: uuid::Uuid = invocation.parse().map_err(error)?;
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount = mounts.get_mut(&id).ok_or_else(|| error("desktop disposed"))?;
+        if let Some(desktop) = &mount.desktop {
+            let mut pending = desktop.session_requests.borrow_mut();
+            if pending.first().is_some_and(|(id, _)| *id == invocation) { pending.remove(0); }
+        }
+        mount.pending = true;
+        mount.window.request_redraw();
+        Ok(())
     })
 }

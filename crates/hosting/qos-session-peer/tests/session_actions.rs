@@ -325,6 +325,7 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         4,
         "actual checked Writer insert-table must create exactly 2x2 cells"
     );
+    let (desktop_invocation, desktop_operation, desktop_records) = desktop_open_through_broker(&client, &mut remote, room, &cert, &native, broker_host, &catalogue).await;
     owner_and_room_isolation(
         origin,
         &cap,
@@ -503,6 +504,11 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         4,
         "restarting ordinary executable repeated the effect"
     );
+    invoke_and_observe(&client, &mut remote, room, &cert, &native, broker_host,
+        desktop_invocation, ActionMessage::Status { invocation: desktop_invocation }).await;
+    invoke_and_observe(&client, &mut remote, room, &cert, &native, broker_host,
+        desktop_invocation, desktop_operation).await;
+    assert_eq!(remote.rows().len(), desktop_records, "restart duplicate desktop invocation cannot create a record");
     let refresh = uuid::Uuid::new_v4();
     client
         .send_action(EnvelopeV2::Directed(DirectedAction {
@@ -1060,4 +1066,37 @@ async fn owner_and_room_isolation(
     .await
     .unwrap();
     second.close().await;
+}
+
+async fn desktop_open_through_broker(
+    client: &qos_relay::RelayClient, remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid, cert: &qos_user_identity::DeviceCert, native: &qos_user_identity::DeviceCert,
+    host: uuid::Uuid, catalogue: &serde_json::Value,
+) -> (qos_actions::InvocationId, qos_relay::peer_actions::ActionMessage, usize) {
+    use qos_peer_state::desktop_command::*;
+    use qos_relay::peer_actions::ActionMessage;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(100), client.recv()).await { apply_state(remote, event); }
+    let mut tree = qos_desktop::WorkspaceTree::default();
+    qos_desktop::projection::RoomProjection::apply_admitted_room(&mut tree, room.into(), remote.admitted_room().unwrap()).unwrap();
+    let strip = tree.workspaces[0].strips[0].id.0;
+    let command = BoundCommand {
+        source: CommandSource { room: room.to_string(), heads: remote.admitted_room().unwrap().clone().get_heads().into_iter().map(|h|h.0).collect() },
+        command: DesktopCommand::OpenTab { app: "dev.qos.notes".into(), placement: TabPlacement::NewGroup { strip, after: None } },
+    };
+    let surface = catalogue["surfaces"].as_array().unwrap().iter().find(|s|s["app_id"]==APP_ID).expect("installed native desktop service must be advertised");
+    let invocation = qos_actions::InvocationId::new();
+    let operation = ActionMessage::InvokeBound { host, invocation, app_peer: surface["peer_id"].as_u64().unwrap().to_string(), app_id: APP_ID.into(), record_id: "".into(), resource: RESOURCE.into(), action: ACTION.into(), argument: Some(serde_json::json!({"command":serde_json::to_string(&command).unwrap()})), confirmation: None, revision: None };
+    let prior = remote.rows().len();
+    invoke_and_observe(client, remote, room, cert, native, host, invocation, operation.clone()).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while remote.rows().len() <= prior { apply_state(remote, client.recv().await.unwrap()); }
+    }).await.expect("native desktop record must replicate");
+    let records = remote.rows().len();
+    invoke_and_observe(client, remote, room, cert, native, host, invocation, operation.clone()).await;
+    assert_eq!(remote.rows().len(), records, "duplicate full UUID must not create another checked record");
+    let mut reconstructed = qos_desktop::WorkspaceTree::default();
+    qos_desktop::projection::RoomProjection::apply_admitted_room(&mut reconstructed, room.into(), remote.admitted_room().unwrap()).unwrap();
+    let count = |tree: &qos_desktop::WorkspaceTree| tree.workspaces.iter().flat_map(|w| &w.strips).flat_map(|s| &s.window_groups).map(|g|g.tabs.len()).sum::<usize>();
+    assert_eq!(count(&reconstructed), count(&tree)+1, "signed canonical topology replicates along with checked record");
+    (invocation, operation, records)
 }

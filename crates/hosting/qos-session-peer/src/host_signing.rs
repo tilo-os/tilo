@@ -45,6 +45,16 @@ struct BoundSigner {
     certificate: qos_user_identity::DeviceCert,
 }
 impl HostSigning {
+    pub fn desktop_commands(&self, room: String) -> Arc<dyn qos_action_broker::services::DesktopCommands> {
+        struct Commands { room: String, owner: OwnerCommitHandle }
+        impl qos_action_broker::services::DesktopCommands for Commands {
+            fn room(&self) -> &str { &self.room }
+            fn execute(&self, request: OwnerCommitRequest) -> qos_action_broker::services::DesktopCommandFuture {
+                self.owner.desktop_command(request)
+            }
+        }
+        Arc::new(Commands { room, owner: self.ordinary.clone() })
+    }
     pub fn new(ordinary: OwnerCommitHandle) -> (Self, mpsc::Receiver<PendingSignature>) {
         let (sender, receiver) = mpsc::channel(LIMIT);
         (

@@ -14,3 +14,4 @@ pub mod owner_commit;
 
 mod action_host;
 mod host_signing;
+mod desktop_commands;

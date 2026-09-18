@@ -17,6 +17,7 @@ uuid.workspace = true
 parking_lot.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 qos-actions = { path = "../../collab/actions" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
 desktop-policy = { path = "../../system/desktop-policy" }
 ui = { path = "../../../ui" }
 

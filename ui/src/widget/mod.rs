@@ -1370,6 +1370,10 @@ pub trait Widget {
         Vec::new()
     }
 
+    /// Explicit host-local presentation/request controls for the portable caller
+    /// palette. Only View operations are accepted; shared effects remain broker-owned.
+    fn caller_view_resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> { Vec::new() }
+
     /// One cursor-addressable page of resource roots safe to expose through
     /// the broker pull directory. `max_results` is a hard ceiling; a live
     /// provider must return a non-empty opaque cursor when it has a tail.

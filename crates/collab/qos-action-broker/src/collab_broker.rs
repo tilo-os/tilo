@@ -598,6 +598,15 @@ pub fn spawn_native_peer(
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     config: crate::peer_actions::NativePeerBrokerConfig,
 ) -> std::io::Result<BrokerHandle> {
+    spawn_native_peer_with_services(socket, membership, publisher, config, Default::default())
+}
+pub fn spawn_native_peer_with_services(
+    socket: PathBuf,
+    membership: crate::services::WorkspaceAuthorityHandle,
+    publisher: Arc<crate::collab_outbound::PeerPublisher>,
+    config: crate::peer_actions::NativePeerBrokerConfig,
+    services: crate::services::HostServices,
+) -> std::io::Result<BrokerHandle> {
     if !publisher.is_wired() {
         return Err(std::io::Error::other(
             "peer broker requires an attached signed-document publisher",
@@ -608,7 +617,7 @@ pub fn spawn_native_peer(
         Some(membership),
         publisher,
         Some(&config),
-        Default::default(),
+        services,
         Arc::new(Mutex::new(BrokerChannels::default())),
         Arc::new(FanoutState::new()),
     )

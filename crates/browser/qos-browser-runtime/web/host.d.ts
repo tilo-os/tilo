@@ -8,6 +8,9 @@ export interface RuntimeStatus {
   /** Private caller observation; never a claim of replicated document completion. */
   action?: Pick<PrivateInvocation,'invocation'|'state'|'terminal'|'cancellationRequested'>;
   actionError?: string;
+  /** Native semantic command receipt lifecycle; signed room state owns rendering. */
+  desktopCommand?: { invocation: string; state: string; terminal: boolean; error: string | null };
+  desktopErrors?: string[];
   document?: unknown;
   heads?: string[];
   [diagnostic: string]: unknown;

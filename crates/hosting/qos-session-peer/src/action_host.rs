@@ -147,13 +147,17 @@ impl ActionHost {
             }),
             Arc::new(signing.clone()),
         );
-        let broker = qos_action_broker::collab_broker::spawn_native_peer(
+        let broker = qos_action_broker::collab_broker::spawn_native_peer_with_services(
             state.join("broker.sock"),
             Arc::new(authority.clone()),
             publisher,
             qos_action_broker::peer_actions::NativePeerBrokerConfig {
                 journal_root: state.join("journal"),
                 certificate_authority: Arc::new(authority),
+            },
+            qos_action_broker::services::HostServices {
+                desktop_commands: Some(signing.desktop_commands(owner.peer().room().into())),
+                ..Default::default()
             },
         )?;
         let principal = match collab_types::caps::Principal::person_from_key(
@@ -252,6 +256,7 @@ impl ActionHost {
                 "dev.qos.word-processor" => word_processor::definition(),
                 "dev.qos.chat" => chat::definition(),
                 "dev.qos.notes" => notes::definition(),
+                "dev.qos.calculator" => calculator::definition(),
                 _ => continue,
             };
             let checkout = if row.record_id.is_empty() {
@@ -413,9 +418,10 @@ impl ActionHost {
         }).collect())
     }
     pub fn ready(&self) -> bool {
+        let surfaces = self.broker.published_action_surfaces();
         self.signing.health().is_ok()
             && !self.workers.is_empty()
-            && self.broker.published_action_surfaces().len() >= self.workers.len()
+            && self.workers.iter().all(|worker| surfaces.iter().any(|surface| surface.live && surface.app_id == worker.app_id && surface.route.record_id == worker.record_id))
     }
     fn acknowledge_committed(&self, owner: &SessionOwner) -> Result<(), String> {
         for write in self.cache.pending_writes() {

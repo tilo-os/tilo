@@ -44,6 +44,7 @@ pub struct OwnerCommitMailbox {
 pub struct PendingOwnerCommit {
     request: OwnerCommitRequest,
     reply: Option<oneshot::Sender<Result<OwnerCommitReceipt, String>>>,
+    desktop_reply: Option<oneshot::Sender<Result<OwnerCommitReceipt, qos_peer_state::desktop_command::DesktopCommandError>>>,
     health: Arc<Health>,
     _permit: OwnedSemaphorePermit,
 }
@@ -95,6 +96,7 @@ impl OwnerCommitService for OwnerCommitHandle {
                 .try_send(PendingOwnerCommit {
                     request: request.clone(),
                     reply: Some(reply),
+                    desktop_reply: None,
                     health: this.health.clone(),
                     _permit: permit,
                 })
@@ -114,6 +116,18 @@ impl OwnerCommitService for OwnerCommitHandle {
     }
 }
 impl PendingOwnerCommit {
+    pub fn is_desktop(&self) -> bool { self.desktop_reply.is_some() }
+    pub fn apply_desktop(mut self, owner: &mut SessionOwner) -> Result<(), String> {
+        use qos_peer_state::desktop_command::DesktopCommandError;
+        let result = self.health.check().map_err(DesktopCommandError::Uncertain)
+            .and_then(|()| owner.commit_desktop_command(&self.request));
+        let health = match &result {
+            Err(DesktopCommandError::Uncertain(reason)) => Err(self.health.fail(reason.clone())),
+            _ => Ok(()),
+        };
+        if let Some(reply) = self.desktop_reply.take() { let _ = reply.send(result); }
+        health
+    }
     /// Called only by the serialized owner loop. A successful reply follows its
     /// aggregate fsync+directory barrier. Dropped callers do not cancel commits.
     pub fn apply(mut self, owner: &mut SessionOwner) -> Result<OwnerCommitReceipt, String> {
@@ -132,10 +146,33 @@ impl PendingOwnerCommit {
 }
 impl Drop for PendingOwnerCommit {
     fn drop(&mut self) {
-        if self.reply.is_some() {
+        if self.reply.is_some() || self.desktop_reply.is_some() {
             self.health
                 .fail("owner handoff dropped before commit; outcome unknown");
         }
+    }
+}
+
+impl OwnerCommitHandle {
+    pub(crate) fn desktop_command(&self, request: OwnerCommitRequest) -> qos_action_broker::services::DesktopCommandFuture {
+        let this = self.clone();
+        Box::pin(async move {
+            use qos_peer_state::desktop_command::DesktopCommandError::{Rejected, Uncertain};
+            this.health().map_err(Uncertain)?;
+            if !matches!(request.operation, CommitOperation::DesktopCommand { .. }) { return Err(Rejected("not a desktop command".into())); }
+            request.binding().map_err(Rejected)?;
+            let bytes = postcard::to_stdvec(&request).map_err(|e| Rejected(e.to_string()))?;
+            if bytes.len() > MAX_REQUEST_BYTES { return Err(Rejected("desktop command exceeds bounded payload".into())); }
+            let permit = this.permits.clone().try_acquire_owned().map_err(|_| Rejected("desktop command capacity exhausted".into()))?;
+            let (reply, response) = oneshot::channel();
+            this.sender.try_send(PendingOwnerCommit { request: request.clone(), reply: None, desktop_reply: Some(reply), health: this.health.clone(), _permit: permit })
+                .map_err(|_| Uncertain(this.health.fail("desktop owner queue unavailable; outcome unknown")))?;
+            let receipt = tokio::time::timeout(COMMIT_TIMEOUT, response).await
+                .map_err(|_| Uncertain(this.health.fail("desktop owner commit timed out; outcome unknown")))?
+                .map_err(|_| Uncertain(this.health.fail("desktop owner reply lost; outcome unknown")))??;
+            receipt.validate_for(&request).map_err(|e| Uncertain(this.health.fail(e)))?;
+            Ok(receipt)
+        })
     }
 }
 impl SessionOwner {
@@ -152,6 +189,9 @@ impl SessionOwner {
         }
         let mut candidate = self.peer().clone();
         match &request.operation {
+            CommitOperation::DesktopCommand { .. } => {
+                return Err("desktop commands require their admitted semantic service".into());
+            }
             CommitOperation::Document {
                 app,
                 record,
@@ -249,5 +289,46 @@ impl SessionOwner {
         };
         receipt.validate_for(request)?;
         Ok(receipt)
+    }
+}
+
+#[cfg(test)]
+mod desktop_mailbox_tests {
+    use super::*;
+    use qos_peer_state::desktop_command::*;
+    fn command(owner: &SessionOwner, name: &str) -> OwnerCommitRequest {
+        OwnerCommitRequest { room: owner.peer().room().into(), operation: CommitOperation::DesktopCommand {
+            invocation: uuid::Uuid::new_v4(), caller: owner.peer().authority().clone(), command: BoundCommand {
+                source: CommandSource { room: owner.peer().room().into(), heads: owner.peer().admitted_room().unwrap().clone().get_heads().into_iter().map(|h|h.0).collect() },
+                command: DesktopCommand::CreateStrip { name: name.into() },
+            },
+        } }
+    }
+    #[tokio::test]
+    async fn definite_refusal_keeps_mailbox_healthy_but_failed_flush_is_uncertain() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("owner");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let (service, mut mailbox) = OwnerCommitMailbox::bounded(2);
+        let before = owner.status();
+        let refused = tokio::spawn(service.desktop_command(command(&owner, "")));
+        mailbox.recv().await.unwrap().apply_desktop(&mut owner).unwrap();
+        assert!(matches!(refused.await.unwrap(), Err(DesktopCommandError::Rejected(_))));
+        assert!(service.health().is_ok()); assert!(owner.permits_publication());
+        assert_eq!(owner.status(), before);
+        let request = command(&owner, "Durable");
+        let mut receipt = tokio::spawn(service.desktop_command(request.clone()));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut receipt).await.is_err());
+        mailbox.recv().await.unwrap().apply_desktop(&mut owner).unwrap();
+        receipt.await.unwrap().unwrap().validate_for(&request).unwrap();
+        let before = owner.status();
+        let uncertain = tokio::spawn(service.desktop_command(command(&owner, "Cannot flush")));
+        let pending = mailbox.recv().await.unwrap();
+        std::fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
+        std::fs::create_dir(path.join("session.bin")).unwrap();
+        assert!(pending.apply_desktop(&mut owner).is_err());
+        assert!(matches!(uncertain.await.unwrap(), Err(DesktopCommandError::Uncertain(_))));
+        assert!(service.health().is_err()); assert!(!owner.permits_publication());
+        assert_eq!(owner.status(), before);
     }
 }

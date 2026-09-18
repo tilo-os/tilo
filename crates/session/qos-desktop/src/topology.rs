@@ -185,6 +185,16 @@ impl WorkspaceTree {
         tab_id: TabId,
         insert_at: usize,
     ) -> Option<TabMove> {
+        self.split_tab_into_new_group_using(strip_id, tab_id, insert_at, next_id)
+    }
+
+    /// Durable hosts reserve the identity in their owned namespace before
+    /// publishing; native callers retain the process allocator above.
+    pub fn split_tab_into_reserved_group(&mut self, strip_id: StripId, tab_id: TabId, insert_at: usize, new_group_id: GroupId) -> Option<TabMove> {
+        self.split_tab_into_new_group_using(strip_id, tab_id, insert_at, || new_group_id)
+    }
+
+    fn split_tab_into_new_group_using(&mut self, strip_id: StripId, tab_id: TabId, insert_at: usize, new_group_id: impl FnOnce() -> GroupId) -> Option<TabMove> {
         let (ws_idx, strip_idx, group_idx, tab_idx) =
             self.workspaces
                 .iter()
@@ -229,7 +239,7 @@ impl WorkspaceTree {
             (group.id, moved)
         };
         let new_group = WindowGroup {
-            id: next_id(),
+            id: new_group_id(),
             active_tab: moved.id,
             tabs: vec![moved],
             width: WindowWidth::Normal,
