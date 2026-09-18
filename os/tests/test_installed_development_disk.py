@@ -58,6 +58,29 @@ class Layout(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux' and os.geteuid() == 0, 'root Linux file ownership checks')
 class Reopen(unittest.TestCase):
+    def test_materialized_target_requires_all_exact_source_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root, esp = root / 'source', root / 'esp'
+            original = source_root / 'boot/tilo-target'
+            copied = esp / 'tilo-target'
+            for base in (original, copied):
+                (base / 'predictions').mkdir(parents=True)
+                (base / 'tilo-target.efi').write_bytes(b'verified-target')
+                (base / 'predictions/generation-7.json').write_bytes(b'prediction')
+                (base / 'predictions/generation-7.json.uki.sig').write_bytes(b'signature')
+            proof = {'target_uki_sha256': hashlib.sha256(b'verified-target').hexdigest()}
+            result = disk.verify_materialized_target(source_root, esp, proof, 7)
+            self.assertEqual(len(result['files']), 3)
+            self.assertFalse(result['runtime_access_verified'])
+            (copied / 'predictions/generation-7.json').write_bytes(b'wrong')
+            with self.assertRaisesRegex(ValueError, 'differs'):
+                disk.verify_materialized_target(source_root, esp, proof, 7)
+            (copied / 'predictions/generation-7.json').write_bytes(b'prediction')
+            (copied / 'extra.efi').write_bytes(b'extra')
+            with self.assertRaisesRegex(ValueError, 'inventory'):
+                disk.verify_materialized_target(source_root, esp, proof, 7)
+
     def test_live_media_and_target_keep_distinct_authenticated_identities(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
