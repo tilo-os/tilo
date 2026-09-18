@@ -1112,6 +1112,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
     os/usr/lib/systemd/system/tilo-relay-firstboot.service \
+    os/usr/lib/systemd/system/tilo-network-start.timer \
     /usr/lib/systemd/system/
 COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
 COPY os/usr/share/polkit-1/actions/org.tilo.home-peer.policy /usr/share/polkit-1/actions/org.tilo.home-peer.policy
@@ -1935,7 +1936,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-rollback-confirm.timer && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
     systemctl enable bootc-fetch-apply-updates.timer && \
-    systemctl enable NetworkManager.service
+    systemctl enable tilo-network-start.timer
 
 # Boot-time prune. These units sit on the critical chain but their work
 # is either irrelevant to a desktop Tilo (offline man-db caching), or a
