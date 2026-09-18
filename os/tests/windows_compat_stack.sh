@@ -34,13 +34,17 @@ grep -Fq '("PROTON_USE_NTSYNC", "1".to_string())' \
   && ok 'pinned Proton runner is instructed to select ntsync' \
   || bad 'Proton receives ntsync but is not instructed to use it'
 
-for package in wine wine-dxvk qemu-kvm libvirt-daemon-kvm swtpm freerdp xwayland-satellite virt-viewer xorriso; do
+grep -Fq "x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;;" "$CF" \
+  && ok 'x86-64 image includes the native Wine and DXVK packages' \
+  || bad 'x86-64 image lacks its native Wine or DXVK package selection'
+
+for package in qemu-kvm libvirt-daemon-kvm swtpm freerdp xwayland-satellite virt-viewer xorriso; do
   grep -q "^    $package \\\\$" "$CF" \
     && ok "$package is part of the immutable image" \
     || bad "$package is absent from the Windows compatibility package transaction"
 done
 
-for selection in 'x86_64) vm_firmware=edk2-ovmf ;;' 'aarch64) vm_firmware=edk2-aarch64 ;;'; do
+for selection in 'x86_64) vm_firmware=edk2-ovmf;' 'aarch64) vm_firmware=edk2-aarch64;'; do
   grep -Fq "$selection" "$CF" \
     && ok "native VM firmware selection: $selection" \
     || bad "missing VM firmware selection: $selection"

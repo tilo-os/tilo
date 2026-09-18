@@ -368,7 +368,12 @@ fn paint_scanouts(
                 .scanout
                 .present_scene_damage(cursor, bridge, scene, damage)
             {
-                tracing::error!("DRM backend: history-aware XRGB paint: {error}");
+                match error {
+                    paint::BridgeError::RecoveryBackoff { .. } => {
+                        tracing::debug!("DRM backend: paint recovery is cooling down: {error}");
+                    }
+                    error => tracing::error!("DRM backend: history-aware XRGB paint: {error}"),
+                }
             }
             return;
         }
@@ -381,7 +386,12 @@ fn paint_scanouts(
                 None => bridge.paint_into_xrgb8888(scene, dst, pitch),
             }
         }) {
-            tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
+            match e {
+                paint::BridgeError::RecoveryBackoff { .. } => {
+                    tracing::debug!("DRM backend: paint recovery is cooling down: {e}");
+                }
+                e => tracing::error!("DRM backend: paint_into_xrgb8888: {e}"),
+            }
         }
         return;
     }
@@ -403,7 +413,12 @@ fn paint_scanouts(
     let rgba = match bridge.paint(scene) {
         Ok(b) => b,
         Err(e) => {
-            tracing::error!("DRM backend: paint (combined): {e}");
+            match e {
+                paint::BridgeError::RecoveryBackoff { .. } => {
+                    tracing::debug!("DRM backend: paint recovery is cooling down: {e}");
+                }
+                e => tracing::error!("DRM backend: paint (combined): {e}"),
+            }
             return;
         }
     };

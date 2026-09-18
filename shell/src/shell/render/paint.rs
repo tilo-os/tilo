@@ -65,6 +65,11 @@ pub enum BridgeError {
     #[error("retained GPU target must be reconstructed")]
     RecreateRequired,
 
+    /// The previous software-rendered submission timed out.  Keep the last scanout intact and
+    /// avoid submitting another frame until the old work has had a chance to drain.
+    #[error("DRM paint recovery backoff active; retry in {retry_in_ms}ms")]
+    RecoveryBackoff { retry_in_ms: u64 },
+
     #[error("XRGB destination-history transaction does not match this scene damage")]
     XrgbHistoryMismatch,
 }
@@ -81,6 +86,13 @@ static NEXT_XRGB_HISTORY_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// pixel. Retrying is deliberately bounded: an exhausted recovery reports an error rather than
 /// presenting incomplete geometry as a successful frame.
 const RESILIENT_RENDER_ATTEMPTS: usize = 4;
+/// A software Vulkan frame can legitimately exceed the normal one-second phase budget.  Once it
+/// does, repeatedly allocating a replacement target every compositor tick only queues more
+/// llvmpipe work and makes the guest look frozen.  Give the timed-out submission one more full
+/// fence interval to drain before retrying, then back off exponentially while preserving the
+/// already displayed scanout.
+const RECOVERY_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+const RECOVERY_BACKOFF_MAX: Duration = Duration::from_secs(8);
 
 /// Identity of the adapter actually opened by this bridge. This comes from the wgpu adapter
 /// that owns the renderer, rather than from a separate GL probe.
@@ -1177,6 +1189,11 @@ pub struct VelloDrmBridge {
     /// Process-unique identity and monotonic content epoch for opt-in destination histories.
     xrgb_history_generation: Option<u64>,
     xrgb_history_epoch: Option<u64>,
+    /// Deadline before another replacement renderer may be submitted after a Linux completion
+    /// timeout.  A timed-out readback leaves the previous scanout untouched; retrying at the
+    /// compositor's normal cadence would otherwise queue one more llvmpipe frame every tick.
+    recovery_not_before: Option<Instant>,
+    recovery_backoff: Duration,
     /// Narrow fault injection for the tracked-swizzle cleanup test. It is absent from ordinary
     /// binaries and shortens only the test's mapped source view after GPU completion.
     #[cfg(test)]
@@ -1212,6 +1229,14 @@ impl VelloDrmBridge {
             BridgeError::InvalidDevice(format!("wgpu device id {dev_id} out of range"))
         })?;
         let device = &dev_handle.device;
+        let adapter_info = dev_handle.adapter.get_info();
+        tracing::info!(
+            adapter = %adapter_info.name,
+            backend = ?adapter_info.backend,
+            device_type = ?adapter_info.device_type,
+            driver = %adapter_info.driver,
+            "DRM CPU-fallback wgpu adapter selected"
+        );
 
         let target = RetainedGpuTarget::new(dev_handle, width, height)?;
         let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
@@ -1233,6 +1258,8 @@ impl VelloDrmBridge {
 
             xrgb_history_generation,
             xrgb_history_epoch: Some(1),
+            recovery_not_before: None,
+            recovery_backoff: RECOVERY_BACKOFF_INITIAL,
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
@@ -1262,6 +1289,57 @@ impl VelloDrmBridge {
         self.xrgb_history_epoch = self
             .xrgb_history_epoch
             .and_then(|epoch| epoch.checked_add(1));
+    }
+
+    /// Refuse to submit another frame while a timed-out software-rendered submission drains.
+    /// Returning before `render_normal` is called leaves the caller's dumb buffer untouched, so
+    /// KMS continues showing the last complete frame instead of exposing a half-painted one.
+    fn check_recovery_backoff(&mut self) -> Result<(), BridgeError> {
+        let Some(not_before) = self.recovery_not_before else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        if now < not_before {
+            let retry_in_ms = not_before
+                .saturating_duration_since(now)
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX);
+            return Err(BridgeError::RecoveryBackoff { retry_in_ms });
+        }
+        self.recovery_not_before = None;
+        self.recovery_backoff = RECOVERY_BACKOFF_INITIAL;
+        Ok(())
+    }
+
+    /// LinuxPerPhase timeout errors are recoverable, but only after an explicit cool-down. Other
+    /// errors retain their existing fail-closed behaviour and may be retried on the next frame.
+    fn note_render_failure(&mut self, error: &BridgeError) {
+        let timed_out = match error {
+            BridgeError::Map(message) => {
+                message.contains("LinuxPerPhase fence wait")
+                    || message.contains("LinuxPerPhase map_async channel")
+            }
+            BridgeError::BumpReadback(message) => {
+                message.contains("LinuxPerPhase counter settlement timeout")
+            }
+            _ => false,
+        };
+        if !timed_out {
+            self.recovery_not_before = None;
+            self.recovery_backoff = RECOVERY_BACKOFF_INITIAL;
+            return;
+        }
+        let delay = self.recovery_backoff;
+        self.recovery_not_before = Instant::now().checked_add(delay);
+        self.recovery_backoff = delay
+            .checked_mul(2)
+            .unwrap_or(RECOVERY_BACKOFF_MAX)
+            .min(RECOVERY_BACKOFF_MAX);
+        tracing::warn!(
+            ?delay,
+            "DRM paint completion timed out; preserving the last scanout and backing off renderer recovery"
+        );
     }
 
     /// Identity required by an opt-in XRGB destination history. A saturated epoch is deliberately
@@ -1402,6 +1480,7 @@ impl VelloDrmBridge {
     /// returned buffer instead of panicking.
     pub fn paint(&mut self, scene: &Scene) -> Result<&[u8], BridgeError> {
         self.last_phase_timing = None;
+        self.check_recovery_backoff()?;
         // This API intentionally has no revision. It always renders densely and cannot seed a
         // later versioned sparse frame, even though it refreshes the retained texture/staging.
         self.invalidate_retained();
@@ -1417,7 +1496,13 @@ impl VelloDrmBridge {
         let padded_bytes_per_row = self.padded_bytes_per_row;
         let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
         self.reset_render_attempts();
-        let (mapped, _) = self.render_normal(scene, None, timing.as_mut())?;
+        let (mapped, _) = match self.render_normal(scene, None, timing.as_mut()) {
+            Ok(result) => result,
+            Err(error) => {
+                self.note_render_failure(&error);
+                return Err(error);
+            }
+        };
 
         // Block-map the readback buffer and copy into the tight `self.readback`, stripping row padding.
         let tight_row = (width as usize).saturating_mul(4);
@@ -1469,6 +1554,7 @@ impl VelloDrmBridge {
         dst_pitch: usize,
     ) -> Result<(), BridgeError> {
         self.last_phase_timing = None;
+        self.check_recovery_backoff()?;
         self.invalidate_retained();
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
@@ -1483,7 +1569,13 @@ impl VelloDrmBridge {
         let padded_bytes_per_row = self.padded_bytes_per_row;
         let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
         self.reset_render_attempts();
-        let (mapped, _) = self.render_normal(scene, None, timing.as_mut())?;
+        let (mapped, _) = match self.render_normal(scene, None, timing.as_mut()) {
+            Ok(result) => result,
+            Err(error) => {
+                self.note_render_failure(&error);
+                return Err(error);
+            }
+        };
 
         let cpu_copy_started = self.phase_timing_enabled.then(Instant::now);
         if dst_pitch == 0 {
@@ -2112,6 +2204,7 @@ impl VelloDrmBridge {
         if require_complete_destination {
             Self::validate_complete_xrgb_destination(dst, dst_pitch, self.target.size)?;
         }
+        self.check_recovery_backoff()?;
         self.last_phase_timing = None;
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
@@ -2124,7 +2217,14 @@ impl VelloDrmBridge {
         let (width, height) = self.target.size;
         let padded_bytes_per_row = self.padded_bytes_per_row;
         let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
-        let (mapped, damage_admitted) = self.render_normal(scene, Some(damage), timing.as_mut())?;
+        let (mapped, damage_admitted) =
+            match self.render_normal(scene, Some(damage), timing.as_mut()) {
+                Ok(result) => result,
+                Err(error) => {
+                    self.note_render_failure(&error);
+                    return Err(error);
+                }
+            };
 
         let write_plan = if damage_admitted {
             requested_plan
@@ -4126,14 +4226,28 @@ mod tests {
             assert!(!bridge.retained_staging_valid && bridge.target.completed_view().is_none());
             assert!(bytes.iter().all(|byte| *byte == 0xAB));
             let identity = bridge.xrgb_history_identity(512, 1);
-            bridge
-                .paint_damage_into_xrgb8888(
+            assert!(matches!(
+                bridge.paint_damage_into_xrgb8888(
                     &Scene::new(),
                     version(2, Some(1), None),
                     &mut bytes,
                     512,
+                ),
+                Err(BridgeError::RecoveryBackoff { .. })
+            ));
+            assert_eq!(bridge.last_render_attempts(), 1);
+            assert!(bytes.iter().all(|byte| *byte == 0xAB));
+            // Once the cool-down expires the poisoned target is reconstructed exactly once; the
+            // failure fixture belongs to the old target and cannot poison its replacement.
+            bridge.recovery_not_before = Some(Instant::now() - Duration::from_millis(1));
+            bridge
+                .paint_damage_into_xrgb8888(
+                    &Scene::new(),
+                    version(3, Some(2), None),
+                    &mut bytes,
+                    512,
                 )
-                .expect("bridge reconstructs poisoned renderer");
+                .expect("bridge reconstructs poisoned renderer after backoff");
             assert_ne!(bridge.xrgb_history_identity(512, 1), identity);
             assert!(bridge.target.completed_view().is_some());
         }
