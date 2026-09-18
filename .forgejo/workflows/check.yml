@@ -19,9 +19,9 @@ on:
         type: string
 
 concurrency:
-  group: check-${{ github.ref }}
-  # Main is continuously integrated by multiple agents; cancelling its
-  # security gate on every newer push can prevent any revision from finishing.
+  # Keep every main revision, without serializing all commits behind one slow
+  # native build. Runner admission limits resource use across these runs.
+  group: check-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   # Feature branches still supersede obsolete work immediately.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
